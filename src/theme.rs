@@ -66,6 +66,26 @@ impl Theme {
         let color = self.schemes.dark.on_background;
         argb_to_rgba(color)
     }
+    pub fn input_bg_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(10);
+        argb_to_rgba(color)
+    }
+    pub fn input_text_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(90);
+        argb_to_rgba(color)
+    }
+    pub fn input_border_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(20);
+        argb_to_rgba(color)
+    }
+    pub fn input_focus_border_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(60);
+        argb_to_rgba(color)
+    }
+    pub fn input_cursor_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(90);
+        argb_to_rgba(color)
+    }
 }
 
 pub fn get_theme() -> Theme {

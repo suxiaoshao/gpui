@@ -10,11 +10,13 @@ use prelude::FluentBuilder;
 
 use crate::theme::Theme;
 
+type OnClick = Box<dyn Fn(&ClickEvent, &mut WindowContext) + 'static>;
+
 #[derive(IntoElement)]
 pub struct Button {
     text: String,
     id: ElementId,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut WindowContext) + 'static>>,
+    on_click: Option<OnClick>,
 }
 
 impl Button {
