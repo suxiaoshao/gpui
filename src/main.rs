@@ -1,3 +1,4 @@
+use http_method::SelectHttpMethod;
 /*
  * @Author: suxiaoshao suxiaoshao@gmail.com
  * @Date: 2024-05-31 00:15:11
@@ -7,23 +8,49 @@
  */
 use ::theme::SystemAppearance;
 use assets::Assets;
-use components::{Button, Input};
+use components::{Button, Input, Select};
 use gpui::*;
 use theme::argb_to_rgba;
 use ui::Clickable;
 
 mod components;
+mod http_method;
 mod theme;
 
 struct HelloWorld {
     count: u32,
     input: View<Input>,
+    focus_handle: FocusHandle,
+    http_method_select: View<Select<http_method::SelectHttpMethod>>,
+}
+
+impl HelloWorld {
+    fn new(cx: &mut ViewContext<Self>) -> Self {
+        Self {
+            count: 0,
+            input: cx.new_view(|cx| Input::new("".to_string(), "input", cx)),
+            focus_handle: cx.focus_handle(),
+            http_method_select: cx.new_view(|cx| Select::new(SelectHttpMethod::default(), cx)),
+        }
+    }
 }
 
 impl Render for HelloWorld {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let theme = cx.global::<theme::Theme>();
+        let button_add = Button::new("add", "add_button").on_click(cx.listener(|this, _, cx| {
+            this.count += 1;
+            cx.notify()
+        }));
+        let button_sub = Button::new("sub", "sub_button").on_click(cx.listener(|this, _, cx| {
+            if this.count == 0 {
+                return;
+            }
+            this.count -= 1;
+            cx.notify()
+        }));
         div()
+            .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
             .bg(theme.bg_color())
@@ -41,21 +68,8 @@ impl Render for HelloWorld {
                     .flex_row()
                     .gap_2()
                     .child(format!("Count {}!", &self.count))
-                    .child(
-                        Button::new("add", "add_button").on_click(cx.listener(|this, _, cx| {
-                            this.count += 1;
-                            cx.notify()
-                        })),
-                    )
-                    .child(Button::new("sub", "sub_button").on_click(cx.listener(
-                        |this, _, cx| {
-                            if this.count == 0 {
-                                return;
-                            }
-                            this.count -= 1;
-                            cx.notify()
-                        },
-                    ))),
+                    .child(button_add)
+                    .child(button_sub),
             )
             .child(div().flex().flex_row().gap_1().children((0..=10).map(|x| {
                 div()
@@ -81,6 +95,12 @@ impl Render for HelloWorld {
                     .gap_1()
                     .child(ui::Button::new(13, "sushao")),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(self.http_method_select.clone()),
+            )
     }
 }
 
@@ -98,10 +118,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |cx| {
-                let input = cx.new_view(|cx| Input::new("test".to_string(), "input", cx));
-                cx.new_view(|_cx| HelloWorld { count: 0, input })
-            },
+            |cx| cx.new_view(HelloWorld::new),
         );
     });
 }

@@ -49,11 +49,10 @@ impl RenderOnce for Button {
             .rounded_xl()
             .child(self.text)
             .when_some(self.on_click, |this, on_click| {
-                this.on_mouse_down(MouseButton::Left, |_, cx| cx.prevent_default())
-                    .on_click(move |event, cx| {
-                        cx.stop_propagation();
-                        (on_click)(event, cx)
-                    })
+                this.on_click(move |event, cx| {
+                    cx.stop_propagation();
+                    (on_click)(event, cx)
+                })
             })
             .hover(|style| {
                 style

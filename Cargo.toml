@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-gpui = { path = "../zed/crates/gpui" }
-ui = { path = "../zed/crates/ui" }
-theme = { path = "../zed/crates/theme" }
-assets = { path = "../zed/crates/assets" }
-settings = { path = "../zed/crates/settings" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
+ui = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
+assets = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
+settings = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
 
 # smallvec is included here for convenience, it is used by gpui when creating
 # components that can have children. uncomment this line or

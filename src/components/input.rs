@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use gpui::*;
 use ui::FluentBuilder;
 
@@ -47,9 +49,6 @@ impl Render for Input {
             .bg(theme.input_bg_color())
             .text_color(theme.input_text_color())
             .p_1()
-            .on_click(cx.listener(|this, _, cx| {
-                this.focus_handle.focus(cx);
-            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, cx| {
                 match &event.keystroke.ime_key {
                     Some(key) => {
@@ -92,7 +91,7 @@ impl Render for Input {
             }))
             .focus(|x| x.border_color(theme.input_focus_border_color()))
             .in_focus(|x| x.border_color(theme.input_border_color()))
-            .child(InputElements::new(self))
+            .child(InputElements::new(self, cx))
     }
 }
 
@@ -100,13 +99,15 @@ impl Render for Input {
 pub struct InputElements {
     input: String,
     index: usize,
+    focus: bool,
 }
 
 impl InputElements {
-    fn new(input: &Input) -> Self {
+    fn new(input: &Input, cx: &WindowContext) -> Self {
         InputElements {
             input: input.text.clone(),
             index: input.index,
+            focus: input.focus_handle.is_focused(cx),
         }
     }
 }
@@ -117,9 +118,16 @@ impl RenderOnce for InputElements {
         let text = self.input.chars().collect::<Vec<_>>();
         let index = self.index;
         let gap = px(1.0);
+        let font_size = cx.text_style().font_size;
+        let rem_size = cx.rem_size();
+        let font_size = font_size.to_pixels(rem_size);
+        let cursor_color = theme.input_cursor_color();
+
         div()
             .flex()
             .flex_row()
+            .items_center()
+            .when(text.is_empty(), |x| x.child(""))
             .child(
                 div().flex().flex_row().children(
                     text.iter()
@@ -128,7 +136,25 @@ impl RenderOnce for InputElements {
                         .collect::<Vec<_>>(),
                 ),
             )
-            .child(div().bg(theme.input_cursor_color()).w(gap).relative())
+            .when(self.focus, |x| {
+                x.child(
+                    div().bg(cursor_color).w(gap).h(font_size).with_animation(
+                        "input_cursor",
+                        Animation::new(Duration::from_secs(1))
+                            .repeat()
+                            .with_easing(bounce(ease_in_out)),
+                        move |cursor, delate| {
+                            let mut color = cursor_color;
+                            let delate = match delate {
+                                0.75..=1.0 => 1.0,
+                                _ => delate * 4.0 / 3.0,
+                            };
+                            color.a = delate;
+                            cursor.bg(color)
+                        },
+                    ),
+                )
+            })
             .child(
                 div().flex().flex_row().children(
                     text.iter()
@@ -137,6 +163,5 @@ impl RenderOnce for InputElements {
                         .collect::<Vec<_>>(),
                 ),
             )
-            .when(text.is_empty(), |x| x.child(""))
     }
 }
