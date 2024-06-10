@@ -14,7 +14,7 @@ type OnClick = Box<dyn Fn(&ClickEvent, &mut WindowContext) + 'static>;
 
 #[derive(IntoElement)]
 pub struct Button {
-    text: String,
+    label: String,
     id: ElementId,
     on_click: Option<OnClick>,
 }
@@ -22,7 +22,7 @@ pub struct Button {
 impl Button {
     pub fn new(text: impl Into<String>, id: impl Into<ElementId>) -> Self {
         Self {
-            text: text.into(),
+            label: text.into(),
             id: id.into(),
             on_click: None,
         }
@@ -47,7 +47,7 @@ impl RenderOnce for Button {
             .p_1()
             .px_4()
             .rounded_xl()
-            .child(self.text)
+            .child(self.label)
             .when_some(self.on_click, |this, on_click| {
                 this.on_click(move |event, cx| {
                     cx.stop_propagation();

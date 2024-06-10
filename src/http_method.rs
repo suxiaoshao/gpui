@@ -49,7 +49,7 @@ impl SelectItem for HttpMethod {
         *self
     }
 
-    fn display(&self) -> impl IntoElement {
+    fn display_item(&self) -> impl IntoElement {
         self.as_str()
     }
 
@@ -86,10 +86,6 @@ impl SelectList for SelectHttpMethod {
 
     fn select(&mut self, value: &<Self::Item as SelectItem>::Value) {
         self.selected = *value;
-    }
-
-    fn default(&self) -> Self::Item {
-        HttpMethod::default()
     }
 
     fn get_select_item(&self) -> &Self::Item {

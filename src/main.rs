@@ -1,4 +1,3 @@
-use http_method::SelectHttpMethod;
 /*
  * @Author: suxiaoshao suxiaoshao@gmail.com
  * @Date: 2024-05-31 00:15:11
@@ -10,6 +9,7 @@ use ::theme::SystemAppearance;
 use assets::Assets;
 use components::{Button, Input, Select};
 use gpui::*;
+use http_method::SelectHttpMethod;
 use theme::argb_to_rgba;
 use ui::Clickable;
 
