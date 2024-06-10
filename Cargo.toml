@@ -1,20 +1,16 @@
-[package]
-name = "gpui-app"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = ["app/http-client", "common/components", "common/theme"]
 
-[dependencies]
+resolver = "2"
+
+[workspace.dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
 ui = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
 theme = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
 assets = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
 settings = { git = "https://github.com/zed-industries/zed", rev = "3ec94697" }
-
-# smallvec is included here for convenience, it is used by gpui when creating
-# components that can have children. uncomment this line or
-# use `cargo add smallvec` to add it to your project
 smallvec = "1.13.2"
-material-colors = "0.3.3"
+# material-colors = "0.3.3"
 
 [patch.crates-io]
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "7b4894ba2ae81b988846676f54c0988d4027ef4f" }
