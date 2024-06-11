@@ -3,8 +3,8 @@
 // Example:
 [
   {
-    "label": "Dev",
-    "command": " cargo watch -x run",
+    "label": "http-client Dev",
+    "command": " cargo watch -x run -p http-client",
     //"args": [],
     // Env overrides for the command, will be appended to the terminal's environment from the settings.
     "env": {},

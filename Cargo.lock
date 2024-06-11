@@ -434,7 +434,7 @@ checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
 [[package]]
 name = "blade-graphics"
 version = "0.4.0"
-source = "git+https://github.com/kvark/blade?rev=e35b2d41f221a48b75f7cf2e78a81e7ecb7a383c#e35b2d41f221a48b75f7cf2e78a81e7ecb7a383c"
+source = "git+https://github.com/kvark/blade?rev=bdaf8c534fbbc9fbca71d1cf272f45640b3a068d#bdaf8c534fbbc9fbca71d1cf272f45640b3a068d"
 dependencies = [
  "ash",
  "ash-window",
@@ -464,11 +464,22 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.2.1"
-source = "git+https://github.com/kvark/blade?rev=e35b2d41f221a48b75f7cf2e78a81e7ecb7a383c#e35b2d41f221a48b75f7cf2e78a81e7ecb7a383c"
+source = "git+https://github.com/kvark/blade?rev=bdaf8c534fbbc9fbca71d1cf272f45640b3a068d#bdaf8c534fbbc9fbca71d1cf272f45640b3a068d"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.66",
+]
+
+[[package]]
+name = "blade-util"
+version = "0.1.0"
+source = "git+https://github.com/kvark/blade?rev=bdaf8c534fbbc9fbca71d1cf272f45640b3a068d#bdaf8c534fbbc9fbca71d1cf272f45640b3a068d"
+dependencies = [
+ "blade-graphics",
+ "bytemuck",
+ "log",
+ "profiling",
 ]
 
 [[package]]
@@ -742,7 +753,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "rustc-hash",
 ]
@@ -756,6 +767,10 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 [[package]]
 name = "components"
 version = "0.1.0"
+dependencies = [
+ "gpui",
+ "theme",
+]
 
 [[package]]
 name = "concurrent-queue"
@@ -1044,7 +1059,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1721,7 +1736,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -1730,6 +1745,7 @@ dependencies = [
  "bindgen",
  "blade-graphics",
  "blade-macros",
+ "blade-util",
  "block",
  "bytemuck",
  "calloop",
@@ -1806,7 +1822,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1905,7 +1921,7 @@ dependencies = [
 [[package]]
 name = "http"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "anyhow",
  "futures",
@@ -1932,6 +1948,8 @@ dependencies = [
 name = "http-client"
 version = "0.1.0"
 dependencies = [
+ "components",
+ "gpui",
  "theme",
 ]
 
@@ -2406,7 +2424,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -3058,9 +3076,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.84"
+version = "1.0.85"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec96c6a92621310b51366f1e28d05ef11489516e93be030060e5fc12024a49d6"
+checksum = "22244ce15aa966053a896d1accb3a6e68469b97c7f33f284b99f0d576879fc23"
 dependencies = [
  "unicode-ident",
 ]
@@ -3209,7 +3227,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "derive_refineable",
 ]
@@ -3447,7 +3465,7 @@ checksum = "d369a96f978623eb3dc28807c4852d6cc617fed53da5d3c400feff1ef34a714a"
 [[package]]
 name = "semantic_version"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "anyhow",
  "serde",
@@ -3764,7 +3782,7 @@ checksum = "81cdd64d312baedb58e21336b31bc043b77e01cc99033ce76ef539f78e965ebc"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "arrayvec",
  "log",
@@ -4354,7 +4372,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "util"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=3ec94697#3ec94697b4c3def47209674cf08665fd1674b8ad"
+source = "git+https://github.com/zed-industries/zed#8078e58494b8255003f45e01ddc4c8502fa33efb"
 dependencies = [
  "anyhow",
  "async-fs 1.6.0",
@@ -5267,8 +5285,3 @@ dependencies = [
  "quote",
  "syn 2.0.66",
 ]
-
-[[patch.unused]]
-name = "tree-sitter"
-version = "0.20.100"
-source = "git+https://github.com/tree-sitter/tree-sitter?rev=7b4894ba2ae81b988846676f54c0988d4027ef4f#7b4894ba2ae81b988846676f54c0988d4027ef4f"
