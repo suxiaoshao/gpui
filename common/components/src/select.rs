@@ -1,8 +1,6 @@
 use gpui::{prelude::*, *};
 use std::ops::Deref;
 
-use super::Button;
-
 pub trait SelectItem {
     type Value: Eq;
     fn value(&self) -> Self::Value;
@@ -17,6 +15,11 @@ pub trait SelectList {
     fn items(&self) -> impl IntoIterator<Item = Self::Item>;
     fn select(&mut self, value: &<Self::Item as SelectItem>::Value);
     fn get_select_item(&self) -> &Self::Item;
+    fn trigger_element(
+        &self,
+        cx: &mut WindowContext,
+        func: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
+    ) -> impl IntoElement;
 }
 
 #[derive(Debug, Clone)]
@@ -53,15 +56,16 @@ where
 {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let options = self.options.items().into_iter();
-        let select_value = self.options.get_select_item();
+        let func = cx.listener(|this, _event, cx| {
+            match this.menu_focus_handle.is_focused(cx) {
+                true => this.button_focus_handle.focus(cx),
+                false => this.menu_focus_handle.focus(cx),
+            };
+            cx.notify();
+        });
+        let trigger_element = self.options.trigger_element(cx, func);
         div()
-            .child(
-                Button::new(select_value.label(), select_value.id()).on_click(cx.listener(
-                    |this, _, cx| {
-                        this.menu_focus_handle.focus(cx);
-                    },
-                )),
-            )
+            .child(trigger_element)
             .when(self.menu_focus_handle.is_focused(cx), |x| {
                 x.child(
                     div()

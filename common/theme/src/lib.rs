@@ -4,7 +4,11 @@ use std::{
 };
 
 use gpui::Rgba;
-use material_colors::{color::Argb, theme::ThemeBuilder};
+use material_colors::{color::Argb, palette::TonalPalette, theme::ThemeBuilder};
+
+mod elevation;
+
+pub use elevation::ElevationColor;
 
 pub struct Theme(material_colors::theme::Theme);
 
@@ -66,21 +70,9 @@ impl Theme {
         let color = self.schemes.dark.on_background;
         argb_to_rgba(color)
     }
-    pub fn input_bg_color(&self) -> Rgba {
-        let color = self.palettes.primary.tone(10);
-        argb_to_rgba(color)
-    }
-    pub fn input_text_color(&self) -> Rgba {
-        let color = self.palettes.primary.tone(90);
-        argb_to_rgba(color)
-    }
-    pub fn input_border_color(&self) -> Rgba {
-        let color = self.palettes.primary.tone(20);
-        argb_to_rgba(color)
-    }
-    pub fn input_focus_border_color(&self) -> Rgba {
-        let color = self.palettes.primary.tone(60);
-        argb_to_rgba(color)
+    pub fn divider_color(&self) -> Rgba {
+        let color = TonalPalette::from_hct(self.schemes.dark.on_background.into());
+        argb_to_rgba(color.tone(20))
     }
     pub fn input_cursor_color(&self) -> Rgba {
         let color = self.palettes.primary.tone(90);

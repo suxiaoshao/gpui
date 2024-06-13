@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 gpui.workspace = true
+smallvec.workspace = true
+
 theme = { path = "../../common/theme" }
 components = { path = "../../common/components" }

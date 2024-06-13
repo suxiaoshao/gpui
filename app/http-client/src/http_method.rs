@@ -1,4 +1,4 @@
-use components::{SelectItem, SelectList};
+use components::{button, SelectItem, SelectList};
 use gpui::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -90,5 +90,22 @@ impl SelectList for SelectHttpMethod {
 
     fn get_select_item(&self) -> &Self::Item {
         &self.selected
+    }
+
+    fn trigger_element(
+        &self,
+        cx: &mut WindowContext,
+        func: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
+    ) -> impl IntoElement {
+        button(self.selected.as_str(), cx)
+            .on_click(move |event, cx| {
+                func(event, cx);
+            })
+            .rounded_l(px(4.0))
+            .rounded_r(rems(0.0))
+            .flex()
+            .w(px(100.0))
+            .items_center()
+            .child(self.selected.as_str())
     }
 }

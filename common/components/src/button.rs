@@ -59,3 +59,8 @@ impl RenderOnce for Button {
             })
     }
 }
+
+pub fn button(id: impl Into<ElementId>, cx: &mut WindowContext) -> Stateful<Div> {
+    let theme = cx.global::<Theme>();
+    div().id(id.into()).p_1().px_4().cursor_pointer()
+}

@@ -40,13 +40,10 @@ impl FocusableView for Input {
 
 impl Render for Input {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
         div()
             .id(self.id.clone())
             .border_1()
             .track_focus(&self.focus_handle)
-            .bg(theme.input_bg_color())
-            .text_color(theme.input_text_color())
             .p_1()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, cx| {
                 match &event.keystroke.ime_key {
@@ -88,8 +85,6 @@ impl Render for Input {
                     },
                 };
             }))
-            .focus(|x| x.border_color(theme.input_focus_border_color()))
-            .in_focus(|x| x.border_color(theme.input_border_color()))
             .child(InputElements::new(self, cx))
     }
 }
