@@ -50,8 +50,7 @@ where
 
 impl<List> Render for Select<List>
 where
-    List: SelectList + 'static,
-    List::Item: 'static,
+    List: SelectList<Item: 'static> + 'static,
     <List::Item as SelectItem>::Value: 'static,
 {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {

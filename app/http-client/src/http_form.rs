@@ -1,20 +1,28 @@
-use components::{Input, Select};
+use components::{button, Input, Select, Tab};
 use gpui::*;
 use smallvec::smallvec;
 use theme::ElevationColor;
 
-use crate::http_method::{HttpMethod, SelectHttpMethod};
+use crate::{
+    http_method::{HttpMethod, SelectHttpMethod},
+    http_tab::HttpTabView,
+};
+
+pub enum HttpFormEvent {
+    Send,
+}
 
 pub struct HttpForm {
     http_method: HttpMethod,
     url: String,
 }
 
-impl EventEmitter<()> for HttpForm {}
+impl EventEmitter<HttpFormEvent> for HttpForm {}
 
 pub struct HttpFormView {
     form: Model<HttpForm>,
     http_method_select: View<Select<SelectHttpMethod>>,
+    http_tab: View<Tab<HttpTabView>>,
     url_input: View<Input>,
     focus_handle: FocusHandle,
 }
@@ -29,6 +37,7 @@ impl HttpFormView {
             http_method_select: cx.new_view(|cx| Select::new(SelectHttpMethod::default(), cx)),
             url_input: cx.new_view(|cx| Input::new("".to_string(), "url_input", cx)),
             focus_handle: cx.focus_handle(),
+            http_tab: cx.new_view(|_cx| Tab::new(HttpTabView::new())),
         }
     }
 }
@@ -36,20 +45,23 @@ impl HttpFormView {
 impl Render for HttpFormView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let theme = cx.global::<theme::Theme>();
-        div()
-            .track_focus(&self.focus_handle)
+        let send_button = button("Send")
+            .child("Send")
+            .bg(theme.button_bg_color())
+            .text_color(theme.button_color())
+            .rounded_md()
+            .on_click(|_event, _cx| {});
+        let header = div()
             .flex()
-            .flex_col()
-            .p_2()
-            .bg(theme.bg_color())
-            .size_full()
-            .shadow_lg()
-            .border_1()
-            .text_color(theme.text_color())
             .gap_2()
+            .p_2()
+            .items_start()
+            .text_sm()
             .child(
                 div()
                     .flex()
+                    .items_center()
+                    .flex_1()
                     .rounded_md()
                     .shadow(smallvec![
                         BoxShadow {
@@ -73,16 +85,27 @@ impl Render for HttpFormView {
                     ])
                     .border(px(0.5))
                     .border_color(theme.divider_color())
-                    .bg(theme.bg_color().elevation_color(1.0))
+                    .bg(theme.bg_color().elevation_color(3.0))
                     .child(self.http_method_select.clone())
-                    .child(div().my_1().w(px(1.0)).bg(theme.divider_color()))
                     .child(
                         div()
-                            .flex_1()
-                            .overflow_x_hidden()
-                            .child(self.url_input.clone()),
-                    ),
+                            .h(DefiniteLength::Fraction(0.8))
+                            .w(px(1.0))
+                            .bg(theme.divider_color()),
+                    )
+                    .child(div().flex_1().child(self.url_input.clone())),
             )
-            .child(div().flex_1())
+            .child(send_button);
+        div()
+            .track_focus(&self.focus_handle)
+            .flex()
+            .flex_col()
+            .bg(theme.bg_color())
+            .size_full()
+            .shadow_lg()
+            .border_1()
+            .text_color(theme.text_color())
+            .child(header)
+            .child(self.http_tab.clone())
     }
 }

@@ -3,6 +3,7 @@ use http_form::HttpFormView;
 
 mod http_form;
 mod http_method;
+mod http_tab;
 
 fn main() {
     App::new().run(|cx: &mut AppContext| {

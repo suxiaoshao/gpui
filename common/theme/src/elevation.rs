@@ -1,12 +1,18 @@
+/*
+ * @Author: suxiaoshao suxiaoshao@gmail.com
+ * @Date: 2024-06-12 20:03:29
+ * @LastEditors: suxiaoshao suxiaoshao@gmail.com
+ * @LastEditTime: 2024-06-19 09:39:03
+ * @FilePath: /gpui-app/common/theme/src/elevation.rs
+ */
 use gpui::Rgba;
 
 fn get_overlay_alpha(elevation: f32) -> f32 {
-    let alpha_value: f32;
-    if elevation < 1.0 {
-        alpha_value = 5.11916 * elevation.powi(2);
+    let alpha_value = if elevation < 1.0 {
+        5.11916 * elevation.powi(2)
     } else {
-        alpha_value = 4.5 * (elevation + 1.0).ln() + 2.0;
-    }
+        4.5 * (elevation + 1.0).ln() + 2.0
+    };
     (alpha_value * 10.0).round() / 1000.0
 }
 pub trait ElevationColor {

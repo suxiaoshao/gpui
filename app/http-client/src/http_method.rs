@@ -67,14 +67,6 @@ pub struct SelectHttpMethod {
     pub selected: HttpMethod,
 }
 
-impl SelectHttpMethod {
-    pub fn new(selected: Option<HttpMethod>) -> Self {
-        Self {
-            selected: selected.unwrap_or_default(),
-        }
-    }
-}
-
 impl SelectList for SelectHttpMethod {
     type Item = HttpMethod;
 
@@ -94,14 +86,13 @@ impl SelectList for SelectHttpMethod {
 
     fn trigger_element(
         &self,
-        cx: &mut WindowContext,
+        _cx: &mut WindowContext,
         func: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
     ) -> impl IntoElement {
-        button(self.selected.as_str(), cx)
+        button(self.selected.as_str())
             .on_click(move |event, cx| {
                 func(event, cx);
             })
-            .rounded_l(px(4.0))
             .rounded_r(rems(0.0))
             .flex()
             .w(px(100.0))

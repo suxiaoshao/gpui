@@ -44,7 +44,7 @@ impl Render for Input {
             .id(self.id.clone())
             .border_1()
             .track_focus(&self.focus_handle)
-            .p_1()
+            .px_2()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, cx| {
                 match &event.keystroke.ime_key {
                     Some(key) => {
@@ -121,6 +121,7 @@ impl RenderOnce for InputElements {
             .flex()
             .flex_row()
             .items_center()
+            .cursor_text()
             .when(text.is_empty(), |x| x.child(""))
             .child(
                 div().flex().flex_row().children(

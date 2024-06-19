@@ -72,7 +72,7 @@ impl Theme {
     }
     pub fn divider_color(&self) -> Rgba {
         let color = TonalPalette::from_hct(self.schemes.dark.on_background.into());
-        argb_to_rgba(color.tone(20))
+        argb_to_rgba(color.tone(30))
     }
     pub fn input_cursor_color(&self) -> Rgba {
         let color = self.palettes.primary.tone(90);
