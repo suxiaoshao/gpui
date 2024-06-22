@@ -10,19 +10,17 @@ type OnChange = Box<dyn Fn(&String, &mut WindowContext) + 'static>;
 pub struct Input {
     text: String,
     focus_handle: FocusHandle,
-    id: ElementId,
     index: usize,
     on_change: Option<OnChange>,
 }
 
 impl Input {
-    pub fn new(text: String, id: impl Into<ElementId>, cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(text: String, cx: &mut ViewContext<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let index = text.graphemes(true).count();
         Input {
             text,
             focus_handle,
-            id: id.into(),
             index,
             on_change: None,
         }
@@ -30,6 +28,9 @@ impl Input {
     pub fn on_change(mut self, on_change: impl Fn(&String, &mut WindowContext) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
+    }
+    pub fn get_value(&self) -> &str {
+        &self.text
     }
 }
 
@@ -42,8 +43,6 @@ impl FocusableView for Input {
 impl Render for Input {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         div()
-            .id(self.id.clone())
-            .border_1()
             .track_focus(&self.focus_handle)
             .px_2()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, cx| {
@@ -150,12 +149,10 @@ impl RenderOnce for InputElements {
             .cursor_text()
             .when(text.is_empty(), |x| x.child(""))
             .child(
-                div().flex().flex_row().children(
-                    text.iter()
-                        .take(index)
-                        .map(|c| c.to_string())
-                        .collect::<Vec<_>>(),
-                ),
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(String::from_iter(text.iter().take(index).copied())),
             )
             .when(self.focus, |x| {
                 x.child(
@@ -177,12 +174,10 @@ impl RenderOnce for InputElements {
                 )
             })
             .child(
-                div().flex().flex_row().children(
-                    text.iter()
-                        .skip(index)
-                        .map(|c| c.to_string())
-                        .collect::<Vec<_>>(),
-                ),
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(String::from_iter(text.iter().skip(index).copied())),
             )
     }
 }

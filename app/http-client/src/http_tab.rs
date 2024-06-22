@@ -34,16 +34,17 @@ impl TabItem for HttpTab {
     }
 }
 
+#[derive(Clone)]
 pub struct HttpTabView {
     pub tab: HttpTab,
-    http_form: Model<HttpForm>,
+    params: View<HttpParams>,
 }
 
 impl HttpTabView {
-    pub fn new(http_form: Model<HttpForm>) -> Self {
+    pub fn new(http_form: Model<HttpForm>, cx: &mut WindowContext) -> Self {
         Self {
+            params: cx.new_view(|cx| HttpParams::new(http_form.clone(), cx)),
             tab: HttpTab::Params,
-            http_form,
         }
     }
 }
@@ -66,11 +67,9 @@ impl TabList for HttpTabView {
     fn div(&self, _cx: &mut WindowContext) -> Div {
         div().flex_1()
     }
-    fn panel(&self) -> impl gpui::IntoElement {
+    fn panel(&self, _cx: &mut WindowContext) -> impl gpui::IntoElement {
         match self.get_select_item() {
-            HttpTab::Params => HttpParams::new(self.http_form.clone())
-                .into_element()
-                .into_any(),
+            HttpTab::Params => self.params.clone().into_any(),
             HttpTab::Headers => div().child("Headers").into_any(),
             HttpTab::Body => div().child("Body").into_any(),
         }

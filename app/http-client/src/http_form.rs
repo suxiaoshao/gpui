@@ -1,4 +1,4 @@
-use components::{button, Input, Select, Tab};
+use components::{button, Select, Tab};
 use gpui::*;
 use smallvec::smallvec;
 use theme::ElevationColor;
@@ -6,12 +6,14 @@ use theme::ElevationColor;
 use crate::{
     http_method::{HttpMethod, SelectHttpMethod},
     http_tab::HttpTabView,
+    url_input::UrlInput,
 };
 
 pub enum HttpFormEvent {
     Send,
     SetUrl(String),
     SetMethod(HttpMethod),
+    SetUrlByParams(String),
 }
 
 pub struct HttpForm {
@@ -24,7 +26,7 @@ pub struct HttpFormView {
     form: Model<HttpForm>,
     http_method_select: View<Select<SelectHttpMethod>>,
     http_tab: View<Tab<HttpTabView>>,
-    url_input: View<Input>,
+    url_input: View<UrlInput>,
     focus_handle: FocusHandle,
 }
 
@@ -35,19 +37,13 @@ impl HttpFormView {
             url: "".to_string(),
         });
         form_cx.subscribe(&form, Self::subscribe).detach();
-        let on_url_change = form_cx.listener(|this: &mut HttpFormView, data: &String, cx| {
-            this.form
-                .update(cx, |_data, cx| cx.emit(HttpFormEvent::SetUrl(data.clone())));
-        });
         let weak_form = form.downgrade();
         Self {
-            http_tab: form_cx.new_view(|_cx| Tab::new(HttpTabView::new(form.clone()))),
+            url_input: form_cx.new_view(|cx| UrlInput::new(form.clone(), cx)),
+            http_tab: form_cx.new_view(|cx| Tab::new(HttpTabView::new(form.clone(), cx))),
             form,
             http_method_select: form_cx
                 .new_view(|cx| Select::new(SelectHttpMethod::new(weak_form), cx)),
-            url_input: form_cx.new_view(|cx| {
-                Input::new("".to_string(), "url_input", cx).on_change(on_url_change)
-            }),
             focus_handle: form_cx.focus_handle(),
         }
     }
@@ -61,7 +57,7 @@ impl HttpFormView {
             HttpFormEvent::Send => {
                 // todo
             }
-            HttpFormEvent::SetUrl(url) => {
+            HttpFormEvent::SetUrl(url) | HttpFormEvent::SetUrlByParams(url) => {
                 subscriber.update(cx, |data, _cx| {
                     data.url.clone_from(url);
                 });

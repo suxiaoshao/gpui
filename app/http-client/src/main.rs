@@ -7,6 +7,7 @@ mod http_form;
 mod http_method;
 mod http_params;
 mod http_tab;
+mod url_input;
 
 fn main() -> HttpClientResult<()> {
     App::new().run(|cx: &mut AppContext| {
