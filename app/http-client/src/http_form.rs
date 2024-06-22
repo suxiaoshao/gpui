@@ -10,13 +10,14 @@ use crate::{
 
 pub enum HttpFormEvent {
     Send,
+    SetUrl(String),
+    SetMethod(HttpMethod),
 }
 
 pub struct HttpForm {
-    http_method: HttpMethod,
-    url: String,
+    pub http_method: HttpMethod,
+    pub url: String,
 }
-
 impl EventEmitter<HttpFormEvent> for HttpForm {}
 
 pub struct HttpFormView {
@@ -28,17 +29,49 @@ pub struct HttpFormView {
 }
 
 impl HttpFormView {
-    pub fn new(cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(form_cx: &mut ViewContext<Self>) -> Self {
+        let form = form_cx.new_model(|_cx| HttpForm {
+            http_method: HttpMethod::Get,
+            url: "".to_string(),
+        });
+        form_cx.subscribe(&form, Self::subscribe).detach();
+        let on_url_change = form_cx.listener(|this: &mut HttpFormView, data: &String, cx| {
+            this.form
+                .update(cx, |_data, cx| cx.emit(HttpFormEvent::SetUrl(data.clone())));
+        });
+        let weak_form = form.downgrade();
         Self {
-            form: cx.new_model(|_cx| HttpForm {
-                http_method: HttpMethod::Get,
-                url: "".to_string(),
+            http_tab: form_cx.new_view(|_cx| Tab::new(HttpTabView::new(form.clone()))),
+            form,
+            http_method_select: form_cx
+                .new_view(|cx| Select::new(SelectHttpMethod::new(weak_form), cx)),
+            url_input: form_cx.new_view(|cx| {
+                Input::new("".to_string(), "url_input", cx).on_change(on_url_change)
             }),
-            http_method_select: cx.new_view(|cx| Select::new(SelectHttpMethod::default(), cx)),
-            url_input: cx.new_view(|cx| Input::new("".to_string(), "url_input", cx)),
-            focus_handle: cx.focus_handle(),
-            http_tab: cx.new_view(|_cx| Tab::new(HttpTabView::new())),
+            focus_handle: form_cx.focus_handle(),
         }
+    }
+    fn subscribe(
+        &mut self,
+        subscriber: Model<HttpForm>,
+        emitter: &HttpFormEvent,
+        cx: &mut ViewContext<Self>,
+    ) {
+        match emitter {
+            HttpFormEvent::Send => {
+                // todo
+            }
+            HttpFormEvent::SetUrl(url) => {
+                subscriber.update(cx, |data, _cx| {
+                    data.url.clone_from(url);
+                });
+            }
+            HttpFormEvent::SetMethod(method) => {
+                subscriber.update(cx, |data, _cx| {
+                    data.http_method = *method;
+                });
+            }
+        };
     }
 }
 
@@ -50,7 +83,11 @@ impl Render for HttpFormView {
             .bg(theme.button_bg_color())
             .text_color(theme.button_color())
             .rounded_md()
-            .on_click(|_event, _cx| {});
+            .on_click(cx.listener(|this, _event, cx| {
+                this.form.update(cx, |_, cx| {
+                    cx.emit(HttpFormEvent::Send);
+                });
+            }));
         let header = div()
             .flex()
             .gap_2()

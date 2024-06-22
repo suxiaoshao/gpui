@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 gpui.workspace = true
 theme = { path = "../theme" }
+unicode-segmentation = "1.11.0"

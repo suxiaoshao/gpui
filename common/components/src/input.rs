@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use gpui::{prelude::*, *};
+use unicode_segmentation::UnicodeSegmentation;
 
 use theme::Theme;
 
-type OnChange = Box<dyn Fn(String, &mut WindowContext) + 'static>;
+type OnChange = Box<dyn Fn(&String, &mut WindowContext) + 'static>;
 
 pub struct Input {
     text: String,
@@ -17,7 +18,7 @@ pub struct Input {
 impl Input {
     pub fn new(text: String, id: impl Into<ElementId>, cx: &mut ViewContext<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let index = text.chars().count();
+        let index = text.graphemes(true).count();
         Input {
             text,
             focus_handle,
@@ -26,7 +27,7 @@ impl Input {
             on_change: None,
         }
     }
-    pub fn on_change(mut self, on_change: impl Fn(String, &mut WindowContext) + 'static) -> Self {
+    pub fn on_change(mut self, on_change: impl Fn(&String, &mut WindowContext) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
     }
@@ -49,9 +50,9 @@ impl Render for Input {
                 match &event.keystroke.ime_key {
                     Some(key) => {
                         this.text.insert_str(this.index, key);
-                        this.index += key.chars().count();
+                        this.index += key.graphemes(true).count();
                         if let Some(on_change) = this.on_change.as_ref() {
-                            on_change(this.text.clone(), cx)
+                            on_change(&this.text, cx)
                         }
                         cx.notify();
                     }
@@ -59,11 +60,11 @@ impl Render for Input {
                         "backspace" => {
                             if this.index > 0 {
                                 this.index -= 1;
-                                let mut text = this.text.chars().collect::<Vec<_>>();
+                                let mut text = this.text.graphemes(true).collect::<Vec<_>>();
                                 text.remove(this.index);
                                 this.text = text.into_iter().collect();
                                 if let Some(on_change) = this.on_change.as_ref() {
-                                    on_change(this.text.clone(), cx)
+                                    on_change(&this.text, cx)
                                 }
                                 cx.notify();
                             }
@@ -75,12 +76,37 @@ impl Render for Input {
                             }
                         }
                         "right" => {
-                            if this.index < this.text.len() {
+                            if this.index < this.text.graphemes(true).count() {
                                 this.index += 1;
                                 cx.notify();
                             }
                         }
                         "enter" => {}
+                        "q" | "w" | "e" | "r" | "t" | "y" | "u" | "i" | "o" | "p" | "a" | "s"
+                        | "d" | "f" | "g" | "h" | "j" | "k" | "l" | "z" | "x" | "c" | "v" | "b"
+                        | "n" | "m"
+                            if !(event.keystroke.modifiers.alt
+                                || event.keystroke.modifiers.control
+                                || event.keystroke.modifiers.function
+                                || event.keystroke.modifiers.platform
+                                || event.keystroke.modifiers.shift) =>
+                        {
+                            dbg!(event.keystroke.key.as_str());
+                        }
+                        "v" if event.keystroke.modifiers.platform
+                            || event.keystroke.modifiers.control =>
+                        {
+                            let text = cx.read_from_clipboard();
+                            if let Some(text) = text {
+                                let text = text.text();
+                                this.text.insert_str(this.index, text);
+                                this.index += text.graphemes(true).count();
+                                if let Some(on_change) = this.on_change.as_ref() {
+                                    on_change(&this.text, cx)
+                                }
+                                cx.notify();
+                            }
+                        }
                         _ => {}
                     },
                 };
@@ -109,7 +135,7 @@ impl InputElements {
 impl RenderOnce for InputElements {
     fn render(self, cx: &mut WindowContext) -> impl IntoElement {
         let theme = cx.global::<Theme>();
-        let text = self.input.chars().collect::<Vec<_>>();
+        let text = self.input.graphemes(true).collect::<Vec<_>>();
         let index = self.index;
         let gap = px(1.0);
         let font_size = cx.text_style().font_size;

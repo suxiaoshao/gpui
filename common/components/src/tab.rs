@@ -12,7 +12,6 @@ use theme::Theme;
 pub trait TabItem {
     type Value: Eq;
     fn label(&self) -> SharedString;
-    fn panel(&self) -> impl IntoElement;
     fn value(&self) -> Self::Value;
 }
 
@@ -22,6 +21,7 @@ pub trait TabList {
     fn select(&mut self, value: &<Self::Item as TabItem>::Value);
     fn get_select_item(&self) -> &Self::Item;
     fn div(&self, cx: &mut WindowContext) -> Div;
+    fn panel(&self) -> impl IntoElement;
 }
 
 pub struct Tab<List>
@@ -86,6 +86,6 @@ where
                     })),
             )
             .child(div().bg(divider_color).h(px(1.0)))
-            .child(div().flex_1().child(self.options.get_select_item().panel()))
+            .child(div().flex_1().child(self.options.panel()))
     }
 }

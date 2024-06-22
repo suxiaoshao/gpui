@@ -13,8 +13,8 @@ pub trait SelectList {
     type Item: SelectItem;
     type Value: Eq;
     fn items(&self) -> impl IntoIterator<Item = Self::Item>;
-    fn select(&mut self, value: &<Self::Item as SelectItem>::Value);
-    fn get_select_item(&self) -> &Self::Item;
+    fn select(&mut self, cx: &mut WindowContext, value: &<Self::Item as SelectItem>::Value);
+    fn get_select_item(&self, cx: &mut WindowContext) -> Self::Item;
     fn trigger_element(
         &self,
         cx: &mut WindowContext,
@@ -43,8 +43,8 @@ where
             button_focus_handle: cx.focus_handle(),
         }
     }
-    fn select(&mut self, value: &<List::Item as SelectItem>::Value) {
-        self.options.select(value);
+    fn select(&mut self, cx: &mut WindowContext, value: &<List::Item as SelectItem>::Value) {
+        self.options.select(cx, value);
     }
 }
 
@@ -75,7 +75,7 @@ where
                         .children(options.into_iter().map(|data| {
                             let value = data.value();
                             let on_click = cx.listener(move |this, _, cx| {
-                                this.select(&value);
+                                this.select(cx, &value);
                                 this.button_focus_handle.focus(cx);
                                 cx.notify();
                             });
@@ -126,6 +126,7 @@ impl<T: SelectItem + 'static> RenderOnce for SelectItemElement<T> {
             .on_mouse_up(MouseButton::Left, |_event, cx| {
                 cx.prevent_default();
             })
+            .cursor_pointer()
             .on_click(move |event, cx| {
                 cx.stop_propagation();
                 (self.on_click)(event, cx)

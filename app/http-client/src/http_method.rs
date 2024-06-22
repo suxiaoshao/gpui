@@ -1,6 +1,8 @@
 use components::{button, SelectItem, SelectList};
 use gpui::*;
 
+use crate::http_form::{HttpForm, HttpFormEvent};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
     #[default]
@@ -62,9 +64,20 @@ impl SelectItem for HttpMethod {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct SelectHttpMethod {
-    pub selected: HttpMethod,
+    pub http_form: WeakModel<HttpForm>,
+}
+
+impl SelectHttpMethod {
+    pub fn new(http_form: WeakModel<HttpForm>) -> Self {
+        Self { http_form }
+    }
+    pub fn selected(&self, cx: &mut WindowContext) -> HttpMethod {
+        self.http_form
+            .read_with(cx, |data, _cx| data.http_method)
+            .unwrap_or_default()
+    }
 }
 
 impl SelectList for SelectHttpMethod {
@@ -76,20 +89,28 @@ impl SelectList for SelectHttpMethod {
         HttpMethod::ALL
     }
 
-    fn select(&mut self, value: &<Self::Item as SelectItem>::Value) {
-        self.selected = *value;
+    fn select(&mut self, cx: &mut WindowContext, value: &<Self::Item as SelectItem>::Value) {
+        if let Err(_err) = self
+            .http_form
+            .update(cx, |_data, cx| cx.emit(HttpFormEvent::SetMethod(*value)))
+        {
+            // todo log
+        };
     }
 
-    fn get_select_item(&self) -> &Self::Item {
-        &self.selected
+    fn get_select_item(&self, cx: &mut WindowContext) -> Self::Item {
+        self.http_form
+            .read_with(cx, |data, _cx| data.http_method)
+            .unwrap_or_default()
     }
 
     fn trigger_element(
         &self,
-        _cx: &mut WindowContext,
+        cx: &mut WindowContext,
         func: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
     ) -> impl IntoElement {
-        button(self.selected.as_str())
+        let http_method = self.selected(cx);
+        button(http_method.as_str())
             .on_click(move |event, cx| {
                 func(event, cx);
             })
@@ -97,6 +118,6 @@ impl SelectList for SelectHttpMethod {
             .flex()
             .w(px(100.0))
             .items_center()
-            .child(self.selected.as_str())
+            .child(http_method.as_str())
     }
 }

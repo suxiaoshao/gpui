@@ -1,6 +1,8 @@
 use components::{TabItem, TabList};
 use gpui::*;
 
+use crate::{http_form::HttpForm, http_params::HttpParams};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpTab {
     #[default]
@@ -27,14 +29,6 @@ impl TabItem for HttpTab {
         self.as_str().into()
     }
 
-    fn panel(&self) -> impl gpui::IntoElement {
-        match self {
-            HttpTab::Params => div().child("Params"),
-            HttpTab::Headers => div().child("Headers"),
-            HttpTab::Body => div().child("Body"),
-        }
-    }
-
     fn value(&self) -> Self::Value {
         *self
     }
@@ -42,12 +36,14 @@ impl TabItem for HttpTab {
 
 pub struct HttpTabView {
     pub tab: HttpTab,
+    http_form: Model<HttpForm>,
 }
 
 impl HttpTabView {
-    pub fn new() -> Self {
+    pub fn new(http_form: Model<HttpForm>) -> Self {
         Self {
             tab: HttpTab::Params,
+            http_form,
         }
     }
 }
@@ -69,5 +65,14 @@ impl TabList for HttpTabView {
 
     fn div(&self, _cx: &mut WindowContext) -> Div {
         div().flex_1()
+    }
+    fn panel(&self) -> impl gpui::IntoElement {
+        match self.get_select_item() {
+            HttpTab::Params => HttpParams::new(self.http_form.clone())
+                .into_element()
+                .into_any(),
+            HttpTab::Headers => div().child("Headers").into_any(),
+            HttpTab::Body => div().child("Body").into_any(),
+        }
     }
 }

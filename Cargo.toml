@@ -4,5 +4,5 @@ members = ["app/http-client", "common/components", "common/theme"]
 resolver = "2"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "29d29f5a90c181c62251be2d9c3b38f6f1beef46" }
+gpui = { git = "https://github.com/zed-industries/zed" }
 smallvec = "1.13.2"
