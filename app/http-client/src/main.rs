@@ -4,6 +4,7 @@ use http_form::HttpFormView;
 
 mod errors;
 mod http_form;
+mod http_headers;
 mod http_method;
 mod http_params;
 mod http_tab;

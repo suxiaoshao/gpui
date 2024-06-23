@@ -4,6 +4,7 @@ use smallvec::smallvec;
 use theme::ElevationColor;
 
 use crate::{
+    http_headers::HttpHeader,
     http_method::{HttpMethod, SelectHttpMethod},
     http_tab::HttpTabView,
     url_input::UrlInput,
@@ -14,12 +15,31 @@ pub enum HttpFormEvent {
     SetUrl(String),
     SetMethod(HttpMethod),
     SetUrlByParams(String),
+    AddHeader,
+    DeleteHeader(usize),
+    SetHeaderIndex {
+        index: usize,
+        value: String,
+        is_key: bool,
+    },
 }
 
 pub struct HttpForm {
     pub http_method: HttpMethod,
     pub url: String,
+    pub headers: Vec<HttpHeader>,
 }
+
+impl HttpForm {
+    fn new() -> Self {
+        Self {
+            http_method: HttpMethod::Get,
+            url: "".to_string(),
+            headers: vec![],
+        }
+    }
+}
+
 impl EventEmitter<HttpFormEvent> for HttpForm {}
 
 pub struct HttpFormView {
@@ -32,10 +52,7 @@ pub struct HttpFormView {
 
 impl HttpFormView {
     pub fn new(form_cx: &mut ViewContext<Self>) -> Self {
-        let form = form_cx.new_model(|_cx| HttpForm {
-            http_method: HttpMethod::Get,
-            url: "".to_string(),
-        });
+        let form = form_cx.new_model(|_cx| HttpForm::new());
         form_cx.subscribe(&form, Self::subscribe).detach();
         let weak_form = form.downgrade();
         Self {
@@ -65,6 +82,29 @@ impl HttpFormView {
             HttpFormEvent::SetMethod(method) => {
                 subscriber.update(cx, |data, _cx| {
                     data.http_method = *method;
+                });
+            }
+            HttpFormEvent::AddHeader => {
+                subscriber.update(cx, |data, _cx| {
+                    data.headers.push(HttpHeader::default());
+                });
+            }
+            HttpFormEvent::DeleteHeader(index) => {
+                subscriber.update(cx, |data, _cx| {
+                    if *index < data.headers.len() {
+                        data.headers.remove(*index);
+                    }
+                });
+            }
+            HttpFormEvent::SetHeaderIndex {
+                index,
+                value,
+                is_key,
+            } => {
+                subscriber.update(cx, |data, _cx| {
+                    if let Some(header) = data.headers.get_mut(*index) {
+                        header.set_value(*is_key, value.to_string());
+                    }
                 });
             }
         };

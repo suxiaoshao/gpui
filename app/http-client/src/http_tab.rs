@@ -1,7 +1,7 @@
 use components::{TabItem, TabList};
 use gpui::*;
 
-use crate::{http_form::HttpForm, http_params::HttpParams};
+use crate::{http_form::HttpForm, http_headers::HttpHeadersView, http_params::HttpParams};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpTab {
@@ -38,11 +38,13 @@ impl TabItem for HttpTab {
 pub struct HttpTabView {
     pub tab: HttpTab,
     params: View<HttpParams>,
+    headers: View<HttpHeadersView>,
 }
 
 impl HttpTabView {
     pub fn new(http_form: Model<HttpForm>, cx: &mut WindowContext) -> Self {
         Self {
+            headers: cx.new_view(|cx| HttpHeadersView::new(http_form.clone(), cx)),
             params: cx.new_view(|cx| HttpParams::new(http_form.clone(), cx)),
             tab: HttpTab::Params,
         }
@@ -70,7 +72,7 @@ impl TabList for HttpTabView {
     fn panel(&self, _cx: &mut WindowContext) -> impl gpui::IntoElement {
         match self.get_select_item() {
             HttpTab::Params => self.params.clone().into_any(),
-            HttpTab::Headers => div().child("Headers").into_any(),
+            HttpTab::Headers => self.headers.clone().into_any(),
             HttpTab::Body => div().child("Body").into_any(),
         }
     }
