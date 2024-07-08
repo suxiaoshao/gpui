@@ -93,6 +93,7 @@ impl HttpHeadersView {
 
 impl Render for HttpHeadersView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let action_width: f32 = 5.0;
         let theme = cx.global::<Theme>();
         let divider_color = theme.divider_color();
         let mut element = div().p_2().gap_1().child(
@@ -106,7 +107,7 @@ impl Render for HttpHeadersView {
                 .child(div().bg(divider_color).w(px(1.0)))
                 .child(
                     button("add_header")
-                        .w(rems(4.0))
+                        .w(rems(action_width))
                         .child("Add")
                         .on_click(cx.listener(|this, _, cx| {
                             this.http_form
@@ -124,12 +125,16 @@ impl Render for HttpHeadersView {
                     .child(div().bg(divider_color).w(px(1.0)))
                     .child(div().flex_1().child(value_input.clone()))
                     .child(div().bg(divider_color).w(px(1.0)))
-                    .child(button("add_header").w(rems(4.0)).child("Detele").on_click(
-                        cx.listener(move |this, _, cx| {
-                            this.http_form
-                                .update(cx, |_, cx| cx.emit(HttpFormEvent::DeleteHeader(index)));
-                        }),
-                    )),
+                    .child(
+                        button("add_header")
+                            .w(rems(action_width))
+                            .child("Detele")
+                            .on_click(cx.listener(move |this, _, cx| {
+                                this.http_form.update(cx, |_, cx| {
+                                    cx.emit(HttpFormEvent::DeleteHeader(index))
+                                });
+                            })),
+                    ),
             )
         }
         element
