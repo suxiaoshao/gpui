@@ -1,4 +1,4 @@
-use components::Input;
+use components::TextInput;
 use gpui::*;
 use theme::Theme;
 use url::Url;
@@ -10,7 +10,7 @@ use crate::{
 
 pub struct HttpParams {
     pub http_form: Model<HttpForm>,
-    inputs: Vec<(View<Input>, View<Input>)>,
+    inputs: Vec<(View<TextInput>, View<TextInput>)>,
 }
 
 impl HttpParams {
@@ -56,22 +56,26 @@ impl HttpParams {
             self.inputs = Self::get_inputs(url, cx);
         };
     }
-    fn get_inputs(url: &str, params_cx: &mut ViewContext<Self>) -> Vec<(View<Input>, View<Input>)> {
+    fn get_inputs(
+        url: &str,
+        params_cx: &mut ViewContext<Self>,
+    ) -> Vec<(View<TextInput>, View<TextInput>)> {
         let mut inputs = vec![];
         if let Ok(url) = Url::parse(url) {
             for (index, (key, value)) in url.query_pairs().enumerate() {
                 let on_key_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &String, cx| {
+                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, cx| {
                         this.set_url(index, true, data, cx);
                     });
                 let on_value_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &String, cx| {
+                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, cx| {
                         this.set_url(index, false, data, cx);
                     });
                 let key_input = params_cx
-                    .new_view(|cx| Input::new(key.to_string(), cx).on_change(on_key_change));
-                let value_input = params_cx
-                    .new_view(|cx| Input::new(value.to_string(), cx).on_change(on_value_change));
+                    .new_view(|cx| TextInput::new(cx, key.to_string()).on_change(on_key_change));
+                let value_input = params_cx.new_view(|cx| {
+                    TextInput::new(cx, value.to_string()).on_change(on_value_change)
+                });
                 inputs.push((key_input, value_input));
             }
         }

@@ -1,4 +1,4 @@
-use components::{button, Input};
+use components::{button, TextInput};
 use gpui::*;
 use theme::Theme;
 
@@ -25,7 +25,7 @@ impl HttpHeader {
 
 pub struct HttpHeadersView {
     http_form: Model<HttpForm>,
-    inputs: Vec<(View<Input>, View<Input>)>,
+    inputs: Vec<(View<TextInput>, View<TextInput>)>,
 }
 
 impl HttpHeadersView {
@@ -39,11 +39,11 @@ impl HttpHeadersView {
     fn get_inputs(
         headers: Vec<HttpHeader>,
         header_cx: &mut ViewContext<Self>,
-    ) -> Vec<(View<Input>, View<Input>)> {
+    ) -> Vec<(View<TextInput>, View<TextInput>)> {
         let mut inputs = vec![];
         for (index, HttpHeader { key, value }) in headers.into_iter().enumerate() {
             let on_key_change =
-                header_cx.listener(move |this: &mut HttpHeadersView, data: &String, cx| {
+                header_cx.listener(move |this: &mut HttpHeadersView, data: &SharedString, cx| {
                     this.http_form.update(cx, |_data, cx| {
                         cx.emit(HttpFormEvent::SetHeaderIndex {
                             index,
@@ -53,7 +53,7 @@ impl HttpHeadersView {
                     });
                 });
             let on_value_change =
-                header_cx.listener(move |this: &mut HttpHeadersView, data: &String, cx| {
+                header_cx.listener(move |this: &mut HttpHeadersView, data: &SharedString, cx| {
                     this.http_form.update(cx, |_data, cx| {
                         cx.emit(HttpFormEvent::SetHeaderIndex {
                             index,
@@ -62,9 +62,10 @@ impl HttpHeadersView {
                         });
                     });
                 });
-            let key_input = header_cx.new_view(|cx| Input::new(key, cx).on_change(on_key_change));
+            let key_input =
+                header_cx.new_view(|cx| TextInput::new(cx, key).on_change(on_key_change));
             let value_input =
-                header_cx.new_view(|cx| Input::new(value, cx).on_change(on_value_change));
+                header_cx.new_view(|cx| TextInput::new(cx, value).on_change(on_value_change));
             inputs.push((key_input, value_input));
         }
         inputs
@@ -77,8 +78,8 @@ impl HttpHeadersView {
     ) {
         match emitter {
             HttpFormEvent::AddHeader => {
-                let key_input = cx.new_view(|cx| Input::new(Default::default(), cx));
-                let value_input = cx.new_view(|cx| Input::new(Default::default(), cx));
+                let key_input = cx.new_view(|cx| TextInput::new(cx, SharedString::default()));
+                let value_input = cx.new_view(|cx| TextInput::new(cx, SharedString::default()));
                 self.inputs.push((key_input, value_input));
             }
             HttpFormEvent::DeleteHeader(index) => {
