@@ -1416,6 +1416,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "feiwen"
+version = "0.1.0"
+dependencies = [
+ "components",
+ "gpui",
+ "reqwest",
+ "smallvec",
+ "theme",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3607,6 +3620,10 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "router"
+version = "0.1.0"
 
 [[package]]
 name = "roxmltree"
