@@ -338,6 +338,12 @@ impl ViewInputHandler for TextInput {
     }
 }
 
+impl FocusableView for TextInput {
+    fn focus_handle(&self, _: &AppContext) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 struct TextElement {
     input: View<TextInput>,
 }

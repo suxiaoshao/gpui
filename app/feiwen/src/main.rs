@@ -1,15 +1,9 @@
 use errors::FeiwenResult;
 use gpui::*;
+use views::WorkspaceView;
 
 mod errors;
-
-struct TestView;
-
-impl Render for TestView {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
-        div()
-    }
-}
+mod views;
 
 fn main() -> FeiwenResult<()> {
     App::new().run(|cx: &mut AppContext| {
@@ -26,7 +20,7 @@ fn main() -> FeiwenResult<()> {
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
-            |cx| cx.new_view(|_cx| TestView),
+            |cx| cx.new_view(WorkspaceView::new),
         ) {
             // todo log
         };
