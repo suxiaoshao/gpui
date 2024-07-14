@@ -3,7 +3,7 @@ use std::{
     str::FromStr,
 };
 
-use gpui::Rgba;
+use gpui::{px, AbsoluteLength, Rgba};
 use material_colors::{color::Argb, palette::TonalPalette, theme::ThemeBuilder};
 
 mod elevation;
@@ -77,6 +77,9 @@ impl Theme {
     pub fn input_cursor_color(&self) -> Rgba {
         let color = self.palettes.primary.tone(90);
         argb_to_rgba(color)
+    }
+    pub fn base_fontsize(&self) -> AbsoluteLength {
+        px(14.0).into()
     }
 }
 

@@ -72,6 +72,7 @@ impl Render for WorkspaceView {
             .shadow_lg()
             .border_1()
             .text_color(theme.text_color())
+            .text_size(theme.base_fontsize())
             .child(self.child_view(cx))
     }
 }
