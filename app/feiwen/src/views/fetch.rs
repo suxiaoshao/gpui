@@ -17,8 +17,8 @@ impl FetchView {
     pub fn new(workspace: Model<Workspace>, cx: &mut ViewContext<Self>) -> Self {
         Self {
             workspace,
-            url_input: cx.new_view(|cx| TextInput::new(cx, "")),
-            cookie_input: cx.new_view(|cx| TextInput::new(cx, "")),
+            url_input: cx.new_view(|cx| TextInput::new(cx, "", "Url")),
+            cookie_input: cx.new_view(|cx| TextInput::new(cx, "", "Cookie")),
         }
     }
 }

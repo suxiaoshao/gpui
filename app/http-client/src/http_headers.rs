@@ -63,9 +63,9 @@ impl HttpHeadersView {
                     });
                 });
             let key_input =
-                header_cx.new_view(|cx| TextInput::new(cx, key).on_change(on_key_change));
-            let value_input =
-                header_cx.new_view(|cx| TextInput::new(cx, value).on_change(on_value_change));
+                header_cx.new_view(|cx| TextInput::new(cx, key, "Key").on_change(on_key_change));
+            let value_input = header_cx
+                .new_view(|cx| TextInput::new(cx, value, "Value").on_change(on_value_change));
             inputs.push((key_input, value_input));
         }
         inputs
@@ -78,8 +78,10 @@ impl HttpHeadersView {
     ) {
         match emitter {
             HttpFormEvent::AddHeader => {
-                let key_input = cx.new_view(|cx| TextInput::new(cx, SharedString::default()));
-                let value_input = cx.new_view(|cx| TextInput::new(cx, SharedString::default()));
+                let key_input =
+                    cx.new_view(|cx| TextInput::new(cx, SharedString::default(), "Key"));
+                let value_input =
+                    cx.new_view(|cx| TextInput::new(cx, SharedString::default(), "Value"));
                 self.inputs.push((key_input, value_input));
             }
             HttpFormEvent::DeleteHeader(index) => {

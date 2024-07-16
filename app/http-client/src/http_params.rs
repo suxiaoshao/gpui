@@ -71,10 +71,11 @@ impl HttpParams {
                     params_cx.listener(move |this: &mut HttpParams, data: &SharedString, cx| {
                         this.set_url(index, false, data, cx);
                     });
-                let key_input = params_cx
-                    .new_view(|cx| TextInput::new(cx, key.to_string()).on_change(on_key_change));
+                let key_input = params_cx.new_view(|cx| {
+                    TextInput::new(cx, key.to_string(), "Key").on_change(on_key_change)
+                });
                 let value_input = params_cx.new_view(|cx| {
-                    TextInput::new(cx, value.to_string()).on_change(on_value_change)
+                    TextInput::new(cx, value.to_string(), "Value").on_change(on_value_change)
                 });
                 inputs.push((key_input, value_input));
             }

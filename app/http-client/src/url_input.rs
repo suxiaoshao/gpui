@@ -18,7 +18,8 @@ impl UrlInput {
         cx.subscribe(&http_form, Self::subscribe).detach();
         Self {
             form: http_form,
-            input: cx.new_view(|cx| TextInput::new(cx, "".to_string()).on_change(on_url_change)),
+            input: cx
+                .new_view(|cx| TextInput::new(cx, "".to_string(), "Url").on_change(on_url_change)),
         }
     }
     fn subscribe(
@@ -28,7 +29,7 @@ impl UrlInput {
         cx: &mut ViewContext<Self>,
     ) {
         if let HttpFormEvent::SetUrlByParams(url) = emitter {
-            self.input = cx.new_view(|cx| TextInput::new(cx, url.clone()));
+            self.input = cx.new_view(|cx| TextInput::new(cx, url.clone(), "Url"));
         };
     }
 }

@@ -75,8 +75,17 @@ impl Theme {
         argb_to_rgba(color.tone(30))
     }
     pub fn input_cursor_color(&self) -> Rgba {
-        let color = self.palettes.primary.tone(90);
+        let color = self.palettes.primary.tone(80);
         argb_to_rgba(color)
+    }
+    pub fn input_select_color(&self) -> Rgba {
+        let color = self.palettes.primary.tone(65);
+        argb_to_rgba(color)
+    }
+    pub fn input_placeholder_color(&self) -> Rgba {
+        let mut color = self.text_color();
+        color.a = 0.7;
+        color
     }
     pub fn base_fontsize(&self) -> AbsoluteLength {
         px(14.0).into()

@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use gpui::*;
+use theme::Theme;
 use unicode_segmentation::*;
 
 actions!(
@@ -26,6 +27,7 @@ type OnChange = Box<dyn Fn(&SharedString, &mut WindowContext) + 'static>;
 pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
+    placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -36,12 +38,17 @@ pub struct TextInput {
 }
 
 impl TextInput {
-    pub fn new(cx: &mut ViewContext<Self>, text: impl Into<SharedString>) -> Self {
+    pub fn new(
+        cx: &mut ViewContext<Self>,
+        text: impl Into<SharedString>,
+        placeholder: impl Into<SharedString>,
+    ) -> Self {
         let content = text.into();
         let length = content.len();
         Self {
             focus_handle: cx.focus_handle(),
             content,
+            placeholder: placeholder.into(),
             selected_range: length..length,
             selection_reversed: false,
             marked_range: None,
@@ -133,7 +140,11 @@ impl TextInput {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, cx: &mut ViewContext<Self>) {
         self.is_selecting = true;
-        self.move_to(self.index_for_mouse_position(event.position), cx)
+        if event.modifiers.shift {
+            self.select_to(self.index_for_mouse_position(event.position), cx);
+        } else {
+            self.move_to(self.index_for_mouse_position(event.position), cx)
+        }
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut ViewContext<Self>) {
@@ -151,6 +162,9 @@ impl TextInput {
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+        if self.content.is_empty() {
+            return 0;
+        }
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
             return 0;
@@ -241,6 +255,15 @@ impl TextInput {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
+    }
+    pub fn reset(&mut self) {
+        self.content = "".into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        self.is_selecting = false;
     }
 }
 
@@ -389,15 +412,26 @@ impl Element for TextElement {
         _request_layout: &mut Self::RequestLayoutState,
         cx: &mut WindowContext,
     ) -> Self::PrepaintState {
+        let theme = cx.global::<Theme>();
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
         let style = cx.text_style();
+
+        let (display_text, text_color) = if content.is_empty() {
+            (
+                input.placeholder.clone(),
+                theme.input_placeholder_color().into(),
+            )
+        } else {
+            (content.clone(), style.color)
+        };
+
         let run = TextRun {
-            len: input.content.len(),
+            len: display_text.len(),
             font: style.font(),
-            color: style.color,
+            color: text_color,
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -418,7 +452,7 @@ impl Element for TextElement {
                     ..run.clone()
                 },
                 TextRun {
-                    len: input.content.len() - marked_range.end,
+                    len: display_text.len() - marked_range.end,
                     ..run.clone()
                 },
             ]
@@ -432,7 +466,7 @@ impl Element for TextElement {
         let font_size = style.font_size.to_pixels(cx.rem_size());
         let line = cx
             .text_system()
-            .shape_line(content, font_size, &runs)
+            .shape_line(display_text, font_size, &runs)
             .unwrap();
 
         let cursor_pos = line.x_for_index(cursor);
@@ -444,7 +478,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    gpui::blue(),
+                    theme.input_cursor_color(),
                 )),
             )
         } else {
@@ -460,7 +494,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x3311FF30),
+                    theme.input_select_color(),
                 )),
                 None,
             )
