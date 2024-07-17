@@ -867,6 +867,7 @@ name = "components"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "smallvec",
  "theme",
  "unicode-segmentation",
 ]

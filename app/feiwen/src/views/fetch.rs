@@ -1,5 +1,6 @@
-use components::{button, TextInput};
+use components::{button, input_border, TextInput};
 use gpui::*;
+use theme::Theme;
 
 use super::{
     workspace::{RouterType, WorkspaceEvent},
@@ -25,6 +26,7 @@ impl FetchView {
 
 impl Render for FetchView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
         div()
             .h_full()
             .w_full()
@@ -41,17 +43,13 @@ impl Render for FetchView {
             )
             .child(
                 div()
+                    .flex_1()
                     .flex()
                     .flex_col()
-                    .child(div().text_lg().child("url"))
-                    .child(self.url_input.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().text_lg().child("cookie"))
-                    .child(self.cookie_input.clone()),
+                    .p_1()
+                    .gap_1()
+                    .child(input_border(theme).child(self.url_input.clone()))
+                    .child(input_border(theme).child(self.cookie_input.clone())),
             )
     }
 }
