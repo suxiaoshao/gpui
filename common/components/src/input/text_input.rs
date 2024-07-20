@@ -14,12 +14,12 @@ pub struct TextInput {
     pub(super) content: SharedString,
     pub(super) placeholder: SharedString,
     pub(super) selected_range: Range<usize>,
-    pub(super) selection_reversed: bool,
+    selection_reversed: bool,
     pub(super) marked_range: Option<Range<usize>>,
     pub(super) last_layout: Option<ShapedLine>,
-    pub(super) on_change: Option<OnChange>,
+    on_change: Option<OnChange>,
     pub(super) last_bounds: Option<Bounds<Pixels>>,
-    pub(super) is_selecting: bool,
+    is_selecting: bool,
 }
 
 impl TextInput {
@@ -54,6 +54,20 @@ impl TextInput {
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx)
         }
+    }
+    pub fn set_value(&mut self, text: impl Into<SharedString>) {
+        let text = text.into();
+        if text == self.content {
+            return;
+        }
+        let length = text.len();
+        self.content = text;
+        self.selected_range = length..length;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        self.is_selecting = false;
     }
 }
 

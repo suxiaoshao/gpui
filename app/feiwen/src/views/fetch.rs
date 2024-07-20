@@ -1,4 +1,4 @@
-use components::{button, input_border, TextInput};
+use components::{button, input_border, IntInput, TextInput};
 use gpui::*;
 use theme::Theme;
 
@@ -11,6 +11,8 @@ use super::{
 pub struct FetchView {
     workspace: Model<Workspace>,
     url_input: View<TextInput>,
+    start_page: View<IntInput>,
+    end_page: View<IntInput>,
     cookie_input: View<TextInput>,
 }
 
@@ -19,6 +21,8 @@ impl FetchView {
         Self {
             workspace,
             url_input: cx.new_view(|cx| TextInput::new(cx, "", "Url")),
+            start_page: cx.new_view(|cx| IntInput::new(cx, 0, "Start Page")),
+            end_page: cx.new_view(|cx| IntInput::new(cx, 0, "End Page")),
             cookie_input: cx.new_view(|cx| TextInput::new(cx, "", "Cookie")),
         }
     }
@@ -49,6 +53,8 @@ impl Render for FetchView {
                     .p_1()
                     .gap_1()
                     .child(input_border(theme).child(self.url_input.clone()))
+                    .child(input_border(theme).child(self.start_page.clone()))
+                    .child(input_border(theme).child(self.end_page.clone()))
                     .child(input_border(theme).child(self.cookie_input.clone())),
             )
     }
