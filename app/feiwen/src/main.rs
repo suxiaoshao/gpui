@@ -3,6 +3,8 @@ use gpui::*;
 use views::WorkspaceView;
 
 mod errors;
+mod fetch;
+mod store;
 mod views;
 
 fn main() -> FeiwenResult<()> {
