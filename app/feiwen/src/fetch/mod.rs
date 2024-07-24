@@ -7,23 +7,21 @@ use self::parse_novel::parse_page;
 mod get_content;
 pub mod parse_novel;
 
-#[async_trait::async_trait]
 pub trait FetchRunner {
     fn get_url(&self) -> &str;
     fn get_cookies(&self) -> &str;
     fn get_start(&self) -> u32;
     fn get_end(&self) -> u32;
-    fn resolve_novel(&self, novels: Vec<Novel>) -> FeiwenResult<i64>;
-    async fn fetch(&self) -> FeiwenResult<()> {
-        let url = self.get_url();
-        let cookies = self.get_cookies();
+    fn resolve_novel(&mut self, novels: Vec<Novel>, page: u32) -> FeiwenResult<()>;
+    async fn fetch(&mut self) -> FeiwenResult<()> {
+        let url = self.get_url().to_owned();
+        let cookies = self.get_cookies().to_owned();
         let end = self.get_end();
         let start = self.get_start();
         let client = Client::new();
         for i in start..=end {
-            let data = fetch_one(url, i, cookies, &client).await?;
-            let total = self.resolve_novel(data)?;
-            println!("正在获取第{}/{}页,总共{}", i, end, total);
+            let data = fetch_one(&url, i, &cookies, &client).await?;
+            self.resolve_novel(data, i)?;
         }
         Ok(())
     }

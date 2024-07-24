@@ -2,8 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum FeiwenError {
-    #[error("获取不了配置路径")]
-    ConfigPath,
     #[error("数据库错误:{}",.0)]
     Sqlite(#[source] diesel::result::Error),
     #[error("数据库连接错误:{}",.0)]
@@ -14,34 +12,12 @@ pub enum FeiwenError {
     GetConnection(#[from] diesel::r2d2::Error),
     #[error("文件系统错误:{}",.0)]
     Fs(#[from] std::io::Error),
-    #[error("页面shadow错误")]
-    Shadow,
-    #[error("页面透明效果错误")]
-    Vibrancy,
     #[error("请求头构造错误:{}",.0)]
     HeaderParse(#[from] reqwest::header::InvalidHeaderValue),
     #[error("请求错误:{}",.0)]
     Request(#[from] reqwest::Error),
-    #[error("api key未设置")]
-    ApiKeyNotSet,
-    #[error("无父文件夹")]
-    Path,
     #[error("获取不了历史记录数据库路径")]
     DbPath,
-    #[error("无效的模式:{}",.0)]
-    InvalidMode(String),
-    #[error("无效的角色:{}",.0)]
-    InvalidRole(String),
-    #[error("无效的消息状态:{}",.0)]
-    InvalidMessageStatus(String),
-    #[error("无效的时间格式:{}",.0)]
-    InvalidTimeFormat(#[from] time::error::IndeterminateOffset),
-    #[error("无效的 model:{}",.0)]
-    InvalidModel(String),
-    #[error("窗口不存在")]
-    WindowNotFound,
-    #[error("tag id解析错误:{}",.0)]
-    TagIdParse(#[from] url::ParseError),
     #[error("desc 解析错误")]
     DescParse,
     #[error("href 解析错误")]

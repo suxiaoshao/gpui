@@ -1,9 +1,12 @@
+use std::{ops::Deref, path::PathBuf};
+
 use crate::errors::{FeiwenError, FeiwenResult};
 use diesel::{
     connection::SimpleConnection,
     r2d2::{ConnectionManager, Pool},
     SqliteConnection,
 };
+use gpui::AppContext;
 
 pub mod model;
 pub mod schema;
@@ -11,8 +14,33 @@ pub mod service;
 pub mod types;
 pub type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
-pub fn establish_connection(url: &str) -> FeiwenResult<DbConn> {
-    let not_exists = check_data_file(url)?;
+pub struct Db(DbConn);
+
+impl gpui::Global for Db {}
+
+impl Deref for Db {
+    type Target = DbConn;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub fn init_store(cx: &mut AppContext) {
+    let conn = match establish_connection() {
+        Ok(conn) => conn,
+        Err(_) => {
+            // todo log
+            return;
+        }
+    };
+    cx.set_global(Db(conn));
+}
+
+fn establish_connection() -> FeiwenResult<DbConn> {
+    let url_path = get_data_url()?;
+    let not_exists = check_data_file(&url_path)?;
+    let url = url_path.to_str().ok_or(FeiwenError::DbPath)?;
     let manager = ConnectionManager::<SqliteConnection>::new(url);
     let pool = Pool::builder().test_on_check_out(true).build(manager)?;
     if not_exists {
@@ -21,12 +49,19 @@ pub fn establish_connection(url: &str) -> FeiwenResult<DbConn> {
     Ok(pool)
 }
 
-fn check_data_file(url: &str) -> FeiwenResult<bool> {
-    use std::{fs::File, path::Path};
-    let path = Path::new(url);
-    if !path.exists() {
-        std::fs::create_dir_all(path.parent().ok_or(FeiwenError::Path)?)?;
-        File::create(path)?;
+fn get_data_url() -> FeiwenResult<PathBuf> {
+    let data_path = dirs_next::config_dir()
+        .ok_or(FeiwenError::DbPath)?
+        .join("top.sushao.feiwen")
+        .join("data.sqlite");
+    Ok(data_path)
+}
+
+fn check_data_file(url: &PathBuf) -> FeiwenResult<bool> {
+    use std::fs::File;
+    if !url.exists() {
+        std::fs::create_dir_all(url.parent().ok_or(FeiwenError::DbPath)?)?;
+        File::create(url)?;
         return Ok(true);
     }
     Ok(false)

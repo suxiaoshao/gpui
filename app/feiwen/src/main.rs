@@ -12,6 +12,7 @@ fn main() -> FeiwenResult<()> {
         let theme = theme::get_theme();
         cx.set_global(theme);
         components::bind_input_keys(cx);
+        store::init_store(cx);
 
         if let Err(_err) = cx.open_window(
             WindowOptions {
