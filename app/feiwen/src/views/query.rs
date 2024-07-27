@@ -1,19 +1,26 @@
 use components::button;
 use gpui::*;
+use tags_select::TagsSelect;
 
 use super::{
     workspace::{RouterType, WorkspaceEvent},
     Workspace,
 };
 
+mod tags_select;
+
 #[derive(Clone)]
-pub struct QueryView {
+pub(crate) struct QueryView {
     workspace: Model<Workspace>,
+    tag_select_view: View<TagsSelect>,
 }
 
 impl QueryView {
-    pub fn new(workspace: Model<Workspace>, _cx: &mut ViewContext<Self>) -> Self {
-        Self { workspace }
+    pub(crate) fn new(workspace: Model<Workspace>, cx: &mut ViewContext<Self>) -> Self {
+        Self {
+            workspace,
+            tag_select_view: cx.new_view(TagsSelect::new),
+        }
     }
 }
 
@@ -31,5 +38,6 @@ impl Render for QueryView {
                         });
                     })),
             )
+            .child(self.tag_select_view.clone())
     }
 }

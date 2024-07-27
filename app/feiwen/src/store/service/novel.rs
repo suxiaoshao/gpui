@@ -13,18 +13,18 @@ use crate::{
 use super::Tag;
 
 #[derive(Debug, Clone)]
-pub struct Novel {
-    pub title: Title,
-    pub author: Author,
-    pub latest_chapter: Title,
-    pub desc: String,
-    pub count: NovelCount,
-    pub tags: HashSet<Tag>,
-    pub is_limit: bool,
+pub(crate) struct Novel {
+    pub(crate) title: Title,
+    pub(crate) author: Author,
+    pub(crate) latest_chapter: Title,
+    pub(crate) desc: String,
+    pub(crate) count: NovelCount,
+    pub(crate) tags: HashSet<Tag>,
+    pub(crate) is_limit: bool,
 }
 
 impl Novel {
-    pub fn save(self, conn: &mut SqliteConnection) -> FeiwenResult<()> {
+    pub(crate) fn save(self, conn: &mut SqliteConnection) -> FeiwenResult<()> {
         let tags = self
             .tags
             .iter()
@@ -47,7 +47,7 @@ impl Novel {
         })?;
         Ok(())
     }
-    pub fn count(conn: &mut SqliteConnection) -> FeiwenResult<i64> {
+    pub(crate) fn count(conn: &mut SqliteConnection) -> FeiwenResult<i64> {
         NovelModel::count(conn)
     }
 }

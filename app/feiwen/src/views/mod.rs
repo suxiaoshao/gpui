@@ -2,4 +2,4 @@ mod fetch;
 mod query;
 mod workspace;
 
-pub use workspace::{Workspace, WorkspaceView};
+pub(crate) use workspace::{Workspace, WorkspaceView};

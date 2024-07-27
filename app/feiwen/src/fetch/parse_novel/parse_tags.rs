@@ -6,15 +6,14 @@
  * @FilePath: /tauri/packages/feiwen/src-tauri/src/fetch/parse_novel/parse_tags.rs
  */
 use crate::{errors::FeiwenResult, store::service::Tag};
-use once_cell::sync::Lazy;
 use scraper::{ElementRef, Html, Selector};
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::LazyLock};
 
-static SELECTOR_TAGS: Lazy<Selector> = Lazy::new(|| {
+static SELECTOR_TAGS: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("div.col-xs-12.h5.brief > span.pull-right.smaller-20 > i > a").unwrap()
 });
 
-pub fn parse_tags(doc: &Html) -> FeiwenResult<HashSet<Tag>> {
+pub(crate) fn parse_tags(doc: &Html) -> FeiwenResult<HashSet<Tag>> {
     let tags = doc
         .select(&SELECTOR_TAGS)
         .map(parse_tag)

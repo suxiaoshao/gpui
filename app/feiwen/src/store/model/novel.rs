@@ -14,22 +14,22 @@ use diesel::prelude::*;
 
 #[derive(Insertable, Queryable)]
 #[diesel(table_name = novel)]
-pub struct NovelModel {
-    pub id: i32,
-    pub name: String,
-    pub desc: String,
-    pub is_limit: bool,
-    pub latest_chapter_name: String,
-    pub latest_chapter_id: i32,
-    pub word_count: i32,
-    pub read_count: i32,
-    pub reply_count: i32,
-    pub author_id: Option<i32>,
-    pub author_name: String,
+pub(crate) struct NovelModel {
+    pub(crate) id: i32,
+    pub(crate) name: String,
+    pub(crate) desc: String,
+    pub(crate) is_limit: bool,
+    pub(crate) latest_chapter_name: String,
+    pub(crate) latest_chapter_id: i32,
+    pub(crate) word_count: i32,
+    pub(crate) read_count: i32,
+    pub(crate) reply_count: i32,
+    pub(crate) author_id: Option<i32>,
+    pub(crate) author_name: String,
 }
 
 impl NovelModel {
-    pub fn into_novel(self, conn: &mut SqliteConnection) -> FeiwenResult<Novel> {
+    pub(crate) fn into_novel(self, conn: &mut SqliteConnection) -> FeiwenResult<Novel> {
         use super::super::schema::novel_tag::dsl as novel_tag_dsl;
         use super::super::schema::tag::dsl as tag_dsl;
         let tags = tag_dsl::tag
@@ -70,7 +70,7 @@ impl NovelModel {
         };
         Ok(novel)
     }
-    pub fn query_with_tag(
+    pub(crate) fn query_with_tag(
         offset: i64,
         limit: i64,
         is_limit: bool,
@@ -105,7 +105,7 @@ impl NovelModel {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(data)
     }
-    pub fn query(
+    pub(crate) fn query(
         offset: i64,
         limit: i64,
         is_limit: bool,
@@ -123,13 +123,13 @@ impl NovelModel {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(data)
     }
-    pub fn save(self, conn: &mut SqliteConnection) -> FeiwenResult<()> {
+    pub(crate) fn save(self, conn: &mut SqliteConnection) -> FeiwenResult<()> {
         diesel::insert_or_ignore_into(novel::table)
             .values(self)
             .execute(conn)?;
         Ok(())
     }
-    pub fn count(conn: &mut SqliteConnection) -> FeiwenResult<i64> {
+    pub(crate) fn count(conn: &mut SqliteConnection) -> FeiwenResult<i64> {
         let count = novel::dsl::novel.count().get_result(conn)?;
         Ok(count)
     }

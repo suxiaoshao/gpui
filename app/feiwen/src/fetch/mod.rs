@@ -5,9 +5,9 @@ use crate::{errors::FeiwenResult, store::service::Novel};
 use self::parse_novel::parse_page;
 
 mod get_content;
-pub mod parse_novel;
+pub(crate) mod parse_novel;
 
-pub trait FetchRunner {
+pub(crate) trait FetchRunner {
     fn get_url(&self) -> &str;
     fn get_cookies(&self) -> &str;
     fn get_start(&self) -> u32;

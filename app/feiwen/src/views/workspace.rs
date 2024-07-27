@@ -3,24 +3,24 @@ use gpui::*;
 use super::{fetch::FetchView, query::QueryView};
 
 #[derive(Default, Clone, Copy)]
-pub enum RouterType {
+pub(crate) enum RouterType {
     Fetch,
     #[default]
     Query,
 }
 
-pub enum WorkspaceEvent {
+pub(crate) enum WorkspaceEvent {
     UpdateRouter(RouterType),
 }
 
 #[derive(Default)]
-pub struct Workspace {
+pub(crate) struct Workspace {
     router: RouterType,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
-pub struct WorkspaceView {
+pub(crate) struct WorkspaceView {
     workspace: Model<Workspace>,
     focus_handle: FocusHandle,
     fetch_view: View<FetchView>,
@@ -28,7 +28,7 @@ pub struct WorkspaceView {
 }
 
 impl WorkspaceView {
-    pub fn new(workspace_cx: &mut ViewContext<Self>) -> Self {
+    pub(crate) fn new(workspace_cx: &mut ViewContext<Self>) -> Self {
         let workspace = workspace_cx.new_model(|_cx| Default::default());
         workspace_cx.subscribe(&workspace, Self::subscribe).detach();
         Self {

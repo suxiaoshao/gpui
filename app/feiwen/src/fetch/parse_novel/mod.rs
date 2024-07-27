@@ -5,7 +5,8 @@
  * @LastEditTime: 2024-01-07 19:23:04
  * @FilePath: /tauri/packages/feiwen/src-tauri/src/fetch/parse_novel/mod.rs
  */
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
 use scraper::{Html, Selector};
 
 use crate::{
@@ -18,20 +19,21 @@ use crate::{
 
 mod parse_author;
 mod parse_chapter;
-pub mod parse_count;
+pub(crate) mod parse_count;
 mod parse_tags;
 mod parse_title;
-pub mod parse_url;
+pub(crate) mod parse_url;
 
-static SELECTOR_ARTICLE: Lazy<Selector> = Lazy::new(|| Selector::parse("article > div").unwrap());
-static SELECTOR_RAT: Lazy<Selector> = Lazy::new(|| {
+static SELECTOR_ARTICLE: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("article > div").unwrap());
+static SELECTOR_RAT: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("div:nth-child(1) > span:nth-child(1) > span.badge.bianyuan-tag.badge-tag")
         .unwrap()
 });
-static SELECTOR_DESC: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("div.col-xs-12.h5.brief-0 > span.smaller-5").unwrap());
+static SELECTOR_DESC: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("div.col-xs-12.h5.brief-0 > span.smaller-5").unwrap());
 
-pub fn parse_page(body: String) -> FeiwenResult<Vec<Novel>> {
+pub(crate) fn parse_page(body: String) -> FeiwenResult<Vec<Novel>> {
     let document = Html::parse_document(&body);
     let novels = document
         .select(&SELECTOR_ARTICLE)

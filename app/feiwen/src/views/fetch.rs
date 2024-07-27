@@ -27,8 +27,18 @@ enum FetchFormEvent {
     StartFetch,
     FetchDbError,
     FetchSuccess,
-    FetchStart { total: i64, page: u32 },
-    Fetching { total: i64, page: u32 },
+    FetchStart {
+        total: i64,
+        page: u32,
+        start_page: u32,
+        end_page: u32,
+    },
+    Fetching {
+        total: i64,
+        page: u32,
+        start_page: u32,
+        end_page: u32,
+    },
     FetchNetworkError,
     FetchParseError,
 }
@@ -40,6 +50,8 @@ enum FetchState {
     Fetching {
         total: i64,
         page: u32,
+        start_page: u32,
+        end_page: u32,
     },
     Success,
     DbError,
@@ -58,11 +70,15 @@ struct FetchForm {
 
 impl FetchForm {
     fn render_state(&self) -> Option<Div> {
-        let end_page = self.end_page;
         let element = match self.state {
             FetchState::None => return None,
-            FetchState::Fetching { total, page } => div().child(format!(
-                "Fetching page {page}/{end_page} of a total of {total}"
+            FetchState::Fetching {
+                total,
+                page,
+                start_page,
+                end_page,
+            } => div().child(format!(
+                "Fetching page {start_page}/{page}/{end_page} of a total of {total}"
             )),
             FetchState::Success => div().child("Success"),
             FetchState::DbError => div().child("Database Error"),
@@ -104,7 +120,12 @@ impl fetch::FetchRunner for Runner {
             novel.save(&mut self.conn)?;
         }
         let total = Novel::count(&mut self.conn)?;
-        self.form_emit(FetchFormEvent::Fetching { total, page });
+        self.form_emit(FetchFormEvent::Fetching {
+            total,
+            page,
+            start_page: self.start_page,
+            end_page: self.end_page,
+        });
         Ok(())
     }
 }
@@ -162,6 +183,8 @@ impl Runner {
         self.form_emit(FetchFormEvent::FetchStart {
             total,
             page: self.start_page,
+            start_page: self.start_page,
+            end_page: self.end_page,
         });
     }
     fn form_emit(&mut self, event: FetchFormEvent) {
@@ -174,7 +197,7 @@ impl Runner {
 impl EventEmitter<FetchFormEvent> for FetchForm {}
 
 #[derive(Clone)]
-pub struct FetchView {
+pub(crate) struct FetchView {
     workspace: Model<Workspace>,
     url_input: View<TextInput>,
     start_page: View<IntInput>,
@@ -184,7 +207,7 @@ pub struct FetchView {
 }
 
 impl FetchView {
-    pub fn new(workspace: Model<Workspace>, cx: &mut ViewContext<Self>) -> Self {
+    pub(crate) fn new(workspace: Model<Workspace>, cx: &mut ViewContext<Self>) -> Self {
         let url_on_change = cx.listener(|this, data: &SharedString, cx| {
             this.form.update(cx, |_form, cx| {
                 cx.emit(FetchFormEvent::SetUrl(data.to_string()));
@@ -259,12 +282,24 @@ impl FetchView {
                     data.state = FetchState::Success;
                 });
             }
-            FetchFormEvent::FetchStart { total, page }
-            | FetchFormEvent::Fetching { total, page } => {
+            FetchFormEvent::FetchStart {
+                total,
+                page,
+                start_page,
+                end_page,
+            }
+            | FetchFormEvent::Fetching {
+                total,
+                page,
+                start_page,
+                end_page,
+            } => {
                 subscriber.update(cx, |data, _| {
                     data.state = FetchState::Fetching {
                         total: *total,
                         page: *page,
+                        start_page: *start_page,
+                        end_page: *end_page,
                     }
                 });
             }

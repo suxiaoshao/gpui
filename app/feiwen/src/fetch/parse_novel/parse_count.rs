@@ -5,6 +5,8 @@
  * @LastEditTime: 2024-01-07 19:25:25
  * @FilePath: /tauri/packages/feiwen/src-tauri/src/fetch/parse_novel/parse_count.rs
  */
+use std::sync::LazyLock;
+
 use nom::{
     branch::alt,
     bytes::complete::tag,
@@ -13,18 +15,17 @@ use nom::{
     sequence::tuple,
     IResult,
 };
-use once_cell::sync::Lazy;
 use scraper::{Html, Selector};
 
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::types::NovelCount,
 };
-static SELECTOR_COUNT: Lazy<Selector> = Lazy::new(|| {
+static SELECTOR_COUNT: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("div.col-xs-12.h5.brief-0 > span.pull-right.smaller-30 > em").unwrap()
 });
 
-pub fn parse_count(doc: &Html) -> FeiwenResult<NovelCount> {
+pub(crate) fn parse_count(doc: &Html) -> FeiwenResult<NovelCount> {
     let mut count = doc
         .select(&SELECTOR_COUNT)
         .next()

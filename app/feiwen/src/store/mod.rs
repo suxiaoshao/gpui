@@ -8,13 +8,13 @@ use diesel::{
 };
 use gpui::AppContext;
 
-pub mod model;
-pub mod schema;
-pub mod service;
-pub mod types;
-pub type DbConn = Pool<ConnectionManager<SqliteConnection>>;
+pub(crate) mod model;
+pub(crate) mod schema;
+pub(crate) mod service;
+pub(crate) mod types;
+pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
-pub struct Db(DbConn);
+pub(crate) struct Db(DbConn);
 
 impl gpui::Global for Db {}
 
@@ -26,7 +26,7 @@ impl Deref for Db {
     }
 }
 
-pub fn init_store(cx: &mut AppContext) {
+pub(crate) fn init_store(cx: &mut AppContext) {
     let conn = match establish_connection() {
         Ok(conn) => conn,
         Err(_) => {

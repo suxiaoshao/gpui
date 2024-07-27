@@ -1558,7 +1558,6 @@ dependencies = [
  "gpui",
  "libsqlite3-sys",
  "nom",
- "once_cell",
  "reqwest",
  "scraper",
  "smallvec",

@@ -5,6 +5,8 @@
  * @LastEditTime: 2024-01-07 19:24:59
  * @FilePath: /tauri/packages/feiwen/src-tauri/src/fetch/parse_novel/parse_chapter.rs
  */
+use std::sync::LazyLock;
+
 use nom::{
     bytes::complete::{tag, take_till},
     combinator::complete,
@@ -20,12 +22,12 @@ use crate::{
 };
 
 use super::{parse_url::parse_url, Title};
-use once_cell::sync::Lazy;
 
-static SELECTOR_CHAPTER: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("div.col-xs-12.h5.brief > span.grayout.smaller-20 > a").unwrap());
+static SELECTOR_CHAPTER: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("div.col-xs-12.h5.brief > span.grayout.smaller-20 > a").unwrap()
+});
 
-pub fn parse_chapter(doc: &Html) -> FeiwenResult<Title> {
+pub(crate) fn parse_chapter(doc: &Html) -> FeiwenResult<Title> {
     let UrlWithName { name, href } = parse_url(doc, &SELECTOR_CHAPTER)?;
     let (_, id) =
         parse_chapter_url(&href).map_err(|err| FeiwenError::ChapterIdParse(err.to_string()))?;

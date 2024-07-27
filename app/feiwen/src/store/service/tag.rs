@@ -3,9 +3,9 @@ use diesel::SqliteConnection;
 use crate::{errors::FeiwenResult, store::model::TagModel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Tag {
-    pub name: String,
-    pub id: Option<i32>,
+pub(crate) struct Tag {
+    pub(crate) name: String,
+    pub(crate) id: Option<i32>,
 }
 
 impl From<TagModel> for Tag {
@@ -18,8 +18,8 @@ impl From<TagModel> for Tag {
 }
 
 impl Tag {
-    pub fn tags(offset: i64, limit: i64, conn: &mut SqliteConnection) -> FeiwenResult<Vec<Self>> {
-        let tags = TagModel::all_tags(offset, limit, conn)?;
+    pub(crate) fn tags(conn: &mut SqliteConnection) -> FeiwenResult<Vec<Self>> {
+        let tags = TagModel::all_tags(conn)?;
         let tags = tags
             .into_iter()
             .map(|tag| tag.into())

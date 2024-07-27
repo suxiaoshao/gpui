@@ -2,7 +2,7 @@ use reqwest::Client;
 
 use crate::errors::FeiwenResult;
 
-pub async fn get_content(
+pub(crate) async fn get_content(
     url: &str,
     page: u32,
     cookies: &str,

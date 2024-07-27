@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum FeiwenError {
+pub(crate) enum FeiwenError {
     #[error("数据库错误:{}",.0)]
     Sqlite(#[source] diesel::result::Error),
     #[error("数据库连接错误:{}",.0)]
@@ -58,4 +58,4 @@ impl From<diesel::r2d2::PoolError> for FeiwenError {
     }
 }
 
-pub type FeiwenResult<T> = Result<T, FeiwenError>;
+pub(crate) type FeiwenResult<T> = Result<T, FeiwenError>;

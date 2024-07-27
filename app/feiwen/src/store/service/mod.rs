@@ -1,5 +1,5 @@
 mod novel;
 mod tag;
 
-pub use novel::Novel;
-pub use tag::Tag;
+pub(crate) use novel::Novel;
+pub(crate) use tag::Tag;
