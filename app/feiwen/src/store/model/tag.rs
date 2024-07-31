@@ -16,6 +16,7 @@ impl TagModel {
         let data = tag::table
             .inner_join(novel_tag::table.on(tag::name.eq(novel_tag::tag_id)))
             .select((tag::id, tag::name))
+            .filter(tag::id.is_not_null())
             .group_by(tag::name)
             .order(count(novel_tag::tag_id).desc())
             .load(conn)?;

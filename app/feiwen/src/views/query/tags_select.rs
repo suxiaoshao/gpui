@@ -1,26 +1,36 @@
+use std::collections::HashMap;
+
 use components::button;
-use gpui::{div, ParentElement, Render, StatefulInteractiveElement, Styled, ViewContext};
+use gpui::{
+    div, px, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, ViewContext,
+};
+use theme::Theme;
 
 use crate::{
     errors::FeiwenResult,
-    store::{service::Tag, Db},
+    store::{
+        service::{Tag, TagWithId},
+        Db,
+    },
 };
 
-enum TagDataState {}
-
 pub(crate) struct TagsSelect {
-    data: FeiwenResult<Vec<Tag>>,
+    data: FeiwenResult<Vec<TagWithId>>,
+    selected: HashMap<i32, TagWithId>,
 }
 
 impl TagsSelect {
     pub fn new(cx: &mut ViewContext<Self>) -> Self {
         let tags = Self::get_data(cx);
-        Self { data: tags }
+        Self {
+            data: tags,
+            selected: HashMap::new(),
+        }
     }
-    fn get_data(cx: &mut ViewContext<Self>) -> FeiwenResult<Vec<Tag>> {
+    fn get_data(cx: &mut ViewContext<Self>) -> FeiwenResult<Vec<TagWithId>> {
         let conn = cx.global::<Db>();
         let conn = &mut conn.get()?;
-        let tags = Tag::tags(conn)?;
+        let tags = Tag::tags_with_id(conn)?;
         Ok(tags)
     }
     fn retry(&mut self, cx: &mut ViewContext<Self>) {
@@ -32,13 +42,54 @@ impl TagsSelect {
 
 impl Render for TagsSelect {
     fn render(&mut self, cx: &mut gpui::ViewContext<Self>) -> impl gpui::IntoElement {
+        let theme = cx.global::<Theme>();
         let child =
             match &self.data {
                 Ok(data) => div()
                     .flex()
                     .flex_row()
                     .flex_wrap()
-                    .children(data.iter().map(|item| item.name.to_string())),
+                    .gap_1()
+                    .children(self.selected.iter().map(|item| {
+                        let id = *item.0;
+                        button(SharedString::from(format!("select-tag-{}", item.0)))
+                            .flex()
+                            .justify_center()
+                            .child(item.1.name.to_string())
+                            .border_1()
+                            .border_color(theme.button_bg_color())
+                            .rounded_lg()
+                            .p_1()
+                            .min_w(px(50.0))
+                            .on_click(cx.listener(move |this, _, cx| {
+                                this.selected.remove(&id);
+                                cx.notify();
+                            }))
+                    }))
+                    .children(
+                        data.iter()
+                            .filter(|item| !self.selected.contains_key(&item.id))
+                            .take(100)
+                            .map(|item| {
+                                let tag = TagWithId {
+                                    name: item.name.clone(),
+                                    id: item.id,
+                                };
+                                button(SharedString::from(format!("select-tag-{}", item.id)))
+                                    .flex()
+                                    .justify_center()
+                                    .child(item.name.to_string())
+                                    .border_1()
+                                    .border_color(theme.text_color())
+                                    .rounded_lg()
+                                    .p_1()
+                                    .min_w(px(50.0))
+                                    .on_click(cx.listener(move |this, _, cx| {
+                                        this.selected.insert(tag.id, tag.clone());
+                                        cx.notify();
+                                    }))
+                            }),
+                    ),
                 Err(err) => {
                     div()
                         .child(err.to_string())

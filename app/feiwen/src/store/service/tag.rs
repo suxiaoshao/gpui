@@ -8,6 +8,12 @@ pub(crate) struct Tag {
     pub(crate) id: Option<i32>,
 }
 
+#[derive(Clone)]
+pub(crate) struct TagWithId {
+    pub(crate) name: String,
+    pub(crate) id: i32,
+}
+
 impl From<TagModel> for Tag {
     fn from(value: TagModel) -> Self {
         Self {
@@ -18,12 +24,15 @@ impl From<TagModel> for Tag {
 }
 
 impl Tag {
-    pub(crate) fn tags(conn: &mut SqliteConnection) -> FeiwenResult<Vec<Self>> {
+    pub(crate) fn tags_with_id(conn: &mut SqliteConnection) -> FeiwenResult<Vec<TagWithId>> {
         let tags = TagModel::all_tags(conn)?;
         let tags = tags
             .into_iter()
-            .map(|tag| tag.into())
-            .collect::<Vec<Self>>();
+            .filter_map(|tag| match tag.id {
+                Some(id) => Some(TagWithId { name: tag.name, id }),
+                None => None,
+            })
+            .collect::<Vec<TagWithId>>();
         Ok(tags)
     }
 }
