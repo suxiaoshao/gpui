@@ -1,5 +1,6 @@
 use gpui::{prelude::*, *};
 use std::ops::Deref;
+use theme::Theme;
 
 pub trait SelectItem {
     type Value: Eq;
@@ -62,13 +63,16 @@ where
             };
             cx.notify();
         });
+        let theme = cx.global::<Theme>();
+        let bg = theme.bg_color();
         let trigger_element = self.options.trigger_element(cx, func);
         div()
             .child(trigger_element)
             .when(self.menu_focus_handle.is_focused(cx), |x| {
-                x.child(
+                x.child(deferred(
                     div()
                         .whitespace_nowrap()
+                        .bg(bg)
                         .track_focus(&self.menu_focus_handle)
                         .absolute()
                         .max_h(px(200.0))
@@ -81,7 +85,7 @@ where
                             });
                             SelectItemElement::new(data, on_click)
                         })),
-                )
+                ))
             })
     }
 }

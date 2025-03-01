@@ -11,4 +11,4 @@ theme = { path = "../../common/theme" }
 components = { path = "../../common/components" }
 url = "2.5.2"
 thiserror = "1.0.63"
-reqwest = "0.12.5"
+reqwest = "0.12.7"

@@ -128,12 +128,14 @@ impl TextInput {
         }
         let range = self.selected_range.clone();
         let content = self.content[range.start..range.end].to_owned();
-        cx.write_to_clipboard(ClipboardItem::new(content));
+        cx.write_to_clipboard(ClipboardItem::new_string(content));
     }
     fn paste(&mut self, _: &Paste, cx: &mut ViewContext<Self>) {
         let text = cx.read_from_clipboard();
         if let Some(text) = text {
-            self.replace_text_in_range(None, text.text(), cx);
+            if let Some(text) = text.text() {
+                self.replace_text_in_range(None, &text, cx);
+            }
         }
     }
 
