@@ -1,8 +1,15 @@
 [workspace]
-members = [ "app/feiwen","app/http-client", "app/novel-download", "common/components", "common/router", "common/theme"]
+members = [
+    "app/feiwen",
+    "app/http-client",
+    "app/novel-download",
+    "common/components",
+    "common/router",
+    "common/theme",
+]
 
 resolver = "2"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
+gpui = { git = "https://github.com/huacnlee/zed.git", branch = "webview" }
 smallvec = "1.13.2"
