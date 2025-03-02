@@ -43,32 +43,31 @@ impl HttpForm {
 impl EventEmitter<HttpFormEvent> for HttpForm {}
 
 pub struct HttpFormView {
-    form: Model<HttpForm>,
-    http_method_select: View<Select<SelectHttpMethod>>,
-    http_tab: View<Tab<HttpTabView>>,
-    url_input: View<UrlInput>,
+    form: Entity<HttpForm>,
+    http_method_select: Entity<Select<SelectHttpMethod>>,
+    http_tab: Entity<Tab<HttpTabView>>,
+    url_input: Entity<UrlInput>,
     focus_handle: FocusHandle,
 }
 
 impl HttpFormView {
-    pub fn new(form_cx: &mut ViewContext<Self>) -> Self {
-        let form = form_cx.new_model(|_cx| HttpForm::new());
+    pub fn new(form_cx: &mut Context<Self>) -> Self {
+        let form = form_cx.new(|_cx| HttpForm::new());
         form_cx.subscribe(&form, Self::subscribe).detach();
         let weak_form = form.downgrade();
         Self {
-            url_input: form_cx.new_view(|cx| UrlInput::new(form.clone(), cx)),
-            http_tab: form_cx.new_view(|cx| Tab::new(HttpTabView::new(form.clone(), cx))),
+            url_input: form_cx.new(|cx| UrlInput::new(form.clone(), cx)),
+            http_tab: form_cx.new(|cx| Tab::new(HttpTabView::new(form.clone(), cx))),
             form,
-            http_method_select: form_cx
-                .new_view(|cx| Select::new(SelectHttpMethod::new(weak_form), cx)),
+            http_method_select: form_cx.new(|cx| Select::new(SelectHttpMethod::new(weak_form), cx)),
             focus_handle: form_cx.focus_handle(),
         }
     }
     fn subscribe(
         &mut self,
-        subscriber: Model<HttpForm>,
+        subscriber: Entity<HttpForm>,
         emitter: &HttpFormEvent,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) {
         match emitter {
             HttpFormEvent::Send => {
@@ -112,14 +111,14 @@ impl HttpFormView {
 }
 
 impl Render for HttpFormView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<theme::Theme>();
         let send_button = button("Send")
             .child("Send")
             .bg(theme.button_bg_color())
             .text_color(theme.button_color())
             .rounded_md()
-            .on_click(cx.listener(|this, _event, cx| {
+            .on_click(cx.listener(|this, _event, _, cx| {
                 this.form.update(cx, |_, cx| {
                     cx.emit(HttpFormEvent::Send);
                 });

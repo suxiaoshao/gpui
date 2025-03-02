@@ -1,5 +1,5 @@
 [workspace]
-members = [ "app/feiwen","app/http-client", "common/components", "common/router", "common/theme"]
+members = [ "app/feiwen","app/http-client", "app/novel-download", "common/components", "common/router", "common/theme"]
 
 resolver = "2"
 

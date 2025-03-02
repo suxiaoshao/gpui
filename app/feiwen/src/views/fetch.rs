@@ -94,9 +94,9 @@ struct Runner {
     start_page: u32,
     end_page: u32,
     cookie: String,
-    form: Model<FetchForm>,
+    form: Entity<FetchForm>,
     conn: PooledConnection<ConnectionManager<SqliteConnection>>,
-    cx: AsyncWindowContext,
+    cx: AsyncApp,
 }
 
 impl fetch::FetchRunner for Runner {
@@ -198,55 +198,53 @@ impl EventEmitter<FetchFormEvent> for FetchForm {}
 
 #[derive(Clone)]
 pub(crate) struct FetchView {
-    workspace: Model<Workspace>,
-    url_input: View<TextInput>,
-    start_page: View<IntInput>,
-    end_page: View<IntInput>,
-    cookie_input: View<TextInput>,
-    form: Model<FetchForm>,
+    workspace: Entity<Workspace>,
+    url_input: Entity<TextInput>,
+    start_page: Entity<IntInput>,
+    end_page: Entity<IntInput>,
+    cookie_input: Entity<TextInput>,
+    form: Entity<FetchForm>,
 }
 
 impl FetchView {
-    pub(crate) fn new(workspace: Model<Workspace>, cx: &mut ViewContext<Self>) -> Self {
-        let url_on_change = cx.listener(|this, data: &SharedString, cx| {
+    pub(crate) fn new(workspace: Entity<Workspace>, cx: &mut Context<Self>) -> Self {
+        let url_on_change = cx.listener(|this, data: &SharedString, _window, cx| {
             this.form.update(cx, |_form, cx| {
                 cx.emit(FetchFormEvent::SetUrl(data.to_string()));
             });
         });
-        let cookie_on_change = cx.listener(|this, data: &SharedString, cx| {
+        let cookie_on_change = cx.listener(|this, data: &SharedString, _window, cx| {
             this.form.update(cx, |_form, cx| {
                 cx.emit(FetchFormEvent::SetCookie(data.to_string()));
             });
         });
-        let start_page_on_change = cx.listener(|this, data: &u32, cx| {
+        let start_page_on_change = cx.listener(|this, data: &u32, _window, cx| {
             this.form.update(cx, |_form, cx| {
                 cx.emit(FetchFormEvent::SetStartPage(*data));
             });
         });
-        let end_page_on_change = cx.listener(|this, data: &u32, cx| {
+        let end_page_on_change = cx.listener(|this, data: &u32, _window, cx| {
             this.form.update(cx, |_form, cx| {
                 cx.emit(FetchFormEvent::SetEedPage(*data));
             });
         });
-        let form = cx.new_model(|_cx| Default::default());
+        let form = cx.new(|_cx| Default::default());
         cx.subscribe(&form, Self::subscribe).detach();
         Self {
             workspace,
-            url_input: cx.new_view(|cx| TextInput::new(cx, "", "Url").on_change(url_on_change)),
+            url_input: cx.new(|cx| TextInput::new(cx, "", "Url").on_change(url_on_change)),
             start_page: cx
-                .new_view(|cx| IntInput::new(cx, 0, "Start Page").on_change(start_page_on_change)),
-            end_page: cx
-                .new_view(|cx| IntInput::new(cx, 0, "End Page").on_change(end_page_on_change)),
-            cookie_input: cx
-                .new_view(|cx| TextInput::new(cx, "", "Cookie").on_change(cookie_on_change)),
+                .new(|cx| IntInput::new(cx, 0, "Start Page").on_change(start_page_on_change)),
+            end_page: cx.new(|cx| IntInput::new(cx, 0, "End Page").on_change(end_page_on_change)),
+            cookie_input: cx.new(|cx| TextInput::new(cx, "", "Cookie").on_change(cookie_on_change)),
             form,
         }
     }
     fn subscribe(
         &mut self,
-        subscriber: Model<FetchForm>,
+        subscriber: Entity<FetchForm>,
         emitter: &FetchFormEvent,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) {
         match emitter {
             FetchFormEvent::SetUrl(url) => {
@@ -316,7 +314,7 @@ impl FetchView {
         };
         cx.notify();
     }
-    fn fetch(&mut self, subscriber: Model<FetchForm>, cx: &mut ViewContext<Self>) {
+    fn fetch(&mut self, subscriber: Entity<FetchForm>, cx: &mut Context<Self>) {
         let conn = cx.global::<Db>();
         let conn = match conn.get() {
             Ok(data) => data,
@@ -350,7 +348,7 @@ impl FetchView {
 }
 
 impl Render for FetchView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let state_element = self.form.read(cx).render_state();
         div()
@@ -366,21 +364,19 @@ impl Render for FetchView {
                     .child(
                         button("router-query")
                             .child("Go query")
-                            .on_click(cx.listener(|this, _, cx| {
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.workspace.update(cx, |_data, cx| {
                                     cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Query));
                                 });
                             })),
                     )
-                    .child(
-                        button("fetch")
-                            .child("Fetch")
-                            .on_click(cx.listener(|this, _, cx| {
-                                this.form.update(cx, |_data, cx| {
-                                    cx.emit(FetchFormEvent::StartFetch);
-                                });
-                            })),
-                    ),
+                    .child(button("fetch").child("Fetch").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.form.update(cx, |_data, cx| {
+                                cx.emit(FetchFormEvent::StartFetch);
+                            });
+                        },
+                    ))),
             )
             .child(
                 div()

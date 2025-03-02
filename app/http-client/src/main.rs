@@ -12,7 +12,7 @@ mod http_tab;
 mod url_input;
 
 fn main() -> HttpClientResult<()> {
-    App::new().run(|cx: &mut AppContext| {
+    Application::new().run(|cx: &mut App| {
         let theme = theme::get_theme();
         cx.set_global(theme);
         components::bind_input_keys(cx);
@@ -26,7 +26,7 @@ fn main() -> HttpClientResult<()> {
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
-            |cx| cx.new_view(HttpFormView::new),
+            |_, cx| cx.new(HttpFormView::new),
         ) {
             // todo log
         };

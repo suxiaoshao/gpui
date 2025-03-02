@@ -8,7 +8,7 @@ mod store;
 mod views;
 
 fn main() -> FeiwenResult<()> {
-    App::new().run(|cx: &mut AppContext| {
+    Application::new().run(|cx: &mut App| {
         let theme = theme::get_theme();
         cx.set_global(theme);
         components::bind_input_keys(cx);
@@ -23,7 +23,7 @@ fn main() -> FeiwenResult<()> {
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
-            |cx| cx.new_view(WorkspaceView::new),
+            |_, cx| cx.new(WorkspaceView::new),
         ) {
             // todo log
         };

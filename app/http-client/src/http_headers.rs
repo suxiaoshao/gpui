@@ -24,12 +24,12 @@ impl HttpHeader {
 }
 
 pub struct HttpHeadersView {
-    http_form: Model<HttpForm>,
-    inputs: Vec<(View<TextInput>, View<TextInput>)>,
+    http_form: Entity<HttpForm>,
+    inputs: Vec<(Entity<TextInput>, Entity<TextInput>)>,
 }
 
 impl HttpHeadersView {
-    pub fn new(http_form: Model<HttpForm>, cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&http_form, Self::subscribe).detach();
         let headers = http_form.read(cx);
         let headers = &headers.headers;
@@ -38,12 +38,12 @@ impl HttpHeadersView {
     }
     fn get_inputs(
         headers: Vec<HttpHeader>,
-        header_cx: &mut ViewContext<Self>,
-    ) -> Vec<(View<TextInput>, View<TextInput>)> {
+        header_cx: &mut Context<Self>,
+    ) -> Vec<(Entity<TextInput>, Entity<TextInput>)> {
         let mut inputs = vec![];
         for (index, HttpHeader { key, value }) in headers.into_iter().enumerate() {
-            let on_key_change =
-                header_cx.listener(move |this: &mut HttpHeadersView, data: &SharedString, cx| {
+            let on_key_change = header_cx.listener(
+                move |this: &mut HttpHeadersView, data: &SharedString, _, cx| {
                     this.http_form.update(cx, |_data, cx| {
                         cx.emit(HttpFormEvent::SetHeaderIndex {
                             index,
@@ -51,9 +51,10 @@ impl HttpHeadersView {
                             is_key: true,
                         });
                     });
-                });
-            let on_value_change =
-                header_cx.listener(move |this: &mut HttpHeadersView, data: &SharedString, cx| {
+                },
+            );
+            let on_value_change = header_cx.listener(
+                move |this: &mut HttpHeadersView, data: &SharedString, _, cx| {
                     this.http_form.update(cx, |_data, cx| {
                         cx.emit(HttpFormEvent::SetHeaderIndex {
                             index,
@@ -61,27 +62,26 @@ impl HttpHeadersView {
                             is_key: false,
                         });
                     });
-                });
+                },
+            );
             let key_input =
-                header_cx.new_view(|cx| TextInput::new(cx, key, "Key").on_change(on_key_change));
-            let value_input = header_cx
-                .new_view(|cx| TextInput::new(cx, value, "Value").on_change(on_value_change));
+                header_cx.new(|cx| TextInput::new(cx, key, "Key").on_change(on_key_change));
+            let value_input =
+                header_cx.new(|cx| TextInput::new(cx, value, "Value").on_change(on_value_change));
             inputs.push((key_input, value_input));
         }
         inputs
     }
     fn subscribe(
         &mut self,
-        _subscriber: Model<HttpForm>,
+        _subscriber: Entity<HttpForm>,
         emitter: &HttpFormEvent,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) {
         match emitter {
             HttpFormEvent::AddHeader => {
-                let key_input =
-                    cx.new_view(|cx| TextInput::new(cx, SharedString::default(), "Key"));
-                let value_input =
-                    cx.new_view(|cx| TextInput::new(cx, SharedString::default(), "Value"));
+                let key_input = cx.new(|cx| TextInput::new(cx, SharedString::default(), "Key"));
+                let value_input = cx.new(|cx| TextInput::new(cx, SharedString::default(), "Value"));
                 self.inputs.push((key_input, value_input));
             }
             HttpFormEvent::DeleteHeader(index) => {
@@ -95,7 +95,7 @@ impl HttpHeadersView {
 }
 
 impl Render for HttpHeadersView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let action_width: f32 = 5.0;
         let theme = cx.global::<Theme>();
         let divider_color = theme.divider_color();
@@ -112,7 +112,7 @@ impl Render for HttpHeadersView {
                     button("add_header")
                         .w(rems(action_width))
                         .child("Add")
-                        .on_click(cx.listener(|this, _, cx| {
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.http_form
                                 .update(cx, |_, cx| cx.emit(HttpFormEvent::AddHeader));
                         })),
@@ -132,7 +132,7 @@ impl Render for HttpHeadersView {
                         button("add_header")
                             .w(rems(action_width))
                             .child("Detele")
-                            .on_click(cx.listener(move |this, _, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.http_form.update(cx, |_, cx| {
                                     cx.emit(HttpFormEvent::DeleteHeader(index))
                                 });

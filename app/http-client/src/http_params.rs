@@ -9,18 +9,18 @@ use crate::{
 };
 
 pub struct HttpParams {
-    pub http_form: Model<HttpForm>,
-    inputs: Vec<(View<TextInput>, View<TextInput>)>,
+    pub http_form: Entity<HttpForm>,
+    inputs: Vec<(Entity<TextInput>, Entity<TextInput>)>,
 }
 
 impl HttpParams {
-    fn get_url(&self, cx: &mut WindowContext) -> HttpClientResult<Url> {
+    fn get_url(&self, cx: &mut Context<Self>) -> HttpClientResult<Url> {
         let form = self.http_form.read(cx);
         let url = form.url.as_str();
         let url = url.parse::<url::Url>()?;
         Ok(url)
     }
-    fn set_url(&self, index: usize, is_key: bool, value: &str, cx: &mut WindowContext) {
+    fn set_url(&self, index: usize, is_key: bool, value: &str, cx: &mut Context<Self>) {
         if let Ok(mut url) = self.get_url(cx) {
             let mut query_pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
             match is_key {
@@ -39,7 +39,7 @@ impl HttpParams {
             });
         }
     }
-    pub fn new(http_form: Model<HttpForm>, cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
         let url = http_form.read(cx);
         let url = url.url.clone();
         cx.subscribe(&http_form, Self::subscribe).detach();
@@ -48,9 +48,9 @@ impl HttpParams {
     }
     fn subscribe(
         &mut self,
-        _subscriber: Model<HttpForm>,
+        _subscriber: Entity<HttpForm>,
         emitter: &HttpFormEvent,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) {
         if let HttpFormEvent::SetUrl(url) = emitter {
             self.inputs = Self::get_inputs(url, cx);
@@ -58,23 +58,22 @@ impl HttpParams {
     }
     fn get_inputs(
         url: &str,
-        params_cx: &mut ViewContext<Self>,
-    ) -> Vec<(View<TextInput>, View<TextInput>)> {
+        params_cx: &mut Context<Self>,
+    ) -> Vec<(Entity<TextInput>, Entity<TextInput>)> {
         let mut inputs = vec![];
         if let Ok(url) = Url::parse(url) {
             for (index, (key, value)) in url.query_pairs().enumerate() {
                 let on_key_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, cx| {
+                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, _, cx| {
                         this.set_url(index, true, data, cx);
                     });
                 let on_value_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, cx| {
+                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, _, cx| {
                         this.set_url(index, false, data, cx);
                     });
-                let key_input = params_cx.new_view(|cx| {
-                    TextInput::new(cx, key.to_string(), "Key").on_change(on_key_change)
-                });
-                let value_input = params_cx.new_view(|cx| {
+                let key_input = params_cx
+                    .new(|cx| TextInput::new(cx, key.to_string(), "Key").on_change(on_key_change));
+                let value_input = params_cx.new(|cx| {
                     TextInput::new(cx, value.to_string(), "Value").on_change(on_value_change)
                 });
                 inputs.push((key_input, value_input));
@@ -85,7 +84,7 @@ impl HttpParams {
 }
 
 impl Render for HttpParams {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let divider_color = theme.divider_color();
         let mut element = div().p_2().gap_1().child(

@@ -131,45 +131,45 @@ impl Number {
     }
 }
 
-type OnChange = Box<dyn Fn(&u32, &mut WindowContext) + 'static>;
+type OnChange = Box<dyn Fn(&u32, &mut Window, &mut App) + 'static>;
 
 pub struct IntInput {
     data: Vec<Number>,
-    input: View<TextInput>,
+    input: Entity<TextInput>,
     on_change: Option<OnChange>,
 }
 
 impl IntInput {
     pub fn new(
-        int_cx: &mut ViewContext<Self>,
+        int_cx: &mut Context<Self>,
         value: u32,
         placeholder: impl Into<SharedString>,
     ) -> Self {
-        let on_change = int_cx.listener(|this, data: &SharedString, cx| {
+        let on_change = int_cx.listener(|this, data: &SharedString, window, cx| {
             let new_value = Number::parse_from_str(data);
             this.data = new_value;
             if let Some(on_change) = &this.on_change {
-                on_change(&Number::to_u32(this.data.as_slice()), cx);
+                on_change(&Number::to_u32(this.data.as_slice()), window, cx);
             }
         });
         let input = int_cx
-            .new_view(|cx| TextInput::new(cx, value.to_string(), placeholder).on_change(on_change));
+            .new(|cx| TextInput::new(cx, value.to_string(), placeholder).on_change(on_change));
         Self {
             data: Number::parse_from_u32(value),
             input,
             on_change: None,
         }
     }
-    pub fn on_change(mut self, on_change: impl Fn(&u32, &mut WindowContext) + 'static) -> Self {
+    pub fn on_change(mut self, on_change: impl Fn(&u32, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
     }
 }
 
 impl Render for IntInput {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.input.update(cx, |text_input, cx| {
-            if !text_input.focus_handle(cx).is_focused(cx) {
+            if !text_input.focus_handle(cx).is_focused(window) {
                 text_input.set_value(Number::to_string(self.data.as_slice()));
             }
         });
@@ -179,11 +179,11 @@ impl Render for IntInput {
 
 #[cfg(test)]
 mod tests {
-    use core::prelude::rust_2021;
+    use core::prelude::rust_2024;
 
     use super::*;
 
-    #[rust_2021::test]
+    #[rust_2024::test]
     fn test_parse_from_u32() {
         assert_eq!(Number::parse_from_u32(0), vec![Number::Zero]);
         assert_eq!(
@@ -203,7 +203,7 @@ mod tests {
         );
     }
 
-    #[rust_2021::test]
+    #[rust_2024::test]
     fn test_parse_from_str() {
         assert_eq!(Number::parse_from_str("0"), vec![Number::Zero]);
         assert_eq!(
@@ -223,7 +223,7 @@ mod tests {
         );
     }
 
-    #[rust_2021::test]
+    #[rust_2024::test]
     fn test_to_u32() {
         assert_eq!(Number::to_u32(&[Number::Zero]), 0);
         assert_eq!(
@@ -243,7 +243,7 @@ mod tests {
         );
     }
 
-    #[rust_2021::test]
+    #[rust_2024::test]
     fn test_to_string() {
         assert_eq!(Number::to_string(&[Number::Zero]), "0");
         assert_eq!(

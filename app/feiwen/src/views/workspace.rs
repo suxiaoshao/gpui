@@ -21,34 +21,34 @@ pub(crate) struct Workspace {
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 pub(crate) struct WorkspaceView {
-    workspace: Model<Workspace>,
+    workspace: Entity<Workspace>,
     focus_handle: FocusHandle,
-    fetch_view: View<FetchView>,
-    query_view: View<QueryView>,
+    fetch_view: Entity<FetchView>,
+    query_view: Entity<QueryView>,
 }
 
 impl WorkspaceView {
-    pub(crate) fn new(workspace_cx: &mut ViewContext<Self>) -> Self {
-        let workspace = workspace_cx.new_model(|_cx| Default::default());
+    pub(crate) fn new(workspace_cx: &mut Context<Self>) -> Self {
+        let workspace = workspace_cx.new(|_cx| Default::default());
         workspace_cx.subscribe(&workspace, Self::subscribe).detach();
         Self {
             focus_handle: workspace_cx.focus_handle(),
-            fetch_view: workspace_cx.new_view(|cx| FetchView::new(workspace.clone(), cx)),
-            query_view: workspace_cx.new_view(|cx| QueryView::new(workspace.clone(), cx)),
+            fetch_view: workspace_cx.new(|cx| FetchView::new(workspace.clone(), cx)),
+            query_view: workspace_cx.new(|cx| QueryView::new(workspace.clone(), cx)),
             workspace,
         }
     }
-    fn child_view(&self, cx: &mut ViewContext<Self>) -> impl gpui::IntoElement {
+    fn child_view(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         match self.workspace.read(cx).router {
-            RouterType::Fetch => self.fetch_view.clone().into_any(),
-            RouterType::Query => self.query_view.clone().into_any(),
+            RouterType::Fetch => self.fetch_view.clone().into_any_element(),
+            RouterType::Query => self.query_view.clone().into_any_element(),
         }
     }
     fn subscribe(
         &mut self,
-        subscriber: Model<Workspace>,
+        subscriber: Entity<Workspace>,
         emitter: &WorkspaceEvent,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) {
         match emitter {
             WorkspaceEvent::UpdateRouter(router) => {
@@ -61,7 +61,7 @@ impl WorkspaceView {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<theme::Theme>();
         div()
             .track_focus(&self.focus_handle)

@@ -20,8 +20,8 @@ pub trait TabList {
     fn items(&self) -> impl IntoIterator<Item = Self::Item>;
     fn select(&mut self, value: &<Self::Item as TabItem>::Value);
     fn get_select_item(&self) -> &Self::Item;
-    fn div(&self, cx: &mut WindowContext) -> Div;
-    fn panel(&self, cx: &mut WindowContext) -> impl IntoElement;
+    fn div(&self, window: &mut Window) -> Div;
+    fn panel(&self, window: &mut Window) -> impl IntoElement;
 }
 
 pub struct Tab<List>
@@ -45,14 +45,14 @@ where
     List: TabList<Item: 'static> + 'static,
     <List::Item as TabItem>::Value: 'static,
 {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let divider_color = theme.divider_color();
         let button_color = theme.button_bg_color();
         let items = self.options.items().into_iter();
         let selected_value = self.options.get_select_item().value();
         self.options
-            .div(cx)
+            .div(window)
             .flex()
             .flex_col()
             .child(
@@ -65,7 +65,7 @@ where
                     .children(items.map(|item| {
                         let value = item.value();
                         let is_selected = value == selected_value;
-                        let func = cx.listener(move |this, _event, cx| {
+                        let func = cx.listener(move |this, _event, _window, cx| {
                             this.options.select(&value);
                             cx.notify();
                         });
@@ -73,12 +73,12 @@ where
                         div()
                             .id(label.clone())
                             .child(label)
-                            .on_mouse_up(MouseButton::Left, |_event, cx| {
-                                cx.prevent_default();
+                            .on_mouse_up(MouseButton::Left, |_event, window, _cx| {
+                                window.prevent_default();
                             })
-                            .on_click(move |event, cx| {
+                            .on_click(move |event, window, cx| {
                                 cx.stop_propagation();
-                                func(event, cx);
+                                func(event, window, cx);
                             })
                             .when(is_selected, |this| {
                                 this.border_b(px(2.0)).border_color(button_color)
@@ -86,6 +86,6 @@ where
                     })),
             )
             .child(div().bg(divider_color).h(px(1.0)))
-            .child(div().flex_1().child(self.options.panel(cx)))
+            .child(div().flex_1().child(self.options.panel(window)))
     }
 }

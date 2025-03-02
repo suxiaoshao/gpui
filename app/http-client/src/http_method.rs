@@ -66,14 +66,14 @@ impl SelectItem for HttpMethod {
 
 #[derive(Clone)]
 pub struct SelectHttpMethod {
-    pub http_form: WeakModel<HttpForm>,
+    pub http_form: WeakEntity<HttpForm>,
 }
 
 impl SelectHttpMethod {
-    pub fn new(http_form: WeakModel<HttpForm>) -> Self {
+    pub fn new(http_form: WeakEntity<HttpForm>) -> Self {
         Self { http_form }
     }
-    pub fn selected(&self, cx: &mut WindowContext) -> HttpMethod {
+    pub fn selected(&self, cx: &mut App) -> HttpMethod {
         self.http_form
             .read_with(cx, |data, _cx| data.http_method)
             .unwrap_or_default()
@@ -89,7 +89,12 @@ impl SelectList for SelectHttpMethod {
         HttpMethod::ALL
     }
 
-    fn select(&mut self, cx: &mut WindowContext, value: &<Self::Item as SelectItem>::Value) {
+    fn select(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut App,
+        value: &<Self::Item as SelectItem>::Value,
+    ) {
         if let Err(_err) = self
             .http_form
             .update(cx, |_data, cx| cx.emit(HttpFormEvent::SetMethod(*value)))
@@ -98,7 +103,7 @@ impl SelectList for SelectHttpMethod {
         };
     }
 
-    fn get_select_item(&self, cx: &mut WindowContext) -> Self::Item {
+    fn get_select_item(&self, _window: &mut Window, cx: &mut App) -> Self::Item {
         self.http_form
             .read_with(cx, |data, _cx| data.http_method)
             .unwrap_or_default()
@@ -106,13 +111,14 @@ impl SelectList for SelectHttpMethod {
 
     fn trigger_element(
         &self,
-        cx: &mut WindowContext,
-        func: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
+        _window: &mut Window,
+        cx: &mut App,
+        func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         let http_method = self.selected(cx);
         button(http_method.as_str())
-            .on_click(move |event, cx| {
-                func(event, cx);
+            .on_click(move |event, window, cx| {
+                func(event, window, cx);
             })
             .rounded_r(rems(0.0))
             .flex()

@@ -1,4 +1,4 @@
-use components::{TabItem, TabList};
+use components::{Tab, TabItem, TabList};
 use gpui::*;
 
 use crate::{http_form::HttpForm, http_headers::HttpHeadersView, http_params::HttpParams};
@@ -37,15 +37,15 @@ impl TabItem for HttpTab {
 #[derive(Clone)]
 pub struct HttpTabView {
     pub tab: HttpTab,
-    params: View<HttpParams>,
-    headers: View<HttpHeadersView>,
+    params: Entity<HttpParams>,
+    headers: Entity<HttpHeadersView>,
 }
 
 impl HttpTabView {
-    pub fn new(http_form: Model<HttpForm>, cx: &mut WindowContext) -> Self {
+    pub fn new(http_form: Entity<HttpForm>, cx: &mut Context<Tab<Self>>) -> Self {
         Self {
-            headers: cx.new_view(|cx| HttpHeadersView::new(http_form.clone(), cx)),
-            params: cx.new_view(|cx| HttpParams::new(http_form.clone(), cx)),
+            headers: cx.new(|cx| HttpHeadersView::new(http_form.clone(), cx)),
+            params: cx.new(|cx| HttpParams::new(http_form.clone(), cx)),
             tab: HttpTab::Params,
         }
     }
@@ -66,14 +66,14 @@ impl TabList for HttpTabView {
         &self.tab
     }
 
-    fn div(&self, _cx: &mut WindowContext) -> Div {
+    fn div(&self, _cx: &mut Window) -> Div {
         div().flex_1()
     }
-    fn panel(&self, _cx: &mut WindowContext) -> impl gpui::IntoElement {
+    fn panel(&self, _cx: &mut Window) -> impl gpui::IntoElement {
         match self.get_select_item() {
-            HttpTab::Params => self.params.clone().into_any(),
-            HttpTab::Headers => self.headers.clone().into_any(),
-            HttpTab::Body => div().child("Body").into_any(),
+            HttpTab::Params => self.params.clone().into_any_element(),
+            HttpTab::Headers => self.headers.clone().into_any_element(),
+            HttpTab::Body => div().child("Body").into_any_element(),
         }
     }
 }

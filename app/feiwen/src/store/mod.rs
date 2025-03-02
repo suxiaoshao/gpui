@@ -6,7 +6,7 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
     SqliteConnection,
 };
-use gpui::AppContext;
+use gpui::App;
 
 pub(crate) mod model;
 pub(crate) mod schema;
@@ -26,7 +26,7 @@ impl Deref for Db {
     }
 }
 
-pub(crate) fn init_store(cx: &mut AppContext) {
+pub(crate) fn init_store(cx: &mut App) {
     let conn = match establish_connection() {
         Ok(conn) => conn,
         Err(_) => {

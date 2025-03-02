@@ -4,7 +4,7 @@ use theme::Theme;
 use crate::TextInput;
 
 pub(super) struct TextElement {
-    pub(super) input: View<TextInput>,
+    pub(super) input: Entity<TextInput>,
 }
 
 pub(super) struct PrepaintState {
@@ -33,12 +33,13 @@ impl Element for TextElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = cx.line_height().into();
-        (cx.request_layout(style, []), ())
+        style.size.height = window.line_height().into();
+        (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(
@@ -46,14 +47,15 @@ impl Element for TextElement {
         _id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Self::PrepaintState {
         let theme = cx.global::<Theme>();
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
-        let style = cx.text_style();
+        let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
             (
@@ -99,8 +101,8 @@ impl Element for TextElement {
             vec![run]
         };
 
-        let font_size = style.font_size.to_pixels(cx.rem_size());
-        let line = cx
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let line = window
             .text_system()
             .shape_line(display_text, font_size, &runs)
             .unwrap();
@@ -135,7 +137,7 @@ impl Element for TextElement {
                 None,
             )
         };
-        let is_focus = self.input.read(cx).focus_handle.is_focused(cx);
+        let is_focus = self.input.read(cx).focus_handle.is_focused(window);
         if !is_focus {
             cursor = None;
         }
@@ -152,21 +154,24 @@ impl Element for TextElement {
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
-        cx.handle_input(
+        window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
+            cx,
         );
         if let Some(selection) = prepaint.selection.take() {
-            cx.paint_quad(selection)
+            window.paint_quad(selection)
         }
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, cx.line_height(), cx).unwrap();
+        line.paint(bounds.origin, window.line_height(), window, cx)
+            .unwrap();
 
         if let Some(cursor) = prepaint.cursor.take() {
-            cx.paint_quad(cursor);
+            window.paint_quad(cursor);
         }
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);

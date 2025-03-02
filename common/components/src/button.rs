@@ -3,7 +3,7 @@ use prelude::FluentBuilder;
 
 use theme::Theme;
 
-type OnClick = Box<dyn Fn(&ClickEvent, &mut WindowContext) + 'static>;
+type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
 pub struct Button {
@@ -23,7 +23,7 @@ impl Button {
 
     pub fn on_click(
         mut self,
-        on_click: impl Fn(&ClickEvent, &mut WindowContext) + 'static,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(on_click));
         self
@@ -31,8 +31,8 @@ impl Button {
 }
 
 impl RenderOnce for Button {
-    fn render(self, cx: &mut WindowContext) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
+    fn render(self, _cx: &mut Window, app: &mut App) -> impl IntoElement {
+        let theme = app.global::<Theme>();
         div()
             .id(self.id)
             .bg(theme.button_bg_color())
@@ -42,9 +42,9 @@ impl RenderOnce for Button {
             .rounded_xl()
             .child(self.label)
             .when_some(self.on_click, |this, on_click| {
-                this.on_click(move |event, cx| {
-                    cx.stop_propagation();
-                    (on_click)(event, cx)
+                this.on_click(move |event, window, app| {
+                    app.stop_propagation();
+                    (on_click)(event, window, app)
                 })
             })
             .hover(|style| {
