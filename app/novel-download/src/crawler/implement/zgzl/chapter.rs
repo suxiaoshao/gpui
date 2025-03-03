@@ -31,6 +31,7 @@ static SELECTOR_CHAPTER_NAME: LazyLock<Selector> =
 static SELECTOR_CHAPTER_CONTENT: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("#novelcontent").unwrap());
 
+#[derive(Debug)]
 pub struct Chapter {
     novel_id: String,
     chapter_id: String,
@@ -91,7 +92,7 @@ impl ChapterFn for Chapter {
 
 fn parse_title(html: &str) -> IResult<&str, (String, u32)> {
     let (input, (title, _, chapter_id, _)) =
-        (take_until("("), tag("1 / "), float, tag(")")).parse(html)?;
+        (take_until("("), tag("(1 / "), float, tag(")")).parse(html)?;
     Ok((input, (title.to_string(), chapter_id as u32)))
 }
 
@@ -100,4 +101,19 @@ async fn fetch_page_content(chapter_id: &str, novel_id: &str, page_id: u32) -> N
     let html = get_doc(&page_url, "utf-8").await?;
     let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
     Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_page_content() -> anyhow::Result<()> {
+        let chapter_id = "68hqo";
+        let novel_id = "otew";
+        let content = Chapter::get_chapter_data(chapter_id, novel_id).await?;
+        println!("{:?}", content);
+        Ok(())
+    }
 }

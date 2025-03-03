@@ -25,6 +25,7 @@ static SELECTOR_NOVEL_CHAPTERS: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("body > div.main > div.info_chapters > ul:nth-child(5) > li > a").unwrap()
 });
 
+#[derive(Debug)]
 pub struct Novel {
     novel_id: String,
     name: String,
@@ -70,7 +71,7 @@ fn parse_chapters(document: &Html) -> NovelResult<Vec<String>> {
     let selector = &SELECTOR_NOVEL_CHAPTERS;
     fn parse_target(input: &str) -> IResult<&str, &str> {
         delimited(
-            preceded(tag("/read_"), take_until("/")),
+            (tag("/read_"), take_until("/"), tag("/")),
             alphanumeric1,
             tag(".html"),
         )
@@ -85,4 +86,30 @@ fn parse_chapters(document: &Html) -> NovelResult<Vec<String>> {
         })
         .collect::<NovelResult<Vec<_>>>()?;
     Ok(chapters)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::crawler::{ChapterFn, NovelFn};
+
+    use super::Novel;
+
+    #[tokio::test]
+    async fn test_fetch_novel() -> anyhow::Result<()> {
+        let novel = Novel::get_novel_data("otew").await?;
+        let chapters = novel.chapters().await?;
+        let novel_content =
+            chapters
+                .iter()
+                .map(|c| c.content())
+                .fold(String::new(), |mut acc, content| {
+                    acc.push_str(content);
+                    acc
+                });
+        std::fs::write(
+            format!("/Users/sushao/Downloads/{}.txt", novel.name()),
+            novel_content,
+        )?;
+        Ok(())
+    }
 }

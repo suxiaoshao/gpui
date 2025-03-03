@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::{button::Button, input::TextInput};
+use gpui_component::{StyledExt, button::Button, input::TextInput};
 
 mod crawler;
 mod errors;
@@ -20,13 +20,15 @@ impl Example {
 
 impl Render for Example {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .key_context("NovelDownload")
-            .p_4()
-            .size_full()
-            .child("helllo")
-            .child(self.input.clone())
-            .child(Button::new("send").on_click(cx.listener(|this, _, window, cx| {})))
+        div().key_context("NovelDownload").p_4().size_full().child(
+            div().h_flex().gap_1().child(self.input.clone()).child(
+                Button::new("send")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        println!("{}", this.input.read(cx).text());
+                    }))
+                    .child("send"),
+            ),
+        )
     }
 }
 

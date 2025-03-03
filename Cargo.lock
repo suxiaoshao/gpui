@@ -95,9 +95,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.96"
+version = "1.0.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b964d184e89d9b6b67dd2715bc8e74cf3107fb2b529990c90cf517326150bf4"
+checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
 
 [[package]]
 name = "arbitrary"
@@ -3795,6 +3795,7 @@ dependencies = [
 name = "novel-download"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "futures",
  "gpui",
  "gpui-component",
@@ -3802,6 +3803,7 @@ dependencies = [
  "reqwest",
  "scraper",
  "thiserror 2.0.11",
+ "tokio",
 ]
 
 [[package]]
@@ -6347,7 +6349,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2 0.5.8",
+ "tokio-macros",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e06d43f1345a3bcd39f6a56dbb7dcab2ba47e68e8ac134855e7e2bdbaf8cab8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
 ]
 
 [[package]]
