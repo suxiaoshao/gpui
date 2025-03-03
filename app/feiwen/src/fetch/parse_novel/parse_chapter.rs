@@ -8,11 +8,10 @@
 use std::sync::LazyLock;
 
 use nom::{
+    IResult, Parser,
     bytes::complete::{tag, take_till},
     combinator::complete,
     number::complete::float,
-    sequence::tuple,
-    IResult,
 };
 use scraper::{Html, Selector};
 
@@ -21,7 +20,7 @@ use crate::{
     store::types::UrlWithName,
 };
 
-use super::{parse_url::parse_url, Title};
+use super::{Title, parse_url::parse_url};
 
 static SELECTOR_CHAPTER: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("div.col-xs-12.h5.brief > span.grayout.smaller-20 > a").unwrap()
@@ -35,12 +34,13 @@ pub(crate) fn parse_chapter(doc: &Html) -> FeiwenResult<Title> {
 }
 
 fn parse_chapter_url(name: &str) -> IResult<&str, i32> {
-    let (name, (_, _, _, data)) = complete(tuple((
+    let (name, (_, _, _, data)) = complete((
         tag("https://"),
         take_till(|c| c == '/'),
         tag("/posts/"),
         float,
-    )))(name)?;
+    ))
+    .parse(name)?;
     Ok((name, data as i32))
 }
 

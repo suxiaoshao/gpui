@@ -6,3 +6,12 @@ edition = "2024"
 [dependencies]
 gpui.workspace = true
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+thiserror = "2.0.11"
+reqwest = { version = "0.12.12", features = [
+    "gzip",
+    "rustls-tls",
+    "charset",
+], default-features = false }
+nom = "8.0.0"
+scraper = "0.23.1"
+futures = "0.3.31"

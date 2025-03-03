@@ -12,4 +12,4 @@ resolver = "2"
 
 [workspace.dependencies]
 gpui = { git = "https://github.com/huacnlee/zed.git", branch = "webview" }
-smallvec = "1.13.2"
+smallvec = "1.14.0"

@@ -8,11 +8,10 @@
 use std::sync::LazyLock;
 
 use nom::{
+    IResult, Parser,
     bytes::complete::{tag, take_till},
     combinator::complete,
     number::complete::float,
-    sequence::tuple,
-    IResult,
 };
 use scraper::{Html, Selector};
 
@@ -21,7 +20,7 @@ use crate::{
     store::types::UrlWithName,
 };
 
-use super::{parse_url::parse_url, Author, Title};
+use super::{Author, Title, parse_url::parse_url};
 static SELECTOR_AUTHOR: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("div:nth-child(1) > span.pull-right.smaller-5 > a").unwrap());
 static SELECTOR_AUTHOR_NNONYMOUS: LazyLock<Selector> = LazyLock::new(|| {
@@ -51,12 +50,13 @@ pub(crate) fn parse_author(doc: &Html) -> FeiwenResult<Author> {
 }
 
 fn parse_author_url(name: &str) -> IResult<&str, i32> {
-    let (name, (_, _, _, data)) = complete(tuple((
+    let (name, (_, _, _, data)) = complete((
         tag("https://"),
         take_till(|c| c == '/'),
         tag("/users/"),
         float,
-    )))(name)?;
+    ))
+    .parse(name)?;
     Ok((name, data as i32))
 }
 

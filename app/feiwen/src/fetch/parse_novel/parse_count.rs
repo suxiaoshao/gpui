@@ -8,12 +8,11 @@
 use std::sync::LazyLock;
 
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::complete::tag,
     combinator::{opt, value},
     number::complete::float,
-    sequence::tuple,
-    IResult,
 };
 use scraper::{Html, Selector};
 
@@ -60,13 +59,14 @@ fn parse_num_with_unit(num: &str) -> FeiwenResult<i32> {
             Qian,
             Wan,
         }
-        let (input, (num, flag)) = tuple((
+        let (input, (num, flag)) = (
             float,
             opt(alt((
                 value(Flag::Qian, tag("千")),
                 value(Flag::Wan, tag("万")),
             ))),
-        ))(num)?;
+        )
+            .parse(num)?;
         let num = match flag {
             Some(Flag::Qian) => num * 1000f32,
             Some(Flag::Wan) => num * 10000f32,

@@ -1,5 +1,8 @@
 use gpui::*;
-use gpui_component::input::TextInput;
+use gpui_component::{button::Button, input::TextInput};
+
+mod crawler;
+mod errors;
 
 actions!(novel_download, [Quit]);
 
@@ -13,20 +16,17 @@ impl Example {
             input: cx.new(|cx| TextInput::new(window, cx)),
         }
     }
-
-    fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(window, cx))
-    }
 }
 
 impl Render for Example {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .key_context("NovelDownload")
             .p_4()
             .size_full()
             .child("helllo")
             .child(self.input.clone())
+            .child(Button::new("send").on_click(cx.listener(|this, _, window, cx| {})))
     }
 }
 
