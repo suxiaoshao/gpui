@@ -8,7 +8,8 @@
  */
 use std::sync::LazyLock;
 
-use futures::future::try_join_all;
+use async_stream::try_stream;
+use futures::{Stream, future::try_join_all};
 use nom::{
     IResult, Parser,
     bytes::complete::{tag, take_until},
@@ -24,7 +25,7 @@ use crate::{
     errors::NovelResult,
 };
 
-use super::{author::Author, novel::Novel};
+use super::novel::Novel;
 
 static SELECTOR_CHAPTER_NAME: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("#novelbody > div.nr_function > h1").unwrap());
@@ -36,13 +37,45 @@ pub struct Chapter {
     novel_id: String,
     chapter_id: String,
     title: String,
+    page_count: u32,
     content: String,
 }
 
-impl ChapterFn for Chapter {
-    type Author = Author;
+impl Chapter {
+    fn stream(&self) -> impl Stream<Item = NovelResult<String>> {
+        try_stream! {
+            for i in 1..=self.page_count{
+                let content = fetch_page_content(&self.chapter_id, &self.novel_id, i).await?;
+                yield content;
+            }
+        }
+    }
+}
 
+impl ChapterFn for Chapter {
     type Novel = Novel;
+
+    async fn get_chapter_data(chapter_id: &str, novel_id: &str) -> NovelResult<Self> {
+        let url = Self::get_url_from_id(chapter_id, novel_id);
+        let html = get_doc(&url, "utf-8").await?;
+        let title = parse_text(&html, &SELECTOR_CHAPTER_NAME)?;
+        let (_, (title, count)) = parse_title(&title)?;
+        let mut content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
+        let contents = try_join_all(
+            (2..=count).map(|page_id| fetch_page_content(chapter_id, novel_id, page_id)),
+        )
+        .await?;
+        for c in contents {
+            content.push_str(&c);
+        }
+        Ok(Self {
+            title,
+            chapter_id: chapter_id.to_string(),
+            novel_id: novel_id.to_string(),
+            content,
+            page_count: count,
+        })
+    }
 
     fn url(&self) -> String {
         Self::get_url_from_id(&self.chapter_id, &self.novel_id)
@@ -68,25 +101,8 @@ impl ChapterFn for Chapter {
         &self.content
     }
 
-    async fn get_chapter_data(chapter_id: &str, novel_id: &str) -> NovelResult<Self> {
-        let url = Self::get_url_from_id(chapter_id, novel_id);
-        let html = get_doc(&url, "utf-8").await?;
-        let title = parse_text(&html, &SELECTOR_CHAPTER_NAME)?;
-        let (_, (title, count)) = parse_title(&title)?;
-        let mut content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
-        let contents = try_join_all(
-            (2..=count).map(|page_id| fetch_page_content(chapter_id, novel_id, page_id)),
-        )
-        .await?;
-        for c in contents {
-            content.push_str(&c);
-        }
-        Ok(Self {
-            title,
-            chapter_id: chapter_id.to_string(),
-            novel_id: novel_id.to_string(),
-            content,
-        })
+    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<String>> {
+        self.stream()
     }
 }
 

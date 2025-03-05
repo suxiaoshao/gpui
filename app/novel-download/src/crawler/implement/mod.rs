@@ -4,6 +4,8 @@ use crate::errors::{NovelError, NovelResult};
 
 mod zgzl;
 
+pub use zgzl::Novel;
+
 async fn get_doc(url: &str, charset: &str) -> NovelResult<Html> {
     let body = reqwest::get(url).await?.text_with_charset(charset).await?;
     let document = Html::parse_document(&body);
