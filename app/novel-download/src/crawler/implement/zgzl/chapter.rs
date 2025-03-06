@@ -6,7 +6,7 @@
  * @FilePath: /gpui-app/app/novel-download/src/crawler/implement/zgzl/chapter.rs
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
 
 use async_stream::try_stream;
 use futures::Stream;
@@ -43,7 +43,8 @@ pub struct Chapter {
 impl Chapter {
     fn stream(&self) -> impl Stream<Item = NovelResult<String>> {
         try_stream! {
-            for i in 1..=self.page_count{
+            for i in 1..=self.page_count {
+                smol::Timer::after(Duration::from_secs(1)).await;
                 let content = fetch_page_content(&self.chapter_id, &self.novel_id, i).await?;
                 yield content;
             }
@@ -100,9 +101,29 @@ fn parse_title(html: &str) -> IResult<&str, (String, u32)> {
 
 async fn fetch_page_content(chapter_id: &str, novel_id: &str, page_id: u32) -> NovelResult<String> {
     let page_url = format!("https://m.zgzl.net/read_{novel_id}/{chapter_id}_{page_id}.html");
-    let html = get_doc(&page_url, "utf-8").await?;
+    let html = retry(3, Duration::from_secs(1), || get_doc(&page_url, "utf-8")).await?;
     let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
     Ok(content)
+}
+
+async fn retry<T, E, Fut, F>(retries: usize, duration: Duration, mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut count = 0;
+    loop {
+        let result = f().await;
+        if result.is_ok() {
+            return result;
+        } else {
+            smol::Timer::after(duration).await;
+            count += 1;
+            if count >= retries {
+                return result;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

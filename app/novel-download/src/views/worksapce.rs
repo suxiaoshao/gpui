@@ -1,18 +1,14 @@
-use std::{
-    fs::{File, OpenOptions},
-    io::Write,
-};
-
 use async_compat::Compat;
+use futures::AsyncWriteExt;
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{StyledExt, button::Button, input::TextInput, label::Label};
+use gpui_component::{ActiveTheme, StyledExt, button::Button, input::TextInput, label::Label};
+use smol::fs::{File, OpenOptions};
 
 use crate::{
     crawler::{Fetch, NovelBaseData},
     errors::{NovelError, NovelResult},
 };
-
-pub(crate) enum WorkspaceEvent {
+enum WorkspaceEvent {
     Send(String),
     FetchFileError,
     FetchSuccess,
@@ -90,7 +86,7 @@ impl Fetch for Runner {
         self.emit(WorkspaceEvent::FetchStart);
         Ok(())
     }
-    fn on_fetch_base(&mut self, base_data: NovelBaseData<'_>) -> NovelResult<Self::BaseData> {
+    async fn on_fetch_base(&mut self, base_data: NovelBaseData<'_>) -> NovelResult<Self::BaseData> {
         self.emit(WorkspaceEvent::Fetching(FetchingNovelData {
             name: base_data.name.to_string(),
             author: base_data.author_name.to_string(),
@@ -98,12 +94,20 @@ impl Fetch for Runner {
         let path = dirs_next::download_dir()
             .ok_or(NovelError::DownloadFolder)?
             .join(format!("{}by{}.txt", base_data.name, base_data.author_name));
-        let file = OpenOptions::new().append(true).create(true).open(path)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .await?;
         Ok(file)
     }
 
-    fn on_add_content(&mut self, content: &str, base_data: &mut Self::BaseData) -> NovelResult<()> {
-        base_data.write_all(content.as_bytes())?;
+    async fn on_add_content(
+        &mut self,
+        content: &str,
+        base_data: &mut Self::BaseData,
+    ) -> NovelResult<()> {
+        base_data.write_all(content.as_bytes()).await?;
         Ok(())
     }
 
@@ -212,6 +216,8 @@ impl Render for WorkspaceView {
             .key_context("NovelDownload")
             .p_4()
             .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .child(
                 div().h_flex().gap_1().child(self.input.clone()).child(
                     Button::new("send")
