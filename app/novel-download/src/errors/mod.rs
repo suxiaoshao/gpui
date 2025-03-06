@@ -6,6 +6,10 @@ pub enum NovelError {
     NetworkError(reqwest::Error),
     #[error("解析错误")]
     ParseError,
+    #[error("文件系统错误:{}",.0)]
+    Fs(#[from] std::io::Error),
+    #[error("下载文件夹")]
+    DownloadFolder,
 }
 
 impl From<reqwest::Error> for NovelError {

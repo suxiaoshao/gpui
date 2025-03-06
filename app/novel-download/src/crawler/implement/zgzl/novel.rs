@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use async_stream::try_stream;
-use futures::{StreamExt, future::try_join_all, pin_mut};
+use futures::{StreamExt, pin_mut};
 use scraper::{Html, Selector};
 
 use crate::{
@@ -41,9 +41,11 @@ impl NovelFn for Novel {
     type Chapter = Chapter;
 
     async fn get_novel_data(novel_id: &str) -> NovelResult<Self> {
-        let url = format!("https://m.zgzl.net/info_{novel_id}/#");
+        let url = Self::get_url_from_id(novel_id);
         let html = get_doc(&url, "utf-8").await?;
-        let name = parse_text(&html, &SELECTOR_NOVEL_NAME)?;
+        let name = parse_text(&html, &SELECTOR_NOVEL_NAME)?
+            .trim()
+            .replace("/", "|");
         let chapters: Vec<String> = parse_chapters(&html)?;
         let author_name = parse_author_name(&html)?;
 
@@ -57,16 +59,6 @@ impl NovelFn for Novel {
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    async fn chapters(&self) -> NovelResult<Vec<Self::Chapter>> {
-        let data = try_join_all(
-            self.chapter_ids
-                .iter()
-                .map(|chapter_id| Chapter::get_chapter_data(chapter_id, &self.novel_id)),
-        )
-        .await?;
-        Ok(data)
     }
 
     fn get_url_from_id(id: &str) -> String {
@@ -114,36 +106,24 @@ fn parse_chapters(document: &Html) -> NovelResult<Vec<String>> {
 
 fn parse_author_name(document: &Html) -> NovelResult<String> {
     let name = parse_text(document, &SELECTOR_NOVEL_AUTHOR)?;
-    fn parse_target(input: &str) -> IResult<&str, String> {
-        let (input, (_, data)) = (tag("作者："), take_until("")).parse(input)?;
-        Ok((input, data.to_string()))
+    fn parse_target(input: &str) -> IResult<&str, ()> {
+        let (input, _) = tag("作者：").parse(input)?;
+        Ok((input, ()))
     }
-    let (_, data) = parse_target(&name)?;
-    Ok(data)
+    let (data, _) = parse_target(&name)?;
+    Ok(data.trim().replace("/", "|"))
 }
 
 #[cfg(test)]
 mod test {
-    use crate::crawler::{ChapterFn, NovelFn};
+    use crate::crawler::NovelFn;
 
     use super::Novel;
 
     #[tokio::test]
     async fn test_fetch_novel() -> anyhow::Result<()> {
         let novel = Novel::get_novel_data("otew").await?;
-        let chapters = novel.chapters().await?;
-        let novel_content =
-            chapters
-                .iter()
-                .map(|c| c.content())
-                .fold(String::new(), |mut acc, content| {
-                    acc.push_str(content);
-                    acc
-                });
-        std::fs::write(
-            format!("/Users/sushao/Downloads/{}.txt", novel.name()),
-            novel_content,
-        )?;
+        println!("{novel:?}");
         Ok(())
     }
 }

@@ -3818,7 +3818,9 @@ name = "novel-download"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-compat",
  "async-stream",
+ "dirs-next",
  "futures",
  "gpui",
  "gpui-component",

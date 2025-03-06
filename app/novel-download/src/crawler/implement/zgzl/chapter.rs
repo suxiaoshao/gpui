@@ -9,7 +9,7 @@
 use std::sync::LazyLock;
 
 use async_stream::try_stream;
-use futures::{Stream, future::try_join_all};
+use futures::Stream;
 use nom::{
     IResult, Parser,
     bytes::complete::{tag, take_until},
@@ -38,7 +38,6 @@ pub struct Chapter {
     chapter_id: String,
     title: String,
     page_count: u32,
-    content: String,
 }
 
 impl Chapter {
@@ -60,19 +59,10 @@ impl ChapterFn for Chapter {
         let html = get_doc(&url, "utf-8").await?;
         let title = parse_text(&html, &SELECTOR_CHAPTER_NAME)?;
         let (_, (title, count)) = parse_title(&title)?;
-        let mut content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
-        let contents = try_join_all(
-            (2..=count).map(|page_id| fetch_page_content(chapter_id, novel_id, page_id)),
-        )
-        .await?;
-        for c in contents {
-            content.push_str(&c);
-        }
         Ok(Self {
             title,
             chapter_id: chapter_id.to_string(),
             novel_id: novel_id.to_string(),
-            content,
             page_count: count,
         })
     }
@@ -97,10 +87,6 @@ impl ChapterFn for Chapter {
         format!("https://m.zgzl.net/read_{}/{}.html", novel_id, chapter_id)
     }
 
-    fn content(&self) -> &str {
-        &self.content
-    }
-
     fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<String>> {
         self.stream()
     }
@@ -109,7 +95,7 @@ impl ChapterFn for Chapter {
 fn parse_title(html: &str) -> IResult<&str, (String, u32)> {
     let (input, (title, _, chapter_id, _)) =
         (take_until("("), tag("(1 / "), float, tag(")")).parse(html)?;
-    Ok((input, (title.to_string(), chapter_id as u32)))
+    Ok((input, (title.trim().replace("/", "|"), chapter_id as u32)))
 }
 
 async fn fetch_page_content(chapter_id: &str, novel_id: &str, page_id: u32) -> NovelResult<String> {

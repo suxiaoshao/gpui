@@ -1,14 +1,136 @@
-use gpui::*;
-use gpui_component::{StyledExt, button::Button, input::TextInput};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+};
+
+use async_compat::Compat;
+use gpui::{prelude::FluentBuilder, *};
+use gpui_component::{StyledExt, button::Button, input::TextInput, label::Label};
+
+use crate::{
+    crawler::{Fetch, NovelBaseData},
+    errors::{NovelError, NovelResult},
+};
 
 pub(crate) enum WorkspaceEvent {
     Send(String),
+    FetchFileError,
+    FetchSuccess,
+    FetchStart,
+    Fetching(FetchingNovelData),
+    FetchNetworkError,
+    FetchParseError,
+}
+
+#[derive(Debug, Clone)]
+struct FetchingNovelData {
+    name: String,
+    author: String,
+}
+
+#[derive(Default, Clone)]
+enum FetchState {
+    #[default]
+    None,
+    Fetching(Option<FetchingNovelData>),
+    Success,
+    FileError,
+    NetworkError,
+    ParseError,
 }
 
 #[derive(Default)]
-struct Workspace {}
+struct Workspace {
+    fetch_state: FetchState,
+}
+
+impl Workspace {
+    fn render_state(&self) -> Option<Label> {
+        let element = match &self.fetch_state {
+            FetchState::None => return None,
+            FetchState::Fetching(novel_data) => Label::new(match novel_data {
+                Some(FetchingNovelData { name, author }) => format!("Fetching {name} by {author}"),
+                None => "Fetching...".to_string(),
+            }),
+            FetchState::Success => Label::new("Success"),
+            FetchState::FileError => Label::new("File Error"),
+            FetchState::NetworkError => Label::new("Network Error"),
+            FetchState::ParseError => Label::new("Parse Error"),
+        };
+        Some(element)
+    }
+    fn loading(&self) -> bool {
+        match &self.fetch_state {
+            FetchState::None => false,
+            FetchState::Fetching(_) => true,
+            _ => false,
+        }
+    }
+}
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
+
+struct Runner {
+    novel_id: String,
+    workspace: Entity<Workspace>,
+    cx: AsyncApp,
+}
+
+impl Runner {
+    fn emit(&mut self, event: WorkspaceEvent) {
+        if let Err(_err) = self.workspace.update(&mut self.cx, |_, cx| cx.emit(event)) {
+            // todo log
+        }
+    }
+}
+
+impl Fetch for Runner {
+    type BaseData = File;
+    fn on_start(&mut self) -> NovelResult<()> {
+        self.emit(WorkspaceEvent::FetchStart);
+        Ok(())
+    }
+    fn on_fetch_base(&mut self, base_data: NovelBaseData<'_>) -> NovelResult<Self::BaseData> {
+        self.emit(WorkspaceEvent::Fetching(FetchingNovelData {
+            name: base_data.name.to_string(),
+            author: base_data.author_name.to_string(),
+        }));
+        let path = dirs_next::download_dir()
+            .ok_or(NovelError::DownloadFolder)?
+            .join(format!("{}by{}.txt", base_data.name, base_data.author_name));
+        let file = OpenOptions::new().append(true).create(true).open(path)?;
+        Ok(file)
+    }
+
+    fn on_add_content(&mut self, content: &str, base_data: &mut Self::BaseData) -> NovelResult<()> {
+        base_data.write_all(content.as_bytes())?;
+        Ok(())
+    }
+
+    fn get_novel_id(&self) -> &str {
+        &self.novel_id
+    }
+
+    fn on_success(&mut self, _base_data: &mut Self::BaseData) -> NovelResult<()> {
+        self.emit(WorkspaceEvent::FetchSuccess);
+        Ok(())
+    }
+
+    fn on_error(&mut self, error: &NovelError) {
+        // todo log error
+        match error {
+            NovelError::NetworkError(_) => {
+                self.emit(WorkspaceEvent::FetchNetworkError);
+            }
+            NovelError::ParseError => {
+                self.emit(WorkspaceEvent::FetchParseError);
+            }
+            NovelError::Fs(_) | NovelError::DownloadFolder => {
+                self.emit(WorkspaceEvent::FetchFileError);
+            }
+        }
+    }
+}
 
 pub struct WorkspaceView {
     input: Entity<TextInput>,
@@ -34,14 +156,57 @@ impl WorkspaceView {
     ) {
         match emitter {
             WorkspaceEvent::Send(text) => {
-                println!("{}", text);
+                self.fetch(subscriber, cx, text.to_string());
+            }
+            WorkspaceEvent::FetchStart => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::Fetching(None);
+                });
+            }
+            WorkspaceEvent::Fetching(novel_data) => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::Fetching(Some(novel_data.clone()));
+                });
+            }
+            WorkspaceEvent::FetchNetworkError => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::NetworkError;
+                });
+            }
+            WorkspaceEvent::FetchParseError => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::ParseError;
+                });
+            }
+            WorkspaceEvent::FetchFileError => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::FileError;
+                });
+            }
+            WorkspaceEvent::FetchSuccess => {
+                subscriber.update(cx, |data, _| {
+                    data.fetch_state = FetchState::Success;
+                });
             }
         }
+    }
+    fn fetch(&mut self, subscriber: Entity<Workspace>, cx: &mut Context<Self>, novel_id: String) {
+        let task = cx.spawn(|_, cx| {
+            let mut runner = Runner {
+                novel_id,
+                workspace: subscriber,
+                cx,
+            };
+            Compat::new(async move { runner.fetch().await })
+        });
+        task.detach();
     }
 }
 
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state_element = self.workspace.read(cx).render_state();
+        let loading = self.workspace.read(cx).loading();
         div()
             .track_focus(&self.focus_handle)
             .key_context("NovelDownload")
@@ -60,9 +225,11 @@ impl Render for WorkspaceView {
                                 this.focus_handle.focus(window);
                             });
                         }))
+                        .loading(loading)
                         .child("send")
                         .track_focus(&self.focus_handle),
                 ),
             )
+            .when_some(state_element, |this, element| this.child(element))
     }
 }
