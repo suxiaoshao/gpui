@@ -3,7 +3,12 @@ use std::{fs::create_dir_all, path::PathBuf};
 use errors::{NovelError, NovelResult};
 use gpui::*;
 use tracing::{Level, event, level_filters::LevelFilter};
-use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    Layer,
+    fmt::{self},
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+};
 use views::WorkspaceView;
 
 mod crawler;
@@ -41,9 +46,11 @@ fn get_logs_dir() -> NovelResult<PathBuf> {
 }
 
 fn main() -> NovelResult<()> {
+    // tracing
     tracing_subscriber::registry()
         .with(
             fmt::layer()
+                .with_timer(fmt::time::LocalTime::rfc_3339())
                 .with_writer(
                     std::fs::OpenOptions::new()
                         .append(true)
@@ -53,8 +60,17 @@ fn main() -> NovelResult<()> {
                 )
                 .with_filter(LevelFilter::INFO),
         )
+        .with(
+            fmt::layer()
+                .with_timer(fmt::time::LocalTime::rfc_3339())
+                .event_format(fmt::format().pretty())
+                .with_filter(LevelFilter::INFO),
+        )
         .init();
+    let span = tracing::info_span!("init");
+    let _enter = span.enter();
     let app = Application::new();
+    event!(Level::INFO, "app created");
 
     app.run(move |cx| {
         init(cx);
@@ -68,13 +84,14 @@ fn main() -> NovelResult<()> {
             },
             |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
         ) {
-            tracing::info_span!("init");
             event!(Level::ERROR, "{}", err)
         };
+        event!(Level::INFO, "window opened");
     });
     Ok(())
 }
 
 fn quit(_: &Quit, cx: &mut App) {
+    event!(Level::INFO, "quit by action");
     cx.quit();
 }

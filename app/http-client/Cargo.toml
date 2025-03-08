@@ -10,5 +10,5 @@ smallvec.workspace = true
 theme = { path = "../../common/theme" }
 components = { path = "../../common/components" }
 url = "2.5.4"
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 reqwest = "0.12.12"

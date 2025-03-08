@@ -6,10 +6,8 @@
  * @FilePath: /gpui-app/app/novel-download/src/crawler/implement/zgzl/chapter.rs
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
 
-use async_stream::try_stream;
-use futures::Stream;
 use nom::{
     IResult, Parser,
     bytes::complete::{tag, take_until},
@@ -20,7 +18,6 @@ use scraper::Selector;
 use crate::{
     crawler::{
         ChapterFn,
-        chapter::ContentItem,
         implement::{get_doc, parse_text},
     },
     errors::NovelResult,
@@ -35,21 +32,9 @@ static SELECTOR_CHAPTER_CONTENT: LazyLock<Selector> =
 
 #[derive(Debug)]
 pub struct Chapter {
-    novel_id: String,
-    chapter_id: String,
-    page_count: u32,
-}
-
-impl Chapter {
-    fn stream(&self) -> impl Stream<Item = NovelResult<ContentItem>> {
-        try_stream! {
-            for i in 1..=self.page_count {
-                let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",self.novel_id,self.chapter_id,i);
-                let content = fetch_page_content(&page_url).await?;
-                yield ContentItem::new(page_url, content);
-            }
-        }
-    }
+    title: String,
+    pub(super) page_count: u32,
+    pub(super) content: String,
 }
 
 impl ChapterFn for Chapter {
@@ -58,21 +43,21 @@ impl ChapterFn for Chapter {
     async fn get_chapter_data(chapter_id: &str, novel_id: &str) -> NovelResult<Self> {
         let url = Self::get_url_from_id(chapter_id, novel_id);
         let html = get_doc(&url, "utf-8").await?;
+        let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
         let title = parse_text(&html, &SELECTOR_CHAPTER_NAME)?;
-        let (_, (_title, count)) = parse_title(&title)?;
+        let (_, (title, count)) = parse_title(&title)?;
         Ok(Self {
-            chapter_id: chapter_id.to_string(),
-            novel_id: novel_id.to_string(),
             page_count: count,
+            content,
+            title,
         })
     }
 
     fn get_url_from_id(chapter_id: &str, novel_id: &str) -> String {
         format!("https://m.zgzl.net/read_{}/{}.html", novel_id, chapter_id)
     }
-
-    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<ContentItem>> {
-        self.stream()
+    fn title(&self) -> &str {
+        self.title.as_str()
     }
 }
 
@@ -82,30 +67,10 @@ fn parse_title(html: &str) -> IResult<&str, (String, u32)> {
     Ok((input, (title.trim().replace("/", "|"), chapter_id as u32)))
 }
 
-async fn fetch_page_content(page_url: &str) -> NovelResult<String> {
-    let html = retry(3, Duration::from_secs(1), || get_doc(&page_url, "utf-8")).await?;
+pub(super) async fn fetch_page_content(page_url: &str) -> NovelResult<String> {
+    let html = get_doc(page_url, "utf-8").await?;
     let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
     Ok(content)
-}
-
-async fn retry<T, E, Fut, F>(retries: usize, duration: Duration, mut f: F) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    let mut count = 0;
-    loop {
-        let result = f().await;
-        if result.is_ok() {
-            return result;
-        } else {
-            smol::Timer::after(duration).await;
-            count += 1;
-            if count >= retries {
-                return result;
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -115,7 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_page_content() -> anyhow::Result<()> {
-        let chapter_id = "68hqo";
+        let chapter_id = "68hq7";
         let novel_id = "otew";
         let content = Chapter::get_chapter_data(chapter_id, novel_id).await?;
         println!("{:?}", content);

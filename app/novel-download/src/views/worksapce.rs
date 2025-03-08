@@ -16,17 +16,10 @@ enum WorkspaceEvent {
     FetchFileError,
     FetchSuccess,
     FetchStart,
-    FetchingNovel(FetchingNovelData),
+    FetchingNovel { name: String, author: String },
     FetchingChapter(String),
     FetchNetworkError,
     FetchParseError,
-}
-
-#[derive(Debug, Clone)]
-struct FetchingNovelData {
-    name: String,
-    author: String,
-    history: Vec<String>,
 }
 
 #[derive(Default, Clone)]
@@ -34,7 +27,11 @@ enum FetchState {
     #[default]
     None,
     Fetching,
-    FetchingNovel(FetchingNovelData),
+    FetchingNovel {
+        name: String,
+        author: String,
+        history: Vec<String>,
+    },
     Success,
     FileError,
     NetworkError,
@@ -50,11 +47,11 @@ impl Workspace {
     fn render_state(&self) -> Option<Div> {
         let element = match &self.fetch_state {
             FetchState::None => return None,
-            FetchState::FetchingNovel(FetchingNovelData {
+            FetchState::FetchingNovel {
                 name,
                 author,
                 history,
-            }) => div()
+            } => div()
                 .flex()
                 .flex_col()
                 .child(Label::new(format!("Fetching {name} by {author}")))
@@ -74,7 +71,7 @@ impl Workspace {
     fn loading(&self) -> bool {
         match &self.fetch_state {
             FetchState::None => false,
-            FetchState::FetchingNovel(_) => true,
+            FetchState::FetchingNovel { .. } => true,
             _ => false,
         }
     }
@@ -105,11 +102,10 @@ impl Fetch for Runner {
     }
     async fn on_fetch_base(&mut self, base_data: NovelBaseData<'_>) -> NovelResult<Self::BaseData> {
         event!(Level::INFO, "Fetching base data");
-        self.emit(WorkspaceEvent::FetchingNovel(FetchingNovelData {
+        self.emit(WorkspaceEvent::FetchingNovel {
             name: base_data.name.to_string(),
             author: base_data.author_name.to_string(),
-            history: Vec::new(),
-        }));
+        });
         let path = dirs_next::download_dir()
             .ok_or(NovelError::DownloadFolder)?
             .join(format!("{}by{}.txt", base_data.name, base_data.author_name));
@@ -193,9 +189,13 @@ impl WorkspaceView {
                     data.fetch_state = FetchState::Fetching;
                 });
             }
-            WorkspaceEvent::FetchingNovel(novel_data) => {
+            WorkspaceEvent::FetchingNovel { author, name } => {
                 subscriber.update(cx, |data, _| {
-                    data.fetch_state = FetchState::FetchingNovel(novel_data.clone());
+                    data.fetch_state = FetchState::FetchingNovel {
+                        author: author.clone(),
+                        name: name.clone(),
+                        history: Vec::new(),
+                    };
                 });
             }
             WorkspaceEvent::FetchNetworkError => {
@@ -220,14 +220,13 @@ impl WorkspaceView {
             }
             WorkspaceEvent::FetchingChapter(url) => {
                 subscriber.update(cx, |data, _| {
-                    if let FetchState::FetchingNovel(FetchingNovelData { history, .. }) =
-                        &mut data.fetch_state
-                    {
+                    if let FetchState::FetchingNovel { history, .. } = &mut data.fetch_state {
                         history.push(url.clone());
                     };
                 });
             }
         }
+        cx.notify();
     }
     fn fetch(&mut self, subscriber: Entity<Workspace>, cx: &mut Context<Self>, novel_id: String) {
         let task = cx.spawn(|_, cx| {
@@ -237,7 +236,7 @@ impl WorkspaceView {
                 cx,
             };
             Compat::new(async move {
-                let span = tracing::info_span!("send", novel_id = novel_id);
+                let span = tracing::info_span!("send", novel_id);
                 runner.fetch().instrument(span).await
             })
         });

@@ -15,5 +15,5 @@ pub trait ChapterFn: Sized + Send {
     type Novel: super::NovelFn;
     async fn get_chapter_data(chapter_id: &str, novel_id: &str) -> NovelResult<Self>;
     fn get_url_from_id(chapter_id: &str, novel_id: &str) -> String;
-    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<ContentItem>>;
+    fn title(&self) -> &str;
 }

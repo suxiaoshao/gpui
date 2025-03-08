@@ -32,13 +32,13 @@ pub trait Fetch {
     fn on_error(&mut self, error: &NovelError);
     async fn __inner_fetch(&mut self) -> NovelResult<()> {
         self.on_start()?;
-        let data = Novel::get_novel_data(self.get_novel_id()).await?;
+        let (data, start) = Novel::get_novel_data(self.get_novel_id()).await?;
         let base_data = NovelBaseData {
             name: data.name(),
             author_name: data.author_name(),
         };
         let mut base_data = self.on_fetch_base(base_data).await?;
-        let stream = data.content_stream();
+        let stream = data.content_stream(&start);
         pin_mut!(stream);
         while let Some(content) = stream.next().await {
             self.on_add_content(&content?, &mut base_data).await?;
