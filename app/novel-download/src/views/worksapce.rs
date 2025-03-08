@@ -1,11 +1,14 @@
 use async_compat::Compat;
 use futures::AsyncWriteExt;
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, StyledExt, button::Button, input::TextInput, label::Label};
+use gpui_component::{
+    ActiveTheme, StyledExt, button::Button, input::TextInput, label::Label, link::Link,
+};
 use smol::fs::{File, OpenOptions};
+use tracing::{Instrument, Level, event};
 
 use crate::{
-    crawler::{Fetch, NovelBaseData},
+    crawler::{ContentItem, Fetch, NovelBaseData},
     errors::{NovelError, NovelResult},
 };
 enum WorkspaceEvent {
@@ -13,7 +16,8 @@ enum WorkspaceEvent {
     FetchFileError,
     FetchSuccess,
     FetchStart,
-    Fetching(FetchingNovelData),
+    FetchingNovel(FetchingNovelData),
+    FetchingChapter(String),
     FetchNetworkError,
     FetchParseError,
 }
@@ -22,13 +26,15 @@ enum WorkspaceEvent {
 struct FetchingNovelData {
     name: String,
     author: String,
+    history: Vec<String>,
 }
 
 #[derive(Default, Clone)]
 enum FetchState {
     #[default]
     None,
-    Fetching(Option<FetchingNovelData>),
+    Fetching,
+    FetchingNovel(FetchingNovelData),
     Success,
     FileError,
     NetworkError,
@@ -41,24 +47,34 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn render_state(&self) -> Option<Label> {
+    fn render_state(&self) -> Option<Div> {
         let element = match &self.fetch_state {
             FetchState::None => return None,
-            FetchState::Fetching(novel_data) => Label::new(match novel_data {
-                Some(FetchingNovelData { name, author }) => format!("Fetching {name} by {author}"),
-                None => "Fetching...".to_string(),
-            }),
-            FetchState::Success => Label::new("Success"),
-            FetchState::FileError => Label::new("File Error"),
-            FetchState::NetworkError => Label::new("Network Error"),
-            FetchState::ParseError => Label::new("Parse Error"),
+            FetchState::FetchingNovel(FetchingNovelData {
+                name,
+                author,
+                history,
+            }) => div()
+                .flex()
+                .flex_col()
+                .child(Label::new(format!("Fetching {name} by {author}")))
+                .children(history.iter().cloned().rev().take(5).rev().map(|url| {
+                    Link::new(SharedString::from(&url))
+                        .child(SharedString::from(&url))
+                        .href(url)
+                })),
+            FetchState::Success => div().child(Label::new("Success")),
+            FetchState::FileError => div().child(Label::new("File Error")),
+            FetchState::NetworkError => div().child(Label::new("Network Error")),
+            FetchState::ParseError => div().child(Label::new("Parse Error")),
+            FetchState::Fetching => div().child(Label::new("Fetching...")),
         };
         Some(element)
     }
     fn loading(&self) -> bool {
         match &self.fetch_state {
             FetchState::None => false,
-            FetchState::Fetching(_) => true,
+            FetchState::FetchingNovel(_) => true,
             _ => false,
         }
     }
@@ -75,7 +91,7 @@ struct Runner {
 impl Runner {
     fn emit(&mut self, event: WorkspaceEvent) {
         if let Err(_err) = self.workspace.update(&mut self.cx, |_, cx| cx.emit(event)) {
-            // todo log
+            event!(Level::ERROR, "Failed to emit event");
         }
     }
 }
@@ -83,13 +99,16 @@ impl Runner {
 impl Fetch for Runner {
     type BaseData = File;
     fn on_start(&mut self) -> NovelResult<()> {
+        event!(Level::INFO, "Starting fetch");
         self.emit(WorkspaceEvent::FetchStart);
         Ok(())
     }
     async fn on_fetch_base(&mut self, base_data: NovelBaseData<'_>) -> NovelResult<Self::BaseData> {
-        self.emit(WorkspaceEvent::Fetching(FetchingNovelData {
+        event!(Level::INFO, "Fetching base data");
+        self.emit(WorkspaceEvent::FetchingNovel(FetchingNovelData {
             name: base_data.name.to_string(),
             author: base_data.author_name.to_string(),
+            history: Vec::new(),
         }));
         let path = dirs_next::download_dir()
             .ok_or(NovelError::DownloadFolder)?
@@ -104,10 +123,12 @@ impl Fetch for Runner {
 
     async fn on_add_content(
         &mut self,
-        content: &str,
+        content: &ContentItem,
         base_data: &mut Self::BaseData,
     ) -> NovelResult<()> {
-        base_data.write_all(content.as_bytes()).await?;
+        event!(Level::INFO, "Fetching chapter:{}", content.url);
+        self.emit(WorkspaceEvent::FetchingChapter(content.url.clone()));
+        base_data.write_all(content.content.as_bytes()).await?;
         Ok(())
     }
 
@@ -116,12 +137,13 @@ impl Fetch for Runner {
     }
 
     fn on_success(&mut self, _base_data: &mut Self::BaseData) -> NovelResult<()> {
+        event!(Level::INFO, "Fetch success");
         self.emit(WorkspaceEvent::FetchSuccess);
         Ok(())
     }
 
     fn on_error(&mut self, error: &NovelError) {
-        // todo log error
+        event!(Level::ERROR, "Fetch error: {}", error);
         match error {
             NovelError::NetworkError(_) => {
                 self.emit(WorkspaceEvent::FetchNetworkError);
@@ -131,6 +153,10 @@ impl Fetch for Runner {
             }
             NovelError::Fs(_) | NovelError::DownloadFolder => {
                 self.emit(WorkspaceEvent::FetchFileError);
+            }
+            NovelError::LogFileNotFound => {
+                event!(Level::ERROR, "Log file not found");
+                unimplemented!()
             }
         }
     }
@@ -164,12 +190,12 @@ impl WorkspaceView {
             }
             WorkspaceEvent::FetchStart => {
                 subscriber.update(cx, |data, _| {
-                    data.fetch_state = FetchState::Fetching(None);
+                    data.fetch_state = FetchState::Fetching;
                 });
             }
-            WorkspaceEvent::Fetching(novel_data) => {
+            WorkspaceEvent::FetchingNovel(novel_data) => {
                 subscriber.update(cx, |data, _| {
-                    data.fetch_state = FetchState::Fetching(Some(novel_data.clone()));
+                    data.fetch_state = FetchState::FetchingNovel(novel_data.clone());
                 });
             }
             WorkspaceEvent::FetchNetworkError => {
@@ -192,16 +218,28 @@ impl WorkspaceView {
                     data.fetch_state = FetchState::Success;
                 });
             }
+            WorkspaceEvent::FetchingChapter(url) => {
+                subscriber.update(cx, |data, _| {
+                    if let FetchState::FetchingNovel(FetchingNovelData { history, .. }) =
+                        &mut data.fetch_state
+                    {
+                        history.push(url.clone());
+                    };
+                });
+            }
         }
     }
     fn fetch(&mut self, subscriber: Entity<Workspace>, cx: &mut Context<Self>, novel_id: String) {
         let task = cx.spawn(|_, cx| {
             let mut runner = Runner {
-                novel_id,
+                novel_id: novel_id.clone(),
                 workspace: subscriber,
                 cx,
             };
-            Compat::new(async move { runner.fetch().await })
+            Compat::new(async move {
+                let span = tracing::info_span!("send", novel_id = novel_id);
+                runner.fetch().instrument(span).await
+            })
         });
         task.detach();
     }

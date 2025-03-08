@@ -7,7 +7,10 @@ use implement::Novel;
 
 use crate::errors::{NovelError, NovelResult};
 
-pub use self::{chapter::ChapterFn, novel::NovelFn};
+pub use self::{
+    chapter::{ChapterFn, ContentItem},
+    novel::NovelFn,
+};
 
 #[derive(Default, Clone)]
 pub struct NovelBaseData<'a> {
@@ -23,7 +26,7 @@ pub trait Fetch {
     async fn on_fetch_base(&mut self, base_data: NovelBaseData) -> NovelResult<Self::BaseData>;
     async fn on_add_content(
         &mut self,
-        content: &str,
+        content: &ContentItem,
         base_data: &mut Self::BaseData,
     ) -> NovelResult<()>;
     fn on_error(&mut self, error: &NovelError);

@@ -20,6 +20,7 @@ use scraper::Selector;
 use crate::{
     crawler::{
         ChapterFn,
+        chapter::ContentItem,
         implement::{get_doc, parse_text},
     },
     errors::NovelResult,
@@ -36,17 +37,16 @@ static SELECTOR_CHAPTER_CONTENT: LazyLock<Selector> =
 pub struct Chapter {
     novel_id: String,
     chapter_id: String,
-    title: String,
     page_count: u32,
 }
 
 impl Chapter {
-    fn stream(&self) -> impl Stream<Item = NovelResult<String>> {
+    fn stream(&self) -> impl Stream<Item = NovelResult<ContentItem>> {
         try_stream! {
             for i in 1..=self.page_count {
-                smol::Timer::after(Duration::from_secs(1)).await;
-                let content = fetch_page_content(&self.chapter_id, &self.novel_id, i).await?;
-                yield content;
+                let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",self.novel_id,self.chapter_id,i);
+                let content = fetch_page_content(&page_url).await?;
+                yield ContentItem::new(page_url, content);
             }
         }
     }
@@ -59,36 +59,19 @@ impl ChapterFn for Chapter {
         let url = Self::get_url_from_id(chapter_id, novel_id);
         let html = get_doc(&url, "utf-8").await?;
         let title = parse_text(&html, &SELECTOR_CHAPTER_NAME)?;
-        let (_, (title, count)) = parse_title(&title)?;
+        let (_, (_title, count)) = parse_title(&title)?;
         Ok(Self {
-            title,
             chapter_id: chapter_id.to_string(),
             novel_id: novel_id.to_string(),
             page_count: count,
         })
     }
 
-    fn url(&self) -> String {
-        Self::get_url_from_id(&self.chapter_id, &self.novel_id)
-    }
-
-    fn title(&self) -> &str {
-        &self.title
-    }
-
-    fn chapter_id(&self) -> &str {
-        &self.chapter_id
-    }
-
-    fn novel_id(&self) -> &str {
-        todo!()
-    }
-
     fn get_url_from_id(chapter_id: &str, novel_id: &str) -> String {
         format!("https://m.zgzl.net/read_{}/{}.html", novel_id, chapter_id)
     }
 
-    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<String>> {
+    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<ContentItem>> {
         self.stream()
     }
 }
@@ -99,8 +82,7 @@ fn parse_title(html: &str) -> IResult<&str, (String, u32)> {
     Ok((input, (title.trim().replace("/", "|"), chapter_id as u32)))
 }
 
-async fn fetch_page_content(chapter_id: &str, novel_id: &str, page_id: u32) -> NovelResult<String> {
-    let page_url = format!("https://m.zgzl.net/read_{novel_id}/{chapter_id}_{page_id}.html");
+async fn fetch_page_content(page_url: &str) -> NovelResult<String> {
     let html = retry(3, Duration::from_secs(1), || get_doc(&page_url, "utf-8")).await?;
     let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
     Ok(content)

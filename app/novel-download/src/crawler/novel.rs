@@ -1,4 +1,4 @@
-use super::chapter::ChapterFn;
+use super::chapter::{ChapterFn, ContentItem};
 use crate::errors::NovelResult;
 pub trait NovelFn: Sized + Send + Sync + Sized {
     type Chapter: ChapterFn;
@@ -6,5 +6,5 @@ pub trait NovelFn: Sized + Send + Sync + Sized {
     fn name(&self) -> &str;
     fn author_name(&self) -> &str;
     fn get_url_from_id(id: &str) -> String;
-    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<String>>;
+    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<ContentItem>>;
 }

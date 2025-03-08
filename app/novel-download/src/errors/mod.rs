@@ -10,6 +10,8 @@ pub enum NovelError {
     Fs(#[from] std::io::Error),
     #[error("下载文件夹")]
     DownloadFolder,
+    #[error("log file not found")]
+    LogFileNotFound,
 }
 
 impl From<reqwest::Error> for NovelError {

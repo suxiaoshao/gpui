@@ -7,6 +7,7 @@ use scraper::{Html, Selector};
 use crate::{
     crawler::{
         ChapterFn, NovelFn,
+        chapter::ContentItem,
         implement::{get_doc, parse_text},
     },
     errors::{NovelError, NovelResult},
@@ -69,7 +70,7 @@ impl NovelFn for Novel {
         &self.author_name
     }
 
-    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<String>> {
+    fn content_stream(&self) -> impl futures::Stream<Item = NovelResult<ContentItem>> {
         try_stream! {
             for chapter_id in &self.chapter_ids{
                 let chapter = Chapter::get_chapter_data(chapter_id, &self.novel_id).await?;
