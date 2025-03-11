@@ -2,7 +2,6 @@ use std::{sync::LazyLock, time::Duration};
 
 use async_stream::try_stream;
 use scraper::{Html, Selector};
-use tracing::{Level, event};
 
 use crate::{
     crawler::{
@@ -111,7 +110,7 @@ impl NovelFn for Novel {
                     for chapter_id in &self.chapter_ids {
                         let chapter = Chapter::get_chapter_data(chapter_id, &self.novel_id).await?;
                         let url = Chapter::get_url_from_id(chapter_id,&self.novel_id);
-                        yield ContentItem::new(url, format!("{}\n{}", chapter.title(), chapter.content));
+                        yield ContentItem::new(url, format!("\n{}\n{}", chapter.title(), chapter.content));
                         for i in 2..=chapter.page_count {
                             let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",self.novel_id,chapter_id,i);
                             let content = retry(3, Duration::from_secs(1), ||fetch_page_content(&page_url)).await?;
@@ -124,7 +123,7 @@ impl NovelFn for Novel {
                         for chapter_id in &self.chapter_ids[start_index..] {
                             let chapter = Chapter::get_chapter_data(chapter_id, novel_id).await?;
                             let url = Chapter::get_url_from_id(chapter_id,novel_id);
-                            yield ContentItem::new(url, format!("{}\n{}", chapter.title(), chapter.content));
+                            yield ContentItem::new(url, format!("\n{}\n{}", chapter.title(), chapter.content));
                             for i in 2..=chapter.page_count {
                                 let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",novel_id,chapter_id,i);
                                 let content = retry(3, Duration::from_secs(1), ||fetch_page_content(&page_url)).await?;
@@ -140,7 +139,7 @@ impl NovelFn for Novel {
                         if page_id == 1 {
                             let url = Chapter::get_url_from_id(chapter_id,&self.novel_id);
                             page_id += 1;
-                            yield ContentItem::new(url, format!("{}\n{}", chapter.title(), chapter.content));
+                            yield ContentItem::new(url, format!("\n{}\n{}", chapter.title(), chapter.content));
                         }
                         for i in page_id..=chapter.page_count {
                             let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",self.novel_id,chapter_id,i);
@@ -150,7 +149,7 @@ impl NovelFn for Novel {
                         for chapter_id in &self.chapter_ids[start_index+1..] {
                             let chapter = Chapter::get_chapter_data(chapter_id, &self.novel_id).await?;
                             let url = Chapter::get_url_from_id(chapter_id,&self.novel_id);
-                            yield ContentItem::new(url, chapter.content.clone());
+                            yield ContentItem::new(url, format!("\n{}\n{}", chapter.title(), chapter.content));
                             for i in 2..=chapter.page_count {
                                 let page_url = format!("https://m.zgzl.net/read_{}/{}_{}.html",self.novel_id,chapter_id,i);
                                 let content = retry(3, Duration::from_secs(1), ||fetch_page_content(&page_url)).await?;
