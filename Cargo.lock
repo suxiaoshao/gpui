@@ -3826,7 +3826,6 @@ dependencies = [
  "gpui-component",
  "nom 8.0.0",
  "reqwest",
- "retry",
  "scraper",
  "smol 2.0.2",
  "thiserror 2.0.12",
@@ -5093,15 +5092,6 @@ dependencies = [
  "svgtypes",
  "tiny-skia",
  "usvg",
-]
-
-[[package]]
-name = "retry"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9166d72162de3575f950507683fac47e30f6f2c3836b71b7fbc61aa517c9c5f4"
-dependencies = [
- "rand 0.8.5",
 ]
 
 [[package]]

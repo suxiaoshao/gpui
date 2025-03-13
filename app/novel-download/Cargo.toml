@@ -17,7 +17,6 @@ reqwest = { version = "0.12.12", features = [
     "rustls-tls",
     "charset",
 ], default-features = false }
-retry = "2.0.0"
 
 # parser
 nom = "8.0.0"
