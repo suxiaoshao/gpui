@@ -1,4 +1,5 @@
 use gpui::*;
+use gpui_component::ActiveTheme;
 
 use super::{fetch::FetchView, query::QueryView};
 
@@ -25,17 +26,19 @@ pub(crate) struct WorkspaceView {
     focus_handle: FocusHandle,
     fetch_view: Entity<FetchView>,
     query_view: Entity<QueryView>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl WorkspaceView {
-    pub(crate) fn new(workspace_cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, workspace_cx: &mut Context<Self>) -> Self {
         let workspace = workspace_cx.new(|_cx| Default::default());
-        workspace_cx.subscribe(&workspace, Self::subscribe).detach();
+        let _subscriptions = vec![workspace_cx.subscribe(&workspace, Self::subscribe)];
         Self {
             focus_handle: workspace_cx.focus_handle(),
-            fetch_view: workspace_cx.new(|cx| FetchView::new(workspace.clone(), cx)),
+            fetch_view: workspace_cx.new(|cx| FetchView::new(window, workspace.clone(), cx)),
             query_view: workspace_cx.new(|cx| QueryView::new(workspace.clone(), cx)),
             workspace,
+            _subscriptions,
         }
     }
     fn child_view(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
@@ -62,17 +65,15 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<theme::Theme>();
+        let theme = cx.theme();
         div()
             .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
-            .bg(theme.bg_color())
+            .bg(theme.background)
             .size_full()
             .shadow_lg()
             .border_1()
-            .text_color(theme.text_color())
-            .text_size(theme.base_fontsize())
             .child(self.child_view(cx))
     }
 }

@@ -1,16 +1,20 @@
-use async_compat::Compat;
-use futures::AsyncWriteExt;
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
-    ActiveTheme, StyledExt, button::Button, input::TextInput, label::Label, link::Link,
-};
-use smol::fs::{File, OpenOptions};
-use tracing::{Instrument, Level, event};
-
 use crate::{
     crawler::{ContentItem, Fetch, NovelBaseData},
     errors::{NovelError, NovelResult},
 };
+use async_compat::Compat;
+use futures::AsyncWriteExt;
+use gpui::{prelude::FluentBuilder, *};
+use gpui_component::{
+    ActiveTheme, StyledExt,
+    button::Button,
+    input::{Input, InputState},
+    label::Label,
+    link::Link,
+};
+use smol::fs::{File, OpenOptions};
+use tracing::{Instrument, Level, event};
+
 enum WorkspaceEvent {
     Send(String),
     FetchFileError,
@@ -79,21 +83,21 @@ impl Workspace {
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
-struct Runner {
+struct Runner<'a> {
     novel_id: String,
     workspace: Entity<Workspace>,
-    cx: AsyncApp,
+    cx: &'a mut AsyncApp,
 }
 
-impl Runner {
+impl Runner<'_> {
     fn emit(&mut self, event: WorkspaceEvent) {
-        if let Err(_err) = self.workspace.update(&mut self.cx, |_, cx| cx.emit(event)) {
+        if let Err(_err) = self.workspace.update(self.cx, |_, cx| cx.emit(event)) {
             event!(Level::ERROR, "Failed to emit event");
         }
     }
 }
 
-impl Fetch for Runner {
+impl Fetch for Runner<'_> {
     type BaseData = File;
     fn on_start(&mut self) -> NovelResult<()> {
         event!(Level::INFO, "Starting fetch");
@@ -159,7 +163,7 @@ impl Fetch for Runner {
 }
 
 pub struct WorkspaceView {
-    input: Entity<TextInput>,
+    input: Entity<InputState>,
     workspace: Entity<Workspace>,
     focus_handle: FocusHandle,
 }
@@ -169,7 +173,7 @@ impl WorkspaceView {
         let workspce = cx.new(|_| Workspace::default());
         cx.subscribe(&workspce, Self::subscribe).detach();
         Self {
-            input: cx.new(|cx| TextInput::new(window, cx)),
+            input: cx.new(|cx| InputState::new(window, cx)),
             workspace: workspce,
             focus_handle: cx.focus_handle(),
         }
@@ -229,7 +233,7 @@ impl WorkspaceView {
         cx.notify();
     }
     fn fetch(&mut self, subscriber: Entity<Workspace>, cx: &mut Context<Self>, novel_id: String) {
-        let task = cx.spawn(|_, cx| {
+        let task = cx.spawn(async move |_, cx| {
             let mut runner = Runner {
                 novel_id: novel_id.clone(),
                 workspace: subscriber,
@@ -239,6 +243,7 @@ impl WorkspaceView {
                 let span = tracing::info_span!("send", novel_id);
                 runner.fetch().instrument(span).await
             })
+            .await
         });
         task.detach();
     }
@@ -256,14 +261,14 @@ impl Render for WorkspaceView {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
-                div().h_flex().gap_1().child(self.input.clone()).child(
+                div().h_flex().gap_1().child(Input::new(&self.input)).child(
                     Button::new("send")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.workspace.update(cx, |_data, cx| {
                                 let text = this.input.read(cx).text();
                                 cx.emit(WorkspaceEvent::Send(text.to_string()));
                                 this.input.update(cx, |this, cx| {
-                                    this.set_text("", window, cx);
+                                    this.set_value("", window, cx);
                                 });
                                 this.focus_handle.focus(window);
                             });

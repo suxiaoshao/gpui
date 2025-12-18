@@ -1,40 +1,60 @@
-use components::TextInput;
 use gpui::*;
+use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::http_form::{HttpForm, HttpFormEvent};
 
 pub struct UrlInput {
-    input: Entity<TextInput>,
+    input: Entity<InputState>,
     form: Entity<HttpForm>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl UrlInput {
-    pub fn new(http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
-        let on_url_change = cx.listener(|this: &mut UrlInput, data: &SharedString, _, cx| {
-            this.form.update(cx, |_data, cx| {
-                cx.emit(HttpFormEvent::SetUrl(data.to_string()))
-            });
+    pub fn new(window: &mut Window, http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("")
+                .placeholder("Url")
         });
-        cx.subscribe(&http_form, Self::subscribe).detach();
+        let input_subscription =
+            cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    let text = state.read(cx).value();
+                    this.form.update(cx, |_data, cx| {
+                        cx.emit(HttpFormEvent::SetUrl(text.to_string()))
+                    });
+                }
+            });
+
+        let _subscriptions = vec![
+            cx.subscribe_in(&http_form, window, Self::subscribe),
+            input_subscription,
+        ];
         Self {
             form: http_form,
-            input: cx.new(|cx| TextInput::new(cx, "".to_string(), "Url").on_change(on_url_change)),
+            input,
+            _subscriptions,
         }
     }
     fn subscribe(
         &mut self,
-        _subscriber: Entity<HttpForm>,
+        _subscriber: &Entity<HttpForm>,
         emitter: &HttpFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let HttpFormEvent::SetUrlByParams(url) = emitter {
-            self.input = cx.new(|cx| TextInput::new(cx, url.clone(), "Url"));
+            self.input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(url)
+                    .placeholder("Url")
+            });
         };
     }
 }
 
 impl Render for UrlInput {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.input.clone()
+        Input::new(&self.input)
     }
 }

@@ -1,11 +1,10 @@
-use components::button;
-use gpui::*;
-use tags_select::TagsSelect;
-
 use super::{
-    workspace::{RouterType, WorkspaceEvent},
     Workspace,
+    workspace::{RouterType, WorkspaceEvent},
 };
+use gpui::*;
+use gpui_component::button::{Button, ButtonVariants};
+use tags_select::TagsSelect;
 
 mod tags_select;
 
@@ -27,16 +26,21 @@ impl QueryView {
 impl Render for QueryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h_full()
-            .w_full()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_1()
             .child(
-                button("router-fetch")
-                    .child("fetch")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.workspace.update(cx, |_data, cx| {
-                            cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
-                        });
-                    })),
+                div().flex().child(
+                    Button::new("router-fetch")
+                        .primary()
+                        .label("fetch")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.workspace.update(cx, |_data, cx| {
+                                cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
+                            });
+                        })),
+                ),
             )
             .child(self.tag_select_view.clone())
     }

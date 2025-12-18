@@ -1,5 +1,4 @@
-use diesel::{QueryDsl, SqliteConnection};
-
+use super::super::schema::novel;
 use crate::{
     errors::FeiwenResult,
     store::{
@@ -8,9 +7,8 @@ use crate::{
         types::{Author, NovelCount, Title},
     },
 };
-
-use super::super::schema::novel;
 use diesel::prelude::*;
+use diesel::{QueryDsl, SqliteConnection};
 
 #[derive(Insertable, Queryable)]
 #[diesel(table_name = novel)]

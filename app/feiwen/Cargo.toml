@@ -6,29 +6,28 @@ edition = "2024"
 [dependencies]
 # ui
 gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
 smallvec.workspace = true
 
-theme = { path = "../../common/theme" }
-components = { path = "../../common/components" }
-
 # err
-thiserror = "2.0.12"
+thiserror = "2.0.17"
 
 # http
-reqwest = "0.12.12"
-async-compat = "0.2.4"
+reqwest = "0.12.25"
+async-compat = "0.2.5"
 
 # html
-scraper = "0.23.1"
+scraper = "0.25.0"
 nom = "8.0.0"
-
-url = "2.5.4"
+regex = "1.12.2"
+url = "2.5.7"
 
 # database
-diesel = { version = "2.2.8", features = ["sqlite", "r2d2"] }
-libsqlite3-sys = { version = "0.31.0", features = ["bundled"] }
-time = { version = "0.3.39", features = ["local-offset"] }
+diesel = { version = "2.3.4", features = ["sqlite", "r2d2"] }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
+time = { version = "0.3.44", features = ["local-offset"] }
 dirs-next = "2.0.0"
 
 [dev-dependencies]
-anyhow = "1.0.97"
+anyhow = "1.0.100"

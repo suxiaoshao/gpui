@@ -1,28 +1,29 @@
-use async_compat::Compat;
-use components::{button, input_border, IntInput, TextInput};
-use diesel::{
-    r2d2::{ConnectionManager, PooledConnection},
-    SqliteConnection,
+use super::{
+    Workspace,
+    workspace::{RouterType, WorkspaceEvent},
 };
-use gpui::*;
-use prelude::FluentBuilder;
-use theme::Theme;
-
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     fetch::{self, FetchRunner},
-    store::{service::Novel, Db},
+    store::{Db, service::Novel},
 };
-
-use super::{
-    workspace::{RouterType, WorkspaceEvent},
-    Workspace,
+use async_compat::Compat;
+use diesel::{
+    SqliteConnection,
+    r2d2::{ConnectionManager, PooledConnection},
 };
+use gpui::*;
+use gpui_component::{
+    button::Button,
+    input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
+};
+use prelude::FluentBuilder;
+use regex::Regex;
 
 enum FetchFormEvent {
     SetUrl(String),
     SetStartPage(u32),
-    SetEedPage(u32),
+    SetEndPage(u32),
     SetCookie(String),
     StartFetch,
     FetchDbError,
@@ -89,17 +90,17 @@ impl FetchForm {
     }
 }
 
-struct Runner {
+struct Runner<'a> {
     url: String,
     start_page: u32,
     end_page: u32,
     cookie: String,
     form: Entity<FetchForm>,
     conn: PooledConnection<ConnectionManager<SqliteConnection>>,
-    cx: AsyncApp,
+    cx: &'a mut AsyncApp,
 }
 
-impl fetch::FetchRunner for Runner {
+impl fetch::FetchRunner for Runner<'_> {
     fn get_url(&self) -> &str {
         &self.url
     }
@@ -130,7 +131,7 @@ impl fetch::FetchRunner for Runner {
     }
 }
 
-impl Runner {
+impl Runner<'_> {
     async fn run(&mut self) {
         self.on_start();
         match self.fetch().await {
@@ -188,7 +189,7 @@ impl Runner {
         });
     }
     fn form_emit(&mut self, event: FetchFormEvent) {
-        if let Err(_err) = self.form.update(&mut self.cx, |_, cx| cx.emit(event)) {
+        if let Err(_err) = self.form.update(self.cx, |_, cx| cx.emit(event)) {
             // todo log
         }
     }
@@ -196,48 +197,173 @@ impl Runner {
 
 impl EventEmitter<FetchFormEvent> for FetchForm {}
 
-#[derive(Clone)]
 pub(crate) struct FetchView {
     workspace: Entity<Workspace>,
-    url_input: Entity<TextInput>,
-    start_page: Entity<IntInput>,
-    end_page: Entity<IntInput>,
-    cookie_input: Entity<TextInput>,
+    url_input: Entity<InputState>,
+    start_page: Entity<InputState>,
+    end_page: Entity<InputState>,
+    cookie_input: Entity<InputState>,
     form: Entity<FetchForm>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl FetchView {
-    pub(crate) fn new(workspace: Entity<Workspace>, cx: &mut Context<Self>) -> Self {
-        let url_on_change = cx.listener(|this, data: &SharedString, _window, cx| {
-            this.form.update(cx, |_form, cx| {
-                cx.emit(FetchFormEvent::SetUrl(data.to_string()));
-            });
+    pub(crate) fn new(
+        window: &mut Window,
+        workspace: Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let integer_regex = Regex::new(r"^\d+$").unwrap();
+        let mut _subscriptions = vec![];
+        let url_input = cx.new(|cx| InputState::new(window, cx).placeholder("Url"));
+        let start_page = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Start Page")
+                .pattern(integer_regex.clone())
         });
-        let cookie_on_change = cx.listener(|this, data: &SharedString, _window, cx| {
-            this.form.update(cx, |_form, cx| {
-                cx.emit(FetchFormEvent::SetCookie(data.to_string()));
-            });
+        let end_page = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("End Page")
+                .pattern(integer_regex)
         });
-        let start_page_on_change = cx.listener(|this, data: &u32, _window, cx| {
-            this.form.update(cx, |_form, cx| {
-                cx.emit(FetchFormEvent::SetStartPage(*data));
-            });
-        });
-        let end_page_on_change = cx.listener(|this, data: &u32, _window, cx| {
-            this.form.update(cx, |_form, cx| {
-                cx.emit(FetchFormEvent::SetEedPage(*data));
-            });
-        });
+        let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder("Cookie"));
+
+        _subscriptions.push(cx.subscribe_in(
+            &url_input,
+            window,
+            |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value();
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetUrl(text.to_string()));
+                    });
+                }
+                InputEvent::PressEnter { .. } => {
+                    view.start_page.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
+            &start_page,
+            window,
+            |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value();
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetStartPage(text.parse().unwrap_or(1)));
+                    });
+                }
+                InputEvent::PressEnter { .. } => {
+                    view.end_page.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
+            &start_page,
+            window,
+            |view, state, event, window, cx| match event {
+                NumberInputEvent::Step(StepAction::Decrement) => {
+                    let start_page = match view.form.read(cx).start_page {
+                        0 => 0,
+                        n => n - 1,
+                    };
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetStartPage(start_page));
+                    });
+                    state.update(cx, |input, cx| {
+                        input.set_value(start_page.to_string(), window, cx);
+                    });
+                }
+                NumberInputEvent::Step(StepAction::Increment) => {
+                    let start_page = view.form.read(cx).start_page + 1;
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetStartPage(start_page));
+                    });
+                    state.update(cx, |input, cx| {
+                        input.set_value(start_page.to_string(), window, cx);
+                    });
+                }
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
+            &end_page,
+            window,
+            |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value();
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetEndPage(text.parse().unwrap_or(1)));
+                    });
+                }
+                InputEvent::PressEnter { .. } => {
+                    view.cookie_input.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
+            &end_page,
+            window,
+            |view, state, event, window, cx| match event {
+                NumberInputEvent::Step(StepAction::Decrement) => {
+                    let end_page = match view.form.read(cx).end_page {
+                        0 => 0,
+                        n => n - 1,
+                    };
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetEndPage(end_page));
+                    });
+                    state.update(cx, |input, cx| {
+                        input.set_value(end_page.to_string(), window, cx);
+                    });
+                }
+                NumberInputEvent::Step(StepAction::Increment) => {
+                    let end_page = view.form.read(cx).end_page + 1;
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetEndPage(end_page));
+                    });
+                    state.update(cx, |input, cx| {
+                        input.set_value(end_page.to_string(), window, cx);
+                    });
+                }
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
+            &cookie_input,
+            window,
+            |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value();
+                    view.form.update(cx, |_form, cx| {
+                        cx.emit(FetchFormEvent::SetCookie(text.to_string()));
+                    });
+                }
+                InputEvent::PressEnter { .. } => {
+                    view.url_input.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        ));
         let form = cx.new(|_cx| Default::default());
-        cx.subscribe(&form, Self::subscribe).detach();
+        _subscriptions.push(cx.subscribe(&form, Self::subscribe));
         Self {
             workspace,
-            url_input: cx.new(|cx| TextInput::new(cx, "", "Url").on_change(url_on_change)),
-            start_page: cx
-                .new(|cx| IntInput::new(cx, 0, "Start Page").on_change(start_page_on_change)),
-            end_page: cx.new(|cx| IntInput::new(cx, 0, "End Page").on_change(end_page_on_change)),
-            cookie_input: cx.new(|cx| TextInput::new(cx, "", "Cookie").on_change(cookie_on_change)),
+            url_input,
+            start_page,
+            end_page,
+            cookie_input,
             form,
+            _subscriptions,
         }
     }
     fn subscribe(
@@ -257,7 +383,7 @@ impl FetchView {
                     data.start_page = *start_page;
                 });
             }
-            FetchFormEvent::SetEedPage(end_page) => {
+            FetchFormEvent::SetEndPage(end_page) => {
                 subscriber.update(cx, |data, _cx| {
                     data.end_page = *end_page;
                 });
@@ -331,7 +457,7 @@ impl FetchView {
         let end_page = form.end_page;
         let cookie = form.cookie.clone();
         let form = subscriber.clone();
-        let task = cx.spawn(|_, cx| {
+        let task = cx.spawn(async move |_, cx| {
             let mut runner = Runner {
                 conn,
                 url,
@@ -341,7 +467,7 @@ impl FetchView {
                 form,
                 cx,
             };
-            Compat::new(async move { runner.run().await })
+            Compat::new(async move { runner.run().await }).await
         });
         task.detach();
     }
@@ -349,7 +475,6 @@ impl FetchView {
 
 impl Render for FetchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
         let state_element = self.form.read(cx).render_state();
         div()
             .h_full()
@@ -362,15 +487,15 @@ impl Render for FetchView {
                     .flex_row()
                     .justify_between()
                     .child(
-                        button("router-query")
-                            .child("Go query")
+                        Button::new("router-query")
+                            .label("Go query")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.workspace.update(cx, |_data, cx| {
                                     cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Query));
                                 });
                             })),
                     )
-                    .child(button("fetch").child("Fetch").on_click(cx.listener(
+                    .child(Button::new("fetch").label("Fetch").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.form.update(cx, |_data, cx| {
                                 cx.emit(FetchFormEvent::StartFetch);
@@ -385,10 +510,10 @@ impl Render for FetchView {
                     .flex_col()
                     .p_1()
                     .gap_1()
-                    .child(input_border(theme).child(self.url_input.clone()))
-                    .child(input_border(theme).child(self.start_page.clone()))
-                    .child(input_border(theme).child(self.end_page.clone()))
-                    .child(input_border(theme).child(self.cookie_input.clone()))
+                    .child(Input::new(&self.url_input).flex_initial())
+                    .child(NumberInput::new(&self.start_page).flex_initial())
+                    .child(NumberInput::new(&self.end_page).flex_initial())
+                    .child(Input::new(&self.cookie_input).flex_initial())
                     .when_some(state_element, |this, element| this.child(element)),
             )
     }

@@ -1,7 +1,7 @@
-use std::{fs::create_dir_all, path::PathBuf};
-
 use errors::{NovelError, NovelResult};
 use gpui::*;
+use gpui_component::Root;
+use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{
     Layer,
@@ -37,10 +37,10 @@ fn get_logs_dir() -> NovelResult<PathBuf> {
         .ok_or(NovelError::LogFileNotFound)
         .map(|dir| dir.join(APP_NAME).join("logs"));
 
-    if let Ok(path) = &path {
-        if !path.exists() {
-            create_dir_all(path).map_err(|_| NovelError::LogFileNotFound)?;
-        }
+    if let Ok(path) = &path
+        && !path.exists()
+    {
+        create_dir_all(path).map_err(|_| NovelError::LogFileNotFound)?;
     }
     path
 }
@@ -69,7 +69,8 @@ fn main() -> NovelResult<()> {
         .init();
     let span = tracing::info_span!("init");
     let _enter = span.enter();
-    let app = Application::new();
+
+    let app = Application::new().with_assets(gpui_component_assets::Assets);
     event!(Level::INFO, "app created");
 
     app.run(move |cx| {
@@ -82,7 +83,10 @@ fn main() -> NovelResult<()> {
                 }),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
+            |window, cx| {
+                let view = cx.new(|cx| WorkspaceView::new(window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
         ) {
             event!(Level::ERROR, "{}", err)
         };

@@ -1,11 +1,10 @@
 use gpui::*;
-use smallvec::smallvec;
 use theme::ElevationColor;
 
 pub fn input_border(theme: &theme::Theme) -> Div {
     div()
         .rounded_md()
-        .shadow(smallvec![
+        .shadow(vec![
             BoxShadow {
                 color: hsla(0., 0., 0., 0.12),
                 offset: point(px(0.), px(2.)),

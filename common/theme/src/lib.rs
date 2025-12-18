@@ -1,11 +1,9 @@
+use gpui::{AbsoluteLength, Rgba, px};
+use material_colors::{color::Argb, palette::TonalPalette, theme::ThemeBuilder};
 use std::{
     ops::{Deref, DerefMut},
     str::FromStr,
 };
-
-use gpui::{px, AbsoluteLength, Rgba};
-use material_colors::{color::Argb, palette::TonalPalette, theme::ThemeBuilder};
-
 mod elevation;
 
 pub use elevation::ElevationColor;

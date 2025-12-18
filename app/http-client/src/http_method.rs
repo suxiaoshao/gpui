@@ -1,7 +1,10 @@
-use components::{button, SelectItem, SelectList};
 use gpui::*;
+use gpui_component::{
+    IndexPath,
+    select::{SelectDelegate, SelectItem},
+};
 
-use crate::http_form::{HttpForm, HttpFormEvent};
+use crate::http_form::HttpForm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
@@ -47,20 +50,35 @@ impl HttpMethod {
 impl SelectItem for HttpMethod {
     type Value = HttpMethod;
 
-    fn value(&self) -> Self::Value {
-        *self
+    fn title(&self) -> SharedString {
+        self.as_str().into()
     }
 
-    fn display_item(&self) -> impl IntoElement {
-        self.as_str()
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
+impl SelectDelegate for SelectHttpMethod {
+    type Item = HttpMethod;
+
+    fn items_count(&self, _section: usize) -> usize {
+        HttpMethod::ALL.len()
     }
 
-    fn id(&self) -> ElementId {
-        ElementId::Name(self.as_str().into())
+    fn item(&self, ix: gpui_component::IndexPath) -> Option<&Self::Item> {
+        HttpMethod::ALL.get(ix.row)
     }
 
-    fn label(&self) -> String {
-        self.as_str().to_string()
+    fn position<V>(&self, value: &V) -> Option<gpui_component::IndexPath>
+    where
+        Self::Item: gpui_component::select::SelectItem<Value = V>,
+        V: PartialEq,
+    {
+        HttpMethod::ALL
+            .iter()
+            .position(|v| v.value() == value)
+            .map(|ix| IndexPath::default().row(ix))
     }
 }
 
@@ -72,58 +90,5 @@ pub struct SelectHttpMethod {
 impl SelectHttpMethod {
     pub fn new(http_form: WeakEntity<HttpForm>) -> Self {
         Self { http_form }
-    }
-    pub fn selected(&self, cx: &mut App) -> HttpMethod {
-        self.http_form
-            .read_with(cx, |data, _cx| data.http_method)
-            .unwrap_or_default()
-    }
-}
-
-impl SelectList for SelectHttpMethod {
-    type Item = HttpMethod;
-
-    type Value = HttpMethod;
-
-    fn items(&self) -> impl IntoIterator<Item = Self::Item> {
-        HttpMethod::ALL
-    }
-
-    fn select(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut App,
-        value: &<Self::Item as SelectItem>::Value,
-    ) {
-        if let Err(_err) = self
-            .http_form
-            .update(cx, |_data, cx| cx.emit(HttpFormEvent::SetMethod(*value)))
-        {
-            // todo log
-        };
-    }
-
-    fn get_select_item(&self, _window: &mut Window, cx: &mut App) -> Self::Item {
-        self.http_form
-            .read_with(cx, |data, _cx| data.http_method)
-            .unwrap_or_default()
-    }
-
-    fn trigger_element(
-        &self,
-        _window: &mut Window,
-        cx: &mut App,
-        func: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
-        let http_method = self.selected(cx);
-        button(http_method.as_str())
-            .on_click(move |event, window, cx| {
-                func(event, window, cx);
-            })
-            .rounded_r(rems(0.0))
-            .flex()
-            .w(px(100.0))
-            .items_center()
-            .child(http_method.as_str())
     }
 }

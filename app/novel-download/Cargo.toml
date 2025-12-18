@@ -6,13 +6,14 @@ edition = "2024"
 [dependencies]
 # ui
 gpui.workspace = true
-gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
 
 # error
-thiserror = "2.0.12"
+thiserror = "2.0.17"
 
 # http
-reqwest = { version = "0.12.12", features = [
+reqwest = { version = "0.12.25", features = [
     "gzip",
     "rustls-tls",
     "charset",
@@ -20,21 +21,21 @@ reqwest = { version = "0.12.12", features = [
 
 # parser
 nom = "8.0.0"
-scraper = "0.23.1"
+scraper = "0.25.0"
 
 # async
 futures = "0.3.31"
 async-stream = "0.3.6"
-async-compat = "0.2.4"
+async-compat = "0.2.5"
 
 # path
 dirs-next = "2.0.0"
 smol = "2.0.2"
 
 # log
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["local-time"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 
 [dev-dependencies]
-anyhow = "1.0.97"
-tokio = { version = "1.44.0", default-features = false, features = ["macros"] }
+anyhow = "1.0.100"
+tokio = { version = "1.48.0", default-features = false, features = ["macros"] }

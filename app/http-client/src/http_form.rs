@@ -1,13 +1,14 @@
-use components::{button, Select, Tab};
-use gpui::*;
-use smallvec::smallvec;
-use theme::ElevationColor;
-
 use crate::{
     http_headers::HttpHeader,
     http_method::{HttpMethod, SelectHttpMethod},
     http_tab::HttpTabView,
     url_input::UrlInput,
+};
+use gpui::*;
+use gpui_component::{
+    IndexPath,
+    button::Button,
+    select::{Select, SelectState},
 };
 
 pub enum HttpFormEvent {
@@ -44,23 +45,32 @@ impl EventEmitter<HttpFormEvent> for HttpForm {}
 
 pub struct HttpFormView {
     form: Entity<HttpForm>,
-    http_method_select: Entity<Select<SelectHttpMethod>>,
-    http_tab: Entity<Tab<HttpTabView>>,
+    http_method_select: Entity<SelectState<SelectHttpMethod>>,
+    http_tab: Entity<HttpTabView>,
     url_input: Entity<UrlInput>,
     focus_handle: FocusHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl HttpFormView {
-    pub fn new(form_cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, form_cx: &mut Context<Self>) -> Self {
         let form = form_cx.new(|_cx| HttpForm::new());
-        form_cx.subscribe(&form, Self::subscribe).detach();
+        let _subscriptions = vec![form_cx.subscribe(&form, Self::subscribe)];
         let weak_form = form.downgrade();
         Self {
-            url_input: form_cx.new(|cx| UrlInput::new(form.clone(), cx)),
-            http_tab: form_cx.new(|cx| Tab::new(HttpTabView::new(form.clone(), cx))),
+            url_input: form_cx.new(|cx| UrlInput::new(window, form.clone(), cx)),
+            http_tab: form_cx.new(|cx| HttpTabView::new(form.clone(), window, cx)),
             form,
-            http_method_select: form_cx.new(|cx| Select::new(SelectHttpMethod::new(weak_form), cx)),
+            http_method_select: form_cx.new(|cx| {
+                SelectState::new(
+                    SelectHttpMethod::new(weak_form),
+                    Some(IndexPath::default()),
+                    window,
+                    cx,
+                )
+            }),
             focus_handle: form_cx.focus_handle(),
+            _subscriptions,
         }
     }
     fn subscribe(
@@ -112,17 +122,14 @@ impl HttpFormView {
 
 impl Render for HttpFormView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<theme::Theme>();
-        let send_button = button("Send")
-            .child("Send")
-            .bg(theme.button_bg_color())
-            .text_color(theme.button_color())
-            .rounded_md()
-            .on_click(cx.listener(|this, _event, _, cx| {
-                this.form.update(cx, |_, cx| {
-                    cx.emit(HttpFormEvent::Send);
-                });
-            }));
+        let send_button =
+            Button::new("Send")
+                .label("Send")
+                .on_click(cx.listener(|this, _event, _, cx| {
+                    this.form.update(cx, |_, cx| {
+                        cx.emit(HttpFormEvent::Send);
+                    });
+                }));
         let header = div()
             .flex()
             .gap_2()
@@ -134,8 +141,7 @@ impl Render for HttpFormView {
                     .flex()
                     .items_center()
                     .flex_1()
-                    .rounded_md()
-                    .shadow(smallvec![
+                    .shadow(vec![
                         BoxShadow {
                             color: hsla(0., 0., 0., 0.12),
                             offset: point(px(0.), px(2.)),
@@ -155,15 +161,10 @@ impl Render for HttpFormView {
                             spread_radius: px(0.),
                         },
                     ])
-                    .border(px(0.5))
-                    .border_color(theme.divider_color())
-                    .bg(theme.bg_color().elevation_color(3.0))
-                    .child(self.http_method_select.clone())
                     .child(
                         div()
-                            .h(DefiniteLength::Fraction(0.8))
-                            .w(px(1.0))
-                            .bg(theme.divider_color()),
+                            .flex_initial()
+                            .child(Select::new(&self.http_method_select)),
                     )
                     .child(div().flex_1().child(self.url_input.clone())),
             )
@@ -172,11 +173,9 @@ impl Render for HttpFormView {
             .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
-            .bg(theme.bg_color())
             .size_full()
             .shadow_lg()
             .border_1()
-            .text_color(theme.text_color())
             .child(header)
             .child(self.http_tab.clone())
     }

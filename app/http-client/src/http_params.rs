@@ -1,16 +1,15 @@
-use components::TextInput;
-use gpui::*;
-use theme::Theme;
-use url::Url;
-
 use crate::{
     errors::HttpClientResult,
     http_form::{HttpForm, HttpFormEvent},
 };
+use gpui::*;
+use gpui_component::input::{Input, InputState};
+use url::Url;
 
 pub struct HttpParams {
     pub http_form: Entity<HttpForm>,
-    inputs: Vec<(Entity<TextInput>, Entity<TextInput>)>,
+    inputs: Vec<(Entity<InputState>, Entity<InputState>)>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl HttpParams {
@@ -39,42 +38,46 @@ impl HttpParams {
             });
         }
     }
-    pub fn new(http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
+    pub fn new(http_form: Entity<HttpForm>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url = http_form.read(cx);
         let url = url.url.clone();
-        cx.subscribe(&http_form, Self::subscribe).detach();
-        let inputs = Self::get_inputs(&url, cx);
-        Self { http_form, inputs }
+        let _subscriptions = vec![cx.subscribe_in(&http_form, window, Self::subscribe)];
+        let inputs = Self::get_inputs(&url, window, cx);
+        Self {
+            http_form,
+            inputs,
+            _subscriptions,
+        }
     }
+
     fn subscribe(
         &mut self,
-        _subscriber: Entity<HttpForm>,
+        _subscriber: &Entity<HttpForm>,
         emitter: &HttpFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let HttpFormEvent::SetUrl(url) = emitter {
-            self.inputs = Self::get_inputs(url, cx);
+            self.inputs = Self::get_inputs(url, window, cx);
         };
     }
     fn get_inputs(
         url: &str,
+        window: &mut Window,
         params_cx: &mut Context<Self>,
-    ) -> Vec<(Entity<TextInput>, Entity<TextInput>)> {
+    ) -> Vec<(Entity<InputState>, Entity<InputState>)> {
         let mut inputs = vec![];
         if let Ok(url) = Url::parse(url) {
-            for (index, (key, value)) in url.query_pairs().enumerate() {
-                let on_key_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, _, cx| {
-                        this.set_url(index, true, data, cx);
-                    });
-                let on_value_change =
-                    params_cx.listener(move |this: &mut HttpParams, data: &SharedString, _, cx| {
-                        this.set_url(index, false, data, cx);
-                    });
-                let key_input = params_cx
-                    .new(|cx| TextInput::new(cx, key.to_string(), "Key").on_change(on_key_change));
+            for (key, value) in url.query_pairs() {
+                let key_input = params_cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(key.to_string())
+                        .placeholder("Key")
+                });
                 let value_input = params_cx.new(|cx| {
-                    TextInput::new(cx, value.to_string(), "Value").on_change(on_value_change)
+                    InputState::new(window, cx)
+                        .default_value(value.to_string())
+                        .placeholder("Value")
                 });
                 inputs.push((key_input, value_input));
             }
@@ -84,27 +87,23 @@ impl HttpParams {
 }
 
 impl Render for HttpParams {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-        let divider_color = theme.divider_color();
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut element = div().p_2().gap_1().child(
             div()
                 .gap_1()
                 .flex()
                 .flex_row()
                 .child(div().flex_1().child("Key"))
-                .child(div().bg(divider_color).w(px(1.0)))
                 .child(div().flex_1().child("Value")),
         );
         for (key_input, value_input) in &self.inputs {
-            element = element.child(div().bg(divider_color).h(px(1.0))).child(
+            element = element.h(px(1.0)).child(
                 div()
                     .gap_1()
                     .flex()
                     .flex_row()
-                    .child(div().flex_1().child(key_input.clone()))
-                    .child(div().bg(divider_color).w(px(1.0)))
-                    .child(div().flex_1().child(value_input.clone())),
+                    .child(div().flex_1().child(Input::new(key_input)))
+                    .child(div().flex_1().child(Input::new(value_input))),
             )
         }
         element
