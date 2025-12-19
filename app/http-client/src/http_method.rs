@@ -4,8 +4,6 @@ use gpui_component::{
     select::{SelectDelegate, SelectItem},
 };
 
-use crate::http_form::HttpForm;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
     #[default]
@@ -83,12 +81,4 @@ impl SelectDelegate for SelectHttpMethod {
 }
 
 #[derive(Clone)]
-pub struct SelectHttpMethod {
-    pub http_form: WeakEntity<HttpForm>,
-}
-
-impl SelectHttpMethod {
-    pub fn new(http_form: WeakEntity<HttpForm>) -> Self {
-        Self { http_form }
-    }
-}
+pub struct SelectHttpMethod;

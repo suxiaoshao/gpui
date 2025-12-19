@@ -14,7 +14,7 @@ smallvec.workspace = true
 thiserror = "2.0.17"
 
 # http
-reqwest = "0.12.25"
+reqwest = "0.12.26"
 async-compat = "0.2.5"
 
 # html

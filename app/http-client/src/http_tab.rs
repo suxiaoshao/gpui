@@ -63,7 +63,7 @@ pub struct HttpTabView {
 impl HttpTabView {
     pub fn new(http_form: Entity<HttpForm>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
-            headers: cx.new(|cx| HttpHeadersView::new(window, http_form.clone(), cx)),
+            headers: cx.new(|_cx| HttpHeadersView::new(http_form.clone())),
             params: cx.new(|cx| HttpParams::new(http_form.clone(), window, cx)),
             tab: HttpTab::Params,
         }

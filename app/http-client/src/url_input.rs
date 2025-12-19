@@ -21,7 +21,7 @@ impl UrlInput {
                 if let InputEvent::Change = event {
                     let text = state.read(cx).value();
                     this.form.update(cx, |_data, cx| {
-                        cx.emit(HttpFormEvent::SetUrl(text.to_string()))
+                        cx.emit(HttpFormEvent::SetUrlByInput(text.to_string()))
                     });
                 }
             });
@@ -43,7 +43,7 @@ impl UrlInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let HttpFormEvent::SetUrlByParams(url) = emitter {
+        if let HttpFormEvent::SetUrlByParams(url) | HttpFormEvent::SetUrl(url) = emitter {
             self.input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(url)

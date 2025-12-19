@@ -72,8 +72,6 @@ impl Render for WorkspaceView {
             .flex_col()
             .bg(theme.background)
             .size_full()
-            .shadow_lg()
-            .border_1()
             .child(self.child_view(cx))
     }
 }

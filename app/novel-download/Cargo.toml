@@ -13,7 +13,7 @@ gpui-component-assets.workspace = true
 thiserror = "2.0.17"
 
 # http
-reqwest = { version = "0.12.25", features = [
+reqwest = { version = "0.12.26", features = [
     "gzip",
     "rustls-tls",
     "charset",

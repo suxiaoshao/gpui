@@ -8,27 +8,23 @@ use gpui::*;
 use gpui_component::{
     IndexPath,
     button::Button,
-    select::{Select, SelectState},
+    select::{Select, SelectEvent, SelectState},
 };
 
 pub enum HttpFormEvent {
     Send,
     SetUrl(String),
+    SetUrlByInput(String),
     SetMethod(HttpMethod),
     SetUrlByParams(String),
     AddHeader,
     DeleteHeader(usize),
-    SetHeaderIndex {
-        index: usize,
-        value: String,
-        is_key: bool,
-    },
 }
 
 pub struct HttpForm {
     pub http_method: HttpMethod,
     pub url: String,
-    pub headers: Vec<HttpHeader>,
+    pub headers: Vec<Entity<HttpHeader>>,
 }
 
 impl HttpForm {
@@ -55,35 +51,46 @@ pub struct HttpFormView {
 impl HttpFormView {
     pub fn new(window: &mut Window, form_cx: &mut Context<Self>) -> Self {
         let form = form_cx.new(|_cx| HttpForm::new());
-        let _subscriptions = vec![form_cx.subscribe(&form, Self::subscribe)];
-        let weak_form = form.downgrade();
+        let http_method_select = form_cx
+            .new(|cx| SelectState::new(SelectHttpMethod, Some(IndexPath::default()), window, cx));
+        let _subscriptions = vec![
+            form_cx.subscribe_in(&form, window, Self::subscribe),
+            form_cx.subscribe_in(
+                &http_method_select,
+                window,
+                |this, _state, event, _windoww, cx| {
+                    if let SelectEvent::Confirm(Some(method)) = event {
+                        this.form.update(cx, |_form, cx| {
+                            cx.emit(HttpFormEvent::SetMethod(*method));
+                        });
+                    }
+                },
+            ),
+        ];
+
         Self {
             url_input: form_cx.new(|cx| UrlInput::new(window, form.clone(), cx)),
             http_tab: form_cx.new(|cx| HttpTabView::new(form.clone(), window, cx)),
             form,
-            http_method_select: form_cx.new(|cx| {
-                SelectState::new(
-                    SelectHttpMethod::new(weak_form),
-                    Some(IndexPath::default()),
-                    window,
-                    cx,
-                )
-            }),
+            http_method_select,
             focus_handle: form_cx.focus_handle(),
             _subscriptions,
         }
     }
     fn subscribe(
         &mut self,
-        subscriber: Entity<HttpForm>,
+        subscriber: &Entity<HttpForm>,
         emitter: &HttpFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match emitter {
             HttpFormEvent::Send => {
                 // todo
             }
-            HttpFormEvent::SetUrl(url) | HttpFormEvent::SetUrlByParams(url) => {
+            HttpFormEvent::SetUrlByInput(url)
+            | HttpFormEvent::SetUrlByParams(url)
+            | HttpFormEvent::SetUrl(url) => {
                 subscriber.update(cx, |data, _cx| {
                     data.url.clone_from(url);
                 });
@@ -94,25 +101,14 @@ impl HttpFormView {
                 });
             }
             HttpFormEvent::AddHeader => {
-                subscriber.update(cx, |data, _cx| {
-                    data.headers.push(HttpHeader::default());
+                subscriber.update(cx, |data, cx| {
+                    data.headers.push(cx.new(|cx| HttpHeader::new(window, cx)));
                 });
             }
             HttpFormEvent::DeleteHeader(index) => {
                 subscriber.update(cx, |data, _cx| {
                     if *index < data.headers.len() {
                         data.headers.remove(*index);
-                    }
-                });
-            }
-            HttpFormEvent::SetHeaderIndex {
-                index,
-                value,
-                is_key,
-            } => {
-                subscriber.update(cx, |data, _cx| {
-                    if let Some(header) = data.headers.get_mut(*index) {
-                        header.set_value(*is_key, value.to_string());
                     }
                 });
             }
@@ -141,30 +137,10 @@ impl Render for HttpFormView {
                     .flex()
                     .items_center()
                     .flex_1()
-                    .shadow(vec![
-                        BoxShadow {
-                            color: hsla(0., 0., 0., 0.12),
-                            offset: point(px(0.), px(2.)),
-                            blur_radius: px(3.),
-                            spread_radius: px(0.),
-                        },
-                        BoxShadow {
-                            color: hsla(0., 0., 0., 0.08),
-                            offset: point(px(0.), px(3.)),
-                            blur_radius: px(6.),
-                            spread_radius: px(0.),
-                        },
-                        BoxShadow {
-                            color: hsla(0., 0., 0., 0.04),
-                            offset: point(px(0.), px(6.)),
-                            blur_radius: px(12.),
-                            spread_radius: px(0.),
-                        },
-                    ])
                     .child(
                         div()
                             .flex_initial()
-                            .child(Select::new(&self.http_method_select)),
+                            .child(Select::new(&self.http_method_select).w(px(100.))),
                     )
                     .child(div().flex_1().child(self.url_input.clone())),
             )
@@ -174,8 +150,6 @@ impl Render for HttpFormView {
             .flex()
             .flex_col()
             .size_full()
-            .shadow_lg()
-            .border_1()
             .child(header)
             .child(self.http_tab.clone())
     }
