@@ -40,6 +40,8 @@ pub(crate) enum FeiwenError {
     ReplyCountParse,
     #[error("count uint 解析错误,{}",.0)]
     CountUintParse(String),
+    #[error("log file not found")]
+    LogFileNotFound,
 }
 
 impl From<diesel::result::Error> for FeiwenError {

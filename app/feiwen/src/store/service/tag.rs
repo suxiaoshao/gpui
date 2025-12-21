@@ -1,11 +1,19 @@
 use diesel::SqliteConnection;
+use gpui::{IntoElement, ParentElement, RenderOnce};
+use gpui_component::tag::Tag as TagComponent;
 
 use crate::{errors::FeiwenResult, store::model::TagModel};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, IntoElement)]
 pub(crate) struct Tag {
     pub(crate) name: String,
     pub(crate) id: Option<i32>,
+}
+
+impl RenderOnce for Tag {
+    fn render(self, _window: &mut gpui::Window, _cx: &mut gpui::App) -> impl gpui::IntoElement {
+        TagComponent::primary().child(self.name)
+    }
 }
 
 #[derive(Clone)]

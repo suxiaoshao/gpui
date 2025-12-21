@@ -29,5 +29,9 @@ libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
 time = { version = "0.3.44", features = ["local-offset"] }
 dirs-next = "2.0.0"
 
+# log
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
+
 [dev-dependencies]
 anyhow = "1.0.100"

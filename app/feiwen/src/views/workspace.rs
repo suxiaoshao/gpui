@@ -1,5 +1,4 @@
 use gpui::*;
-use gpui_component::ActiveTheme;
 
 use super::{fetch::FetchView, query::QueryView};
 
@@ -36,7 +35,7 @@ impl WorkspaceView {
         Self {
             focus_handle: workspace_cx.focus_handle(),
             fetch_view: workspace_cx.new(|cx| FetchView::new(window, workspace.clone(), cx)),
-            query_view: workspace_cx.new(|cx| QueryView::new(workspace.clone(), cx)),
+            query_view: workspace_cx.new(|cx| QueryView::new(workspace.clone(), window, cx)),
             workspace,
             _subscriptions,
         }
@@ -65,12 +64,8 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         div()
             .track_focus(&self.focus_handle)
-            .flex()
-            .flex_col()
-            .bg(theme.background)
             .size_full()
             .child(self.child_view(cx))
     }

@@ -1,7 +1,10 @@
 use gpui::*;
 use gpui_component::tab::{Tab, TabBar};
 
-use crate::{http_form::HttpForm, http_headers::HttpHeadersView, http_params::HttpParams};
+use crate::{
+    http_body::HttpBodyView, http_form::HttpForm, http_headers::HttpHeadersView,
+    http_params::HttpParams,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpTab {
@@ -48,7 +51,7 @@ impl From<&HttpTabView> for AnyElement {
         match value.tab {
             HttpTab::Params => value.params.clone().into_any_element(),
             HttpTab::Headers => value.headers.clone().into_any_element(),
-            HttpTab::Body => div().child("Body").into_any_element(),
+            HttpTab::Body => value.body.clone().into_any_element(),
         }
     }
 }
@@ -58,6 +61,7 @@ pub struct HttpTabView {
     pub tab: HttpTab,
     params: Entity<HttpParams>,
     headers: Entity<HttpHeadersView>,
+    body: Entity<HttpBodyView>,
 }
 
 impl HttpTabView {
@@ -65,6 +69,7 @@ impl HttpTabView {
         Self {
             headers: cx.new(|_cx| HttpHeadersView::new(http_form.clone())),
             params: cx.new(|cx| HttpParams::new(http_form.clone(), window, cx)),
+            body: cx.new(|_cx| HttpBodyView::new()),
             tab: HttpTab::Params,
         }
     }

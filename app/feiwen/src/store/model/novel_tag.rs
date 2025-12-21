@@ -17,4 +17,9 @@ impl NovelTagModel {
             .execute(conn)?;
         Ok(())
     }
+    pub(in crate::store) fn get_all(conn: &mut SqliteConnection) -> FeiwenResult<Vec<Self>> {
+        use super::super::schema::novel_tag::dsl;
+        let data = dsl::novel_tag.load::<Self>(conn)?;
+        Ok(data)
+    }
 }

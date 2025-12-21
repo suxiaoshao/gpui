@@ -91,8 +91,8 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     fn emit(&mut self, event: WorkspaceEvent) {
-        if let Err(_err) = self.workspace.update(self.cx, |_, cx| cx.emit(event)) {
-            event!(Level::ERROR, "Failed to emit event");
+        if let Err(err) = self.workspace.update(self.cx, |_, cx| cx.emit(event)) {
+            event!(Level::ERROR, "Failed to emit event:{err}");
         }
     }
 }

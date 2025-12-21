@@ -1,3 +1,4 @@
+use gpui::{ParentElement, Render, div};
 pub use http_text::HttpText;
 pub use x_form::XForm;
 
@@ -19,3 +20,19 @@ pub struct HttpBodyForm {
 }
 
 pub struct HttpBodyView {}
+
+impl HttpBodyView {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Render for HttpBodyView {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        div().child("Body")
+    }
+}

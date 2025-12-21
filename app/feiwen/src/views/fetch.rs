@@ -19,6 +19,7 @@ use gpui_component::{
 };
 use prelude::FluentBuilder;
 use regex::Regex;
+use tracing::{Instrument, Level, event};
 
 enum FetchFormEvent {
     SetUrl(String),
@@ -138,42 +139,43 @@ impl Runner<'_> {
             Ok(_) => {
                 self.on_success();
             }
-            Err(err) => {
-                // todo log
-                match err {
-                    FeiwenError::Sqlite(_)
-                    | FeiwenError::Connection(_)
-                    | FeiwenError::Pool(_)
-                    | FeiwenError::GetConnection(_) => {
-                        self.form_emit(FetchFormEvent::FetchDbError);
-                    }
-                    FeiwenError::HeaderParse(_) | FeiwenError::Request(_) => {
-                        self.form_emit(FetchFormEvent::FetchNetworkError);
-                    }
-                    FeiwenError::DescParse
-                    | FeiwenError::HrefParse
-                    | FeiwenError::CountParse
-                    | FeiwenError::ReadCountParse
-                    | FeiwenError::WordCountParse
-                    | FeiwenError::AuthorNameParse
-                    | FeiwenError::NovelIdParse(_)
-                    | FeiwenError::AuthorIdParse(_)
-                    | FeiwenError::ChapterIdParse(_)
-                    | FeiwenError::ReplyCountParse
-                    | FeiwenError::CountUintParse(_) => {
-                        self.form_emit(FetchFormEvent::FetchParseError);
-                    }
-                    _ => {
-                        // todo log
-                    }
+            Err(err) => match err {
+                FeiwenError::Sqlite(_)
+                | FeiwenError::Connection(_)
+                | FeiwenError::Pool(_)
+                | FeiwenError::GetConnection(_) => {
+                    event!(Level::ERROR, "Failed to fetch database: {:?}", err);
+                    self.form_emit(FetchFormEvent::FetchDbError);
                 }
-            }
+                FeiwenError::HeaderParse(_) | FeiwenError::Request(_) => {
+                    event!(Level::ERROR, "Failed to fetch network: {:?}", err);
+                    self.form_emit(FetchFormEvent::FetchNetworkError);
+                }
+                FeiwenError::DescParse
+                | FeiwenError::HrefParse
+                | FeiwenError::CountParse
+                | FeiwenError::ReadCountParse
+                | FeiwenError::WordCountParse
+                | FeiwenError::AuthorNameParse
+                | FeiwenError::NovelIdParse(_)
+                | FeiwenError::AuthorIdParse(_)
+                | FeiwenError::ChapterIdParse(_)
+                | FeiwenError::ReplyCountParse
+                | FeiwenError::CountUintParse(_) => {
+                    event!(Level::ERROR, "Failed to fetch parse: {:?}", err);
+                    self.form_emit(FetchFormEvent::FetchParseError);
+                }
+                err => {
+                    event!(Level::ERROR, "Failed to fetch other: {:?}", err);
+                }
+            },
         };
     }
     fn on_success(&mut self) {
         self.form_emit(FetchFormEvent::FetchSuccess);
     }
     fn on_start(&mut self) {
+        event!(Level::INFO, "Start fetch");
         let total = match Novel::count(&mut self.conn) {
             Ok(data) => data,
             Err(_) => {
@@ -189,8 +191,8 @@ impl Runner<'_> {
         });
     }
     fn form_emit(&mut self, event: FetchFormEvent) {
-        if let Err(_err) = self.form.update(self.cx, |_, cx| cx.emit(event)) {
-            // todo log
+        if let Err(err) = self.form.update(self.cx, |_, cx| cx.emit(event)) {
+            event!(Level::ERROR, "Failed to emit event: {:?}", err);
         }
     }
 }
@@ -458,6 +460,7 @@ impl FetchView {
         let cookie = form.cookie.clone();
         let form = subscriber.clone();
         let task = cx.spawn(async move |_, cx| {
+            let span = tracing::info_span!("send", url, start_page, end_page, cookie);
             let mut runner = Runner {
                 conn,
                 url,
@@ -467,7 +470,9 @@ impl FetchView {
                 form,
                 cx,
             };
-            Compat::new(async move { runner.run().await }).await
+            Compat::new(async move { runner.run().await })
+                .instrument(span)
+                .await
         });
         task.detach();
     }

@@ -2,11 +2,12 @@ use std::{ops::Deref, path::PathBuf};
 
 use crate::errors::{FeiwenError, FeiwenResult};
 use diesel::{
+    SqliteConnection,
     connection::SimpleConnection,
     r2d2::{ConnectionManager, Pool},
-    SqliteConnection,
 };
 use gpui::App;
+use tracing::{Level, event};
 
 pub(crate) mod model;
 pub(crate) mod schema;
@@ -29,8 +30,8 @@ impl Deref for Db {
 pub(crate) fn init_store(cx: &mut App) {
     let conn = match establish_connection() {
         Ok(conn) => conn,
-        Err(_) => {
-            // todo log
+        Err(err) => {
+            event!(Level::ERROR, "init_store failed: {}", err);
             return;
         }
     };

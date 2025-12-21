@@ -33,6 +33,9 @@ impl TagsSelect {
         self.data = data;
         cx.notify();
     }
+    pub fn get_selected(&self) -> Vec<TagWithId> {
+        self.selected.values().cloned().collect()
+    }
 }
 
 impl Render for TagsSelect {
@@ -90,6 +93,6 @@ impl Render for TagsSelect {
                     )),
                 ),
             };
-        div().child(child)
+        div().flex_initial().child(child)
     }
 }

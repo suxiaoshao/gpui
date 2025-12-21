@@ -1894,6 +1894,8 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.17",
  "time",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 
