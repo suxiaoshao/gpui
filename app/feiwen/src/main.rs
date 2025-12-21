@@ -38,7 +38,7 @@ fn get_logs_dir() -> FeiwenResult<PathBuf> {
 
     #[cfg(not(target_os = "macos"))]
     let path = dirs_next::data_local_dir()
-        .ok_or(NovelError::LogFileNotFound)
+        .ok_or(FeiwenError::LogFileNotFound)
         .map(|dir| dir.join(APP_NAME).join("logs"));
 
     if let Ok(path) = &path
