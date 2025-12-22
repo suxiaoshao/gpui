@@ -12,6 +12,6 @@ url = "2.5.7"
 thiserror = "2.0.17"
 
 # log
-tracing = "0.1.43"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 dirs-next = "2.0.0"

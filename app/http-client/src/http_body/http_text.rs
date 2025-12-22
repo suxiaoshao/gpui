@@ -1,5 +1,6 @@
 use gpui::*;
 use gpui_component::{
+    ActiveTheme,
     input::{Input, InputEvent, InputState},
     select::SelectItem,
 };
@@ -110,10 +111,11 @@ impl HttpTextView {
 }
 
 impl Render for HttpTextView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .p_2()
-            .flex_1()
-            .child(Input::new(&self.input_state).h_full())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().p_2().flex_1().child(
+            Input::new(&self.input_state)
+                .h_full()
+                .font_family(cx.theme().mono_font_family.clone()),
+        )
     }
 }
