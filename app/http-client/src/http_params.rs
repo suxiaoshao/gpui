@@ -6,27 +6,28 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    label::Label,
     popover::Popover,
 };
 use url::Url;
 
-struct Param {
+struct ParamView {
     key: Entity<InputState>,
     _key_subscription: Subscription,
     value: Entity<InputState>,
     _value_subscription: Subscription,
 }
 
-pub struct HttpParams {
+pub struct HttpParamsView {
     pub http_form: Entity<HttpForm>,
-    inputs: Vec<Param>,
+    inputs: Vec<ParamView>,
     open_popover: bool,
     add_key_input: Entity<InputState>,
     add_value_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
-impl HttpParams {
+impl HttpParamsView {
     fn get_url(&self, cx: &mut Context<Self>) -> HttpClientResult<Url> {
         let form = self.http_form.read(cx);
         let url = form.url.as_str();
@@ -118,7 +119,7 @@ impl HttpParams {
             cx.notify();
         };
     }
-    fn get_inputs(url: &str, window: &mut Window, params_cx: &mut Context<Self>) -> Vec<Param> {
+    fn get_inputs(url: &str, window: &mut Window, params_cx: &mut Context<Self>) -> Vec<ParamView> {
         let mut inputs = vec![];
         if let Ok(url) = Url::parse(url) {
             for (index, (key, value)) in url.query_pairs().enumerate() {
@@ -141,7 +142,7 @@ impl HttpParams {
                             this.set_url(index, true, &text, cx);
                         }
                         InputEvent::PressEnter { .. } => {
-                            if let Some(Param { value, .. }) = this.inputs.get(index) {
+                            if let Some(ParamView { value, .. }) = this.inputs.get(index) {
                                 value.update(cx, |this, cx| {
                                     this.focus(window, cx);
                                 });
@@ -160,7 +161,7 @@ impl HttpParams {
                             this.set_url(index, false, &text, cx);
                         }
                         InputEvent::PressEnter { .. } => {
-                            if let Some(Param { key, .. }) =
+                            if let Some(ParamView { key, .. }) =
                                 this.inputs.get(index + 1).or(this.inputs.first())
                             {
                                 key.update(cx, |this, cx| {
@@ -171,7 +172,7 @@ impl HttpParams {
                         _ => {}
                     },
                 );
-                inputs.push(Param {
+                inputs.push(ParamView {
                     key: key_input,
                     _key_subscription: key_subscription,
                     value: value_input,
@@ -183,14 +184,14 @@ impl HttpParams {
     }
 }
 
-impl Render for HttpParams {
+impl Render for HttpParamsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = div()
-            .gap_1()
+            .gap_2()
             .flex()
             .flex_row()
-            .child(div().flex_1().child("Key"))
-            .child(div().flex_1().child("Value"))
+            .child(div().flex_1().child(Label::new("Key")))
+            .child(div().flex_1().child(Label::new("Value")))
             .child(
                 Popover::new("add-params-popover")
                     .open(self.open_popover)
@@ -222,27 +223,24 @@ impl Render for HttpParams {
             .flex()
             .flex_col()
             .p_2()
-            .gap_1()
+            .gap_2()
             .child(header)
-            .children(
-                self.inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(index, Param { key, value, .. })| {
-                        div()
-                            .gap_1()
-                            .flex()
-                            .flex_row()
-                            .child(div().flex_1().child(Input::new(key)))
-                            .child(div().flex_1().child(Input::new(value)))
-                            .child(
-                                Button::new(SharedString::from(format!("delete-params-{index}")))
-                                    .label("Delete")
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        this.delete_param(index, cx);
-                                    })),
-                            )
-                    }),
-            )
+            .children(self.inputs.iter().enumerate().map(
+                |(index, ParamView { key, value, .. })| {
+                    div()
+                        .gap_2()
+                        .flex()
+                        .flex_row()
+                        .child(div().flex_1().child(Input::new(key)))
+                        .child(div().flex_1().child(Input::new(value)))
+                        .child(
+                            Button::new(SharedString::from(format!("delete-params-{index}")))
+                                .label("Delete")
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    this.delete_param(index, cx);
+                                })),
+                        )
+                },
+            ))
     }
 }

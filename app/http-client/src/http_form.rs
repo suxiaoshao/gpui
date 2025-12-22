@@ -58,7 +58,7 @@ impl HttpFormView {
             form_cx.subscribe_in(
                 &http_method_select,
                 window,
-                |this, _state, event, _windoww, cx| {
+                |this, _state, event, _window, cx| {
                     if let SelectEvent::Confirm(Some(method)) = event {
                         this.form.update(cx, |_form, cx| {
                             cx.emit(HttpFormEvent::SetMethod(*method));

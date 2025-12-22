@@ -3,7 +3,7 @@ use gpui_component::tab::{Tab, TabBar};
 
 use crate::{
     http_body::HttpBodyView, http_form::HttpForm, http_headers::HttpHeadersView,
-    http_params::HttpParams,
+    http_params::HttpParamsView,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,8 +46,8 @@ impl From<&usize> for HttpTab {
     }
 }
 
-impl From<&HttpTabView> for AnyElement {
-    fn from(value: &HttpTabView) -> Self {
+impl From<&mut HttpTabView> for AnyElement {
+    fn from(value: &mut HttpTabView) -> Self {
         match value.tab {
             HttpTab::Params => value.params.clone().into_any_element(),
             HttpTab::Headers => value.headers.clone().into_any_element(),
@@ -59,7 +59,7 @@ impl From<&HttpTabView> for AnyElement {
 #[derive(Clone)]
 pub struct HttpTabView {
     pub tab: HttpTab,
-    params: Entity<HttpParams>,
+    params: Entity<HttpParamsView>,
     headers: Entity<HttpHeadersView>,
     body: Entity<HttpBodyView>,
 }
@@ -68,8 +68,8 @@ impl HttpTabView {
     pub fn new(http_form: Entity<HttpForm>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             headers: cx.new(|_cx| HttpHeadersView::new(http_form.clone())),
-            params: cx.new(|cx| HttpParams::new(http_form.clone(), window, cx)),
-            body: cx.new(|_cx| HttpBodyView::new()),
+            params: cx.new(|cx| HttpParamsView::new(http_form.clone(), window, cx)),
+            body: cx.new(|cx| HttpBodyView::new(window, cx)),
             tab: HttpTab::Params,
         }
     }
@@ -79,6 +79,7 @@ impl Render for HttpTabView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_value = self.tab.into();
         div()
+            .flex_1()
             .flex()
             .flex_col()
             .child(
@@ -90,11 +91,6 @@ impl Render for HttpTabView {
                     }))
                     .children(HttpTab::ALL.map(|tab| Tab::new().label(tab.as_str()))),
             )
-            .child(match selected_value {
-                0 => self.params.clone().into_any_element(),
-                1 => self.headers.clone().into_any_element(),
-                2 => div().child("Body").into_any_element(),
-                _ => unreachable!(),
-            })
+            .child(AnyElement::from(self))
     }
 }

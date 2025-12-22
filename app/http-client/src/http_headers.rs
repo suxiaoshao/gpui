@@ -3,6 +3,7 @@ use gpui::*;
 use gpui_component::{
     button::Button,
     input::{Input, InputState},
+    label::Label,
 };
 
 #[derive(Clone)]
@@ -39,11 +40,11 @@ impl Render for HttpHeadersView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let form = self.http_form.read(cx);
         let header = div()
-            .gap_1()
+            .gap_2()
             .flex()
             .flex_row()
-            .child(div().flex_1().child("Key"))
-            .child(div().flex_1().child("Value"))
+            .child(div().flex_1().child(Label::new("Key")))
+            .child(div().flex_1().child(Label::new("Value")))
             .child(Button::new("add_header").label("Add").on_click(cx.listener(
                 |this, _, _, cx| {
                     this.http_form
@@ -59,7 +60,7 @@ impl Render for HttpHeadersView {
             .children(form.headers.iter().enumerate().map(|(index, state)| {
                 let HttpHeader { key, value } = state.read(cx);
                 div()
-                    .gap_1()
+                    .gap_2()
                     .flex()
                     .flex_row()
                     .child(div().flex_1().child(Input::new(key)))

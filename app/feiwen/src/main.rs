@@ -82,7 +82,7 @@ fn main() -> FeiwenResult<()> {
         if let Err(err) = cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("HTTP Client".into()),
+                    title: Some("Feiwen".into()),
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Blurred,

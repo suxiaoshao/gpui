@@ -1886,14 +1886,11 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
- "libsqlite3-sys",
  "nom 8.0.0",
  "regex",
  "reqwest",
  "scraper",
- "smallvec",
  "thiserror 2.0.17",
- "time",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -2890,12 +2887,13 @@ dependencies = [
 name = "http-client"
 version = "0.1.0"
 dependencies = [
+ "dirs-next",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
- "reqwest",
- "smallvec",
  "thiserror 2.0.17",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 
@@ -3481,7 +3479,6 @@ version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
 dependencies = [
- "cc",
  "pkg-config",
  "vcpkg",
 ]
