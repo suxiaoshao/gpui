@@ -1,5 +1,5 @@
-use gpui::{ParentElement, Render, div};
-use gpui_component::{TitleBar, tab::TabBar};
+use gpui::{ParentElement, Render};
+use gpui_component::{TitleBar, v_flex};
 
 pub(crate) struct HomeView {}
 
@@ -15,6 +15,6 @@ impl Render for HomeView {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        div().child(TitleBar::new())
+        v_flex().child(TitleBar::new())
     }
 }

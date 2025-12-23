@@ -8,7 +8,11 @@ use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod adapter;
 mod errors;
+mod extensions;
+mod fetch;
+mod store;
 mod views;
 
 static APP_NAME: &str = "top.sushao.ai-chat";
@@ -26,7 +30,7 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
-    // store::init_store(cx);
+    store::init_store(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {

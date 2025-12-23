@@ -1,8 +1,6 @@
-use std::{ops::Deref, path::PathBuf};
-
 use crate::{
     APP_NAME,
-    errors::{FeiwenError, FeiwenResult},
+    errors::{AiChatError, AiChatResult},
 };
 use diesel::{
     SqliteConnection,
@@ -10,18 +8,26 @@ use diesel::{
     r2d2::{ConnectionManager, Pool},
 };
 use gpui::App;
+use std::{ops::Deref, path::PathBuf};
 use tracing::{Level, event};
 
-pub(crate) mod model;
-pub(crate) mod schema;
-pub(crate) mod service;
-pub(crate) mod types;
+mod model;
+mod schema;
+mod service;
+mod types;
+
+pub use service::{
+    Content, Conversation, ConversationTemplate, Folder, Message, NewConversation,
+    NewConversationTemplate, NewFolder, NewMessage, deserialize_offset_date_time,
+    serialize_offset_date_time,
+};
+pub use types::{Mode, Role, Status};
+
+static DATABASE_FILE: &str = "history.sqlite";
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
 pub(crate) struct Db(DbConn);
-
-static DATABASE_FILE: &str = "data.sqlite";
 
 impl gpui::Global for Db {}
 
@@ -44,10 +50,10 @@ pub(crate) fn init_store(cx: &mut App) {
     cx.set_global(Db(conn));
 }
 
-fn establish_connection() -> FeiwenResult<DbConn> {
+fn establish_connection() -> AiChatResult<DbConn> {
     let url_path = get_data_url()?;
     let not_exists = check_data_file(&url_path)?;
-    let url = url_path.to_str().ok_or(FeiwenError::DbPath)?;
+    let url = url_path.to_str().ok_or(AiChatError::DbPath)?;
     let manager = ConnectionManager::<SqliteConnection>::new(url);
     let pool = Pool::builder().test_on_check_out(true).build(manager)?;
     if not_exists {
@@ -56,29 +62,28 @@ fn establish_connection() -> FeiwenResult<DbConn> {
     Ok(pool)
 }
 
-fn get_data_url() -> FeiwenResult<PathBuf> {
+fn get_data_url() -> AiChatResult<PathBuf> {
     let data_path = dirs_next::config_dir()
-        .ok_or(FeiwenError::DbPath)?
+        .ok_or(AiChatError::DbPath)?
         .join(APP_NAME)
         .join(DATABASE_FILE);
     Ok(data_path)
 }
 
-fn check_data_file(url: &PathBuf) -> FeiwenResult<bool> {
+fn check_data_file(url: &PathBuf) -> AiChatResult<bool> {
     use std::fs::File;
     if !url.exists() {
-        std::fs::create_dir_all(url.parent().ok_or(FeiwenError::DbPath)?)?;
+        std::fs::create_dir_all(url.parent().ok_or(AiChatError::DbPath)?)?;
         File::create(url)?;
         return Ok(true);
     }
     Ok(false)
 }
-fn create_tables(conn: &DbConn) -> FeiwenResult<()> {
+
+fn create_tables(conn: &DbConn) -> AiChatResult<()> {
     let conn = &mut conn.get()?;
-    conn.batch_execute(include_str!("../migrations/2022-05-15-162950_novel/up.sql"))?;
-    conn.batch_execute(include_str!("../migrations/2022-05-15-163112_tag/up.sql"))?;
     conn.batch_execute(include_str!(
-        "../migrations/2022-05-16-064913_novel_tag/up.sql"
+        "../migrations/2025-12-23-141452-0000_create_tables/up.sql"
     ))?;
     Ok(())
 }

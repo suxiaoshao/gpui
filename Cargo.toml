@@ -3,6 +3,7 @@ members = ["app/ai-chat",
     "app/feiwen",
     "app/http-client",
     "app/novel-download",
+    "app/ai-chat/extensions/url_search"
 ]
 
 resolver = "2"
