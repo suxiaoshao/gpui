@@ -41,7 +41,7 @@ fn get_logs_dir() -> HttpClientResult<PathBuf> {
 
     #[cfg(not(target_os = "macos"))]
     let path = dirs_next::data_local_dir()
-        .ok_or(HttpClientResult::LogFileNotFound)
+        .ok_or(HttpClientError::LogFileNotFound)
         .map(|dir| dir.join(APP_NAME).join("logs"));
 
     if let Ok(path) = &path
