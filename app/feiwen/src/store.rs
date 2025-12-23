@@ -1,6 +1,9 @@
 use std::{ops::Deref, path::PathBuf};
 
-use crate::errors::{FeiwenError, FeiwenResult};
+use crate::{
+    APP_NAME,
+    errors::{FeiwenError, FeiwenResult},
+};
 use diesel::{
     SqliteConnection,
     connection::SimpleConnection,
@@ -16,6 +19,8 @@ pub(crate) mod types;
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
 pub(crate) struct Db(DbConn);
+
+static DATABASE_FILE: &str = "data.sqlite";
 
 impl gpui::Global for Db {}
 
@@ -53,8 +58,8 @@ fn establish_connection() -> FeiwenResult<DbConn> {
 fn get_data_url() -> FeiwenResult<PathBuf> {
     let data_path = dirs_next::config_dir()
         .ok_or(FeiwenError::DbPath)?
-        .join("top.sushao.feiwen")
-        .join("data.sqlite");
+        .join(APP_NAME)
+        .join(DATABASE_FILE);
     Ok(data_path)
 }
 

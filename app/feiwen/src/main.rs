@@ -12,7 +12,7 @@ mod fetch;
 mod store;
 mod views;
 
-static APP_NAME: &str = "feiwen";
+static APP_NAME: &str = "top.sushao.feiwen";
 
 actions!(feiwen, [Quit]);
 

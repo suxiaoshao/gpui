@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = ["app/ai-chat",
     "app/feiwen",
     "app/http-client",
     "app/novel-download",

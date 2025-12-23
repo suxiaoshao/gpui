@@ -1,0 +1,21 @@
+[package]
+name = "ai-chat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# ui
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+
+# err
+thiserror = "2.0.17"
+
+# database
+diesel = { version = "2.3.5", features = ["sqlite", "r2d2"] }
+dirs-next = "2.0.0"
+
+# log
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["local-time"] }

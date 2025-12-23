@@ -43,6 +43,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-chat"
+version = "0.1.0"
+dependencies = [
+ "diesel",
+ "dirs-next",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "thiserror 2.0.17",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

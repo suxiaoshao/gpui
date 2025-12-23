@@ -1,23 +1,17 @@
-use errors::HttpClientResult;
+use crate::errors::AiChatError;
+use crate::errors::AiChatResult;
+use crate::views::home::HomeView;
 use gpui::*;
 use gpui_component::Root;
-use http_form::HttpFormView;
+use gpui_component::TitleBar;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::errors::HttpClientError;
-
 mod errors;
-mod http_body;
-mod http_form;
-mod http_headers;
-mod http_method;
-mod http_params;
-mod http_tab;
-mod url_input;
+mod views;
 
-static APP_NAME: &str = "top.sushao.http-client";
+static APP_NAME: &str = "top.sushao.ai-chat";
 
 actions!(feiwen, [Quit]);
 
@@ -31,28 +25,30 @@ fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
+
+    // store::init_store(cx);
 }
 
-fn get_logs_dir() -> HttpClientResult<PathBuf> {
+fn get_logs_dir() -> AiChatResult<PathBuf> {
     #[cfg(target_os = "macos")]
     let path = dirs_next::home_dir()
-        .ok_or(HttpClientError::LogFileNotFound)
+        .ok_or(AiChatError::LogFileNotFound)
         .map(|dir| dir.join("Library/Logs").join(APP_NAME));
 
     #[cfg(not(target_os = "macos"))]
     let path = dirs_next::data_local_dir()
-        .ok_or(HttpClientError::LogFileNotFound)
+        .ok_or(AiChatError::LogFileNotFound)
         .map(|dir| dir.join(APP_NAME).join("logs"));
 
     if let Ok(path) = &path
         && !path.exists()
     {
-        create_dir_all(path).map_err(|_| HttpClientError::LogFileNotFound)?;
+        create_dir_all(path).map_err(|_| AiChatError::LogFileNotFound)?;
     }
     path
 }
 
-fn main() -> HttpClientResult<()> {
+fn main() -> AiChatResult<()> {
     // tracing
     tracing_subscriber::registry()
         .with(
@@ -63,7 +59,7 @@ fn main() -> HttpClientResult<()> {
                         .append(true)
                         .create(true)
                         .open(get_logs_dir()?.join("data.log"))
-                        .map_err(|_| HttpClientError::LogFileNotFound)?,
+                        .map_err(|_| AiChatError::LogFileNotFound)?,
                 )
                 .with_filter(LevelFilter::INFO),
         )
@@ -77,21 +73,19 @@ fn main() -> HttpClientResult<()> {
 
     let span = tracing::info_span!("init");
     let _enter = span.enter();
-
     let app = Application::new().with_assets(gpui_component_assets::Assets);
+    event!(Level::INFO, "app created");
+
     app.run(|cx: &mut App| {
         init(cx);
         if let Err(err) = cx.open_window(
             WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some("HTTP Client".into()),
-                    ..Default::default()
-                }),
+                titlebar: Some(TitleBar::title_bar_options()),
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| HttpFormView::new(window, cx));
+                let view = cx.new(|cx| HomeView::new());
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {

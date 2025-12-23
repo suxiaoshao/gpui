@@ -15,7 +15,7 @@ mod crawler;
 mod errors;
 mod views;
 
-static APP_NAME: &str = "novel-download";
+static APP_NAME: &str = "top.sushao.novel-download";
 
 actions!(novel_download, [Quit]);
 
