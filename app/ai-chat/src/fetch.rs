@@ -1,16 +1,9 @@
-/*
- * @Author: suxiaoshao suxiaoshao@gmail.com
- * @Date: 2024-01-06 01:08:42
- * @LastEditors: suxiaoshao suxiaoshao@gmail.com
- * @LastEditTime: 2024-05-15 20:42:50
- * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/fetch/mod.rs
- */
 pub use self::types::{ChatRequest, Message, OpenAIStreamResponse};
 use crate::{
     adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
+    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionRunner,
-    plugins::ChatGPTConfig,
     store::Content,
 };
 use futures::pin_mut;
@@ -21,7 +14,7 @@ mod types;
 pub trait FetchRunner {
     fn get_adapter(&self) -> &str;
     fn get_template(&self) -> &Value;
-    fn get_config(&self) -> &ChatGPTConfig;
+    fn get_config(&self) -> &AiChatConfig;
     fn get_history(&self) -> Vec<Message>;
     async fn get_new_user_content(
         send_content: String,

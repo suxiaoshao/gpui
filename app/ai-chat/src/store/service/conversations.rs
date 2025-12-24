@@ -1,4 +1,6 @@
 use diesel::SqliteConnection;
+use gpui::SharedString;
+use gpui_component::tree::TreeItem;
 use pinyin::ToPinyin;
 use time::OffsetDateTime;
 
@@ -38,6 +40,15 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     #[serde(rename = "templateId")]
     pub template_id: i32,
+}
+
+impl From<&Conversation> for TreeItem {
+    fn from(value: &Conversation) -> Self {
+        TreeItem::new(
+            SharedString::from(format!("conversation-tree-item-{}", value.id)),
+            value.title.clone(),
+        )
+    }
 }
 
 #[derive(serde::Deserialize, Debug)]

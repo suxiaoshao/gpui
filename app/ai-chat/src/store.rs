@@ -1,6 +1,7 @@
 use crate::{
     APP_NAME,
     errors::{AiChatError, AiChatResult},
+    store::model::{SqlConversationTemplate, SqlNewConversation, SqlNewConversationTemplate},
 };
 use diesel::{
     SqliteConnection,
@@ -9,6 +10,7 @@ use diesel::{
 };
 use gpui::App;
 use std::{ops::Deref, path::PathBuf};
+use time::OffsetDateTime;
 use tracing::{Level, event};
 
 mod model;
@@ -23,7 +25,7 @@ pub use service::{
 };
 pub use types::{Mode, Role, Status};
 
-static DATABASE_FILE: &str = "history.sqlite";
+static DATABASE_FILE: &str = "history.sqlite3";
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -57,6 +59,7 @@ fn establish_connection() -> AiChatResult<DbConn> {
     let manager = ConnectionManager::<SqliteConnection>::new(url);
     let pool = Pool::builder().test_on_check_out(true).build(manager)?;
     if not_exists {
+        event!(Level::INFO, "create tables");
         create_tables(&pool)?;
     }
     Ok(pool)
@@ -85,5 +88,20 @@ fn create_tables(conn: &DbConn) -> AiChatResult<()> {
     conn.batch_execute(include_str!(
         "../migrations/2025-12-23-141452-0000_create_tables/up.sql"
     ))?;
+    // Insert conversation template
+    let default_conversation_template = SqlNewConversationTemplate::default()?;
+    let SqlConversationTemplate { id, .. } = default_conversation_template.insert(conn)?;
+    let now = OffsetDateTime::now_utc();
+    let default_conversation = SqlNewConversation {
+        title: "默认".to_string(),
+        path: "/默认".to_string(),
+        folder_id: None,
+        icon: "🤖".to_string(),
+        info: None,
+        template_id: id,
+        created_time: now,
+        updated_time: now,
+    };
+    default_conversation.insert(conn)?;
     Ok(())
 }

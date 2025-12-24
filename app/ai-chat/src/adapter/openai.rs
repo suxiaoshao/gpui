@@ -4,9 +4,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     fetch::{ChatRequest, Message},
-    plugins::ChatGPTConfig,
 };
 
 use super::{Adapter, InputItem, InputType};
@@ -161,7 +161,7 @@ impl OpenAIAdapter {
         }
     }
     fn get_reqwest_client(
-        config: &ChatGPTConfig,
+        config: &AiChatConfig,
         settings: &OpenAISettings,
     ) -> AiChatResult<Client> {
         let api_key = settings
@@ -238,7 +238,7 @@ impl Adapter for OpenAIAdapter {
 
     fn fetch(
         &self,
-        config: &ChatGPTConfig,
+        config: &AiChatConfig,
         settings: &serde_json::Value,
         template: &serde_json::Value,
         history_messages: Vec<Message>,

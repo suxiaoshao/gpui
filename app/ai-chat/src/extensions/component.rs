@@ -1,4 +1,4 @@
-use crate::plugins::ChatGPTConfig;
+use crate::config::AiChatConfig;
 use chatgpt::extension::http_client::{HttpRequest, HttpResponse};
 pub use exports::chatgpt::extension::extension_api::ChatRequest;
 use reqwest::{header::HeaderValue, redirect::Policy};
@@ -20,11 +20,11 @@ bindgen!({
 pub(crate) struct ExtensionState {
     pub wasi_ctx: WasiCtx,
     pub resource_table: ResourceTable,
-    app_config: ChatGPTConfig,
+    app_config: AiChatConfig,
 }
 
 impl ExtensionState {
-    pub(super) fn new(app_config: ChatGPTConfig) -> Self {
+    pub(super) fn new(app_config: AiChatConfig) -> Self {
         Self {
             resource_table: ResourceTable::new(),
             wasi_ctx: WasiCtx::builder().inherit_stdio().inherit_args().build(),
@@ -146,7 +146,7 @@ mod tests {
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         Extension::add_to_linker::<_, HasSelf<_>>(&mut linker, |state: &mut ExtensionState| state)?;
-        let mut store = Store::new(&engine, ExtensionState::new(ChatGPTConfig::default()));
+        let mut store = Store::new(&engine, ExtensionState::new(AiChatConfig::default()));
         let bindings = Extension::instantiate_async(&mut store, &component, &linker).await?;
         let extension_api = bindings.chatgpt_extension_extension_api();
         let chat_request = ChatRequest {

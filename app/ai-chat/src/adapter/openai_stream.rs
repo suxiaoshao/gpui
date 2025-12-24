@@ -6,9 +6,9 @@ use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     fetch::{ChatRequest, Message, OpenAIStreamResponse},
-    plugins::ChatGPTConfig,
 };
 
 use super::{
@@ -62,7 +62,7 @@ impl OpenAIStreamAdapter {
         }
     }
     fn get_reqwest_client(
-        config: &ChatGPTConfig,
+        config: &AiChatConfig,
         settings: &OpenAIStreamSettings,
     ) -> AiChatResult<Client> {
         let api_key = settings
@@ -97,7 +97,7 @@ impl Adapter for OpenAIStreamAdapter {
 
     fn fetch(
         &self,
-        config: &ChatGPTConfig,
+        config: &AiChatConfig,
         settings: &serde_json::Value,
         template: &serde_json::Value,
         history_messages: Vec<Message>,

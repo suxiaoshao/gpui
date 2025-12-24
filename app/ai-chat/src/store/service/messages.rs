@@ -1,7 +1,6 @@
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 use crate::{
     errors::{AiChatError, AiChatResult},
-    plugins::TemporaryMessage,
     store::{
         Role, Status,
         model::{SqlConversation, SqlMessage, SqlNewMessage},
@@ -11,6 +10,38 @@ use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 use time::OffsetDateTime;
+
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
+pub struct TemporaryMessage {
+    pub id: usize,
+    pub role: Role,
+    pub content: Content,
+    pub status: Status,
+    #[serde(
+        rename = "createdTime",
+        serialize_with = "serialize_offset_date_time",
+        deserialize_with = "deserialize_offset_date_time"
+    )]
+    pub created_time: OffsetDateTime,
+    #[serde(
+        rename = "updatedTime",
+        serialize_with = "serialize_offset_date_time",
+        deserialize_with = "deserialize_offset_date_time"
+    )]
+    pub updated_time: OffsetDateTime,
+    #[serde(
+        rename = "startTime",
+        serialize_with = "serialize_offset_date_time",
+        deserialize_with = "deserialize_offset_date_time"
+    )]
+    pub start_time: OffsetDateTime,
+    #[serde(
+        rename = "endTime",
+        serialize_with = "serialize_offset_date_time",
+        deserialize_with = "deserialize_offset_date_time"
+    )]
+    pub end_time: OffsetDateTime,
+}
 
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "tag", content = "value", rename_all = "camelCase")]

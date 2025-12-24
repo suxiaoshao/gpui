@@ -9,6 +9,7 @@ use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod adapter;
+mod config;
 mod errors;
 mod extensions;
 mod fetch;
@@ -31,6 +32,7 @@ fn init(cx: &mut App) {
     cx.on_action(quit);
 
     store::init_store(cx);
+    views::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {
@@ -89,7 +91,7 @@ fn main() -> AiChatResult<()> {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| HomeView::new());
+                let view = cx.new(|cx| HomeView::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {

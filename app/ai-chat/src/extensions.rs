@@ -1,6 +1,6 @@
 use crate::{
+    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
-    plugins::ChatGPTConfig,
 };
 use gpui::{Context, Global};
 use std::{collections::HashMap, path::PathBuf};
@@ -95,7 +95,7 @@ impl ExtensionContainer {
             .component_map
             .get(name)
             .ok_or(AiChatError::ExtensionNotFound(name.to_string()))?;
-        let config = ChatGPTConfig::get(app_handle)?;
+        let config = AiChatConfig::get()?;
         let mut store = Store::new(&self.engine, ExtensionState::new(config));
         let bindings = Extension::instantiate_async(&mut store, component, &self.linker)
             .await
