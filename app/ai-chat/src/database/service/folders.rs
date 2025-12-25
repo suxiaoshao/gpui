@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 
 use crate::{
     errors::{AiChatError, AiChatResult},
-    store::{
+    database::{
         Conversation, Message,
         model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
     },

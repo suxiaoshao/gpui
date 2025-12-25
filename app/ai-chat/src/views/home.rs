@@ -1,6 +1,6 @@
 use crate::{
+    database::{Conversation, Db, Folder},
     errors::AiChatResult,
-    store::{Conversation, Db, Folder},
     views::home::sidebar::SidebarView,
 };
 use gpui::*;
@@ -16,33 +16,14 @@ pub fn init(cx: &mut App) {
     sidebar::init(cx);
 }
 
-struct ChatData {
-    conversations: Vec<Conversation>,
-    folders: Vec<Folder>,
-}
-
-impl ChatData {
-    fn new(cx: &mut Context<AiChatResult<Self>>) -> AiChatResult<Self> {
-        let conn = &mut cx.global::<Db>().get()?;
-        let conversations = Conversation::query_without_folder(conn)?;
-        let folders = Folder::query(conn)?;
-        Ok(Self {
-            conversations,
-            folders,
-        })
-    }
-}
-
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
-    chat_data: Entity<AiChatResult<ChatData>>,
 }
 
 impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_data = cx.new(|cx| ChatData::new(cx));
-        let sidebar = cx.new(|cx| SidebarView::new(chat_data.clone(), window, cx));
-        Self { sidebar, chat_data }
+        let sidebar = cx.new(|cx| SidebarView::new(window, cx));
+        Self { sidebar }
     }
 }
 

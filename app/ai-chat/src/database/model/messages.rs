@@ -1,6 +1,6 @@
 use crate::{
+    database::{schema::messages, service::Content, types::Status},
     errors::AiChatResult,
-    store::{schema::messages, service::Content, types::Status},
 };
 use diesel::prelude::*;
 use time::OffsetDateTime;

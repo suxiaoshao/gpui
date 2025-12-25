@@ -7,8 +7,8 @@
  */
 use crate::{
     adapter::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
+    database::{Mode, service::ConversationTemplatePrompt},
     errors::AiChatResult,
-    store::{Mode, service::ConversationTemplatePrompt},
 };
 
 use super::super::schema::conversation_templates;

@@ -7,7 +7,7 @@
  */
 use serde::{Deserialize, Serialize};
 
-use crate::store::Role;
+use crate::database::Role;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Message {

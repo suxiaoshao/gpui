@@ -10,6 +10,7 @@ use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitE
 
 mod adapter;
 mod config;
+mod database;
 mod errors;
 mod extensions;
 mod fetch;
@@ -31,7 +32,8 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
-    store::init_store(cx);
+    database::init_store(cx);
+    store::init(cx);
     views::init(cx);
 }
 

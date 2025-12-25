@@ -5,13 +5,13 @@ use pinyin::ToPinyin;
 use time::OffsetDateTime;
 
 use crate::{
-    errors::{AiChatError, AiChatResult},
-    store::{
+    database::{
         Message,
         model::{
             SqlConversation, SqlFolder, SqlMessage, SqlNewConversation, SqlUpdateConversation,
         },
     },
+    errors::{AiChatError, AiChatResult},
 };
 
 use super::utils::serialize_offset_date_time;

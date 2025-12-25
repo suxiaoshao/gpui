@@ -1,7 +1,7 @@
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 use crate::{
     errors::{AiChatError, AiChatResult},
-    store::{
+    database::{
         Role, Status,
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },

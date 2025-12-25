@@ -14,6 +14,7 @@ thiserror = "2.0.17"
 
 # database
 diesel = { version = "2.3.5", features = ["sqlite", "r2d2", "numeric", "time", "returning_clauses_for_sqlite_3_35"] }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
 time = { version = "0.3.44", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }

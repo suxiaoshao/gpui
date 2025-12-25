@@ -2,9 +2,9 @@ pub use self::types::{ChatRequest, Message, OpenAIStreamResponse};
 use crate::{
     adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
     config::AiChatConfig,
+    database::Content,
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionRunner,
-    store::Content,
 };
 use futures::pin_mut;
 use serde_json::Value;

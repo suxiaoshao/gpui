@@ -12,14 +12,14 @@ use diesel::SqliteConnection;
 use time::OffsetDateTime;
 
 use crate::{
-    errors::AiChatResult,
-    store::{
+    database::{
         Mode, Role,
         model::{
             SqlConversation, SqlConversationTemplate, SqlNewConversationTemplate,
             SqlUpdateConversationTemplate,
         },
     },
+    errors::AiChatResult,
 };
 
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};

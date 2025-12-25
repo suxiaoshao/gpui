@@ -1,4 +1,7 @@
-use crate::{errors::AiChatResult, views::home::ChatData};
+use crate::{
+    errors::AiChatResult,
+    store::{ChatData, ChatDataInner},
+};
 use gpui::*;
 use gpui_component::{
     IconName, Side, WindowExt,
@@ -39,31 +42,25 @@ pub fn init(cx: &mut App) {
 }
 
 pub(crate) struct SidebarView {
-    chat_data: Entity<AiChatResult<ChatData>>,
     tree_state: Entity<TreeState>,
     folder_input: Entity<InputState>,
 }
 
 impl SidebarView {
-    pub fn new(
-        chat_data: Entity<AiChatResult<ChatData>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let chat_data = cx.global::<ChatData>().clone();
         let tree_state = Self::get_tree_state(&chat_data, cx);
         let folder_input = cx.new(|cx| InputState::new(window, cx));
         Self {
-            chat_data,
             tree_state,
             folder_input,
         }
     }
-    fn get_tree_state(
-        chat_date: &Entity<AiChatResult<ChatData>>,
-        cx: &mut Context<Self>,
-    ) -> Entity<TreeState> {
-        match chat_date.read(cx) {
-            Ok(ChatData {
+
+    fn get_tree_state(chat_data: &ChatData, cx: &mut Context<Self>) -> Entity<TreeState> {
+        let data = chat_data.read(cx);
+        match data {
+            Ok(ChatDataInner {
                 conversations,
                 folders,
             }) => {
