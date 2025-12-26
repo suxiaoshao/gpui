@@ -7,8 +7,7 @@ use crate::{
     errors::{AiChatError, AiChatResult},
 };
 use diesel::SqliteConnection;
-use gpui::SharedString;
-use gpui_component::tree::TreeItem;
+use gpui_component::{IconName, sidebar::SidebarMenuItem};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -35,14 +34,12 @@ pub struct Folder {
     pub folders: Vec<Folder>,
 }
 
-impl From<&Folder> for TreeItem {
+impl From<&Folder> for SidebarMenuItem {
     fn from(value: &Folder) -> Self {
-        TreeItem::new(
-            SharedString::from(format!("folder-tree-item-{}", value.id)),
-            value.name.clone(),
-        )
-        .children(value.folders.iter().map(From::from))
-        .children(value.conversations.iter().map(From::from))
+        SidebarMenuItem::new(&value.name)
+            .icon(IconName::Folder)
+            .children(&value.folders)
+            .children(&value.conversations)
     }
 }
 

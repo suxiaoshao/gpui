@@ -1,9 +1,4 @@
-use crate::{
-    database::{Conversation, Db, Folder},
-    errors::AiChatResult,
-    store,
-    views::home::sidebar::SidebarView,
-};
+use crate::{store, views::home::sidebar::SidebarView};
 use gpui::*;
 use gpui_component::{
     Root, TitleBar,

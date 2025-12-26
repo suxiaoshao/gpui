@@ -1,6 +1,6 @@
 use diesel::SqliteConnection;
 use gpui::SharedString;
-use gpui_component::tree::TreeItem;
+use gpui_component::sidebar::SidebarMenuItem;
 use pinyin::ToPinyin;
 use time::OffsetDateTime;
 
@@ -42,12 +42,12 @@ pub struct Conversation {
     pub template_id: i32,
 }
 
-impl From<&Conversation> for TreeItem {
+impl From<&Conversation> for SidebarMenuItem {
     fn from(value: &Conversation) -> Self {
-        TreeItem::new(
-            SharedString::from(format!("conversation-tree-item-{}", value.id)),
-            value.title.clone(),
-        )
+        SidebarMenuItem::new(SharedString::from(format!(
+            "{} {}",
+            value.icon, value.title
+        )))
     }
 }
 

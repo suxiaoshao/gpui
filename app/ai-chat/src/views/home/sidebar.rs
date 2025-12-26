@@ -7,11 +7,10 @@ use gpui_component::{
     IconName, Side, WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
-    h_flex,
     input::{Input, InputState},
-    list::ListItem,
     menu::ContextMenuExt,
-    tree::{TreeState, tree},
+    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu},
+    v_flex,
 };
 use std::ops::Deref;
 
@@ -44,39 +43,16 @@ pub fn init(cx: &mut App) {
 }
 
 pub(crate) struct SidebarView {
-    tree_state: Entity<TreeState>,
-    folder_input: Entity<InputState>,
+    chat_data: Entity<AiChatResult<ChatDataInner>>,
 }
 
 impl SidebarView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_data = cx.global::<ChatData>().deref().clone();
-        let tree_state = Self::get_tree_state(&chat_data, cx);
-        let folder_input = cx.new(|cx| InputState::new(window, cx));
-        Self {
-            tree_state,
-            folder_input,
-        }
+
+        Self { chat_data }
     }
 
-    fn get_tree_state(
-        chat_data: &Entity<AiChatResult<ChatDataInner>>,
-        cx: &mut Context<Self>,
-    ) -> Entity<TreeState> {
-        let data = chat_data.read(cx);
-        match data {
-            Ok(ChatDataInner {
-                conversations,
-                folders,
-            }) => {
-                let mut folder_items: Vec<_> = folders.iter().map(From::from).collect();
-                let conversation_items = conversations.iter().map(From::from);
-                folder_items.extend(conversation_items);
-                cx.new(|cx| TreeState::new(cx).items(folder_items))
-            }
-            Err(_) => cx.new(|cx| TreeState::new(cx)),
-        }
-    }
     fn add_conversation(
         &mut self,
         _: &AddConversation,
@@ -97,7 +73,7 @@ impl SidebarView {
                 .child(v_form().child(field().label("Name").child(Input::new(&folder_input))))
                 .footer({
                     let folder_input = folder_input.clone();
-                    move |this, state, window, cx| {
+                    move |_this, _state, _window, _cx| {
                         vec![
                             Button::new("ok").primary().label("Submit").on_click({
                                 let folder_input = folder_input.clone();
@@ -130,30 +106,26 @@ impl SidebarView {
 impl Render for SidebarView {
     fn render(
         &mut self,
-        window: &mut gpui::Window,
+        _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        div()
+        v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::add_conversation))
             .on_action(cx.listener(Self::add_folder))
             .size_full()
-            .child(tree(&self.tree_state, |ix, entry, selected, window, cx| {
-                let icon = if !entry.is_folder() {
-                    IconName::File
-                } else if entry.is_expanded() {
-                    IconName::FolderOpen
-                } else {
-                    IconName::Folder
-                };
-                ListItem::new(ix).child(
-                    h_flex()
-                        .gap_2()
-                        .child(icon)
-                        .child(entry.item().label.clone()),
-                )
-            }))
-            .context_menu(|this, window, cx| {
+            .child(
+                Sidebar::new(Side::Left)
+                    .w_full()
+                    .header(SidebarHeader::new().child("Ai Chat"))
+                    .child(SidebarGroup::new("Conversation Tree").child(
+                        SidebarMenu::new().children(match self.chat_data.read(cx) {
+                            Ok(data) => data.sidebar_items(),
+                            Err(_) => vec![],
+                        }),
+                    )),
+            )
+            .context_menu(|this, _window, _cx| {
                 this.check_side(Side::Left)
                     .external_link_icon(false)
                     .menu_with_icon(

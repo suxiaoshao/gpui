@@ -7,6 +7,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     notification::{Notification, NotificationType},
+    sidebar::SidebarMenuItem,
 };
 use std::ops::Deref;
 
@@ -44,6 +45,12 @@ impl ChatDataInner {
         } else {
             self.folders.push(new_folder);
         }
+    }
+    pub(crate) fn sidebar_items(&self) -> Vec<SidebarMenuItem> {
+        let mut items = Vec::new();
+        items.extend(self.folders.iter().map(From::from));
+        items.extend(self.conversations.iter().map(From::from));
+        items
     }
 }
 
