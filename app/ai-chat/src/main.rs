@@ -33,7 +33,6 @@ fn init(cx: &mut App) {
     cx.on_action(quit);
 
     database::init_store(cx);
-    store::init(cx);
     views::init(cx);
 }
 

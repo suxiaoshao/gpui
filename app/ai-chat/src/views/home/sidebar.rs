@@ -1,17 +1,19 @@
 use crate::{
     errors::AiChatResult,
-    store::{ChatData, ChatDataInner},
+    store::{ChatData, ChatDataEvent, ChatDataInner},
 };
 use gpui::*;
 use gpui_component::{
     IconName, Side, WindowExt,
-    form::field,
+    button::{Button, ButtonVariants},
+    form::{field, v_form},
     h_flex,
     input::{Input, InputState},
     list::ListItem,
     menu::ContextMenuExt,
     tree::{TreeState, tree},
 };
+use std::ops::Deref;
 
 mod conversation_item;
 mod folder_item;
@@ -48,7 +50,7 @@ pub(crate) struct SidebarView {
 
 impl SidebarView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_data = cx.global::<ChatData>().clone();
+        let chat_data = cx.global::<ChatData>().deref().clone();
         let tree_state = Self::get_tree_state(&chat_data, cx);
         let folder_input = cx.new(|cx| InputState::new(window, cx));
         Self {
@@ -57,7 +59,10 @@ impl SidebarView {
         }
     }
 
-    fn get_tree_state(chat_data: &ChatData, cx: &mut Context<Self>) -> Entity<TreeState> {
+    fn get_tree_state(
+        chat_data: &Entity<AiChatResult<ChatDataInner>>,
+        cx: &mut Context<Self>,
+    ) -> Entity<TreeState> {
         let data = chat_data.read(cx);
         match data {
             Ok(ChatDataInner {
@@ -85,11 +90,39 @@ impl SidebarView {
         });
     }
     fn add_folder(&mut self, _: &AddFolder, window: &mut Window, cx: &mut Context<Self>) {
-        let folder_input = self.folder_input.clone();
+        let folder_input = cx.new(|cx| InputState::new(window, cx));
         window.open_dialog(cx, move |dialog, window, cx| {
             dialog
                 .title("Add Folder")
-                .child(field().label("Name").child(Input::new(&folder_input)))
+                .child(v_form().child(field().label("Name").child(Input::new(&folder_input))))
+                .footer({
+                    let folder_input = folder_input.clone();
+                    move |this, state, window, cx| {
+                        vec![
+                            Button::new("ok").primary().label("Submit").on_click({
+                                let folder_input = folder_input.clone();
+                                move |_, window, cx| {
+                                    let name = folder_input.read(cx).value().to_string();
+                                    if !name.is_empty() {
+                                        let chat_data = cx.global::<ChatData>().deref().clone();
+                                        chat_data.update(cx, |_this, cx| {
+                                            cx.emit(ChatDataEvent::AddFolder {
+                                                name,
+                                                parent_id: None,
+                                            });
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        ]
+                    }
+                })
         });
     }
 }

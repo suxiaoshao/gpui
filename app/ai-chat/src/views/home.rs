@@ -1,6 +1,7 @@
 use crate::{
     database::{Conversation, Db, Folder},
     errors::AiChatResult,
+    store,
     views::home::sidebar::SidebarView,
 };
 use gpui::*;
@@ -22,7 +23,9 @@ pub(crate) struct HomeView {
 
 impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        store::init(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
+
         Self { sidebar }
     }
 }

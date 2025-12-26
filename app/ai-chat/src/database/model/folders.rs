@@ -70,34 +70,34 @@ impl SqlFolder {
 
 #[derive(Insertable)]
 #[diesel(table_name = folders)]
-pub struct SqlNewFolder {
-    pub(in super::super) name: String,
+pub struct SqlNewFolder<'a> {
+    pub(in super::super) name: &'a str,
     pub(in super::super) path: String,
     pub(in super::super) parent_id: Option<i32>,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
 }
 
-impl SqlNewFolder {
-    pub fn insert(&self, conn: &mut SqliteConnection) -> AiChatResult<()> {
-        diesel::insert_into(folders::table)
+impl<'a> SqlNewFolder<'a> {
+    pub fn insert(&self, conn: &mut SqliteConnection) -> AiChatResult<SqlFolder> {
+        let new_folder = diesel::insert_into(folders::table)
             .values(self)
-            .execute(conn)?;
-        Ok(())
+            .get_result(conn)?;
+        Ok(new_folder)
     }
 }
 
 #[derive(AsChangeset, Identifiable)]
 #[diesel(table_name = folders)]
-pub struct SqlUpdateFolder {
+pub struct SqlUpdateFolder<'a> {
     pub(in super::super) id: i32,
-    pub(in super::super) name: String,
+    pub(in super::super) name: &'a str,
     pub(in super::super) path: String,
     pub(in super::super) parent_id: Option<i32>,
     pub(in super::super) updated_time: OffsetDateTime,
 }
 
-impl SqlUpdateFolder {
+impl SqlUpdateFolder<'_> {
     pub fn update(&self, conn: &mut SqliteConnection) -> AiChatResult<()> {
         diesel::update(folders::table)
             .filter(folders::id.eq(self.id))
@@ -105,24 +105,25 @@ impl SqlUpdateFolder {
             .execute(conn)?;
         Ok(())
     }
-    pub fn from_new_path(
+    pub fn from_new_path<'a>(
         SqlFolder {
-            id,
-            name,
-            mut path,
-            parent_id,
-            ..
-        }: SqlFolder,
-        old_path_pre: &str,
-        new_path_pre: &str,
-        time: OffsetDateTime,
-    ) -> Self {
-        path.replace_range(0..old_path_pre.len(), new_path_pre);
-        Self {
             id,
             name,
             path,
             parent_id,
+            ..
+        }: &'a SqlFolder,
+        old_path_pre: &str,
+        new_path_pre: &str,
+        time: OffsetDateTime,
+    ) -> SqlUpdateFolder<'a> {
+        let mut path = path.clone();
+        path.replace_range(0..old_path_pre.len(), new_path_pre);
+        SqlUpdateFolder {
+            id: *id,
+            name,
+            path,
+            parent_id: *parent_id,
             updated_time: time,
         }
     }

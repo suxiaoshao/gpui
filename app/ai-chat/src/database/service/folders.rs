@@ -1,18 +1,16 @@
+use super::utils::serialize_offset_date_time;
+use crate::{
+    database::{
+        Conversation, Message,
+        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
+    },
+    errors::{AiChatError, AiChatResult},
+};
 use diesel::SqliteConnection;
 use gpui::SharedString;
 use gpui_component::tree::TreeItem;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-
-use crate::{
-    errors::{AiChatError, AiChatResult},
-    database::{
-        Conversation, Message,
-        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
-    },
-};
-
-use super::utils::serialize_offset_date_time;
 
 #[derive(Serialize)]
 pub struct Folder {
@@ -52,7 +50,7 @@ impl Folder {
     pub fn insert(
         NewFolder { name, parent_id }: NewFolder,
         conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
+    ) -> AiChatResult<Self> {
         let now = OffsetDateTime::now_utc();
         let parent_folder = parent_id
             .map(|folder_id| SqlFolder::find(folder_id, conn))
@@ -74,8 +72,9 @@ impl Folder {
             created_time: now,
             updated_time: now,
         };
-        new_folder.insert(conn)?;
-        Ok(())
+        let new_folder = new_folder.insert(conn)?;
+        let folder = Self::from_sql_folder(new_folder, conn)?;
+        Ok(folder)
     }
     pub fn update(
         id: i32,
@@ -175,7 +174,7 @@ impl Folder {
         let update_list = SqlFolder::find_by_path_pre(old_path_pre, conn)?;
         let time = OffsetDateTime::now_utc();
         update_list
-            .into_iter()
+            .iter()
             .map(|old| SqlUpdateFolder::from_new_path(old, old_path_pre, new_path_pre, time))
             .try_for_each(|update| {
                 update.update(conn)?;
@@ -222,8 +221,14 @@ impl Folder {
 }
 
 #[derive(Deserialize)]
-pub struct NewFolder {
-    name: String,
+pub struct NewFolder<'a> {
+    name: &'a str,
     #[serde(rename = "parentId")]
     parent_id: Option<i32>,
+}
+
+impl<'a> NewFolder<'a> {
+    pub fn new(name: &'a str, parent_id: Option<i32>) -> Self {
+        Self { name, parent_id }
+    }
 }
