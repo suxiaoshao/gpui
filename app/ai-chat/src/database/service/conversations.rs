@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use diesel::SqliteConnection;
 use gpui::SharedString;
 use gpui_component::sidebar::SidebarMenuItem;
@@ -12,11 +14,12 @@ use crate::{
         },
     },
     errors::{AiChatError, AiChatResult},
+    store::{ChatData, ChatDataEvent},
 };
 
 use super::utils::serialize_offset_date_time;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub struct Conversation {
     pub id: i32,
     pub path: String,
@@ -44,10 +47,17 @@ pub struct Conversation {
 
 impl From<&Conversation> for SidebarMenuItem {
     fn from(value: &Conversation) -> Self {
+        let id = value.id;
         SidebarMenuItem::new(SharedString::from(format!(
             "{} {}",
             value.icon, value.title
         )))
+        .on_click(move |_this, _window, cx| {
+            let chat_data = cx.global::<ChatData>().deref().clone();
+            chat_data.update(cx, move |_this, cx| {
+                cx.emit(ChatDataEvent::AddTab(id));
+            });
+        })
     }
 }
 

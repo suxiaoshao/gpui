@@ -1,7 +1,7 @@
 use crate::{
     database::{Conversation, Db, Folder, NewFolder},
     errors::AiChatResult,
-    views::home::HomeView,
+    views::home::{ConversationTabView, HomeView},
 };
 use gpui::*;
 use gpui_component::{
@@ -10,10 +10,13 @@ use gpui_component::{
     sidebar::SidebarMenuItem,
 };
 use std::ops::Deref;
+use tracing::{Level, event};
 
 pub struct ChatDataInner {
     pub(crate) conversations: Vec<Conversation>,
     pub(crate) folders: Vec<Folder>,
+    tabs: Vec<ConversationTabView>,
+    active_tab: Option<i32>,
 }
 
 impl ChatDataInner {
@@ -21,9 +24,17 @@ impl ChatDataInner {
         let conn = &mut cx.global::<Db>().get()?;
         let conversations = Conversation::query_without_folder(conn)?;
         let folders = Folder::query(conn)?;
+        let active_tab = conversations.first();
+        let mut tabs = Vec::new();
+        if let Some(tab) = active_tab {
+            tabs.push(tab.into());
+        }
+        let active_tab_id = active_tab.map(|tab| tab.id);
         Ok(Self {
             conversations,
             folders,
+            tabs,
+            active_tab: active_tab_id,
         })
     }
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {
@@ -52,16 +63,72 @@ impl ChatDataInner {
         items.extend(self.conversations.iter().map(From::from));
         items
     }
+    fn add_tab(&mut self, conversation_id: i32) {
+        match (
+            self.tabs.iter().any(|id| id.id == conversation_id),
+            self.conversations
+                .iter()
+                .find(|Conversation { id, .. }| *id == conversation_id),
+        ) {
+            (true, Some(_)) => {
+                self.active_tab = Some(conversation_id);
+            }
+            (false, Some(conversation)) => {
+                self.tabs.push(conversation.into());
+                self.active_tab = Some(conversation.id);
+            }
+            (false, None) => {}
+            (true, None) => {
+                self.tabs = self
+                    .tabs
+                    .iter()
+                    .filter(|id| id.id != conversation_id)
+                    .cloned()
+                    .collect();
+                self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+            }
+        }
+    }
+    fn remove_tab(&mut self, conversation_id: i32) {
+        if self.tabs.iter().any(|id| id.id == conversation_id) {
+            self.tabs = self
+                .tabs
+                .iter()
+                .filter(|id| id.id != conversation_id)
+                .cloned()
+                .collect();
+            self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+        }
+    }
+    pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
+        self.tabs.clone()
+    }
+    pub(crate) fn active_tab(&self) -> Option<&Conversation> {
+        self.active_tab.and_then(|id| {
+            self.conversations.iter().find(
+                |Conversation {
+                     id: conversation_id,
+                     ..
+                 }| *conversation_id == id,
+            )
+        })
+    }
 }
 
+#[derive(Debug)]
 pub enum ChatDataEvent {
     AddConversation {
-        name: String,
+        name: SharedString,
+        icon: SharedString,
+        info: Option<SharedString>,
+        template: i32,
     },
     AddFolder {
         name: String,
         parent_id: Option<i32>,
     },
+    AddTab(i32),
+    RemoveTab(i32),
 }
 
 impl EventEmitter<ChatDataEvent> for AiChatResult<ChatDataInner> {}
@@ -84,14 +151,22 @@ impl Global for ChatData {}
 
 impl ChatData {
     pub fn subscribe_in(
-        this: &mut HomeView,
+        _this: &mut HomeView,
         state: &Entity<AiChatResult<ChatDataInner>>,
-        event: &ChatDataEvent,
+        chat_data_event: &ChatDataEvent,
         window: &mut Window,
         cx: &mut Context<HomeView>,
     ) {
-        match event {
-            ChatDataEvent::AddConversation { name } => todo!(),
+        let span = tracing::info_span!("chat data event");
+        let _enter = span.enter();
+        event!(Level::INFO, "start:{chat_data_event:?}");
+        match chat_data_event {
+            ChatDataEvent::AddConversation {
+                name,
+                icon,
+                info,
+                template,
+            } => todo!(),
             ChatDataEvent::AddFolder { name, parent_id } => {
                 match Self::add_folder(state, name, *parent_id, cx) {
                     Ok(_) => {}
@@ -103,8 +178,23 @@ impl ChatData {
                                 .with_type(NotificationType::Error),
                             cx,
                         );
+                        event!(Level::ERROR, "add folder error:{err:?}")
                     }
                 }
+            }
+            ChatDataEvent::AddTab(conversation_id) => {
+                state.update(cx, |this, cx| {
+                    if let Ok(this) = this {
+                        this.add_tab(*conversation_id);
+                    }
+                });
+            }
+            ChatDataEvent::RemoveTab(conversation_id) => {
+                state.update(cx, |this, cx| {
+                    if let Ok(this) = this {
+                        this.remove_tab(*conversation_id);
+                    }
+                });
             }
         }
     }

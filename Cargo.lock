@@ -1884,6 +1884,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "r2d2",
+ "serde_json",
  "sqlite-wasm-rs",
  "time",
 ]

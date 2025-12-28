@@ -78,7 +78,7 @@ fn main() -> AiChatResult<()> {
         )
         .init();
 
-    let span = tracing::info_span!("init");
+    let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
     let app = Application::new().with_assets(gpui_component_assets::Assets);
     event!(Level::INFO, "app created");

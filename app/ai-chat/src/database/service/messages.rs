@@ -1,10 +1,10 @@
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 use crate::{
-    errors::{AiChatError, AiChatResult},
     database::{
         Role, Status,
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },
+    errors::{AiChatError, AiChatResult},
 };
 use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ pub struct TemporaryMessage {
     pub id: usize,
     pub role: Role,
     pub content: Content,
+    pub send_content: serde_json::Value,
     pub status: Status,
     #[serde(
         rename = "createdTime",
@@ -150,15 +151,23 @@ pub struct NewMessage {
     pub conversation_id: i32,
     pub role: Role,
     pub content: Content,
+    pub send_content: serde_json::Value,
     pub status: Status,
 }
 
 impl NewMessage {
-    pub fn new(conversation_id: i32, role: Role, content: Content, status: Status) -> Self {
+    pub fn new(
+        conversation_id: i32,
+        role: Role,
+        content: Content,
+        send_content: serde_json::Value,
+        status: Status,
+    ) -> Self {
         Self {
             conversation_id,
             role,
             content,
+            send_content,
             status,
         }
     }
@@ -170,6 +179,7 @@ impl Message {
             conversation_id,
             role,
             content,
+            send_content,
             status,
         }: NewMessage,
         conn: &mut SqliteConnection,
@@ -183,6 +193,7 @@ impl Message {
                 conversation_path: path,
                 role: role.to_string(),
                 content: serde_json::to_string(&content)?,
+                send_content,
                 status: status.to_string(),
                 created_time: time,
                 updated_time: time,
@@ -205,6 +216,7 @@ impl Message {
                 |TemporaryMessage {
                      role,
                      content,
+                     send_content,
                      created_time,
                      updated_time,
                      start_time,
@@ -217,6 +229,7 @@ impl Message {
                         conversation_path: path.clone(),
                         role: role.to_string(),
                         content: serde_json::to_string(&content)?,
+                        send_content,
                         status: status.to_string(),
                         created_time,
                         updated_time,

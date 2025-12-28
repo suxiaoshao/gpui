@@ -59,6 +59,9 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let name_input = cx.new(|cx| InputState::new(window, cx));
+        let info_input = cx.new(|cx| InputState::new(window, cx));
+        let template_input = cx.new(|cx| InputState::new(window, cx));
         window.open_dialog(cx, |dialog, _, _| {
             dialog
                 .title("Add Conversation")
@@ -67,7 +70,7 @@ impl SidebarView {
     }
     fn add_folder(&mut self, _: &AddFolder, window: &mut Window, cx: &mut Context<Self>) {
         let folder_input = cx.new(|cx| InputState::new(window, cx));
-        window.open_dialog(cx, move |dialog, window, cx| {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title("Add Folder")
                 .child(v_form().child(field().label("Name").child(Input::new(&folder_input))))
