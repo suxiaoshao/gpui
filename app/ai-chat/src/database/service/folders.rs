@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use super::utils::serialize_offset_date_time;
 use crate::{
     database::{
@@ -5,13 +7,23 @@ use crate::{
         model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
     },
     errors::{AiChatError, AiChatResult},
+    store::{ChatData, ChatDataEvent},
+    views::home::{AddConversation, AddFolder},
 };
 use diesel::SqliteConnection;
-use gpui_component::{IconName, sidebar::SidebarMenuItem};
+use gpui::*;
+use gpui_component::{
+    IconName, Sizable, WindowExt,
+    button::{Button, ButtonVariants},
+    form::{field, v_form},
+    input::{Input, InputState},
+    menu::DropdownMenu,
+    sidebar::SidebarMenuItem,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct Folder {
     pub id: i32,
     pub name: String,
@@ -36,10 +48,81 @@ pub struct Folder {
 
 impl From<&Folder> for SidebarMenuItem {
     fn from(value: &Folder) -> Self {
+        let parent_id = Some(value.id);
+        let children = value
+            .folders
+            .iter()
+            .map(SidebarMenuItem::from)
+            .chain(value.conversations.iter().map(SidebarMenuItem::from));
         SidebarMenuItem::new(&value.name)
             .icon(IconName::Folder)
-            .children(&value.folders)
-            .children(&value.conversations)
+            .click_to_open(true)
+            .children(children)
+            .suffix(
+                div()
+                    .on_action(move |_: &AddFolder, window, cx| {
+                        let folder_input = cx.new(|cx| InputState::new(window, cx));
+                        window.open_dialog(cx, move |dialog, _window, _cx| {
+                            dialog
+                                .title("Add Folder")
+                                .child(
+                                    v_form().child(
+                                        field().label("Name").child(Input::new(&folder_input)),
+                                    ),
+                                )
+                                .footer({
+                                    let folder_input = folder_input.clone();
+                                    move |_this, _state, _window, _cx| {
+                                        vec![
+                                            Button::new("ok").primary().label("Submit").on_click({
+                                                let folder_input = folder_input.clone();
+                                                move |_, window, cx| {
+                                                    let name =
+                                                        folder_input.read(cx).value().to_string();
+                                                    if !name.is_empty() {
+                                                        let chat_data =
+                                                            cx.global::<ChatData>().deref().clone();
+                                                        chat_data.update(cx, |_this, cx| {
+                                                            cx.emit(ChatDataEvent::AddFolder {
+                                                                name,
+                                                                parent_id,
+                                                            });
+                                                        });
+                                                    }
+                                                    window.close_dialog(cx);
+                                                }
+                                            }),
+                                            Button::new("cancel").label("Cancel").on_click(
+                                                |_, window, cx| {
+                                                    window.close_dialog(cx);
+                                                },
+                                            ),
+                                        ]
+                                    }
+                                })
+                        });
+                    })
+                    .on_action(|_: &AddConversation, window, cx| {})
+                    .child(
+                        Button::new(value.id)
+                            .icon(IconName::EllipsisVertical)
+                            .ghost()
+                            .xsmall()
+                            .dropdown_menu(|this, _window, _cx| {
+                                this.check_side(gpui_component::Side::Left)
+                                    .menu_with_icon(
+                                        "Add Conversation",
+                                        IconName::Plus,
+                                        Box::new(AddConversation),
+                                    )
+                                    .menu_with_icon(
+                                        "Add Folder",
+                                        IconName::Plus,
+                                        Box::new(AddFolder),
+                                    )
+                            }),
+                    ),
+            )
     }
 }
 

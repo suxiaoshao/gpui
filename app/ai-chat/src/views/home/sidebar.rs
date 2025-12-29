@@ -13,6 +13,7 @@ use gpui_component::{
     v_flex,
 };
 use std::ops::Deref;
+use tracing::{Level, event};
 
 mod conversation_item;
 mod folder_item;
@@ -30,6 +31,7 @@ actions!(
 const CONTEXT: &str = "sidebar_view";
 
 pub fn init(cx: &mut App) {
+    event!(Level::INFO, "init sidebar_view");
     cx.bind_keys([
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-n", AddConversation, Some(CONTEXT)),
@@ -44,13 +46,17 @@ pub fn init(cx: &mut App) {
 
 pub(crate) struct SidebarView {
     chat_data: Entity<AiChatResult<ChatDataInner>>,
+    focus_handle: FocusHandle,
 }
 
 impl SidebarView {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_data = cx.global::<ChatData>().deref().clone();
-
-        Self { chat_data }
+        let focus_handle = cx.focus_handle();
+        Self {
+            chat_data,
+            focus_handle,
+        }
     }
 
     fn add_conversation(
@@ -59,6 +65,9 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let span = tracing::info_span!("add_conversation action");
+        let _enter = span.enter();
+        event!(Level::INFO, "add_conversation action");
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let info_input = cx.new(|cx| InputState::new(window, cx));
         let template_input = cx.new(|cx| InputState::new(window, cx));
@@ -69,6 +78,9 @@ impl SidebarView {
         });
     }
     fn add_folder(&mut self, _: &AddFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let span = tracing::info_span!("add_folder action");
+        let _enter = span.enter();
+        event!(Level::INFO, "add_folder action");
         let folder_input = cx.new(|cx| InputState::new(window, cx));
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
@@ -114,6 +126,7 @@ impl Render for SidebarView {
     ) -> impl gpui::IntoElement {
         v_flex()
             .key_context(CONTEXT)
+            .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::add_conversation))
             .on_action(cx.listener(Self::add_folder))
             .size_full()

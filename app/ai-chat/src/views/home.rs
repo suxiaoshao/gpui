@@ -13,6 +13,7 @@ use gpui_component::{
 mod sidebar;
 mod tabs;
 
+pub(crate) use sidebar::{AddConversation, AddFolder};
 pub(crate) use tabs::ConversationTabView;
 
 pub fn init(cx: &mut App) {

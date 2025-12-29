@@ -33,10 +33,10 @@ impl RenderOnce for ConversationTabView {
             .child(
                 div()
                     .id(self.id)
-                    .child(Icon::new(IconName::Close))
+                    .child(Icon::new(IconName::Close).size_3())
                     .absolute()
-                    .top(px(9.))
-                    .right_0p5()
+                    .top(px(6.))
+                    .right_1()
                     .opacity(0.)
                     .p_0p5()
                     .rounded_sm()
@@ -49,7 +49,7 @@ impl RenderOnce for ConversationTabView {
                         });
                     }),
             )
-            .child(Label::new(self.name).text_sm())
+            .child(Label::new(self.name).text_xs().line_height(rems(0.75)))
             .px_6()
             .py_2()
             .bg(cx.theme().tab_active)

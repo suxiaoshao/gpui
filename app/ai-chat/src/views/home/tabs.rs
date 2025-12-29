@@ -27,7 +27,7 @@ impl Render for TabsView {
         v_flex().flex_1().map(|this| match self.chat_data.read(cx) {
             Ok(chat_data) => this.child(
                 h_flex()
-                    .h_9()
+                    .h_7()
                     .bg(cx.theme().accent)
                     .children(chat_data.tabs())
                     .child(

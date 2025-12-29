@@ -19,7 +19,7 @@ use crate::{
 
 use super::utils::serialize_offset_date_time;
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct Conversation {
     pub id: i32,
     pub path: String,
