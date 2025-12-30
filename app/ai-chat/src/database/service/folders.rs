@@ -1,4 +1,5 @@
 use super::utils::serialize_offset_date_time;
+use crate::store::{ChatData, ChatDataEvent};
 use crate::views::home::AddConversation;
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
@@ -11,6 +12,7 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use gpui::*;
+use gpui_component::input::Delete;
 use gpui_component::{
     IconName, Sizable,
     button::{Button, ButtonVariants},
@@ -18,6 +20,7 @@ use gpui_component::{
     sidebar::SidebarMenuItem,
 };
 use serde::{Deserialize, Serialize};
+use std::ops::Deref;
 use time::OffsetDateTime;
 
 #[derive(Serialize, Debug)]
@@ -45,6 +48,7 @@ pub struct Folder {
 
 impl From<&Folder> for SidebarMenuItem {
     fn from(value: &Folder) -> Self {
+        let id = value.id;
         let parent_id = Some(value.id);
         let children = value
             .folders
@@ -63,8 +67,14 @@ impl From<&Folder> for SidebarMenuItem {
                     .on_action(move |_: &AddConversation, window, cx| {
                         add_conversation_dialog(parent_id, window, cx);
                     })
+                    .on_action(move |_: &Delete, _window, cx| {
+                        let chat_data = cx.global::<ChatData>().deref().clone();
+                        chat_data.update(cx, move |_this, cx| {
+                            cx.emit(ChatDataEvent::DeleteFolder(id));
+                        });
+                    })
                     .child(
-                        Button::new(value.id)
+                        Button::new(id)
                             .icon(IconName::EllipsisVertical)
                             .ghost()
                             .xsmall()
@@ -80,6 +90,7 @@ impl From<&Folder> for SidebarMenuItem {
                                         IconName::Plus,
                                         Box::new(AddFolder),
                                     )
+                                    .menu_with_icon("Delete", IconName::Delete, Box::new(Delete))
                             }),
                     ),
             )

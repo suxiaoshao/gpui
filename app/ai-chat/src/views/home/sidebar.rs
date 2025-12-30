@@ -16,15 +16,7 @@ use tracing::{Level, event};
 mod conversation_item;
 mod folder_item;
 
-actions!(
-    sidebar_view,
-    [
-        AddConversation,
-        AddFolder,
-        DeleteConversation,
-        EditConversation
-    ]
-);
+actions!(sidebar_view, [AddConversation, AddFolder, Delete, Edit]);
 
 const CONTEXT: &str = "sidebar_view";
 
@@ -38,7 +30,8 @@ pub fn init(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-n", AddFolder, None),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("cmd-shift-n", AddFolder, None),
+        KeyBinding::new("ctrl-shift-n", AddFolder, None),
+        KeyBinding::new("backspace", Delete, None),
     ])
 }
 

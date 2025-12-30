@@ -1,3 +1,8 @@
+use crate::{
+    database::{ConversationTemplate, Db},
+    errors::AiChatResult,
+    store::{ChatData, ChatDataEvent},
+};
 use gpui::*;
 use gpui_component::{
     IndexPath, WindowExt,
@@ -9,12 +14,6 @@ use gpui_component::{
 };
 use std::ops::Deref;
 use tracing::{Level, event};
-
-use crate::{
-    database::{ConversationTemplate, Db},
-    errors::AiChatResult,
-    store::{ChatData, ChatDataEvent},
-};
 
 pub fn add_conversation_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {
     let span = tracing::info_span!("add_conversation action");

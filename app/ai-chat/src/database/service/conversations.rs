@@ -1,9 +1,14 @@
-use std::ops::Deref;
-
 use diesel::SqliteConnection;
-use gpui::SharedString;
-use gpui_component::sidebar::SidebarMenuItem;
+use gpui::*;
+use gpui_component::{
+    IconName, Sizable,
+    button::{Button, ButtonVariants},
+    input::Delete,
+    menu::DropdownMenu,
+    sidebar::SidebarMenuItem,
+};
 use pinyin::ToPinyin;
+use std::ops::Deref;
 use time::OffsetDateTime;
 
 use crate::{
@@ -58,6 +63,28 @@ impl From<&Conversation> for SidebarMenuItem {
                 cx.emit(ChatDataEvent::AddTab(id));
             });
         })
+        .suffix(
+            div()
+                .on_action(move |_: &Delete, _window, cx| {
+                    let chat_data = cx.global::<ChatData>().deref().clone();
+                    chat_data.update(cx, move |_this, cx| {
+                        cx.emit(ChatDataEvent::DeleteConversation(id));
+                    });
+                })
+                .child(
+                    Button::new(value.id)
+                        .icon(IconName::EllipsisVertical)
+                        .ghost()
+                        .xsmall()
+                        .dropdown_menu(|this, _window, _cx| {
+                            this.check_side(gpui_component::Side::Left).menu_with_icon(
+                                "Delete",
+                                IconName::Delete,
+                                Box::new(Delete),
+                            )
+                        }),
+                ),
+        )
     }
 }
 
@@ -293,8 +320,7 @@ fn get_chinese_str(data: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-
-    use super::*;
+    use crate::database::service::conversations::get_chinese_str;
 
     #[test]
     fn test_pinyin() {

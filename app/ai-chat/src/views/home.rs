@@ -42,6 +42,7 @@ impl Render for HomeView {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
         let chat_data = cx.global::<store::ChatData>().read(cx);
         v_flex()
             .size_full()
@@ -55,5 +56,6 @@ impl Render for HomeView {
                 Err(err) => this.child(Alert::error("home-alert", err.to_string()).title("Error")),
             })
             .children(dialog_layer)
+            .children(notification_layer)
     }
 }
