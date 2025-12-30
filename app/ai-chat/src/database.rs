@@ -93,10 +93,10 @@ fn create_tables(conn: &DbConn) -> AiChatResult<()> {
     let SqlConversationTemplate { id, .. } = default_conversation_template.insert(conn)?;
     let now = OffsetDateTime::now_utc();
     let default_conversation = SqlNewConversation {
-        title: "默认".to_string(),
+        title: "默认",
         path: "/默认".to_string(),
         folder_id: None,
-        icon: "🤖".to_string(),
+        icon: "🤖",
         info: None,
         template_id: id,
         created_time: now,

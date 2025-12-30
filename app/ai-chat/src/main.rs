@@ -9,6 +9,7 @@ use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod adapter;
+mod components;
 mod config;
 mod database;
 mod errors;

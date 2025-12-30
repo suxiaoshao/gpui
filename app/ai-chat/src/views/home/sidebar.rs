@@ -1,13 +1,11 @@
 use crate::{
+    components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
-    store::{ChatData, ChatDataEvent, ChatDataInner},
+    store::{ChatData, ChatDataInner},
 };
 use gpui::*;
 use gpui_component::{
-    IconName, Side, WindowExt,
-    button::{Button, ButtonVariants},
-    form::{field, v_form},
-    input::{Input, InputState},
+    IconName, Side,
     menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu},
     v_flex,
@@ -34,13 +32,13 @@ pub fn init(cx: &mut App) {
     event!(Level::INFO, "init sidebar_view");
     cx.bind_keys([
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-n", AddConversation, Some(CONTEXT)),
+        KeyBinding::new("cmd-n", AddConversation, None),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-n", AddConversation, Some(CONTEXT)),
+        KeyBinding::new("ctrl-n", AddConversation, None),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-n", AddFolder, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-n", AddFolder, None),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("cmd-shift-n", AddFolder, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-n", AddFolder, None),
     ])
 }
 
@@ -65,56 +63,10 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let span = tracing::info_span!("add_conversation action");
-        let _enter = span.enter();
-        event!(Level::INFO, "add_conversation action");
-        let name_input = cx.new(|cx| InputState::new(window, cx));
-        let info_input = cx.new(|cx| InputState::new(window, cx));
-        let template_input = cx.new(|cx| InputState::new(window, cx));
-        window.open_dialog(cx, |dialog, _, _| {
-            dialog
-                .title("Add Conversation")
-                .child("This is a dialog dialog.")
-        });
+        add_conversation_dialog(None, window, cx);
     }
     fn add_folder(&mut self, _: &AddFolder, window: &mut Window, cx: &mut Context<Self>) {
-        let span = tracing::info_span!("add_folder action");
-        let _enter = span.enter();
-        event!(Level::INFO, "add_folder action");
-        let folder_input = cx.new(|cx| InputState::new(window, cx));
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog
-                .title("Add Folder")
-                .child(v_form().child(field().label("Name").child(Input::new(&folder_input))))
-                .footer({
-                    let folder_input = folder_input.clone();
-                    move |_this, _state, _window, _cx| {
-                        vec![
-                            Button::new("ok").primary().label("Submit").on_click({
-                                let folder_input = folder_input.clone();
-                                move |_, window, cx| {
-                                    let name = folder_input.read(cx).value().to_string();
-                                    if !name.is_empty() {
-                                        let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, |_this, cx| {
-                                            cx.emit(ChatDataEvent::AddFolder {
-                                                name,
-                                                parent_id: None,
-                                            });
-                                        });
-                                    }
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                            Button::new("cancel")
-                                .label("Cancel")
-                                .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
-                                }),
-                        ]
-                    }
-                })
-        });
+        add_folder_dialog(None, window, cx);
     }
 }
 

@@ -5,18 +5,18 @@ use time::OffsetDateTime;
 
 #[derive(Insertable)]
 #[diesel(table_name = conversations)]
-pub struct SqlNewConversation {
-    pub(crate) title: String,
+pub struct SqlNewConversation<'a> {
+    pub(crate) title: &'a str,
     pub(crate) path: String,
     pub(crate) folder_id: Option<i32>,
-    pub(crate) icon: String,
+    pub(crate) icon: &'a str,
     pub(crate) created_time: OffsetDateTime,
     pub(crate) updated_time: OffsetDateTime,
-    pub(crate) info: Option<String>,
+    pub(crate) info: Option<&'a str>,
     pub(crate) template_id: i32,
 }
 
-impl SqlNewConversation {
+impl SqlNewConversation<'_> {
     pub fn insert(self, conn: &mut SqliteConnection) -> AiChatResult<SqlConversation> {
         let conversation = diesel::insert_into(conversations::table)
             .values(self)
@@ -114,18 +114,18 @@ impl SqlConversation {
 
 #[derive(AsChangeset, Identifiable, Debug)]
 #[diesel(table_name = conversations)]
-pub struct SqlUpdateConversation {
+pub struct SqlUpdateConversation<'a> {
     pub(crate) id: i32,
     pub(crate) folder_id: Option<i32>,
     pub(crate) path: String,
-    pub(crate) title: String,
-    pub(crate) icon: String,
+    pub(crate) title: &'a str,
+    pub(crate) icon: &'a str,
     pub(crate) updated_time: OffsetDateTime,
-    pub(crate) info: Option<String>,
+    pub(crate) info: Option<&'a str>,
     pub(crate) template_id: i32,
 }
 
-impl SqlUpdateConversation {
+impl SqlUpdateConversation<'_> {
     pub fn update(self, conn: &mut SqliteConnection) -> AiChatResult<()> {
         diesel::update(conversations::table)
             .filter(conversations::id.eq(self.id))
@@ -133,31 +133,32 @@ impl SqlUpdateConversation {
             .execute(conn)?;
         Ok(())
     }
-    pub fn from_new_path(
+    pub fn from_new_path<'a>(
         SqlConversation {
             id,
             folder_id,
             title,
             icon,
-            mut path,
+            path,
             info,
             template_id,
             ..
-        }: SqlConversation,
+        }: &'a SqlConversation,
         old_path_pre: &str,
         new_path_pre: &str,
         time: OffsetDateTime,
-    ) -> Self {
+    ) -> SqlUpdateConversation<'a> {
+        let mut path = path.clone();
         path.replace_range(0..old_path_pre.len(), new_path_pre);
-        Self {
-            id,
-            folder_id,
+        SqlUpdateConversation {
+            id: *id,
+            folder_id: *folder_id,
             path,
             title,
             icon,
             updated_time: time,
-            info,
-            template_id,
+            info: info.as_ref().map(|a| a.as_str()),
+            template_id: *template_id,
         }
     }
     pub fn move_folder(

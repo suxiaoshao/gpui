@@ -1,5 +1,5 @@
 use crate::{
-    database::{Conversation, Db, Folder, NewFolder},
+    database::{Conversation, Db, Folder, NewConversation, NewFolder},
     errors::AiChatResult,
     views::home::{ConversationTabView, HomeView},
 };
@@ -57,18 +57,45 @@ impl ChatDataInner {
             self.folders.push(new_folder);
         }
     }
+    fn add_conversation(&mut self, new_conversation: Conversation) {
+        if let Some(parent_id) = new_conversation.folder_id {
+            if let Some(parent) = ChatDataInner::get_folder(&mut self.folders, parent_id) {
+                parent.conversations.push(new_conversation);
+            }
+        } else {
+            self.conversations.push(new_conversation);
+        }
+    }
     pub(crate) fn sidebar_items(&self) -> Vec<SidebarMenuItem> {
         let mut items = Vec::new();
         items.extend(self.folders.iter().map(From::from));
         items.extend(self.conversations.iter().map(From::from));
         items
     }
+    fn get_conversation<'a>(
+        folders: &'a [Folder],
+        conversations: &'a [Conversation],
+        conversation_id: i32,
+    ) -> Option<&'a Conversation> {
+        if let Some(find) = conversations
+            .iter()
+            .find(|Conversation { id, .. }| *id == conversation_id)
+        {
+            return Some(find);
+        }
+        for folder in folders {
+            if let Some(conversation) =
+                Self::get_conversation(&folder.folders, &folder.conversations, conversation_id)
+            {
+                return Some(conversation);
+            }
+        }
+        None
+    }
     fn add_tab(&mut self, conversation_id: i32) {
         match (
             self.tabs.iter().any(|id| id.id == conversation_id),
-            self.conversations
-                .iter()
-                .find(|Conversation { id, .. }| *id == conversation_id),
+            Self::get_conversation(&self.folders, &self.conversations, conversation_id),
         ) {
             (true, Some(_)) => {
                 self.active_tab = Some(conversation_id);
@@ -104,14 +131,8 @@ impl ChatDataInner {
         self.tabs.clone()
     }
     pub(crate) fn active_tab(&self) -> Option<&Conversation> {
-        self.active_tab.and_then(|id| {
-            self.conversations.iter().find(
-                |Conversation {
-                     id: conversation_id,
-                     ..
-                 }| *conversation_id == id,
-            )
-        })
+        self.active_tab
+            .and_then(|id| Self::get_conversation(&self.folders, &self.conversations, id))
     }
 }
 
@@ -122,9 +143,10 @@ pub enum ChatDataEvent {
         icon: SharedString,
         info: Option<SharedString>,
         template: i32,
+        parent_id: Option<i32>,
     },
     AddFolder {
-        name: String,
+        name: SharedString,
         parent_id: Option<i32>,
     },
     AddTab(i32),
@@ -166,7 +188,28 @@ impl ChatData {
                 icon,
                 info,
                 template,
-            } => todo!(),
+                parent_id,
+            } => match Self::add_conversation(
+                state,
+                name,
+                icon,
+                info.as_ref().map(|x| x.as_str()),
+                *parent_id,
+                *template,
+                cx,
+            ) {
+                Ok(_) => {}
+                Err(err) => {
+                    window.push_notification(
+                        Notification::new()
+                            .title("Add Conversation Failed")
+                            .message(SharedString::from(err.to_string()))
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                    event!(Level::ERROR, "add conversation error:{err:?}")
+                }
+            },
             ChatDataEvent::AddFolder { name, parent_id } => {
                 match Self::add_folder(state, name, *parent_id, cx) {
                     Ok(_) => {}
@@ -207,9 +250,34 @@ impl ChatData {
         let new_folder = NewFolder::new(name, parent_id);
         let conn = &mut cx.global::<Db>().get()?;
         let folder = Folder::insert(new_folder, conn)?;
-        state.update(cx, |data, cx| {
+        state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.add_folder(folder);
+            }
+        });
+        Ok(())
+    }
+    fn add_conversation(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        title: &str,
+        icon: &str,
+        info: Option<&str>,
+        folder_id: Option<i32>,
+        template_id: i32,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let new_conversation = NewConversation {
+            title,
+            folder_id,
+            icon,
+            info,
+            template_id,
+        };
+        let conn = &mut cx.global::<Db>().get()?;
+        let conversation = Conversation::insert(new_conversation, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.add_conversation(conversation);
             }
         });
         Ok(())

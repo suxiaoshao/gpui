@@ -62,12 +62,12 @@ impl From<&Conversation> for SidebarMenuItem {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub struct NewConversation {
-    pub title: String,
+pub struct NewConversation<'a> {
+    pub title: &'a str,
     #[serde(rename = "folderId")]
     pub folder_id: Option<i32>,
-    pub icon: String,
-    pub info: Option<String>,
+    pub icon: &'a str,
+    pub info: Option<&'a str>,
     #[serde(rename = "templateId")]
     pub template_id: i32,
 }
@@ -220,7 +220,7 @@ impl Conversation {
         let update_list = SqlConversation::find_by_path_pre(old_path_pre, conn)?;
         let time = OffsetDateTime::now_utc();
         update_list
-            .into_iter()
+            .iter()
             .map(|old| SqlUpdateConversation::from_new_path(old, old_path_pre, new_path_pre, time))
             .try_for_each(|update| {
                 update.update(conn)?;

@@ -1,22 +1,19 @@
-use std::ops::Deref;
-
 use super::utils::serialize_offset_date_time;
+use crate::views::home::AddConversation;
 use crate::{
+    components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     database::{
         Conversation, Message,
         model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
     },
     errors::{AiChatError, AiChatResult},
-    store::{ChatData, ChatDataEvent},
-    views::home::{AddConversation, AddFolder},
+    views::home::AddFolder,
 };
 use diesel::SqliteConnection;
 use gpui::*;
 use gpui_component::{
-    IconName, Sizable, WindowExt,
+    IconName, Sizable,
     button::{Button, ButtonVariants},
-    form::{field, v_form},
-    input::{Input, InputState},
     menu::DropdownMenu,
     sidebar::SidebarMenuItem,
 };
@@ -61,48 +58,11 @@ impl From<&Folder> for SidebarMenuItem {
             .suffix(
                 div()
                     .on_action(move |_: &AddFolder, window, cx| {
-                        let folder_input = cx.new(|cx| InputState::new(window, cx));
-                        window.open_dialog(cx, move |dialog, _window, _cx| {
-                            dialog
-                                .title("Add Folder")
-                                .child(
-                                    v_form().child(
-                                        field().label("Name").child(Input::new(&folder_input)),
-                                    ),
-                                )
-                                .footer({
-                                    let folder_input = folder_input.clone();
-                                    move |_this, _state, _window, _cx| {
-                                        vec![
-                                            Button::new("ok").primary().label("Submit").on_click({
-                                                let folder_input = folder_input.clone();
-                                                move |_, window, cx| {
-                                                    let name =
-                                                        folder_input.read(cx).value().to_string();
-                                                    if !name.is_empty() {
-                                                        let chat_data =
-                                                            cx.global::<ChatData>().deref().clone();
-                                                        chat_data.update(cx, |_this, cx| {
-                                                            cx.emit(ChatDataEvent::AddFolder {
-                                                                name,
-                                                                parent_id,
-                                                            });
-                                                        });
-                                                    }
-                                                    window.close_dialog(cx);
-                                                }
-                                            }),
-                                            Button::new("cancel").label("Cancel").on_click(
-                                                |_, window, cx| {
-                                                    window.close_dialog(cx);
-                                                },
-                                            ),
-                                        ]
-                                    }
-                                })
-                        });
+                        add_folder_dialog(parent_id, window, cx);
                     })
-                    .on_action(|_: &AddConversation, window, cx| {})
+                    .on_action(move |_: &AddConversation, window, cx| {
+                        add_conversation_dialog(parent_id, window, cx);
+                    })
                     .child(
                         Button::new(value.id)
                             .icon(IconName::EllipsisVertical)

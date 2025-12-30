@@ -9,6 +9,7 @@
 use std::str::FromStr;
 
 use diesel::SqliteConnection;
+use gpui_component::select::SelectItem;
 use time::OffsetDateTime;
 
 use crate::{
@@ -52,6 +53,18 @@ pub struct ConversationTemplate {
         deserialize_with = "deserialize_offset_date_time"
     )]
     pub updated_time: OffsetDateTime,
+}
+
+impl SelectItem for ConversationTemplate {
+    type Value = i32;
+
+    fn title(&self) -> gpui::SharedString {
+        self.name.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
 }
 
 impl ConversationTemplate {

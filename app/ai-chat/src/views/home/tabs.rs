@@ -1,10 +1,9 @@
 use crate::{
-    database::Conversation,
     errors::AiChatResult,
-    store::{ChatData, ChatDataEvent, ChatDataInner},
+    store::{ChatData, ChatDataInner},
 };
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label, v_flex};
+use gpui_component::{ActiveTheme, h_flex, v_flex};
 use std::ops::Deref;
 
 mod conversation_tab;
@@ -23,7 +22,7 @@ impl TabsView {
 }
 
 impl Render for TabsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().flex_1().map(|this| match self.chat_data.read(cx) {
             Ok(chat_data) => this.child(
                 h_flex()
