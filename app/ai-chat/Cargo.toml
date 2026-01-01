@@ -6,8 +6,12 @@ edition = "2024"
 [dependencies]
 # ui
 gpui.workspace = true
-gpui-component.workspace = true
-gpui-component-assets.workspace = true
+gpui-component = { workspace = true, features = [
+  "tree-sitter-languages",
+] }
+gpui-component-assets = {workspace = true}
+rust-embed = { version = "8.9.0", features = ["interpolate-folder-path"] }
+anyhow = "1.0.100"
 
 # err
 thiserror = "2.0.17"
@@ -18,7 +22,7 @@ libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
 time = { version = "0.3.44", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.148"
 pinyin = "0.10.0"
 
 # log
@@ -40,12 +44,12 @@ futures = "0.3.31"
 async-stream = "0.3.6"
 
 # extension
-wasmtime = { version = "39.0.1" }
-wasmtime-wasi = "39.0.1"
+wasmtime = { version = "40.0.0" }
+wasmtime-wasi = "40.0.0"
 get-selected-text = "0.1.6"
 
 # config
-toml = "0.9.8"
+toml = "0.9.10"
 
 [dev-dependencies]
 anyhow = "1.0.100"

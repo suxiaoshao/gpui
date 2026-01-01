@@ -13,7 +13,7 @@ gpui-component-assets.workspace = true
 thiserror = "2.0.17"
 
 # http
-reqwest = "0.12.28"
+reqwest = "0.13.1"
 async-compat = "0.2.5"
 
 # html

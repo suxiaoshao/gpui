@@ -14,7 +14,7 @@ mod sidebar;
 mod tabs;
 
 pub(crate) use sidebar::{AddConversation, AddFolder};
-pub(crate) use tabs::ConversationTabView;
+pub(crate) use tabs::{ConversationPanelView, ConversationTabView};
 
 pub fn init(cx: &mut App) {
     sidebar::init(cx);
@@ -29,7 +29,7 @@ impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         store::init(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
-        let tabs = cx.new(|cx| TabsView::new(cx));
+        let tabs = cx.new(TabsView::new);
 
         Self { sidebar, tabs }
     }
@@ -46,12 +46,18 @@ impl Render for HomeView {
         let chat_data = cx.global::<store::ChatData>().read(cx);
         v_flex()
             .size_full()
-            .child(TitleBar::new())
+            .overflow_hidden()
+            .child(div().child(TitleBar::new()).flex_initial())
             .map(|this| match chat_data {
                 Ok(_) => this.child(
-                    h_resizable("vertical-layout")
-                        .child(resizable_panel().size(px(300.)).child(self.sidebar.clone()))
-                        .child(self.tabs.clone().into_any_element()),
+                    div()
+                        .overflow_hidden()
+                        .child(
+                            h_resizable("vertical-layout")
+                                .child(resizable_panel().size(px(300.)).child(self.sidebar.clone()))
+                                .child(self.tabs.clone().into_any_element()),
+                        )
+                        .flex_1(),
                 ),
                 Err(err) => this.child(Alert::error("home-alert", err.to_string()).title("Error")),
             })

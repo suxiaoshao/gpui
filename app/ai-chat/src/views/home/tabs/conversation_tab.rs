@@ -5,6 +5,7 @@ use std::ops::Deref;
 use crate::{
     database::Conversation,
     store::{ChatData, ChatDataEvent},
+    views::home::ConversationPanelView,
 };
 
 #[derive(IntoElement, Clone)]
@@ -12,14 +13,16 @@ pub(crate) struct ConversationTabView {
     pub(crate) id: i32,
     pub(crate) icon: SharedString,
     pub(crate) name: SharedString,
+    pub(crate) panel: Entity<ConversationPanelView>,
 }
 
-impl From<&Conversation> for ConversationTabView {
-    fn from(conversation: &Conversation) -> Self {
+impl From<(&Conversation, Entity<ConversationPanelView>)> for ConversationTabView {
+    fn from((conversation, panel): (&Conversation, Entity<ConversationPanelView>)) -> Self {
         Self {
             id: conversation.id,
             icon: SharedString::from(&conversation.icon),
             name: SharedString::from(&conversation.title),
+            panel,
         }
     }
 }

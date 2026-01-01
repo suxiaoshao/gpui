@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 gpui.workspace = true
-gpui-component.workspace = true
+gpui-component = { workspace = true, features = [
+  "tree-sitter-languages",
+] }
 gpui-component-assets.workspace = true
 
 url = "2.5.7"

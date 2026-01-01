@@ -1,7 +1,8 @@
 use crate::{
+    components::message::MessageItemView,
     database::{Conversation, Db, Folder, NewConversation, NewFolder},
     errors::AiChatResult,
-    views::home::{ConversationTabView, HomeView},
+    views::home::{ConversationPanelView, ConversationTabView, HomeView},
 };
 use gpui::*;
 use gpui_component::{
@@ -20,14 +21,20 @@ pub struct ChatDataInner {
 }
 
 impl ChatDataInner {
-    fn new(cx: &mut Context<AiChatResult<Self>>) -> AiChatResult<Self> {
+    fn new(window: &mut Window, cx: &mut Context<AiChatResult<Self>>) -> AiChatResult<Self> {
         let conn = &mut cx.global::<Db>().get()?;
         let conversations = Conversation::query_without_folder(conn)?;
         let folders = Folder::query(conn)?;
         let active_tab = conversations.first();
         let mut tabs = Vec::new();
         if let Some(tab) = active_tab {
-            tabs.push(tab.into());
+            tabs.push(
+                (
+                    tab,
+                    cx.new(|cx| ConversationPanelView::new(tab, window, cx)),
+                )
+                    .into(),
+            );
         }
         let active_tab_id = active_tab.map(|tab| tab.id);
         Ok(Self {
@@ -92,7 +99,7 @@ impl ChatDataInner {
         }
         None
     }
-    fn add_tab(&mut self, conversation_id: i32) {
+    fn add_tab(&mut self, conversation_id: i32, window: &mut Window, cx: &mut App) {
         match (
             self.tabs.iter().any(|id| id.id == conversation_id),
             Self::get_conversation(&self.folders, &self.conversations, conversation_id),
@@ -101,7 +108,13 @@ impl ChatDataInner {
                 self.active_tab = Some(conversation_id);
             }
             (false, Some(conversation)) => {
-                self.tabs.push(conversation.into());
+                self.tabs.push(
+                    (
+                        conversation,
+                        cx.new(|cx| ConversationPanelView::new(&conversation, window, cx)),
+                    )
+                        .into(),
+                );
                 self.active_tab = Some(conversation.id);
             }
             (false, None) => {}
@@ -182,6 +195,25 @@ impl ChatDataInner {
             .any(|ConversationTabView { id, .. }| Some(*id) == self.active_tab)
         {
             self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+        }
+    }
+    pub(crate) fn panel(&self) -> Option<&Entity<ConversationPanelView>> {
+        self.tabs.iter().find_map(|tab| {
+            if Some(tab.id) == self.active_tab {
+                Some(&tab.panel)
+            } else {
+                None
+            }
+        })
+    }
+    pub(crate) fn panel_messages(&self) -> Vec<MessageItemView> {
+        if let Some(conversation_id) = self.active_tab
+            && let Some(conversation) =
+                Self::get_conversation(&self.folders, &self.conversations, conversation_id)
+        {
+            conversation.messages.iter().map(From::from).collect()
+        } else {
+            vec![]
         }
     }
 }
@@ -280,12 +312,12 @@ impl ChatData {
             ChatDataEvent::AddTab(conversation_id) => {
                 state.update(cx, |this, cx| {
                     if let Ok(this) = this {
-                        this.add_tab(*conversation_id);
+                        this.add_tab(*conversation_id, window, cx);
                     }
                 });
             }
             ChatDataEvent::RemoveTab(conversation_id) => {
-                state.update(cx, |this, cx| {
+                state.update(cx, |this, _cx| {
                     if let Ok(this) = this {
                         this.remove_tab(*conversation_id);
                     }
@@ -395,7 +427,7 @@ impl ChatData {
 }
 
 pub(crate) fn init(window: &mut Window, cx: &mut Context<HomeView>) {
-    let chat_data = cx.new(ChatDataInner::new);
+    let chat_data = cx.new(|cx| ChatDataInner::new(window, cx));
     let _subscriptions = vec![cx.subscribe_in(&chat_data, window, ChatData::subscribe_in)];
     cx.set_global(ChatData {
         data: chat_data,

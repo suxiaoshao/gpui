@@ -9,6 +9,7 @@ use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod adapter;
+mod assets;
 mod components;
 mod config;
 mod database;
@@ -81,7 +82,9 @@ fn main() -> AiChatResult<()> {
 
     let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = Application::new()
+        .with_assets(gpui_component_assets::Assets)
+        .with_assets(assets::Assets::default());
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {
