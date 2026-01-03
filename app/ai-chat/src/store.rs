@@ -111,7 +111,7 @@ impl ChatDataInner {
                 self.tabs.push(
                     (
                         conversation,
-                        cx.new(|cx| ConversationPanelView::new(&conversation, window, cx)),
+                        cx.new(|cx| ConversationPanelView::new(conversation, window, cx)),
                     )
                         .into(),
                 );

@@ -1,12 +1,11 @@
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
-use std::ops::Deref;
-
 use crate::{
     database::Conversation,
     store::{ChatData, ChatDataEvent},
     views::home::ConversationPanelView,
 };
+use gpui::{prelude::FluentBuilder, *};
+use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
+use std::ops::Deref;
 
 #[derive(IntoElement, Clone)]
 pub(crate) struct ConversationTabView {

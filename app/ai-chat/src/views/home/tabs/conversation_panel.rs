@@ -1,18 +1,16 @@
-use std::ops::Deref;
-
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     input::{Input, InputState},
     scroll::ScrollableElement,
     v_flex,
 };
+use std::ops::Deref;
 
 use crate::{database::Conversation, store::ChatData};
 
 pub(crate) struct ConversationPanelView {
     conversation_id: i32,
     input_state: Entity<InputState>,
-    scroll_handle: ScrollHandle,
 }
 
 impl ConversationPanelView {
@@ -21,13 +19,12 @@ impl ConversationPanelView {
         Self {
             conversation_id: conversation.id,
             input_state,
-            scroll_handle: ScrollHandle::new(),
         }
     }
 }
 
 impl Render for ConversationPanelView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chat_data = cx.global::<ChatData>().deref().clone();
         let chat_data = chat_data.read(cx).as_ref().ok();
         v_flex()
@@ -37,23 +34,18 @@ impl Render for ConversationPanelView {
             .pb_2()
             .child(
                 div()
+                    .id("conversation-panel")
                     .flex_1()
-                    .relative()
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .id("conversation-panel")
-                            .track_scroll(&self.scroll_handle)
-                            .size_full()
-                            .overflow_scroll()
-                            .when_some(chat_data.map(|x| x.panel_messages()), |this, messages| {
-                                this.children(messages)
-                            }),
-                    )
-                    .vertical_scrollbar(&self.scroll_handle),
+                    .pb_2()
+                    .when_some(chat_data.map(|x| x.panel_messages()), |this, messages| {
+                        this.children(messages)
+                    })
+                    .overflow_y_scrollbar(),
             )
             .child(
                 div()
+                    .w_full()
                     .flex_initial()
                     .child(Input::new(&self.input_state))
                     .px_2(),

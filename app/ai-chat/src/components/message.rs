@@ -1,7 +1,5 @@
 use gpui::*;
-use gpui_component::{
-    ActiveTheme, Sizable, avatar::Avatar, divider::Divider, h_flex, text::TextView, v_flex,
-};
+use gpui_component::{Sizable, avatar::Avatar, divider::Divider, h_flex, text::TextView, v_flex};
 
 use crate::database::{Content, Message, Role};
 
@@ -59,7 +57,7 @@ impl RenderOnce for MessageItemView {
                             self.id,
                             match self.content {
                                 Content::Text(content) => content,
-                                Content::Extension { content, .. } => content,
+                                Content::Extension { source, .. } => source,
                             },
                             window,
                             cx,
