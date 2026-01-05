@@ -9,17 +9,13 @@ use std::ops::Deref;
 use crate::{database::Conversation, store::ChatData};
 
 pub(crate) struct ConversationPanelView {
-    conversation_id: i32,
     input_state: Entity<InputState>,
 }
 
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
-        Self {
-            conversation_id: conversation.id,
-            input_state,
-        }
+        Self { input_state }
     }
 }
 
@@ -37,10 +33,10 @@ impl Render for ConversationPanelView {
                     .id("conversation-panel")
                     .flex_1()
                     .overflow_hidden()
-                    .pb_2()
                     .when_some(chat_data.map(|x| x.panel_messages()), |this, messages| {
                         this.children(messages)
                     })
+                    .child(div().h_2())
                     .overflow_y_scrollbar(),
             )
             .child(

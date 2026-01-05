@@ -37,6 +37,7 @@ impl RenderOnce for ConversationTabView {
         let is_active = active_id == Some(self.id);
         h_flex()
             .id(self.id)
+            .flex_initial()
             .group("tab")
             .gap_1()
             .relative()
