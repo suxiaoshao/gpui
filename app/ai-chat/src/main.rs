@@ -16,6 +16,7 @@ mod database;
 mod errors;
 mod extensions;
 mod fetch;
+mod hotkey;
 mod store;
 mod views;
 
@@ -34,6 +35,7 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
+    hotkey::init(cx);
     database::init_store(cx);
     views::init(cx);
 }

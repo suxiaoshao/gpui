@@ -58,6 +58,10 @@ pub enum AiChatError {
     TomlParse(#[from] toml::de::Error),
     #[error("toml序列化错误:{}",.0)]
     TomlSerialize(#[from] toml::ser::Error),
+    #[error("GlobalHotKeyManager creation failed: {}", .0)]
+    GlobalHotKeyManagerCreationFailed(#[from] global_hotkey::Error),
+    #[error("HotKey creation failed: {}", .0)]
+    HotKeyCreationFailed(#[from] global_hotkey::hotkey::HotKeyParseError),
 }
 
 pub type AiChatResult<T> = Result<T, AiChatError>;
