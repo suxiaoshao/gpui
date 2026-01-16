@@ -10,7 +10,6 @@ use gpui_component::{
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu},
     v_flex,
 };
-use std::ops::Deref;
 use tracing::{Level, event};
 
 mod conversation_item;
@@ -36,13 +35,13 @@ pub fn init(cx: &mut App) {
 }
 
 pub(crate) struct SidebarView {
-    chat_data: Entity<AiChatResult<ChatDataInner>>,
+    chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
     focus_handle: FocusHandle,
 }
 
 impl SidebarView {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_data = cx.global::<ChatData>().deref().clone();
+        let chat_data = cx.global::<ChatData>().downgrade();
         let focus_handle = cx.focus_handle();
         Self {
             chat_data,
@@ -79,12 +78,20 @@ impl Render for SidebarView {
                 Sidebar::new(Side::Left)
                     .w_full()
                     .header(SidebarHeader::new().child("Ai Chat"))
-                    .child(SidebarGroup::new("Conversation Tree").child(
-                        SidebarMenu::new().children(match self.chat_data.read(cx) {
-                            Ok(data) => data.sidebar_items(),
-                            Err(_) => vec![],
-                        }),
-                    )),
+                    .child(
+                        SidebarGroup::new("Conversation Tree").child(
+                            SidebarMenu::new().children(
+                                match self
+                                    .chat_data
+                                    .upgrade()
+                                    .and_then(|x| x.read(cx).as_ref().ok())
+                                {
+                                    Some(data) => data.sidebar_items(),
+                                    None => vec![],
+                                },
+                            ),
+                        ),
+                    ),
             )
             .context_menu(|this, _window, _cx| {
                 this.check_side(Side::Left)

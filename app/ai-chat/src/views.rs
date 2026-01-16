@@ -6,4 +6,5 @@ pub(crate) mod temporary;
 
 pub fn init(cx: &mut App) {
     home::init(cx);
+    temporary::init(cx);
 }

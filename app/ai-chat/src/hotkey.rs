@@ -5,40 +5,37 @@ use gpui_component::Root;
 use std::str::FromStr;
 use tracing::{Level, event};
 
-struct TemporaryData {
+pub struct TemporaryData {
     _manager: GlobalHotKeyManager,
     _task: Task<()>,
-    temporary_window: Option<WindowHandle<Root>>,
+    pub temporary_window: Option<WindowHandle<Root>>,
 }
 
 impl TemporaryData {
     fn on_short(&mut self, cx: &mut App) {
         match self.temporary_window {
             Some(temporary_window) => {
-                let windows = cx.windows().to_vec();
-                for window in windows {
-                    if window.window_id() == temporary_window.window_id() {
-                        match temporary_window.update(cx, |this, window, cx| {
-                            if window.is_window_active() {
-                                window.remove_window();
-                                self.temporary_window = None;
-                            } else {
-                                window.activate_window();
-                            }
-                        }) {
-                            Ok(_) => {}
-                            Err(err) => {
-                                event!(
-                                    Level::ERROR,
-                                    "Failed to update temporary window: {:?}",
-                                    err
-                                );
-                            }
-                        };
-                        return;
-                    }
+                let windows = cx.windows();
+                if windows
+                    .iter()
+                    .any(|window| window.window_id() == temporary_window.window_id())
+                {
+                    match temporary_window.update(cx, |_this, window, _cx| {
+                        if window.is_window_active() {
+                            window.remove_window();
+                            self.temporary_window = None;
+                        } else {
+                            window.activate_window();
+                        }
+                    }) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
+                        }
+                    };
+                } else {
+                    self.create_temporary_window(cx);
                 }
-                self.create_temporary_window(cx);
             }
             None => self.create_temporary_window(cx),
         }
@@ -48,9 +45,16 @@ impl TemporaryData {
             WindowOptions {
                 kind: WindowKind::PopUp,
                 titlebar: Some(TitlebarOptions {
-                    appears_transparent: false,
-                    ..Default::default()
+                    title: None,
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(-100.), px(-100.))),
                 }),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    cx.primary_display().map(|display| display.id()),
+                    size(px(800.), px(600.)),
+                    cx,
+                ))),
+                is_resizable: false,
                 ..Default::default()
             },
             |window, cx| {

@@ -13,23 +13,27 @@ pub(crate) use conversation_panel::ConversationPanelView;
 pub(crate) use conversation_tab::ConversationTabView;
 
 pub(crate) struct TabsView {
-    chat_data: Entity<AiChatResult<ChatDataInner>>,
+    chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
 }
 
 impl TabsView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let chat_data = cx.global::<ChatData>().deref().clone();
+        let chat_data = cx.global::<ChatData>().deref().downgrade();
         Self { chat_data }
     }
 }
 
 impl Render for TabsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let chat_data = self
+            .chat_data
+            .upgrade()
+            .and_then(|x| x.read(cx).as_ref().ok());
         v_flex()
             .flex_1()
             .overflow_hidden()
-            .map(|this| match self.chat_data.read(cx) {
-                Ok(chat_data) => this
+            .map(|this| match chat_data {
+                Some(chat_data) => this
                     .child(
                         h_flex()
                             .flex_initial()
@@ -45,7 +49,7 @@ impl Render for TabsView {
                             ),
                     )
                     .when_some(chat_data.panel(), |this, panel| this.child(panel.clone())),
-                Err(_) => this,
+                None => this,
             })
     }
 }
