@@ -2,39 +2,31 @@ use crate::{
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     hotkey::TemporaryData,
+    views::temporary::{detail::TemplateDetailView, list::TemporaryList},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    Sizable,
     alert::Alert,
-    divider::Divider,
-    h_flex,
-    input::{Input, InputState},
-    label::Label,
-    tag::Tag,
-    v_flex,
+    list::{List, ListState},
 };
 use tracing::{Level, event};
 
+mod detail;
+mod list;
+
 const CONTEXT: &str = "temporary-list";
 
-actions!([Up, Down, Enter]);
-
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     event!(Level::INFO, "Initializing temporary view");
-    cx.bind_keys([
-        KeyBinding::new("up", Up, Some(CONTEXT)),
-        KeyBinding::new("down", Down, Some(CONTEXT)),
-        KeyBinding::new("enter", Enter, Some(CONTEXT)),
-    ]);
+    detail::init(cx);
 }
 
 pub(crate) struct TemporaryView {
     _subscription: Vec<Subscription>,
-    search_input: Entity<InputState>,
-    templates: AiChatResult<Vec<ConversationTemplate>>,
-    selected_index: Option<usize>,
+    templates: AiChatResult<Entity<ListState<TemporaryList>>>,
     focus_handle: FocusHandle,
+    selected_item: Option<Entity<TemplateDetailView>>,
 }
 
 impl TemporaryView {
@@ -46,93 +38,56 @@ impl TemporaryView {
                 data.temporary_window = None;
             }
         })];
-        let templates = Self::get_templates(cx);
-        let search_input = cx.new(|cx| InputState::new(window, cx));
-        search_input.focus_handle(cx).focus(window);
+        let templates = Self::get_templates(cx).map(|templates| {
+            let on_confirm = cx.listener(move |this, state: &ConversationTemplate, window, cx| {
+                let on_esc = cx.listener(|this, _, window, cx| {
+                    this.selected_item = None;
+                    if let Ok(templates) = &this.templates {
+                        templates.update(cx, |this, cx| {
+                            this.focus(window, cx);
+                        });
+                    }
+                    cx.notify();
+                });
+                this.selected_item =
+                    Some(cx.new(move |cx| TemplateDetailView::new(state, on_esc, window, cx)));
+            });
+            cx.new(move |cx| {
+                let mut list_state =
+                    ListState::new(TemporaryList::new(templates, on_confirm), window, cx)
+                        .searchable(true);
+                list_state.focus(window, cx);
+                list_state
+            })
+        });
         Self {
             _subscription,
-            search_input,
             templates,
-            selected_index: None,
             focus_handle: cx.focus_handle(),
+            selected_item: None,
         }
     }
     fn get_templates(cx: &mut Context<Self>) -> AiChatResult<Vec<ConversationTemplate>> {
         let conn = &mut cx.global::<Db>().get()?;
         ConversationTemplate::all(conn)
     }
-    fn on_up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.selected_index {
-            self.selected_index = Some(index.saturating_sub(1));
-        } else if let Ok(templates) = &self.templates {
-            self.selected_index = Some(templates.len().saturating_sub(1));
-        }
-    }
-    fn on_down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.selected_index {
-            self.selected_index = Some(index.saturating_add(1));
-        } else if self.templates.is_ok() {
-            self.selected_index = Some(0);
-        }
-    }
-    fn on_enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.selected_index {}
-    }
 }
 
 impl Render for TemporaryView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_up))
-            .on_action(cx.listener(Self::on_down))
-            .on_action(cx.listener(Self::on_enter))
             .size_full()
-            .child(Input::new(&self.search_input).bordered(false).large())
-            .child(Divider::horizontal())
-            .map(|this| match &self.templates {
-                Ok(templates) => this.children(templates.iter().enumerate().map(
-                    |(
-                        index,
-                        ConversationTemplate {
-                            id,
-                            name,
-                            icon,
-                            description,
-                            mode,
-                            ..
-                        },
-                    )| {
-                        h_flex()
-                            .id(*id)
-                            .gap_2()
-                            .p_4()
-                            .when(
-                                matches!(self.selected_index, Some(selected_index)  if selected_index == index),
-                                |this| this.bg(cx.theme().accent),
-                            )
-                            .child(Label::new(icon))
-                            .child(
-                                Label::new(name)
-                                    .when_some(description.as_ref(), |this, description| {
-                                        this.secondary(description)
-                                    }),
-                            )
-                            .child(
-                                match mode {
-                                    crate::database::Mode::Contextual => Tag::primary(),
-                                    crate::database::Mode::Single => Tag::info(),
-                                    crate::database::Mode::AssistantOnly => Tag::success(),
-                                }
-                                .child(mode.to_string())
-                                .outline(),
-                            )
+            .map(|this| {
+                this.map(|this| match &self.selected_item {
+                    Some(selected_item) => this.child(selected_item.clone()),
+                    None => match &self.templates {
+                        Ok(templates) => this.child(List::new(templates).large()),
+                        Err(err) => this
+                            .child(Alert::error("temporary-alert", err.to_string()).title("Error")),
                     },
-                )),
-                Err(err) => {
-                    this.child(Alert::error("temporary-alert", err.to_string()).title("Error"))
-                }
+                })
             })
     }
 }

@@ -6,10 +6,9 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/service/conversation_templates.rs
  */
 
-use std::str::FromStr;
-
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
+use std::str::FromStr;
 use time::OffsetDateTime;
 
 use crate::{
