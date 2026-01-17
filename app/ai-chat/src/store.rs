@@ -206,7 +206,7 @@ impl ChatDataInner {
             }
         })
     }
-    pub(crate) fn panel_messages(&self) -> Vec<MessageItemView> {
+    pub(crate) fn panel_messages(&self) -> Vec<MessageItemView<i32>> {
         if let Some(conversation_id) = self.active_tab
             && let Some(conversation) =
                 Self::get_conversation(&self.folders, &self.conversations, conversation_id)

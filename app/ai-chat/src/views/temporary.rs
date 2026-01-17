@@ -15,6 +15,8 @@ use tracing::{Level, event};
 mod detail;
 mod list;
 
+pub use detail::TemporaryMessage;
+
 const CONTEXT: &str = "temporary-list";
 
 pub fn init(cx: &mut App) {

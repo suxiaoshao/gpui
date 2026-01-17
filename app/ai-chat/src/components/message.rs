@@ -1,7 +1,7 @@
 use crate::{
     database::{Content, Db, Message, Role},
     errors::AiChatResult,
-    views::message_preview::MessagePreview,
+    views::{message_preview::MessagePreview, temporary::TemporaryMessage},
 };
 use gpui::*;
 use gpui_component::{
@@ -14,18 +14,31 @@ use gpui_component::{
     text::TextView,
     v_flex,
 };
+use std::fmt::Display;
 use tracing::{Level, event};
 
 #[derive(IntoElement)]
-pub struct MessageItemView {
-    id: i32,
+pub struct MessageItemView<T>
+where
+    T: MessageId,
+{
+    id: T,
     role: Role,
     content: Content,
 }
 
-impl MessageItemView {
-    fn open_view_window(message_id: i32, window: &mut Window, cx: &mut App) {
-        let message = match Self::get_message(message_id, cx) {
+pub trait MessageId: Into<ElementId> + Display + Copy + 'static {
+    fn open_view_window(&self, window: &mut Window, cx: &mut App);
+}
+
+impl MessageId for i32 {
+    fn open_view_window(&self, window: &mut Window, cx: &mut App) {
+        fn get_message(message_id: i32, cx: &mut App) -> AiChatResult<Message> {
+            let conn = &mut cx.global::<Db>().get()?;
+            let message = Message::find(message_id, conn)?;
+            Ok(message)
+        }
+        let message = match get_message(*self, cx) {
             Ok(data) => data,
             Err(err) => {
                 event!(Level::ERROR, "open message view window: {}", err);
@@ -63,26 +76,18 @@ impl MessageItemView {
             }
         };
     }
-    fn get_message(message_id: i32, cx: &mut App) -> AiChatResult<Message> {
-        let conn = &mut cx.global::<Db>().get()?;
-        let message = Message::find(message_id, conn)?;
-        Ok(message)
+}
+
+impl MessageId for usize {
+    fn open_view_window(&self, window: &mut Window, cx: &mut App) {
+        //todo
     }
 }
 
-impl From<&Message> for MessageItemView {
+impl From<&Message> for MessageItemView<i32> {
     fn from(
         Message {
-            id,
-            conversation_id,
-            conversation_path,
-            role,
-            content,
-            status,
-            created_time,
-            updated_time,
-            start_time,
-            end_time,
+            id, role, content, ..
         }: &Message,
     ) -> Self {
         Self {
@@ -93,7 +98,21 @@ impl From<&Message> for MessageItemView {
     }
 }
 
-impl RenderOnce for MessageItemView {
+impl From<&TemporaryMessage> for MessageItemView<usize> {
+    fn from(
+        TemporaryMessage {
+            id, role, content, ..
+        }: &TemporaryMessage,
+    ) -> Self {
+        Self {
+            id: *id,
+            role: *role,
+            content: content.clone(),
+        }
+    }
+}
+
+impl<T: MessageId> RenderOnce for MessageItemView<T> {
     fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         v_flex()
             .group("message")
@@ -138,12 +157,12 @@ impl RenderOnce for MessageItemView {
                             .opacity(0.)
                             .group_hover("message", |this| this.opacity(1.))
                             .child(
-                                Button::new(SharedString::from(format!("view-{}", self.id)))
+                                Button::new(SharedString::from(format!("view-{}", &self.id)))
                                     .icon(IconName::Eye)
                                     .ghost()
                                     .small()
                                     .on_click(move |_, window, cx| {
-                                        Self::open_view_window(self.id, window, cx);
+                                        self.id.open_view_window(window, cx);
                                     })
                                     .tooltip("View Detail"),
                             ),
