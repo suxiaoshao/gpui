@@ -22,7 +22,7 @@ mod views;
 
 static APP_NAME: &str = "top.sushao.ai-chat";
 
-actions!(feiwen, [Quit]);
+actions!(ai_chat, [Quit]);
 
 fn quit(_: &Quit, cx: &mut App) {
     event!(Level::INFO, "quit by action");
@@ -102,7 +102,7 @@ fn main() -> AiChatResult<()> {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
-            event!(Level::ERROR, "{}", err)
+            event!(Level::ERROR, "open main window: {}", err)
         };
         event!(Level::INFO, "window opened");
     });

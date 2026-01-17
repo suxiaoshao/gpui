@@ -2,12 +2,13 @@ use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
     store::{ChatData, ChatDataInner},
+    views::settings::OpenSetting,
 };
 use gpui::*;
 use gpui_component::{
     IconName, Side,
     menu::ContextMenuExt,
-    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu},
+    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
 use tracing::{Level, event};
@@ -89,6 +90,17 @@ impl Render for SidebarView {
                                     Some(data) => data.sidebar_items(),
                                     None => vec![],
                                 },
+                            ),
+                        ),
+                    )
+                    .child(
+                        SidebarGroup::new("Actions").child(
+                            SidebarMenu::new().child(
+                                SidebarMenuItem::new("Settings")
+                                    .icon(IconName::Settings)
+                                    .on_click(cx.listener(|_this, _event, window, cx| {
+                                        window.dispatch_action(OpenSetting.boxed_clone(), cx);
+                                    })),
                             ),
                         ),
                     ),
