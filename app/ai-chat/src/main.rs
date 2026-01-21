@@ -38,6 +38,7 @@ fn init(cx: &mut App) {
     hotkey::init(cx);
     database::init_store(cx);
     views::init(cx);
+    config::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {
@@ -84,9 +85,7 @@ fn main() -> AiChatResult<()> {
 
     let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
-    let app = Application::new()
-        .with_assets(gpui_component_assets::Assets)
-        .with_assets(assets::Assets::default());
+    let app = Application::new().with_assets(assets::Assets::default());
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {

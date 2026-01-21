@@ -1,20 +1,20 @@
 use crate::{
+    config::AiChatConfig,
     store,
     views::home::{sidebar::SidebarView, tabs::TabsView},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    Root, TitleBar,
+    Root, Theme, ThemeRegistry, TitleBar,
     alert::Alert,
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
+pub(crate) use sidebar::{AddConversation, AddFolder};
+pub(crate) use tabs::{ConversationPanelView, ConversationTabView};
 
 mod sidebar;
 mod tabs;
-
-pub(crate) use sidebar::{AddConversation, AddFolder};
-pub(crate) use tabs::{ConversationPanelView, ConversationTabView};
 
 pub fn init(cx: &mut App) {
     sidebar::init(cx);
@@ -23,6 +23,7 @@ pub fn init(cx: &mut App) {
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
     tabs: Entity<TabsView>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl HomeView {
@@ -31,7 +32,26 @@ impl HomeView {
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
 
-        Self { sidebar, tabs }
+        Self {
+            sidebar,
+            tabs,
+            _subscriptions: vec![
+                cx.observe_window_appearance(window, |_state, window, cx| {
+                    let theme_registry = ThemeRegistry::global(cx);
+                    let config = cx.global::<AiChatConfig>();
+                    let config = config.gpui_theme(theme_registry, window);
+                    Theme::global_mut(cx).apply_config(&config);
+                    cx.refresh_windows();
+                }),
+                cx.observe_global_in::<AiChatConfig>(window, |_state, window, cx| {
+                    let theme_registry = ThemeRegistry::global(cx);
+                    let config = cx.global::<AiChatConfig>();
+                    let config = config.gpui_theme(theme_registry, window);
+                    Theme::global_mut(cx).apply_config(&config);
+                    cx.refresh_windows();
+                }),
+            ],
+        }
     }
 }
 

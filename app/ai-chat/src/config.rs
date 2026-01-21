@@ -9,14 +9,17 @@ use crate::{
     APP_NAME,
     errors::{AiChatError, AiChatResult},
 };
+use gpui::*;
+use gpui_component::{ThemeConfig, ThemeRegistry};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::ErrorKind, path::PathBuf};
+use std::{collections::HashMap, fmt::Display, io::ErrorKind, path::PathBuf, rc::Rc};
+use tracing::{Level, event};
 
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum Theme {
+pub(crate) enum ThemeMode {
     Dark,
     Light,
     #[default]
@@ -24,9 +27,30 @@ enum Theme {
     System,
 }
 
+impl Display for ThemeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThemeMode::Dark => write!(f, "dark"),
+            ThemeMode::Light => write!(f, "light"),
+            ThemeMode::System => write!(f, "system"),
+        }
+    }
+}
+
+impl ThemeMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "dark" => ThemeMode::Dark,
+            "light" => ThemeMode::Light,
+            "system" => ThemeMode::System,
+            _ => ThemeMode::System,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 struct ThemeOption {
-    theme: Theme,
+    theme: ThemeMode,
     color: String,
 }
 
@@ -63,6 +87,8 @@ pub struct AiChatConfig {
     #[serde(rename = "adapterSettings", default)]
     adapter_settings: HashMap<String, serde_json::Value>,
 }
+
+impl Global for AiChatConfig {}
 
 impl AiChatConfig {
     pub fn path() -> AiChatResult<PathBuf> {
@@ -105,4 +131,48 @@ impl AiChatConfig {
     pub(crate) fn get_http_proxy(&self) -> Option<&str> {
         self.http_proxy.as_deref()
     }
+    pub(crate) fn gpui_theme(
+        &self,
+        theme_registry: &ThemeRegistry,
+        window: &mut Window,
+    ) -> Rc<ThemeConfig> {
+        let appearance = window.appearance();
+        let theme = match (appearance, self.theme.theme) {
+            (_, ThemeMode::Light)
+            | (WindowAppearance::Light | WindowAppearance::VibrantLight, ThemeMode::System) => {
+                theme_registry.default_light_theme()
+            }
+            (_, ThemeMode::Dark)
+            | (WindowAppearance::Dark | WindowAppearance::VibrantDark, ThemeMode::System) => {
+                theme_registry.default_dark_theme()
+            }
+        };
+        Rc::clone(theme)
+    }
+    pub(crate) fn theme_mode(&self) -> ThemeMode {
+        self.theme.theme
+    }
+    pub(crate) fn set_theme_mode(&mut self, mode: ThemeMode) {
+        self.theme.theme = mode;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save theme mode: {}", err);
+            }
+        }
+    }
+    pub(crate) fn set_http_proxy(&mut self, proxy: Option<String>) {
+        self.http_proxy = proxy;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save HTTP proxy: {}", err);
+            }
+        }
+    }
+}
+
+pub fn init(cx: &mut App) {
+    let config = AiChatConfig::get().unwrap_or_default();
+    cx.set_global(config);
 }
