@@ -1,8 +1,10 @@
-use crate::config::{AiChatConfig, ThemeMode};
+use crate::{
+    components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
+    config::{AiChatConfig, ThemeMode},
+};
 use gpui::*;
 use gpui_component::{
-    Root, Sizable, TitleBar,
-    input::{Input, InputState},
+    Root, TitleBar,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -26,17 +28,43 @@ pub fn init(cx: &mut App) {
 
 pub struct SettingsView {
     focus_handle: FocusHandle,
-    hotkey_input: Entity<InputState>,
+    hotkey_input: Entity<HotkeyInput>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
-        let hotkey_input = cx.new(|cx| InputState::new(window, cx));
+        let hotkey_input = cx.new(|cx| {
+            let temporary_hotkey = cx.global::<AiChatConfig>().http_proxy.clone();
+            HotkeyInput::new(window, cx)
+                .default_value(temporary_hotkey.and_then(|x| string_to_keystroke(&x)))
+        });
+        let _subscriptions =
+            vec![
+                cx.subscribe(&hotkey_input, |this, _state, event: &HotkeyEvent, cx| {
+                    let config = cx.global_mut::<AiChatConfig>();
+                    match event {
+                        HotkeyEvent::Confirm(shared_string) => {
+                            config.set_temporary_hotkey(Some(shared_string.to_string()));
+                            this.hotkey_input.update(cx, move |this, _cx| {
+                                this.set_default_value(string_to_keystroke(shared_string));
+                            });
+                        }
+                        HotkeyEvent::Cancel => {
+                            config.set_temporary_hotkey(None);
+                            this.hotkey_input.update(cx, move |this, _cx| {
+                                this.set_default_value(None);
+                            });
+                        }
+                    }
+                }),
+            ];
         Self {
             focus_handle,
             hotkey_input,
+            _subscriptions,
         }
     }
 }
@@ -110,8 +138,8 @@ impl Render for SettingsView {
                             ))
                             .item(SettingItem::new(
                                 "Temporary Conversation Hotkey",
-                                SettingField::render(move |options, window, cx| {
-                                    Input::new(&hotkey_input).with_size(options.size).w_64()
+                                SettingField::render(move |_options, _window, _cx| {
+                                    hotkey_input.clone()
                                 }),
                             )),
                     ),

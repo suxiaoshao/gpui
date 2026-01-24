@@ -170,6 +170,15 @@ impl AiChatConfig {
             }
         }
     }
+    pub(crate) fn set_temporary_hotkey(&mut self, hotkey: Option<String>) {
+        self.temporary_hotkey = hotkey;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save temporary hotkey: {}", err);
+            }
+        }
+    }
 }
 
 pub fn init(cx: &mut App) {

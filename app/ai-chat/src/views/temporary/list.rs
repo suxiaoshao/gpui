@@ -1,8 +1,7 @@
-use std::rc::Rc;
-
 use crate::database::ConversationTemplate;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Selectable, h_flex, label::Label, list::ListDelegate, tag::Tag};
+use std::rc::Rc;
 
 #[derive(IntoElement, Clone)]
 pub struct TemplateItem {
