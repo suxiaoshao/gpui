@@ -9,6 +9,7 @@ use crate::{
     APP_NAME,
     adapter::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
     errors::{AiChatError, AiChatResult},
+    hotkey::TemporaryData,
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};
@@ -205,7 +206,12 @@ impl AiChatConfig {
             }
         }
     }
-    pub(crate) fn set_temporary_hotkey(&mut self, hotkey: Option<String>) {
+    pub(crate) fn set_temporary_hotkey(&mut self, hotkey: Option<String>, cx: &mut App) {
+        if let Err(err) =
+            TemporaryData::update_hotkey(self.temporary_hotkey.as_deref(), hotkey.as_deref(), cx)
+        {
+            event!(Level::ERROR, "Failed to update temporary hotkey: {}", err);
+        };
         self.temporary_hotkey = hotkey;
         match self.save() {
             Ok(_) => {}

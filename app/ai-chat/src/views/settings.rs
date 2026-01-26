@@ -55,21 +55,20 @@ impl SettingsView {
         event: &HotkeyEvent,
         cx: &mut Context<Self>,
     ) {
-        let config = cx.global_mut::<AiChatConfig>();
-        match event {
+        cx.update_global::<AiChatConfig, _>(|config, cx| match event {
             HotkeyEvent::Confirm(shared_string) => {
-                config.set_temporary_hotkey(Some(shared_string.to_string()));
+                config.set_temporary_hotkey(Some(shared_string.to_string()), cx);
                 state.update(cx, move |this, _cx| {
                     this.set_default_value(string_to_keystroke(shared_string));
                 });
             }
             HotkeyEvent::Cancel => {
-                config.set_temporary_hotkey(None);
+                config.set_temporary_hotkey(None, cx);
                 state.update(cx, move |this, _cx| {
                     this.set_default_value(None);
                 });
             }
-        }
+        });
     }
 }
 

@@ -6,7 +6,7 @@ use std::str::FromStr;
 use tracing::{Level, event};
 
 pub struct TemporaryData {
-    _manager: GlobalHotKeyManager,
+    manager: GlobalHotKeyManager,
     _task: Task<()>,
     pub temporary_window: Option<WindowHandle<Root>>,
 }
@@ -70,6 +70,22 @@ impl TemporaryData {
         };
         self.temporary_window = Some(temporary_window);
     }
+    pub fn update_hotkey(
+        old_hotkey: Option<&str>,
+        new_hotkey: Option<&str>,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
+        let temporary_data = cx.global_mut::<TemporaryData>();
+        if let Some(old_hotkey) = old_hotkey {
+            let old_hotkey = HotKey::from_str(old_hotkey)?;
+            temporary_data.manager.unregister(old_hotkey)?;
+        }
+        if let Some(new_hotkey) = new_hotkey {
+            let new_hotkey = HotKey::from_str(new_hotkey)?;
+            temporary_data.manager.register(new_hotkey)?;
+        }
+        Ok(())
+    }
 }
 
 impl Global for TemporaryData {}
@@ -124,7 +140,7 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
             }
         });
         cx.set_global(TemporaryData {
-            _manager: manager,
+            manager,
             _task: task,
             temporary_window: None,
         });
