@@ -1,15 +1,16 @@
-use std::collections::HashSet;
-
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-
+use super::{Adapter, InputItem, InputType};
 use crate::{
     config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     fetch::{ChatRequest, Message},
 };
-
-use super::{Adapter, InputItem, InputType};
+use gpui::App;
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use toml::Value;
+use tracing::{Level, event};
 
 pub(crate) struct OpenAIAdapter;
 
@@ -19,17 +20,23 @@ fn default_url() -> String {
 
 fn default_models() -> HashSet<String> {
     let mut models = HashSet::new();
-    models.insert("gpt-3.5-turbo".to_string());
-    models.insert("o3-mini".to_string());
-    models.insert("gpt-4o-mini".to_string());
-    models.insert("gpt-4".to_string());
-    models.insert("gpt-4-turbo".to_string());
-    models.insert("gpt-4o".to_string());
+    models.insert("o3-mini".into());
+    models.insert("o4-mini".into());
+    models.insert("gpt-4o".into());
+    models.insert("gpt-4o-mini".into());
+    models.insert("gpt-4.1".into());
+    models.insert("gpt-4.1-mini".into());
+    models.insert("gpt-4.1-nano".into());
+    models.insert("gpt-5".into());
+    models.insert("gpt-5-mini".into());
+    models.insert("gpt-5-nano".into());
+    models.insert("gpt-5.2".into());
+    models.insert("gpt-5.2-pro".into());
     models
 }
 
-#[derive(Default, Deserialize, Serialize)]
-struct OpenAISettings {
+#[derive(Deserialize, Serialize)]
+pub(crate) struct OpenAISettings {
     #[serde(rename = "apiKey")]
     api_key: Option<String>,
     #[serde(default = "default_url")]
@@ -38,6 +45,17 @@ struct OpenAISettings {
     pub http_proxy: Option<String>,
     #[serde(default = "default_models")]
     pub models: HashSet<String>,
+}
+
+impl Default for OpenAISettings {
+    fn default() -> Self {
+        Self {
+            api_key: Default::default(),
+            url: Default::default(),
+            http_proxy: Default::default(),
+            models: default_models(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -239,13 +257,13 @@ impl Adapter for OpenAIAdapter {
     fn fetch(
         &self,
         config: &AiChatConfig,
-        settings: &serde_json::Value,
-        template: &serde_json::Value,
+        settings: &toml::Value,
+        template: &toml::Value,
         history_messages: Vec<Message>,
     ) -> impl futures::Stream<Item = AiChatResult<String>> {
         async_stream::try_stream! {
-            let template = serde_json::from_value(template.clone())?;
-            let settings = serde_json::from_value(settings.clone())?;
+            let template = template.clone().try_into()?;
+            let settings = settings.clone().try_into()?;
             let body = Self::get_body(&template, history_messages);
             let client = Self::get_reqwest_client(config, &settings)?;
             let response=client.post(settings.url.clone()).json(&body).send().await?;
@@ -257,6 +275,104 @@ impl Adapter for OpenAIAdapter {
                 .collect::<String>();
             yield content
         }
+    }
+
+    fn setting_group(&self) -> gpui_component::setting::SettingGroup {
+        fn get_openai_setting(cx: &App) -> OpenAISettings {
+            let config = cx.global::<AiChatConfig>();
+            config
+                .get_adapter_settings(OpenAIAdapter::NAME)
+                .and_then(|x| x.clone().try_into::<OpenAISettings>().ok())
+                .unwrap_or_default()
+        }
+        SettingGroup::new()
+            .title("OpenAI")
+            .item(SettingItem::new(
+                "Api Key",
+                SettingField::input(
+                    |cx| {
+                        let openai_setting = get_openai_setting(cx);
+                        openai_setting.api_key.map(|x| x.into()).unwrap_or_default()
+                    },
+                    |value, cx| {
+                        let mut open_settings = get_openai_setting(cx);
+                        open_settings.api_key = if value.is_empty() {
+                            None
+                        } else {
+                            Some(value.into())
+                        };
+                        let config = cx.global_mut::<AiChatConfig>();
+                        match Value::try_from(open_settings) {
+                            Ok(settings) => {
+                                config.set_adapter_settings(OpenAIAdapter::NAME, settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                            }
+                        }
+                        if let Err(err) = config.save() {
+                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
+                        };
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                "Api Url",
+                SettingField::input(
+                    |cx| {
+                        let openai_setting = get_openai_setting(cx);
+                        openai_setting.url.into()
+                    },
+                    |value, cx| {
+                        let mut open_settings = get_openai_setting(cx);
+                        open_settings.url = value.into();
+                        let config = cx.global_mut::<AiChatConfig>();
+                        match Value::try_from(open_settings) {
+                            Ok(settings) => {
+                                config.set_adapter_settings(OpenAIAdapter::NAME, settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                            }
+                        }
+                        if let Err(err) = config.save() {
+                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
+                        };
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                "Http Proxy",
+                SettingField::input(
+                    |cx| {
+                        let openai_setting = get_openai_setting(cx);
+                        openai_setting
+                            .http_proxy
+                            .map(|x| x.into())
+                            .unwrap_or_default()
+                    },
+                    |value, cx| {
+                        let mut open_settings = get_openai_setting(cx);
+                        open_settings.http_proxy = if value.is_empty() {
+                            None
+                        } else {
+                            Some(value.into())
+                        };
+                        let config = cx.global_mut::<AiChatConfig>();
+                        match Value::try_from(open_settings) {
+                            Ok(settings) => {
+                                config.set_adapter_settings(OpenAIAdapter::NAME, settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                            }
+                        }
+                        if let Err(err) = config.save() {
+                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
+                        };
+                    },
+                ),
+            ))
     }
 }
 

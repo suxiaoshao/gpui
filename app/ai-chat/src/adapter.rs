@@ -69,11 +69,13 @@ pub trait Adapter {
     fn fetch(
         &self,
         config: &AiChatConfig,
-        settings: &serde_json::Value,
-        template: &serde_json::Value,
+        settings: &toml::Value,
+        template: &toml::Value,
         history_messages: Vec<Message>,
     ) -> impl futures::Stream<Item = AiChatResult<String>>;
+    fn setting_group(&self) -> SettingGroup;
 }
 
-pub(crate) use openai::{OpenAIAdapter, OpenAIConversationTemplate};
-pub(crate) use openai_stream::OpenAIStreamAdapter;
+use gpui_component::setting::SettingGroup;
+pub(crate) use openai::{OpenAIAdapter, OpenAIConversationTemplate, OpenAISettings};
+pub(crate) use openai_stream::{OpenAIStreamAdapter, OpenAIStreamSettings};

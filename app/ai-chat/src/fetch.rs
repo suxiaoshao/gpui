@@ -7,7 +7,7 @@ use crate::{
     extensions::ExtensionRunner,
 };
 use futures::pin_mut;
-use serde_json::Value;
+use toml::Value;
 
 mod types;
 

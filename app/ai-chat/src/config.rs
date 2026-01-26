@@ -7,12 +7,14 @@
  */
 use crate::{
     APP_NAME,
+    adapter::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
     errors::{AiChatError, AiChatResult},
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, io::ErrorKind, path::PathBuf, rc::Rc};
+use toml::Value;
 use tracing::{Level, event};
 
 const CONFIG_FILE_NAME: &str = "config.toml";
@@ -74,7 +76,7 @@ enum Language {
     System,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct AiChatConfig {
     #[serde(default = "Default::default")]
     theme: ThemeOption,
@@ -85,7 +87,26 @@ pub struct AiChatConfig {
     #[serde(rename = "temporaryHotkey")]
     pub temporary_hotkey: Option<String>,
     #[serde(rename = "adapterSettings", default)]
-    adapter_settings: HashMap<String, serde_json::Value>,
+    adapter_settings: HashMap<String, toml::Value>,
+}
+
+impl Default for AiChatConfig {
+    fn default() -> Self {
+        let mut adapter_settings = HashMap::new();
+        if let Ok(settings) = Value::try_from(OpenAISettings::default()) {
+            adapter_settings.insert(OpenAIAdapter::NAME.to_string(), settings);
+        }
+        if let Ok(settings) = Value::try_from(OpenAIStreamSettings::default()) {
+            adapter_settings.insert(OpenAIStreamAdapter::NAME.to_string(), settings);
+        }
+        Self {
+            theme: Default::default(),
+            language: Default::default(),
+            http_proxy: Default::default(),
+            temporary_hotkey: Default::default(),
+            adapter_settings,
+        }
+    }
 }
 
 impl Global for AiChatConfig {}
@@ -111,7 +132,15 @@ impl AiChatConfig {
         //data path
         let config_path = AiChatConfig::path()?;
         let config = match std::fs::read_to_string(&config_path) {
-            Ok(file) => toml::from_str(&file)?,
+            Ok(file) => match toml::from_str(&file) {
+                Ok(config) => config,
+                Err(_) => {
+                    let config = Self::default();
+                    let config_str = toml::to_string_pretty(&config)?;
+                    std::fs::write(&config_path, config_str)?;
+                    config
+                }
+            },
             Err(e) => {
                 if let ErrorKind::NotFound = e.kind() {
                     let config = Self::default();
@@ -125,8 +154,14 @@ impl AiChatConfig {
         };
         Ok(config)
     }
-    pub(crate) fn get_adapter_settings(&self, adapter: &str) -> Option<&serde_json::Value> {
+    pub(crate) fn get_adapter_settings(&self, adapter: &str) -> Option<&toml::Value> {
         self.adapter_settings.get(adapter)
+    }
+    pub(crate) fn get_adapter_settings_mut(&mut self, adapter: &str) -> Option<&mut toml::Value> {
+        self.adapter_settings.get_mut(adapter)
+    }
+    pub(crate) fn set_adapter_settings(&mut self, adapter: &str, settings: toml::Value) {
+        self.adapter_settings.insert(adapter.to_string(), settings);
     }
     pub(crate) fn get_http_proxy(&self) -> Option<&str> {
         self.http_proxy.as_deref()

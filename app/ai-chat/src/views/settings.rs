@@ -1,10 +1,11 @@
 use crate::{
+    adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     config::{AiChatConfig, ThemeMode},
 };
 use gpui::*;
 use gpui_component::{
-    Root, TitleBar,
+    Root,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -37,34 +38,37 @@ impl SettingsView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
         let hotkey_input = cx.new(|cx| {
-            let temporary_hotkey = cx.global::<AiChatConfig>().http_proxy.clone();
+            let temporary_hotkey = cx.global::<AiChatConfig>().temporary_hotkey.clone();
             HotkeyInput::new(window, cx)
                 .default_value(temporary_hotkey.and_then(|x| string_to_keystroke(&x)))
         });
-        let _subscriptions =
-            vec![
-                cx.subscribe(&hotkey_input, |this, _state, event: &HotkeyEvent, cx| {
-                    let config = cx.global_mut::<AiChatConfig>();
-                    match event {
-                        HotkeyEvent::Confirm(shared_string) => {
-                            config.set_temporary_hotkey(Some(shared_string.to_string()));
-                            this.hotkey_input.update(cx, move |this, _cx| {
-                                this.set_default_value(string_to_keystroke(shared_string));
-                            });
-                        }
-                        HotkeyEvent::Cancel => {
-                            config.set_temporary_hotkey(None);
-                            this.hotkey_input.update(cx, move |this, _cx| {
-                                this.set_default_value(None);
-                            });
-                        }
-                    }
-                }),
-            ];
+        let _subscriptions = vec![cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes)];
         Self {
             focus_handle,
             hotkey_input,
             _subscriptions,
+        }
+    }
+    fn subscribe_hotkey_changes(
+        &mut self,
+        state: Entity<HotkeyInput>,
+        event: &HotkeyEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let config = cx.global_mut::<AiChatConfig>();
+        match event {
+            HotkeyEvent::Confirm(shared_string) => {
+                config.set_temporary_hotkey(Some(shared_string.to_string()));
+                state.update(cx, move |this, _cx| {
+                    this.set_default_value(string_to_keystroke(shared_string));
+                });
+            }
+            HotkeyEvent::Cancel => {
+                config.set_temporary_hotkey(None);
+                state.update(cx, move |this, _cx| {
+                    this.set_default_value(None);
+                });
+            }
         }
     }
 }
@@ -83,68 +87,74 @@ impl Render for SettingsView {
             .on_action(cx.listener(|_this, _: &OpenSetting, window, _cx| {
                 window.remove_window();
             }))
-            .child(TitleBar::new().child(div().flex().items_center().gap_3().child("Settings")))
-            .child(Settings::new("my-settings").pages(vec![
-                    SettingPage::new("General").group(
-                        SettingGroup::new()
-                            .title("Basic Options")
-                            .item(SettingItem::new(
-                                "Theme",
-                                SettingField::dropdown(
-                                    vec![
-                                        (
-                                            ThemeMode::Light.to_string().into(),
-                                            ThemeMode::Light.to_string().into(),
-                                        ),
-                                        (
-                                            ThemeMode::Dark.to_string().into(),
-                                            ThemeMode::Dark.to_string().into(),
-                                        ),
-                                        (
-                                            ThemeMode::System.to_string().into(),
-                                            ThemeMode::System.to_string().into(),
-                                        ),
-                                    ],
-                                    |cx: &App| {
-                                        let config = cx.global::<AiChatConfig>();
-                                        config.theme_mode().to_string().into()
-                                    },
-                                    |val: SharedString, cx: &mut App| {
-                                        let config = cx.global_mut::<AiChatConfig>();
-                                        config.set_theme_mode(ThemeMode::from_str(&val));
-                                    },
-                                ),
-                            ))
-                            .item(SettingItem::new(
-                                "Http Proxy",
-                                SettingField::input(
-                                    |cx: &App| {
-                                        let config = cx.global::<AiChatConfig>();
-                                        config
-                                            .http_proxy
-                                            .as_ref()
-                                            .map(|proxy| proxy.into())
-                                            .unwrap_or_default()
-                                    },
-                                    |val: SharedString, cx: &mut App| {
-                                        if val.is_empty() {
-                                            cx.global_mut::<AiChatConfig>().set_http_proxy(None);
-                                        } else {
-                                            cx.global_mut::<AiChatConfig>()
-                                                .set_http_proxy(Some(val.into()));
-                                        }
-                                    },
-                                ),
-                            ))
-                            .item(SettingItem::new(
-                                "Temporary Conversation Hotkey",
-                                SettingField::render(move |_options, _window, _cx| {
-                                    hotkey_input.clone()
-                                }),
-                            )),
-                    ),
-                    SettingPage::new("Adapter"),
-                ]))
+            .child(
+                Settings::new("my-settings")
+                    .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
+                    .pages(vec![
+                        SettingPage::new("General").group(
+                            SettingGroup::new()
+                                .title("Basic Options")
+                                .item(SettingItem::new(
+                                    "Theme",
+                                    SettingField::dropdown(
+                                        vec![
+                                            (
+                                                ThemeMode::Light.to_string().into(),
+                                                ThemeMode::Light.to_string().into(),
+                                            ),
+                                            (
+                                                ThemeMode::Dark.to_string().into(),
+                                                ThemeMode::Dark.to_string().into(),
+                                            ),
+                                            (
+                                                ThemeMode::System.to_string().into(),
+                                                ThemeMode::System.to_string().into(),
+                                            ),
+                                        ],
+                                        |cx: &App| {
+                                            let config = cx.global::<AiChatConfig>();
+                                            config.theme_mode().to_string().into()
+                                        },
+                                        |val: SharedString, cx: &mut App| {
+                                            let config = cx.global_mut::<AiChatConfig>();
+                                            config.set_theme_mode(ThemeMode::from_str(&val));
+                                        },
+                                    ),
+                                ))
+                                .item(SettingItem::new(
+                                    "Http Proxy",
+                                    SettingField::input(
+                                        |cx: &App| {
+                                            let config = cx.global::<AiChatConfig>();
+                                            config
+                                                .http_proxy
+                                                .as_ref()
+                                                .map(|proxy| proxy.into())
+                                                .unwrap_or_default()
+                                        },
+                                        |val: SharedString, cx: &mut App| {
+                                            if val.is_empty() {
+                                                cx.global_mut::<AiChatConfig>()
+                                                    .set_http_proxy(None);
+                                            } else {
+                                                cx.global_mut::<AiChatConfig>()
+                                                    .set_http_proxy(Some(val.into()));
+                                            }
+                                        },
+                                    ),
+                                ))
+                                .item(SettingItem::new(
+                                    "Temporary Conversation Hotkey",
+                                    SettingField::render(move |_options, _window, _cx| {
+                                        hotkey_input.clone()
+                                    }),
+                                )),
+                        ),
+                        SettingPage::new("Adapter")
+                            .group(OpenAIAdapter.setting_group())
+                            .group(OpenAIStreamAdapter.setting_group()),
+                    ]),
+            )
     }
 }
 
@@ -185,7 +195,10 @@ pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
 fn inner_open_settings_window(cx: &mut App) {
     match cx.open_window(
         WindowOptions {
-            titlebar: Some(TitleBar::title_bar_options()),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Settings".into()),
+                ..Default::default()
+            }),
             window_background: WindowBackgroundAppearance::Blurred,
             ..Default::default()
         },
