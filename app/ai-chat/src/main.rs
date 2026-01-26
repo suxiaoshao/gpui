@@ -35,10 +35,10 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
-    hotkey::init(cx);
     database::init_store(cx);
     views::init(cx);
     config::init(cx);
+    hotkey::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {

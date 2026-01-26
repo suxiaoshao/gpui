@@ -103,47 +103,47 @@ pub fn init(cx: &mut App) {
 }
 
 fn inner_init(cx: &mut App) -> AiChatResult<()> {
+    let manager = GlobalHotKeyManager::new()?;
     let config = AiChatConfig::get()?;
     if let Some(temporary_hotkey) = config.temporary_hotkey {
-        let manager = GlobalHotKeyManager::new()?;
         let hotkey = HotKey::from_str(&temporary_hotkey)?;
         manager.register(hotkey)?;
         event!(Level::INFO, "hotkey registered {}", hotkey);
-        let (tx, rx) = smol::channel::unbounded();
-        GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
-            if let GlobalHotKeyEvent {
-                state: HotKeyState::Pressed,
-                ..
-            } = e
-            {
-                smol::block_on(async {
-                    match tx.send(e).await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            event!(Level::ERROR, "send hotkey event failed: {}", err);
-                        }
-                    };
-                });
-            }
-        }));
-        let task = cx.spawn(async move |cx| {
-            while let Ok(event) = rx.recv().await {
-                event!(Level::INFO, "hotkey event received: {:?}", event);
-                match cx.update_global::<TemporaryData, _>(|this, cx| {
-                    this.on_short(cx);
-                }) {
+    }
+    let (tx, rx) = smol::channel::unbounded();
+    GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
+        if let GlobalHotKeyEvent {
+            state: HotKeyState::Pressed,
+            ..
+        } = e
+        {
+            smol::block_on(async {
+                match tx.send(e).await {
                     Ok(_) => {}
                     Err(err) => {
-                        event!(Level::ERROR, "open temporary window failed: {}", err);
+                        event!(Level::ERROR, "send hotkey event failed: {}", err);
                     }
                 };
-            }
-        });
-        cx.set_global(TemporaryData {
-            manager,
-            _task: task,
-            temporary_window: None,
-        });
-    }
+            });
+        }
+    }));
+    let task = cx.spawn(async move |cx| {
+        while let Ok(event) = rx.recv().await {
+            event!(Level::INFO, "hotkey event received: {:?}", event);
+            match cx.update_global::<TemporaryData, _>(|this, cx| {
+                this.on_short(cx);
+            }) {
+                Ok(_) => {}
+                Err(err) => {
+                    event!(Level::ERROR, "open temporary window failed: {}", err);
+                }
+            };
+        }
+    });
+    cx.set_global(TemporaryData {
+        manager,
+        _task: task,
+        temporary_window: None,
+    });
     Ok(())
 }
