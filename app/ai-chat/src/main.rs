@@ -36,6 +36,7 @@ fn init(cx: &mut App) {
     cx.on_action(quit);
 
     database::init_store(cx);
+    components::init(cx);
     views::init(cx);
     config::init(cx);
     hotkey::init(cx);

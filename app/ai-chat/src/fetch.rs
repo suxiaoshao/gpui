@@ -13,7 +13,7 @@ mod types;
 
 pub trait FetchRunner {
     fn get_adapter(&self) -> &str;
-    fn get_template(&self) -> &Value;
+    fn get_template(&self) -> &serde_json::Value;
     fn get_config(&self) -> &AiChatConfig;
     fn get_history(&self) -> Vec<Message>;
     async fn get_new_user_content(

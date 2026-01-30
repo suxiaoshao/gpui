@@ -116,11 +116,11 @@ impl Adapter for OpenAIStreamAdapter {
         &self,
         config: &AiChatConfig,
         settings: &toml::Value,
-        template: &toml::Value,
+        template: &serde_json::Value,
         history_messages: Vec<Message>,
     ) -> impl futures::Stream<Item = AiChatResult<String>> {
         async_stream::try_stream! {
-            let template = template.clone().try_into()?;
+            let template = serde_json::from_value(template.clone())?;
             let settings = settings.clone().try_into()?;
             let body = Self::get_body(&template, history_messages);
             let client = Self::get_reqwest_client(config, &settings)?;

@@ -70,7 +70,7 @@ pub trait Adapter {
         &self,
         config: &AiChatConfig,
         settings: &toml::Value,
-        template: &toml::Value,
+        template: &serde_json::Value,
         history_messages: Vec<Message>,
     ) -> impl futures::Stream<Item = AiChatResult<String>>;
     fn setting_group(&self) -> SettingGroup;

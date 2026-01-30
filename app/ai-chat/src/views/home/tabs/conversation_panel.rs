@@ -1,21 +1,26 @@
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
-    input::{Input, InputState},
-    scroll::ScrollableElement,
-    v_flex,
-};
+use gpui_component::{input::InputState, scroll::ScrollableElement, v_flex};
 use std::ops::Deref;
 
-use crate::{database::Conversation, store::ChatData};
+use crate::{
+    components::chat_input::{ChatInput, input_state},
+    database::Conversation,
+    store::ChatData,
+};
 
 pub(crate) struct ConversationPanelView {
     input_state: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
-        Self { input_state }
+        let input_state = input_state(window, cx);
+        let _subscriptions = vec![];
+        Self {
+            input_state,
+            _subscriptions,
+        }
     }
 }
 
@@ -43,7 +48,7 @@ impl Render for ConversationPanelView {
                 div()
                     .w_full()
                     .flex_initial()
-                    .child(Input::new(&self.input_state))
+                    .child(ChatInput::new(&self.input_state))
                     .px_2(),
             )
     }

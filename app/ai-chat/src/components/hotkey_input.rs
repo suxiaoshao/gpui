@@ -137,8 +137,8 @@ impl Render for HotkeyInput {
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _event, window, _cx| {
-                                    this.value = this.default_value.clone();
+                                .on_click(cx.listener(|_this, _event, window, cx| {
+                                    cx.emit(HotkeyEvent::Cancel);
                                     window.focus_next();
                                 })),
                         )
