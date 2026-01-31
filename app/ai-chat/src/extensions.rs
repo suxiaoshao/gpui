@@ -1,14 +1,17 @@
 use crate::{
+    APP_NAME,
     config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
 };
-use gpui::{Context, Global};
+use gpui::{App, Context, Global};
 use std::{collections::HashMap, path::PathBuf};
+use tracing::{Level, event};
 use wasmtime::{Config, Engine, Store, component::*};
 mod component;
 
 pub(crate) use component::{ChatRequest, Extension, ExtensionState};
 
+const EXTENSION_FOLDER: &str = "extensions";
 const WASM_FILE_NAME: &str = "extension.wasm";
 const CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -63,7 +66,18 @@ pub(crate) struct ExtensionContainer {
 impl Global for ExtensionContainer {}
 
 impl ExtensionContainer {
-    pub(crate) fn new(extensions_path: PathBuf) -> AiChatResult<Self> {
+    fn path() -> AiChatResult<PathBuf> {
+        let file = dirs_next::config_dir()
+            .ok_or(AiChatError::DbPath)?
+            .join(APP_NAME)
+            .join(EXTENSION_FOLDER);
+        if !file.exists() {
+            std::fs::create_dir_all(&file)?;
+        }
+        Ok(file)
+    }
+    pub(crate) fn new() -> AiChatResult<Self> {
+        let extensions_path = Self::path()?;
         // engine
         let engine = initialize_wasmtime_engine()?;
         let component_map = get_all_components(&engine, extensions_path)?;
@@ -119,4 +133,19 @@ pub(crate) struct ExtensionRunner {
     pub(crate) extension: Extension,
     pub(crate) store: Store<ExtensionState>,
     pub(crate) config: ExtensionConfig,
+}
+
+pub fn init(cx: &mut App) {
+    match inner_init(cx) {
+        Ok(_) => {}
+        Err(err) => {
+            event!(Level::ERROR, error = ?err);
+        }
+    }
+}
+
+fn inner_init(cx: &mut App) -> AiChatResult<()> {
+    let extension_config = ExtensionContainer::new()?;
+    cx.set_global(extension_config);
+    Ok(())
 }

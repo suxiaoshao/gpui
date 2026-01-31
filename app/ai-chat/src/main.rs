@@ -40,6 +40,7 @@ fn init(cx: &mut App) {
     views::init(cx);
     config::init(cx);
     hotkey::init(cx);
+    extensions::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {

@@ -74,6 +74,7 @@ impl TemplateDetailView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
         let input_state = input_state(window, cx);
+        input_state.focus_handle(cx).focus(window);
         let _subscriptions = vec![];
         Self {
             focus_handle,
@@ -142,7 +143,13 @@ impl TemplateDetailView {
         self.add_message(
             now,
             Role::User,
-            Content::Text(shared_string.to_string()),
+            match Runner::get_new_user_content(shared_string.to_string(), None) {
+                Ok(data) => data,
+                Err(err) => {
+                    event!(Level::ERROR, "{}", err);
+                    return;
+                }
+            },
             Status::Normal,
         );
         self.input_state.update(cx, |input, cx| {
@@ -171,7 +178,7 @@ impl TemplateDetailView {
                 while let Some(message) = stream.next().await {
                     match message {
                         Ok(message) => {
-                            if let Err(err) = this.update(cx, |this, cx| {
+                            if let Err(err) = this.update(cx, |this, _cx| {
                                 this.on_message(&message, assistant_message_id);
                             }) {
                                 event!(Level::ERROR, error = ?err);
@@ -179,7 +186,7 @@ impl TemplateDetailView {
                         }
                         Err(error) => {
                             event!(Level::ERROR, "Connection Error: {}", error);
-                            if let Err(err) = this.update(cx, |this, cx| {
+                            if let Err(err) = this.update(cx, |this, _cx| {
                                 this.on_error(assistant_message_id);
                             }) {
                                 event!(Level::ERROR, error = ?err);
