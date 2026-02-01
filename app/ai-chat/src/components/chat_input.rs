@@ -4,6 +4,7 @@ use gpui_component::{
     button::Button,
     h_flex,
     input::{Input, InputState},
+    select::{Select, SelectState},
 };
 
 const CONTEXT: &str = "chat-form";
@@ -18,6 +19,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct ChatInput {
     base: Div,
     input_state: Entity<InputState>,
+    extension_state: Entity<SelectState<Vec<String>>>,
     disabled: bool,
 }
 
@@ -26,9 +28,13 @@ pub(crate) fn input_state(window: &mut Window, cx: &mut App) -> Entity<InputStat
 }
 
 impl ChatInput {
-    pub(crate) fn new(input_state: &Entity<InputState>) -> Self {
+    pub(crate) fn new(
+        input_state: &Entity<InputState>,
+        extension_state: &Entity<SelectState<Vec<String>>>,
+    ) -> Self {
         Self {
             input_state: input_state.clone(),
+            extension_state: extension_state.clone(),
             base: div().key_context(CONTEXT),
             disabled: false,
         }
@@ -37,6 +43,7 @@ impl ChatInput {
         Self {
             base: self.base,
             input_state: self.input_state,
+            extension_state: self.extension_state,
             disabled,
         }
     }
@@ -55,12 +62,24 @@ impl RenderOnce for ChatInput {
                     .bg(cx.theme().transparent),
             )
             .child(
-                h_flex().w_full().p_1().child(div().flex_1()).child(
-                    Button::new("send")
-                        .disabled(disable)
-                        .icon(IconName::ArrowUp)
-                        .small(),
-                ),
+                h_flex()
+                    .w_full()
+                    .p_1()
+                    .child(div().flex_1())
+                    .child(
+                        Select::new(&self.extension_state)
+                            .cleanable(true)
+                            .w(px(150.)),
+                    )
+                    .child(
+                        Button::new("send")
+                            .disabled(disable)
+                            .icon(IconName::ArrowUp)
+                            .small()
+                            .on_click(|_event, window, cx| {
+                                window.dispatch_action(Send.boxed_clone(), cx);
+                            }),
+                    ),
             )
     }
 }

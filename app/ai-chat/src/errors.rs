@@ -62,6 +62,8 @@ pub enum AiChatError {
     GlobalHotKeyManagerCreationFailed(#[from] global_hotkey::Error),
     #[error("HotKey creation failed: {}", .0)]
     HotKeyCreationFailed(#[from] global_hotkey::hotkey::HotKeyParseError),
+    #[error("gpui error")]
+    GpuiError,
 }
 
 pub type AiChatResult<T> = Result<T, AiChatError>;

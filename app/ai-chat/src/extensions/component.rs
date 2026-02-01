@@ -10,7 +10,7 @@ bindgen!({
     world: "extension",
     path:"./extensions/wit",
     exports:{
-        // "chatgpt:extension/extension-api":async,
+        "chatgpt:extension/extension-api":async,
     },
     imports:{
         "chatgpt:extension/http-client":async,
@@ -152,7 +152,9 @@ mod tests {
         let chat_request = ChatRequest {
             message: "https://www.nodejs-security.com/blog/nodejs-api-security-vulnerabilities-path-traversal-files-bucket-server".to_string(),
         };
-        let response = extension_api.call_on_request(&mut store, &chat_request)?;
+        let response = extension_api
+            .call_on_request(&mut store, &chat_request)
+            .await?;
         assert!(response.is_ok());
         let response = response.map_err(|err| anyhow!("{}", err))?;
         println!("{response:?}");

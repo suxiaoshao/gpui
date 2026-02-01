@@ -15,7 +15,7 @@ pub trait FetchRunner {
     fn get_template(&self) -> &serde_json::Value;
     fn get_config(&self) -> &AiChatConfig;
     fn get_history(&self) -> Vec<Message>;
-    fn get_new_user_content(
+    async fn get_new_user_content(
         send_content: String,
         extension: Option<ExtensionRunner>,
     ) -> AiChatResult<Content> {
@@ -31,6 +31,7 @@ pub trait FetchRunner {
             let extension_api = extension.chatgpt_extension_extension_api();
             let data = extension_api
                 .call_on_request(&mut store, &chat_request)
+                .await
                 .map_err(|_| AiChatError::ExtensionRuntimeError)?
                 .map_err(|_| AiChatError::ExtensionRuntimeError)?;
             return Ok(Content::Extension {

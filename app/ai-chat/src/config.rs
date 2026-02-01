@@ -158,9 +158,6 @@ impl AiChatConfig {
     pub(crate) fn get_adapter_settings(&self, adapter: &str) -> Option<&toml::Value> {
         self.adapter_settings.get(adapter)
     }
-    pub(crate) fn get_adapter_settings_mut(&mut self, adapter: &str) -> Option<&mut toml::Value> {
-        self.adapter_settings.get_mut(adapter)
-    }
     pub(crate) fn set_adapter_settings(&mut self, adapter: &str, settings: toml::Value) {
         self.adapter_settings.insert(adapter.to_string(), settings);
     }

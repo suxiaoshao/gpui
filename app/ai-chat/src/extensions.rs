@@ -3,12 +3,11 @@ use crate::{
     config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
 };
-use gpui::{App, Context, Global};
+use gpui::{App, Global};
 use std::{collections::HashMap, path::PathBuf};
 use tracing::{Level, event};
 use wasmtime::{Config, Engine, Store, component::*};
 mod component;
-
 pub(crate) use component::{ChatRequest, Extension, ExtensionState};
 
 const EXTENSION_FOLDER: &str = "extensions";
@@ -57,6 +56,7 @@ fn get_all_components(
     Ok(map)
 }
 
+#[derive(Clone)]
 pub(crate) struct ExtensionContainer {
     engine: Engine,
     component_map: HashMap<String, (Component, ExtensionConfig)>,
@@ -94,17 +94,7 @@ impl ExtensionContainer {
             linker,
         })
     }
-    pub(crate) fn load_from_app<'a, R>(
-        app_handle: &'a mut Context<'a, R>,
-    ) -> AiChatResult<&'a Self> {
-        let extension_container = app_handle.global::<Self>();
-        Ok(extension_container)
-    }
-    pub(crate) async fn get_extension<'app, R>(
-        &self,
-        name: &str,
-        app_handle: &mut Context<'app, R>,
-    ) -> AiChatResult<ExtensionRunner> {
+    pub(crate) async fn get_extension(&self, name: &str) -> AiChatResult<ExtensionRunner> {
         let (component, extension_config) = self
             .component_map
             .get(name)
