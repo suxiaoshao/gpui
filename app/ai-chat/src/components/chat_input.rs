@@ -4,7 +4,7 @@ use gpui_component::{
     button::Button,
     h_flex,
     input::{Input, InputState},
-    select::{Select, SelectState},
+    select::{SearchableVec, Select, SelectState},
 };
 
 const CONTEXT: &str = "chat-form";
@@ -19,7 +19,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct ChatInput {
     base: Div,
     input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<Vec<String>>>,
+    extension_state: Entity<SelectState<SearchableVec<String>>>,
     disabled: bool,
 }
 
@@ -30,7 +30,7 @@ pub(crate) fn input_state(window: &mut Window, cx: &mut App) -> Entity<InputStat
 impl ChatInput {
     pub(crate) fn new(
         input_state: &Entity<InputState>,
-        extension_state: &Entity<SelectState<Vec<String>>>,
+        extension_state: &Entity<SelectState<SearchableVec<String>>>,
     ) -> Self {
         Self {
             input_state: input_state.clone(),

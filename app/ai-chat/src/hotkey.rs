@@ -43,7 +43,7 @@ impl TemporaryData {
     fn create_temporary_window(&mut self, cx: &mut App) {
         let temporary_window = match cx.open_window(
             WindowOptions {
-                kind: WindowKind::Floating,
+                kind: WindowKind::PopUp,
                 titlebar: Some(TitlebarOptions {
                     title: None,
                     appears_transparent: true,

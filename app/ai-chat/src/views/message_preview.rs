@@ -1,7 +1,4 @@
-use crate::{
-    database::{Content, Db, Message},
-    errors::AiChatResult,
-};
+use crate::{components::message::MessageViewExt, database::Content, errors::AiChatResult};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     IconName, Root, WindowExt,
@@ -11,6 +8,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
+use std::ops::Deref;
 use tracing::event;
 
 #[derive(Debug)]
@@ -38,8 +36,8 @@ enum MessageInput {
 }
 
 impl MessageInput {
-    fn new(message: &Message, window: &mut Window, cx: &mut Context<MessagePreview>) -> Self {
-        match &message.content {
+    fn new<T: MessagePreviewExt>(message: &T, window: &mut Window, cx: &mut App) -> Self {
+        match &message.content() {
             crate::database::Content::Text(value) => {
                 Self::Text(cx.new(|cx| {
                     InputState::new(window, cx)
@@ -74,14 +72,22 @@ impl MessageInput {
     }
 }
 
-pub struct MessagePreview {
-    message: Message,
+pub struct MessagePreview<T: MessagePreviewExt> {
+    message: T,
     preview_type: PreviewType,
     input: MessageInput,
 }
 
-impl MessagePreview {
-    pub fn new(message: Message, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl<T: MessagePreviewExt> Deref for MessagePreview<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message
+    }
+}
+
+impl<T: MessagePreviewExt> MessagePreview<T> {
+    pub fn new(message: T, window: &mut Window, cx: &mut App) -> Self {
         let input = MessageInput::new(&message, window, cx);
         Self {
             message,
@@ -90,7 +96,6 @@ impl MessagePreview {
         }
     }
     fn submit(&self, cx: &mut Context<Self>) -> AiChatResult<()> {
-        let conn = &mut cx.global::<Db>().get()?;
         let content = match &self.input {
             MessageInput::Text(entity) => {
                 let text = entity.read(cx).value().to_string();
@@ -110,11 +115,16 @@ impl MessagePreview {
                 }
             }
         };
-        Message::update_content(self.message.id, &content, conn)?;
+        self.on_update_content(content, cx)?;
         Ok(())
     }
 }
-impl Render for MessagePreview {
+
+pub trait MessagePreviewExt: MessageViewExt {
+    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()>;
+}
+
+impl<T: MessagePreviewExt> Render for MessagePreview<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);

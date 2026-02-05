@@ -1,5 +1,5 @@
 use crate::{
-    database::{schema::messages, service::Content, types::Status},
+    database::{schema::messages, types::Status},
     errors::AiChatResult,
 };
 use diesel::prelude::*;

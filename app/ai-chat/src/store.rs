@@ -1,6 +1,6 @@
 use crate::{
-    components::message::MessageItemView,
-    database::{Conversation, Db, Folder, NewConversation, NewFolder},
+    components::message::MessageView,
+    database::{Conversation, Db, Folder, Message, NewConversation, NewFolder},
     errors::AiChatResult,
     views::home::{ConversationPanelView, ConversationTabView, HomeView},
 };
@@ -206,12 +206,17 @@ impl ChatDataInner {
             }
         })
     }
-    pub(crate) fn panel_messages(&self) -> Vec<MessageItemView<i32>> {
+    pub(crate) fn panel_messages(&self) -> Vec<MessageView<Message>> {
         if let Some(conversation_id) = self.active_tab
             && let Some(conversation) =
                 Self::get_conversation(&self.folders, &self.conversations, conversation_id)
         {
-            conversation.messages.iter().map(From::from).collect()
+            conversation
+                .messages
+                .iter()
+                .cloned()
+                .map(MessageView::new)
+                .collect()
         } else {
             vec![]
         }

@@ -1,17 +1,21 @@
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{input::InputState, scroll::ScrollableElement, select::SelectState, v_flex};
-use std::ops::Deref;
-
 use crate::{
     components::chat_input::{ChatInput, input_state},
     database::Conversation,
     extensions::ExtensionContainer,
     store::ChatData,
 };
+use gpui::{prelude::FluentBuilder, *};
+use gpui_component::{
+    input::InputState,
+    scroll::ScrollableElement,
+    select::{SearchableVec, SelectState},
+    v_flex,
+};
+use std::ops::Deref;
 
 pub(crate) struct ConversationPanelView {
     input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<Vec<String>>>,
+    extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -26,7 +30,12 @@ impl ConversationPanelView {
             _subscriptions,
             extension_state: cx.new(|cx| {
                 SelectState::new(
-                    all_extensions.into_iter().map(|x| x.name).collect(),
+                    SearchableVec::new(
+                        all_extensions
+                            .into_iter()
+                            .map(|x| x.name)
+                            .collect::<Vec<_>>(),
+                    ),
                     None,
                     window,
                     cx,

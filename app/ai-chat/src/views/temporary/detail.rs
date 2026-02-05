@@ -1,20 +1,30 @@
 use crate::{
     components::{
         chat_input::{ChatInput, Send, input_state},
-        message::MessageItemView,
+        message::{MessageView, MessageViewExt},
     },
     config::AiChatConfig,
     database::{Content, ConversationTemplate, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     fetch::FetchRunner,
+    views::{
+        message_preview::{MessagePreview, MessagePreviewExt},
+        temporary::TemporaryView,
+    },
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    divider::Divider, h_flex, input::InputState, label::Label, scroll::ScrollableElement,
-    select::SelectState, v_flex,
+    Root,
+    divider::Divider,
+    h_flex,
+    input::InputState,
+    label::Label,
+    scroll::ScrollableElement,
+    select::{SearchableVec, SelectState},
+    v_flex,
 };
 use smol::stream::StreamExt;
 use std::rc::Rc;
@@ -43,6 +53,77 @@ pub struct TemporaryMessage {
     pub end_time: OffsetDateTime,
 }
 
+impl MessageViewExt for TemporaryMessage {
+    fn open_view_window(&self, _window: &mut Window, cx: &mut App) {
+        match cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(800.), px(600.)),
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(format!("Message Preview: {}", self.id).into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |window, cx| {
+                let message_view = cx.new(|cx| MessagePreview::new(self.clone(), window, cx));
+                cx.new(|cx| Root::new(message_view, window, cx))
+            },
+        ) {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "open message view window: {}", err);
+            }
+        };
+    }
+
+    fn role(&self) -> &Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn id(&self) -> impl Into<ElementId> + std::fmt::Display {
+        self.id
+    }
+    fn status(&self) -> &Status {
+        &self.status
+    }
+}
+
+impl MessagePreviewExt for TemporaryMessage {
+    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()> {
+        let temporary_view = cx.windows().iter().find_map(|window| {
+            window
+                .downcast::<Root>()
+                .and_then(|window_root| window_root.read(cx).ok())
+                .and_then(|root| root.view().downgrade().upgrade())
+                .and_then(|view| view.downcast::<TemporaryView>().ok())
+        });
+        if let Some(temporary_view) = temporary_view {
+            temporary_view.update(cx, |this, cx| {
+                if let Some(template_detail) = this.selected_item.as_ref() {
+                    template_detail.update(cx, |this, _cx| {
+                        if let Some(message) = this
+                            .messages
+                            .iter_mut()
+                            .find(|message| message.id == self.id)
+                        {
+                            message.content = content;
+                        }
+                    });
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
 impl TemporaryMessage {
     fn add_content(&mut self, content: &str) {
         let now = OffsetDateTime::now_utc();
@@ -64,7 +145,7 @@ pub(crate) struct TemplateDetailView {
     on_esc: OnEsc,
     messages: Vec<TemporaryMessage>,
     input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<Vec<String>>>,
+    extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
     task: Option<Task<()>>,
     autoincrement_id: usize,
@@ -95,7 +176,12 @@ impl TemplateDetailView {
             autoincrement_id: 0,
             extension_state: cx.new(|cx| {
                 SelectState::new(
-                    all_extensions.into_iter().map(|x| x.name).collect(),
+                    SearchableVec::new(
+                        all_extensions
+                            .into_iter()
+                            .map(|x| x.name)
+                            .collect::<Vec<_>>(),
+                    ),
                     None,
                     window,
                     cx,
@@ -104,8 +190,12 @@ impl TemplateDetailView {
             }),
         }
     }
-    fn messages(&self) -> Vec<MessageItemView<usize>> {
-        self.messages.iter().map(From::from).collect()
+    fn messages(&self) -> Vec<MessageView<TemporaryMessage>> {
+        self.messages
+            .iter()
+            .cloned()
+            .map(MessageView::new)
+            .collect()
     }
     fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input_state.read(cx).value();
@@ -174,9 +264,15 @@ impl TemplateDetailView {
         }
         self.task = None;
     }
+    fn on_success(&mut self, message_id: usize) {
+        if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
+            last.update_status(Status::Normal);
+        }
+        self.task = None;
+    }
     async fn fetch(
         state: WeakEntity<Self>,
-        context: &SharedString,
+        text: &SharedString,
         extension_name: Option<&String>,
         extension_container: &ExtensionContainer,
         config: AiChatConfig,
@@ -187,21 +283,35 @@ impl TemplateDetailView {
             Some(extension_name) => Some(extension_container.get_extension(extension_name).await?),
             None => None,
         };
-        let extension_config = extension_runner.as_ref().map(|x| x.config.name.to_string());
         let now = OffsetDateTime::now_utc();
-        let content = Runner::get_new_user_content(context.to_string(), extension_runner).await?;
-        state
-            .update(cx, |this, _cx| {
-                this.add_message(now, Role::User, content, Status::Normal);
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-        state
+        let user_message_id = state
             .update_in(cx, |this, window, cx| {
                 this.input_state.update(cx, |input, cx| {
                     input.set_value("", window, cx);
                 });
+                this.add_message(
+                    now,
+                    Role::User,
+                    Content::Text(text.to_string()),
+                    Status::Loading,
+                )
+                .id
             })
             .map_err(|_| AiChatError::GpuiError)?;
+        let content = Runner::get_new_user_content(text.to_string(), extension_runner).await?;
+        state
+            .update(cx, |this, _cx| {
+                if let Some(message) = this
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == user_message_id)
+                {
+                    message.content = content;
+                    message.status = Status::Normal;
+                }
+            })
+            .map_err(|_| AiChatError::GpuiError)?;
+
         let template = state
             .read_with(cx, |this, _cx| this.template.clone())
             .map_err(|_| AiChatError::GpuiError)?;
@@ -230,22 +340,27 @@ impl TemplateDetailView {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(message) => {
-                    if let Err(err) = state.update(cx, |this, _cx| {
-                        this.on_message(&message, assistant_message_id);
-                    }) {
-                        event!(Level::ERROR, error = ?err);
-                    };
+                    state
+                        .update(cx, |this, _cx| {
+                            this.on_message(&message, assistant_message_id);
+                        })
+                        .map_err(|_| AiChatError::GpuiError)?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    if let Err(err) = state.update(cx, |this, _cx| {
-                        this.on_error(assistant_message_id);
-                    }) {
-                        event!(Level::ERROR, error = ?err);
-                    };
+                    state
+                        .update(cx, |this, _cx| {
+                            this.on_error(assistant_message_id);
+                        })
+                        .map_err(|_| AiChatError::GpuiError)?;
                 }
             }
         }
+        state
+            .update(cx, |this, _cx| {
+                this.on_success(assistant_message_id);
+            })
+            .map_err(|_| AiChatError::GpuiError)?;
         Ok(())
     }
 }

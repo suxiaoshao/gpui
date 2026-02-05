@@ -1,15 +1,20 @@
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 use crate::{
+    components::message::MessageViewExt,
     database::{
-        Role, Status,
+        Db, Role, Status,
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },
     errors::{AiChatError, AiChatResult},
+    views::message_preview::{MessagePreview, MessagePreviewExt},
 };
 use diesel::SqliteConnection;
+use gpui::*;
+use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 use time::OffsetDateTime;
+use tracing::{Level, event};
 
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
 pub struct TemporaryMessage {
@@ -125,6 +130,58 @@ pub struct Message {
         deserialize_with = "deserialize_offset_date_time"
     )]
     pub end_time: OffsetDateTime,
+}
+
+impl MessageViewExt for Message {
+    fn open_view_window(&self, _window: &mut gpui::Window, cx: &mut gpui::App) {
+        match cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(800.), px(600.)),
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(format!("Message Preview: {}", self.id).into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |window, cx| {
+                let message_view = cx.new(|cx| MessagePreview::new(self.clone(), window, cx));
+                cx.new(|cx| Root::new(message_view, window, cx))
+            },
+        ) {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "open message view window: {}", err);
+            }
+        };
+    }
+
+    fn role(&self) -> &Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn id(&self) -> impl Into<ElementId> + std::fmt::Display {
+        self.id
+    }
+
+    fn status(&self) -> &Status {
+        &self.status
+    }
+}
+
+impl MessagePreviewExt for Message {
+    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::update_content(self.id, &content, conn)?;
+        Ok(())
+    }
 }
 
 impl TryFrom<SqlMessage> for Message {

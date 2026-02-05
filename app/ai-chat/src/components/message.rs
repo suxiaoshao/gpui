@@ -1,119 +1,54 @@
-use crate::{
-    database::{Content, Db, Message, Role},
-    errors::AiChatResult,
-    views::{message_preview::MessagePreview, temporary::TemporaryMessage},
-};
-use gpui::*;
+use crate::database::{Content, Role, Status};
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    IconName, Root, Sizable, WindowExt,
+    IconName, Sizable,
     avatar::Avatar,
     button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
-    notification::{Notification, NotificationType},
+    spinner::Spinner,
     text::TextView,
     v_flex,
 };
-use std::fmt::Display;
-use tracing::{Level, event};
+use std::{
+    fmt::Display,
+    ops::{Deref, DerefMut},
+};
 
 #[derive(IntoElement)]
-pub struct MessageItemView<T>
-where
-    T: MessageId,
-{
-    id: T,
-    role: Role,
-    content: Content,
+pub(crate) struct MessageView<T: MessageViewExt>(T);
+
+impl<T: MessageViewExt> MessageView<T> {
+    pub fn new(data: T) -> Self {
+        Self(data)
+    }
 }
 
-pub trait MessageId: Into<ElementId> + Display + Copy + 'static {
+impl<T: MessageViewExt> DerefMut for MessageView<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: MessageViewExt> Deref for MessageView<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub trait MessageViewExt: 'static {
     fn open_view_window(&self, window: &mut Window, cx: &mut App);
+    fn role(&self) -> &Role;
+    fn content(&self) -> &Content;
+    fn status(&self) -> &Status;
+    fn id(&self) -> impl Into<ElementId> + Display;
 }
 
-impl MessageId for i32 {
-    fn open_view_window(&self, window: &mut Window, cx: &mut App) {
-        fn get_message(message_id: i32, cx: &mut App) -> AiChatResult<Message> {
-            let conn = &mut cx.global::<Db>().get()?;
-            let message = Message::find(message_id, conn)?;
-            Ok(message)
-        }
-        let message = match get_message(*self, cx) {
-            Ok(data) => data,
-            Err(err) => {
-                event!(Level::ERROR, "open message view window: {}", err);
-                window.push_notification(
-                    Notification::new()
-                        .title("Get Message Detail Failed")
-                        .message(SharedString::from(err.to_string()))
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-                return;
-            }
-        };
-        match cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(800.), px(600.)),
-                    cx,
-                ))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Message Preview: {}", message.id).into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(message, window, cx));
-                cx.new(|cx| Root::new(message_view, window, cx))
-            },
-        ) {
-            Ok(_) => {}
-            Err(err) => {
-                event!(Level::ERROR, "open message view window: {}", err);
-            }
-        };
-    }
-}
-
-impl MessageId for usize {
-    fn open_view_window(&self, window: &mut Window, cx: &mut App) {
-        //todo
-    }
-}
-
-impl From<&Message> for MessageItemView<i32> {
-    fn from(
-        Message {
-            id, role, content, ..
-        }: &Message,
-    ) -> Self {
-        Self {
-            id: *id,
-            role: *role,
-            content: content.clone(),
-        }
-    }
-}
-
-impl From<&TemporaryMessage> for MessageItemView<usize> {
-    fn from(
-        TemporaryMessage {
-            id, role, content, ..
-        }: &TemporaryMessage,
-    ) -> Self {
-        Self {
-            id: *id,
-            role: *role,
-            content: content.clone(),
-        }
-    }
-}
-
-impl<T: MessageId> RenderOnce for MessageItemView<T> {
-    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
+impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_loading = matches!(self.status(), Status::Loading);
         v_flex()
             .group("message")
             .child(
@@ -123,8 +58,8 @@ impl<T: MessageId> RenderOnce for MessageItemView<T> {
                     .pb_4()
                     .child(
                         Avatar::new()
-                            .name(self.role.to_string())
-                            .src(match self.role {
+                            .name(self.role().to_string())
+                            .src(match self.role() {
                                 Role::Developer => "png/system.png",
                                 Role::User => "jpg/user.jpg",
                                 Role::Assistant => "jpg/assistant.jpg",
@@ -135,8 +70,8 @@ impl<T: MessageId> RenderOnce for MessageItemView<T> {
                     )
                     .child(
                         TextView::markdown(
-                            self.id,
-                            match self.content {
+                            self.id(),
+                            match self.content() {
                                 Content::Text(content) => content,
                                 Content::Extension { source, .. } => source,
                             },
@@ -149,24 +84,33 @@ impl<T: MessageId> RenderOnce for MessageItemView<T> {
                         .flex_1()
                         .overflow_x_hidden(),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .right_2()
-                            .top_0()
-                            .opacity(0.)
-                            .group_hover("message", |this| this.opacity(1.))
-                            .child(
-                                Button::new(SharedString::from(format!("view-{}", &self.id)))
-                                    .icon(IconName::Eye)
-                                    .ghost()
-                                    .small()
-                                    .on_click(move |_, window, cx| {
-                                        self.id.open_view_window(window, cx);
-                                    })
-                                    .tooltip("View Detail"),
-                            ),
-                    ),
+                    .map(|this| {
+                        if is_loading {
+                            this.child(div().absolute().right_2().top_2().child(Spinner::new()))
+                        } else {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .right_2()
+                                    .top_0()
+                                    .opacity(0.)
+                                    .group_hover("message", |this| this.opacity(1.))
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "view-{}",
+                                            &self.id()
+                                        )))
+                                        .icon(IconName::Eye)
+                                        .ghost()
+                                        .small()
+                                        .on_click(move |_, window, cx| {
+                                            self.open_view_window(window, cx);
+                                        })
+                                        .tooltip("View Detail"),
+                                    ),
+                            )
+                        }
+                    }),
             )
             .child(Divider::horizontal())
     }
