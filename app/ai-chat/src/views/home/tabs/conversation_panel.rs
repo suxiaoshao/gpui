@@ -6,7 +6,9 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
+    h_flex,
     input::InputState,
+    label::Label,
     scroll::ScrollableElement,
     select::{SearchableVec, SelectState},
     v_flex,
@@ -14,6 +16,7 @@ use gpui_component::{
 use std::ops::Deref;
 
 pub(crate) struct ConversationPanelView {
+    conversation: Conversation,
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
@@ -26,6 +29,7 @@ impl ConversationPanelView {
         let extension_container = cx.global::<ExtensionContainer>();
         let all_extensions = extension_container.get_all_config();
         Self {
+            conversation: conversation.clone(),
             input_state,
             _subscriptions,
             extension_state: cx.new(|cx| {
@@ -55,6 +59,20 @@ impl Render for ConversationPanelView {
             .w_full()
             .overflow_hidden()
             .pb_2()
+            .child(
+                h_flex()
+                    .flex_initial()
+                    .p_2()
+                    .gap_2()
+                    .child(Label::new(&self.conversation.icon))
+                    .child(
+                        Label::new(&self.conversation.title)
+                            .text_xl()
+                            .when_some(self.conversation.info.as_ref(), |this, description| {
+                                this.secondary(description)
+                            }),
+                    ),
+            )
             .child(
                 div()
                     .id("conversation-panel")

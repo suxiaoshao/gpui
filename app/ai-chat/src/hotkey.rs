@@ -4,14 +4,33 @@ use gpui::*;
 use gpui_component::Root;
 use std::str::FromStr;
 use tracing::{Level, event};
+use window_ext::{
+    NSRunningApplication, Retained, WindowExt, record_frontmost_app, restore_frontmost_app,
+};
 
 pub struct TemporaryData {
     manager: GlobalHotKeyManager,
     _task: Task<()>,
+    front_app: Option<Retained<NSRunningApplication>>,
     pub temporary_window: Option<WindowHandle<Root>>,
 }
 
 impl TemporaryData {
+    pub fn hide(&mut self, window: &mut Window) {
+        if let Err(err) = window.hide() {
+            event!(Level::ERROR, "Failed to hide temporary window: {:?}", err);
+        };
+        restore_frontmost_app(&self.front_app);
+        self.front_app = None;
+    }
+    fn show(&mut self, window: &mut Window) {
+        let prev_app = record_frontmost_app();
+        self.front_app = prev_app;
+        if let Err(err) = window.show() {
+            event!(Level::ERROR, "Failed to show temporary window: {:?}", err);
+        };
+        window.activate_window();
+    }
     fn on_short(&mut self, cx: &mut App) {
         match self.temporary_window {
             Some(temporary_window) => {
@@ -22,10 +41,9 @@ impl TemporaryData {
                 {
                     match temporary_window.update(cx, |_this, window, _cx| {
                         if window.is_window_active() {
-                            window.remove_window();
-                            self.temporary_window = None;
+                            self.hide(window);
                         } else {
-                            window.activate_window();
+                            self.show(window);
                         }
                     }) {
                         Ok(_) => {}
@@ -41,9 +59,11 @@ impl TemporaryData {
         }
     }
     fn create_temporary_window(&mut self, cx: &mut App) {
+        let front_app = record_frontmost_app();
+        self.front_app = front_app;
         let temporary_window = match cx.open_window(
             WindowOptions {
-                kind: WindowKind::PopUp,
+                kind: WindowKind::Floating,
                 titlebar: Some(TitlebarOptions {
                     title: None,
                     appears_transparent: true,
@@ -58,6 +78,9 @@ impl TemporaryData {
                 ..Default::default()
             },
             |window, cx| {
+                if let Err(err) = window.set_floating() {
+                    event!(Level::ERROR, error = ?err, "Failed to set floating");
+                }
                 let view = cx.new(|cx| TemporaryView::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
@@ -144,6 +167,7 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
         manager,
         _task: task,
         temporary_window: None,
+        front_app: None,
     });
     Ok(())
 }

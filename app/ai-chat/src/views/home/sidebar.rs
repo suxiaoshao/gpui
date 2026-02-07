@@ -95,13 +95,29 @@ impl Render for SidebarView {
                     )
                     .child(
                         SidebarGroup::new("Actions").child(
-                            SidebarMenu::new().child(
-                                SidebarMenuItem::new("Settings")
-                                    .icon(IconName::Settings)
-                                    .on_click(cx.listener(|_this, _event, window, cx| {
-                                        window.dispatch_action(OpenSetting.boxed_clone(), cx);
-                                    })),
-                            ),
+                            SidebarMenu::new()
+                                .child(
+                                    SidebarMenuItem::new("Settings")
+                                        .icon(IconName::Settings)
+                                        .on_click(cx.listener(|_this, _event, window, cx| {
+                                            window.dispatch_action(OpenSetting.boxed_clone(), cx);
+                                        })),
+                                )
+                                .child(
+                                    SidebarMenuItem::new("Add Conversation")
+                                        .icon(IconName::Plus)
+                                        .on_click(cx.listener(|_this, _evnet, window, cx| {
+                                            window
+                                                .dispatch_action(AddConversation.boxed_clone(), cx);
+                                        })),
+                                )
+                                .child(
+                                    SidebarMenuItem::new("Add Folder")
+                                        .icon(IconName::Plus)
+                                        .on_click(cx.listener(|_this, _evnet, window, cx| {
+                                            window.dispatch_action(AddFolder.boxed_clone(), cx);
+                                        })),
+                                ),
                         ),
                     ),
             )

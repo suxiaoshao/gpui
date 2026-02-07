@@ -1,0 +1,13 @@
+[package]
+name = "window-ext"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui.workspace = true
+
+raw-window-handle = "0.6.2"
+thiserror = "2.0.17"
+objc2-app-kit = "0.3.2"
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"

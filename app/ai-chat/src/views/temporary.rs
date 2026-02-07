@@ -33,9 +33,8 @@ impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _subscription = vec![cx.observe_window_activation(window, |_this, window, cx| {
             if !window.is_window_active() {
-                window.remove_window();
-                let data = cx.global_mut::<TemporaryData>();
-                data.temporary_window = None;
+                let temporary_data = cx.global_mut::<TemporaryData>();
+                temporary_data.hide(window);
             }
         })];
         let templates = Self::get_templates(cx).map(|templates| {

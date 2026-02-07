@@ -10,6 +10,7 @@ gpui-component = { workspace = true, features = [
   "tree-sitter-languages",
 ] }
 gpui-component-assets = {workspace = true}
+window-ext = {workspace = true}
 rust-embed = { version = "8.9.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.100"
 
