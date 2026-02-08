@@ -2,17 +2,17 @@ use crate::{config::AiChatConfig, errors::AiChatResult, views::temporary::Tempor
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::*;
 use gpui_component::Root;
-use std::str::FromStr;
+use std::{any::TypeId, str::FromStr};
 use tracing::{Level, event};
-use window_ext::{
-    NSRunningApplication, Retained, WindowExt, record_frontmost_app, restore_frontmost_app,
-};
+use window_ext::WindowExt;
+#[cfg(target_os = "macos")]
+pub use window_ext::{NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app};
 
 pub struct TemporaryData {
     manager: GlobalHotKeyManager,
     _task: Task<()>,
+    #[cfg(target_os = "macos")]
     front_app: Option<Retained<NSRunningApplication>>,
-    pub temporary_window: Option<WindowHandle<Root>>,
 }
 
 impl TemporaryData {
@@ -20,48 +20,53 @@ impl TemporaryData {
         if let Err(err) = window.hide() {
             event!(Level::ERROR, "Failed to hide temporary window: {:?}", err);
         };
-        restore_frontmost_app(&self.front_app);
-        self.front_app = None;
+        #[cfg(target_os = "macos")]
+        {
+            restore_frontmost_app(&self.front_app);
+            self.front_app = None;
+        }
     }
     fn show(&mut self, window: &mut Window) {
-        let prev_app = record_frontmost_app();
-        self.front_app = prev_app;
+        #[cfg(target_os = "macos")]
+        {
+            let prev_app = record_frontmost_app();
+            self.front_app = prev_app;
+        }
         if let Err(err) = window.show() {
             event!(Level::ERROR, "Failed to show temporary window: {:?}", err);
         };
-        window.activate_window();
     }
     fn on_short(&mut self, cx: &mut App) {
-        match self.temporary_window {
+        let temporary_window = cx.windows().iter().find_map(|window| {
+            window.downcast::<Root>().filter(|root| {
+                root.read(cx)
+                    .ok()
+                    .map(|root| root.view().entity_type() == TypeId::of::<TemporaryView>())
+                    .unwrap_or(false)
+            })
+        });
+        match temporary_window {
             Some(temporary_window) => {
-                let windows = cx.windows();
-                if windows
-                    .iter()
-                    .any(|window| window.window_id() == temporary_window.window_id())
-                {
-                    match temporary_window.update(cx, |_this, window, _cx| {
-                        if window.is_window_active() {
-                            self.hide(window);
-                        } else {
-                            self.show(window);
-                        }
-                    }) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
-                        }
-                    };
-                } else {
-                    self.create_temporary_window(cx);
-                }
+                if let Err(err) = temporary_window.update(cx, |_this, window, _cx| {
+                    if window.is_showing().unwrap_or(false) {
+                        self.hide(window);
+                    } else {
+                        self.show(window);
+                    }
+                }) {
+                    event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
+                };
             }
             None => self.create_temporary_window(cx),
         }
     }
     fn create_temporary_window(&mut self, cx: &mut App) {
-        let front_app = record_frontmost_app();
-        self.front_app = front_app;
-        let temporary_window = match cx.open_window(
+        #[cfg(target_os = "macos")]
+        {
+            let front_app = record_frontmost_app();
+            self.front_app = front_app;
+        }
+        if let Err(err) = cx.open_window(
             WindowOptions {
                 kind: WindowKind::Floating,
                 titlebar: Some(TitlebarOptions {
@@ -85,13 +90,8 @@ impl TemporaryData {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
-            Ok(data) => data,
-            Err(err) => {
-                event!(Level::ERROR, error = ?err, "Failed to open temporary window");
-                return;
-            }
+            event!(Level::ERROR, error = ?err, "Failed to open temporary window");
         };
-        self.temporary_window = Some(temporary_window);
     }
     pub fn update_hotkey(
         old_hotkey: Option<&str>,
@@ -140,33 +140,28 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
             ..
         } = e
         {
-            smol::block_on(async {
-                match tx.send(e).await {
-                    Ok(_) => {}
-                    Err(err) => {
-                        event!(Level::ERROR, "send hotkey event failed: {}", err);
-                    }
-                };
-            });
+            match tx.send_blocking(e) {
+                Ok(_) => {}
+                Err(err) => {
+                    event!(Level::ERROR, "send hotkey event failed: {}", err);
+                }
+            };
         }
     }));
     let task = cx.spawn(async move |cx| {
         while let Ok(event) = rx.recv().await {
             event!(Level::INFO, "hotkey event received: {:?}", event);
-            match cx.update_global::<TemporaryData, _>(|this, cx| {
+            if let Err(err) = cx.update_global::<TemporaryData, _>(|this, cx| {
                 this.on_short(cx);
             }) {
-                Ok(_) => {}
-                Err(err) => {
-                    event!(Level::ERROR, "open temporary window failed: {}", err);
-                }
+                event!(Level::ERROR, "open temporary window failed: {}", err);
             };
         }
     });
     cx.set_global(TemporaryData {
         manager,
         _task: task,
-        temporary_window: None,
+        #[cfg(target_os = "macos")]
         front_app: None,
     });
     Ok(())

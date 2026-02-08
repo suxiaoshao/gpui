@@ -1,12 +1,24 @@
 #![allow(deprecated)]
 use gpui::Window;
+#[cfg(target_os = "macos")]
 pub use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Id};
+#[cfg(target_os = "macos")]
 pub use objc2_app_kit::NSRunningApplication;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSView, NSWindow};
-use raw_window_handle::{AppKitWindowHandle, HandleError, HasRawWindowHandle, RawWindowHandle};
+#[cfg(target_os = "macos")]
+use raw_window_handle::AppKitWindowHandle;
+use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
 use thiserror::Error;
+#[cfg(target_os = "windows")]
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+        HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow,
+    },
+};
 
 #[derive(Error, Debug)]
 pub enum WindowExtError {
@@ -18,21 +30,38 @@ pub enum WindowExtError {
     FailedToGetNSWindow,
     #[error("Failed to get NSApplication")]
     FailedToGetNSApplication,
+    #[error("Failed to set topmost")]
+    FailedSetTopMost,
 }
 
 pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
+    fn is_showing(&self) -> Result<bool, WindowExtError>;
 }
 
 impl WindowExt for Window {
     fn hide(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
+            #[allow(unused_variables)]
             RawWindowHandle::AppKit(handle) => {
-                let ns_window = get_ns_window(handle)?;
-                ns_window.orderOut(None);
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.orderOut(None);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    };
+                }
             }
             _ => {}
         }
@@ -42,13 +71,27 @@ impl WindowExt for Window {
     fn show(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
+            #[allow(unused_variables)]
             RawWindowHandle::AppKit(handle) => {
-                let ns_window = get_ns_window(handle)?;
-                ns_window.makeKeyAndOrderFront(None);
-                let ns_app = NSApplication::sharedApplication(
-                    MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
-                );
-                ns_app.activate();
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.makeKeyAndOrderFront(None);
+                    let ns_app = NSApplication::sharedApplication(
+                        MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
+                    );
+                    ns_app.activate();
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    };
+                }
             }
             _ => {}
         }
@@ -57,17 +100,61 @@ impl WindowExt for Window {
     fn set_floating(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
+            #[allow(unused_variables)]
             RawWindowHandle::AppKit(handle) => {
-                let ns_window = get_ns_window(handle)?;
-                ns_window.setLevel(5 as _);
-                let ns_app = NSApplication::sharedApplication(
-                    MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
-                );
-                ns_app.activate();
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.setLevel(5 as _);
+                    let ns_app = NSApplication::sharedApplication(
+                        MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
+                    );
+                    ns_app.activate();
+                }
             }
-            _ => {}
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOMOVE,
+                        )
+                        .map_err(|_| WindowExtError::FailedSetTopMost)?;
+                    }
+                }
+            }
+            _ => (),
         }
         Ok(())
+    }
+
+    fn is_showing(&self) -> Result<bool, WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        match raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                todo!()
+            }
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+                        return Ok(IsWindowVisible(hwnd).as_bool());
+                    };
+                }
+            }
+            _ => return Ok(true),
+        };
     }
 }
 
@@ -78,6 +165,7 @@ fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
     Ok(raw_window)
 }
 
+#[cfg(target_os = "macos")]
 fn get_ns_window(window: AppKitWindowHandle) -> Result<Retained<NSWindow>, WindowExtError> {
     let ns_view = window.ns_view.as_ptr();
     let ns_view: Id<NSView> =
