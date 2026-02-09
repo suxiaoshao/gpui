@@ -1,8 +1,10 @@
 use crate::{
     components::message::MessageView,
-    database::{Conversation, Db, Folder, Message, NewConversation, NewFolder},
+    database::{Conversation, ConversationTemplate, Db, Folder, Message, NewConversation, NewFolder},
     errors::AiChatResult,
-    views::home::{ConversationPanelView, ConversationTabView, HomeView},
+    views::home::{
+        ConversationPanelView, ConversationTabView, HomeView, TemplateDetailView, TemplateListView,
+    },
 };
 use gpui::*;
 use gpui_component::{
@@ -16,8 +18,50 @@ use tracing::{Level, event};
 pub struct ChatDataInner {
     pub(crate) conversations: Vec<Conversation>,
     pub(crate) folders: Vec<Folder>,
-    tabs: Vec<ConversationTabView>,
-    active_tab: Option<i32>,
+    tabs: Vec<AppTab>,
+    active_tab: Option<TabKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabKind {
+    Conversation(i32),
+    TemplateList,
+    TemplateDetail(i32),
+}
+
+impl TabKind {
+    fn key(self) -> i32 {
+        match self {
+            TabKind::Conversation(id) => id,
+            TabKind::TemplateList => i32::MIN,
+            TabKind::TemplateDetail(id) => id.saturating_add(1).saturating_neg(),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum TabPanel {
+    Conversation(Entity<ConversationPanelView>),
+    TemplateList(Entity<TemplateListView>),
+    TemplateDetail(Entity<TemplateDetailView>),
+}
+
+impl TabPanel {
+    fn into_any_element(self) -> AnyElement {
+        match self {
+            TabPanel::Conversation(panel) => panel.into_any_element(),
+            TabPanel::TemplateList(panel) => panel.into_any_element(),
+            TabPanel::TemplateDetail(panel) => panel.into_any_element(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AppTab {
+    kind: TabKind,
+    icon: SharedString,
+    name: SharedString,
+    panel: TabPanel,
 }
 
 impl ChatDataInner {
@@ -28,21 +72,58 @@ impl ChatDataInner {
         let active_tab = conversations.first();
         let mut tabs = Vec::new();
         if let Some(tab) = active_tab {
-            tabs.push(
-                (
-                    tab,
-                    cx.new(|cx| ConversationPanelView::new(tab, window, cx)),
-                )
-                    .into(),
-            );
+            tabs.push(Self::conversation_tab(tab, window, cx));
         }
-        let active_tab_id = active_tab.map(|tab| tab.id);
+        let active_tab_kind = active_tab.map(|tab| TabKind::Conversation(tab.id));
         Ok(Self {
             conversations,
             folders,
             tabs,
-            active_tab: active_tab_id,
+            active_tab: active_tab_kind,
         })
+    }
+    fn conversation_tab(conversation: &Conversation, window: &mut Window, cx: &mut App) -> AppTab {
+        AppTab {
+            kind: TabKind::Conversation(conversation.id),
+            icon: SharedString::from(&conversation.icon),
+            name: SharedString::from(&conversation.title),
+            panel: TabPanel::Conversation(cx.new(|cx| {
+                ConversationPanelView::new(conversation, window, cx)
+            })),
+        }
+    }
+    fn template_tab(window: &mut Window, cx: &mut App) -> AppTab {
+        AppTab {
+            kind: TabKind::TemplateList,
+            icon: "📋".into(),
+            name: "Templates".into(),
+            panel: TabPanel::TemplateList(cx.new(|cx| TemplateListView::new(window, cx))),
+        }
+    }
+    fn template_detail_tab(template_id: i32, _window: &mut Window, cx: &mut App) -> AppTab {
+        let (icon, name) = cx
+            .global::<Db>()
+            .get()
+            .ok()
+            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok())
+            .map(|template| {
+                (
+                    SharedString::from(template.icon),
+                    SharedString::from(format!("Template: {}", template.name)),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    SharedString::from("🧩"),
+                    SharedString::from(format!("Template #{template_id}")),
+                )
+            });
+        AppTab {
+            kind: TabKind::TemplateDetail(template_id),
+            icon,
+            name,
+            panel: TabPanel::TemplateDetail(cx.new(|cx| TemplateDetailView::new(template_id, cx))),
+        }
     }
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {
         for folder in folders {
@@ -123,73 +204,94 @@ impl ChatDataInner {
     }
     fn add_tab(&mut self, conversation_id: i32, window: &mut Window, cx: &mut App) {
         match (
-            self.tabs.iter().any(|id| id.id == conversation_id),
+            self.tabs
+                .iter()
+                .any(|tab| tab.kind == TabKind::Conversation(conversation_id)),
             Self::get_conversation(&self.folders, &self.conversations, conversation_id),
         ) {
             (true, Some(_)) => {
-                self.active_tab = Some(conversation_id);
+                self.active_tab = Some(TabKind::Conversation(conversation_id));
             }
             (false, Some(conversation)) => {
-                self.tabs.push(
-                    (
-                        conversation,
-                        cx.new(|cx| ConversationPanelView::new(conversation, window, cx)),
-                    )
-                        .into(),
-                );
-                self.active_tab = Some(conversation.id);
+                self.tabs.push(Self::conversation_tab(conversation, window, cx));
+                self.active_tab = Some(TabKind::Conversation(conversation.id));
             }
             (false, None) => {}
             (true, None) => {
                 self.tabs = self
                     .tabs
                     .iter()
-                    .filter(|id| id.id != conversation_id)
+                    .filter(|tab| tab.kind != TabKind::Conversation(conversation_id))
                     .cloned()
                     .collect();
-                self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+                self.active_tab = self.tabs.first().map(|tab| tab.kind);
             }
         }
     }
-    fn remove_tab(&mut self, conversation_id: i32) {
-        if self.tabs.iter().any(|id| id.id == conversation_id) {
+    fn open_template_list_tab(&mut self, window: &mut Window, cx: &mut App) {
+        if self.tabs.iter().all(|tab| tab.kind != TabKind::TemplateList) {
+            self.tabs.push(Self::template_tab(window, cx));
+        }
+        self.active_tab = Some(TabKind::TemplateList);
+    }
+    fn open_template_detail_tab(&mut self, template_id: i32, window: &mut Window, cx: &mut App) {
+        let kind = TabKind::TemplateDetail(template_id);
+        if self.tabs.iter().all(|tab| tab.kind != kind) {
+            self.tabs.push(Self::template_detail_tab(template_id, window, cx));
+        }
+        self.active_tab = Some(kind);
+    }
+    fn activate_tab(&mut self, tab_key: i32) {
+        self.active_tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.kind.key() == tab_key)
+            .map(|tab| tab.kind);
+    }
+    fn remove_tab(&mut self, tab_key: i32) {
+        if self.tabs.iter().any(|tab| tab.kind.key() == tab_key) {
             self.tabs = self
                 .tabs
                 .iter()
-                .filter(|id| id.id != conversation_id)
+                .filter(|tab| tab.kind.key() != tab_key)
                 .cloned()
                 .collect();
-            self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+            if self.active_tab.is_some_and(|kind| kind.key() == tab_key) {
+                self.active_tab = self.tabs.first().map(|tab| tab.kind);
+            }
         }
     }
     fn move_tab(&mut self, from_id: i32, to_id: Option<i32>) {
         if to_id == Some(from_id) {
             return;
         }
-        let Some(from_ix) = self.tabs.iter().position(|tab| tab.id == from_id) else {
+        let Some(from_ix) = self.tabs.iter().position(|tab| tab.kind.key() == from_id) else {
             return;
         };
-        let tab = self.tabs.remove(from_ix);
-        match to_id {
-            Some(target_id) => {
-                let Some(mut to_ix) = self.tabs.iter().position(|tab| tab.id == target_id) else {
-                    self.tabs.insert(from_ix.min(self.tabs.len()), tab);
-                    return;
-                };
-                if from_ix < to_ix {
-                    to_ix = to_ix.saturating_sub(1);
-                }
-                self.tabs.insert(to_ix, tab);
-            }
-            None => self.tabs.push(tab),
+        let moved_kind = self.tabs[from_ix].kind;
+        let to_ix = to_id.and_then(|target_id| {
+            self.tabs
+                .iter()
+                .position(|tab| tab.kind.key() == target_id)
+        });
+        Self::move_item(&mut self.tabs, from_ix, to_ix);
+        self.active_tab = Some(moved_kind);
+    }
+    fn move_item<T>(items: &mut Vec<T>, from_ix: usize, to_ix: Option<usize>) {
+        let item = items.remove(from_ix);
+        match to_ix {
+            Some(target_ix) => items.insert(target_ix.min(items.len()), item),
+            None => items.push(item),
         }
     }
     pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
-        self.tabs.clone()
+        self.tabs
+            .iter()
+            .map(|tab| ConversationTabView::new(tab.kind.key(), tab.icon.clone(), tab.name.clone()))
+            .collect()
     }
-    pub(crate) fn active_tab(&self) -> Option<&Conversation> {
-        self.active_tab
-            .and_then(|id| Self::get_conversation(&self.folders, &self.conversations, id))
+    pub(crate) fn active_tab_key(&self) -> Option<i32> {
+        self.active_tab.map(TabKind::key)
     }
     fn __delete_conversation(
         folders: &mut [Folder],
@@ -228,30 +330,30 @@ impl ChatDataInner {
         self.tabs = self
             .tabs
             .iter()
-            .filter(|ConversationTabView { id, .. }| {
-                Self::get_conversation(&self.folders, &self.conversations, *id).is_some()
+            .filter(|tab| match tab.kind {
+                TabKind::Conversation(id) => {
+                    Self::get_conversation(&self.folders, &self.conversations, id).is_some()
+                }
+                TabKind::TemplateList => true,
+                TabKind::TemplateDetail(_) => true,
             })
             .cloned()
             .collect();
-        if !self
-            .tabs
-            .iter()
-            .any(|ConversationTabView { id, .. }| Some(*id) == self.active_tab)
-        {
-            self.active_tab = self.tabs.first().map(|conversation| conversation.id);
+        if !self.tabs.iter().any(|tab| Some(tab.kind) == self.active_tab) {
+            self.active_tab = self.tabs.first().map(|tab| tab.kind);
         }
     }
-    pub(crate) fn panel(&self) -> Option<&Entity<ConversationPanelView>> {
+    pub(crate) fn panel(&self) -> Option<AnyElement> {
         self.tabs.iter().find_map(|tab| {
-            if Some(tab.id) == self.active_tab {
-                Some(&tab.panel)
+            if Some(tab.kind) == self.active_tab {
+                Some(tab.panel.clone().into_any_element())
             } else {
                 None
             }
         })
     }
     pub(crate) fn panel_messages(&self) -> Vec<MessageView<Message>> {
-        if let Some(conversation_id) = self.active_tab
+        if let Some(TabKind::Conversation(conversation_id)) = self.active_tab
             && let Some(conversation) =
                 Self::get_conversation(&self.folders, &self.conversations, conversation_id)
         {
@@ -272,9 +374,15 @@ impl ChatDataInner {
             conversation.messages.push(message);
         }
     }
-    fn __delete_message(folders: &mut [Folder], conversations: &mut [Conversation], message_id: i32) {
+    fn __delete_message(
+        folders: &mut [Folder],
+        conversations: &mut [Conversation],
+        message_id: i32,
+    ) {
         for conversation in conversations {
-            conversation.messages.retain(|message| message.id != message_id);
+            conversation
+                .messages
+                .retain(|message| message.id != message_id);
         }
         for folder in folders {
             Self::__delete_message(&mut folder.folders, &mut folder.conversations, message_id);
@@ -314,6 +422,9 @@ pub enum ChatDataEvent {
         parent_id: Option<i32>,
     },
     AddTab(i32),
+    ActivateTab(i32),
+    OpenTemplateList,
+    OpenTemplateDetail(i32),
     RemoveTab(i32),
     MoveTab {
         from_id: i32,
@@ -403,6 +514,27 @@ impl ChatData {
                     }
                 });
             }
+            ChatDataEvent::ActivateTab(tab_key) => {
+                state.update(cx, |this, _cx| {
+                    if let Ok(this) = this {
+                        this.activate_tab(*tab_key);
+                    }
+                });
+            }
+            ChatDataEvent::OpenTemplateList => {
+                state.update(cx, |this, cx| {
+                    if let Ok(this) = this {
+                        this.open_template_list_tab(window, cx);
+                    }
+                });
+            }
+            ChatDataEvent::OpenTemplateDetail(template_id) => {
+                state.update(cx, |this, cx| {
+                    if let Ok(this) = this {
+                        this.open_template_detail_tab(*template_id, window, cx);
+                    }
+                });
+            }
             ChatDataEvent::RemoveTab(conversation_id) => {
                 state.update(cx, |this, _cx| {
                     if let Ok(this) = this {
@@ -417,19 +549,21 @@ impl ChatData {
                     }
                 });
             }
-            ChatDataEvent::DeleteMessage(message_id) => match Self::delete_message(state, *message_id, cx) {
-                Ok(_) => {}
-                Err(err) => {
-                    window.push_notification(
-                        Notification::new()
-                            .title("Delete Message Failed")
-                            .message(SharedString::from(err.to_string()))
-                            .with_type(NotificationType::Error),
-                        cx,
-                    );
-                    event!(Level::ERROR, "delete message error:{err:?}")
+            ChatDataEvent::DeleteMessage(message_id) => {
+                match Self::delete_message(state, *message_id, cx) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        window.push_notification(
+                            Notification::new()
+                                .title("Delete Message Failed")
+                                .message(SharedString::from(err.to_string()))
+                                .with_type(NotificationType::Error),
+                            cx,
+                        );
+                        event!(Level::ERROR, "delete message error:{err:?}")
+                    }
                 }
-            },
+            }
             ChatDataEvent::DeleteConversation(conversation_id) => {
                 match Self::delete_conversation(state, *conversation_id, cx) {
                     Ok(_) => {}
@@ -745,5 +879,15 @@ mod tests {
         data.delete_folder(2);
         let found = ChatDataInner::get_folder(&mut data.folders, 2);
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn move_item_supports_forward_and_backward_moves() {
+        let mut values = vec![1, 2, 3, 4];
+        ChatDataInner::move_item(&mut values, 0, Some(1));
+        assert_eq!(values, vec![2, 1, 3, 4]);
+
+        ChatDataInner::move_item(&mut values, 3, Some(1));
+        assert_eq!(values, vec![2, 4, 1, 3]);
     }
 }

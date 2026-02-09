@@ -11,7 +11,9 @@ use gpui_component::{
     v_flex,
 };
 pub(crate) use sidebar::{AddConversation, AddFolder};
-pub(crate) use tabs::{ConversationPanelView, ConversationTabView};
+pub(crate) use tabs::{
+    ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
+};
 
 mod sidebar;
 mod tabs;

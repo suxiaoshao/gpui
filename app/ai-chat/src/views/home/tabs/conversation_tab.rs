@@ -1,7 +1,5 @@
 use crate::{
-    database::Conversation,
     store::{ChatData, ChatDataEvent},
-    views::home::ConversationPanelView,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
@@ -46,17 +44,11 @@ pub(crate) struct ConversationTabView {
     pub(crate) id: i32,
     pub(crate) icon: SharedString,
     pub(crate) name: SharedString,
-    pub(crate) panel: Entity<ConversationPanelView>,
 }
 
-impl From<(&Conversation, Entity<ConversationPanelView>)> for ConversationTabView {
-    fn from((conversation, panel): (&Conversation, Entity<ConversationPanelView>)) -> Self {
-        Self {
-            id: conversation.id,
-            icon: SharedString::from(&conversation.icon),
-            name: SharedString::from(&conversation.title),
-            panel,
-        }
+impl ConversationTabView {
+    pub(crate) fn new(id: i32, icon: SharedString, name: SharedString) -> Self {
+        Self { id, icon, name }
     }
 }
 
@@ -66,8 +58,7 @@ impl RenderOnce for ConversationTabView {
         let active_id = chat_data
             .as_ref()
             .ok()
-            .and_then(|data| data.active_tab())
-            .map(|tab| tab.id);
+            .and_then(|data| data.active_tab_key());
         let is_active = active_id == Some(self.id);
         let icon = self.icon.clone();
         let name = self.name.clone();
@@ -106,8 +97,12 @@ impl RenderOnce for ConversationTabView {
             .when(is_active, |this| {
                 this.bg(cx.theme().tab_active).border_b_0()
             })
-            .drag_over::<DragTab>(|this, _drag, _window, cx| {
-                this.border_color(cx.theme().drag_border)
+            .drag_over::<DragTab>(move |this, _drag, _window, cx| {
+                if is_active {
+                    this.border_b_1().border_color(cx.theme().drag_border)
+                } else {
+                    this.border_color(cx.theme().drag_border)
+                }
             })
             .on_drop(move |drag: &DragTab, _window, cx| {
                 if drag.id == self.id {
@@ -124,7 +119,7 @@ impl RenderOnce for ConversationTabView {
             .on_click(move |_this, _window, cx| {
                 let chat_data = cx.global::<ChatData>().deref().clone();
                 chat_data.update(cx, move |_this, cx| {
-                    cx.emit(ChatDataEvent::AddTab(self.id));
+                    cx.emit(ChatDataEvent::ActivateTab(self.id));
                 });
             })
             .on_drag(

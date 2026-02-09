@@ -8,9 +8,13 @@ use std::ops::Deref;
 
 mod conversation_panel;
 mod conversation_tab;
+mod template_detail;
+mod template_list;
 
 pub(crate) use conversation_panel::ConversationPanelView;
 pub(crate) use conversation_tab::{ConversationTabView, DragTab};
+pub(crate) use template_detail::TemplateDetailView;
+pub(crate) use template_list::TemplateListView;
 
 pub(crate) struct TabsView {
     chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
@@ -60,7 +64,7 @@ impl Render for TabsView {
                                     }),
                             ),
                     )
-                    .when_some(chat_data.panel(), |this, panel| this.child(panel.clone())),
+                    .when_some(chat_data.panel(), |this, panel| this.child(panel)),
                 None => this,
             })
     }

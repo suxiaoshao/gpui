@@ -1,0 +1,220 @@
+use crate::{
+    database::{ConversationTemplate, Db, Mode},
+    errors::AiChatResult,
+    store::{ChatData, ChatDataEvent},
+};
+use gpui::{prelude::FluentBuilder, *};
+use gpui_component::{
+    ActiveTheme, Selectable, Sizable, h_flex,
+    label::Label,
+    list::{List, ListDelegate, ListState},
+    tag::Tag,
+    v_flex,
+};
+use std::{ops::Deref, rc::Rc};
+
+#[derive(IntoElement, Clone)]
+struct TemplateItem {
+    template: Rc<ConversationTemplate>,
+    is_selected: bool,
+}
+
+impl TemplateItem {
+    fn new(template: Rc<ConversationTemplate>) -> Self {
+        Self {
+            template,
+            is_selected: false,
+        }
+    }
+}
+
+impl Selectable for TemplateItem {
+    fn selected(mut self, selected: bool) -> Self {
+        self.is_selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.is_selected
+    }
+}
+
+impl RenderOnce for TemplateItem {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let template = self.template;
+        h_flex()
+            .id(template.id)
+            .w_full()
+            .gap_3()
+            .items_start()
+            .px_4()
+            .py_3()
+            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .child(
+                Label::new(&template.icon)
+                    .when_some(template.description.as_ref(), |this, desc| {
+                        this.secondary(desc)
+                    }),
+            )
+            .child(
+                v_flex().flex_1().gap_1().child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(&template.name).text_sm())
+                        .child(
+                            match template.mode {
+                                Mode::Contextual => Tag::primary(),
+                                Mode::Single => Tag::info(),
+                                Mode::AssistantOnly => Tag::success(),
+                            }
+                            .outline()
+                            .child(template.mode.to_string()),
+                        ),
+                ),
+            )
+    }
+}
+
+type OnConfirm = Rc<dyn Fn(i32, &mut Window, &mut App) + 'static>;
+
+struct TemplateListDelegate {
+    ix: Option<gpui_component::IndexPath>,
+    items: Vec<Rc<ConversationTemplate>>,
+    filtered_items: Vec<Rc<ConversationTemplate>>,
+    on_confirm: OnConfirm,
+}
+
+impl TemplateListDelegate {
+    fn new(items: Vec<ConversationTemplate>, on_confirm: OnConfirm) -> Self {
+        let items = items.into_iter().map(Rc::new).collect::<Vec<_>>();
+        Self {
+            ix: None,
+            filtered_items: items.clone(),
+            items,
+            on_confirm,
+        }
+    }
+}
+
+impl ListDelegate for TemplateListDelegate {
+    type Item = TemplateItem;
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.filtered_items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: gpui_component::IndexPath,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        self.filtered_items
+            .get(ix.row)
+            .cloned()
+            .map(TemplateItem::new)
+    }
+
+    fn set_selected_index(
+        &mut self,
+        ix: Option<gpui_component::IndexPath>,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) {
+        self.ix = ix;
+    }
+
+    fn confirm(
+        &mut self,
+        _secondary: bool,
+        window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) {
+        if let Some(ix) = self.ix
+            && let Some(template) = self.filtered_items.get(ix.row)
+        {
+            (self.on_confirm)(template.id, window, cx);
+        }
+    }
+
+    fn perform_search(
+        &mut self,
+        query: &str,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) -> Task<()> {
+        if query.is_empty() {
+            self.filtered_items = self.items.clone();
+        } else {
+            self.filtered_items = self
+                .items
+                .iter()
+                .filter(|item| {
+                    item.name.contains(query)
+                        || item
+                            .description
+                            .as_ref()
+                            .is_some_and(|description| description.contains(query))
+                })
+                .cloned()
+                .collect();
+        }
+        Task::ready(())
+    }
+}
+
+pub(crate) struct TemplateListView {
+    templates: AiChatResult<Entity<ListState<TemplateListDelegate>>>,
+}
+
+impl TemplateListView {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let templates = Self::build_list(window, cx);
+        Self {
+            templates: templates.map(|(list, _)| list),
+        }
+    }
+
+    fn get_templates(cx: &mut Context<Self>) -> AiChatResult<Vec<ConversationTemplate>> {
+        let conn = &mut cx.global::<Db>().get()?;
+        ConversationTemplate::all(conn)
+    }
+
+    fn build_list(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AiChatResult<(Entity<ListState<TemplateListDelegate>>, usize)> {
+        let templates = Self::get_templates(cx)?;
+        let count = templates.len();
+        let on_confirm: OnConfirm = Rc::new(|template_id, _window, cx| {
+            let chat_data = cx.global::<ChatData>().deref().clone();
+            chat_data.update(cx, |_this, cx| {
+                cx.emit(ChatDataEvent::OpenTemplateDetail(template_id));
+            });
+        });
+        let list = cx.new(move |cx| {
+            let mut state =
+                ListState::new(TemplateListDelegate::new(templates, on_confirm), window, cx)
+                    .searchable(true);
+            state.focus(window, cx);
+            state
+        });
+        Ok((list, count))
+    }
+}
+
+impl Render for TemplateListView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex().size_full().map(|this| match &self.templates {
+            Ok(templates) => this.child(List::new(templates).large()),
+            Err(err) => this.child(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .child(Label::new(format!("Load templates failed: {err}")).text_sm()),
+            ),
+        })
+    }
+}

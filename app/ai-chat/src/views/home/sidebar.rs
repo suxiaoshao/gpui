@@ -1,7 +1,7 @@
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
-    store::{ChatData, ChatDataInner},
+    store::{ChatData, ChatDataEvent, ChatDataInner},
     views::settings::OpenSetting,
 };
 use gpui::*;
@@ -11,6 +11,7 @@ use gpui_component::{
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
+use std::ops::Deref;
 use tracing::{Level, event};
 
 mod conversation_item;
@@ -101,6 +102,16 @@ impl Render for SidebarView {
                                         .icon(IconName::Settings)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
                                             window.dispatch_action(OpenSetting.boxed_clone(), cx);
+                                        })),
+                                )
+                                .child(
+                                    SidebarMenuItem::new("Template List")
+                                        .icon(IconName::Bot)
+                                        .on_click(cx.listener(|_this, _event, _window, cx| {
+                                            let chat_data = cx.global::<ChatData>().deref().clone();
+                                            chat_data.update(cx, |_this, cx| {
+                                                cx.emit(ChatDataEvent::OpenTemplateList);
+                                            });
                                         })),
                                 )
                                 .child(
