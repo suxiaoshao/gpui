@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate::errors::{AiChatError, AiChatResult};
+use crate::errors::{AiChatError};
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Mode {

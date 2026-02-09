@@ -38,7 +38,7 @@ pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
-    fn is_showing(&self) -> Result<bool, WindowExtError>;
+    fn is_visible(&self) -> Result<bool, WindowExtError>;
 }
 
 impl WindowExt for Window {
@@ -136,13 +136,19 @@ impl WindowExt for Window {
         Ok(())
     }
 
-    fn is_showing(&self) -> Result<bool, WindowExtError> {
+    fn is_visible(&self) -> Result<bool, WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
             #[allow(unused_variables)]
             RawWindowHandle::AppKit(handle) => {
-                todo!()
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    return Ok(ns_window.isVisible());
+                }
             }
+
+            #[allow(unused_variables)]
             RawWindowHandle::Win32(handle) => {
                 #[cfg(target_os = "windows")]
                 {
@@ -153,8 +159,9 @@ impl WindowExt for Window {
                     };
                 }
             }
-            _ => return Ok(true),
+            _ => {}
         };
+        Ok(true)
     }
 }
 

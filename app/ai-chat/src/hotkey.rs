@@ -2,7 +2,7 @@ use crate::{config::AiChatConfig, errors::AiChatResult, views::temporary::Tempor
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::*;
 use gpui_component::Root;
-use std::{any::TypeId, str::FromStr};
+use std::{any::TypeId, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
 #[cfg(target_os = "macos")]
@@ -13,9 +13,20 @@ pub struct TemporaryData {
     _task: Task<()>,
     #[cfg(target_os = "macos")]
     front_app: Option<Retained<NSRunningApplication>>,
+    pub delay_close: Option<Task<()>>,
 }
 
 impl TemporaryData {
+    pub fn delay_close(window: &mut Window, cx: &mut App) -> Task<()> {
+        window.spawn(cx, async |cx| {
+            Timer::after(Duration::from_secs(600)).await;
+            if let Err(err) = cx.window_handle().update(cx, |_, window, cx| {
+                window.remove_window();
+            }) {
+                event!(Level::ERROR, "Failed to remove temporary window: {:?}", err);
+            };
+        })
+    }
     pub fn hide(&mut self, window: &mut Window) {
         if let Err(err) = window.hide() {
             event!(Level::ERROR, "Failed to hide temporary window: {:?}", err);
@@ -27,6 +38,7 @@ impl TemporaryData {
         }
     }
     fn show(&mut self, window: &mut Window) {
+        self.delay_close = None;
         #[cfg(target_os = "macos")]
         {
             let prev_app = record_frontmost_app();
@@ -47,8 +59,9 @@ impl TemporaryData {
         });
         match temporary_window {
             Some(temporary_window) => {
-                if let Err(err) = temporary_window.update(cx, |_this, window, _cx| {
-                    if window.is_showing().unwrap_or(false) {
+                if let Err(err) = temporary_window.update(cx, |_this, window, cx| {
+                    if window.is_visible().unwrap_or(false) {
+                        self.delay_close = Some(Self::delay_close(window, cx));
                         self.hide(window);
                     } else {
                         self.show(window);
@@ -163,6 +176,7 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
         _task: task,
         #[cfg(target_os = "macos")]
         front_app: None,
+        delay_close: None,
     });
     Ok(())
 }

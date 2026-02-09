@@ -33,7 +33,9 @@ impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _subscription = vec![cx.observe_window_activation(window, |_this, window, cx| {
             if !window.is_window_active() {
+                let task = TemporaryData::delay_close(window, cx);
                 let temporary_data = cx.global_mut::<TemporaryData>();
+                temporary_data.delay_close = Some(task);
                 temporary_data.hide(window);
             }
         })];

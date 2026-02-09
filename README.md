@@ -1,12 +1,99 @@
-# gpui-app
+# GPUI 应用工作区
 
-Created with Create GPUI App.
+一个基于 **GPUI** 的 Rust 桌面应用工作区，包含多个独立应用，统一管理依赖与构建流程。
 
-- [`gpui`](https://www.gpui.rs/)
-- [GPUI documentation](https://github.com/zed-industries/zed/tree/main/crates/gpui/docs)
-- [GPUI examples](https://github.com/zed-industries/zed/tree/main/crates/gpui/examples)
+## 应用列表
 
-## Usage
+- **ai-chat**：AI 聊天应用，支持会话管理、流式响应与 WebAssembly 扩展
+- **feiwen**：小说 / 网页内容阅读器，支持本地数据库存储
+- **http-client**：HTTP 请求测试工具（类似 Postman）
+- **novel-download**：小说 / 网页内容下载工具
 
-- Ensure Rust is installed - [Rustup](https://rustup.rs/)
-- Run your app with `cargo run`
+## 目录结构
+
+- `app/ai-chat`：AI 聊天应用
+- `app/feiwen`：阅读器
+- `app/http-client`：HTTP 客户端
+- `app/novel-download`：下载器
+- `crates/window-ext`：窗口相关扩展
+
+## 环境要求
+
+- Rust 1.92+（Edition 2024）
+- 推荐：`cargo-watch`（可选，热重载）
+- 可选：`diesel_cli`（仅 ai-chat 用于管理迁移）
+
+## 构建与运行
+
+```bash
+# 构建整个工作区
+cargo build
+
+# 构建指定应用
+cargo build -p ai-chat
+cargo build -p feiwen
+cargo build -p http-client
+cargo build -p novel-download
+
+# 运行指定应用
+cargo run -p ai-chat
+cargo run -p feiwen
+cargo run -p http-client
+cargo run -p novel-download
+```
+
+## 开发与调试
+
+```bash
+# 自动重载（需要 cargo-watch）
+cargo watch -x 'run -p ai-chat'
+```
+
+## 数据与日志位置
+
+- **macOS**
+  - 数据：`~/Library/Application Support/top.sushao.{app}/`
+  - 日志：`~/Library/Logs/top.sushao.{app}/data.log`
+
+- **Linux**
+  - 数据：`$XDG_CONFIG_HOME/top.sushao.{app}/` 或 `~/.config/top.sushao.{app}/`
+  - 日志：`$XDG_DATA_HOME/top.sushao.{app}/logs/data.log` 或 `~/.local/share/top.sushao.{app}/logs/data.log`
+
+## ai-chat 专项说明
+
+### 数据库
+
+- 使用 Diesel + SQLite
+- 迁移文件已内置，首次运行会自动初始化数据库
+
+```bash
+# 进入 ai-chat 目录
+cd app/ai-chat
+
+# 生成迁移（需要 diesel_cli）
+diesel migration generate migration_name
+```
+
+### 扩展（WASM）
+
+ai-chat 支持 WebAssembly 组件扩展：
+
+```bash
+# 在扩展目录中构建（示例：app/ai-chat/extensions/url_search）
+cargo component build --release
+```
+
+扩展目录：`app/ai-chat/extensions/`
+- `extension.wasm`：编译后的 WASM 组件
+- `config.toml`：扩展元数据
+
+## 技术栈
+
+- GPUI + gpui-component
+- Rust 2024 Edition
+- tracing / tracing-subscriber（日志）
+- Diesel + SQLite（ai-chat、feiwen）
+
+## 许可
+
+未指定。
