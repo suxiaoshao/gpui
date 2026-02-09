@@ -6,15 +6,16 @@ use crate::{
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },
     errors::{AiChatError, AiChatResult},
+    store::{ChatData, ChatDataEvent},
     views::message_preview::{MessagePreview, MessagePreviewExt},
 };
 use diesel::SqliteConnection;
 use gpui::{
-    App, AppContext, Bounds, ElementId, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
 };
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Deref};
 use time::OffsetDateTime;
 use tracing::{Level, event};
 
@@ -175,7 +176,38 @@ pub struct Message {
 }
 
 impl MessageViewExt for Message {
-    fn open_view_window(&self, _window: &mut gpui::Window, cx: &mut gpui::App) {
+    type Id = i32;
+
+    fn role(&self) -> &Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn status(&self) -> &Status {
+        &self.status
+    }
+
+    fn open_view_by_id(id: Self::Id, _window: &mut gpui::Window, cx: &mut gpui::App) {
+        let message = match cx.global::<Db>().get() {
+            Ok(mut conn) => match Message::find(id, &mut conn) {
+                Ok(message) => message,
+                Err(err) => {
+                    event!(Level::ERROR, "find message failed: {}", err);
+                    return;
+                }
+            },
+            Err(err) => {
+                event!(Level::ERROR, "get db failed: {}", err);
+                return;
+            }
+        };
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -184,13 +216,13 @@ impl MessageViewExt for Message {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Message Preview: {}", self.id).into()),
+                    title: Some(format!("Message Preview: {}", message.id).into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(self.clone(), window, cx));
+                let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
                 cx.new(|cx| Root::new(message_view, window, cx))
             },
         ) {
@@ -201,20 +233,11 @@ impl MessageViewExt for Message {
         };
     }
 
-    fn role(&self) -> &Role {
-        &self.role
-    }
-
-    fn content(&self) -> &Content {
-        &self.content
-    }
-
-    fn id(&self) -> impl Into<ElementId> + std::fmt::Display {
-        self.id
-    }
-
-    fn status(&self) -> &Status {
-        &self.status
+    fn delete_message_by_id(message_id: Self::Id, _window: &mut gpui::Window, cx: &mut App) {
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        chat_data.update(cx, move |_this, cx| {
+            cx.emit(ChatDataEvent::DeleteMessage(message_id));
+        });
     }
 }
 

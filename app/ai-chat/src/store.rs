@@ -272,6 +272,17 @@ impl ChatDataInner {
             conversation.messages.push(message);
         }
     }
+    fn __delete_message(folders: &mut [Folder], conversations: &mut [Conversation], message_id: i32) {
+        for conversation in conversations {
+            conversation.messages.retain(|message| message.id != message_id);
+        }
+        for folder in folders {
+            Self::__delete_message(&mut folder.folders, &mut folder.conversations, message_id);
+        }
+    }
+    pub(crate) fn delete_message(&mut self, message_id: i32) {
+        Self::__delete_message(&mut self.folders, &mut self.conversations, message_id);
+    }
     pub(crate) fn replace_message(&mut self, conversation_id: i32, message: Message) {
         if let Some(conversation) =
             Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
@@ -308,6 +319,7 @@ pub enum ChatDataEvent {
         from_id: i32,
         to_id: Option<i32>,
     },
+    DeleteMessage(i32),
     DeleteConversation(i32),
     DeleteFolder(i32),
 }
@@ -405,6 +417,19 @@ impl ChatData {
                     }
                 });
             }
+            ChatDataEvent::DeleteMessage(message_id) => match Self::delete_message(state, *message_id, cx) {
+                Ok(_) => {}
+                Err(err) => {
+                    window.push_notification(
+                        Notification::new()
+                            .title("Delete Message Failed")
+                            .message(SharedString::from(err.to_string()))
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                    event!(Level::ERROR, "delete message error:{err:?}")
+                }
+            },
             ChatDataEvent::DeleteConversation(conversation_id) => {
                 match Self::delete_conversation(state, *conversation_id, cx) {
                     Ok(_) => {}
@@ -502,6 +527,20 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.delete_folder(id);
+            }
+        });
+        Ok(())
+    }
+    fn delete_message(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        message_id: i32,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::delete(message_id, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.delete_message(message_id);
             }
         });
         Ok(())

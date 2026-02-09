@@ -18,10 +18,12 @@ use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     Root,
+    WindowExt,
     divider::Divider,
     h_flex,
     input::InputState,
     label::Label,
+    notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     select::{SearchableVec, SelectState},
     v_flex,
@@ -54,7 +56,45 @@ pub struct TemporaryMessage {
 }
 
 impl MessageViewExt for TemporaryMessage {
-    fn open_view_window(&self, _window: &mut Window, cx: &mut App) {
+    type Id = usize;
+
+    fn role(&self) -> &Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn status(&self) -> &Status {
+        &self.status
+    }
+
+    fn open_view_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let message = cx.windows().iter().find_map(|window| {
+            window
+                .downcast::<Root>()
+                .and_then(|window_root| window_root.read(cx).ok())
+                .and_then(|root| root.view().downgrade().upgrade())
+                .and_then(|view| view.downcast::<TemporaryView>().ok())
+                .and_then(|temporary_view| {
+                    let temporary_view = temporary_view.read(cx);
+                    let template_detail = temporary_view.selected_item.as_ref()?.clone();
+                    let template_detail = template_detail.read(cx);
+                    template_detail
+                        .messages
+                        .iter()
+                        .find(|message| message.id == id)
+                        .cloned()
+                })
+        });
+        let Some(message) = message else {
+            return;
+        };
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -63,13 +103,13 @@ impl MessageViewExt for TemporaryMessage {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Message Preview: {}", self.id).into()),
+                    title: Some(format!("Message Preview: {}", message.id).into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(self.clone(), window, cx));
+                let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
                 cx.new(|cx| Root::new(message_view, window, cx))
             },
         ) {
@@ -80,19 +120,31 @@ impl MessageViewExt for TemporaryMessage {
         };
     }
 
-    fn role(&self) -> &Role {
-        &self.role
-    }
-
-    fn content(&self) -> &Content {
-        &self.content
-    }
-
-    fn id(&self) -> impl Into<ElementId> + std::fmt::Display {
-        self.id
-    }
-    fn status(&self) -> &Status {
-        &self.status
+    fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
+        let temporary_view = cx.windows().iter().find_map(|window| {
+            window
+                .downcast::<Root>()
+                .and_then(|window_root| window_root.read(cx).ok())
+                .and_then(|root| root.view().downgrade().upgrade())
+                .and_then(|view| view.downcast::<TemporaryView>().ok())
+        });
+        if let Some(temporary_view) = temporary_view {
+            temporary_view.update(cx, |this, cx| {
+                if let Some(template_detail) = this.selected_item.as_ref() {
+                    template_detail.update(cx, |this, _cx| {
+                        this.messages.retain(|message| message.id != message_id);
+                    });
+                }
+            });
+        } else {
+            window.push_notification(
+                Notification::new()
+                    .title("Delete Message Failed")
+                    .message("Message view not available.")
+                    .with_type(NotificationType::Error),
+                cx,
+            );
+        }
     }
 }
 
