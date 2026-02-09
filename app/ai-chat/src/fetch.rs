@@ -82,3 +82,44 @@ pub trait FetchRunner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FetchRunner;
+    use crate::database::Content;
+    use crate::extensions::ExtensionRunner;
+    use futures::executor::block_on;
+    use std::sync::OnceLock;
+
+    struct DummyRunner;
+
+    impl FetchRunner for DummyRunner {
+        fn get_adapter(&self) -> &str {
+            "noop"
+        }
+
+        fn get_template(&self) -> &serde_json::Value {
+            static TEMPLATE: OnceLock<serde_json::Value> = OnceLock::new();
+            TEMPLATE.get_or_init(|| serde_json::Value::Null)
+        }
+
+        fn get_config(&self) -> &crate::config::AiChatConfig {
+            static CONFIG: OnceLock<crate::config::AiChatConfig> = OnceLock::new();
+            CONFIG.get_or_init(crate::config::AiChatConfig::default)
+        }
+
+        fn get_history(&self) -> Vec<crate::fetch::Message> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn get_new_user_content_without_extension_returns_text() {
+        let content = block_on(DummyRunner::get_new_user_content(
+            "hello".to_string(),
+            None::<ExtensionRunner>,
+        ))
+        .expect("content");
+        assert_eq!(content, Content::Text("hello".to_string()));
+    }
+}

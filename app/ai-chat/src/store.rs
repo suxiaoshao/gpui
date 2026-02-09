@@ -99,6 +99,28 @@ impl ChatDataInner {
         }
         None
     }
+    fn get_conversation_mut<'a>(
+        folders: &'a mut [Folder],
+        conversations: &'a mut [Conversation],
+        conversation_id: i32,
+    ) -> Option<&'a mut Conversation> {
+        if let Some(find) = conversations
+            .iter_mut()
+            .find(|Conversation { id, .. }| *id == conversation_id)
+        {
+            return Some(find);
+        }
+        for folder in folders {
+            if let Some(conversation) = Self::get_conversation_mut(
+                &mut folder.folders,
+                &mut folder.conversations,
+                conversation_id,
+            ) {
+                return Some(conversation);
+            }
+        }
+        None
+    }
     fn add_tab(&mut self, conversation_id: i32, window: &mut Window, cx: &mut App) {
         match (
             self.tabs.iter().any(|id| id.id == conversation_id),
@@ -241,6 +263,28 @@ impl ChatDataInner {
                 .collect()
         } else {
             vec![]
+        }
+    }
+    pub(crate) fn add_message(&mut self, conversation_id: i32, message: Message) {
+        if let Some(conversation) =
+            Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
+        {
+            conversation.messages.push(message);
+        }
+    }
+    pub(crate) fn replace_message(&mut self, conversation_id: i32, message: Message) {
+        if let Some(conversation) =
+            Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
+        {
+            if let Some(existing) = conversation
+                .messages
+                .iter_mut()
+                .find(|message_item| message_item.id == message.id)
+            {
+                *existing = message;
+            } else {
+                conversation.messages.push(message);
+            }
         }
     }
 }
@@ -471,4 +515,196 @@ pub(crate) fn init(window: &mut Window, cx: &mut Context<HomeView>) {
         data: chat_data,
         _subscriptions,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatDataInner;
+    use crate::database::{Content, Conversation, Folder, Message, Role, Status};
+    use time::OffsetDateTime;
+
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::now_utc()
+    }
+
+    fn message(id: i32, conversation_id: i32) -> Message {
+        Message {
+            id,
+            conversation_id,
+            conversation_path: format!("/conversation/{conversation_id}"),
+            role: Role::User,
+            content: Content::Text(format!("message {id}")),
+            status: Status::Normal,
+            created_time: now(),
+            updated_time: now(),
+            start_time: now(),
+            end_time: now(),
+        }
+    }
+
+    fn conversation(id: i32, folder_id: Option<i32>) -> Conversation {
+        Conversation {
+            id,
+            path: format!("/conversation/{id}"),
+            folder_id,
+            title: format!("Conversation {id}"),
+            icon: "🤖".to_string(),
+            created_time: now(),
+            updated_time: now(),
+            info: None,
+            messages: vec![],
+            template_id: 1,
+        }
+    }
+
+    fn folder(id: i32, parent_id: Option<i32>) -> Folder {
+        Folder {
+            id,
+            name: format!("Folder {id}"),
+            path: format!("/folder/{id}"),
+            parent_id,
+            created_time: now(),
+            updated_time: now(),
+            conversations: vec![],
+            folders: vec![],
+        }
+    }
+
+    fn empty_chat_data() -> ChatDataInner {
+        ChatDataInner {
+            conversations: vec![],
+            folders: vec![],
+            tabs: vec![],
+            active_tab: None,
+        }
+    }
+
+    #[test]
+    fn add_folder_places_into_parent() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.folders.push(folder(2, Some(1)));
+        data.folders.push(root);
+
+        let new_folder = folder(3, Some(2));
+        data.add_folder(new_folder);
+
+        let parent = ChatDataInner::get_folder(&mut data.folders, 2).unwrap();
+        assert!(parent.folders.iter().any(|f| f.id == 3));
+    }
+
+    #[test]
+    fn add_folder_to_root_when_no_parent() {
+        let mut data = empty_chat_data();
+        data.add_folder(folder(1, None));
+        assert_eq!(data.folders.len(), 1);
+        assert_eq!(data.folders[0].id, 1);
+    }
+
+    #[test]
+    fn add_conversation_places_into_folder_or_root() {
+        let mut data = empty_chat_data();
+        data.folders.push(folder(1, None));
+
+        data.add_conversation(conversation(1, Some(1)));
+        data.add_conversation(conversation(2, None));
+
+        let parent = ChatDataInner::get_folder(&mut data.folders, 1).unwrap();
+        assert_eq!(parent.conversations.len(), 1);
+        assert_eq!(parent.conversations[0].id, 1);
+        assert_eq!(data.conversations.len(), 1);
+        assert_eq!(data.conversations[0].id, 2);
+    }
+
+    #[test]
+    fn get_conversation_recurses_through_folders() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        let mut child = folder(2, Some(1));
+        child.conversations.push(conversation(3, Some(2)));
+        root.folders.push(child);
+        data.folders.push(root);
+
+        let found = ChatDataInner::get_conversation(&data.folders, &data.conversations, 3);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, 3);
+    }
+
+    #[test]
+    fn get_conversation_mut_allows_updates() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.conversations.push(conversation(2, Some(1)));
+        data.folders.push(root);
+
+        if let Some(conversation) =
+            ChatDataInner::get_conversation_mut(&mut data.folders, &mut data.conversations, 2)
+        {
+            conversation.title = "Updated".to_string();
+        }
+
+        let found = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2);
+        assert_eq!(found.unwrap().title, "Updated");
+    }
+
+    #[test]
+    fn add_message_and_replace_message_updates_conversation() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.conversations.push(conversation(2, Some(1)));
+        data.folders.push(root);
+
+        data.add_message(2, message(10, 2));
+        data.add_message(2, message(11, 2));
+        let before = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
+            .unwrap()
+            .messages
+            .len();
+        assert_eq!(before, 2);
+
+        let mut updated = message(11, 2);
+        updated.content = Content::Text("updated".to_string());
+        data.replace_message(2, updated.clone());
+
+        let found = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
+            .unwrap()
+            .messages
+            .iter()
+            .find(|msg| msg.id == 11)
+            .unwrap();
+        assert_eq!(found.content, updated.content);
+
+        data.replace_message(2, message(12, 2));
+        let after = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
+            .unwrap()
+            .messages
+            .len();
+        assert_eq!(after, 3);
+    }
+
+    #[test]
+    fn delete_conversation_removes_nested_conversation() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        let mut child = folder(2, Some(1));
+        child.conversations.push(conversation(3, Some(2)));
+        root.folders.push(child);
+        data.folders.push(root);
+
+        data.delete_conversation(3);
+        let found = ChatDataInner::get_conversation(&data.folders, &data.conversations, 3);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn delete_folder_removes_nested_folder() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.folders.push(folder(2, Some(1)));
+        data.folders.push(root);
+
+        data.delete_folder(2);
+        let found = ChatDataInner::get_folder(&mut data.folders, 2);
+        assert!(found.is_none());
+    }
 }

@@ -9,7 +9,9 @@ use crate::{
     views::message_preview::{MessagePreview, MessagePreviewExt},
 };
 use diesel::SqliteConnection;
-use gpui::*;
+use gpui::{
+    App, AppContext, Bounds, ElementId, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+};
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
@@ -93,6 +95,46 @@ impl Content {
             Content::Text(content) => content,
             Content::Extension { content, .. } => content,
         }
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::Content;
+
+    #[test]
+    fn add_assign_appends_text_content() {
+        let mut content = Content::Text("hello".to_string());
+        content += " world";
+        assert_eq!(content, Content::Text("hello world".to_string()));
+    }
+
+    #[test]
+    fn add_assign_appends_extension_source() {
+        let mut content = Content::Extension {
+            source: "src".to_string(),
+            extension_name: "ext".to_string(),
+            content: "payload".to_string(),
+        };
+        content += " more";
+        assert_eq!(
+            content,
+            Content::Extension {
+                source: "src more".to_string(),
+                extension_name: "ext".to_string(),
+                content: "payload".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn send_content_uses_extension_payload() {
+        let content = Content::Extension {
+            source: "src".to_string(),
+            extension_name: "ext".to_string(),
+            content: "payload".to_string(),
+        };
+        assert_eq!(content.send_content(), "payload");
     }
 }
 

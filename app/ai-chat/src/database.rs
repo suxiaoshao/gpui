@@ -19,9 +19,9 @@ mod service;
 mod types;
 
 pub use service::{
-    Content, Conversation, ConversationTemplate, Folder, Message, NewConversation,
-    NewConversationTemplate, NewFolder, NewMessage, deserialize_offset_date_time,
-    serialize_offset_date_time,
+    Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Folder, Message,
+    NewConversation, NewConversationTemplate, NewFolder, NewMessage,
+    deserialize_offset_date_time, serialize_offset_date_time,
 };
 pub use types::{Mode, Role, Status};
 

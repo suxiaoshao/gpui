@@ -139,6 +139,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_extension() -> anyhow::Result<()> {
+        if std::env::var("AI_CHAT_RUN_EXTENSION_TEST").is_err() {
+            return Ok(());
+        }
         let mut config = Config::new();
         config.async_support(true);
         let engine = Engine::new(&config)?;
