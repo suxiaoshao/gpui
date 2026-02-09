@@ -1,6 +1,6 @@
 use crate::{
     errors::AiChatResult,
-    store::{ChatData, ChatDataInner},
+    store::{ChatData, ChatDataEvent, ChatDataInner},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
@@ -10,7 +10,7 @@ mod conversation_panel;
 mod conversation_tab;
 
 pub(crate) use conversation_panel::ConversationPanelView;
-pub(crate) use conversation_tab::ConversationTabView;
+pub(crate) use conversation_tab::{ConversationTabView, DragTab};
 
 pub(crate) struct TabsView {
     chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
@@ -45,7 +45,19 @@ impl Render for TabsView {
                                     .flex_1()
                                     .h_full()
                                     .border_b_1()
-                                    .border_color(cx.theme().border),
+                                    .border_color(cx.theme().border)
+                                    .drag_over::<DragTab>(|this, _drag, _window, cx| {
+                                        this.bg(cx.theme().drop_target)
+                                    })
+                                    .on_drop(move |drag: &DragTab, _window, cx| {
+                                        let chat_data = cx.global::<ChatData>().deref().clone();
+                                        chat_data.update(cx, move |_this, cx| {
+                                            cx.emit(ChatDataEvent::MoveTab {
+                                                from_id: drag.id,
+                                                to_id: None,
+                                            });
+                                        });
+                                    }),
                             ),
                     )
                     .when_some(chat_data.panel(), |this, panel| this.child(panel.clone())),

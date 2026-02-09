@@ -140,6 +140,28 @@ impl ChatDataInner {
             self.active_tab = self.tabs.first().map(|conversation| conversation.id);
         }
     }
+    fn move_tab(&mut self, from_id: i32, to_id: Option<i32>) {
+        if to_id == Some(from_id) {
+            return;
+        }
+        let Some(from_ix) = self.tabs.iter().position(|tab| tab.id == from_id) else {
+            return;
+        };
+        let tab = self.tabs.remove(from_ix);
+        match to_id {
+            Some(target_id) => {
+                let Some(mut to_ix) = self.tabs.iter().position(|tab| tab.id == target_id) else {
+                    self.tabs.insert(from_ix.min(self.tabs.len()), tab);
+                    return;
+                };
+                if from_ix < to_ix {
+                    to_ix = to_ix.saturating_sub(1);
+                }
+                self.tabs.insert(to_ix, tab);
+            }
+            None => self.tabs.push(tab),
+        }
+    }
     pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
         self.tabs.clone()
     }
@@ -238,6 +260,10 @@ pub enum ChatDataEvent {
     },
     AddTab(i32),
     RemoveTab(i32),
+    MoveTab {
+        from_id: i32,
+        to_id: Option<i32>,
+    },
     DeleteConversation(i32),
     DeleteFolder(i32),
 }
@@ -325,6 +351,13 @@ impl ChatData {
                 state.update(cx, |this, _cx| {
                     if let Ok(this) = this {
                         this.remove_tab(*conversation_id);
+                    }
+                });
+            }
+            ChatDataEvent::MoveTab { from_id, to_id } => {
+                state.update(cx, |this, _cx| {
+                    if let Ok(this) = this {
+                        this.move_tab(*from_id, *to_id);
                     }
                 });
             }
