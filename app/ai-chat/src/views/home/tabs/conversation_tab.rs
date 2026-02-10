@@ -1,6 +1,4 @@
-use crate::{
-    store::{ChatData, ChatDataEvent},
-};
+use crate::store::{ChatData, ChatDataEvent};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use std::ops::Deref;

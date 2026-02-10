@@ -1,6 +1,8 @@
 use crate::{
     components::message::MessageView,
-    database::{Conversation, ConversationTemplate, Db, Folder, Message, NewConversation, NewFolder},
+    database::{
+        Conversation, ConversationTemplate, Db, Folder, Message, NewConversation, NewFolder,
+    },
     errors::AiChatResult,
     views::home::{
         ConversationPanelView, ConversationTabView, HomeView, TemplateDetailView, TemplateListView,
@@ -87,9 +89,9 @@ impl ChatDataInner {
             kind: TabKind::Conversation(conversation.id),
             icon: SharedString::from(&conversation.icon),
             name: SharedString::from(&conversation.title),
-            panel: TabPanel::Conversation(cx.new(|cx| {
-                ConversationPanelView::new(conversation, window, cx)
-            })),
+            panel: TabPanel::Conversation(
+                cx.new(|cx| ConversationPanelView::new(conversation, window, cx)),
+            ),
         }
     }
     fn template_tab(window: &mut Window, cx: &mut App) -> AppTab {
@@ -122,9 +124,9 @@ impl ChatDataInner {
             kind: TabKind::TemplateDetail(template_id),
             icon,
             name,
-            panel: TabPanel::TemplateDetail(cx.new(|cx| {
-                TemplateDetailView::new(template_id, window, cx)
-            })),
+            panel: TabPanel::TemplateDetail(
+                cx.new(|cx| TemplateDetailView::new(template_id, window, cx)),
+            ),
         }
     }
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {
@@ -215,7 +217,8 @@ impl ChatDataInner {
                 self.active_tab = Some(TabKind::Conversation(conversation_id));
             }
             (false, Some(conversation)) => {
-                self.tabs.push(Self::conversation_tab(conversation, window, cx));
+                self.tabs
+                    .push(Self::conversation_tab(conversation, window, cx));
                 self.active_tab = Some(TabKind::Conversation(conversation.id));
             }
             (false, None) => {}
@@ -231,7 +234,11 @@ impl ChatDataInner {
         }
     }
     fn open_template_list_tab(&mut self, window: &mut Window, cx: &mut App) {
-        if self.tabs.iter().all(|tab| tab.kind != TabKind::TemplateList) {
+        if self
+            .tabs
+            .iter()
+            .all(|tab| tab.kind != TabKind::TemplateList)
+        {
             self.tabs.push(Self::template_tab(window, cx));
         }
         self.active_tab = Some(TabKind::TemplateList);
@@ -239,7 +246,8 @@ impl ChatDataInner {
     fn open_template_detail_tab(&mut self, template_id: i32, window: &mut Window, cx: &mut App) {
         let kind = TabKind::TemplateDetail(template_id);
         if self.tabs.iter().all(|tab| tab.kind != kind) {
-            self.tabs.push(Self::template_detail_tab(template_id, window, cx));
+            self.tabs
+                .push(Self::template_detail_tab(template_id, window, cx));
         }
         self.active_tab = Some(kind);
     }
@@ -271,11 +279,8 @@ impl ChatDataInner {
             return;
         };
         let moved_kind = self.tabs[from_ix].kind;
-        let to_ix = to_id.and_then(|target_id| {
-            self.tabs
-                .iter()
-                .position(|tab| tab.kind.key() == target_id)
-        });
+        let to_ix = to_id
+            .and_then(|target_id| self.tabs.iter().position(|tab| tab.kind.key() == target_id));
         Self::move_item(&mut self.tabs, from_ix, to_ix);
         self.active_tab = Some(moved_kind);
     }
@@ -341,7 +346,11 @@ impl ChatDataInner {
             })
             .cloned()
             .collect();
-        if !self.tabs.iter().any(|tab| Some(tab.kind) == self.active_tab) {
+        if !self
+            .tabs
+            .iter()
+            .any(|tab| Some(tab.kind) == self.active_tab)
+        {
             self.active_tab = self.tabs.first().map(|tab| tab.kind);
         }
     }

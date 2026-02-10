@@ -11,8 +11,6 @@ mod folders;
 mod messages;
 mod utils;
 
-pub use utils::{deserialize_offset_date_time, serialize_offset_date_time};
-
 pub use conversation_templates::{
     ConversationTemplate, ConversationTemplatePrompt, NewConversationTemplate,
 };

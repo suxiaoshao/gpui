@@ -1,5 +1,5 @@
 use crate::{
-    adapter::{adapter_names, template_inputs_by_adapter, InputItem, InputType},
+    adapter::{InputItem, InputType, adapter_names, template_inputs_by_adapter},
     config::AiChatConfig,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, Mode, NewConversationTemplate, Role,
@@ -7,6 +7,7 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
+    IndexPath, WindowExt,
     button::{Button, ButtonVariants},
     divider::Divider,
     form::{field, v_form},
@@ -15,7 +16,7 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     select::{Select, SelectEvent, SelectState},
-    v_flex, IndexPath, WindowExt,
+    v_flex,
 };
 use std::{cell::RefCell, rc::Rc};
 use time::OffsetDateTime;
@@ -492,11 +493,13 @@ pub(crate) fn open_template_edit_dialog(
     cx: &mut App,
 ) {
     open_template_dialog(
-        Some(template_id),
-        "Edit Template",
-        "Submit",
-        "Template updated successfully",
-        "Update template failed",
+        TemplateDialogParams {
+            template_id: Some(template_id),
+            dialog_title: "Edit Template",
+            submit_label: "Submit",
+            success_title: "Template updated successfully",
+            failure_title: "Update template failed",
+        },
         template,
         on_saved,
         window,
@@ -531,11 +534,13 @@ pub(crate) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
         updated_time: now,
     };
     open_template_dialog(
-        None,
-        "Add Template",
-        "Create",
-        "Template created successfully",
-        "Create template failed",
+        TemplateDialogParams {
+            template_id: None,
+            dialog_title: "Add Template",
+            submit_label: "Create",
+            success_title: "Template created successfully",
+            failure_title: "Create template failed",
+        },
         template,
         on_saved,
         window,
@@ -543,17 +548,28 @@ pub(crate) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
     );
 }
 
-fn open_template_dialog(
+struct TemplateDialogParams {
     template_id: Option<i32>,
     dialog_title: &'static str,
     submit_label: &'static str,
     success_title: &'static str,
     failure_title: &'static str,
+}
+
+fn open_template_dialog(
+    params: TemplateDialogParams,
     template: ConversationTemplate,
     on_saved: OnSaved,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let TemplateDialogParams {
+        template_id,
+        dialog_title,
+        submit_label,
+        success_title,
+        failure_title,
+    } = params;
     let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
     name_input.update(cx, |input, cx| input.set_value(&template.name, window, cx));
 
@@ -716,11 +732,7 @@ fn open_template_dialog(
                                     let description = {
                                         let value =
                                             description_input.read(cx).value().trim().to_string();
-                                        if value.is_empty() {
-                                            None
-                                        } else {
-                                            Some(value)
-                                        }
+                                        if value.is_empty() { None } else { Some(value) }
                                     };
                                     let mode = match mode_input.read(cx).selected_value().copied() {
                                         Some(mode) => mode,

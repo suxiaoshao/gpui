@@ -82,6 +82,7 @@ impl InputItem {
 
 pub trait Adapter {
     const NAME: &'static str;
+    #[allow(dead_code)]
     fn get_setting_inputs(&self) -> Vec<InputItem>;
     fn get_template_inputs(&self, settings: &serde_json::Value) -> AiChatResult<Vec<InputItem>>;
     fn fetch(

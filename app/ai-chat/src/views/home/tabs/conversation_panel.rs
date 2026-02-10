@@ -12,8 +12,8 @@ use crate::{
 use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{
-    AppContext, AsyncWindowContext, Context, Entity, IntoElement, InteractiveElement, ParentElement,
-    Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
+    AppContext, AsyncWindowContext, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder,
 };
 use gpui_component::{
@@ -442,7 +442,12 @@ mod tests {
     fn get_history_contextual_includes_all_normal_messages_and_user() {
         let template = make_template(Mode::Contextual);
         let history_messages = vec![
-            make_message(1, Role::User, Status::Normal, Content::Text("u1".to_string())),
+            make_message(
+                1,
+                Role::User,
+                Status::Normal,
+                Content::Text("u1".to_string()),
+            ),
             make_message(
                 2,
                 Role::Assistant,
@@ -453,7 +458,12 @@ mod tests {
                     content: "a1".to_string(),
                 },
             ),
-            make_message(3, Role::User, Status::Error, Content::Text("bad".to_string())),
+            make_message(
+                3,
+                Role::User,
+                Status::Error,
+                Content::Text("bad".to_string()),
+            ),
         ];
         let runner = Runner {
             config: AiChatConfig::default(),
@@ -514,9 +524,24 @@ mod tests {
     fn get_history_assistant_only_filters_roles() {
         let template = make_template(Mode::AssistantOnly);
         let history_messages = vec![
-            make_message(1, Role::User, Status::Normal, Content::Text("u1".to_string())),
-            make_message(2, Role::Assistant, Status::Normal, Content::Text("a1".to_string())),
-            make_message(3, Role::Assistant, Status::Error, Content::Text("bad".to_string())),
+            make_message(
+                1,
+                Role::User,
+                Status::Normal,
+                Content::Text("u1".to_string()),
+            ),
+            make_message(
+                2,
+                Role::Assistant,
+                Status::Normal,
+                Content::Text("a1".to_string()),
+            ),
+            make_message(
+                3,
+                Role::Assistant,
+                Status::Error,
+                Content::Text("bad".to_string()),
+            ),
         ];
         let runner = Runner {
             config: AiChatConfig::default(),

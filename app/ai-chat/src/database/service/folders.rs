@@ -2,7 +2,10 @@ use super::utils::serialize_offset_date_time;
 use crate::store::{ChatData, ChatDataEvent};
 use crate::views::home::Add;
 use crate::{
-    components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
+    components::{
+        add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
+        delete_confirm::open_delete_confirm_dialog,
+    },
     database::{
         Conversation, Message,
         model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
@@ -50,6 +53,7 @@ impl From<&Folder> for SidebarMenuItem {
     fn from(value: &Folder) -> Self {
         let id = value.id;
         let parent_id = Some(value.id);
+        let name = value.name.clone();
         let children = value
             .folders
             .iter()
@@ -67,11 +71,21 @@ impl From<&Folder> for SidebarMenuItem {
                     .on_action(move |_: &Add, window, cx| {
                         add_conversation_dialog(parent_id, window, cx);
                     })
-                    .on_action(move |_: &Delete, _window, cx| {
+                    .on_action(move |_: &Delete, window, cx| {
                         let chat_data = cx.global::<ChatData>().deref().clone();
-                        chat_data.update(cx, move |_this, cx| {
-                            cx.emit(ChatDataEvent::DeleteFolder(id));
-                        });
+                        open_delete_confirm_dialog(
+                            "Delete Folder",
+                            SharedString::from(format!(
+                                "Delete folder \"{name}\" and its contents? This action cannot be undone."
+                            )),
+                            move |_window, cx| {
+                                chat_data.update(cx, move |_this, cx| {
+                                    cx.emit(ChatDataEvent::DeleteFolder(id));
+                                });
+                            },
+                            window,
+                            cx,
+                        );
                     })
                     .child(
                         Button::new(id)

@@ -8,6 +8,7 @@ use crate::{
 use gpui::*;
 use gpui_component::description_list::{DescriptionItem, DescriptionList};
 use gpui_component::{
+    ActiveTheme, Sizable, WindowExt,
     avatar::Avatar,
     button::{Button, ButtonVariants},
     divider::Divider,
@@ -17,7 +18,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     tag::Tag,
     text::TextView,
-    v_flex, ActiveTheme, Sizable, WindowExt,
+    v_flex,
 };
 use std::{ops::Deref, rc::Rc};
 
@@ -120,7 +121,9 @@ impl TemplateDetailView {
                 let this = this.clone();
                 dialog
                     .title("Delete Template")
-                    .child(Label::new("Delete this template? This action cannot be undone."))
+                    .child(Label::new(
+                        "Delete this template? This action cannot be undone.",
+                    ))
                     .footer(move |_dialog, _state, _window, _cx| {
                         vec![
                             Button::new("cancel")
@@ -128,15 +131,18 @@ impl TemplateDetailView {
                                 .on_click(|_, window, cx| {
                                     window.close_dialog(cx);
                                 }),
-                            Button::new("confirm-delete").danger().label("Delete").on_click({
-                                let this = this.clone();
-                                move |_, window, cx| {
-                                    window.close_dialog(cx);
-                                    let _ = this.update(cx, |view, cx| {
-                                        view.delete_template(window, cx);
-                                    });
-                                }
-                            }),
+                            Button::new("confirm-delete")
+                                .danger()
+                                .label("Delete")
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        let _ = this.update(cx, |view, cx| {
+                                            view.delete_template(window, cx);
+                                        });
+                                    }
+                                }),
                         ]
                     })
             }

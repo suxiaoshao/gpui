@@ -251,7 +251,8 @@ impl Adapter for OpenAIStreamAdapter {
     }
 
     fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
-        let Ok(settings) = serde_json::from_value::<OpenAIConversationTemplate>(template.template.clone())
+        let Ok(settings) =
+            serde_json::from_value::<OpenAIConversationTemplate>(template.template.clone())
         else {
             return description_items_default(template);
         };

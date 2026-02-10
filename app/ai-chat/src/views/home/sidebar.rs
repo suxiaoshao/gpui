@@ -107,8 +107,7 @@ impl Render for SidebarView {
                                     SidebarMenuItem::new("Add Conversation")
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
-                                            window
-                                                .dispatch_action(Add.boxed_clone(), cx);
+                                            window.dispatch_action(Add.boxed_clone(), cx);
                                         })),
                                 )
                                 .child(
@@ -124,11 +123,7 @@ impl Render for SidebarView {
             .context_menu(|this, _window, _cx| {
                 this.check_side(Side::Left)
                     .external_link_icon(false)
-                    .menu_with_icon(
-                        "Add Conversation",
-                        IconName::Plus,
-                        Box::new(Add),
-                    )
+                    .menu_with_icon("Add Conversation", IconName::Plus, Box::new(Add))
                     .menu_with_icon("Add Folder", IconName::Plus, Box::new(AddShift))
             })
     }

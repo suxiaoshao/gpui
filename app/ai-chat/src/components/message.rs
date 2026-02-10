@@ -1,8 +1,7 @@
 use crate::database::{Content, Role, Status};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    WindowExt,
-    IconName, Sizable,
+    IconName, Sizable, WindowExt,
     avatar::Avatar,
     button::{Button, ButtonVariants},
     divider::Divider,
@@ -83,11 +82,11 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     )
                     .child(
                         TextView::markdown(text_id, &copy_text, window, cx)
-                        .selectable(true)
-                        .px_4()
-                        .pt_4()
-                        .flex_1()
-                        .overflow_x_hidden(),
+                            .selectable(true)
+                            .px_4()
+                            .pt_4()
+                            .flex_1()
+                            .overflow_x_hidden(),
                     )
                     .map(|this| {
                         if is_loading {
@@ -112,9 +111,11 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 .ghost()
                                                 .small()
                                                 .on_click(move |_, window, cx| {
-                                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                                        copy_text.clone(),
-                                                    ));
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(
+                                                            copy_text.clone(),
+                                                        ),
+                                                    );
                                                     let copied = cx
                                                         .read_from_clipboard()
                                                         .and_then(|item| item.text())
@@ -136,7 +137,9 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                         window.push_notification(
                                                             Notification::new()
                                                                 .title("Copy Failed")
-                                                                .message("Could not read clipboard.")
+                                                                .message(
+                                                                    "Could not read clipboard.",
+                                                                )
                                                                 .with_type(NotificationType::Error),
                                                             cx,
                                                         );

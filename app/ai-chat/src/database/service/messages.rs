@@ -10,9 +10,7 @@ use crate::{
     views::message_preview::{MessagePreview, MessagePreviewExt},
 };
 use diesel::SqliteConnection;
-use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
-};
+use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::ops::{AddAssign, Deref};
@@ -301,7 +299,7 @@ impl Message {
             conversation_id,
             role,
             content,
-            send_content,
+            send_content: _,
             status,
         }: NewMessage,
         conn: &mut SqliteConnection,
@@ -338,7 +336,7 @@ impl Message {
                 |TemporaryMessage {
                      role,
                      content,
-                     send_content,
+                     send_content: _,
                      created_time,
                      updated_time,
                      start_time,

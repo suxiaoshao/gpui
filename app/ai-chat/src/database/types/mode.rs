@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate::errors::{AiChatError};
+use crate::errors::AiChatError;
 use gpui::SharedString;
 use gpui_component::select::SelectItem;
 

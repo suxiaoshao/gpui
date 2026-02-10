@@ -12,6 +12,7 @@ use std::ops::Deref;
 use time::OffsetDateTime;
 
 use crate::{
+    components::delete_confirm::open_delete_confirm_dialog,
     database::{
         Message,
         model::{
@@ -53,6 +54,7 @@ pub struct Conversation {
 impl From<&Conversation> for SidebarMenuItem {
     fn from(value: &Conversation) -> Self {
         let id = value.id;
+        let title = value.title.clone();
         SidebarMenuItem::new(SharedString::from(format!(
             "{} {}",
             value.icon, value.title
@@ -65,11 +67,21 @@ impl From<&Conversation> for SidebarMenuItem {
         })
         .suffix(
             div()
-                .on_action(move |_: &Delete, _window, cx| {
+                .on_action(move |_: &Delete, window, cx| {
                     let chat_data = cx.global::<ChatData>().deref().clone();
-                    chat_data.update(cx, move |_this, cx| {
-                        cx.emit(ChatDataEvent::DeleteConversation(id));
-                    });
+                    open_delete_confirm_dialog(
+                        "Delete Conversation",
+                        SharedString::from(format!(
+                            "Delete conversation \"{title}\"? This action cannot be undone."
+                        )),
+                        move |_window, cx| {
+                            chat_data.update(cx, move |_this, cx| {
+                                cx.emit(ChatDataEvent::DeleteConversation(id));
+                            });
+                        },
+                        window,
+                        cx,
+                    );
                 })
                 .child(
                     Button::new(value.id)

@@ -17,8 +17,7 @@ use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    Root,
-    WindowExt,
+    Root, WindowExt,
     divider::Divider,
     h_flex,
     input::InputState,
