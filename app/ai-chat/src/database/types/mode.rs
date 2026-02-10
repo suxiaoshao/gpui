@@ -1,6 +1,8 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::errors::{AiChatError};
+use gpui::SharedString;
+use gpui_component::select::SelectItem;
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Mode {
@@ -32,6 +34,18 @@ impl Display for Mode {
             Mode::Contextual => f.write_str("contextual"),
             Mode::Single => f.write_str("single"),
         }
+    }
+}
+
+impl SelectItem for Mode {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        self.to_string().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 

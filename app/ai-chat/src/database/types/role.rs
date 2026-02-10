@@ -1,6 +1,8 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::errors::{AiChatError};
+use gpui::SharedString;
+use gpui_component::select::SelectItem;
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug, Default, Clone, Copy)]
 pub enum Role {
@@ -34,6 +36,18 @@ impl Display for Role {
             Role::Assistant => "assistant",
         };
         write!(f, "{s}")
+    }
+}
+
+impl SelectItem for Role {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        self.to_string().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 

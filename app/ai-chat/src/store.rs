@@ -100,7 +100,7 @@ impl ChatDataInner {
             panel: TabPanel::TemplateList(cx.new(|cx| TemplateListView::new(window, cx))),
         }
     }
-    fn template_detail_tab(template_id: i32, _window: &mut Window, cx: &mut App) -> AppTab {
+    fn template_detail_tab(template_id: i32, window: &mut Window, cx: &mut App) -> AppTab {
         let (icon, name) = cx
             .global::<Db>()
             .get()
@@ -122,7 +122,9 @@ impl ChatDataInner {
             kind: TabKind::TemplateDetail(template_id),
             icon,
             name,
-            panel: TabPanel::TemplateDetail(cx.new(|cx| TemplateDetailView::new(template_id, cx))),
+            panel: TabPanel::TemplateDetail(cx.new(|cx| {
+                TemplateDetailView::new(template_id, window, cx)
+            })),
         }
     }
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {

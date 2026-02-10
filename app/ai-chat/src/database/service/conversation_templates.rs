@@ -5,7 +5,6 @@
  * @LastEditTime: 2024-05-16 04:24:23
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/service/conversation_templates.rs
  */
-
 use crate::{
     database::{
         Mode, Role,

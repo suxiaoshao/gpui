@@ -66,6 +66,18 @@ impl InputItem {
             input_type,
         }
     }
+
+    pub(crate) fn id(&self) -> &'static str {
+        self.id
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn input_type(&self) -> &InputType {
+        &self.input_type
+    }
 }
 
 pub trait Adapter {
@@ -88,6 +100,26 @@ pub trait Adapter {
 use gpui_component::setting::SettingGroup;
 pub(crate) use openai::{OpenAIAdapter, OpenAIConversationTemplate, OpenAISettings};
 pub(crate) use openai_stream::{OpenAIStreamAdapter, OpenAIStreamSettings};
+
+pub(crate) fn adapter_names() -> Vec<&'static str> {
+    vec![OpenAIAdapter::NAME, OpenAIStreamAdapter::NAME]
+}
+
+pub(crate) fn template_inputs_by_adapter(
+    adapter: &str,
+    config: &AiChatConfig,
+) -> AiChatResult<Vec<InputItem>> {
+    let settings = config
+        .get_adapter_settings(adapter)
+        .ok_or_else(|| AiChatError::AdapterSettingsNotFound(adapter.to_string()))?
+        .clone();
+    let settings = serde_json::to_value(settings)?;
+    match adapter {
+        OpenAIAdapter::NAME => OpenAIAdapter.get_template_inputs(&settings),
+        OpenAIStreamAdapter::NAME => OpenAIStreamAdapter.get_template_inputs(&settings),
+        _ => Err(AiChatError::AdapterNotFound(adapter.to_string())),
+    }
+}
 
 pub(crate) fn description_items_by_adapter(
     template: &ConversationTemplate,

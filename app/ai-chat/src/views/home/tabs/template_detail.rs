@@ -1,22 +1,35 @@
 use crate::{
     adapter::{description_items_by_adapter, description_items_default},
+    components::template_edit_dialog::open_template_edit_dialog,
     database::{ConversationTemplate, Db, Mode, Role},
     errors::AiChatResult,
 };
 use gpui::*;
 use gpui_component::description_list::{DescriptionItem, DescriptionList};
 use gpui_component::{
-    Sizable, avatar::Avatar, divider::Divider, h_flex, label::Label, scroll::ScrollableElement,
-    tag::Tag, text::TextView, v_flex,
+    ActiveTheme, Sizable, WindowExt,
+    avatar::Avatar,
+    button::{Button, ButtonVariants},
+    divider::Divider,
+    h_flex,
+    label::Label,
+    notification::{Notification, NotificationType},
+    scroll::ScrollableElement,
+    tag::Tag,
+    text::TextView,
+    v_flex,
 };
+use std::rc::Rc;
 
 pub(crate) struct TemplateDetailView {
+    template_id: i32,
     template: AiChatResult<ConversationTemplate>,
 }
 
 impl TemplateDetailView {
-    pub fn new(template_id: i32, cx: &mut Context<Self>) -> Self {
+    pub fn new(template_id: i32, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
+            template_id,
             template: Self::get_template(template_id, cx),
         }
     }
@@ -28,19 +41,67 @@ impl TemplateDetailView {
         let conn = &mut cx.global::<Db>().get()?;
         ConversationTemplate::find(template_id, conn)
     }
+
+    fn open_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let template = match &self.template {
+            Ok(template) => template.clone(),
+            Err(err) => {
+                window.push_notification(
+                    Notification::new()
+                        .title("Load template failed")
+                        .message(err.to_string())
+                        .with_type(NotificationType::Error),
+                    cx,
+                );
+                return;
+            }
+        };
+        let this = cx.entity().downgrade();
+        open_template_edit_dialog(
+            self.template_id,
+            template,
+            Rc::new(move |latest, cx| {
+                let _ = this.update(cx, |view, _cx| {
+                    view.template = Ok(latest);
+                });
+            }),
+            window,
+            cx,
+        );
+    }
 }
 
 impl Render for TemplateDetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match &self.template {
-            Ok(template) => render_template_detail(template, window, cx),
-            Err(err) => v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(Label::new(format!("Load template failed: {err}")).text_sm())
-                .into_any_element(),
-        }
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("template-edit")
+                            .primary()
+                            .label("Edit")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open_edit_dialog(window, cx);
+                            })),
+                    ),
+            )
+            .child(match &self.template {
+                Ok(template) => render_template_detail(template, window, cx),
+                Err(err) => v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .child(Label::new(format!("Load template failed: {err}")).text_sm())
+                    .into_any_element(),
+            })
     }
 }
 
