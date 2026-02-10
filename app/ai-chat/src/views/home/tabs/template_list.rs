@@ -1,17 +1,28 @@
 use crate::{
+    components::template_edit_dialog::open_add_template_dialog,
     database::{ConversationTemplate, Db, Mode},
     errors::AiChatResult,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Selectable, Sizable, h_flex,
+    ActiveTheme, Selectable, Sizable,
+    button::{Button, ButtonVariants},
+    h_flex,
     label::Label,
     list::{List, ListDelegate, ListState},
     tag::Tag,
     v_flex,
 };
 use std::{ops::Deref, rc::Rc};
+
+actions!(template_list_view, [Add]);
+
+const CONTEXT: &str = "template_list_view";
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("secondary-n", Add, Some(CONTEXT))]);
+}
 
 #[derive(IntoElement, Clone)]
 struct TemplateItem {
@@ -170,9 +181,8 @@ pub(crate) struct TemplateListView {
 
 impl TemplateListView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let templates = Self::build_list(window, cx);
         Self {
-            templates: templates.map(|(list, _)| list),
+            templates: Self::build_list(window, cx),
         }
     }
 
@@ -184,9 +194,8 @@ impl TemplateListView {
     fn build_list(
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AiChatResult<(Entity<ListState<TemplateListDelegate>>, usize)> {
+    ) -> AiChatResult<Entity<ListState<TemplateListDelegate>>> {
         let templates = Self::get_templates(cx)?;
-        let count = templates.len();
         let on_confirm: OnConfirm = Rc::new(|template_id, _window, cx| {
             let chat_data = cx.global::<ChatData>().deref().clone();
             chat_data.update(cx, |_this, cx| {
@@ -200,21 +209,65 @@ impl TemplateListView {
             state.focus(window, cx);
             state
         });
-        Ok((list, count))
+        Ok(list)
+    }
+
+    fn reload_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.templates = Self::build_list(window, cx);
+        cx.notify();
+    }
+
+    fn add_template(&mut self, _: &Add, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        open_add_template_dialog(
+            Rc::new(move |template, window, cx| {
+                let _ = this.update(cx, |view, cx| {
+                    view.reload_templates(window, cx);
+                });
+                let chat_data = cx.global::<ChatData>().deref().clone();
+                chat_data.update(cx, |_this, cx| {
+                    cx.emit(ChatDataEvent::OpenTemplateDetail(template.id));
+                });
+            }),
+            window,
+            cx,
+        );
     }
 }
 
 impl Render for TemplateListView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().size_full().map(|this| match &self.templates {
-            Ok(templates) => this.child(List::new(templates).large()),
-            Err(err) => this.child(
-                v_flex()
-                    .size_full()
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context(CONTEXT)
+            .size_full()
+            .on_action(cx.listener(Self::add_template))
+            .child(
+                h_flex()
                     .items_center()
-                    .justify_center()
-                    .child(Label::new(format!("Load templates failed: {err}")).text_sm()),
-            ),
-        })
+                    .justify_end()
+                    .gap_2()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("template-add")
+                            .primary()
+                            .label("Add")
+                            .on_click(cx.listener(|_view, _, window, cx| {
+                                window.dispatch_action(Add.boxed_clone(), cx);
+                            })),
+                    ),
+            )
+            .map(|this| match &self.templates {
+                Ok(templates) => this.child(List::new(templates).large()),
+                Err(err) => this.child(
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .child(Label::new(format!("Load templates failed: {err}")).text_sm()),
+                ),
+            })
     }
 }

@@ -3,11 +3,11 @@ use crate::{
     components::template_edit_dialog::open_template_edit_dialog,
     database::{ConversationTemplate, Db, Mode, Role},
     errors::AiChatResult,
+    store::{ChatData, ChatDataEvent},
 };
 use gpui::*;
 use gpui_component::description_list::{DescriptionItem, DescriptionList};
 use gpui_component::{
-    ActiveTheme, Sizable, WindowExt,
     avatar::Avatar,
     button::{Button, ButtonVariants},
     divider::Divider,
@@ -17,9 +17,9 @@ use gpui_component::{
     scroll::ScrollableElement,
     tag::Tag,
     text::TextView,
-    v_flex,
+    v_flex, ActiveTheme, Sizable, WindowExt,
 };
-use std::rc::Rc;
+use std::{ops::Deref, rc::Rc};
 
 pub(crate) struct TemplateDetailView {
     template_id: i32,
@@ -60,7 +60,7 @@ impl TemplateDetailView {
         open_template_edit_dialog(
             self.template_id,
             template,
-            Rc::new(move |latest, cx| {
+            Rc::new(move |latest, _window, cx| {
                 let _ = this.update(cx, |view, _cx| {
                     view.template = Ok(latest);
                 });
@@ -68,6 +68,79 @@ impl TemplateDetailView {
             window,
             cx,
         );
+    }
+
+    fn template_tab_key(template_id: i32) -> i32 {
+        template_id.saturating_add(1).saturating_neg()
+    }
+
+    fn delete_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut conn = match cx.global::<Db>().get() {
+            Ok(conn) => conn,
+            Err(err) => {
+                window.push_notification(
+                    Notification::new()
+                        .title("Open database failed")
+                        .message(err.to_string())
+                        .with_type(NotificationType::Error),
+                    cx,
+                );
+                return;
+            }
+        };
+        if let Err(err) = ConversationTemplate::delete(self.template_id, &mut conn) {
+            window.push_notification(
+                Notification::new()
+                    .title("Delete template failed")
+                    .message(err.to_string())
+                    .with_type(NotificationType::Error),
+                cx,
+            );
+            return;
+        }
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        let tab_key = Self::template_tab_key(self.template_id);
+        chat_data.update(cx, |_this, cx| {
+            cx.emit(ChatDataEvent::RemoveTab(tab_key));
+            cx.emit(ChatDataEvent::OpenTemplateList);
+        });
+        window.push_notification(
+            Notification::new()
+                .title("Template deleted successfully")
+                .with_type(NotificationType::Success),
+            cx,
+        );
+    }
+
+    fn open_delete_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.open_dialog(cx, {
+            let this = this.clone();
+            move |dialog, _window, _cx| {
+                let this = this.clone();
+                dialog
+                    .title("Delete Template")
+                    .child(Label::new("Delete this template? This action cannot be undone."))
+                    .footer(move |_dialog, _state, _window, _cx| {
+                        vec![
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                            Button::new("confirm-delete").danger().label("Delete").on_click({
+                                let this = this.clone();
+                                move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = this.update(cx, |view, cx| {
+                                        view.delete_template(window, cx);
+                                    });
+                                }
+                            }),
+                        ]
+                    })
+            }
+        });
     }
 }
 
@@ -90,6 +163,14 @@ impl Render for TemplateDetailView {
                             .label("Edit")
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_edit_dialog(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("template-delete")
+                            .danger()
+                            .label("Delete")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open_delete_dialog(window, cx);
                             })),
                     ),
             )

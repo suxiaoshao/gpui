@@ -1,6 +1,6 @@
 use super::utils::serialize_offset_date_time;
 use crate::store::{ChatData, ChatDataEvent};
-use crate::views::home::AddConversation;
+use crate::views::home::Add;
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     database::{
@@ -8,7 +8,7 @@ use crate::{
         model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
     },
     errors::{AiChatError, AiChatResult},
-    views::home::AddFolder,
+    views::home::AddShift,
 };
 use diesel::SqliteConnection;
 use gpui::*;
@@ -61,10 +61,10 @@ impl From<&Folder> for SidebarMenuItem {
             .children(children)
             .suffix(
                 div()
-                    .on_action(move |_: &AddFolder, window, cx| {
+                    .on_action(move |_: &AddShift, window, cx| {
                         add_folder_dialog(parent_id, window, cx);
                     })
-                    .on_action(move |_: &AddConversation, window, cx| {
+                    .on_action(move |_: &Add, window, cx| {
                         add_conversation_dialog(parent_id, window, cx);
                     })
                     .on_action(move |_: &Delete, _window, cx| {
@@ -83,12 +83,12 @@ impl From<&Folder> for SidebarMenuItem {
                                     .menu_with_icon(
                                         "Add Conversation",
                                         IconName::Plus,
-                                        Box::new(AddConversation),
+                                        Box::new(Add),
                                     )
                                     .menu_with_icon(
                                         "Add Folder",
                                         IconName::Plus,
-                                        Box::new(AddFolder),
+                                        Box::new(AddShift),
                                     )
                                     .menu_with_icon("Delete", IconName::Delete, Box::new(Delete))
                             }),

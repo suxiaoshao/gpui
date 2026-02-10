@@ -16,6 +16,10 @@ pub(crate) use conversation_tab::{ConversationTabView, DragTab};
 pub(crate) use template_detail::TemplateDetailView;
 pub(crate) use template_list::TemplateListView;
 
+pub fn init(cx: &mut App) {
+    template_list::init(cx);
+}
+
 pub(crate) struct TabsView {
     chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
 }

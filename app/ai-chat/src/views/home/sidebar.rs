@@ -17,21 +17,15 @@ use tracing::{Level, event};
 mod conversation_item;
 mod folder_item;
 
-actions!(sidebar_view, [AddConversation, AddFolder, Delete, Edit]);
+actions!(sidebar_view, [Add, AddShift, Delete, Edit]);
 
 const CONTEXT: &str = "sidebar_view";
 
 pub fn init(cx: &mut App) {
     event!(Level::INFO, "init sidebar_view");
     cx.bind_keys([
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-n", AddConversation, None),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-n", AddConversation, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-n", AddFolder, None),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-n", AddFolder, None),
+        KeyBinding::new("secondary-n", Add, None),
+        KeyBinding::new("secondary-shift-n", AddShift, None),
         KeyBinding::new("backspace", Delete, None),
     ])
 }
@@ -51,15 +45,10 @@ impl SidebarView {
         }
     }
 
-    fn add_conversation(
-        &mut self,
-        _: &AddConversation,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn add_conversation(&mut self, _: &Add, window: &mut Window, cx: &mut Context<Self>) {
         add_conversation_dialog(None, window, cx);
     }
-    fn add_folder(&mut self, _: &AddFolder, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_folder(&mut self, _: &AddShift, window: &mut Window, cx: &mut Context<Self>) {
         add_folder_dialog(None, window, cx);
     }
 }
@@ -119,14 +108,14 @@ impl Render for SidebarView {
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
                                             window
-                                                .dispatch_action(AddConversation.boxed_clone(), cx);
+                                                .dispatch_action(Add.boxed_clone(), cx);
                                         })),
                                 )
                                 .child(
                                     SidebarMenuItem::new("Add Folder")
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
-                                            window.dispatch_action(AddFolder.boxed_clone(), cx);
+                                            window.dispatch_action(AddShift.boxed_clone(), cx);
                                         })),
                                 ),
                         ),
@@ -138,9 +127,9 @@ impl Render for SidebarView {
                     .menu_with_icon(
                         "Add Conversation",
                         IconName::Plus,
-                        Box::new(AddConversation),
+                        Box::new(Add),
                     )
-                    .menu_with_icon("Add Folder", IconName::Plus, Box::new(AddFolder))
+                    .menu_with_icon("Add Folder", IconName::Plus, Box::new(AddShift))
             })
     }
 }
