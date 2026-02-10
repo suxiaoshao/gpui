@@ -6,11 +6,6 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/service/conversation_templates.rs
  */
 
-use diesel::SqliteConnection;
-use gpui_component::select::SelectItem;
-use std::str::FromStr;
-use time::OffsetDateTime;
-
 use crate::{
     database::{
         Mode, Role,
@@ -21,6 +16,10 @@ use crate::{
     },
     errors::AiChatResult,
 };
+use diesel::SqliteConnection;
+use gpui_component::select::SelectItem;
+use std::str::FromStr;
+use time::OffsetDateTime;
 
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 

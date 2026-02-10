@@ -1,96 +1,158 @@
 use crate::{
-    adapter::render_template_detail_by_adapter,
-    database::{ConversationTemplate, Db, Mode},
+    adapter::{description_items_by_adapter, description_items_default},
+    database::{ConversationTemplate, Db, Mode, Role},
     errors::AiChatResult,
 };
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
+use gpui_component::description_list::{DescriptionItem, DescriptionList};
 use gpui_component::{
-    ActiveTheme, h_flex, label::Label, scroll::ScrollableElement, tag::Tag, v_flex,
+    Sizable, avatar::Avatar, divider::Divider, h_flex, label::Label, scroll::ScrollableElement,
+    tag::Tag, text::TextView, v_flex,
 };
 
-actions!(template_detail_view, [RefreshTemplateDetail]);
-
 pub(crate) struct TemplateDetailView {
-    template_id: i32,
     template: AiChatResult<ConversationTemplate>,
 }
 
 impl TemplateDetailView {
     pub fn new(template_id: i32, cx: &mut Context<Self>) -> Self {
         Self {
-            template_id,
             template: Self::get_template(template_id, cx),
         }
     }
 
-    fn get_template(template_id: i32, cx: &mut Context<Self>) -> AiChatResult<ConversationTemplate> {
+    fn get_template(
+        template_id: i32,
+        cx: &mut Context<Self>,
+    ) -> AiChatResult<ConversationTemplate> {
         let conn = &mut cx.global::<Db>().get()?;
         ConversationTemplate::find(template_id, conn)
-    }
-
-    fn refresh(&mut self, _: &RefreshTemplateDetail, _window: &mut Window, cx: &mut Context<Self>) {
-        self.template = Self::get_template(self.template_id, cx);
-        cx.notify();
     }
 }
 
 impl Render for TemplateDetailView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .key_context("template-detail-view")
-            .on_action(cx.listener(Self::refresh))
-            .child(match &self.template {
-                Ok(template) => {
-                    render_template_detail_by_adapter(template, cx)
-                        .unwrap_or_else(|_| fallback_template_detail(template, cx))
-                }
-                Err(err) => v_flex()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .child(Label::new(format!("Load template failed: {err}")).text_sm())
-                    .into_any_element(),
-            })
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match &self.template {
+            Ok(template) => render_template_detail(template, window, cx),
+            Err(err) => v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(Label::new(format!("Load template failed: {err}")).text_sm())
+                .into_any_element(),
+        }
     }
 }
 
-fn fallback_template_detail(template: &ConversationTemplate, cx: &App) -> AnyElement {
-    let template_json = serde_json::to_string_pretty(&template.template).unwrap_or_default();
-    v_flex()
-        .size_full()
+fn render_template_detail(
+    template: &ConversationTemplate,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mode_tag = match template.mode {
+        Mode::Contextual => Tag::primary(),
+        Mode::Single => Tag::info(),
+        Mode::AssistantOnly => Tag::success(),
+    }
+    .outline()
+    .flex_initial()
+    .child(template.mode.to_string());
+
+    let base_items = {
+        let items = vec![
+            DescriptionItem::new("ID").value(template.id.to_string()),
+            DescriptionItem::new("Name").value(template.name.clone()),
+            DescriptionItem::new("Icon").value(template.icon.clone()),
+            DescriptionItem::new("Mode").value(div().flex().child(mode_tag).into_any_element()),
+            DescriptionItem::new("Adapter").value(template.adapter.clone()),
+            DescriptionItem::new("Prompts").value(template.prompts.len().to_string()),
+        ];
+        items
+    };
+
+    let detail_items = description_items_by_adapter(template)
+        .unwrap_or_else(|_| description_items_default(template));
+    let merged_items = {
+        let mut items = base_items;
+        if !items.is_empty() && !detail_items.is_empty() {
+            items.push(DescriptionItem::Divider);
+        }
+        items.extend(detail_items);
+        items.push(
+            DescriptionItem::new("Description")
+                .value(template.description.clone().unwrap_or("-".to_string()))
+                .span(3),
+        );
+        items
+    };
+
+    div()
+        .id(template.id)
+        .flex_1()
         .gap_3()
-        .p_4()
+        .px_4()
+        .child(Label::new("Information").text_lg())
+        .child(
+            div().child(
+                DescriptionList::new()
+                    .columns(3)
+                    .children(merged_items)
+                    .layout(Axis::Vertical),
+            ),
+        )
+        .child(Label::new("Prompts").text_lg())
+        .child(
+            div().id("template-prompts").children(
+                template
+                    .prompts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, prompt)| {
+                        render_prompt_message(template.id, index, prompt, window, cx)
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .child(div().h_4())
+        .overflow_hidden()
         .overflow_y_scrollbar()
+        .into_any_element()
+}
+
+fn render_prompt_message(
+    template_id: i32,
+    index: usize,
+    prompt: &crate::database::ConversationTemplatePrompt,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let text_id: SharedString = format!("template-prompt-{template_id}-{index}").into();
+    v_flex()
         .child(
             h_flex()
+                .items_start()
                 .gap_2()
-                .items_center()
-                .child(Label::new(&template.icon))
-                .child(Label::new(&template.name).text_xl())
                 .child(
-                    match template.mode {
-                        Mode::Contextual => Tag::primary(),
-                        Mode::Single => Tag::info(),
-                        Mode::AssistantOnly => Tag::success(),
-                    }
-                    .outline()
-                    .child(template.mode.to_string()),
+                    Avatar::new()
+                        .name(prompt.role.to_string())
+                        .src(prompt_avatar(prompt.role))
+                        .with_size(px(32.)),
+                )
+                .child(
+                    TextView::markdown(text_id, &prompt.prompt, window, cx)
+                        .selectable(true)
+                        .flex_1()
+                        .overflow_x_hidden(),
                 ),
         )
-        .map(|this| match template.description.as_ref() {
-            Some(description) => this.child(Label::new(description).text_sm()),
-            None => this,
-        })
-        .child(Label::new(format!("Adapter: {}", template.adapter)).text_sm())
-        .child(Label::new("Template JSON").text_sm())
-        .child(
-            div()
-                .w_full()
-                .p_3()
-                .rounded_md()
-                .bg(cx.theme().secondary)
-                .child(Label::new(template_json).text_xs()),
-        )
+        .child(Divider::horizontal().my_2().ml(px(40.)))
         .into_any_element()
+}
+
+fn prompt_avatar(role: Role) -> &'static str {
+    match role {
+        Role::Developer => "png/system.png",
+        Role::User => "jpg/user.jpg",
+        Role::Assistant => "jpg/assistant.jpg",
+    }
 }

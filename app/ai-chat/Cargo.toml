@@ -11,19 +11,19 @@ gpui-component = { workspace = true, features = [
 ] }
 gpui-component-assets = {workspace = true}
 window-ext = {workspace = true}
-rust-embed = { version = "8.9.0", features = ["interpolate-folder-path"] }
-anyhow = "1.0.100"
+rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
+anyhow = "1.0.101"
 
 # err
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 
 # database
-diesel = { version = "2.3.5", features = ["sqlite", "r2d2", "numeric", "time", "returning_clauses_for_sqlite_3_35","serde_json"] }
+diesel = { version = "2.3.6", features = ["sqlite", "r2d2", "numeric", "time", "returning_clauses_for_sqlite_3_35","serde_json"] }
 libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
-time = { version = "0.3.44", features = ["serde"] }
+time = { version = "0.3.47", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
+serde_json = "1.0.149"
 pinyin = "0.11.0"
 
 # log
@@ -32,7 +32,7 @@ tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 
 # http request
 reqwest = { version = "0.12.25", features = ["json"] }
-tokio = { version = "1.48.0", features = [
+tokio = { version = "1.49.0", features = [
     "rt",
     "rt-multi-thread",
     "sync",
@@ -47,15 +47,15 @@ async-compat = "0.2.5"
 smol="2.0.2"
 
 # extension
-wasmtime = { version = "40.0.0" }
-wasmtime-wasi = "40.0.0"
+wasmtime = { version = "41.0.3" }
+wasmtime-wasi = "41.0.3"
 get-selected-text = "0.1.6"
 
 # config
-toml = "0.9.10"
+toml = "0.9.11"
 
 # hotkey
 global-hotkey = {version = "0.7.0",features = ["serde","tracing"]}
 
 [dev-dependencies]
-anyhow = "1.0.100"
+anyhow = "1.0.101"

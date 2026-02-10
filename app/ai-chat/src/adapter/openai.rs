@@ -1,13 +1,13 @@
-use super::{Adapter, InputItem, InputType, render_template_detail_default};
+use super::{Adapter, InputItem, InputType, description_items_default};
 use crate::{
     config::AiChatConfig,
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
     fetch::{ChatRequest, Message},
 };
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
+use gpui_component::description_list::DescriptionItem;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
-use gpui_component::{h_flex, label::Label, scroll::ScrollableElement, tag::Tag, v_flex};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -377,80 +377,27 @@ impl Adapter for OpenAIAdapter {
             ))
     }
 
-    fn render_template_detail(&self, template: &ConversationTemplate, cx: &App) -> gpui::AnyElement {
+    fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
         let Ok(settings) = serde_json::from_value::<OpenAIConversationTemplate>(template.template.clone())
         else {
-            return render_template_detail_default(template, cx);
+            return description_items_default(template);
         };
 
-        v_flex()
-            .size_full()
-            .gap_3()
-            .p_4()
-            .overflow_y_scrollbar()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(Label::new(&template.icon))
-                    .child(Label::new(&template.name).text_xl())
-                    .child(Tag::primary().outline().child("OpenAI")),
-            )
-            .child(Label::new("Model Parameters").text_lg())
-            .child(
-                v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .child(kv_line("Model", settings.model))
-                    .child(kv_line("Temperature", settings.temperature))
-                    .child(kv_line("Top P", settings.top_p))
-                    .child(kv_line("N", settings.n))
-                    .child(kv_line(
-                        "Max Completion Tokens",
-                        settings
-                            .max_completion_tokens
-                            .map(|x| x.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
-                    ))
-                    .child(kv_line("Presence Penalty", settings.presence_penalty))
-                    .child(kv_line("Frequency Penalty", settings.frequency_penalty)),
-            )
-            .map(|this| match template.description.as_ref() {
-                Some(description) => this.child(
-                    v_flex()
-                        .gap_1()
-                        .child(Label::new("Description").text_sm())
-                        .child(Label::new(description).text_sm()),
-                ),
-                None => this,
-            })
-            .child(Label::new("Prompts").text_lg())
-            .children(template.prompts.iter().map(|prompt| {
-                let role = match prompt.role {
-                    crate::database::Role::User => "User",
-                    crate::database::Role::Assistant => "Assistant",
-                    crate::database::Role::Developer => "Developer",
-                };
-                v_flex()
-                    .gap_1()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .child(Label::new(role).text_sm())
-                    .child(Label::new(&prompt.prompt).text_sm())
-            }))
-            .into_any_element()
+        vec![
+            DescriptionItem::new("Model").value(settings.model),
+            DescriptionItem::new("Temperature").value(settings.temperature.to_string()),
+            DescriptionItem::new("Top P").value(settings.top_p.to_string()),
+            DescriptionItem::new("N").value(settings.n.to_string()),
+            DescriptionItem::new("Max Completion Tokens").value(
+                settings
+                    .max_completion_tokens
+                    .map(|x| x.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            DescriptionItem::new("Presence Penalty").value(settings.presence_penalty.to_string()),
+            DescriptionItem::new("Frequency Penalty").value(settings.frequency_penalty.to_string()),
+        ]
     }
-}
-
-fn kv_line(label: impl Into<gpui::SharedString>, value: impl ToString) -> gpui::Div {
-    h_flex()
-        .justify_between()
-        .items_center()
-        .child(Label::new(label).text_sm())
-        .child(Label::new(value.to_string()).text_sm())
 }
 
 #[derive(Debug, Deserialize)]

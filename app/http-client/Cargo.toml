@@ -10,8 +10,8 @@ gpui-component = { workspace = true, features = [
 ] }
 gpui-component-assets.workspace = true
 
-url = "2.5.7"
-thiserror = "2.0.17"
+url = "2.5.8"
+thiserror = "2.0.18"
 
 # log
 tracing = "0.1.44"

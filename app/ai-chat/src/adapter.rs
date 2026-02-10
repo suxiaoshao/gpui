@@ -1,13 +1,10 @@
 use crate::{
     config::AiChatConfig,
-    database::{ConversationTemplate, ConversationTemplatePrompt, Role},
+    database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
     fetch::Message,
 };
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
-    ActiveTheme, h_flex, label::Label, scroll::ScrollableElement, tag::Tag, v_flex,
-};
+use gpui_component::description_list::DescriptionItem;
 
 mod openai;
 mod openai_stream;
@@ -83,8 +80,8 @@ pub trait Adapter {
         history_messages: Vec<Message>,
     ) -> impl futures::Stream<Item = AiChatResult<String>>;
     fn setting_group(&self) -> SettingGroup;
-    fn render_template_detail(&self, template: &ConversationTemplate, cx: &App) -> AnyElement {
-        render_template_detail_default(template, cx)
+    fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
+        description_items_default(template)
     }
 }
 
@@ -92,105 +89,36 @@ use gpui_component::setting::SettingGroup;
 pub(crate) use openai::{OpenAIAdapter, OpenAIConversationTemplate, OpenAISettings};
 pub(crate) use openai_stream::{OpenAIStreamAdapter, OpenAIStreamSettings};
 
-pub(crate) fn render_template_detail_by_adapter(
+pub(crate) fn description_items_by_adapter(
     template: &ConversationTemplate,
-    cx: &App,
-) -> AiChatResult<AnyElement> {
+) -> AiChatResult<Vec<DescriptionItem>> {
     match template.adapter.as_str() {
-        OpenAIAdapter::NAME => Ok(OpenAIAdapter.render_template_detail(template, cx)),
-        OpenAIStreamAdapter::NAME => Ok(OpenAIStreamAdapter.render_template_detail(template, cx)),
+        OpenAIAdapter::NAME => Ok(OpenAIAdapter.description_items(template)),
+        OpenAIStreamAdapter::NAME => Ok(OpenAIStreamAdapter.description_items(template)),
         _ => Err(AiChatError::AdapterNotFound(template.adapter.clone())),
     }
 }
 
-pub(crate) fn render_template_detail_default(template: &ConversationTemplate, cx: &App) -> AnyElement {
-    v_flex()
-        .size_full()
-        .gap_3()
-        .p_4()
-        .overflow_y_scrollbar()
-        .child(Label::new("Base Information").text_lg())
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(Label::new("Name").text_sm())
-                .child(Label::new(&template.name).text_sm()),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(Label::new("Icon").text_sm())
-                .child(Label::new(&template.icon).text_sm()),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(Label::new("Mode").text_sm())
-                .child(
-                    match template.mode {
-                        crate::database::Mode::Contextual => Tag::primary(),
-                        crate::database::Mode::Single => Tag::info(),
-                        crate::database::Mode::AssistantOnly => Tag::success(),
-                    }
-                    .outline()
-                    .child(template.mode.to_string()),
-                ),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(Label::new("Adapter").text_sm())
-                .child(Label::new(&template.adapter).text_sm()),
-        )
-        .map(|this| match template.description.as_ref() {
-            Some(description) => this.child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("Description").text_sm())
-                    .child(Label::new(description).text_sm()),
-            ),
-            None => this,
-        })
-        .child(Label::new("Prompts").text_lg())
-        .children(
-            template
-                .prompts
-                .iter()
-                .map(render_prompt)
-                .collect::<Vec<AnyElement>>(),
-        )
-        .child(Label::new("Template JSON").text_lg())
-        .child(
-            div()
-                .w_full()
-                .p_3()
-                .rounded_md()
-                .bg(cx.theme().secondary)
-                .child(
-                    Label::new(serde_json::to_string_pretty(&template.template).unwrap_or_default())
-                        .text_xs(),
-                ),
-        )
-        .into_any_element()
+pub(crate) fn description_items_default(template: &ConversationTemplate) -> Vec<DescriptionItem> {
+    match template.template.as_object() {
+        Some(map) if !map.is_empty() => map
+            .iter()
+            .map(|(key, value)| {
+                DescriptionItem::new(key.clone()).value(format_template_value(value))
+            })
+            .collect(),
+        _ => vec![DescriptionItem::new("Raw").value(format_template_value(&template.template))],
+    }
 }
 
-fn render_prompt(prompt: &ConversationTemplatePrompt) -> AnyElement {
-    let role = match prompt.role {
-        Role::User => "User",
-        Role::Assistant => "Assistant",
-        Role::Developer => "Developer",
-    };
-    v_flex()
-        .w_full()
-        .gap_1()
-        .p_3()
-        .rounded_md()
-        .border_1()
-        .child(Label::new(role).text_sm())
-        .child(Label::new(&prompt.prompt).text_sm())
-        .into_any_element()
+fn format_template_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(num) => num.to_string(),
+        serde_json::Value::Bool(boolean) => boolean.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_default()
+        }
+    }
 }
