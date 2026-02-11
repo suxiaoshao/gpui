@@ -3,11 +3,13 @@ use gpui::Window;
 #[cfg(target_os = "macos")]
 pub use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
-use objc2::{MainThreadMarker, rc::Id};
+use objc2::{AnyThread, MainThreadMarker, rc::Id};
 #[cfg(target_os = "macos")]
 pub use objc2_app_kit::NSRunningApplication;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSImage, NSView, NSWindow};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSData;
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
@@ -30,6 +32,8 @@ pub enum WindowExtError {
     FailedToGetNSWindow,
     #[error("Failed to get NSApplication")]
     FailedToGetNSApplication,
+    #[error("Failed to load app icon")]
+    FailedToLoadAppIcon,
     #[error("Failed to set topmost")]
     FailedSetTopMost,
 }
@@ -204,4 +208,23 @@ pub fn restore_frontmost_app(prev_app: &Option<Retained<NSRunningApplication>>) 
             NSAPPLICATION_ACTIVATE_IGNORING_OTHER_APPS,
         ));
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_application_icon_from_bytes(icon_bytes: &[u8]) -> Result<(), WindowExtError> {
+    let ns_app = NSApplication::sharedApplication(
+        MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
+    );
+    let data = NSData::with_bytes(icon_bytes);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .ok_or(WindowExtError::FailedToLoadAppIcon)?;
+    unsafe {
+        ns_app.setApplicationIconImage(Some(&image));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_application_icon_from_bytes(_icon_bytes: &[u8]) -> Result<(), WindowExtError> {
+    Ok(())
 }

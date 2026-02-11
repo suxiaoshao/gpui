@@ -3,6 +3,25 @@ name = "ai-chat"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.bundle]
+name = "AI Chat"
+identifier = "top.sushao.ai-chat"
+icon = [
+  "assets/icon/app-icon.iconset/icon_32x32.png",
+  "assets/icon/app-icon.iconset/icon_128x128.png",
+  "assets/icon/app-icon.iconset/icon_128x128@2x.png",
+  "assets/icon/app-icon.iconset/icon_256x256.png",
+  "assets/icon/app-icon.iconset/icon_256x256@2x.png",
+  "assets/icon/app-icon.iconset/icon_512x512.png",
+  "assets/icon/app-icon.iconset/icon_512x512@2x.png",
+]
+short_description = "A desktop AI chat app built with GPUI."
+long_description = """
+AI Chat is a GPUI-based desktop application with chat history, templates,
+streaming responses, and extension support.
+"""
+category = "DeveloperTool"
+
 [dependencies]
 # ui
 gpui.workspace = true

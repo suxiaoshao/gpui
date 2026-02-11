@@ -5,8 +5,8 @@ use std::borrow::Cow;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
-#[include = "**/*.jpg"]
-#[include = "**/*.png"]
+#[include = "jpg/*.jpg"]
+#[include = "png/*.png"]
 struct AssetsInner;
 
 impl AssetSource for AssetsInner {

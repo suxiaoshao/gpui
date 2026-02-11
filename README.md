@@ -49,6 +49,29 @@ cargo run -p novel-download
 cargo watch -x 'run -p ai-chat'
 ```
 
+## 应用打包
+
+当前已为 `ai-chat` 增加 `cargo-bundle` 打包配置，可直接输出系统应用包（如 macOS `.app`）。
+
+```bash
+# 首次安装（只需一次）
+cargo install cargo-bundle
+
+# 方式 1：在工作区根目录执行
+cargo bundle -p ai-chat --release
+
+# 方式 2：使用 ai-chat 内置脚本
+./app/ai-chat/scripts/bundle.sh
+```
+
+默认产物目录：
+
+```bash
+target/release/bundle/
+```
+
+macOS 下 `bundle.sh` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName=Icon`）。如果系统未安装可用的 `actool`/`xcrun`，会自动降级为普通图标，不影响打包成功。
+
 ## 数据与日志位置
 
 - **macOS**
