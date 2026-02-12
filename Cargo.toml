@@ -14,3 +14,11 @@ gpui-component = "0.5.1"
 # Optional, for default bundled assets
 gpui-component-assets = "0.5.1"
 window-ext = {path = "./crates/window-ext"}
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = 0
+incremental = false
