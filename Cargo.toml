@@ -1,10 +1,12 @@
 [workspace]
-members = ["app/ai-chat",
-    "app/feiwen",
-    "app/http-client",
-    "app/novel-download",
-    "app/ai-chat/extensions/url_search"
-, "crates/window-ext"]
+members = [
+  "app/ai-chat",
+  "app/feiwen",
+  "app/http-client",
+  "app/novel-download",
+  "app/ai-chat/extensions/url_search",
+  "crates/window-ext",
+]
 
 resolver = "2"
 
@@ -13,7 +15,7 @@ gpui = "0.2.2"
 gpui-component = "0.5.1"
 # Optional, for default bundled assets
 gpui-component-assets = "0.5.1"
-window-ext = {path = "./crates/window-ext"}
+window-ext = { path = "./crates/window-ext" }
 
 [profile.release]
 lto = true

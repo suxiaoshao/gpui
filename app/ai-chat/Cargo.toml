@@ -2,11 +2,13 @@
 name = "ai-chat"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [package.metadata.bundle]
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
 icon = [
+  "assets/icon/app-icon.ico",
   "assets/icon/app-icon.iconset/icon_32x32.png",
   "assets/icon/app-icon.iconset/icon_128x128.png",
   "assets/icon/app-icon.iconset/icon_128x128@2x.png",
@@ -25,11 +27,9 @@ category = "DeveloperTool"
 [dependencies]
 # ui
 gpui.workspace = true
-gpui-component = { workspace = true, features = [
-  "tree-sitter-languages",
-] }
-gpui-component-assets = {workspace = true}
-window-ext = {workspace = true}
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+gpui-component-assets = { workspace = true }
+window-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.101"
 fluent-bundle = "0.16.0"
@@ -40,7 +40,14 @@ sys-locale = "0.3.2"
 thiserror = "2.0.18"
 
 # database
-diesel = { version = "2.3.6", features = ["sqlite", "r2d2", "numeric", "time", "returning_clauses_for_sqlite_3_35","serde_json"] }
+diesel = { version = "2.3.6", features = [
+  "sqlite",
+  "r2d2",
+  "numeric",
+  "time",
+  "returning_clauses_for_sqlite_3_35",
+  "serde_json",
+] }
 libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
 time = { version = "0.3.47", features = ["serde"] }
@@ -55,18 +62,18 @@ tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 # http request
 reqwest = { version = "0.12.25", features = ["json"] }
 tokio = { version = "1.49.0", features = [
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "fs",
-    "io-util",
-    "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "fs",
+  "io-util",
+  "macros",
 ] }
 reqwest-eventsource = "0.6.0"
 futures = "0.3.31"
 async-stream = "0.3.6"
 async-compat = "0.2.5"
-smol="2.0.2"
+smol = "2.0.2"
 
 # extension
 wasmtime = { version = "41.0.3" }
@@ -77,7 +84,19 @@ get-selected-text = "0.1.6"
 toml = "0.9.11"
 
 # hotkey
-global-hotkey = {version = "0.7.0",features = ["serde","tracing"]}
+global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.101"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
+
+
+
+
+
+
+
+
