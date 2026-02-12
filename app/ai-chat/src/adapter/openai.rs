@@ -4,6 +4,7 @@ use crate::{
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
     fetch::{ChatRequest, Message},
+    i18n::t_static,
 };
 use gpui::*;
 use gpui_component::description_list::DescriptionItem;
@@ -288,9 +289,9 @@ impl Adapter for OpenAIAdapter {
                 .unwrap_or_default()
         }
         SettingGroup::new()
-            .title("OpenAI")
+            .title(t_static("settings-openai-title"))
             .item(SettingItem::new(
-                "Api Key",
+                t_static("field-api-key"),
                 SettingField::input(
                     |cx| {
                         let openai_setting = get_openai_setting(cx);
@@ -319,7 +320,7 @@ impl Adapter for OpenAIAdapter {
                 ),
             ))
             .item(SettingItem::new(
-                "Api Url",
+                t_static("field-api-url"),
                 SettingField::input(
                     |cx| {
                         let openai_setting = get_openai_setting(cx);
@@ -344,7 +345,7 @@ impl Adapter for OpenAIAdapter {
                 ),
             ))
             .item(SettingItem::new(
-                "Http Proxy",
+                t_static("field-http-proxy"),
                 SettingField::input(
                     |cx| {
                         let openai_setting = get_openai_setting(cx);
@@ -385,18 +386,18 @@ impl Adapter for OpenAIAdapter {
         };
 
         vec![
-            DescriptionItem::new("Model").value(settings.model),
-            DescriptionItem::new("Temperature").value(settings.temperature.to_string()),
-            DescriptionItem::new("Top P").value(settings.top_p.to_string()),
-            DescriptionItem::new("N").value(settings.n.to_string()),
-            DescriptionItem::new("Max Completion Tokens").value(
+            DescriptionItem::new(t_static("field-model")).value(settings.model),
+            DescriptionItem::new(t_static("field-temperature")).value(settings.temperature.to_string()),
+            DescriptionItem::new(t_static("field-top-p")).value(settings.top_p.to_string()),
+            DescriptionItem::new(t_static("field-n")).value(settings.n.to_string()),
+            DescriptionItem::new(t_static("field-max-completion-tokens")).value(
                 settings
                     .max_completion_tokens
                     .map(|x| x.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             ),
-            DescriptionItem::new("Presence Penalty").value(settings.presence_penalty.to_string()),
-            DescriptionItem::new("Frequency Penalty").value(settings.frequency_penalty.to_string()),
+            DescriptionItem::new(t_static("field-presence-penalty")).value(settings.presence_penalty.to_string()),
+            DescriptionItem::new(t_static("field-frequency-penalty")).value(settings.frequency_penalty.to_string()),
         ]
     }
 }

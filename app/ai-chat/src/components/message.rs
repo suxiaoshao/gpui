@@ -1,4 +1,7 @@
-use crate::database::{Content, Role, Status};
+use crate::{
+    database::{Content, Role, Status},
+    i18n::I18n,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     IconName, Sizable, WindowExt,
@@ -53,6 +56,26 @@ pub trait MessageViewExt: 'static {
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = self.0;
+        let (
+            copy_success_title,
+            copy_success_message,
+            copy_failed_title,
+            copy_failed_message,
+            copy_tooltip,
+            delete_tooltip,
+            view_detail_tooltip,
+        ) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("notify-copy-success-title"),
+                i18n.t("notify-copy-success-message"),
+                i18n.t("notify-copy-failed-title"),
+                i18n.t("notify-copy-failed-message"),
+                i18n.t("tooltip-copy"),
+                i18n.t("tooltip-delete"),
+                i18n.t("tooltip-view-detail"),
+            )
+        };
         let is_loading = matches!(data.status(), Status::Loading);
         let copy_text = match data.content() {
             Content::Text(content) => content.to_string(),
@@ -124,10 +147,8 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                     if copied {
                                                         window.push_notification(
                                                             Notification::new()
-                                                                .title("Copy Succeeded")
-                                                                .message(
-                                                                    "Message copied to clipboard.",
-                                                                )
+                                                                .title(copy_success_title.clone())
+                                                                .message(copy_success_message.clone())
                                                                 .with_type(
                                                                     NotificationType::Success,
                                                                 ),
@@ -136,16 +157,14 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                     } else {
                                                         window.push_notification(
                                                             Notification::new()
-                                                                .title("Copy Failed")
-                                                                .message(
-                                                                    "Could not read clipboard.",
-                                                                )
+                                                                .title(copy_failed_title.clone())
+                                                                .message(copy_failed_message.clone())
                                                                 .with_type(NotificationType::Error),
                                                             cx,
                                                         );
                                                     }
                                                 })
-                                                .tooltip("Copy"),
+                                                .tooltip(copy_tooltip.clone()),
                                             )
                                             .child(
                                                 Button::new(SharedString::from(format!(
@@ -158,7 +177,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 .on_click(move |_, window, cx| {
                                                     T::delete_message_by_id(id, window, cx);
                                                 })
-                                                .tooltip("Delete"),
+                                                .tooltip(delete_tooltip.clone()),
                                             )
                                             .child(
                                                 Button::new(SharedString::from(format!(
@@ -171,7 +190,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 .on_click(move |_, window, cx| {
                                                     T::open_view_by_id(id, window, cx);
                                                 })
-                                                .tooltip("View Detail"),
+                                                .tooltip(view_detail_tooltip.clone()),
                                             ),
                                     ),
                             )

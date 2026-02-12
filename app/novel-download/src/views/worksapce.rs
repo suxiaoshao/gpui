@@ -1,8 +1,10 @@
 use crate::{
     crawler::{ContentItem, Fetch, NovelBaseData},
     errors::{NovelError, NovelResult},
+    i18n::I18n,
 };
 use async_compat::Compat;
+use fluent_bundle::FluentArgs;
 use futures::AsyncWriteExt;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -48,27 +50,32 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn render_state(&self) -> Option<Div> {
+    fn render_state(&self, i18n: &I18n) -> Option<Div> {
         let element = match &self.fetch_state {
             FetchState::None => return None,
             FetchState::FetchingNovel {
                 name,
                 author,
                 history,
-            } => div()
-                .flex()
-                .flex_col()
-                .child(Label::new(format!("Fetching {name} by {author}")))
-                .children(history.iter().cloned().rev().take(5).rev().map(|url| {
-                    Link::new(SharedString::from(&url))
-                        .child(SharedString::from(&url))
-                        .href(url)
-                })),
-            FetchState::Success => div().child(Label::new("Success")),
-            FetchState::FileError => div().child(Label::new("File Error")),
-            FetchState::NetworkError => div().child(Label::new("Network Error")),
-            FetchState::ParseError => div().child(Label::new("Parse Error")),
-            FetchState::Fetching => div().child(Label::new("Fetching...")),
+            } => {
+                let mut args = FluentArgs::new();
+                args.set("name", name.clone());
+                args.set("author", author.clone());
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(Label::new(i18n.t_with_args("fetch-state-fetching-novel", &args)))
+                    .children(history.iter().cloned().rev().take(5).rev().map(|url| {
+                        Link::new(SharedString::from(&url))
+                            .child(SharedString::from(&url))
+                            .href(url)
+                    }))
+            }
+            FetchState::Success => div().child(Label::new(i18n.t("fetch-state-success"))),
+            FetchState::FileError => div().child(Label::new(i18n.t("fetch-state-file-error"))),
+            FetchState::NetworkError => div().child(Label::new(i18n.t("fetch-state-network-error"))),
+            FetchState::ParseError => div().child(Label::new(i18n.t("fetch-state-parse-error"))),
+            FetchState::Fetching => div().child(Label::new(i18n.t("fetch-state-fetching"))),
         };
         Some(element)
     }
@@ -251,7 +258,13 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state_element = self.workspace.read(cx).render_state();
+        let (state_element, send_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                self.workspace.read(cx).render_state(i18n),
+                i18n.t("button-send"),
+            )
+        };
         let loading = self.workspace.read(cx).loading();
         div()
             .track_focus(&self.focus_handle)
@@ -274,7 +287,7 @@ impl Render for WorkspaceView {
                             });
                         }))
                         .loading(loading)
-                        .child("send")
+                        .child(send_label)
                         .track_focus(&self.focus_handle),
                 ),
             )

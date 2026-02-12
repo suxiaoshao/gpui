@@ -4,6 +4,7 @@ use crate::views::home::HomeView;
 use gpui::*;
 use gpui_component::Root;
 use gpui_component::TitleBar;
+use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -17,6 +18,7 @@ mod errors;
 mod extensions;
 mod fetch;
 mod hotkey;
+mod i18n;
 mod store;
 mod views;
 
@@ -35,6 +37,7 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
+    i18n::init_i18n(cx);
     database::init_store(cx);
     components::init(cx);
     views::init(cx);
@@ -92,9 +95,13 @@ fn main() -> AiChatResult<()> {
 
     app.run(|cx: &mut App| {
         init(cx);
+        let title = cx.global::<I18n>().t("app-title");
         if let Err(err) = cx.open_window(
             WindowOptions {
-                titlebar: Some(TitleBar::title_bar_options()),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(title.into()),
+                    ..TitleBar::title_bar_options()
+                }),
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },

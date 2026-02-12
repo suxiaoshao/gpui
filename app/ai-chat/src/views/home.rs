@@ -1,5 +1,6 @@
 use crate::{
     config::AiChatConfig,
+    i18n::I18n,
     store,
     views::home::{sidebar::SidebarView, tabs::TabsView},
 };
@@ -66,6 +67,7 @@ impl Render for HomeView {
     ) -> impl gpui::IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+        let error_title = cx.global::<I18n>().t("alert-error-title");
         let chat_data = cx.global::<store::ChatData>().read(cx);
         v_flex()
             .size_full()
@@ -82,7 +84,7 @@ impl Render for HomeView {
                         )
                         .flex_1(),
                 ),
-                Err(err) => this.child(Alert::error("home-alert", err.to_string()).title("Error")),
+                Err(err) => this.child(Alert::error("home-alert", err.to_string()).title(error_title)),
             })
             .children(dialog_layer)
             .children(notification_layer)

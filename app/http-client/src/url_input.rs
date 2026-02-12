@@ -1,7 +1,10 @@
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
 
-use crate::http_form::{HttpForm, HttpFormEvent};
+use crate::{
+    http_form::{HttpForm, HttpFormEvent},
+    i18n::I18n,
+};
 
 pub struct UrlInput {
     input: Entity<InputState>,
@@ -11,10 +14,11 @@ pub struct UrlInput {
 
 impl UrlInput {
     pub fn new(window: &mut Window, http_form: Entity<HttpForm>, cx: &mut Context<Self>) -> Self {
+        let url_placeholder = cx.global::<I18n>().t("field-url");
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("")
-                .placeholder("Url")
+                .placeholder(url_placeholder)
         });
         let input_subscription =
             cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
@@ -44,10 +48,11 @@ impl UrlInput {
         cx: &mut Context<Self>,
     ) {
         if let HttpFormEvent::SetUrlByParams(url) | HttpFormEvent::SetUrl(url) = emitter {
+            let url_placeholder = cx.global::<I18n>().t("field-url");
             self.input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(url)
-                    .placeholder("Url")
+                    .placeholder(url_placeholder)
             });
         };
     }

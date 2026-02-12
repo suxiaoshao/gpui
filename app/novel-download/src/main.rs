@@ -1,6 +1,7 @@
 use errors::{NovelError, NovelResult};
 use gpui::*;
 use gpui_component::Root;
+use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{
@@ -13,6 +14,7 @@ use views::WorkspaceView;
 
 mod crawler;
 mod errors;
+mod i18n;
 mod views;
 
 static APP_NAME: &str = "top.sushao.novel-download";
@@ -24,6 +26,7 @@ fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
+    i18n::init_i18n(cx);
 }
 
 fn get_logs_dir() -> NovelResult<PathBuf> {
@@ -75,10 +78,11 @@ fn main() -> NovelResult<()> {
 
     app.run(move |cx| {
         init(cx);
+        let title = cx.global::<I18n>().t("app-title");
         if let Err(err) = cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Novel Download".into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 ..Default::default()

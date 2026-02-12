@@ -3,6 +3,7 @@ use crate::{
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
     fetch::Message,
+    i18n::t_static,
 };
 use gpui_component::description_list::DescriptionItem;
 
@@ -140,7 +141,7 @@ pub(crate) fn description_items_default(template: &ConversationTemplate) -> Vec<
                 DescriptionItem::new(key.clone()).value(format_template_value(value))
             })
             .collect(),
-        _ => vec![DescriptionItem::new("Raw").value(format_template_value(&template.template))],
+        _ => vec![DescriptionItem::new(t_static("field-raw")).value(format_template_value(&template.template))],
     }
 }
 

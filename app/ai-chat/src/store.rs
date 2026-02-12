@@ -4,6 +4,7 @@ use crate::{
         Conversation, ConversationTemplate, Db, Folder, Message, NewConversation, NewFolder,
     },
     errors::AiChatResult,
+    i18n::I18n,
     views::home::{
         ConversationPanelView, ConversationTabView, HomeView, TemplateDetailView, TemplateListView,
     },
@@ -98,7 +99,7 @@ impl ChatDataInner {
         AppTab {
             kind: TabKind::TemplateList,
             icon: "📋".into(),
-            name: "Templates".into(),
+            name: cx.global::<I18n>().t("tab-templates").into(),
             panel: TabPanel::TemplateList(cx.new(|cx| TemplateListView::new(window, cx))),
         }
     }
@@ -111,13 +112,20 @@ impl ChatDataInner {
             .map(|template| {
                 (
                     SharedString::from(template.icon),
-                    SharedString::from(format!("Template: {}", template.name)),
+                    SharedString::from(format!(
+                        "{}: {}",
+                        cx.global::<I18n>().t("tab-template"),
+                        template.name
+                    )),
                 )
             })
             .unwrap_or_else(|| {
                 (
                     SharedString::from("🧩"),
-                    SharedString::from(format!("Template #{template_id}")),
+                    SharedString::from(format!(
+                        "{} #{template_id}",
+                        cx.global::<I18n>().t("tab-template")
+                    )),
                 )
             });
         AppTab {
@@ -475,6 +483,22 @@ impl ChatData {
         let span = tracing::info_span!("chat data event");
         let _enter = span.enter();
         event!(Level::INFO, "start:{chat_data_event:?}");
+        let (
+            add_conversation_failed,
+            add_folder_failed,
+            delete_message_failed,
+            delete_conversation_failed,
+            delete_folder_failed,
+        ) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("notify-add-conversation-failed"),
+                i18n.t("notify-add-folder-failed"),
+                i18n.t("notify-delete-message-failed"),
+                i18n.t("notify-delete-conversation-failed"),
+                i18n.t("notify-delete-folder-failed"),
+            )
+        };
         match chat_data_event {
             ChatDataEvent::AddConversation {
                 name,
@@ -495,7 +519,7 @@ impl ChatData {
                 Err(err) => {
                     window.push_notification(
                         Notification::new()
-                            .title("Add Conversation Failed")
+                            .title(add_conversation_failed)
                             .message(SharedString::from(err.to_string()))
                             .with_type(NotificationType::Error),
                         cx,
@@ -509,7 +533,7 @@ impl ChatData {
                     Err(err) => {
                         window.push_notification(
                             Notification::new()
-                                .title("Add Folder Failed")
+                                .title(add_folder_failed)
                                 .message(SharedString::from(err.to_string()))
                                 .with_type(NotificationType::Error),
                             cx,
@@ -566,7 +590,7 @@ impl ChatData {
                     Err(err) => {
                         window.push_notification(
                             Notification::new()
-                                .title("Delete Message Failed")
+                                .title(delete_message_failed)
                                 .message(SharedString::from(err.to_string()))
                                 .with_type(NotificationType::Error),
                             cx,
@@ -581,7 +605,7 @@ impl ChatData {
                     Err(err) => {
                         window.push_notification(
                             Notification::new()
-                                .title("Delete Conversation Failed")
+                                .title(delete_conversation_failed)
                                 .message(SharedString::from(err.to_string()))
                                 .with_type(NotificationType::Error),
                             cx,
@@ -596,7 +620,7 @@ impl ChatData {
                     Err(err) => {
                         window.push_notification(
                             Notification::new()
-                                .title("Delete Folder Failed")
+                                .title(delete_folder_failed)
                                 .message(SharedString::from(err.to_string()))
                                 .with_type(NotificationType::Error),
                             cx,

@@ -1,6 +1,7 @@
 use crate::{
     errors::HttpClientResult,
     http_form::{HttpForm, HttpFormEvent},
+    i18n::I18n,
 };
 use gpui::*;
 use gpui_component::{
@@ -95,8 +96,11 @@ impl HttpParamsView {
         let url = url.url.clone();
         let _subscriptions = vec![cx.subscribe_in(&http_form, window, Self::subscribe)];
         let inputs = Self::get_inputs(&url, window, cx);
-        let add_key_input = cx.new(|cx| InputState::new(window, cx).placeholder("Key"));
-        let add_value_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let key_placeholder = cx.global::<I18n>().t("field-key");
+        let value_placeholder = cx.global::<I18n>().t("field-value");
+        let add_key_input = cx.new(|cx| InputState::new(window, cx).placeholder(key_placeholder));
+        let add_value_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(value_placeholder));
         Self {
             http_form,
             inputs,
@@ -121,17 +125,19 @@ impl HttpParamsView {
     }
     fn get_inputs(url: &str, window: &mut Window, params_cx: &mut Context<Self>) -> Vec<ParamView> {
         let mut inputs = vec![];
+        let key_placeholder = params_cx.global::<I18n>().t("field-key");
+        let value_placeholder = params_cx.global::<I18n>().t("field-value");
         if let Ok(url) = Url::parse(url) {
             for (index, (key, value)) in url.query_pairs().enumerate() {
                 let key_input = params_cx.new(|cx| {
                     InputState::new(window, cx)
                         .default_value(key.to_string())
-                        .placeholder("Key")
+                        .placeholder(key_placeholder.clone())
                 });
                 let value_input = params_cx.new(|cx| {
                     InputState::new(window, cx)
                         .default_value(value.to_string())
-                        .placeholder("Value")
+                        .placeholder(value_placeholder.clone())
                 });
                 let key_subscription = params_cx.subscribe_in(
                     &key_input,
@@ -186,12 +192,22 @@ impl HttpParamsView {
 
 impl Render for HttpParamsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (key_label, value_label, add_label, confirm_label, delete_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("field-key"),
+                i18n.t("field-value"),
+                i18n.t("button-add"),
+                i18n.t("button-confirm"),
+                i18n.t("button-delete"),
+            )
+        };
         let header = div()
             .gap_2()
             .flex()
             .flex_row()
-            .child(div().flex_1().child(Label::new("Key")))
-            .child(div().flex_1().child(Label::new("Value")))
+            .child(div().flex_1().child(Label::new(key_label)))
+            .child(div().flex_1().child(Label::new(value_label)))
             .child(
                 Popover::new("add-params-popover")
                     .open(self.open_popover)
@@ -199,7 +215,7 @@ impl Render for HttpParamsView {
                         this.open_popover = *open;
                         cx.notify();
                     }))
-                    .trigger(Button::new("add-params-popover-trigger").label("Add"))
+                    .trigger(Button::new("add-params-popover-trigger").label(add_label))
                     .w(px(400.))
                     .child(
                         div()
@@ -211,7 +227,7 @@ impl Render for HttpParamsView {
                             .child(Input::new(&self.add_value_input))
                             .child(
                                 Button::new("add-params-popover-button")
-                                    .label("Confirm")
+                                    .label(confirm_label)
                                     .success()
                                     .on_click(cx.listener(|this, _event, window, cx| {
                                         this.add_params(window, cx);
@@ -235,7 +251,7 @@ impl Render for HttpParamsView {
                         .child(div().flex_1().child(Input::new(value)))
                         .child(
                             Button::new(SharedString::from(format!("delete-params-{index}")))
-                                .label("Delete")
+                                .label(delete_label.clone())
                                 .on_click(cx.listener(move |this, _event, _window, cx| {
                                     this.delete_param(index, cx);
                                 })),

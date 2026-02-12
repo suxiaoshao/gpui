@@ -2,6 +2,7 @@ use crate::{
     components::template_edit_dialog::open_add_template_dialog,
     database::{ConversationTemplate, Db, Mode},
     errors::AiChatResult,
+    i18n::I18n,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::{prelude::FluentBuilder, *};
@@ -237,6 +238,10 @@ impl TemplateListView {
 
 impl Render for TemplateListView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (add_label, load_failed_title) = {
+            let i18n = cx.global::<I18n>();
+            (i18n.t("button-add"), i18n.t("notify-load-templates-failed"))
+        };
         v_flex()
             .key_context(CONTEXT)
             .size_full()
@@ -250,7 +255,7 @@ impl Render for TemplateListView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(Button::new("template-add").primary().label("Add").on_click(
+                    .child(Button::new("template-add").primary().label(add_label).on_click(
                         cx.listener(|_view, _, window, cx| {
                             window.dispatch_action(Add.boxed_clone(), cx);
                         }),
@@ -263,7 +268,7 @@ impl Render for TemplateListView {
                         .size_full()
                         .items_center()
                         .justify_center()
-                        .child(Label::new(format!("Load templates failed: {err}")).text_sm()),
+                        .child(Label::new(format!("{load_failed_title}: {err}")).text_sm()),
                 ),
             })
     }

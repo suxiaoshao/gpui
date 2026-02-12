@@ -5,6 +5,7 @@ use super::{
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     fetch::{self, FetchRunner},
+    i18n::I18n,
     store::{Db, service::Novel},
 };
 use async_compat::Compat;
@@ -12,12 +13,13 @@ use diesel::{
     SqliteConnection,
     r2d2::{ConnectionManager, PooledConnection},
 };
+use fluent_bundle::FluentArgs;
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::Button,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
 };
-use prelude::FluentBuilder;
 use regex::Regex;
 use tracing::{Instrument, Level, event};
 
@@ -71,7 +73,7 @@ struct FetchForm {
 }
 
 impl FetchForm {
-    fn render_state(&self) -> Option<Div> {
+    fn render_state(&self, i18n: &I18n) -> Option<Div> {
         let element = match self.state {
             FetchState::None => return None,
             FetchState::Fetching {
@@ -79,13 +81,18 @@ impl FetchForm {
                 page,
                 start_page,
                 end_page,
-            } => div().child(format!(
-                "Fetching page {start_page}/{page}/{end_page} of a total of {total}"
-            )),
-            FetchState::Success => div().child("Success"),
-            FetchState::DbError => div().child("Database Error"),
-            FetchState::NetworkError => div().child("Network Error"),
-            FetchState::ParseError => div().child("Parse Error"),
+            } => {
+                let mut args = FluentArgs::new();
+                args.set("start_page", start_page as i64);
+                args.set("page", page as i64);
+                args.set("end_page", end_page as i64);
+                args.set("total", total);
+                div().child(i18n.t_with_args("fetch-state-fetching", &args))
+            }
+            FetchState::Success => div().child(i18n.t("fetch-state-success")),
+            FetchState::DbError => div().child(i18n.t("fetch-state-db-error")),
+            FetchState::NetworkError => div().child(i18n.t("fetch-state-network-error")),
+            FetchState::ParseError => div().child(i18n.t("fetch-state-parse-error")),
         };
         Some(element)
     }
@@ -216,19 +223,28 @@ impl FetchView {
         cx: &mut Context<Self>,
     ) -> Self {
         let integer_regex = Regex::new(r"^\d+$").unwrap();
+        let (url_placeholder, start_page_placeholder, end_page_placeholder, cookie_placeholder) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("fetch-url-placeholder"),
+                i18n.t("fetch-start-page-placeholder"),
+                i18n.t("fetch-end-page-placeholder"),
+                i18n.t("fetch-cookie-placeholder"),
+            )
+        };
         let mut _subscriptions = vec![];
-        let url_input = cx.new(|cx| InputState::new(window, cx).placeholder("Url"));
+        let url_input = cx.new(|cx| InputState::new(window, cx).placeholder(url_placeholder));
         let start_page = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Start Page")
+                .placeholder(start_page_placeholder)
                 .pattern(integer_regex.clone())
         });
         let end_page = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("End Page")
+                .placeholder(end_page_placeholder)
                 .pattern(integer_regex)
         });
-        let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder("Cookie"));
+        let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder(cookie_placeholder));
 
         _subscriptions.push(cx.subscribe_in(
             &url_input,
@@ -480,7 +496,14 @@ impl FetchView {
 
 impl Render for FetchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state_element = self.form.read(cx).render_state();
+        let (query_button_label, fetch_button_label, state_element) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("fetch-route-query-button"),
+                i18n.t("fetch-submit-button"),
+                self.form.read(cx).render_state(i18n),
+            )
+        };
         div()
             .h_full()
             .w_full()
@@ -493,20 +516,22 @@ impl Render for FetchView {
                     .justify_between()
                     .child(
                         Button::new("router-query")
-                            .label("Go query")
+                            .label(query_button_label)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.workspace.update(cx, |_data, cx| {
                                     cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Query));
                                 });
                             })),
                     )
-                    .child(Button::new("fetch").label("Fetch").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.form.update(cx, |_data, cx| {
-                                cx.emit(FetchFormEvent::StartFetch);
-                            });
-                        },
-                    ))),
+                    .child(
+                        Button::new("fetch")
+                            .label(fetch_button_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.form.update(cx, |_data, cx| {
+                                    cx.emit(FetchFormEvent::StartFetch);
+                                });
+                            })),
+                    ),
             )
             .child(
                 div()

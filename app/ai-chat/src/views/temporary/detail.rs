@@ -8,12 +8,14 @@ use crate::{
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     fetch::FetchRunner,
+    i18n::I18n,
     views::{
         message_preview::{MessagePreview, MessagePreviewExt},
         temporary::TemporaryView,
     },
 };
 use async_compat::CompatExt;
+use fluent_bundle::FluentArgs;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -94,6 +96,12 @@ impl MessageViewExt for TemporaryMessage {
         let Some(message) = message else {
             return;
         };
+        let title = {
+            let i18n = cx.global::<I18n>();
+            let mut args = FluentArgs::new();
+            args.set("id", message.id as i64);
+            i18n.t_with_args("message-preview-title", &args)
+        };
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -102,7 +110,7 @@ impl MessageViewExt for TemporaryMessage {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Message Preview: {}", message.id).into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -136,10 +144,17 @@ impl MessageViewExt for TemporaryMessage {
                 }
             });
         } else {
+            let (title, message) = {
+                let i18n = cx.global::<I18n>();
+                (
+                    i18n.t("delete-message-failed-title"),
+                    i18n.t("delete-message-failed-message"),
+                )
+            };
             window.push_notification(
                 Notification::new()
-                    .title("Delete Message Failed")
-                    .message("Message view not available.")
+                    .title(title)
+                    .message(message)
                     .with_type(NotificationType::Error),
                 cx,
             );

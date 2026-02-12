@@ -3,7 +3,7 @@ use gpui_component::tab::{Tab, TabBar};
 
 use crate::{
     http_body::HttpBodyView, http_form::HttpForm, http_headers::HttpHeadersView,
-    http_params::HttpParamsView,
+    http_params::HttpParamsView, i18n::I18n,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,6 +78,14 @@ impl HttpTabView {
 impl Render for HttpTabView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_value = self.tab.into();
+        let (params_label, headers_label, body_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("tab-params"),
+                i18n.t("tab-headers"),
+                i18n.t("tab-body"),
+            )
+        };
         div()
             .flex_1()
             .flex()
@@ -89,7 +97,11 @@ impl Render for HttpTabView {
                         let tab = HttpTab::from(selected_index);
                         this.tab = tab;
                     }))
-                    .children(HttpTab::ALL.map(|tab| Tab::new().label(tab.as_str()))),
+                    .children([
+                        Tab::new().label(params_label),
+                        Tab::new().label(headers_label),
+                        Tab::new().label(body_label),
+                    ]),
             )
             .child(AnyElement::from(self))
     }

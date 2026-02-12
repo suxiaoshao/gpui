@@ -3,6 +3,7 @@ use crate::{
     components::template_edit_dialog::open_template_edit_dialog,
     database::{ConversationTemplate, Db, Mode, Role},
     errors::AiChatResult,
+    i18n::I18n,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::*;
@@ -44,12 +45,13 @@ impl TemplateDetailView {
     }
 
     fn open_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let load_template_failed = cx.global::<I18n>().t("notify-load-template-failed");
         let template = match &self.template {
             Ok(template) => template.clone(),
             Err(err) => {
                 window.push_notification(
                     Notification::new()
-                        .title("Load template failed")
+                        .title(load_template_failed)
                         .message(err.to_string())
                         .with_type(NotificationType::Error),
                     cx,
@@ -76,12 +78,20 @@ impl TemplateDetailView {
     }
 
     fn delete_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (open_db_failed, delete_failed, delete_success) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("notify-open-database-failed"),
+                i18n.t("notify-delete-template-failed"),
+                i18n.t("notify-template-deleted-success"),
+            )
+        };
         let mut conn = match cx.global::<Db>().get() {
             Ok(conn) => conn,
             Err(err) => {
                 window.push_notification(
                     Notification::new()
-                        .title("Open database failed")
+                        .title(open_db_failed)
                         .message(err.to_string())
                         .with_type(NotificationType::Error),
                     cx,
@@ -92,7 +102,7 @@ impl TemplateDetailView {
         if let Err(err) = ConversationTemplate::delete(self.template_id, &mut conn) {
             window.push_notification(
                 Notification::new()
-                    .title("Delete template failed")
+                    .title(delete_failed)
                     .message(err.to_string())
                     .with_type(NotificationType::Error),
                 cx,
@@ -107,33 +117,43 @@ impl TemplateDetailView {
         });
         window.push_notification(
             Notification::new()
-                .title("Template deleted successfully")
+                .title(delete_success)
                 .with_type(NotificationType::Success),
             cx,
         );
     }
 
     fn open_delete_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (delete_title, delete_message, cancel_label, delete_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-delete-template-title"),
+                i18n.t("dialog-delete-template-message"),
+                i18n.t("button-cancel"),
+                i18n.t("button-delete"),
+            )
+        };
         let this = cx.entity().downgrade();
         window.open_dialog(cx, {
             let this = this.clone();
             move |dialog, _window, _cx| {
                 let this = this.clone();
                 dialog
-                    .title("Delete Template")
-                    .child(Label::new(
-                        "Delete this template? This action cannot be undone.",
-                    ))
-                    .footer(move |_dialog, _state, _window, _cx| {
+                    .title(delete_title.clone())
+                    .child(Label::new(delete_message.clone()))
+                    .footer({
+                        let cancel_label = cancel_label.clone();
+                        let delete_label = delete_label.clone();
+                        move |_dialog, _state, _window, _cx| {
                         vec![
                             Button::new("cancel")
-                                .label("Cancel")
+                                .label(cancel_label.clone())
                                 .on_click(|_, window, cx| {
                                     window.close_dialog(cx);
                                 }),
                             Button::new("confirm-delete")
                                 .danger()
-                                .label("Delete")
+                                .label(delete_label.clone())
                                 .on_click({
                                     let this = this.clone();
                                     move |_, window, cx| {
@@ -144,6 +164,7 @@ impl TemplateDetailView {
                                     }
                                 }),
                         ]
+                    }
                     })
             }
         });
@@ -152,6 +173,14 @@ impl TemplateDetailView {
 
 impl Render for TemplateDetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (edit_label, delete_label, load_template_failed) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("button-edit"),
+                i18n.t("button-delete"),
+                i18n.t("notify-load-template-failed"),
+            )
+        };
         v_flex()
             .size_full()
             .child(
@@ -166,7 +195,7 @@ impl Render for TemplateDetailView {
                     .child(
                         Button::new("template-edit")
                             .primary()
-                            .label("Edit")
+                            .label(edit_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_edit_dialog(window, cx);
                             })),
@@ -174,7 +203,7 @@ impl Render for TemplateDetailView {
                     .child(
                         Button::new("template-delete")
                             .danger()
-                            .label("Delete")
+                            .label(delete_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_delete_dialog(window, cx);
                             })),
@@ -186,7 +215,7 @@ impl Render for TemplateDetailView {
                     .size_full()
                     .items_center()
                     .justify_center()
-                    .child(Label::new(format!("Load template failed: {err}")).text_sm())
+                    .child(Label::new(format!("{load_template_failed}: {err}")).text_sm())
                     .into_any_element(),
             })
     }
@@ -197,6 +226,7 @@ fn render_template_detail(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>();
     let mode_tag = match template.mode {
         Mode::Contextual => Tag::primary(),
         Mode::Single => Tag::info(),
@@ -208,12 +238,12 @@ fn render_template_detail(
 
     let base_items = {
         let items = vec![
-            DescriptionItem::new("ID").value(template.id.to_string()),
-            DescriptionItem::new("Name").value(template.name.clone()),
-            DescriptionItem::new("Icon").value(template.icon.clone()),
-            DescriptionItem::new("Mode").value(div().flex().child(mode_tag).into_any_element()),
-            DescriptionItem::new("Adapter").value(template.adapter.clone()),
-            DescriptionItem::new("Prompts").value(template.prompts.len().to_string()),
+            DescriptionItem::new(i18n.t("field-id")).value(template.id.to_string()),
+            DescriptionItem::new(i18n.t("field-name")).value(template.name.clone()),
+            DescriptionItem::new(i18n.t("field-icon")).value(template.icon.clone()),
+            DescriptionItem::new(i18n.t("field-mode")).value(div().flex().child(mode_tag).into_any_element()),
+            DescriptionItem::new(i18n.t("field-adapter")).value(template.adapter.clone()),
+            DescriptionItem::new(i18n.t("field-prompts")).value(template.prompts.len().to_string()),
         ];
         items
     };
@@ -227,7 +257,7 @@ fn render_template_detail(
         }
         items.extend(detail_items);
         items.push(
-            DescriptionItem::new("Description")
+            DescriptionItem::new(i18n.t("field-description"))
                 .value(template.description.clone().unwrap_or("-".to_string()))
                 .span(3),
         );
@@ -239,7 +269,7 @@ fn render_template_detail(
         .flex_1()
         .gap_3()
         .px_4()
-        .child(Label::new("Information").text_lg())
+        .child(Label::new(i18n.t("section-information")).text_lg())
         .child(
             div().child(
                 DescriptionList::new()
@@ -248,7 +278,7 @@ fn render_template_detail(
                     .layout(Axis::Vertical),
             ),
         )
-        .child(Label::new("Prompts").text_lg())
+        .child(Label::new(i18n.t("field-prompts")).text_lg())
         .child(
             div().id("template-prompts").children(
                 template

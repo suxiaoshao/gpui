@@ -1,6 +1,7 @@
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
+    i18n::I18n,
     store::{ChatData, ChatDataEvent, ChatDataInner},
     views::settings::OpenSetting,
 };
@@ -59,6 +60,26 @@ impl Render for SidebarView {
         _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
+        let (
+            app_title,
+            conversation_tree_title,
+            actions_title,
+            settings_label,
+            template_list_label,
+            add_conversation_label,
+            add_folder_label,
+        ) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("sidebar-app-title"),
+                i18n.t("sidebar-conversation-tree"),
+                i18n.t("sidebar-actions"),
+                i18n.t("sidebar-settings"),
+                i18n.t("sidebar-template-list"),
+                i18n.t("sidebar-add-conversation"),
+                i18n.t("sidebar-add-folder"),
+            )
+        };
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
@@ -68,9 +89,9 @@ impl Render for SidebarView {
             .child(
                 Sidebar::new(Side::Left)
                     .w_full()
-                    .header(SidebarHeader::new().child("Ai Chat"))
+                    .header(SidebarHeader::new().child(app_title))
                     .child(
-                        SidebarGroup::new("Conversation Tree").child(
+                        SidebarGroup::new(conversation_tree_title).child(
                             SidebarMenu::new().children(
                                 match self
                                     .chat_data
@@ -84,17 +105,17 @@ impl Render for SidebarView {
                         ),
                     )
                     .child(
-                        SidebarGroup::new("Actions").child(
+                        SidebarGroup::new(actions_title).child(
                             SidebarMenu::new()
                                 .child(
-                                    SidebarMenuItem::new("Settings")
+                                    SidebarMenuItem::new(settings_label)
                                         .icon(IconName::Settings)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
                                             window.dispatch_action(OpenSetting.boxed_clone(), cx);
                                         })),
                                 )
                                 .child(
-                                    SidebarMenuItem::new("Template List")
+                                    SidebarMenuItem::new(template_list_label)
                                         .icon(IconName::Bot)
                                         .on_click(cx.listener(|_this, _event, _window, cx| {
                                             let chat_data = cx.global::<ChatData>().deref().clone();
@@ -104,14 +125,14 @@ impl Render for SidebarView {
                                         })),
                                 )
                                 .child(
-                                    SidebarMenuItem::new("Add Conversation")
+                                    SidebarMenuItem::new(add_conversation_label.clone())
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
                                             window.dispatch_action(Add.boxed_clone(), cx);
                                         })),
                                 )
                                 .child(
-                                    SidebarMenuItem::new("Add Folder")
+                                    SidebarMenuItem::new(add_folder_label.clone())
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
                                             window.dispatch_action(AddShift.boxed_clone(), cx);
@@ -120,11 +141,13 @@ impl Render for SidebarView {
                         ),
                     ),
             )
-            .context_menu(|this, _window, _cx| {
+            .context_menu(move |this, _window, _cx| {
+                let add_conversation_label = add_conversation_label.clone();
+                let add_folder_label = add_folder_label.clone();
                 this.check_side(Side::Left)
                     .external_link_icon(false)
-                    .menu_with_icon("Add Conversation", IconName::Plus, Box::new(Add))
-                    .menu_with_icon("Add Folder", IconName::Plus, Box::new(AddShift))
+                    .menu_with_icon(add_conversation_label, IconName::Plus, Box::new(Add))
+                    .menu_with_icon(add_folder_label, IconName::Plus, Box::new(AddShift))
             })
     }
 }

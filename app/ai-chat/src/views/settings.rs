@@ -2,6 +2,7 @@ use crate::{
     adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     config::{AiChatConfig, ThemeMode},
+    i18n::I18n,
 };
 use gpui::*;
 use gpui_component::{
@@ -74,6 +75,24 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (
+            page_general,
+            page_adapter,
+            group_basic_options,
+            field_theme,
+            field_http_proxy,
+            field_temporary_hotkey,
+        ) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("settings-page-general"),
+                i18n.t("settings-page-adapter"),
+                i18n.t("settings-group-basic-options"),
+                i18n.t("field-theme"),
+                i18n.t("field-http-proxy"),
+                i18n.t("field-temporary-conversation-hotkey"),
+            )
+        };
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let hotkey_input = self.hotkey_input.clone();
@@ -90,11 +109,11 @@ impl Render for SettingsView {
                 Settings::new("my-settings")
                     .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
                     .pages(vec![
-                        SettingPage::new("General").group(
+                        SettingPage::new(page_general).group(
                             SettingGroup::new()
-                                .title("Basic Options")
+                                .title(group_basic_options)
                                 .item(SettingItem::new(
-                                    "Theme",
+                                    field_theme,
                                     SettingField::dropdown(
                                         vec![
                                             (
@@ -121,7 +140,7 @@ impl Render for SettingsView {
                                     ),
                                 ))
                                 .item(SettingItem::new(
-                                    "Http Proxy",
+                                    field_http_proxy,
                                     SettingField::input(
                                         |cx: &App| {
                                             let config = cx.global::<AiChatConfig>();
@@ -143,13 +162,13 @@ impl Render for SettingsView {
                                     ),
                                 ))
                                 .item(SettingItem::new(
-                                    "Temporary Conversation Hotkey",
+                                    field_temporary_hotkey,
                                     SettingField::render(move |_options, _window, _cx| {
                                         hotkey_input.clone()
                                     }),
                                 )),
                         ),
-                        SettingPage::new("Adapter")
+                        SettingPage::new(page_adapter)
                             .group(OpenAIAdapter.setting_group())
                             .group(OpenAIStreamAdapter.setting_group()),
                     ]),
@@ -192,10 +211,11 @@ pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
 }
 
 fn inner_open_settings_window(cx: &mut App) {
+    let title = cx.global::<I18n>().t("settings-title");
     match cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("Settings".into()),
+                title: Some(title.into()),
                 ..Default::default()
             }),
             window_background: WindowBackgroundAppearance::Blurred,

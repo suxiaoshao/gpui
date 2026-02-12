@@ -6,9 +6,11 @@ use crate::{
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },
     errors::{AiChatError, AiChatResult},
+    i18n::I18n,
     store::{ChatData, ChatDataEvent},
     views::message_preview::{MessagePreview, MessagePreviewExt},
 };
+use fluent_bundle::FluentArgs;
 use diesel::SqliteConnection;
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
@@ -206,6 +208,12 @@ impl MessageViewExt for Message {
                 return;
             }
         };
+        let title = {
+            let i18n = cx.global::<I18n>();
+            let mut args = FluentArgs::new();
+            args.set("id", message.id as i64);
+            i18n.t_with_args("message-preview-title", &args)
+        };
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -214,7 +222,7 @@ impl MessageViewExt for Message {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Message Preview: {}", message.id).into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 ..Default::default()

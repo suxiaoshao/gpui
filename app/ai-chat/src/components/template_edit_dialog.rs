@@ -4,6 +4,7 @@ use crate::{
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, Mode, NewConversationTemplate, Role,
     },
+    i18n::{I18n, t_static},
 };
 use gpui::*;
 use gpui_component::{
@@ -214,13 +215,13 @@ impl TemplateEditForm {
                     .parse::<f64>()
                     .ok()
                     .and_then(serde_json::Number::from_f64)
-                    .ok_or_else(|| "Must be a valid float".to_string())?;
+                    .ok_or_else(|| t_static("template-error-float"))?;
                 Ok(serde_json::Value::Number(number))
             }
             InputType::Boolean { .. } => {
                 let boolean = raw
                     .parse::<bool>()
-                    .map_err(|_| "Must be true or false".to_string())?;
+                    .map_err(|_| t_static("template-error-boolean"))?;
                 Ok(serde_json::Value::Bool(boolean))
             }
             InputType::Integer { .. } => {
@@ -229,14 +230,14 @@ impl TemplateEditForm {
                     .map(Into::into)
                     .or_else(|_| raw.parse::<u64>().map(Into::into))
                     .map(serde_json::Value::Number)
-                    .map_err(|_| "Must be a valid integer".to_string())?;
+                    .map_err(|_| t_static("template-error-integer"))?;
                 Ok(number)
             }
             InputType::Select(options) => {
                 if options.is_empty() || options.iter().any(|option| option == raw) {
                     Ok(serde_json::Value::String(raw.to_string()))
                 } else {
-                    Err("Selected value is not in available options".to_string())
+                    Err(t_static("template-error-select"))
                 }
             }
             InputType::Optional(inner) => {
@@ -248,7 +249,7 @@ impl TemplateEditForm {
             }
             InputType::Object(_) | InputType::ArrayObject(_) | InputType::Array { .. } => {
                 serde_json::from_str::<serde_json::Value>(raw)
-                    .map_err(|_| "Must be a valid JSON value".to_string())
+                    .map_err(|_| t_static("template-error-json"))
             }
         }
     }
@@ -276,6 +277,19 @@ impl TemplateEditForm {
         !matches!(input_type, InputType::Optional(_))
     }
 
+    fn localized_item_name(id: &str, fallback: &str) -> String {
+        match id {
+            "model" => t_static("field-model"),
+            "temperature" => t_static("field-temperature"),
+            "top_p" => t_static("field-top-p"),
+            "n" => t_static("field-n"),
+            "max_completion_tokens" => t_static("field-max-completion-tokens"),
+            "presence_penalty" => t_static("field-presence-penalty"),
+            "frequency_penalty" => t_static("field-frequency-penalty"),
+            _ => fallback.to_string(),
+        }
+    }
+
     fn collect_template(&self, cx: &App) -> Result<serde_json::Value, String> {
         let mut map = serde_json::Map::new();
         for row in &self.template_rows {
@@ -287,8 +301,9 @@ impl TemplateEditForm {
                     .cloned()
                     .unwrap_or_default(),
             };
+            let item_name = Self::localized_item_name(row.item.id(), row.item.name());
             let value = Self::parse_value_by_type(row.item.input_type(), &raw)
-                .map_err(|err| format!("Template field '{}': {err}", row.item.name()))?;
+                .map_err(|err| format!("{} '{}': {err}", t_static("template-error-field-prefix"), item_name))?;
             map.insert(row.item.id().to_string(), value);
         }
         Ok(serde_json::Value::Object(map))
@@ -336,10 +351,10 @@ impl PromptListForm {
                 .read(cx)
                 .selected_value()
                 .copied()
-                .ok_or_else(|| format!("Please select role for prompt {}", index + 1))?;
+                .ok_or_else(|| format!("{} {}", t_static("template-error-select-role"), index + 1))?;
             let prompt = row.prompt_input.read(cx).value().trim().to_string();
             if prompt.is_empty() {
-                return Err(format!("Prompt {} cannot be empty", index + 1));
+                return Err(format!("{} {}", t_static("template-error-prompt-empty"), index + 1));
             }
             prompts.push(ConversationTemplatePrompt { role, prompt });
         }
@@ -377,7 +392,7 @@ impl PromptEditorRow {
         });
         let prompt_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Prompt")
+                .placeholder(t_static("field-prompt"))
                 .multi_line(true)
                 .line_number(true)
         });
@@ -391,6 +406,7 @@ impl PromptEditorRow {
 
 impl Render for TemplateEditForm {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let template_prefix = _cx.global::<I18n>().t("field-template-prefix");
         let template_fields = self
             .template_rows
             .iter()
@@ -409,7 +425,10 @@ impl Render for TemplateEditForm {
                 };
                 field()
                     .required(Self::is_required(row.item.input_type()))
-                    .label(format!("Template / {}", row.item.name()))
+                    .label(format!(
+                        "{template_prefix} / {}",
+                        Self::localized_item_name(row.item.id(), row.item.name())
+                    ))
                     .child(child)
                     .into_any_element()
             })
@@ -420,6 +439,16 @@ impl Render for TemplateEditForm {
 
 impl Render for PromptListForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (prompts_label, delete_label, role_label, prompt_label, add_prompt_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("field-prompts"),
+                i18n.t("button-delete"),
+                i18n.t("field-role"),
+                i18n.t("field-prompt"),
+                i18n.t("button-add-prompt"),
+            )
+        };
         let this = cx.entity().clone();
         let prompt_fields = self
             .prompt_rows
@@ -433,10 +462,10 @@ impl Render for PromptListForm {
                         h_flex()
                             .items_center()
                             .justify_between()
-                            .child(Label::new(format!("Prompt {}", index + 1)))
+                            .child(Label::new(format!("{prompt_label} {}", index + 1)))
                             .child(
                                 Button::new(("prompt-delete", index))
-                                    .label("Delete")
+                                    .label(delete_label.clone())
                                     .on_click(move |_, _window, cx| {
                                         this.update(cx, |form, cx| {
                                             form.remove_prompt_row(index, cx);
@@ -447,13 +476,13 @@ impl Render for PromptListForm {
                     .child(
                         field()
                             .required(true)
-                            .label("Role")
+                            .label(role_label.clone())
                             .child(Select::new(&row.role_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label("Prompt")
+                            .label(prompt_label.clone())
                             .child(Input::new(&row.prompt_input).h_24()),
                     )
                     .child(Divider::horizontal())
@@ -466,8 +495,8 @@ impl Render for PromptListForm {
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(Label::new("Prompts"))
-                    .child(Button::new("prompt-add").label("Add Prompt").on_click(
+                    .child(Label::new(prompts_label))
+                    .child(Button::new("prompt-add").label(add_prompt_label).on_click(
                         move |_, window, cx| {
                             this.update(cx, |form, cx| {
                                 form.add_prompt_row(window, cx);
@@ -495,10 +524,10 @@ pub(crate) fn open_template_edit_dialog(
     open_template_dialog(
         TemplateDialogParams {
             template_id: Some(template_id),
-            dialog_title: "Edit Template",
-            submit_label: "Submit",
-            success_title: "Template updated successfully",
-            failure_title: "Update template failed",
+            dialog_title_key: "dialog-edit-template-title",
+            submit_label_key: "button-submit",
+            success_title_key: "notify-template-updated-success",
+            failure_title_key: "notify-update-template-failed",
         },
         template,
         on_saved,
@@ -511,7 +540,7 @@ pub(crate) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
     let Some(default_adapter) = adapter_names().first().copied() else {
         window.push_notification(
             Notification::new()
-                .title("No adapter available")
+                .title(cx.global::<I18n>().t("notify-no-adapter-available"))
                 .with_type(NotificationType::Error),
             cx,
         );
@@ -536,10 +565,10 @@ pub(crate) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
     open_template_dialog(
         TemplateDialogParams {
             template_id: None,
-            dialog_title: "Add Template",
-            submit_label: "Create",
-            success_title: "Template created successfully",
-            failure_title: "Create template failed",
+            dialog_title_key: "dialog-add-template-title",
+            submit_label_key: "button-create",
+            success_title_key: "notify-template-created-success",
+            failure_title_key: "notify-create-template-failed",
         },
         template,
         on_saved,
@@ -550,10 +579,10 @@ pub(crate) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
 
 struct TemplateDialogParams {
     template_id: Option<i32>,
-    dialog_title: &'static str,
-    submit_label: &'static str,
-    success_title: &'static str,
-    failure_title: &'static str,
+    dialog_title_key: &'static str,
+    submit_label_key: &'static str,
+    success_title_key: &'static str,
+    failure_title_key: &'static str,
 }
 
 fn open_template_dialog(
@@ -565,18 +594,34 @@ fn open_template_dialog(
 ) {
     let TemplateDialogParams {
         template_id,
-        dialog_title,
-        submit_label,
-        success_title,
-        failure_title,
+        dialog_title_key,
+        submit_label_key,
+        success_title_key,
+        failure_title_key,
     } = params;
-    let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+    let i18n = cx.global::<I18n>();
+    let dialog_title = i18n.t(dialog_title_key);
+    let submit_label = i18n.t(submit_label_key);
+    let success_title = i18n.t(success_title_key);
+    let failure_title = i18n.t(failure_title_key);
+    let name_label = i18n.t("field-name");
+    let icon_label = i18n.t("field-icon");
+    let description_label = i18n.t("field-description");
+    let mode_label = i18n.t("field-mode");
+    let adapter_label = i18n.t("field-adapter");
+    let template_label = i18n.t("field-template");
+    let prompts_label = i18n.t("field-prompts");
+    let cancel_label = i18n.t("button-cancel");
+    let load_schema_failed_title = i18n.t("notify-load-template-schema-failed");
+
+    let name_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
     name_input.update(cx, |input, cx| input.set_value(&template.name, window, cx));
 
-    let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder("Icon"));
+    let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder(icon_label.clone()));
     icon_input.update(cx, |input, cx| input.set_value(&template.icon, window, cx));
 
-    let description_input = cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
+    let description_input =
+        cx.new(|cx| InputState::new(window, cx).placeholder(description_label.clone()));
     description_input.update(cx, |input, cx| {
         input.set_value(template.description.clone().unwrap_or_default(), window, cx)
     });
@@ -605,7 +650,7 @@ fn open_template_dialog(
             Err(err) => {
                 window.push_notification(
                     Notification::new()
-                        .title("Load template schema failed")
+                        .title(load_schema_failed_title)
                         .message(err.to_string())
                         .with_type(NotificationType::Error),
                     cx,
@@ -636,7 +681,7 @@ fn open_template_dialog(
                     Err(err) => {
                         window.push_notification(
                             Notification::new()
-                                .title("Load template schema failed")
+                                .title(cx.global::<I18n>().t("notify-load-template-schema-failed"))
                                 .message(err.to_string())
                                 .with_type(NotificationType::Error),
                             cx,
@@ -655,7 +700,7 @@ fn open_template_dialog(
 
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(dialog_title)
+            .title(dialog_title.clone())
             .w(px(900.))
             .h(px(600.))
             .child(
@@ -663,38 +708,38 @@ fn open_template_dialog(
                     .child(
                         field()
                             .required(true)
-                            .label("Name")
+                            .label(name_label.clone())
                             .child(Input::new(&name_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label("Icon")
+                            .label(icon_label.clone())
                             .child(Input::new(&icon_input)),
                     )
                     .child(
                         field()
-                            .label("Description")
+                            .label(description_label.clone())
                             .child(Input::new(&description_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label("Mode")
+                            .label(mode_label.clone())
                             .child(Select::new(&mode_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label("Adapter")
+                            .label(adapter_label.clone())
                             .child(Select::new(&adapter_input)),
                     )
                     .child(
                         field()
-                            .label("Template")
+                            .label(template_label.clone())
                             .child(template_form_container.clone()),
                     )
-                    .child(field().label("Prompts").child(prompt_form_input.clone())),
+                    .child(field().label(prompts_label.clone()).child(prompt_form_input.clone())),
             )
             .footer({
                 let name_input = name_input.clone();
@@ -706,17 +751,21 @@ fn open_template_dialog(
                 let prompt_form_input = prompt_form_input.clone();
                 let adapter_subscription = adapter_subscription.clone();
                 let on_saved = on_saved.clone();
+                let cancel_label = cancel_label.clone();
+                let submit_label = submit_label.clone();
+                let failure_title = failure_title.clone();
+                let success_title = success_title.clone();
                 move |_dialog, _state, _window, _cx| {
                     let _keep_subscription_alive = adapter_subscription.borrow();
                     vec![
                         Button::new("cancel")
-                            .label("Cancel")
+                            .label(cancel_label.clone())
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
                             }),
                         Button::new("submit")
                             .primary()
-                            .label(submit_label)
+                            .label(submit_label.clone())
                             .on_click({
                                 let name_input = name_input.clone();
                                 let icon_input = icon_input.clone();
@@ -726,6 +775,8 @@ fn open_template_dialog(
                                 let template_form_container = template_form_container.clone();
                                 let prompt_form_input = prompt_form_input.clone();
                                 let on_saved = on_saved.clone();
+                                let failure_title = failure_title.clone();
+                                let success_title = success_title.clone();
                                 move |_, window, cx| {
                                     let name = name_input.read(cx).value().trim().to_string();
                                     let icon = icon_input.read(cx).value().trim().to_string();
@@ -739,7 +790,7 @@ fn open_template_dialog(
                                         None => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title("Please select a mode")
+                                                    .title(cx.global::<I18n>().t("notify-select-mode"))
                                                     .with_type(NotificationType::Error),
                                                 cx,
                                             );
@@ -751,7 +802,7 @@ fn open_template_dialog(
                                         None => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title("Please select an adapter")
+                                                    .title(cx.global::<I18n>().t("notify-select-adapter"))
                                                     .with_type(NotificationType::Error),
                                                 cx,
                                             );
@@ -765,7 +816,7 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title("Invalid template")
+                                                        .title(cx.global::<I18n>().t("notify-invalid-template"))
                                                         .message(err)
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -779,7 +830,7 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title("Invalid prompts")
+                                                        .title(cx.global::<I18n>().t("notify-invalid-prompts"))
                                                         .message(err)
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -793,7 +844,7 @@ fn open_template_dialog(
                                         Err(err) => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title("Open database failed")
+                                                    .title(cx.global::<I18n>().t("notify-open-database-failed"))
                                                     .message(err.to_string())
                                                     .with_type(NotificationType::Error),
                                                 cx,
@@ -820,7 +871,7 @@ fn open_template_dialog(
                                             ) {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title(failure_title)
+                                                        .title(failure_title.clone())
                                                         .message(err.to_string())
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -834,7 +885,7 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title(failure_title)
+                                                        .title(failure_title.clone())
                                                         .message(err.to_string())
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -850,7 +901,7 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title("Reload template failed")
+                                                        .title(cx.global::<I18n>().t("notify-reload-template-failed"))
                                                         .message(err.to_string())
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -862,7 +913,7 @@ fn open_template_dialog(
                                     (on_saved)(latest, window, cx);
                                     window.push_notification(
                                         Notification::new()
-                                            .title(success_title)
+                                            .title(success_title.clone())
                                             .with_type(NotificationType::Success),
                                         cx,
                                     );

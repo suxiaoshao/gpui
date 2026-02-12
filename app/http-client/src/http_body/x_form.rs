@@ -1,4 +1,7 @@
-use crate::http_body::{HttpBodyEvent, HttpBodyForm};
+use crate::{
+    http_body::{HttpBodyEvent, HttpBodyForm},
+    i18n::I18n,
+};
 use gpui::*;
 use gpui_component::{
     button::Button,
@@ -35,18 +38,20 @@ impl XFormItem {
         index: usize,
         key: String,
         value: String,
+        key_placeholder: String,
+        value_placeholder: String,
         window: &mut Window,
         cx: &mut Context<XFormView>,
     ) -> Self {
         let key_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(key)
-                .placeholder("Key")
+                .placeholder(key_placeholder)
         });
         let value_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(value)
-                .placeholder("Value")
+                .placeholder(value_placeholder)
         });
         let _key_subscription = cx.subscribe_in(
             &key_input,
@@ -126,10 +131,22 @@ impl XFormView {
         cx: &mut Context<Self>,
     ) -> Vec<XFormItem> {
         let x_form = form.read(cx).x_form.clone();
+        let key_placeholder = cx.global::<I18n>().t("field-key");
+        let value_placeholder = cx.global::<I18n>().t("field-value");
         x_form
             .into_iter()
             .enumerate()
-            .map(|(index, XForm { key, value })| XFormItem::new(index, key, value, window, cx))
+            .map(|(index, XForm { key, value })| {
+                XFormItem::new(
+                    index,
+                    key,
+                    value,
+                    key_placeholder.clone(),
+                    value_placeholder.clone(),
+                    window,
+                    cx,
+                )
+            })
             .collect()
     }
     fn subscribe_in(
@@ -146,10 +163,14 @@ impl XFormView {
             }
             HttpBodyEvent::AddXForm => {
                 let index = self.items.len();
+                let key_placeholder = cx.global::<I18n>().t("field-key");
+                let value_placeholder = cx.global::<I18n>().t("field-value");
                 self.items.push(XFormItem::new(
                     index,
                     String::default(),
                     String::default(),
+                    key_placeholder,
+                    value_placeholder,
                     window,
                     cx,
                 ));
@@ -165,11 +186,20 @@ impl Render for XFormView {
         _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
+        let (key_label, value_label, add_label, delete_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("field-key"),
+                i18n.t("field-value"),
+                i18n.t("button-add"),
+                i18n.t("button-delete"),
+            )
+        };
         let header = h_flex()
             .gap_2()
-            .child(div().flex_1().child(Label::new("Key")))
-            .child(div().flex_1().child(Label::new("Value")))
-            .child(Button::new("add-x-form").label("Add").on_click(cx.listener(
+            .child(div().flex_1().child(Label::new(key_label)))
+            .child(div().flex_1().child(Label::new(value_label)))
+            .child(Button::new("add-x-form").label(add_label).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.form.update(cx, |_, cx| {
                         cx.emit(HttpBodyEvent::AddXForm);
@@ -196,7 +226,7 @@ impl Render for XFormView {
                         .child(Input::new(value_input))
                         .child(
                             Button::new(SharedString::from(format!("delete-x-form-{index}")))
-                                .label("Delete")
+                                .label(delete_label.clone())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.form.update(cx, |_, cx| {
                                         cx.emit(HttpBodyEvent::DeleteXForm(index));

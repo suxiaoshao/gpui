@@ -2,6 +2,7 @@ use crate::errors::FeiwenError;
 use errors::FeiwenResult;
 use gpui::*;
 use gpui_component::Root;
+use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -9,6 +10,7 @@ use views::WorkspaceView;
 
 mod errors;
 mod fetch;
+mod i18n;
 mod store;
 mod views;
 
@@ -27,6 +29,7 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
+    i18n::init_i18n(cx);
     store::init_store(cx);
 }
 
@@ -79,10 +82,11 @@ fn main() -> FeiwenResult<()> {
 
     app.run(|cx: &mut App| {
         init(cx);
+        let title = cx.global::<I18n>().t("app-title");
         if let Err(err) = cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Feiwen".into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Blurred,

@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     errors::FeiwenError,
+    i18n::I18n,
     store::{
         Db,
         service::{Novel, TagWithId},
@@ -63,10 +64,11 @@ impl QueryView {
     ) -> Self {
         let query = cx.new(|_cx| Query::new());
         let _subscriptions = vec![cx.subscribe_in(&query, window, Self::subscribe_in)];
+        let search_placeholder = cx.global::<I18n>().t("query-search-placeholder");
         Self {
             workspace,
             tag_select_view: cx.new(TagsSelect::new),
-            search_input: cx.new(|cx| InputState::new(window, cx).placeholder("Search")),
+            search_input: cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder)),
             data: QueryData::Init,
             _subscriptions,
             query,
@@ -107,29 +109,38 @@ impl QueryView {
 
 impl Render for QueryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header =
-            div()
-                .flex()
-                .flex_initial()
-                .gap_2()
-                .child(Input::new(&self.search_input))
-                .child(Button::new("search").label("Search").on_click(cx.listener(
-                    |this, _, _, cx| {
+        let (search_label, route_fetch_label, error_label) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("query-search-button"),
+                i18n.t("query-route-fetch-button"),
+                i18n.t("query-error-title"),
+            )
+        };
+        let header = div()
+            .flex()
+            .flex_initial()
+            .gap_2()
+            .child(Input::new(&self.search_input))
+            .child(
+                Button::new("search")
+                    .label(search_label)
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.query.update(cx, |_, cx| {
                             cx.emit(QueryEvent::Search);
                         });
-                    },
-                )))
-                .child(
-                    Button::new("router-fetch")
-                        .primary()
-                        .label("fetch")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.query.update(cx, |_data, cx| {
-                                cx.emit(QueryEvent::RouteToFetch);
-                            });
-                        })),
-                );
+                    })),
+            )
+            .child(
+                Button::new("router-fetch")
+                    .primary()
+                    .label(route_fetch_label)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.query.update(cx, |_data, cx| {
+                            cx.emit(QueryEvent::RouteToFetch);
+                        });
+                    })),
+            );
         div()
             .flex_1()
             .p_2()
@@ -140,9 +151,9 @@ impl Render for QueryView {
             .child(header)
             .child(self.tag_select_view.clone())
             .child(match &self.data {
-                QueryData::Err(feiwen_error) => div()
-                    .flex_1()
-                    .child(Alert::error("error-alert", feiwen_error.to_string()).title("Error")),
+                QueryData::Err(feiwen_error) => div().flex_1().child(
+                    Alert::error("error-alert", feiwen_error.to_string()).title(error_label),
+                ),
                 QueryData::Ok(novels) => v_flex().flex_1().overflow_hidden().child(
                     v_flex()
                         .id("novel-list")

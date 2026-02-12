@@ -2,6 +2,7 @@ use crate::{
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     hotkey::TemporaryData,
+    i18n::I18n,
     views::temporary::{detail::TemplateDetailView, list::TemporaryList},
 };
 use gpui::{prelude::FluentBuilder, *};
@@ -76,6 +77,7 @@ impl TemporaryView {
 
 impl Render for TemporaryView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let error_title = _cx.global::<I18n>().t("alert-error-title");
         div()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
@@ -86,7 +88,7 @@ impl Render for TemporaryView {
                     None => match &self.templates {
                         Ok(templates) => this.child(List::new(templates).large()),
                         Err(err) => this
-                            .child(Alert::error("temporary-alert", err.to_string()).title("Error")),
+                            .child(Alert::error("temporary-alert", err.to_string()).title(error_title)),
                     },
                 })
             })

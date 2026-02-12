@@ -2,6 +2,7 @@ use crate::{
     http_headers::HttpHeader,
     http_method::{HttpMethod, SelectHttpMethod},
     http_tab::HttpTabView,
+    i18n::I18n,
     url_input::UrlInput,
 };
 use gpui::*;
@@ -118,9 +119,10 @@ impl HttpFormView {
 
 impl Render for HttpFormView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let send_label = cx.global::<I18n>().t("button-send");
         let send_button =
             Button::new("Send")
-                .label("Send")
+                .label(send_label)
                 .on_click(cx.listener(|this, _event, _, cx| {
                     this.form.update(cx, |_, cx| {
                         cx.emit(HttpFormEvent::Send);

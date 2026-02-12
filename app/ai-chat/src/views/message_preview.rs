@@ -1,4 +1,6 @@
-use crate::{components::message::MessageViewExt, database::Content, errors::AiChatResult};
+use crate::{
+    components::message::MessageViewExt, database::Content, errors::AiChatResult, i18n::I18n,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     IconName, Root, WindowExt,
@@ -126,6 +128,13 @@ pub trait MessagePreviewExt: MessageViewExt {
 
 impl<T: MessagePreviewExt> Render for MessagePreview<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (update_success_title, update_failed_title) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("notify-update-message-success"),
+                i18n.t("notify-update-message-failed"),
+            )
+        };
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         v_flex()
@@ -166,11 +175,13 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                     )
                     .map(|this| {
                         if let PreviewType::Edit = self.preview_type {
-                            this.child(Button::new("submit").icon(IconName::ArrowUp).on_click(
-                                cx.listener(|view, _, window, cx| match view.submit(cx) {
+                            this.child(Button::new("submit").icon(IconName::ArrowUp).on_click({
+                                let update_success_title = update_success_title.clone();
+                                let update_failed_title = update_failed_title.clone();
+                                cx.listener(move |view, _, window, cx| match view.submit(cx) {
                                     Ok(_) => {
                                         event!(tracing::Level::INFO,"Update Message Content Success");
-                                        window.push_notification(Notification::new().title("Update Message Content Success").with_type(gpui_component::notification::NotificationType::Success), cx);
+                                        window.push_notification(Notification::new().title(update_success_title.clone()).with_type(gpui_component::notification::NotificationType::Success), cx);
                                     }
                                     Err(err) => {
                                         event!(
@@ -180,13 +191,13 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                                         );
                                         window.push_notification(
                                             Notification::new()
-                                                .title("Update Message Content Faild")
+                                                .title(update_failed_title.clone())
                                                 .message(err.to_string()).with_type(gpui_component::notification::NotificationType::Error),
                                             cx,
                                         );
                                     }
-                                }),
-                            ))
+                                })
+                            }))
                         } else {
                             this
                         }

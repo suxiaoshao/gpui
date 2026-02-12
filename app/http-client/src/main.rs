@@ -2,6 +2,7 @@ use errors::HttpClientResult;
 use gpui::*;
 use gpui_component::Root;
 use http_form::HttpFormView;
+use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -12,6 +13,7 @@ mod errors;
 mod http_body;
 mod http_form;
 mod http_headers;
+mod i18n;
 mod http_method;
 mod http_params;
 mod http_tab;
@@ -31,6 +33,7 @@ fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
+    i18n::init_i18n(cx);
 }
 
 fn get_logs_dir() -> HttpClientResult<PathBuf> {
@@ -81,10 +84,11 @@ fn main() -> HttpClientResult<()> {
     let app = Application::new().with_assets(gpui_component_assets::Assets);
     app.run(|cx: &mut App| {
         init(cx);
+        let title = cx.global::<I18n>().t("app-title");
         if let Err(err) = cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("HTTP Client".into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Blurred,
