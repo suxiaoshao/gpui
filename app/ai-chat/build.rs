@@ -5,7 +5,7 @@ fn main() {
     {
         // Allow overriding icon path from environment for CI/release pipelines.
         let icon_path = std::env::var("AI_CHAT_ICON_PATH")
-            .unwrap_or_else(|_| "assets/icon/app-icon.ico".into());
+            .unwrap_or_else(|_| "build-assets/icon/app-icon.ico".into());
         let icon = std::path::Path::new(&icon_path);
 
         println!("cargo:rerun-if-env-changed=AI_CHAT_ICON_PATH");

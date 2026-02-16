@@ -120,3 +120,12 @@ cargo component build --release
 ## 许可
 
 未指定。
+
+## Runtime vs Build Assets
+
+- `app/ai-chat/assets/`: runtime assets only (embedded by `rust-embed`).
+- `app/ai-chat/build-assets/`: build/package-time assets only (not embedded for runtime).
+- Icon assets live in `app/ai-chat/build-assets/icon/`.
+- Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
+- `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- macOS bundle icon paths are in `app/ai-chat/scripts/bundle.sh` and use `build-assets/icon/...`.

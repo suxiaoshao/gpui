@@ -115,3 +115,12 @@ Linux:
 - 状态不同步：优先检查 entity/global 更新是否在正确上下文。
 - 异步问题：确认任务生命周期、取消时机和 UI 更新线程边界。
 - 数据问题：先验证 service 层映射，再查 SQL 模型与 schema。
+
+## Runtime vs Build Assets
+
+- `app/ai-chat/assets/`: runtime assets only (embedded by `rust-embed`).
+- `app/ai-chat/build-assets/`: build/package-time assets only (not embedded for runtime).
+- Icon assets live in `app/ai-chat/build-assets/icon/`.
+- Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
+- `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- macOS bundle icon paths are in `app/ai-chat/scripts/bundle.sh` and use `build-assets/icon/...`.

@@ -13,11 +13,11 @@ WORKSPACE_DIR="$(dirname "${WORKSPACE_CARGO_TOML}")"
 BUNDLE_DIR="${WORKSPACE_DIR}/target/release/bundle"
 
 prepare_bundle_icons() {
-  local src_png="${APP_DIR}/assets/icon/ChatGPT.icon/Assets/logo.png"
+  local src_png="${APP_DIR}/build-assets/icon/ChatGPT.icon/Assets/logo.png"
   if [ ! -f "${src_png}" ]; then
-    src_png="${APP_DIR}/assets/icon/app-icon.png"
+    src_png="${APP_DIR}/build-assets/icon/app-icon.png"
   fi
-  local iconset_dir="${APP_DIR}/assets/icon/app-icon.iconset"
+  local iconset_dir="${APP_DIR}/build-assets/icon/app-icon.iconset"
   local required_icon="${iconset_dir}/icon_512x512@2x.png"
   local should_regenerate=false
 
@@ -51,7 +51,7 @@ prepare_bundle_icons() {
 
 inject_liquid_glass_icon() {
   local app_path="$1"
-  local icon_dir="${APP_DIR}/assets/icon/ChatGPT.icon"
+  local icon_dir="${APP_DIR}/build-assets/icon/ChatGPT.icon"
   local plist="${app_path}/Contents/Info.plist"
 
   if [ ! -d "${icon_dir}" ]; then

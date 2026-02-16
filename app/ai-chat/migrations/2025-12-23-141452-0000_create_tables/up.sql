@@ -50,7 +50,6 @@ create table messages
     conversation_path TEXT                              not null,
     role              TEXT                              not null check ( role in ('developer', 'user', 'assistant') ),
     content           TEXT                              not null,
-    send_content      JSON                              not null,
     status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'error') ),
     created_time      DateTime                          not null,
     updated_time      DateTime                          not null,
