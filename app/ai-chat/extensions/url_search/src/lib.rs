@@ -21,14 +21,17 @@ impl Guest for UrlSearch {
         let req = HttpRequest {
             method: chatgpt::extension::http_client::HttpMethod::Get,
             url: request.message.clone(),
-            headers: vec![],
+            headers: vec![(
+                "Accept".to_string(),
+                "text/markdown, text/html;q=0.9, */*;q=0.8".to_string(),
+            )],
             body: None,
             redirect_policy: chatgpt::extension::http_client::RedirectPolicy::FollowLimit(10),
         };
         let response = fetch(&req)?;
         let body = response.body;
         let text = String::from_utf8(body).map_err(|err| err.to_string())?;
-        request.message = remove_some(text)?;
+        request.message = remove_some(&text).unwrap_or(text);
         Ok(request)
     }
 
@@ -39,7 +42,7 @@ impl Guest for UrlSearch {
     }
 }
 
-fn remove_some(html: String) -> Result<String, String> {
+fn remove_some(html: &String) -> Result<String, String> {
     let dom = Vis::load(html).map_err(|err| err.to_string())?;
     dom.find("script, style, link, meta, svg").remove();
     dom.find("*:not(code)").remove_attr("class");
