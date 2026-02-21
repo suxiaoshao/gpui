@@ -64,7 +64,9 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_col()
-                    .child(Label::new(i18n.t_with_args("fetch-state-fetching-novel", &args)))
+                    .child(Label::new(
+                        i18n.t_with_args("fetch-state-fetching-novel", &args),
+                    ))
                     .children(history.iter().cloned().rev().take(5).rev().map(|url| {
                         Link::new(SharedString::from(&url))
                             .child(SharedString::from(&url))
@@ -73,7 +75,9 @@ impl Workspace {
             }
             FetchState::Success => div().child(Label::new(i18n.t("fetch-state-success"))),
             FetchState::FileError => div().child(Label::new(i18n.t("fetch-state-file-error"))),
-            FetchState::NetworkError => div().child(Label::new(i18n.t("fetch-state-network-error"))),
+            FetchState::NetworkError => {
+                div().child(Label::new(i18n.t("fetch-state-network-error")))
+            }
             FetchState::ParseError => div().child(Label::new(i18n.t("fetch-state-parse-error"))),
             FetchState::Fetching => div().child(Label::new(i18n.t("fetch-state-fetching"))),
         };

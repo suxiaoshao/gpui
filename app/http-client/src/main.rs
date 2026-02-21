@@ -13,10 +13,10 @@ mod errors;
 mod http_body;
 mod http_form;
 mod http_headers;
-mod i18n;
 mod http_method;
 mod http_params;
 mod http_tab;
+mod i18n;
 mod url_input;
 
 static APP_NAME: &str = "top.sushao.http-client";

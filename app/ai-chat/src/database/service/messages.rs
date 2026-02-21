@@ -10,8 +10,8 @@ use crate::{
     store::{ChatData, ChatDataEvent},
     views::message_preview::{MessagePreview, MessagePreviewExt},
 };
-use fluent_bundle::FluentArgs;
 use diesel::SqliteConnection;
+use fluent_bundle::FluentArgs;
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};

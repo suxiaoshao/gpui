@@ -199,13 +199,15 @@ impl Render for XFormView {
             .gap_2()
             .child(div().flex_1().child(Label::new(key_label)))
             .child(div().flex_1().child(Label::new(value_label)))
-            .child(Button::new("add-x-form").label(add_label).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.form.update(cx, |_, cx| {
-                        cx.emit(HttpBodyEvent::AddXForm);
-                    })
-                },
-            )));
+            .child(
+                Button::new("add-x-form")
+                    .label(add_label)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.form.update(cx, |_, cx| {
+                            cx.emit(HttpBodyEvent::AddXForm);
+                        })
+                    })),
+            );
         v_flex()
             .flex_1()
             .p_2()

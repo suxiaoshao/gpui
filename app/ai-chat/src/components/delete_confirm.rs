@@ -35,11 +35,11 @@ pub fn open_delete_confirm_dialog(
                 let delete_label = delete_label.clone();
                 move |_dialog, _state, _window, _cx| {
                     vec![
-                        Button::new("cancel")
-                            .label(cancel_label.clone())
-                            .on_click(|_, window, cx| {
+                        Button::new("cancel").label(cancel_label.clone()).on_click(
+                            |_, window, cx| {
                                 window.close_dialog(cx);
-                            }),
+                            },
+                        ),
                         Button::new("confirm-delete")
                             .danger()
                             .label(delete_label.clone())

@@ -145,26 +145,26 @@ impl TemplateDetailView {
                         let cancel_label = cancel_label.clone();
                         let delete_label = delete_label.clone();
                         move |_dialog, _state, _window, _cx| {
-                        vec![
-                            Button::new("cancel")
-                                .label(cancel_label.clone())
-                                .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
-                                }),
-                            Button::new("confirm-delete")
-                                .danger()
-                                .label(delete_label.clone())
-                                .on_click({
-                                    let this = this.clone();
-                                    move |_, window, cx| {
+                            vec![
+                                Button::new("cancel").label(cancel_label.clone()).on_click(
+                                    |_, window, cx| {
                                         window.close_dialog(cx);
-                                        let _ = this.update(cx, |view, cx| {
-                                            view.delete_template(window, cx);
-                                        });
-                                    }
-                                }),
-                        ]
-                    }
+                                    },
+                                ),
+                                Button::new("confirm-delete")
+                                    .danger()
+                                    .label(delete_label.clone())
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let _ = this.update(cx, |view, cx| {
+                                                view.delete_template(window, cx);
+                                            });
+                                        }
+                                    }),
+                            ]
+                        }
                     })
             }
         });
@@ -241,7 +241,8 @@ fn render_template_detail(
             DescriptionItem::new(i18n.t("field-id")).value(template.id.to_string()),
             DescriptionItem::new(i18n.t("field-name")).value(template.name.clone()),
             DescriptionItem::new(i18n.t("field-icon")).value(template.icon.clone()),
-            DescriptionItem::new(i18n.t("field-mode")).value(div().flex().child(mode_tag).into_any_element()),
+            DescriptionItem::new(i18n.t("field-mode"))
+                .value(div().flex().child(mode_tag).into_any_element()),
             DescriptionItem::new(i18n.t("field-adapter")).value(template.adapter.clone()),
             DescriptionItem::new(i18n.t("field-prompts")).value(template.prompts.len().to_string()),
         ];

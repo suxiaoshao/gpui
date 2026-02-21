@@ -6,6 +6,7 @@ members = [
   "app/novel-download",
   "app/ai-chat/extensions/url_search",
   "crates/window-ext",
+  "crates/xtask",
 ]
 
 resolver = "2"

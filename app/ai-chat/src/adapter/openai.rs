@@ -387,7 +387,8 @@ impl Adapter for OpenAIAdapter {
 
         vec![
             DescriptionItem::new(t_static("field-model")).value(settings.model),
-            DescriptionItem::new(t_static("field-temperature")).value(settings.temperature.to_string()),
+            DescriptionItem::new(t_static("field-temperature"))
+                .value(settings.temperature.to_string()),
             DescriptionItem::new(t_static("field-top-p")).value(settings.top_p.to_string()),
             DescriptionItem::new(t_static("field-n")).value(settings.n.to_string()),
             DescriptionItem::new(t_static("field-max-completion-tokens")).value(
@@ -396,8 +397,10 @@ impl Adapter for OpenAIAdapter {
                     .map(|x| x.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             ),
-            DescriptionItem::new(t_static("field-presence-penalty")).value(settings.presence_penalty.to_string()),
-            DescriptionItem::new(t_static("field-frequency-penalty")).value(settings.frequency_penalty.to_string()),
+            DescriptionItem::new(t_static("field-presence-penalty"))
+                .value(settings.presence_penalty.to_string()),
+            DescriptionItem::new(t_static("field-frequency-penalty"))
+                .value(settings.frequency_penalty.to_string()),
         ]
     }
 }

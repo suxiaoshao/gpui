@@ -12,6 +12,7 @@
   - `app/novel-download`
   - `app/ai-chat/extensions/url_search`
   - `crates/window-ext`
+  - `crates/xtask`
 
 ## 2. 技术栈与版本
 
@@ -31,6 +32,9 @@ cargo build
 # 测试全部
 cargo test
 
+# 静态检查（默认验证项）
+cargo clippy --all-targets --all-features -- -D warnings
+
 # 运行单个应用
 cargo run -p ai-chat
 cargo run -p feiwen
@@ -42,6 +46,10 @@ cargo build -p ai-chat
 cargo build -p feiwen
 cargo build -p http-client
 cargo build -p novel-download
+
+# 打包（xtask）
+cargo run -p xtask -- bundle-ai-chat
+cargo run -p xtask -- bundle-ai-chat-windows
 ```
 
 可选开发工具：
@@ -106,6 +114,7 @@ Linux:
 
 - `cargo build` 通过
 - `cargo test` 通过（或明确说明失败项）
+- `cargo clippy --all-targets --all-features -- -D warnings` 通过（至少覆盖改动范围）
 - 关键路径手动验证（对应 app 的核心流程）
 - 若改动 `ai-chat` 数据层，确认迁移与 schema 一致
 
@@ -123,4 +132,4 @@ Linux:
 - Icon assets live in `app/ai-chat/build-assets/icon/`.
 - Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
 - `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
-- macOS bundle icon paths are in `app/ai-chat/scripts/bundle.sh` and use `build-assets/icon/...`.
+- macOS bundle icon paths are managed by `crates/xtask/src/main.rs` and use `build-assets/icon/...`.

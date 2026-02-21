@@ -87,8 +87,9 @@ impl Render for TemporaryView {
                     Some(selected_item) => this.child(selected_item.clone()),
                     None => match &self.templates {
                         Ok(templates) => this.child(List::new(templates).large()),
-                        Err(err) => this
-                            .child(Alert::error("temporary-alert", err.to_string()).title(error_title)),
+                        Err(err) => this.child(
+                            Alert::error("temporary-alert", err.to_string()).title(error_title),
+                        ),
                     },
                 })
             })

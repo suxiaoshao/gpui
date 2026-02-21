@@ -57,12 +57,14 @@ impl Render for HttpHeadersView {
             .flex_row()
             .child(div().flex_1().child(Label::new(key_label)))
             .child(div().flex_1().child(Label::new(value_label)))
-            .child(Button::new("add_header").label(add_label).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.http_form
-                        .update(cx, |_, cx| cx.emit(HttpFormEvent::AddHeader));
-                },
-            )));
+            .child(
+                Button::new("add_header")
+                    .label(add_label)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.http_form
+                            .update(cx, |_, cx| cx.emit(HttpFormEvent::AddHeader));
+                    })),
+            );
         div()
             .flex()
             .flex_col()

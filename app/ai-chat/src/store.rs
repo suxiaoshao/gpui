@@ -481,6 +481,15 @@ impl Deref for ChatData {
 
 impl Global for ChatData {}
 
+struct AddConversationInput<'a> {
+    title: &'a str,
+    icon: &'a str,
+    info: Option<&'a str>,
+    folder_id: Option<i32>,
+    template_id: i32,
+    initial_messages: Option<&'a [AddConversationMessage]>,
+}
+
 impl ChatData {
     pub fn subscribe_in(
         _this: &mut HomeView,
@@ -518,12 +527,14 @@ impl ChatData {
                 initial_messages,
             } => match Self::add_conversation(
                 state,
-                name,
-                icon,
-                info.as_ref().map(|x| x.as_str()),
-                *parent_id,
-                *template,
-                initial_messages.as_deref(),
+                AddConversationInput {
+                    title: name,
+                    icon,
+                    info: info.as_ref().map(|x| x.as_str()),
+                    folder_id: *parent_id,
+                    template_id: *template,
+                    initial_messages: initial_messages.as_deref(),
+                },
                 cx,
             ) {
                 Ok(_) => {}
@@ -660,24 +671,19 @@ impl ChatData {
     }
     fn add_conversation(
         state: &Entity<AiChatResult<ChatDataInner>>,
-        title: &str,
-        icon: &str,
-        info: Option<&str>,
-        folder_id: Option<i32>,
-        template_id: i32,
-        initial_messages: Option<&[AddConversationMessage]>,
+        input: AddConversationInput<'_>,
         cx: &mut Context<HomeView>,
     ) -> AiChatResult<()> {
         let new_conversation = NewConversation {
-            title,
-            folder_id,
-            icon,
-            info,
-            template_id,
+            title: input.title,
+            folder_id: input.folder_id,
+            icon: input.icon,
+            info: input.info,
+            template_id: input.template_id,
         };
         let conn = &mut cx.global::<Db>().get()?;
         let mut conversation = Conversation::insert(new_conversation, conn)?;
-        if let Some(initial_messages) = initial_messages {
+        if let Some(initial_messages) = input.initial_messages {
             for initial_message in initial_messages {
                 let message = Message::insert(
                     NewMessage::new(

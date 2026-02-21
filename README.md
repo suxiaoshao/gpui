@@ -16,6 +16,7 @@
 - `app/http-client`：HTTP 客户端
 - `app/novel-download`：下载器
 - `crates/window-ext`：窗口相关扩展
+- `crates/xtask`：工作区任务工具（打包脚本迁移）
 
 ## 环境要求
 
@@ -60,8 +61,11 @@ cargo install cargo-bundle
 # 方式 1：在工作区根目录执行
 cargo bundle -p ai-chat --release
 
-# 方式 2：使用 ai-chat 内置脚本
-./app/ai-chat/scripts/bundle.sh
+# 方式 2：使用 xtask（macOS/Linux）
+cargo run -p xtask -- bundle-ai-chat
+
+# Windows MSI 打包（支持 --arch/--target/--install）
+cargo run -p xtask -- bundle-ai-chat-windows
 ```
 
 默认产物目录：
@@ -70,7 +74,7 @@ cargo bundle -p ai-chat --release
 target/release/bundle/
 ```
 
-macOS 下 `bundle.sh` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName=Icon`）。如果系统未安装可用的 `actool`/`xcrun`，会自动降级为普通图标，不影响打包成功。
+macOS 下 `bundle-ai-chat` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName=Icon`）。如果系统未安装可用的 `actool`/`xcrun`，会自动降级为普通图标，不影响打包成功。
 
 ## 数据与日志位置
 
@@ -128,4 +132,4 @@ cargo component build --release
 - Icon assets live in `app/ai-chat/build-assets/icon/`.
 - Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
 - `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
-- macOS bundle icon paths are in `app/ai-chat/scripts/bundle.sh` and use `build-assets/icon/...`.
+- macOS bundle icon paths are managed by `crates/xtask/src/main.rs` and use `build-assets/icon/...`.

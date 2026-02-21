@@ -255,11 +255,14 @@ impl Render for TemplateListView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(Button::new("template-add").primary().label(add_label).on_click(
-                        cx.listener(|_view, _, window, cx| {
-                            window.dispatch_action(Add.boxed_clone(), cx);
-                        }),
-                    )),
+                    .child(
+                        Button::new("template-add")
+                            .primary()
+                            .label(add_label)
+                            .on_click(cx.listener(|_view, _, window, cx| {
+                                window.dispatch_action(Add.boxed_clone(), cx);
+                            })),
+                    ),
             )
             .map(|this| match &self.templates {
                 Ok(templates) => this.child(List::new(templates).large()),

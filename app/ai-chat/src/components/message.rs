@@ -148,7 +148,9 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                         window.push_notification(
                                                             Notification::new()
                                                                 .title(copy_success_title.clone())
-                                                                .message(copy_success_message.clone())
+                                                                .message(
+                                                                    copy_success_message.clone(),
+                                                                )
                                                                 .with_type(
                                                                     NotificationType::Success,
                                                                 ),
@@ -158,7 +160,9 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                         window.push_notification(
                                                             Notification::new()
                                                                 .title(copy_failed_title.clone())
-                                                                .message(copy_failed_message.clone())
+                                                                .message(
+                                                                    copy_failed_message.clone(),
+                                                                )
                                                                 .with_type(NotificationType::Error),
                                                             cx,
                                                         );

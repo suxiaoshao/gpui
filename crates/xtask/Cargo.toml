@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+plist = "1"
+thiserror = "2"
+toml = "0.9.8"
+toml_edit = "0.23"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["local-time"] }
+walkdir = "2"
+which = "8"

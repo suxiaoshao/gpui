@@ -302,8 +302,13 @@ impl TemplateEditForm {
                     .unwrap_or_default(),
             };
             let item_name = Self::localized_item_name(row.item.id(), row.item.name());
-            let value = Self::parse_value_by_type(row.item.input_type(), &raw)
-                .map_err(|err| format!("{} '{}': {err}", t_static("template-error-field-prefix"), item_name))?;
+            let value = Self::parse_value_by_type(row.item.input_type(), &raw).map_err(|err| {
+                format!(
+                    "{} '{}': {err}",
+                    t_static("template-error-field-prefix"),
+                    item_name
+                )
+            })?;
             map.insert(row.item.id().to_string(), value);
         }
         Ok(serde_json::Value::Object(map))
@@ -351,10 +356,16 @@ impl PromptListForm {
                 .read(cx)
                 .selected_value()
                 .copied()
-                .ok_or_else(|| format!("{} {}", t_static("template-error-select-role"), index + 1))?;
+                .ok_or_else(|| {
+                    format!("{} {}", t_static("template-error-select-role"), index + 1)
+                })?;
             let prompt = row.prompt_input.read(cx).value().trim().to_string();
             if prompt.is_empty() {
-                return Err(format!("{} {}", t_static("template-error-prompt-empty"), index + 1));
+                return Err(format!(
+                    "{} {}",
+                    t_static("template-error-prompt-empty"),
+                    index + 1
+                ));
             }
             prompts.push(ConversationTemplatePrompt { role, prompt });
         }
@@ -739,7 +750,11 @@ fn open_template_dialog(
                             .label(template_label.clone())
                             .child(template_form_container.clone()),
                     )
-                    .child(field().label(prompts_label.clone()).child(prompt_form_input.clone())),
+                    .child(
+                        field()
+                            .label(prompts_label.clone())
+                            .child(prompt_form_input.clone()),
+                    ),
             )
             .footer({
                 let name_input = name_input.clone();
@@ -758,11 +773,11 @@ fn open_template_dialog(
                 move |_dialog, _state, _window, _cx| {
                     let _keep_subscription_alive = adapter_subscription.borrow();
                     vec![
-                        Button::new("cancel")
-                            .label(cancel_label.clone())
-                            .on_click(|_, window, cx| {
+                        Button::new("cancel").label(cancel_label.clone()).on_click(
+                            |_, window, cx| {
                                 window.close_dialog(cx);
-                            }),
+                            },
+                        ),
                         Button::new("submit")
                             .primary()
                             .label(submit_label.clone())
@@ -790,7 +805,9 @@ fn open_template_dialog(
                                         None => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title(cx.global::<I18n>().t("notify-select-mode"))
+                                                    .title(
+                                                        cx.global::<I18n>().t("notify-select-mode"),
+                                                    )
                                                     .with_type(NotificationType::Error),
                                                 cx,
                                             );
@@ -802,7 +819,10 @@ fn open_template_dialog(
                                         None => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title(cx.global::<I18n>().t("notify-select-adapter"))
+                                                    .title(
+                                                        cx.global::<I18n>()
+                                                            .t("notify-select-adapter"),
+                                                    )
                                                     .with_type(NotificationType::Error),
                                                 cx,
                                             );
@@ -816,7 +836,10 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title(cx.global::<I18n>().t("notify-invalid-template"))
+                                                        .title(
+                                                            cx.global::<I18n>()
+                                                                .t("notify-invalid-template"),
+                                                        )
                                                         .message(err)
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -830,7 +853,10 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title(cx.global::<I18n>().t("notify-invalid-prompts"))
+                                                        .title(
+                                                            cx.global::<I18n>()
+                                                                .t("notify-invalid-prompts"),
+                                                        )
                                                         .message(err)
                                                         .with_type(NotificationType::Error),
                                                     cx,
@@ -844,7 +870,10 @@ fn open_template_dialog(
                                         Err(err) => {
                                             window.push_notification(
                                                 Notification::new()
-                                                    .title(cx.global::<I18n>().t("notify-open-database-failed"))
+                                                    .title(
+                                                        cx.global::<I18n>()
+                                                            .t("notify-open-database-failed"),
+                                                    )
                                                     .message(err.to_string())
                                                     .with_type(NotificationType::Error),
                                                 cx,
@@ -901,7 +930,10 @@ fn open_template_dialog(
                                             Err(err) => {
                                                 window.push_notification(
                                                     Notification::new()
-                                                        .title(cx.global::<I18n>().t("notify-reload-template-failed"))
+                                                        .title(
+                                                            cx.global::<I18n>()
+                                                                .t("notify-reload-template-failed"),
+                                                        )
                                                         .message(err.to_string())
                                                         .with_type(NotificationType::Error),
                                                     cx,

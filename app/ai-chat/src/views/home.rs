@@ -84,7 +84,9 @@ impl Render for HomeView {
                         )
                         .flex_1(),
                 ),
-                Err(err) => this.child(Alert::error("home-alert", err.to_string()).title(error_title)),
+                Err(err) => {
+                    this.child(Alert::error("home-alert", err.to_string()).title(error_title))
+                }
             })
             .children(dialog_layer)
             .children(notification_layer)

@@ -44,24 +44,27 @@ pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut A
                 let submit_label = submit_label.clone();
                 move |_this, _state, _window, _cx| {
                     vec![
-                        Button::new("cancel")
-                            .label(cancel_label.clone())
-                            .on_click(|_, window, cx| {
+                        Button::new("cancel").label(cancel_label.clone()).on_click(
+                            |_, window, cx| {
                                 window.close_dialog(cx);
-                            }),
-                        Button::new("ok").primary().label(submit_label.clone()).on_click({
-                            let folder_input = folder_input.clone();
-                            move |_, window, cx| {
-                                let name = folder_input.read(cx).value();
-                                if !name.is_empty() {
-                                    let chat_data = cx.global::<ChatData>().deref().clone();
-                                    chat_data.update(cx, |_this, cx| {
-                                        cx.emit(ChatDataEvent::AddFolder { name, parent_id });
-                                    });
+                            },
+                        ),
+                        Button::new("ok")
+                            .primary()
+                            .label(submit_label.clone())
+                            .on_click({
+                                let folder_input = folder_input.clone();
+                                move |_, window, cx| {
+                                    let name = folder_input.read(cx).value();
+                                    if !name.is_empty() {
+                                        let chat_data = cx.global::<ChatData>().deref().clone();
+                                        chat_data.update(cx, |_this, cx| {
+                                            cx.emit(ChatDataEvent::AddFolder { name, parent_id });
+                                        });
+                                    }
+                                    window.close_dialog(cx);
                                 }
-                                window.close_dialog(cx);
-                            }
-                        }),
+                            }),
                     ]
                 }
             })

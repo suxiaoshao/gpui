@@ -101,6 +101,8 @@ fn build_bundle(lang: &str, source: &str) -> FluentBundle<FluentResource> {
     let langid: LanguageIdentifier = lang.parse().expect("valid language id");
     let mut bundle = FluentBundle::new(vec![langid]);
     let resource = FluentResource::try_new(source.to_string()).expect("valid fluent resource");
-    bundle.add_resource(resource).expect("resource can be added");
+    bundle
+        .add_resource(resource)
+        .expect("resource can be added");
     bundle
 }
