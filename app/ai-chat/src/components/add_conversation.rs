@@ -2,7 +2,7 @@ use crate::{
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     i18n::I18n,
-    store::{ChatData, ChatDataEvent},
+    store::{AddConversationMessage, ChatData, ChatDataEvent},
 };
 use gpui::*;
 use gpui_component::{
@@ -17,6 +17,15 @@ use std::ops::Deref;
 use tracing::{Level, event};
 
 pub fn add_conversation_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {
+    add_conversation_dialog_with_messages(parent_id, None, window, cx);
+}
+
+pub fn add_conversation_dialog_with_messages(
+    parent_id: Option<i32>,
+    initial_messages: Option<Vec<AddConversationMessage>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let span = tracing::info_span!("add_conversation action");
     let _enter = span.enter();
     event!(Level::INFO, "add_conversation action");
@@ -87,7 +96,11 @@ pub fn add_conversation_dialog(parent_id: Option<i32>, window: &mut Window, cx: 
                             .label(icon_label.clone())
                             .child(Input::new(&icon_input)),
                     )
-                    .child(field().label(info_label.clone()).child(Input::new(&info_input)))
+                    .child(
+                        field()
+                            .label(info_label.clone())
+                            .child(Input::new(&info_input)),
+                    )
                     .child(
                         field()
                             .required(true)
@@ -103,50 +116,61 @@ pub fn add_conversation_dialog(parent_id: Option<i32>, window: &mut Window, cx: 
                 let cancel_label = cancel_label.clone();
                 let submit_label = submit_label.clone();
                 let select_template_title = select_template_title.clone();
+                let initial_messages = initial_messages.clone();
                 move |_this, _state, _window, _cx| {
                     vec![
-                        Button::new("cancel")
-                            .label(cancel_label.clone())
-                            .on_click(|_, window, cx| {
+                        Button::new("cancel").label(cancel_label.clone()).on_click(
+                            |_, window, cx| {
                                 window.close_dialog(cx);
-                            }),
-                        Button::new("ok").primary().label(submit_label.clone()).on_click({
-                            let name_input = name_input.clone();
-                            let icon_input = icon_input.clone();
-                            let info_input = info_input.clone();
-                            let template_input = template_input.clone();
-                            let select_template_title = select_template_title.clone();
-                            move |_, window, cx| {
-                                let name = name_input.read(cx).value();
-                                let icon = icon_input.read(cx).value();
-                                let info = info_input.read(cx).value();
-                                let template = match template_input.read(cx).selected_value() {
-                                    Some(data) => *data,
-                                    None => {
-                                        window.push_notification(
-                                            Notification::new()
-                                                .title(select_template_title.clone())
-                                                .with_type(NotificationType::Error),
-                                            cx,
-                                        );
-                                        return;
-                                    }
-                                };
-                                if !name.is_empty() {
-                                    let chat_data = cx.global::<ChatData>().deref().clone();
-                                    chat_data.update(cx, move |_this, cx| {
-                                        cx.emit(ChatDataEvent::AddConversation {
-                                            name,
-                                            icon,
-                                            info: if info.is_empty() { None } else { Some(info) },
-                                            template,
-                                            parent_id,
+                            },
+                        ),
+                        Button::new("ok")
+                            .primary()
+                            .label(submit_label.clone())
+                            .on_click({
+                                let name_input = name_input.clone();
+                                let icon_input = icon_input.clone();
+                                let info_input = info_input.clone();
+                                let template_input = template_input.clone();
+                                let select_template_title = select_template_title.clone();
+                                let initial_messages = initial_messages.clone();
+                                move |_, window, cx| {
+                                    let name = name_input.read(cx).value();
+                                    let icon = icon_input.read(cx).value();
+                                    let info = info_input.read(cx).value();
+                                    let template = match template_input.read(cx).selected_value() {
+                                        Some(data) => *data,
+                                        None => {
+                                            window.push_notification(
+                                                Notification::new()
+                                                    .title(select_template_title.clone())
+                                                    .with_type(NotificationType::Error),
+                                                cx,
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    if !name.is_empty() {
+                                        let chat_data = cx.global::<ChatData>().deref().clone();
+                                        let initial_messages = initial_messages.clone();
+                                        chat_data.update(cx, move |_this, cx| {
+                                            cx.emit(ChatDataEvent::AddConversation {
+                                                name,
+                                                icon,
+                                                info: if info.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(info)
+                                                },
+                                                template,
+                                                parent_id,
+                                                initial_messages: initial_messages.clone(),
+                                            });
                                         });
-                                    });
+                                    }
+                                    window.close_dialog(cx);
                                 }
-                                window.close_dialog(cx);
-                            }
-                        }),
+                            }),
                     ]
                 }
             })

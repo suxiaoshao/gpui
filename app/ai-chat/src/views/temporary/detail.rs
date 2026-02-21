@@ -1,5 +1,6 @@
 use crate::{
     components::{
+        add_conversation::add_conversation_dialog_with_messages,
         chat_input::{ChatInput, Send, input_state},
         message::{MessageView, MessageViewExt},
     },
@@ -9,6 +10,7 @@ use crate::{
     extensions::ExtensionContainer,
     fetch::FetchRunner,
     i18n::I18n,
+    store::AddConversationMessage,
     views::{
         message_preview::{MessagePreview, MessagePreviewExt},
         temporary::TemporaryView,
@@ -19,7 +21,8 @@ use fluent_bundle::FluentArgs;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    Root, WindowExt,
+    Disableable, IconName, Root, Sizable, WindowExt,
+    button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
     input::InputState,
@@ -294,6 +297,34 @@ impl TemplateDetailView {
             }));
         }
     }
+    fn on_clear_conversation(
+        &mut self,
+        _: &ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.messages.clear();
+        self.autoincrement_id = 0;
+        cx.notify();
+    }
+    fn on_save_conversation(
+        &mut self,
+        _: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let initial_messages = self
+            .messages
+            .iter()
+            .cloned()
+            .map(|message| AddConversationMessage {
+                role: message.role,
+                content: message.content,
+                status: message.status,
+            })
+            .collect::<Vec<_>>();
+        add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
+    }
     fn new_id(&mut self) -> usize {
         self.autoincrement_id += 1;
         self.autoincrement_id
@@ -479,6 +510,13 @@ impl Render for TemplateDetailView {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         let on_esc = self.on_esc.clone();
+        let (clear_tooltip, save_tooltip) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("tooltip-clear-conversation"),
+                i18n.t("tooltip-save-conversation"),
+            )
+        };
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
@@ -493,13 +531,40 @@ impl Render for TemplateDetailView {
                     .flex_initial()
                     .p_2()
                     .gap_2()
-                    .child(Label::new(&self.template.icon))
+                    .items_center()
+                    .justify_between()
                     .child(
-                        Label::new(&self.template.name)
-                            .text_xl()
-                            .when_some(self.template.description.as_ref(), |this, description| {
-                                this.secondary(description)
-                            }),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(&self.template.icon))
+                            .child(Label::new(&self.template.name).text_xl().when_some(
+                                self.template.description.as_ref(),
+                                |this, description| this.secondary(description),
+                            )),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Button::new("temporary-clear")
+                                    .icon(IconName::Delete)
+                                    .ghost()
+                                    .small()
+                                    .disabled(self.task.is_some())
+                                    .on_click(cx.listener(Self::on_clear_conversation))
+                                    .tooltip(clear_tooltip),
+                            )
+                            .child(
+                                Button::new("temporary-save")
+                                    .icon(IconName::Inbox)
+                                    .ghost()
+                                    .small()
+                                    .disabled(self.task.is_some())
+                                    .on_click(cx.listener(Self::on_save_conversation))
+                                    .tooltip(save_tooltip),
+                            ),
                     ),
             )
             .child(Divider::horizontal())

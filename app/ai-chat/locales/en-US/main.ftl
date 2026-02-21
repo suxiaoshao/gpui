@@ -26,11 +26,15 @@ button-cancel = Cancel
 button-create = Create
 button-delete = Delete
 button-edit = Edit
+button-clear = Clear Conversation
+button-save = Save Conversation
 button-submit = Submit
 
 tooltip-copy = Copy
 tooltip-delete = Delete
 tooltip-view-detail = View Detail
+tooltip-clear-conversation = Clear Conversation
+tooltip-save-conversation = Save Conversation
 
 field-id = ID
 field-name = Name

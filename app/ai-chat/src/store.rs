@@ -1,7 +1,8 @@
 use crate::{
     components::message::MessageView,
     database::{
-        Conversation, ConversationTemplate, Db, Folder, Message, NewConversation, NewFolder,
+        Content, Conversation, ConversationTemplate, Db, Folder, Message, NewConversation,
+        NewFolder, NewMessage, Role, Status,
     },
     errors::AiChatResult,
     i18n::I18n,
@@ -23,6 +24,13 @@ pub struct ChatDataInner {
     pub(crate) folders: Vec<Folder>,
     tabs: Vec<AppTab>,
     active_tab: Option<TabKind>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AddConversationMessage {
+    pub role: Role,
+    pub content: Content,
+    pub status: Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -435,6 +443,7 @@ pub enum ChatDataEvent {
         info: Option<SharedString>,
         template: i32,
         parent_id: Option<i32>,
+        initial_messages: Option<Vec<AddConversationMessage>>,
     },
     AddFolder {
         name: SharedString,
@@ -506,6 +515,7 @@ impl ChatData {
                 info,
                 template,
                 parent_id,
+                initial_messages,
             } => match Self::add_conversation(
                 state,
                 name,
@@ -513,6 +523,7 @@ impl ChatData {
                 info.as_ref().map(|x| x.as_str()),
                 *parent_id,
                 *template,
+                initial_messages.as_deref(),
                 cx,
             ) {
                 Ok(_) => {}
@@ -654,6 +665,7 @@ impl ChatData {
         info: Option<&str>,
         folder_id: Option<i32>,
         template_id: i32,
+        initial_messages: Option<&[AddConversationMessage]>,
         cx: &mut Context<HomeView>,
     ) -> AiChatResult<()> {
         let new_conversation = NewConversation {
@@ -664,7 +676,22 @@ impl ChatData {
             template_id,
         };
         let conn = &mut cx.global::<Db>().get()?;
-        let conversation = Conversation::insert(new_conversation, conn)?;
+        let mut conversation = Conversation::insert(new_conversation, conn)?;
+        if let Some(initial_messages) = initial_messages {
+            for initial_message in initial_messages {
+                let message = Message::insert(
+                    NewMessage::new(
+                        conversation.id,
+                        initial_message.role,
+                        initial_message.content.clone(),
+                        serde_json::Value::Null,
+                        initial_message.status,
+                    ),
+                    conn,
+                )?;
+                conversation.messages.push(message);
+            }
+        }
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.add_conversation(conversation);
