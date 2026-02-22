@@ -31,7 +31,7 @@ gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
 gpui-component-assets = { workspace = true }
 window-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
@@ -70,7 +70,7 @@ tokio = { version = "1.49.0", features = [
   "macros",
 ] }
 reqwest-eventsource = "0.6.0"
-futures = "0.3.31"
+futures = "0.3.32"
 async-stream = "0.3.6"
 async-compat = "0.2.5"
 smol = "2.0.2"
@@ -81,22 +81,13 @@ wasmtime-wasi = "41.0.3"
 get-selected-text = "0.1.6"
 
 # config
-toml = "0.9.11"
+toml = "1.0.3"
 
 # hotkey
 global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
-
-
-
-
-
-
-
-
-

@@ -5,14 +5,14 @@ edition = "2024"
 publish = false
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-image = "0.25"
-plist = "1"
-thiserror = "2"
-toml = "0.9.8"
-tauri-bundler = "2"
-toml_edit = "0.23"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["local-time"] }
-walkdir = "2"
-which = "8"
+clap = { version = "4.5.60", features = ["derive"] }
+image = "0.25.9"
+plist = "1.8.0"
+thiserror = "2.0.18"
+toml = "1.0.3"
+tauri-bundler = "2.8.0"
+toml_edit = "0.25"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
+walkdir = "2.5.0"
+which = "8.0.0"
