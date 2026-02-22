@@ -64,7 +64,7 @@ cargo bundle -p ai-chat --release
 # 方式 2：使用 xtask（macOS/Linux）
 cargo run -p xtask -- bundle-ai-chat
 
-# Windows MSI 打包（支持 --arch/--target/--install）
+# Windows MSI（xtask 内部使用 tauri-bundler + WiX，支持 --arch/--target/--install）
 cargo run -p xtask -- bundle-ai-chat-windows
 ```
 
@@ -72,6 +72,9 @@ cargo run -p xtask -- bundle-ai-chat-windows
 
 ```bash
 target/release/bundle/
+
+# Windows (xtask bundle-ai-chat-windows)
+target/<target-triple>/release/bundle/msi/
 ```
 
 macOS 下 `bundle-ai-chat` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName=Icon`）。如果系统未安装可用的 `actool`/`xcrun`，会自动降级为普通图标，不影响打包成功。
@@ -131,5 +134,6 @@ cargo component build --release
 - `app/ai-chat/build-assets/`: build/package-time assets only (not embedded for runtime).
 - Icon assets live in `app/ai-chat/build-assets/icon/`.
 - Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
-- `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- Package icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- Windows MSI bundling in `xtask` uses `tauri-bundler` and reuses the `.ico` path from `[package.metadata.bundle].icon`.
 - macOS bundle icon paths are managed by `crates/xtask/src/main.rs` and use `build-assets/icon/...`.

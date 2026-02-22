@@ -52,6 +52,8 @@ cargo run -p xtask -- bundle-ai-chat
 cargo run -p xtask -- bundle-ai-chat-windows
 ```
 
+说明：`bundle-ai-chat`（macOS/Linux）仍走 `cargo-bundle`；`bundle-ai-chat-windows` 使用 `tauri-bundler` + WiX。
+
 可选开发工具：
 
 ```bash
@@ -131,5 +133,10 @@ Linux:
 - `app/ai-chat/build-assets/`: build/package-time assets only (not embedded for runtime).
 - Icon assets live in `app/ai-chat/build-assets/icon/`.
 - Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
-- `cargo-bundle` icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- Package icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- Windows MSI bundling in `xtask` uses `tauri-bundler` and reuses the `.ico` path from `[package.metadata.bundle].icon`.
 - macOS bundle icon paths are managed by `crates/xtask/src/main.rs` and use `build-assets/icon/...`.
+
+## 11. 文件编码
+
+- 文档与配置文件必须使用 UTF-8 编码读写，禁止使用本地默认编码导致乱码。

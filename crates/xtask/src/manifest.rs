@@ -41,16 +41,3 @@ pub fn get_main_binary_name(manifest_path: &Path) -> Result<String> {
             ))
         })
 }
-
-pub fn sanitize_identifier(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
