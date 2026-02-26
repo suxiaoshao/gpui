@@ -1,4 +1,4 @@
-pub use self::types::{ChatRequest, Message, OpenAIStreamResponse};
+pub use self::types::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
     adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
     config::AiChatConfig,

@@ -18,7 +18,7 @@ use tracing::{Level, event};
 pub(crate) struct OpenAIAdapter;
 
 fn default_url() -> String {
-    "https://api.openai.com/v1/chat/completions".to_string()
+    "https://api.openai.com/v1/responses".to_string()
 }
 
 fn default_models() -> HashSet<String> {
@@ -170,13 +170,12 @@ impl OpenAIAdapter {
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
         ChatRequest {
-            messages: history_messages,
+            input: history_messages,
             model: template.model.as_str(),
             stream: false,
             temperature: template.temperature,
             top_p: template.top_p,
-            n: template.n,
-            max_completion_tokens: template.max_completion_tokens,
+            max_output_tokens: template.max_completion_tokens,
             presence_penalty: template.presence_penalty,
             frequency_penalty: template.frequency_penalty,
         }
@@ -270,12 +269,8 @@ impl Adapter for OpenAIAdapter {
             let body = Self::get_body(&template, history_messages);
             let client = Self::get_reqwest_client(config, &settings)?;
             let response=client.post(settings.url.clone()).json(&body).send().await?;
-            let response = response.json::<ChatCompletion>().await?;
-            let content = response
-                .choices
-                .into_iter()
-                .filter_map(|choice| choice.message.content)
-                .collect::<String>();
+            let response = response.json::<ResponsesCreateResponse>().await?;
+            let content = response.output_text();
             yield content
         }
     }
@@ -406,16 +401,52 @@ impl Adapter for OpenAIAdapter {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletion {
-    choices: Vec<Choice>,
+struct ResponsesCreateResponse {
+    output: Vec<OutputItem>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Choice {
-    message: ResponseMessage,
+struct OutputItem {
+    content: Option<Vec<OutputContent>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseMessage {
-    content: Option<String>,
+struct OutputContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: Option<String>,
+}
+
+impl ResponsesCreateResponse {
+    fn output_text(self) -> String {
+        self.output
+            .into_iter()
+            .flat_map(|item| item.content.unwrap_or_default())
+            .filter(|part| part.content_type == "output_text")
+            .filter_map(|part| part.text)
+            .collect::<String>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResponsesCreateResponse;
+
+    #[test]
+    fn parse_response_output_text() -> anyhow::Result<()> {
+        let response = serde_json::from_str::<ResponsesCreateResponse>(
+            r#"{
+                "output": [
+                    {
+                        "content": [
+                            {"type":"output_text","text":"hello "},
+                            {"type":"output_text","text":"world"}
+                        ]
+                    }
+                ]
+            }"#,
+        )?;
+        assert_eq!(response.output_text(), "hello world");
+        Ok(())
+    }
 }

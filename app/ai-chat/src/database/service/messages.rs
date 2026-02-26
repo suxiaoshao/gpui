@@ -12,7 +12,9 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use fluent_bundle::FluentArgs;
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext, Bounds, TitlebarOptions, Window, WindowBounds, WindowOptions, px, size,
+};
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::ops::{AddAssign, Deref};
@@ -248,7 +250,12 @@ impl MessageViewExt for Message {
 }
 
 impl MessagePreviewExt for Message {
-    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()> {
+    fn on_update_content(
+        &self,
+        content: Content,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
         let conn = &mut cx.global::<Db>().get()?;
         Message::update_content(self.id, &content, conn)?;
         Ok(())

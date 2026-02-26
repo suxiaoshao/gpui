@@ -97,7 +97,7 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
             input,
         }
     }
-    fn submit(&self, cx: &mut Context<Self>) -> AiChatResult<()> {
+    fn submit(&self, window: &mut Window, cx: &mut Context<Self>) -> AiChatResult<()> {
         let content = match &self.input {
             MessageInput::Text(entity) => {
                 let text = entity.read(cx).value().to_string();
@@ -117,13 +117,18 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
                 }
             }
         };
-        self.on_update_content(content, cx)?;
+        self.on_update_content(content, window, cx)?;
         Ok(())
     }
 }
 
 pub trait MessagePreviewExt: MessageViewExt {
-    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()>;
+    fn on_update_content(
+        &self,
+        content: Content,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AiChatResult<()>;
 }
 
 impl<T: MessagePreviewExt> Render for MessagePreview<T> {
@@ -178,7 +183,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                             this.child(Button::new("submit").icon(IconName::ArrowUp).on_click({
                                 let update_success_title = update_success_title.clone();
                                 let update_failed_title = update_failed_title.clone();
-                                cx.listener(move |view, _, window, cx| match view.submit(cx) {
+                                cx.listener(move |view, _, window, cx| match view.submit(window,cx) {
                                     Ok(_) => {
                                         event!(tracing::Level::INFO,"Update Message Content Success");
                                         window.push_notification(Notification::new().title(update_success_title.clone()).with_type(gpui_component::notification::NotificationType::Success), cx);

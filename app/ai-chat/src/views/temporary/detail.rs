@@ -78,23 +78,16 @@ impl MessageViewExt for TemporaryMessage {
         &self.status
     }
 
-    fn open_view_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
-        let message = cx.windows().iter().find_map(|window| {
-            window
-                .downcast::<Root>()
-                .and_then(|window_root| window_root.read(cx).ok())
-                .and_then(|root| root.view().downgrade().upgrade())
-                .and_then(|view| view.downcast::<TemporaryView>().ok())
-                .and_then(|temporary_view| {
-                    let temporary_view = temporary_view.read(cx);
-                    let template_detail = temporary_view.selected_item.as_ref()?.clone();
-                    let template_detail = template_detail.read(cx);
-                    template_detail
-                        .messages
-                        .iter()
-                        .find(|message| message.id == id)
-                        .cloned()
-                })
+    fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
+        let message = find_temporary_view(window, cx).and_then(|temporary_view| {
+            let temporary_view = temporary_view.read(cx);
+            let template_detail = temporary_view.selected_item.as_ref()?.clone();
+            let template_detail = template_detail.read(cx);
+            template_detail
+                .messages
+                .iter()
+                .find(|message| message.id == id)
+                .cloned()
         });
         let Some(message) = message else {
             return;
@@ -131,13 +124,7 @@ impl MessageViewExt for TemporaryMessage {
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let temporary_view = cx.windows().iter().find_map(|window| {
-            window
-                .downcast::<Root>()
-                .and_then(|window_root| window_root.read(cx).ok())
-                .and_then(|root| root.view().downgrade().upgrade())
-                .and_then(|view| view.downcast::<TemporaryView>().ok())
-        });
+        let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
                 if let Some(template_detail) = this.selected_item.as_ref() {
@@ -166,14 +153,13 @@ impl MessageViewExt for TemporaryMessage {
 }
 
 impl MessagePreviewExt for TemporaryMessage {
-    fn on_update_content(&self, content: Content, cx: &mut App) -> AiChatResult<()> {
-        let temporary_view = cx.windows().iter().find_map(|window| {
-            window
-                .downcast::<Root>()
-                .and_then(|window_root| window_root.read(cx).ok())
-                .and_then(|root| root.view().downgrade().upgrade())
-                .and_then(|view| view.downcast::<TemporaryView>().ok())
-        });
+    fn on_update_content(
+        &self,
+        content: Content,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
+        let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
                 if let Some(template_detail) = this.selected_item.as_ref() {
@@ -206,6 +192,13 @@ impl TemporaryMessage {
         self.updated_time = now;
         self.end_time = now;
     }
+}
+
+fn find_temporary_view(window: &mut Window, cx: &App) -> Option<Entity<TemporaryView>> {
+    let root = window.root::<Root>()??;
+    let root = root.read(cx);
+    let view = root.view().downgrade().upgrade()?;
+    view.downcast::<TemporaryView>().ok()
 }
 
 pub(crate) struct TemplateDetailView {

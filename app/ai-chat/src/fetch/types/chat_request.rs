@@ -12,12 +12,12 @@ use super::message::Message;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest<'a> {
     pub model: &'a str,
-    pub messages: Vec<Message>,
+    pub input: Vec<Message>,
     pub stream: bool,
     pub temperature: f64,
     pub top_p: f64,
-    pub n: u32,
-    pub max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
     pub presence_penalty: f64,
     pub frequency_penalty: f64,
 }

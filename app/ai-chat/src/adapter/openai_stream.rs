@@ -6,7 +6,7 @@ use crate::{
     config::AiChatConfig,
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
-    fetch::{ChatRequest, Message, OpenAIStreamResponse},
+    fetch::{ChatRequest, Message, OpenAIResponseStreamEvent},
     i18n::t_static,
 };
 use futures::StreamExt;
@@ -21,7 +21,7 @@ use toml::Value;
 use tracing::{Level, event};
 
 fn default_url() -> String {
-    "https://api.openai.com/v1/chat/completions".to_string()
+    "https://api.openai.com/v1/responses".to_string()
 }
 
 fn default_models() -> HashSet<String> {
@@ -70,13 +70,12 @@ impl OpenAIStreamAdapter {
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
         ChatRequest {
-            messages: history_messages,
+            input: history_messages,
             model: template.model.as_str(),
             stream: true,
             temperature: template.temperature,
             top_p: template.top_p,
-            n: template.n,
-            max_completion_tokens: template.max_completion_tokens,
+            max_output_tokens: template.max_completion_tokens,
             presence_penalty: template.presence_penalty,
             frequency_penalty: template.frequency_penalty,
         }
@@ -135,13 +134,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let message = message.data;
                         if message == "[DONE]" {
                             es.close();
-                        } else {
-                            let response= serde_json::from_str::<OpenAIStreamResponse>(&message)?;
-                            let content = response
-                                .choices
-                                .into_iter()
-                                .filter_map(|choice| choice.delta.content)
-                                .collect::<String>();
+                        } else if let Some(content) = parse_response_stream_delta(&message)? {
                             yield content
                         }
                     }
@@ -275,5 +268,35 @@ impl Adapter for OpenAIStreamAdapter {
             DescriptionItem::new(t_static("field-frequency-penalty"))
                 .value(settings.frequency_penalty.to_string()),
         ]
+    }
+}
+
+fn parse_response_stream_delta(message: &str) -> AiChatResult<Option<String>> {
+    let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
+    if event.event_type == "response.output_text.delta" {
+        return Ok(event.delta);
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_response_stream_delta;
+
+    #[test]
+    fn parse_stream_delta_event() -> anyhow::Result<()> {
+        let event = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
+        assert_eq!(
+            parse_response_stream_delta(event)?,
+            Some("hello".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ignore_non_delta_event() -> anyhow::Result<()> {
+        let event = r#"{"type":"response.completed"}"#;
+        assert_eq!(parse_response_stream_delta(event)?, None);
+        Ok(())
     }
 }
