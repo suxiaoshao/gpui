@@ -13,6 +13,7 @@ sudo apt-get install -y \
   libwayland-dev \
   libwebkit2gtk-4.1-dev \
   libx11-xcb-dev \
+  libxdo-dev \
   libxkbcommon-x11-dev \
   libzstd-dev \
   pkg-config \
