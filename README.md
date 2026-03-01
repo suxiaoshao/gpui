@@ -27,8 +27,11 @@
 ## 构建与运行
 
 ```bash
-# 构建整个工作区
-cargo build
+# 构建原生工作区（排除 wasm 扩展 url_search）
+cargo build --workspace --exclude url_search
+
+# 构建指定 wasm 扩展
+cargo build -p url_search --target wasm32-wasip2
 
 # 构建指定应用
 cargo build -p ai-chat
@@ -109,7 +112,10 @@ diesel migration generate migration_name
 ai-chat 支持 WebAssembly 组件扩展：
 
 ```bash
-# 在扩展目录中构建（示例：app/ai-chat/extensions/url_search）
+# 方式 1：直接指定 wasm target 构建
+cargo build -p url_search --target wasm32-wasip2
+
+# 方式 2：在扩展目录中构建 component 产物
 cargo component build --release
 ```
 

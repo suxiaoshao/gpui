@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            runs_on: macos-latest
+            target: aarch64-apple-darwin
+          - name: Linux
+            runs_on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: Windows
+            runs_on: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        if: ${{ matrix.runs_on != 'windows-latest' }}
+        run: script/bootstrap
+        shell: bash
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: |
+            ${{ matrix.target }}
+            wasm32-wasip2
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo build
+        run: cargo build --workspace --exclude url_search --locked
+
+      - name: Cargo test
+        run: cargo test --workspace --exclude url_search --locked
+
+      - name: Build url_search extension
+        if: ${{ matrix.runs_on == 'macos-latest' }}
+        run: cargo build -p url_search --target wasm32-wasip2 --locked
+
+      - name: Cargo clippy
+        if: ${{ matrix.runs_on == 'macos-latest' }}
+        run: cargo clippy --workspace --exclude url_search --all-targets --all-features --locked -- -D warnings

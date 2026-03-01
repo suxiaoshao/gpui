@@ -3,9 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tauri_bundler::{
-    BundleBinary, BundleSettings, PackageSettings, PackageType, SettingsBuilder,
-};
+use tauri_bundler::{BundleBinary, BundleSettings, PackageSettings, PackageType, SettingsBuilder};
 use tracing::info;
 use walkdir::WalkDir;
 
@@ -66,8 +64,9 @@ pub fn run(args: BundleAiChatWindowsArgs) -> Result<()> {
         .build()
         .map_err(|err| XtaskError::msg(format!("failed to build tauri bundle settings: {err}")))?;
 
-    let bundles = tauri_bundler::bundle_project(&settings)
-        .map_err(|err| XtaskError::msg(format!("failed to bundle MSI with tauri-bundler: {err}")))?;
+    let bundles = tauri_bundler::bundle_project(&settings).map_err(|err| {
+        XtaskError::msg(format!("failed to bundle MSI with tauri-bundler: {err}"))
+    })?;
 
     let mut artifacts: Vec<PathBuf> = bundles
         .into_iter()
@@ -112,10 +111,15 @@ fn detect_arch() -> String {
 }
 
 fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, BundleSettings)> {
-    let content = fs::read_to_string(manifest_path)
-        .map_err(|err| XtaskError::msg(format!("failed to read {}: {err}", manifest_path.display())))?;
-    let root: toml::Value = toml::from_str(&content)
-        .map_err(|err| XtaskError::msg(format!("failed to parse {}: {err}", manifest_path.display())))?;
+    let content = fs::read_to_string(manifest_path).map_err(|err| {
+        XtaskError::msg(format!("failed to read {}: {err}", manifest_path.display()))
+    })?;
+    let root: toml::Value = toml::from_str(&content).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to parse {}: {err}",
+            manifest_path.display()
+        ))
+    })?;
 
     let package = root
         .get("package")
@@ -201,17 +205,6 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
                     .collect::<Vec<_>>()
             })
             .filter(|icons| !icons.is_empty());
-        if let Some(icon_path) = bundle_settings
-            .icon
-            .as_ref()
-            .and_then(|icons| icons.iter().find(|path| path.to_ascii_lowercase().ends_with(".ico")))
-        {
-            let icon_abs = manifest_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(icon_path);
-            bundle_settings.windows.icon_path = icon_abs;
-        }
 
         bundle_settings.short_description = bundle
             .get("short_description")
@@ -301,8 +294,9 @@ fn find_windows_artifacts(bundle_dir: &Path) -> Result<Vec<PathBuf>> {
 
     let mut artifacts = Vec::new();
     for entry in WalkDir::new(bundle_dir).into_iter() {
-        let entry = entry
-            .map_err(|err| XtaskError::msg(format!("failed to walk {}: {err}", bundle_dir.display())))?;
+        let entry = entry.map_err(|err| {
+            XtaskError::msg(format!("failed to walk {}: {err}", bundle_dir.display()))
+        })?;
         if !entry.file_type().is_file() {
             continue;
         }

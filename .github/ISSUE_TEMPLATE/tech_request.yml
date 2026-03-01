@@ -1,0 +1,49 @@
+name: Tech Request
+description: Track engineering work such as refactors, infra, packaging, CI, or tooling.
+title: "[tech] <scope>: "
+body:
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Target scope
+      description: Select the primary area affected by this engineering task.
+      options:
+        - ai-chat
+        - feiwen
+        - http-client
+        - novel-download
+        - window-ext
+        - xtask
+        - url_search
+        - workspace
+        - ci
+        - packaging
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: Background
+      description: Describe the current technical problem, debt, or constraint.
+      placeholder: We currently rely on...
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope_detail
+    attributes:
+      label: Requested change
+      description: Describe the implementation direction or technical outcome.
+      placeholder: Refactor / upgrade / automate...
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and validation
+      description: Note migration risks, rollout concerns, and how this should be verified.
+      placeholder: Validate with cargo build/test/clippy and manual checks for...
+    validations:
+      required: true
