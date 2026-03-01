@@ -150,6 +150,8 @@ pub struct Message {
     pub conversation_path: String,
     pub role: Role,
     pub content: Content,
+    #[serde(rename = "sendContent")]
+    pub send_content: serde_json::Value,
     pub status: Status,
     #[serde(
         rename = "createdTime",
@@ -272,6 +274,7 @@ impl TryFrom<SqlMessage> for Message {
             conversation_path: value.conversation_path,
             role: value.role.parse()?,
             content: serde_json::from_str(&value.content)?,
+            send_content: serde_json::from_str(&value.send_content)?,
             status: value.status.parse()?,
             created_time: value.created_time,
             updated_time: value.updated_time,
@@ -314,7 +317,7 @@ impl Message {
             conversation_id,
             role,
             content,
-            send_content: _,
+            send_content,
             status,
         }: NewMessage,
         conn: &mut SqliteConnection,
@@ -328,7 +331,7 @@ impl Message {
                 conversation_path: path,
                 role: role.to_string(),
                 content: serde_json::to_string(&content)?,
-                // send_content,
+                send_content: send_content.to_string(),
                 status: status.to_string(),
                 created_time: time,
                 updated_time: time,
@@ -351,7 +354,7 @@ impl Message {
                 |TemporaryMessage {
                      role,
                      content,
-                     send_content: _,
+                     send_content,
                      created_time,
                      updated_time,
                      start_time,
@@ -364,7 +367,7 @@ impl Message {
                         conversation_path: path.clone(),
                         role: role.to_string(),
                         content: serde_json::to_string(&content)?,
-                        // send_content,
+                        send_content: send_content.to_string(),
                         status: status.to_string(),
                         created_time,
                         updated_time,
@@ -445,6 +448,15 @@ impl Message {
     ) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();
         SqlMessage::update_content(id, serde_json::to_string(content)?, time, conn)?;
+        Ok(())
+    }
+    pub fn update_send_content(
+        id: i32,
+        send_content: &serde_json::Value,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::update_send_content(id, send_content.to_string(), time, conn)?;
         Ok(())
     }
 }

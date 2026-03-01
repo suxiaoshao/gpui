@@ -9,7 +9,7 @@ use crate::{
     fetch::{ChatRequest, Message, OpenAIResponseStreamEvent},
     i18n::t_static,
 };
-use futures::StreamExt;
+use futures::{StreamExt, stream::BoxStream};
 use gpui::*;
 use gpui_component::description_list::DescriptionItem;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
@@ -103,7 +103,9 @@ impl OpenAIStreamAdapter {
 }
 
 impl Adapter for OpenAIStreamAdapter {
-    const NAME: &'static str = "OpenAI Stream";
+    fn name(&self) -> &'static str {
+        "OpenAI Stream"
+    }
 
     fn get_setting_inputs(&self) -> Vec<InputItem> {
         OpenAIAdapter.get_setting_inputs()
@@ -114,18 +116,30 @@ impl Adapter for OpenAIStreamAdapter {
         get_openai_template_inputs(&settings.models)
     }
 
-    fn fetch(
+    fn request_body(
         &self,
-        config: &AiChatConfig,
-        settings: &toml::Value,
         template: &serde_json::Value,
         history_messages: Vec<Message>,
-    ) -> impl futures::Stream<Item = AiChatResult<String>> {
+    ) -> AiChatResult<serde_json::Value> {
+        let template: OpenAIConversationTemplate = serde_json::from_value(template.clone())?;
+        Ok(serde_json::to_value(Self::get_body(
+            &template,
+            history_messages,
+        ))?)
+    }
+
+    fn fetch(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        template: serde_json::Value,
+        history_messages: Vec<Message>,
+    ) -> BoxStream<'static, AiChatResult<String>> {
         async_stream::try_stream! {
-            let template = serde_json::from_value(template.clone())?;
-            let settings = settings.clone().try_into()?;
+            let template = serde_json::from_value(template)?;
+            let settings = settings.try_into()?;
             let body = Self::get_body(&template, history_messages);
-            let client = Self::get_reqwest_client(config, &settings)?;
+            let client = Self::get_reqwest_client(&config, &settings)?;
             let mut es = client.post(settings.url.as_str()).json(&body).eventsource()?;
             while let Some(event) = es.next().await {
                 match event {
@@ -144,13 +158,14 @@ impl Adapter for OpenAIStreamAdapter {
                 }
             }
         }
+        .boxed()
     }
 
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAIStreamSettings {
             let config = cx.global::<AiChatConfig>();
             config
-                .get_adapter_settings(OpenAIStreamAdapter::NAME)
+                .get_adapter_settings(OpenAIStreamAdapter.name())
                 .and_then(|x| x.clone().try_into::<OpenAIStreamSettings>().ok())
                 .unwrap_or_default()
         }
@@ -173,7 +188,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
@@ -198,7 +213,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
@@ -230,7 +245,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);

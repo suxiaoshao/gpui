@@ -16,6 +16,9 @@ pub struct SqlFolder {
 }
 
 impl SqlFolder {
+    pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+        folders::table.load::<SqlFolder>(conn).map_err(|e| e.into())
+    }
     pub fn query(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
         let sql_folders = folders::table
             .filter(folders::parent_id.is_null())

@@ -1,5 +1,5 @@
 use crate::{
-    adapter::{Adapter, OpenAIAdapter, OpenAIStreamAdapter},
+    adapter::adapter_setting_groups,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     config::{AiChatConfig, ThemeMode},
     i18n::I18n,
@@ -96,6 +96,11 @@ impl Render for SettingsView {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let hotkey_input = self.hotkey_input.clone();
+        let adapter_page = adapter_setting_groups()
+            .into_iter()
+            .fold(SettingPage::new(page_adapter), |page, group| {
+                page.group(group)
+            });
         v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)
@@ -168,9 +173,7 @@ impl Render for SettingsView {
                                     }),
                                 )),
                         ),
-                        SettingPage::new(page_adapter)
-                            .group(OpenAIAdapter.setting_group())
-                            .group(OpenAIStreamAdapter.setting_group()),
+                        adapter_page,
                     ]),
             )
     }

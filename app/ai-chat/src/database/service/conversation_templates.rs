@@ -17,7 +17,6 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
-use std::str::FromStr;
 use time::OffsetDateTime;
 
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
@@ -86,7 +85,7 @@ impl ConversationTemplate {
             updated_time,
             adapter,
             description,
-            template: serde_json::Value::from_str(&template)?,
+            template: serde_json::from_str(&template)?,
             prompts: serde_json::from_str(&prompts)?,
             mode: mode.parse()?,
         })
@@ -114,7 +113,7 @@ impl ConversationTemplate {
                 created_time,
                 updated_time,
                 description,
-                template: serde_json::Value::from_str(&template)?,
+                template: serde_json::from_str(&template)?,
                 adapter,
                 mode: mode.parse()?,
                 prompts: serde_json::from_str(&prompts)?,

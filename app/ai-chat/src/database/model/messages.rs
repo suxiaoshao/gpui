@@ -12,7 +12,7 @@ pub struct SqlNewMessage {
     pub(in super::super) conversation_path: String,
     pub(in super::super) role: String,
     pub(in super::super) content: String,
-    // pub(in super::super) send_content: serde_json::Value,
+    pub(in super::super) send_content: String,
     pub(in super::super) status: String,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
@@ -43,7 +43,7 @@ pub struct SqlMessage {
     pub(in super::super) conversation_path: String,
     pub role: String,
     pub content: String,
-    // pub send_content: serde_json::Value,
+    pub send_content: String,
     pub status: String,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
@@ -87,6 +87,20 @@ impl SqlMessage {
                 messages::status.eq(status.to_string()),
                 messages::updated_time.eq(time),
                 messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
+    pub fn update_send_content(
+        id: i32,
+        send_content: String,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::send_content.eq(send_content),
+                messages::updated_time.eq(time),
             ))
             .execute(conn)?;
         Ok(())
@@ -173,5 +187,8 @@ impl SqlMessage {
             .values(data)
             .execute(conn)?;
         Ok(())
+    }
+    pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+        messages::table.load::<Self>(conn).map_err(|e| e.into())
     }
 }

@@ -125,17 +125,34 @@ impl ConversationPanelView {
             })
             .map_err(|_| AiChatError::GpuiError)?;
 
-        let (conversation, template, user_message, assistant_message) = cx
+        let (conversation, template) = cx
             .read_global(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
                 let conversation = Conversation::find(context.conversation_id, conn)?;
                 let template = ConversationTemplate::find(conversation.template_id, conn)?;
+                Ok::<_, AiChatError>((conversation, template))
+            })
+            .map_err(|_| AiChatError::GpuiError)??;
+
+        let user_content =
+            Runner::get_new_user_content(context.text.to_string(), extension_runner).await?;
+        let runner = Runner {
+            config: context.config,
+            template: template.clone(),
+            history_messages: conversation.messages,
+            user_message_role: Role::User,
+            user_message_content: user_content.send_content().to_string(),
+        };
+        let send_content = runner.request_body()?;
+        let (user_message, assistant_message) = cx
+            .read_global(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
                 let user_message = Message::insert(
                     NewMessage::new(
                         context.conversation_id,
                         Role::User,
-                        Content::Text(context.text.to_string()),
-                        serde_json::Value::Null,
+                        user_content.clone(),
+                        send_content.clone(),
                         Status::Normal,
                     ),
                     conn,
@@ -145,17 +162,15 @@ impl ConversationPanelView {
                         context.conversation_id,
                         Role::Assistant,
                         Content::Text(String::new()),
-                        serde_json::Value::Null,
+                        send_content.clone(),
                         Status::Loading,
                     ),
                     conn,
                 )?;
-                Ok::<_, AiChatError>((conversation, template, user_message, assistant_message))
+                Ok::<_, AiChatError>((user_message, assistant_message))
             })
             .map_err(|_| AiChatError::GpuiError)??;
-        let user_message_id = user_message.id;
         let assistant_message_id = assistant_message.id;
-
         context
             .chat_data
             .update(cx, |data, cx| {
@@ -166,35 +181,6 @@ impl ConversationPanelView {
                 }
             })
             .map_err(|_| AiChatError::GpuiError)?;
-
-        let user_content =
-            Runner::get_new_user_content(context.text.to_string(), extension_runner).await?;
-        let user_message = cx
-            .read_global(|db: &Db, _window, _cx| {
-                let conn = &mut db.get()?;
-                Message::update_content(user_message_id, &user_content, conn)?;
-                Message::find(user_message_id, conn)
-            })
-            .map_err(|_| AiChatError::GpuiError)??;
-        let user_message_role = user_message.role;
-        let user_message_content = user_message.content.send_content().to_string();
-        context
-            .chat_data
-            .update(cx, |data, cx| {
-                if let Ok(data) = data {
-                    data.replace_message(context.conversation_id, user_message);
-                    cx.notify();
-                }
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-
-        let runner = Runner {
-            config: context.config,
-            template,
-            history_messages: conversation.messages,
-            user_message_role,
-            user_message_content,
-        };
 
         let stream = runner.fetch();
         pin_mut!(stream);
@@ -405,6 +391,7 @@ mod tests {
             conversation_path: "/test".to_string(),
             role,
             content,
+            send_content: serde_json::json!({}),
             status,
             created_time: now,
             updated_time: now,

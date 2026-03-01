@@ -52,6 +52,7 @@ pub struct TemporaryMessage {
     pub id: usize,
     pub role: Role,
     pub content: Content,
+    pub send_content: serde_json::Value,
     pub status: Status,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
@@ -313,6 +314,7 @@ impl TemplateDetailView {
             .map(|message| AddConversationMessage {
                 role: message.role,
                 content: message.content,
+                send_content: message.send_content,
                 status: message.status,
             })
             .collect::<Vec<_>>();
@@ -327,6 +329,7 @@ impl TemplateDetailView {
         now: OffsetDateTime,
         role: Role,
         content: Content,
+        send_content: serde_json::Value,
         status: Status,
     ) -> &mut TemporaryMessage {
         let id = self.new_id();
@@ -334,6 +337,7 @@ impl TemplateDetailView {
             id,
             role,
             content,
+            send_content,
             status,
             created_time: now,
             updated_time: now,
@@ -374,56 +378,49 @@ impl TemplateDetailView {
             None => None,
         };
         let now = OffsetDateTime::now_utc();
-        let user_message_id = state
-            .update_in(cx, |this, window, cx| {
-                this.input_state.update(cx, |input, cx| {
-                    input.set_value("", window, cx);
-                });
-                this.add_message(
-                    now,
-                    Role::User,
-                    Content::Text(text.to_string()),
-                    Status::Loading,
-                )
-                .id
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
         let content = Runner::get_new_user_content(text.to_string(), extension_runner).await?;
-        state
-            .update(cx, |this, _cx| {
-                if let Some(message) = this
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == user_message_id)
-                {
-                    message.content = content;
-                    message.status = Status::Normal;
-                }
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-
         let template = state
             .read_with(cx, |this, _cx| this.template.clone())
             .map_err(|_| AiChatError::GpuiError)?;
         let messages = state
             .read_with(cx, |this, _cx| this.messages.clone())
             .map_err(|_| AiChatError::GpuiError)?;
-        let assistant_message_id = state
-            .update(cx, |this, _cx| {
-                this.add_message(
-                    now,
-                    Role::Assistant,
-                    Content::Text(String::new()),
-                    Status::Loading,
-                )
-                .id
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
         let runner = Runner {
             config,
             template,
             messages,
         };
+        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
+        let (_user_message_id, assistant_message_id) = state
+            .update(cx, |this, _cx| {
+                let user_message_id = this
+                    .add_message(
+                        now,
+                        Role::User,
+                        content.clone(),
+                        send_content.clone(),
+                        Status::Normal,
+                    )
+                    .id;
+                let assistant_message_id = this
+                    .add_message(
+                        now,
+                        Role::Assistant,
+                        Content::Text(String::new()),
+                        send_content.clone(),
+                        Status::Loading,
+                    )
+                    .id;
+                (user_message_id, assistant_message_id)
+            })
+            .map_err(|_| AiChatError::GpuiError)?;
+        state
+            .update_in(cx, |this, window, cx| {
+                this.input_state.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                });
+            })
+            .map_err(|_| AiChatError::GpuiError)?;
 
         let stream = runner.fetch();
         pin_mut!(stream);

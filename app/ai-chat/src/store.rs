@@ -30,6 +30,7 @@ pub struct ChatDataInner {
 pub struct AddConversationMessage {
     pub role: Role,
     pub content: Content,
+    pub send_content: serde_json::Value,
     pub status: Status,
 }
 
@@ -690,7 +691,7 @@ impl ChatData {
                         conversation.id,
                         initial_message.role,
                         initial_message.content.clone(),
-                        serde_json::Value::Null,
+                        initial_message.send_content.clone(),
                         initial_message.status,
                     ),
                     conn,
@@ -775,6 +776,7 @@ mod tests {
             conversation_path: format!("/conversation/{conversation_id}"),
             role: Role::User,
             content: Content::Text(format!("message {id}")),
+            send_content: serde_json::json!({}),
             status: Status::Normal,
             created_time: now(),
             updated_time: now(),

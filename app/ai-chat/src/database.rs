@@ -4,15 +4,16 @@ use crate::{
     errors::{AiChatError, AiChatResult},
 };
 use diesel::{
-    SqliteConnection,
+    Connection, SqliteConnection,
     connection::SimpleConnection,
     r2d2::{ConnectionManager, Pool},
 };
 use gpui::App;
-use std::{ops::Deref, path::PathBuf};
+use std::{ops::Deref, path::Path};
 use time::OffsetDateTime;
 use tracing::{Level, event};
 
+mod migrations;
 mod model;
 mod schema;
 mod service;
@@ -24,7 +25,10 @@ pub use service::{
 };
 pub use types::{Mode, Role, Status};
 
-static DATABASE_FILE: &str = "history.sqlite3";
+const DATABASE_FILE_V1: &str = "history.sqlite3";
+const DATABASE_FILE_V2: &str = "history_v2.sqlite3";
+const CREATE_TABLE_SQL: &str =
+    include_str!("../migrations/2025-12-23-141452-0000_create_tables/up.sql");
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -52,55 +56,93 @@ pub(crate) fn init_store(cx: &mut App) {
 }
 
 fn establish_connection() -> AiChatResult<DbConn> {
-    let url_path = get_data_url()?;
-    let not_exists = check_data_file(&url_path)?;
-    let url = url_path.to_str().ok_or(AiChatError::DbPath)?;
+    let data_dir = get_data_dir()?;
+    create_data_dir(&data_dir)?;
+    StoreVersion::new(&data_dir)?.migration()
+}
+
+enum StoreVersion {
+    None(DbConn),
+    V1 {
+        conn: DbConn,
+        v1_db: SqliteConnection,
+    },
+    V2(DbConn),
+}
+
+impl StoreVersion {
+    fn new(data_dir: &Path) -> AiChatResult<Self> {
+        let v1_path = data_dir.join(DATABASE_FILE_V1);
+        let v2_path = data_dir.join(DATABASE_FILE_V2);
+        match (v1_path.exists(), v2_path.exists()) {
+            (_, true) => Ok(Self::V2(get_dbconn(&v2_path)?)),
+            (true, false) => Ok(Self::V1 {
+                conn: get_dbconn(&v2_path)?,
+                v1_db: SqliteConnection::establish(v1_path.to_str().ok_or(AiChatError::DbPath)?)?,
+            }),
+            _ => Ok(Self::None(get_dbconn(&v2_path)?)),
+        }
+    }
+
+    fn migration(self) -> AiChatResult<DbConn> {
+        match self {
+            Self::None(conn) => {
+                event!(Level::INFO, "initialize database v2");
+                let mut db = conn.get()?;
+                init_tables(&mut db)?;
+                Ok(conn)
+            }
+            Self::V1 { conn, mut v1_db } => {
+                event!(Level::INFO, "migrate database from v1 to v2");
+                let v2_db = &mut conn.get()?;
+                if let Err(err) = migrations::v1_to_v2(&mut v1_db, v2_db) {
+                    event!(Level::ERROR, "database migration v1 -> v2 failed: {}", err);
+                    init_tables(v2_db)?;
+                }
+                Ok(conn)
+            }
+            Self::V2(conn) => Ok(conn),
+        }
+    }
+}
+
+fn get_data_dir() -> AiChatResult<std::path::PathBuf> {
+    Ok(dirs_next::config_dir()
+        .ok_or(AiChatError::DbPath)?
+        .join(APP_NAME))
+}
+
+fn create_data_dir(data_dir: &Path) -> AiChatResult<()> {
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)?;
+    }
+    Ok(())
+}
+
+fn get_dbconn(db_path: &Path) -> AiChatResult<DbConn> {
+    let url = db_path.to_str().ok_or(AiChatError::DbPath)?;
     let manager = ConnectionManager::<SqliteConnection>::new(url);
     let pool = Pool::builder().test_on_check_out(true).build(manager)?;
-    if not_exists {
-        event!(Level::INFO, "create tables");
-        create_tables(&pool)?;
-    }
     Ok(pool)
 }
 
-fn get_data_url() -> AiChatResult<PathBuf> {
-    let data_path = dirs_next::config_dir()
-        .ok_or(AiChatError::DbPath)?
-        .join(APP_NAME)
-        .join(DATABASE_FILE);
-    Ok(data_path)
-}
-
-fn check_data_file(url: &PathBuf) -> AiChatResult<bool> {
-    use std::fs::File;
-    if !url.exists() {
-        std::fs::create_dir_all(url.parent().ok_or(AiChatError::DbPath)?)?;
-        File::create(url)?;
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-fn create_tables(conn: &DbConn) -> AiChatResult<()> {
-    let conn = &mut conn.get()?;
-    conn.batch_execute(include_str!(
-        "../migrations/2025-12-23-141452-0000_create_tables/up.sql"
-    ))?;
-    // Insert conversation template
-    let default_conversation_template = SqlNewConversationTemplate::default()?;
-    let SqlConversationTemplate { id, .. } = default_conversation_template.insert(conn)?;
-    let now = OffsetDateTime::now_utc();
-    let default_conversation = SqlNewConversation {
-        title: "默认",
-        path: "/默认".to_string(),
-        folder_id: None,
-        icon: "🤖",
-        info: None,
-        template_id: id,
-        created_time: now,
-        updated_time: now,
-    };
-    default_conversation.insert(conn)?;
-    Ok(())
+fn init_tables(conn: &mut SqliteConnection) -> AiChatResult<()> {
+    conn.immediate_transaction(|conn| {
+        conn.batch_execute(CREATE_TABLE_SQL)?;
+        let default_conversation_template = SqlNewConversationTemplate::default()?;
+        let SqlConversationTemplate { id, .. } = default_conversation_template.insert(conn)?;
+        let now = OffsetDateTime::now_utc();
+        let default_conversation = SqlNewConversation {
+            title: "默认",
+            path: "/默认".to_string(),
+            folder_id: None,
+            icon: "🤖",
+            info: None,
+            template_id: id,
+            created_time: now,
+            updated_time: now,
+        };
+        default_conversation.insert(conn)?;
+        Ok(())
+    })
 }
