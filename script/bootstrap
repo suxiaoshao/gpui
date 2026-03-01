@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+case "${RUNNER_OS:-$(uname -s)}" in
+  Linux)
+    echo "Installing Linux dependencies..."
+    "$(dirname "$0")/install-linux.sh"
+    ;;
+  macOS|Darwin)
+    echo "No additional macOS system dependencies required."
+    ;;
+  *)
+    echo "No bootstrap steps required for this platform."
+    ;;
+esac

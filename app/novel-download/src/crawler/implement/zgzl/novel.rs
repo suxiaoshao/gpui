@@ -245,6 +245,7 @@ mod test {
     use super::Novel;
 
     #[tokio::test]
+    #[ignore = "requires live network access to m.zgzl.net"]
     async fn test_fetch_novel() -> anyhow::Result<()> {
         let (novel, start) =
             Novel::get_novel_data("https://m.zgzl.net/read_otew/68hq7.html").await?;

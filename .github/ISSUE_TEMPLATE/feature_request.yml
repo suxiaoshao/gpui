@@ -1,0 +1,53 @@
+name: Feature Request
+description: Propose a user-facing enhancement for an app or shared crate.
+title: "[feature] <app-or-crate>: "
+body:
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Target scope
+      description: Select the app or crate that should gain this feature.
+      options:
+        - ai-chat
+        - feiwen
+        - http-client
+        - novel-download
+        - window-ext
+        - xtask
+        - url_search
+        - workspace
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: Explain the user problem or workflow gap first.
+      placeholder: Users cannot...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior and UX.
+      placeholder: Add a screen / action / option that...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List rejected approaches, workarounds, or tradeoffs.
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Explain who benefits and what changes in practice.
+      placeholder: This would help users who...
+    validations:
+      required: true

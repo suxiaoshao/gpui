@@ -79,6 +79,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "requires live network access to m.zgzl.net"]
     async fn test_fetch_page_content() -> anyhow::Result<()> {
         let chapter_id = "68hq7";
         let novel_id = "otew";

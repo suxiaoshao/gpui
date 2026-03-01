@@ -1,0 +1,73 @@
+name: Bug Report
+description: Report a reproducible defect in one of the GPUI apps or shared crates.
+title: "[bug] <app-or-crate>: "
+body:
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected scope
+      description: Select the app or crate where the bug occurs.
+      options:
+        - ai-chat
+        - feiwen
+        - http-client
+        - novel-download
+        - window-ext
+        - xtask
+        - url_search
+        - workspace
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the actual problem in one concise paragraph.
+      placeholder: The app crashes when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide stable reproduction steps.
+      placeholder: |
+        1. Launch ...
+        2. Open ...
+        3. Click ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: It should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: It instead...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs, stack traces, or screenshots if available.
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, app version or commit, and any other context.
+      placeholder: macOS 15.3, main@abcdef, debug build
+    validations:
+      required: true
