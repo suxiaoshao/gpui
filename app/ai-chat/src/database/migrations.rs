@@ -76,7 +76,7 @@ struct LegacyTemplate {
     mode: Mode,
     adapter: String,
     template: serde_json::Value,
-    prompts: String,
+    prompts: serde_json::Value,
     created_time: OffsetDateTime,
     updated_time: OffsetDateTime,
 }
@@ -90,7 +90,7 @@ impl From<LegacyTemplate> for SqlConversationTemplate {
             description: value.description,
             mode: value.mode.to_string(),
             adapter: value.adapter,
-            template: value.template.to_string(),
+            template: value.template,
             prompts: value.prompts,
             created_time: value.created_time,
             updated_time: value.updated_time,
@@ -201,7 +201,7 @@ fn build_conversation_messages(
             conversation_path: message.conversation_path.clone(),
             role: message.role.clone(),
             content: message.content.clone(),
-            send_content: send_content.to_string(),
+            send_content,
             status: message.status.clone(),
             created_time: message.created_time,
             updated_time: message.updated_time,
@@ -226,7 +226,7 @@ fn build_request_payload(
     role: Role,
     send_text: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let prompts = serde_json::from_str::<Vec<ConversationTemplatePrompt>>(&template.prompts)?
+    let prompts = serde_json::from_value::<Vec<ConversationTemplatePrompt>>(template.prompts.clone())?
         .into_iter()
         .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
         .collect::<Vec<_>>();
@@ -344,7 +344,7 @@ impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
             mode: value.mode.parse()?,
             adapter: value.adapter,
             template: serde_json::from_str(&value.template)?,
-            prompts: value.prompts,
+            prompts: serde_json::from_str(&value.prompts)?,
             created_time: value.created_time,
             updated_time: value.updated_time,
         })
@@ -354,7 +354,7 @@ impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
 #[cfg(test)]
 mod tests {
     use super::v1_to_v2;
-    use crate::database::model::SqlMessage;
+    use crate::database::model::{SqlConversationTemplate, SqlMessage};
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query,
     };
@@ -483,12 +483,14 @@ create table messages
 
         v1_to_v2(&mut v1_conn, &mut v2_conn)?;
 
+        let templates = SqlConversationTemplate::all(&mut v2_conn)?;
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].prompts, serde_json::json!([]));
+
         let messages = SqlMessage::all(&mut v2_conn)?;
         assert_eq!(messages.len(), 2);
-        let first_send_content =
-            serde_json::from_str::<serde_json::Value>(&messages[0].send_content)?;
-        let second_send_content =
-            serde_json::from_str::<serde_json::Value>(&messages[1].send_content)?;
+        let first_send_content = &messages[0].send_content;
+        let second_send_content = &messages[1].send_content;
         assert_eq!(first_send_content["model"], "gpt-4o");
         assert_eq!(first_send_content["input"][0]["content"], "hello");
         assert_eq!(second_send_content, first_send_content);
