@@ -1,5 +1,5 @@
 use crate::{
-    components::chat_input::{ChatInput, Send, input_state},
+    components::chat_input::{ChatInput, Pause, Send, input_state},
     config::AiChatConfig,
     database::{
         Content, Conversation, ConversationTemplate, Db, Message, Mode, NewMessage, Role, Status,
@@ -34,7 +34,44 @@ pub(crate) struct ConversationPanelView {
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
-    task: Option<Task<()>>,
+    task: Option<RunningTask>,
+}
+
+struct RunningTask {
+    user_message_id: Option<i32>,
+    assistant_message_id: Option<i32>,
+    _task: Task<()>,
+}
+
+impl RunningTask {
+    fn new(task: Task<()>) -> Self {
+        Self {
+            user_message_id: None,
+            assistant_message_id: None,
+            _task: task,
+        }
+    }
+
+    fn bind_messages(&mut self, user_message_id: Option<i32>, assistant_message_id: Option<i32>) {
+        self.user_message_id = user_message_id;
+        self.assistant_message_id = assistant_message_id;
+    }
+
+    fn contains_message(&self, message_id: i32) -> bool {
+        running_task_contains_message(self.user_message_id, self.assistant_message_id, message_id)
+    }
+
+    fn message_ids(&self) -> [Option<i32>; 2] {
+        [self.user_message_id, self.assistant_message_id]
+    }
+}
+
+fn running_task_contains_message(
+    user_message_id: Option<i32>,
+    assistant_message_id: Option<i32>,
+    message_id: i32,
+) -> bool {
+    user_message_id == Some(message_id) || assistant_message_id == Some(message_id)
 }
 
 impl ConversationPanelView {
@@ -79,7 +116,7 @@ impl ConversationPanelView {
             let extension_container = cx.global::<ExtensionContainer>().clone();
             let conversation_id = self.conversation.id;
             let chat_data = cx.global::<ChatData>().deref().clone();
-            self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let task = cx.spawn_in(window, async move |this, cx| {
                 let state = this.clone();
                 let context = FetchContext {
                     chat_data,
@@ -96,10 +133,85 @@ impl ConversationPanelView {
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
                     let _ = this.update_result(cx, |this, _cx| {
-                        this.task = None;
+                        this.clear_running_task_for_message(None);
                     });
                 }
-            }));
+            });
+            self.task = Some(RunningTask::new(task));
+        }
+    }
+
+    fn on_pause_action(&mut self, _: &Pause, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(err) = self.pause_task(cx) {
+            event!(Level::ERROR, "pause fetch failed: {}", err);
+            cx.notify();
+        }
+    }
+
+    fn pause_task(&mut self, cx: &mut Context<Self>) -> AiChatResult<()> {
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+
+        let conversation_id = self.conversation.id;
+        let paused_messages = {
+            let conn = &mut cx.global::<Db>().get()?;
+            let mut paused_messages = Vec::new();
+            for message_id in task.message_ids().into_iter().flatten() {
+                let message = Message::find(message_id, conn)?;
+                if message.conversation_id != conversation_id
+                    || !matches!(message.status, Status::Loading)
+                {
+                    continue;
+                }
+                Message::update_status(message_id, Status::Normal, conn)?;
+                paused_messages.push(Message::find(message_id, conn)?);
+            }
+            paused_messages
+        };
+
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        chat_data.update(cx, move |data, cx| {
+            if let Ok(data) = data {
+                for message in paused_messages {
+                    data.replace_message(conversation_id, message);
+                }
+                cx.notify();
+            }
+        });
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn pause_message(&mut self, message_id: i32, cx: &mut Context<Self>) {
+        if !self
+            .task
+            .as_ref()
+            .is_some_and(|task| task.contains_message(message_id))
+        {
+            return;
+        }
+        if let Err(err) = self.pause_task(cx) {
+            event!(Level::ERROR, "pause message failed: {}", err);
+        }
+    }
+
+    fn bind_running_task_messages(
+        &mut self,
+        user_message_id: Option<i32>,
+        assistant_message_id: Option<i32>,
+    ) {
+        if let Some(task) = self.task.as_mut() {
+            task.bind_messages(user_message_id, assistant_message_id);
+        }
+    }
+
+    fn clear_running_task_for_message(&mut self, message_id: Option<i32>) {
+        let should_clear = self.task.as_ref().is_some_and(|task| {
+            message_id.is_none_or(|message_id| task.contains_message(message_id))
+        });
+        if should_clear {
+            self.task = None;
         }
     }
 
@@ -133,6 +245,9 @@ impl ConversationPanelView {
                 )
             })??;
             let user_message_id = user_message.id;
+            state.update_result(cx, |this, _cx| {
+                this.bind_running_task_messages(Some(user_message_id), None);
+            })?;
             context.chat_data.update_result(cx, |data, cx| {
                 if let Ok(data) = data {
                     data.add_message(context.conversation_id, user_message.clone());
@@ -240,7 +355,11 @@ impl ConversationPanelView {
                 })??;
             (runner, user_message, assistant_message)
         };
+        let user_message_id = user_message.id;
         let assistant_message_id = assistant_message.id;
+        state.update_result(cx, |this, _cx| {
+            this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+        })?;
         context.chat_data.update_result(cx, |data, cx| {
             if let Ok(data) = data {
                 data.replace_message(context.conversation_id, user_message);
@@ -280,7 +399,7 @@ impl ConversationPanelView {
                         }
                     })?;
                     state.update_result(cx, |this, _cx| {
-                        this.task = None;
+                        this.clear_running_task_for_message(Some(assistant_message_id));
                     })?;
                     return Ok(());
                 }
@@ -299,7 +418,7 @@ impl ConversationPanelView {
             }
         })?;
         state.update_result(cx, |this, _cx| {
-            this.task = None;
+            this.clear_running_task_for_message(Some(assistant_message_id));
         })?;
         Ok(())
     }
@@ -327,7 +446,7 @@ impl ConversationPanelView {
             }
         })?;
         state.update_result(cx, |this, _cx| {
-            this.task = None;
+            this.clear_running_task_for_message(Some(user_message_id));
         })?;
         Ok(())
     }
@@ -382,8 +501,9 @@ impl Render for ConversationPanelView {
                     .flex_initial()
                     .child(
                         ChatInput::new(&self.input_state, &self.extension_state)
-                            .disabled(self.task.is_some())
-                            .on_action(cx.listener(Self::on_send_action)),
+                            .running(self.task.is_some())
+                            .on_action(cx.listener(Self::on_send_action))
+                            .on_action(cx.listener(Self::on_pause_action)),
                     )
                     .px_2(),
             )
@@ -475,6 +595,13 @@ mod tests {
             end_time: now,
             error: None,
         }
+    }
+
+    #[test]
+    fn running_task_contains_any_bound_message() {
+        assert!(running_task_contains_message(Some(7), Some(8), 7));
+        assert!(running_task_contains_message(Some(7), Some(8), 8));
+        assert!(!running_task_contains_message(Some(7), Some(8), 9));
     }
 
     fn make_template(mode: Mode) -> ConversationTemplate {

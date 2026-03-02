@@ -183,6 +183,10 @@ impl MessageViewExt for Message {
         &self.status
     }
 
+    fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     fn id(&self) -> Self::Id {
         self.id
     }
@@ -202,6 +206,21 @@ impl MessageViewExt for Message {
             }
         };
         open_message_preview_window(message, cx);
+    }
+
+    fn pause_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let panel = cx
+            .global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel());
+        let Some(panel) = panel else {
+            return;
+        };
+        panel.update(cx, |this, cx| {
+            this.pause_message(id, cx);
+        });
     }
 
     fn delete_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {

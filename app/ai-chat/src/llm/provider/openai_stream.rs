@@ -14,7 +14,7 @@ use gpui::*;
 use gpui_component::description_list::DescriptionItem;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use reqwest::Client;
-use reqwest_eventsource::{Event, RequestBuilderExt};
+use reqwest_eventsource::{Error as EventSourceError, Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use toml::Value;
@@ -63,6 +63,10 @@ impl Default for OpenAIStreamSettings {
 }
 
 pub(crate) struct OpenAIStreamAdapter;
+
+fn is_normal_stream_end(error: &EventSourceError) -> bool {
+    matches!(error, EventSourceError::StreamEnded)
+}
 
 impl OpenAIStreamAdapter {
     fn get_body(
@@ -155,6 +159,9 @@ impl Adapter for OpenAIStreamAdapter {
                     }
                     Err(err) => {
                         es.close();
+                        if is_normal_stream_end(&err) {
+                            break;
+                        }
                         Err::<(), AiChatError>(err.into())?;
                     }
                 }
@@ -302,8 +309,9 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_response_stream_event;
+    use super::{is_normal_stream_end, parse_response_stream_event};
     use crate::errors::AiChatError;
+    use reqwest_eventsource::Error as EventSourceError;
 
     #[test]
     fn parse_stream_delta_event() -> anyhow::Result<()> {
@@ -337,5 +345,10 @@ mod tests {
         let error = parse_response_stream_event(event).unwrap_err();
         assert!(matches!(error, AiChatError::StreamError(ref msg) if msg == "request failed"));
         Ok(())
+    }
+
+    #[test]
+    fn stream_ended_is_treated_as_normal_exit() {
+        assert!(is_normal_stream_end(&EventSourceError::StreamEnded));
     }
 }

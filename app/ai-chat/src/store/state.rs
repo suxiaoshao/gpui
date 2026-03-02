@@ -373,6 +373,17 @@ impl ChatDataInner {
             }
         })
     }
+    pub(crate) fn active_conversation_panel(&self) -> Option<Entity<ConversationPanelView>> {
+        self.tabs.iter().find_map(|tab| {
+            if Some(tab.kind) != self.active_tab {
+                return None;
+            }
+            match &tab.panel {
+                TabPanel::Conversation(panel) => Some(panel.clone()),
+                TabPanel::TemplateList(_) | TabPanel::TemplateDetail(_) => None,
+            }
+        })
+    }
     pub(crate) fn panel_messages(&self) -> Vec<MessageView<Message>> {
         if let Some(TabKind::Conversation(conversation_id)) = self.active_tab
             && let Some(conversation) =

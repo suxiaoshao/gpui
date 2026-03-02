@@ -1,7 +1,7 @@
 use crate::{
     components::{
         add_conversation::add_conversation_dialog_with_messages,
-        chat_input::{ChatInput, Send, input_state},
+        chat_input::{ChatInput, Pause, Send, input_state},
         message::{MessageView, MessageViewExt},
     },
     config::AiChatConfig,
@@ -72,12 +72,16 @@ impl MessageViewExt for TemporaryMessage {
         &self.content
     }
 
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
     fn status(&self) -> &Status {
         &self.status
+    }
+
+    fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
     }
 
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -95,6 +99,19 @@ impl MessageViewExt for TemporaryMessage {
             return;
         };
         open_message_preview_window(message, cx);
+    }
+
+    fn pause_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
+        let temporary_view = find_temporary_view(window, cx);
+        if let Some(temporary_view) = temporary_view {
+            temporary_view.update(cx, |this, cx| {
+                if let Some(template_detail) = this.selected_item.as_ref() {
+                    template_detail.update(cx, |this, cx| {
+                        this.pause_message(message_id, cx);
+                    });
+                }
+            });
+        }
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -196,8 +213,41 @@ pub(crate) struct TemplateDetailView {
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
-    task: Option<Task<()>>,
+    task: Option<RunningTask>,
     autoincrement_id: usize,
+}
+
+struct RunningTask {
+    user_message_id: Option<usize>,
+    assistant_message_id: Option<usize>,
+    _task: Task<()>,
+}
+
+impl RunningTask {
+    fn new(task: Task<()>) -> Self {
+        Self {
+            user_message_id: None,
+            assistant_message_id: None,
+            _task: task,
+        }
+    }
+
+    fn bind_messages(
+        &mut self,
+        user_message_id: Option<usize>,
+        assistant_message_id: Option<usize>,
+    ) {
+        self.user_message_id = user_message_id;
+        self.assistant_message_id = assistant_message_id;
+    }
+
+    fn contains_message(&self, message_id: usize) -> bool {
+        self.user_message_id == Some(message_id) || self.assistant_message_id == Some(message_id)
+    }
+
+    fn message_ids(&self) -> [Option<usize>; 2] {
+        [self.user_message_id, self.assistant_message_id]
+    }
 }
 
 impl TemplateDetailView {
@@ -259,7 +309,7 @@ impl TemplateDetailView {
         if self.task.is_none() && !text.is_empty() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
-            self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let task = cx.spawn_in(window, async move |this, cx| {
                 if let Err(err) = Self::fetch(
                     this,
                     &text,
@@ -274,8 +324,22 @@ impl TemplateDetailView {
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
                 };
-            }));
+            });
+            self.task = Some(RunningTask::new(task));
         }
+    }
+    fn on_pause_action(&mut self, _: &Pause, _window: &mut Window, cx: &mut Context<Self>) {
+        self.pause_running_task(cx);
+    }
+    fn pause_message(&mut self, message_id: usize, cx: &mut Context<Self>) {
+        if !self
+            .task
+            .as_ref()
+            .is_some_and(|task| task.contains_message(message_id))
+        {
+            return;
+        }
+        self.pause_running_task(cx);
     }
     fn on_clear_conversation(
         &mut self,
@@ -345,13 +409,46 @@ impl TemplateDetailView {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
         }
-        self.task = None;
+        self.clear_running_task_for_message(Some(message_id));
     }
     fn on_success(&mut self, message_id: usize) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
         }
-        self.task = None;
+        self.clear_running_task_for_message(Some(message_id));
+    }
+    fn bind_running_task_messages(
+        &mut self,
+        user_message_id: Option<usize>,
+        assistant_message_id: Option<usize>,
+    ) {
+        if let Some(task) = self.task.as_mut() {
+            task.bind_messages(user_message_id, assistant_message_id);
+        }
+    }
+    fn clear_running_task_for_message(&mut self, message_id: Option<usize>) {
+        let should_clear = self.task.as_ref().is_some_and(|task| {
+            message_id.is_none_or(|message_id| task.contains_message(message_id))
+        });
+        if should_clear {
+            self.task = None;
+        }
+    }
+    fn pause_running_task(&mut self, cx: &mut Context<Self>) {
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        for message_id in task.message_ids().into_iter().flatten() {
+            if let Some(message) = self
+                .messages
+                .iter_mut()
+                .find(|message| message.id == message_id)
+                && matches!(message.status, Status::Loading)
+            {
+                message.update_status(Status::Normal);
+            }
+        }
+        cx.notify();
     }
     async fn fetch(
         state: WeakEntity<Self>,
@@ -365,7 +462,7 @@ impl TemplateDetailView {
         let request_text = text.to_string();
         let now = OffsetDateTime::now_utc();
         let user_message_id = if extension_name.is_some() {
-            state.update_in_result(cx, |this, window, cx| {
+            let user_message_id = state.update_in_result(cx, |this, window, cx| {
                 this.input_state.update(cx, |input, cx| {
                     input.set_value("", window, cx);
                 });
@@ -378,7 +475,11 @@ impl TemplateDetailView {
                     None,
                 )
                 .id
-            })?
+            })?;
+            state.update_result(cx, |this, _cx| {
+                this.bind_running_task_messages(Some(user_message_id), None);
+            })?;
+            user_message_id
         } else {
             0
         };
@@ -440,6 +541,9 @@ impl TemplateDetailView {
                 )
                 .id
             })?;
+            state.update_result(cx, |this, _cx| {
+                this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+            })?;
             (runner, assistant_message_id)
         } else {
             let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
@@ -456,23 +560,28 @@ impl TemplateDetailView {
                 this.input_state.update(cx, |input, cx| {
                     input.set_value("", window, cx);
                 });
-                this.add_message(
-                    now,
-                    Role::User,
-                    content.clone(),
-                    send_content.clone(),
-                    Status::Normal,
-                    None,
-                );
-                this.add_message(
-                    now,
-                    Role::Assistant,
-                    Content::Text(String::new()),
-                    send_content.clone(),
-                    Status::Loading,
-                    None,
-                )
-                .id
+                let user_message_id = this
+                    .add_message(
+                        now,
+                        Role::User,
+                        content.clone(),
+                        send_content.clone(),
+                        Status::Normal,
+                        None,
+                    )
+                    .id;
+                let assistant_message_id = this
+                    .add_message(
+                        now,
+                        Role::Assistant,
+                        Content::Text(String::new()),
+                        send_content.clone(),
+                        Status::Loading,
+                        None,
+                    )
+                    .id;
+                this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+                assistant_message_id
             })?;
             (runner, assistant_message_id)
         };
@@ -637,8 +746,9 @@ impl Render for TemplateDetailView {
                     .flex_initial()
                     .child(
                         ChatInput::new(&self.input_state, &self.extension_state)
-                            .disabled(self.task.is_some())
-                            .on_action(cx.listener(Self::on_send_action)),
+                            .running(self.task.is_some())
+                            .on_action(cx.listener(Self::on_send_action))
+                            .on_action(cx.listener(Self::on_pause_action)),
                     )
                     .px_2(),
             )

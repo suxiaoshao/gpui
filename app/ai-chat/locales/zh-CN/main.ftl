@@ -33,6 +33,8 @@ button-submit = 提交
 tooltip-copy = 复制
 tooltip-delete = 删除
 tooltip-view-detail = 查看详情
+tooltip-send-message = 发送消息
+tooltip-pause-message = 暂停生成
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
 
