@@ -6,9 +6,9 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/model/conversation_templates.rs
  */
 use crate::{
-    adapter::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
     database::{Mode, service::ConversationTemplatePrompt},
     errors::AiChatResult,
+    llm::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
 };
 
 use super::super::schema::conversation_templates;

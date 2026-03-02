@@ -7,9 +7,9 @@
  */
 use crate::{
     APP_NAME,
-    adapter::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
     errors::{AiChatError, AiChatResult},
     hotkey::TemporaryData,
+    llm::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};

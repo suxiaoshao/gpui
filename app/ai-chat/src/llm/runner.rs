@@ -1,6 +1,5 @@
-pub use self::types::{ChatRequest, Message, OpenAIResponseStreamEvent};
+use super::{Adapter, Message, adapter_by_name};
 use crate::{
-    adapter::adapter_by_name,
     config::AiChatConfig,
     database::{Content, Role},
     errors::{AiChatError, AiChatResult},
@@ -8,14 +7,12 @@ use crate::{
 };
 use futures::pin_mut;
 
-mod types;
-
 pub trait FetchRunner {
     fn get_adapter(&self) -> &str;
     fn get_template(&self) -> &serde_json::Value;
     fn get_config(&self) -> &AiChatConfig;
     fn get_history(&self) -> Vec<Message>;
-    fn adapter(&self) -> AiChatResult<&'static dyn crate::adapter::Adapter> {
+    fn adapter(&self) -> AiChatResult<&'static dyn Adapter> {
         adapter_by_name(self.get_adapter())
     }
     fn request_body(&self) -> AiChatResult<serde_json::Value> {
@@ -102,7 +99,7 @@ mod tests {
             CONFIG.get_or_init(crate::config::AiChatConfig::default)
         }
 
-        fn get_history(&self) -> Vec<crate::fetch::Message> {
+        fn get_history(&self) -> Vec<crate::llm::Message> {
             Vec::new()
         }
     }

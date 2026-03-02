@@ -8,16 +8,15 @@ use crate::{
     database::{Content, ConversationTemplate, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
-    fetch::FetchRunner,
     i18n::I18n,
+    llm::FetchRunner,
     store::AddConversationMessage,
     views::{
-        message_preview::{MessagePreview, MessagePreviewExt},
+        message_preview::{MessagePreviewExt, open_message_preview_window},
         temporary::TemporaryView,
     },
 };
 use async_compat::CompatExt;
-use fluent_bundle::FluentArgs;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -93,35 +92,7 @@ impl MessageViewExt for TemporaryMessage {
         let Some(message) = message else {
             return;
         };
-        let title = {
-            let i18n = cx.global::<I18n>();
-            let mut args = FluentArgs::new();
-            args.set("id", message.id as i64);
-            i18n.t_with_args("message-preview-title", &args)
-        };
-        match cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(800.), px(600.)),
-                    cx,
-                ))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
-                cx.new(|cx| Root::new(message_view, window, cx))
-            },
-        ) {
-            Ok(_) => {}
-            Err(err) => {
-                event!(Level::ERROR, "open message view window: {}", err);
-            }
-        };
+        open_message_preview_window(message, cx);
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -471,8 +442,8 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn get_history(&self) -> Vec<crate::fetch::Message> {
-        use crate::fetch::Message as FetchMessage;
+    fn get_history(&self) -> Vec<crate::llm::Message> {
+        use crate::llm::Message as FetchMessage;
         let mut prompts = self
             .template
             .prompts

@@ -14,16 +14,15 @@ use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-mod adapter;
 mod assets;
 mod components;
 mod config;
 mod database;
 mod errors;
 mod extensions;
-mod fetch;
 mod hotkey;
 mod i18n;
+mod llm;
 mod store;
 mod views;
 

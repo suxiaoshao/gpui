@@ -1,10 +1,10 @@
 use crate::{
-    adapter::{InputItem, InputType, adapter_names, template_inputs_by_adapter},
     config::AiChatConfig,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, Mode, NewConversationTemplate, Role,
     },
     i18n::{I18n, t_static},
+    llm::{InputItem, InputType, adapter_names, template_inputs_by_adapter},
 };
 use gpui::*;
 use gpui_component::{

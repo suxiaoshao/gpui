@@ -1,11 +1,10 @@
 use crate::{
-    adapter::adapter_by_name,
     database::{
         CREATE_TABLE_SQL, Content, ConversationTemplatePrompt, Mode, Role, Status,
         model::{SqlConversation, SqlConversationTemplate, SqlFolder, SqlMessage},
     },
     errors::AiChatResult,
-    fetch::Message as FetchMessage,
+    llm::{Message as FetchMessage, adapter_by_name},
 };
 use diesel::{SqliteConnection, connection::SimpleConnection};
 use std::collections::HashMap;

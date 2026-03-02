@@ -1,9 +1,9 @@
 use crate::{
-    adapter::{description_items_by_adapter, description_items_default},
     components::template_edit_dialog::open_template_edit_dialog,
     database::{ConversationTemplate, Db, Mode, Role},
     errors::AiChatResult,
     i18n::I18n,
+    llm::{description_items_by_adapter, description_items_default},
     store::{ChatData, ChatDataEvent},
 };
 use gpui::*;

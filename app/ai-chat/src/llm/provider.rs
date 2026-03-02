@@ -1,8 +1,8 @@
+use super::Message;
 use crate::{
     config::AiChatConfig,
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
-    fetch::Message,
     i18n::t_static,
 };
 use futures::stream::BoxStream;

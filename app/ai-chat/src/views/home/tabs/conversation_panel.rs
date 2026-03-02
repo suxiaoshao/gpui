@@ -6,7 +6,7 @@ use crate::{
     },
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
-    fetch::FetchRunner,
+    llm::FetchRunner,
     store::{ChatData, ChatDataInner},
 };
 use async_compat::CompatExt;
@@ -335,8 +335,8 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn get_history(&self) -> Vec<crate::fetch::Message> {
-        use crate::fetch::Message as FetchMessage;
+    fn get_history(&self) -> Vec<crate::llm::Message> {
+        use crate::llm::Message as FetchMessage;
         let mut prompts_messages = self
             .template
             .prompts

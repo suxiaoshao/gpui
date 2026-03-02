@@ -1,6 +1,11 @@
 use crate::{
-    components::message::MessageViewExt, database::Content, errors::AiChatResult, i18n::I18n,
+    components::message::MessageViewExt,
+    database::{Content, Db, Message},
+    errors::AiChatResult,
+    i18n::I18n,
+    store::{ChatData, ChatDataEvent},
 };
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     IconName, Root, WindowExt,
@@ -11,7 +16,7 @@ use gpui_component::{
     v_flex,
 };
 use std::ops::Deref;
-use tracing::event;
+use tracing::{Level, event};
 
 #[derive(Debug)]
 enum PreviewType {
@@ -122,6 +127,38 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
     }
 }
 
+pub(crate) fn open_message_preview_window<T>(message: T, cx: &mut App)
+where
+    T: MessagePreviewExt + Clone + 'static,
+{
+    let title = {
+        let i18n = cx.global::<I18n>();
+        let mut args = FluentArgs::new();
+        args.set("id", message.id().to_string());
+        i18n.t_with_args("message-preview-title", &args)
+    };
+    if let Err(err) = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(800.), px(600.)),
+                cx,
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some(title.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        move |window, cx| {
+            let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
+            cx.new(|cx| Root::new(message_view, window, cx))
+        },
+    ) {
+        event!(Level::ERROR, "open message view window: {}", err);
+    }
+}
+
 pub trait MessagePreviewExt: MessageViewExt {
     fn on_update_content(
         &self,
@@ -129,6 +166,63 @@ pub trait MessagePreviewExt: MessageViewExt {
         window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()>;
+}
+
+impl MessageViewExt for Message {
+    type Id = i32;
+
+    fn role(&self) -> &crate::database::Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn status(&self) -> &crate::database::Status {
+        &self.status
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn open_view_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let message = match cx.global::<Db>().get() {
+            Ok(mut conn) => match Message::find(id, &mut conn) {
+                Ok(message) => message,
+                Err(err) => {
+                    event!(Level::ERROR, "find message failed: {}", err);
+                    return;
+                }
+            },
+            Err(err) => {
+                event!(Level::ERROR, "get db failed: {}", err);
+                return;
+            }
+        };
+        open_message_preview_window(message, cx);
+    }
+
+    fn delete_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        chat_data.update(cx, move |_this, cx| {
+            cx.emit(ChatDataEvent::DeleteMessage(id));
+        });
+    }
+}
+
+impl MessagePreviewExt for Message {
+    fn on_update_content(
+        &self,
+        content: Content,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::update_content(self.id, &content, conn)?;
+        Ok(())
+    }
 }
 
 impl<T: MessagePreviewExt> Render for MessagePreview<T> {

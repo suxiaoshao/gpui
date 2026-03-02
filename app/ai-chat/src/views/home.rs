@@ -11,7 +11,6 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
-pub(crate) use sidebar::{Add, AddShift};
 pub(crate) use tabs::{
     ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
 };
