@@ -263,16 +263,17 @@ impl ChatData {
         let mut conversation = Conversation::insert(new_conversation, conn)?;
         if let Some(initial_messages) = input.initial_messages {
             for initial_message in initial_messages {
-                let message = Message::insert(
-                    NewMessage::new(
-                        conversation.id,
-                        initial_message.role,
-                        initial_message.content.clone(),
-                        initial_message.send_content.clone(),
-                        initial_message.status,
-                    ),
-                    conn,
-                )?;
+                let mut new_message = NewMessage::new(
+                    conversation.id,
+                    initial_message.role,
+                    initial_message.content.clone(),
+                    initial_message.send_content.clone(),
+                    initial_message.status,
+                );
+                if let Some(error) = initial_message.error.as_ref() {
+                    new_message = new_message.with_error(error.clone());
+                }
+                let message = Message::insert(new_message, conn)?;
                 conversation.messages.push(message);
             }
         }

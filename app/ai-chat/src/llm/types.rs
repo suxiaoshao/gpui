@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 mod chat_request;
 mod message;
@@ -6,9 +6,25 @@ mod message;
 pub use chat_request::ChatRequest;
 pub use message::Message;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct OpenAIResponseStreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub delta: Option<String>,
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum OpenAIResponseStreamEvent {
+    #[serde(rename = "response.output_text.delta")]
+    ResponseOutputTextDelta { delta: String },
+    #[serde(rename = "error")]
+    Error { message: String },
+    #[serde(rename = "response.failed")]
+    ResponseFailed { response: OpenAIResponse },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIResponse {
+    pub error: OpenAIResponseError,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIResponseError {
+    pub message: String,
 }

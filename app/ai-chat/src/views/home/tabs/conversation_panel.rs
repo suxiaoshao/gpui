@@ -6,6 +6,7 @@ use crate::{
     },
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
+    gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::FetchRunner,
     store::{ChatData, ChatDataInner},
 };
@@ -94,7 +95,7 @@ impl ConversationPanelView {
                     .await
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
-                    let _ = this.update(cx, |this, _cx| {
+                    let _ = this.update_result(cx, |this, _cx| {
                         this.task = None;
                     });
                 }
@@ -108,151 +109,226 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "conversation fetch");
-        let extension_runner = match context.extension_name.as_ref() {
-            Some(extension_name) => Some(
-                context
-                    .extension_container
-                    .get_extension(extension_name)
-                    .await?,
-            ),
-            None => None,
-        };
-        state
-            .update_in(cx, |this, window, cx| {
-                this.input_state.update(cx, |input, cx| {
-                    input.set_value("", window, cx);
-                });
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+        let request_text = context.text.to_string();
+        state.update_in_result(cx, |this, window, cx| {
+            this.input_state.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        })?;
 
-        let (conversation, template) = cx
-            .read_global(|db: &Db, _window, _cx| {
+        let (runner, user_message, assistant_message) = if let Some(extension_name) =
+            context.extension_name.as_ref()
+        {
+            let user_message = cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                Message::insert(
+                    NewMessage::new(
+                        context.conversation_id,
+                        Role::User,
+                        Content::Text(request_text.clone()),
+                        serde_json::json!({}),
+                        Status::Loading,
+                    ),
+                    conn,
+                )
+            })??;
+            let user_message_id = user_message.id;
+            context.chat_data.update_result(cx, |data, cx| {
+                if let Ok(data) = data {
+                    data.add_message(context.conversation_id, user_message.clone());
+                    cx.notify();
+                }
+            })?;
+
+            let extension_runner = match context
+                .extension_container
+                .get_extension(extension_name)
+                .await
+            {
+                Ok(extension_runner) => extension_runner,
+                Err(error) => {
+                    Self::record_extension_error(state, user_message_id, &context, error, cx)
+                        .await?;
+                    return Ok(());
+                }
+            };
+            let user_content =
+                match Runner::get_new_user_content(request_text.clone(), Some(extension_runner))
+                    .await
+                {
+                    Ok(content) => content,
+                    Err(error) => {
+                        Self::record_extension_error(state, user_message_id, &context, error, cx)
+                            .await?;
+                        return Ok(());
+                    }
+                };
+            let (conversation, template) = cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
                 let conversation = Conversation::find(context.conversation_id, conn)?;
                 let template = ConversationTemplate::find(conversation.template_id, conn)?;
                 Ok::<_, AiChatError>((conversation, template))
-            })
-            .map_err(|_| AiChatError::GpuiError)??;
-
-        let user_content =
-            Runner::get_new_user_content(context.text.to_string(), extension_runner).await?;
-        let runner = Runner {
-            config: context.config,
-            template: template.clone(),
-            history_messages: conversation.messages,
-            user_message_role: Role::User,
-            user_message_content: user_content.send_content().to_string(),
-        };
-        let send_content = runner.request_body()?;
-        let (user_message, assistant_message) = cx
-            .read_global(|db: &Db, _window, _cx| {
+            })??;
+            let runner = Runner {
+                config: context.config.clone(),
+                template: template.clone(),
+                history_messages: conversation.messages,
+                user_message_role: Role::User,
+                user_message_content: user_content.send_content().to_string(),
+            };
+            let send_content = runner.request_body()?;
+            let (user_message, assistant_message) =
+                cx.read_global_result(|db: &Db, _window, _cx| {
+                    let conn = &mut db.get()?;
+                    Message::update_content(user_message_id, &user_content, conn)?;
+                    Message::update_send_content(user_message_id, send_content.clone(), conn)?;
+                    Message::update_status(user_message_id, Status::Normal, conn)?;
+                    let user_message = Message::find(user_message_id, conn)?;
+                    let assistant_message = Message::insert(
+                        NewMessage::new(
+                            context.conversation_id,
+                            Role::Assistant,
+                            Content::Text(String::new()),
+                            send_content.clone(),
+                            Status::Loading,
+                        ),
+                        conn,
+                    )?;
+                    Ok::<_, AiChatError>((user_message, assistant_message))
+                })??;
+            (runner, user_message, assistant_message)
+        } else {
+            let (conversation, template) = cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
-                let user_message = Message::insert(
-                    NewMessage::new(
-                        context.conversation_id,
-                        Role::User,
-                        user_content.clone(),
-                        send_content.clone(),
-                        Status::Normal,
-                    ),
-                    conn,
-                )?;
-                let assistant_message = Message::insert(
-                    NewMessage::new(
-                        context.conversation_id,
-                        Role::Assistant,
-                        Content::Text(String::new()),
-                        send_content.clone(),
-                        Status::Loading,
-                    ),
-                    conn,
-                )?;
-                Ok::<_, AiChatError>((user_message, assistant_message))
-            })
-            .map_err(|_| AiChatError::GpuiError)??;
+                let conversation = Conversation::find(context.conversation_id, conn)?;
+                let template = ConversationTemplate::find(conversation.template_id, conn)?;
+                Ok::<_, AiChatError>((conversation, template))
+            })??;
+            let user_content = Content::Text(request_text.clone());
+            let runner = Runner {
+                config: context.config.clone(),
+                template: template.clone(),
+                history_messages: conversation.messages,
+                user_message_role: Role::User,
+                user_message_content: user_content.send_content().to_string(),
+            };
+            let send_content = runner.request_body()?;
+            let (user_message, assistant_message) =
+                cx.read_global_result(|db: &Db, _window, _cx| {
+                    let conn = &mut db.get()?;
+                    let user_message = Message::insert(
+                        NewMessage::new(
+                            context.conversation_id,
+                            Role::User,
+                            user_content.clone(),
+                            send_content.clone(),
+                            Status::Normal,
+                        ),
+                        conn,
+                    )?;
+                    let assistant_message = Message::insert(
+                        NewMessage::new(
+                            context.conversation_id,
+                            Role::Assistant,
+                            Content::Text(String::new()),
+                            send_content.clone(),
+                            Status::Loading,
+                        ),
+                        conn,
+                    )?;
+                    Ok::<_, AiChatError>((user_message, assistant_message))
+                })??;
+            (runner, user_message, assistant_message)
+        };
         let assistant_message_id = assistant_message.id;
-        context
-            .chat_data
-            .update(cx, |data, cx| {
-                if let Ok(data) = data {
-                    data.add_message(context.conversation_id, user_message);
-                    data.add_message(context.conversation_id, assistant_message);
-                    cx.notify();
-                }
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+        context.chat_data.update_result(cx, |data, cx| {
+            if let Ok(data) = data {
+                data.replace_message(context.conversation_id, user_message);
+                data.add_message(context.conversation_id, assistant_message);
+                cx.notify();
+            }
+        })?;
 
         let stream = runner.fetch();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
                 Ok(message) => {
-                    let message = cx
-                        .read_global(|db: &Db, _window, _cx| {
-                            let conn = &mut db.get()?;
-                            Message::add_content(assistant_message_id, message, conn)?;
-                            Message::find(assistant_message_id, conn)
-                        })
-                        .map_err(|_| AiChatError::GpuiError)??;
-                    context
-                        .chat_data
-                        .update(cx, |data, cx| {
-                            if let Ok(data) = data {
-                                data.replace_message(context.conversation_id, message);
-                                cx.notify();
-                            }
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    let message = cx.read_global_result(|db: &Db, _window, _cx| {
+                        let conn = &mut db.get()?;
+                        Message::add_content(assistant_message_id, message, conn)?;
+                        Message::find(assistant_message_id, conn)
+                    })??;
+                    context.chat_data.update_result(cx, |data, cx| {
+                        if let Ok(data) = data {
+                            data.replace_message(context.conversation_id, message);
+                            cx.notify();
+                        }
+                    })?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    let message = cx
-                        .read_global(|db: &Db, _window, _cx| {
-                            let conn = &mut db.get()?;
-                            Message::update_status(assistant_message_id, Status::Error, conn)?;
-                            Message::find(assistant_message_id, conn)
-                        })
-                        .map_err(|_| AiChatError::GpuiError)??;
-                    context
-                        .chat_data
-                        .update(cx, |data, cx| {
-                            if let Ok(data) = data {
-                                data.replace_message(context.conversation_id, message);
-                                cx.notify();
-                            }
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
-                    state
-                        .update(cx, |this, _cx| {
-                            this.task = None;
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    let message = cx.read_global_result(|db: &Db, _window, _cx| {
+                        let conn = &mut db.get()?;
+                        Message::record_error(assistant_message_id, error.to_string(), conn)?;
+                        Message::find(assistant_message_id, conn)
+                    })??;
+                    context.chat_data.update_result(cx, |data, cx| {
+                        if let Ok(data) = data {
+                            data.replace_message(context.conversation_id, message);
+                            cx.notify();
+                        }
+                    })?;
+                    state.update_result(cx, |this, _cx| {
+                        this.task = None;
+                    })?;
                     return Ok(());
                 }
             }
         }
 
-        let message = cx
-            .read_global(|db: &Db, _window, _cx| {
-                let conn = &mut db.get()?;
-                Message::update_status(assistant_message_id, Status::Normal, conn)?;
-                Message::find(assistant_message_id, conn)
-            })
-            .map_err(|_| AiChatError::GpuiError)??;
-        context
-            .chat_data
-            .update(cx, |data, cx| {
-                if let Ok(data) = data {
-                    data.replace_message(context.conversation_id, message);
-                    cx.notify();
-                }
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-        state
-            .update(cx, |this, _cx| {
-                this.task = None;
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+        let message = cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            Message::update_status(assistant_message_id, Status::Normal, conn)?;
+            Message::find(assistant_message_id, conn)
+        })??;
+        context.chat_data.update_result(cx, |data, cx| {
+            if let Ok(data) = data {
+                data.replace_message(context.conversation_id, message);
+                cx.notify();
+            }
+        })?;
+        state.update_result(cx, |this, _cx| {
+            this.task = None;
+        })?;
+        Ok(())
+    }
+
+    async fn record_extension_error(
+        state: WeakEntity<Self>,
+        user_message_id: i32,
+        context: &FetchContext,
+        error: AiChatError,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let error = match context.extension_name.as_deref() {
+            Some(extension_name) => format!("extension {extension_name}: {error}"),
+            None => error.to_string(),
+        };
+        let user_message = cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            Message::record_error(user_message_id, error, conn)?;
+            Message::find(user_message_id, conn)
+        })??;
+        context.chat_data.update_result(cx, |data, cx| {
+            if let Ok(data) = data {
+                data.replace_message(context.conversation_id, user_message);
+                cx.notify();
+            }
+        })?;
+        state.update_result(cx, |this, _cx| {
+            this.task = None;
+        })?;
         Ok(())
     }
 }
@@ -397,6 +473,7 @@ mod tests {
             updated_time: now,
             start_time: now,
             end_time: now,
+            error: None,
         }
     }
 

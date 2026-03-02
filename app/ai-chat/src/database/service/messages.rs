@@ -134,6 +134,7 @@ pub struct Message {
         deserialize_with = "deserialize_offset_date_time"
     )]
     pub end_time: OffsetDateTime,
+    pub error: Option<String>,
 }
 
 impl TryFrom<SqlMessage> for Message {
@@ -152,6 +153,7 @@ impl TryFrom<SqlMessage> for Message {
             updated_time: value.updated_time,
             start_time: value.start_time,
             end_time: value.end_time,
+            error: value.error,
         })
     }
 }
@@ -163,6 +165,7 @@ pub struct NewMessage {
     pub content: Content,
     pub send_content: serde_json::Value,
     pub status: Status,
+    pub error: Option<String>,
 }
 
 impl NewMessage {
@@ -179,7 +182,13 @@ impl NewMessage {
             content,
             send_content,
             status,
+            error: None,
         }
+    }
+
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error = Some(error.into());
+        self
     }
 }
 
@@ -191,6 +200,7 @@ impl Message {
             content,
             send_content,
             status,
+            error,
         }: NewMessage,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<Message> {
@@ -209,6 +219,7 @@ impl Message {
                 updated_time: time,
                 start_time: time,
                 end_time: time,
+                error,
             };
             let message = new_message.insert(conn)?;
             Message::try_from(message)
@@ -241,9 +252,27 @@ impl Message {
         SqlMessage::update_status(id, status, time, conn)?;
         Ok(())
     }
+    pub fn record_error(
+        id: i32,
+        error: impl Into<String>,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::record_error(id, error.into(), time, conn)?;
+        Ok(())
+    }
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Message> {
         let message = SqlMessage::find(id, conn)?;
         Message::try_from(message)
+    }
+    pub fn update_send_content(
+        id: i32,
+        send_content: serde_json::Value,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::update_send_content(id, send_content, time, conn)?;
+        Ok(())
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         SqlMessage::delete(id, conn)?;

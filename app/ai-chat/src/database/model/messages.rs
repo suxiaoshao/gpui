@@ -18,6 +18,7 @@ pub struct SqlNewMessage {
     pub(in super::super) updated_time: OffsetDateTime,
     pub(in super::super) start_time: OffsetDateTime,
     pub(in super::super) end_time: OffsetDateTime,
+    pub(in super::super) error: Option<String>,
 }
 
 impl SqlNewMessage {
@@ -49,6 +50,7 @@ pub struct SqlMessage {
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
     pub end_time: OffsetDateTime,
+    pub error: Option<String>,
 }
 
 impl SqlMessage {
@@ -85,6 +87,22 @@ impl SqlMessage {
         diesel::update(messages::table.filter(messages::id.eq(id)))
             .set((
                 messages::status.eq(status.to_string()),
+                messages::updated_time.eq(time),
+                messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
+    pub fn record_error(
+        id: i32,
+        error: String,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::status.eq(Status::Error.to_string()),
+                messages::error.eq(Some(error)),
                 messages::updated_time.eq(time),
                 messages::end_time.eq(time),
             ))

@@ -53,6 +53,7 @@ diesel::table! {
         updated_time -> TimestamptzSqlite,
         start_time -> TimestamptzSqlite,
         end_time -> TimestamptzSqlite,
+        error -> Nullable<Text>,
     }
 }
 

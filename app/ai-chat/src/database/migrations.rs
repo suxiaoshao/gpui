@@ -207,6 +207,7 @@ fn build_conversation_messages(
             updated_time: message.updated_time,
             start_time: message.start_time,
             end_time: message.end_time,
+            error: None,
         });
 
         if status == Status::Normal {
@@ -226,10 +227,11 @@ fn build_request_payload(
     role: Role,
     send_text: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let prompts = serde_json::from_value::<Vec<ConversationTemplatePrompt>>(template.prompts.clone())?
-        .into_iter()
-        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
-        .collect::<Vec<_>>();
+    let prompts =
+        serde_json::from_value::<Vec<ConversationTemplatePrompt>>(template.prompts.clone())?
+            .into_iter()
+            .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
+            .collect::<Vec<_>>();
 
     let history = match template.mode {
         Mode::Contextual => history_messages.to_vec(),
@@ -489,6 +491,7 @@ create table messages
 
         let messages = SqlMessage::all(&mut v2_conn)?;
         assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|message| message.error.is_none()));
         let first_send_content = &messages[0].send_content;
         let second_send_content = &messages[1].send_content;
         assert_eq!(first_send_content["model"], "gpt-4o");

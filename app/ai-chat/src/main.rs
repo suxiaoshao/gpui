@@ -20,6 +20,7 @@ mod config;
 mod database;
 mod errors;
 mod extensions;
+mod gpui_ext;
 mod hotkey;
 mod i18n;
 mod llm;

@@ -8,6 +8,7 @@ use crate::{
     database::{Content, ConversationTemplate, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
+    gpui_ext::WeakEntityResultExt,
     i18n::I18n,
     llm::FetchRunner,
     store::AddConversationMessage,
@@ -53,6 +54,7 @@ pub struct TemporaryMessage {
     pub content: Content,
     pub send_content: serde_json::Value,
     pub status: Status,
+    pub error: Option<String>,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
@@ -158,11 +160,24 @@ impl TemporaryMessage {
         self.updated_time = now;
         self.end_time = now;
     }
+    fn resolve_extension(&mut self, content: Content, send_content: serde_json::Value) {
+        let now = OffsetDateTime::now_utc();
+        self.content = content;
+        self.send_content = send_content;
+        self.status = Status::Normal;
+        self.error = None;
+        self.updated_time = now;
+        self.end_time = now;
+    }
     fn update_status(&mut self, status: Status) {
         let now = OffsetDateTime::now_utc();
         self.status = status;
         self.updated_time = now;
         self.end_time = now;
+    }
+    fn record_error(&mut self, error: String) {
+        self.update_status(Status::Error);
+        self.error = Some(error);
     }
 }
 
@@ -287,6 +302,7 @@ impl TemplateDetailView {
                 content: message.content,
                 send_content: message.send_content,
                 status: message.status,
+                error: message.error,
             })
             .collect::<Vec<_>>();
         add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
@@ -302,6 +318,7 @@ impl TemplateDetailView {
         content: Content,
         send_content: serde_json::Value,
         status: Status,
+        error: Option<String>,
     ) -> &mut TemporaryMessage {
         let id = self.new_id();
         let message = TemporaryMessage {
@@ -310,6 +327,7 @@ impl TemplateDetailView {
             content,
             send_content,
             status,
+            error,
             created_time: now,
             updated_time: now,
             start_time: now,
@@ -323,9 +341,9 @@ impl TemplateDetailView {
             last.add_content(content);
         }
     }
-    fn on_error(&mut self, message_id: usize) {
+    fn on_error(&mut self, message_id: usize, error: String) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
-            last.update_status(Status::Error);
+            last.record_error(error);
         }
         self.task = None;
     }
@@ -344,81 +362,156 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "temporary fetch");
-        let extension_runner = match extension_name {
-            Some(extension_name) => Some(extension_container.get_extension(extension_name).await?),
-            None => None,
-        };
+        let request_text = text.to_string();
         let now = OffsetDateTime::now_utc();
-        let content = Runner::get_new_user_content(text.to_string(), extension_runner).await?;
-        let template = state
-            .read_with(cx, |this, _cx| this.template.clone())
-            .map_err(|_| AiChatError::GpuiError)?;
-        let messages = state
-            .read_with(cx, |this, _cx| this.messages.clone())
-            .map_err(|_| AiChatError::GpuiError)?;
-        let runner = Runner {
-            config,
-            template,
-            messages,
-        };
-        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
-        let (_user_message_id, assistant_message_id) = state
-            .update(cx, |this, _cx| {
-                let user_message_id = this
-                    .add_message(
-                        now,
-                        Role::User,
-                        content.clone(),
-                        send_content.clone(),
-                        Status::Normal,
-                    )
-                    .id;
-                let assistant_message_id = this
-                    .add_message(
-                        now,
-                        Role::Assistant,
-                        Content::Text(String::new()),
-                        send_content.clone(),
-                        Status::Loading,
-                    )
-                    .id;
-                (user_message_id, assistant_message_id)
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-        state
-            .update_in(cx, |this, window, cx| {
+        let user_message_id = if extension_name.is_some() {
+            state.update_in_result(cx, |this, window, cx| {
                 this.input_state.update(cx, |input, cx| {
                     input.set_value("", window, cx);
                 });
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+                this.add_message(
+                    now,
+                    Role::User,
+                    Content::Text(request_text.clone()),
+                    serde_json::json!({}),
+                    Status::Loading,
+                    None,
+                )
+                .id
+            })?
+        } else {
+            0
+        };
+
+        let (runner, assistant_message_id) = if let Some(extension_name) = extension_name {
+            let extension_runner = match extension_container.get_extension(extension_name).await {
+                Ok(extension_runner) => extension_runner,
+                Err(error) => {
+                    Self::record_extension_error(
+                        state,
+                        user_message_id,
+                        extension_name,
+                        error,
+                        cx,
+                    )?;
+                    return Ok(());
+                }
+            };
+            let content =
+                match Runner::get_new_user_content(request_text.clone(), Some(extension_runner))
+                    .await
+                {
+                    Ok(content) => content,
+                    Err(error) => {
+                        Self::record_extension_error(
+                            state,
+                            user_message_id,
+                            extension_name,
+                            error,
+                            cx,
+                        )?;
+                        return Ok(());
+                    }
+                };
+            let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
+            let messages = state.read_with_result(cx, |this, _cx| this.messages.clone())?;
+            let runner = Runner {
+                config,
+                template,
+                messages,
+            };
+            let send_content =
+                runner.request_body_with_message(Role::User, content.send_content())?;
+            let assistant_message_id = state.update_result(cx, |this, _cx| {
+                if let Some(message) = this
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == user_message_id)
+                {
+                    message.resolve_extension(content.clone(), send_content.clone());
+                }
+                this.add_message(
+                    now,
+                    Role::Assistant,
+                    Content::Text(String::new()),
+                    send_content.clone(),
+                    Status::Loading,
+                    None,
+                )
+                .id
+            })?;
+            (runner, assistant_message_id)
+        } else {
+            let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
+            let messages = state.read_with_result(cx, |this, _cx| this.messages.clone())?;
+            let content = Content::Text(request_text.clone());
+            let runner = Runner {
+                config,
+                template,
+                messages,
+            };
+            let send_content =
+                runner.request_body_with_message(Role::User, content.send_content())?;
+            let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
+                this.input_state.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                });
+                this.add_message(
+                    now,
+                    Role::User,
+                    content.clone(),
+                    send_content.clone(),
+                    Status::Normal,
+                    None,
+                );
+                this.add_message(
+                    now,
+                    Role::Assistant,
+                    Content::Text(String::new()),
+                    send_content.clone(),
+                    Status::Loading,
+                    None,
+                )
+                .id
+            })?;
+            (runner, assistant_message_id)
+        };
 
         let stream = runner.fetch();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
                 Ok(message) => {
-                    state
-                        .update(cx, |this, _cx| {
-                            this.on_message(&message, assistant_message_id);
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    state.update_result(cx, |this, _cx| {
+                        this.on_message(&message, assistant_message_id);
+                    })?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    state
-                        .update(cx, |this, _cx| {
-                            this.on_error(assistant_message_id);
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    state.update_result(cx, |this, _cx| {
+                        this.on_error(assistant_message_id, error.to_string());
+                    })?;
+                    return Ok(());
                 }
             }
         }
-        state
-            .update(cx, |this, _cx| {
-                this.on_success(assistant_message_id);
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+        state.update_result(cx, |this, _cx| {
+            this.on_success(assistant_message_id);
+        })?;
+        Ok(())
+    }
+
+    fn record_extension_error(
+        state: WeakEntity<Self>,
+        user_message_id: usize,
+        extension_name: &str,
+        error: AiChatError,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let error = format!("extension {extension_name}: {error}");
+        state.update_result(cx, |this, _cx| {
+            this.on_error(user_message_id, error);
+        })?;
         Ok(())
     }
 }

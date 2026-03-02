@@ -22,6 +22,7 @@ pub struct AddConversationMessage {
     pub content: Content,
     pub send_content: serde_json::Value,
     pub status: Status,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,6 +452,7 @@ mod tests {
             updated_time: now(),
             start_time: now(),
             end_time: now(),
+            error: None,
         }
     }
 

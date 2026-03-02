@@ -148,12 +148,14 @@ impl Adapter for OpenAIStreamAdapter {
                         let message = message.data;
                         if message == "[DONE]" {
                             es.close();
-                        } else if let Some(content) = parse_response_stream_delta(&message)? {
-                            yield content
+                            break;
+                        } else if let Some(content) = parse_response_stream_event(&message)? {
+                            yield content;
                         }
                     }
-                    Err(_err) => {
+                    Err(err) => {
                         es.close();
+                        Err::<(), AiChatError>(err.into())?;
                     }
                 }
             }
@@ -286,23 +288,28 @@ impl Adapter for OpenAIStreamAdapter {
     }
 }
 
-fn parse_response_stream_delta(message: &str) -> AiChatResult<Option<String>> {
+fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
-    if event.event_type == "response.output_text.delta" {
-        return Ok(event.delta);
+    match event {
+        OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => Ok(Some(delta)),
+        OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
+        OpenAIResponseStreamEvent::ResponseFailed { response } => {
+            Err(AiChatError::StreamError(response.error.message))
+        }
+        OpenAIResponseStreamEvent::Other => Ok(None),
     }
-    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_response_stream_delta;
+    use super::parse_response_stream_event;
+    use crate::errors::AiChatError;
 
     #[test]
     fn parse_stream_delta_event() -> anyhow::Result<()> {
         let event = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
         assert_eq!(
-            parse_response_stream_delta(event)?,
+            parse_response_stream_event(event)?,
             Some("hello".to_string())
         );
         Ok(())
@@ -311,7 +318,24 @@ mod tests {
     #[test]
     fn ignore_non_delta_event() -> anyhow::Result<()> {
         let event = r#"{"type":"response.completed"}"#;
-        assert_eq!(parse_response_stream_delta(event)?, None);
+        assert_eq!(parse_response_stream_event(event)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_error_stream_event() -> anyhow::Result<()> {
+        let event = r#"{"type":"error","message":"quota exceeded"}"#;
+        let error = parse_response_stream_event(event).unwrap_err();
+        assert!(matches!(error, AiChatError::StreamError(ref msg) if msg == "quota exceeded"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_failed_response_event() -> anyhow::Result<()> {
+        let event =
+            r#"{"type":"response.failed","response":{"error":{"message":"request failed"}}}"#;
+        let error = parse_response_stream_event(event).unwrap_err();
+        assert!(matches!(error, AiChatError::StreamError(ref msg) if msg == "request failed"));
         Ok(())
     }
 }
