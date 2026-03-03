@@ -287,4 +287,14 @@ impl Message {
         SqlMessage::update_content(id, serde_json::to_string(content)?, time, conn)?;
         Ok(())
     }
+    pub fn reset_for_resend(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::reset_for_resend(
+            id,
+            serde_json::to_string(&Content::Text(String::new()))?,
+            time,
+            conn,
+        )?;
+        Ok(())
+    }
 }

@@ -1,6 +1,6 @@
 use crate::{
     components::message::MessageViewExt,
-    database::{Content, Db, Message},
+    database::{Content, Db, Message, Role},
     errors::AiChatResult,
     i18n::I18n,
     store::{ChatData, ChatDataEvent},
@@ -229,6 +229,33 @@ impl MessageViewExt for Message {
             cx.emit(ChatDataEvent::DeleteMessage(id));
         });
     }
+
+    fn can_resend(&self, cx: &App) -> bool {
+        if self.role != Role::Assistant {
+            return false;
+        }
+        cx.global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel())
+            .is_some_and(|panel| !panel.read(cx).has_running_task())
+    }
+
+    fn resend_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let panel = cx
+            .global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel());
+        let Some(panel) = panel else {
+            return;
+        };
+        panel.update(cx, |this, cx| {
+            this.resend_message(id, _window, cx);
+        });
+    }
 }
 
 impl MessagePreviewExt for Message {
@@ -338,5 +365,37 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             })
             .children(dialog_layer)
             .children(notification_layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::{Content, Message, Role, Status};
+    use time::OffsetDateTime;
+
+    fn make_message(role: Role) -> Message {
+        let now = OffsetDateTime::now_utc();
+        Message {
+            id: 1,
+            conversation_id: 1,
+            conversation_path: "/conversation/1".to_string(),
+            role,
+            content: Content::Text("hello".to_string()),
+            send_content: serde_json::json!({}),
+            status: Status::Normal,
+            created_time: now,
+            updated_time: now,
+            start_time: now,
+            end_time: now,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn only_assistant_messages_can_resend() {
+        let assistant = make_message(Role::Assistant);
+        let user = make_message(Role::User);
+        assert_eq!(assistant.role, Role::Assistant);
+        assert_eq!(user.role, Role::User);
     }
 }

@@ -55,6 +55,8 @@ pub trait MessageViewExt: 'static {
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn pause_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn delete_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
+    fn can_resend(&self, _cx: &App) -> bool;
+    fn resend_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +102,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             copy_failed_message,
             copy_tooltip,
             delete_tooltip,
+            resend_tooltip,
             view_detail_tooltip,
             pause_tooltip,
             error_title,
@@ -112,6 +115,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                 i18n.t("notify-copy-failed-message"),
                 i18n.t("tooltip-copy"),
                 i18n.t("tooltip-delete"),
+                i18n.t("tooltip-resend-message"),
                 i18n.t("tooltip-view-detail"),
                 i18n.t("tooltip-pause-message"),
                 i18n.t("alert-error-title"),
@@ -276,6 +280,20 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 T::delete_message_by_id(id, window, cx);
                                             })
                                             .tooltip(delete_tooltip.clone()),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "resend-{}",
+                                                button_id
+                                            )))
+                                            .icon(IconName::Redo2)
+                                            .ghost()
+                                            .small()
+                                            .when(!data.can_resend(cx), |this| this.invisible())
+                                            .on_click(move |_, window, cx| {
+                                                T::resend_message_by_id(id, window, cx);
+                                            })
+                                            .tooltip(resend_tooltip.clone()),
                                         )
                                         .child(
                                             Button::new(SharedString::from(format!(

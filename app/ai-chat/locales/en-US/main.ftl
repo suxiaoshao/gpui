@@ -34,6 +34,7 @@ button-submit = Submit
 tooltip-copy = Copy
 tooltip-delete = Delete
 tooltip-view-detail = View Detail
+tooltip-resend-message = Resend Message
 tooltip-send-message = Send Message
 tooltip-pause-message = Pause Generation
 tooltip-clear-conversation = Clear Conversation

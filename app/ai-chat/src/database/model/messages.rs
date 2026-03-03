@@ -200,6 +200,24 @@ impl SqlMessage {
             .execute(conn)?;
         Ok(())
     }
+    pub fn reset_for_resend(
+        id: i32,
+        content: String,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::content.eq(content),
+                messages::status.eq("loading"),
+                messages::error.eq::<Option<String>>(None),
+                messages::updated_time.eq(time),
+                messages::start_time.eq(time),
+                messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
     pub fn migration_save(data: Vec<SqlMessage>, conn: &mut SqliteConnection) -> AiChatResult<()> {
         diesel::insert_into(messages::table)
             .values(data)

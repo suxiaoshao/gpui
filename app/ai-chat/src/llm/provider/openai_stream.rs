@@ -170,6 +170,44 @@ impl Adapter for OpenAIStreamAdapter {
         .boxed()
     }
 
+    fn fetch_by_request_body(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        request_body: serde_json::Value,
+    ) -> BoxStream<'static, AiChatResult<String>> {
+        async_stream::try_stream! {
+            let settings = settings.try_into()?;
+            let client = Self::get_reqwest_client(&config, &settings)?;
+            let mut es = client
+                .post(settings.url.as_str())
+                .json(&request_body)
+                .eventsource()?;
+            while let Some(event) = es.next().await {
+                match event {
+                    Ok(Event::Open) => {},
+                    Ok(Event::Message(message)) => {
+                        let message = message.data;
+                        if message == "[DONE]" {
+                            es.close();
+                            break;
+                        } else if let Some(content) = parse_response_stream_event(&message)? {
+                            yield content;
+                        }
+                    }
+                    Err(err) => {
+                        es.close();
+                        if is_normal_stream_end(&err) {
+                            break;
+                        }
+                        Err::<(), AiChatError>(err.into())?;
+                    }
+                }
+            }
+        }
+        .boxed()
+    }
+
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAIStreamSettings {
             let config = cx.global::<AiChatConfig>();

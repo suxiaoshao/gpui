@@ -291,6 +291,22 @@ impl Adapter for OpenAIAdapter {
         .boxed()
     }
 
+    fn fetch_by_request_body(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        request_body: serde_json::Value,
+    ) -> BoxStream<'static, AiChatResult<String>> {
+        async_stream::try_stream! {
+            let settings = settings.try_into()?;
+            let client = Self::get_reqwest_client(&config, &settings)?;
+            let response = client.post(settings.url.clone()).json(&request_body).send().await?;
+            let response = response.json::<ResponsesCreateResponse>().await?;
+            yield response.output_text();
+        }
+        .boxed()
+    }
+
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAISettings {
             let config = cx.global::<AiChatConfig>();
