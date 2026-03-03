@@ -8,8 +8,8 @@ diesel::table! {
         description -> Nullable<Text>,
         mode -> Text,
         adapter -> Text,
-        template -> Text,
-        prompts -> Text,
+        template -> Json,
+        prompts -> Json,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
     }
@@ -47,12 +47,13 @@ diesel::table! {
         conversation_path -> Text,
         role -> Text,
         content -> Text,
-        // send_content -> Json,
+        send_content -> Json,
         status -> Text,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
         start_time -> TimestamptzSqlite,
         end_time -> TimestamptzSqlite,
+        error -> Nullable<Text>,
     }
 }
 

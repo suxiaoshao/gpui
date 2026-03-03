@@ -19,6 +19,7 @@ tab-template = 模板
 
 section-information = 信息
 alert-error-title = 错误
+message-status-paused = 已暂停
 
 button-add = 添加
 button-add-prompt = 添加提示词
@@ -33,6 +34,9 @@ button-submit = 提交
 tooltip-copy = 复制
 tooltip-delete = 删除
 tooltip-view-detail = 查看详情
+tooltip-resend-message = 重新发送消息
+tooltip-send-message = 发送消息
+tooltip-pause-message = 暂停生成
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
 

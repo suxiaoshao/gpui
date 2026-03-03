@@ -1,23 +1,23 @@
 use crate::{
     components::{
         add_conversation::add_conversation_dialog_with_messages,
-        chat_input::{ChatInput, Send, input_state},
+        chat_input::{ChatInput, Pause, Send, input_state},
         message::{MessageView, MessageViewExt},
     },
     config::AiChatConfig,
     database::{Content, ConversationTemplate, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
-    fetch::FetchRunner,
+    gpui_ext::WeakEntityResultExt,
     i18n::I18n,
+    llm::{FetchRunner, adapter_by_name},
     store::AddConversationMessage,
     views::{
-        message_preview::{MessagePreview, MessagePreviewExt},
+        message_preview::{MessagePreviewExt, open_message_preview_window},
         temporary::TemporaryView,
     },
 };
 use async_compat::CompatExt;
-use fluent_bundle::FluentArgs;
 use futures::pin_mut;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -33,7 +33,7 @@ use gpui_component::{
     v_flex,
 };
 use smol::stream::StreamExt;
-use std::rc::Rc;
+use std::{any::TypeId, rc::Rc};
 use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
@@ -52,7 +52,9 @@ pub struct TemporaryMessage {
     pub id: usize,
     pub role: Role,
     pub content: Content,
+    pub send_content: serde_json::Value,
     pub status: Status,
+    pub error: Option<String>,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
@@ -70,12 +72,16 @@ impl MessageViewExt for TemporaryMessage {
         &self.content
     }
 
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
     fn status(&self) -> &Status {
         &self.status
+    }
+
+    fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
     }
 
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -92,35 +98,20 @@ impl MessageViewExt for TemporaryMessage {
         let Some(message) = message else {
             return;
         };
-        let title = {
-            let i18n = cx.global::<I18n>();
-            let mut args = FluentArgs::new();
-            args.set("id", message.id as i64);
-            i18n.t_with_args("message-preview-title", &args)
-        };
-        match cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(800.), px(600.)),
-                    cx,
-                ))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
-                cx.new(|cx| Root::new(message_view, window, cx))
-            },
-        ) {
-            Ok(_) => {}
-            Err(err) => {
-                event!(Level::ERROR, "open message view window: {}", err);
-            }
-        };
+        open_message_preview_window(message, cx);
+    }
+
+    fn pause_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
+        let temporary_view = find_temporary_view(window, cx);
+        if let Some(temporary_view) = temporary_view {
+            temporary_view.update(cx, |this, cx| {
+                if let Some(template_detail) = this.selected_item.as_ref() {
+                    template_detail.update(cx, |this, cx| {
+                        this.pause_message(message_id, cx);
+                    });
+                }
+            });
+        }
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -148,6 +139,47 @@ impl MessageViewExt for TemporaryMessage {
                     .with_type(NotificationType::Error),
                 cx,
             );
+        }
+    }
+
+    fn can_resend(&self, cx: &App) -> bool {
+        if self.role != Role::Assistant {
+            return false;
+        }
+        cx.windows()
+            .into_iter()
+            .find_map(|window| {
+                window.downcast::<Root>().filter(|root| {
+                    root.read(cx)
+                        .ok()
+                        .map(|root| root.view().entity_type() == TypeId::of::<TemporaryView>())
+                        .unwrap_or(false)
+                })
+            })
+            .and_then(|root| {
+                root.read(cx)
+                    .ok()
+                    .and_then(|root| root.view().clone().downcast::<TemporaryView>().ok())
+            })
+            .is_some_and(|temporary_view| {
+                temporary_view
+                    .read(cx)
+                    .selected_item
+                    .as_ref()
+                    .is_some_and(|detail| !detail.read(cx).has_running_task())
+            })
+    }
+
+    fn resend_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
+        let temporary_view = find_temporary_view(window, cx);
+        if let Some(temporary_view) = temporary_view {
+            temporary_view.update(cx, |this, cx| {
+                if let Some(template_detail) = this.selected_item.as_ref() {
+                    template_detail.update(cx, |this, cx| {
+                        this.resend_message(message_id, window, cx);
+                    });
+                }
+            });
         }
     }
 }
@@ -186,10 +218,32 @@ impl TemporaryMessage {
         self.updated_time = now;
         self.end_time = now;
     }
+    fn resolve_extension(&mut self, content: Content, send_content: serde_json::Value) {
+        let now = OffsetDateTime::now_utc();
+        self.content = content;
+        self.send_content = send_content;
+        self.status = Status::Normal;
+        self.error = None;
+        self.updated_time = now;
+        self.end_time = now;
+    }
     fn update_status(&mut self, status: Status) {
         let now = OffsetDateTime::now_utc();
         self.status = status;
         self.updated_time = now;
+        self.end_time = now;
+    }
+    fn record_error(&mut self, error: String) {
+        self.update_status(Status::Error);
+        self.error = Some(error);
+    }
+    fn reset_for_resend(&mut self) {
+        let now = OffsetDateTime::now_utc();
+        self.content = Content::Text(String::new());
+        self.status = Status::Loading;
+        self.error = None;
+        self.updated_time = now;
+        self.start_time = now;
         self.end_time = now;
     }
 }
@@ -209,8 +263,41 @@ pub(crate) struct TemplateDetailView {
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
-    task: Option<Task<()>>,
+    task: Option<RunningTask>,
     autoincrement_id: usize,
+}
+
+struct RunningTask {
+    user_message_id: Option<usize>,
+    assistant_message_id: Option<usize>,
+    _task: Task<()>,
+}
+
+impl RunningTask {
+    fn new(task: Task<()>) -> Self {
+        Self {
+            user_message_id: None,
+            assistant_message_id: None,
+            _task: task,
+        }
+    }
+
+    fn bind_messages(
+        &mut self,
+        user_message_id: Option<usize>,
+        assistant_message_id: Option<usize>,
+    ) {
+        self.user_message_id = user_message_id;
+        self.assistant_message_id = assistant_message_id;
+    }
+
+    fn contains_message(&self, message_id: usize) -> bool {
+        self.user_message_id == Some(message_id) || self.assistant_message_id == Some(message_id)
+    }
+
+    fn message_ids(&self) -> [Option<usize>; 2] {
+        [self.user_message_id, self.assistant_message_id]
+    }
 }
 
 impl TemplateDetailView {
@@ -269,10 +356,10 @@ impl TemplateDetailView {
             send_content = text.to_string(),
             extension_name = extension_name.clone()
         );
-        if self.task.is_none() && !text.is_empty() {
+        if self.can_start_task() && !text.is_empty() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
-            self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let task = cx.spawn_in(window, async move |this, cx| {
                 if let Err(err) = Self::fetch(
                     this,
                     &text,
@@ -287,8 +374,51 @@ impl TemplateDetailView {
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
                 };
-            }));
+            });
+            self.task = Some(RunningTask::new(task));
         }
+    }
+    fn on_pause_action(&mut self, _: &Pause, _window: &mut Window, cx: &mut Context<Self>) {
+        self.pause_running_task(cx);
+    }
+    fn has_running_task(&self) -> bool {
+        self.task.is_some()
+    }
+    fn can_start_task(&self) -> bool {
+        !self.has_running_task()
+    }
+    fn pause_message(&mut self, message_id: usize, cx: &mut Context<Self>) {
+        if !self
+            .task
+            .as_ref()
+            .is_some_and(|task| task.contains_message(message_id))
+        {
+            return;
+        }
+        self.pause_running_task(cx);
+    }
+    fn resend_message(&mut self, message_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_running_task() {
+            return;
+        }
+        let config = cx.global::<AiChatConfig>().clone();
+        let span = span!(Level::INFO, "TemporaryResendMessage", message_id);
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let state = this.clone();
+            if let Err(err) = Self::fetch_existing_assistant_message(state, config, message_id, cx)
+                .compat()
+                .instrument(span)
+                .await
+            {
+                event!(Level::ERROR, "temporary resend message failed: {}", err);
+                let _ = this.update_result(cx, |this, _cx| {
+                    this.clear_running_task_for_message(Some(message_id));
+                });
+            }
+        });
+        let mut running_task = RunningTask::new(task);
+        running_task.bind_messages(None, Some(message_id));
+        self.task = Some(running_task);
     }
     fn on_clear_conversation(
         &mut self,
@@ -313,7 +443,9 @@ impl TemplateDetailView {
             .map(|message| AddConversationMessage {
                 role: message.role,
                 content: message.content,
+                send_content: message.send_content,
                 status: message.status,
+                error: message.error,
             })
             .collect::<Vec<_>>();
         add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
@@ -327,14 +459,18 @@ impl TemplateDetailView {
         now: OffsetDateTime,
         role: Role,
         content: Content,
+        send_content: serde_json::Value,
         status: Status,
+        error: Option<String>,
     ) -> &mut TemporaryMessage {
         let id = self.new_id();
         let message = TemporaryMessage {
             id,
             role,
             content,
+            send_content,
             status,
+            error,
             created_time: now,
             updated_time: now,
             start_time: now,
@@ -348,17 +484,50 @@ impl TemplateDetailView {
             last.add_content(content);
         }
     }
-    fn on_error(&mut self, message_id: usize) {
+    fn on_error(&mut self, message_id: usize, error: String) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
-            last.update_status(Status::Error);
+            last.record_error(error);
         }
-        self.task = None;
+        self.clear_running_task_for_message(Some(message_id));
     }
     fn on_success(&mut self, message_id: usize) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
         }
-        self.task = None;
+        self.clear_running_task_for_message(Some(message_id));
+    }
+    fn bind_running_task_messages(
+        &mut self,
+        user_message_id: Option<usize>,
+        assistant_message_id: Option<usize>,
+    ) {
+        if let Some(task) = self.task.as_mut() {
+            task.bind_messages(user_message_id, assistant_message_id);
+        }
+    }
+    fn clear_running_task_for_message(&mut self, message_id: Option<usize>) {
+        let should_clear = self.task.as_ref().is_some_and(|task| {
+            message_id.is_none_or(|message_id| task.contains_message(message_id))
+        });
+        if should_clear {
+            self.task = None;
+        }
+    }
+    fn pause_running_task(&mut self, cx: &mut Context<Self>) {
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        for message_id in task.message_ids().into_iter().flatten() {
+            if let Some(message) = self
+                .messages
+                .iter_mut()
+                .find(|message| message.id == message_id)
+                && matches!(message.status, Status::Loading)
+            {
+                message.update_status(Status::Paused);
+            }
+        }
+        cx.notify();
     }
     async fn fetch(
         state: WeakEntity<Self>,
@@ -369,90 +538,312 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "temporary fetch");
-        let extension_runner = match extension_name {
-            Some(extension_name) => Some(extension_container.get_extension(extension_name).await?),
-            None => None,
-        };
+        let request_text = text.to_string();
         let now = OffsetDateTime::now_utc();
-        let user_message_id = state
-            .update_in(cx, |this, window, cx| {
-                this.input_state.update(cx, |input, cx| {
-                    input.set_value("", window, cx);
-                });
-                this.add_message(
+        let Some(prepared) = Self::prepare_fetch(
+            state.clone(),
+            request_text,
+            extension_name.map(|name| name.as_str()),
+            extension_container,
+            config,
+            now,
+            cx,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        Self::stream_fetch(state, prepared.runner, prepared.assistant_message_id, cx).await?;
+        Ok(())
+    }
+
+    async fn fetch_existing_assistant_message(
+        state: WeakEntity<Self>,
+        config: AiChatConfig,
+        message_id: usize,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let (adapter_name, request_body, error) = state.update_result(cx, |this, _cx| {
+            let Some(message) = this
+                .messages
+                .iter_mut()
+                .find(|message| message.id == message_id)
+            else {
+                return (
+                    None,
+                    serde_json::Value::Null,
+                    Some(AiChatError::StreamError(
+                        "temporary assistant message not found".to_string(),
+                    )),
+                );
+            };
+            if message.role != Role::Assistant {
+                return (
+                    None,
+                    serde_json::Value::Null,
+                    Some(AiChatError::StreamError(
+                        "temporary message is not assistant".to_string(),
+                    )),
+                );
+            }
+            message.reset_for_resend();
+            (
+                Some(this.template.adapter.clone()),
+                message.send_content.clone(),
+                None,
+            )
+        })?;
+        if let Some(err) = error {
+            return Err(err);
+        }
+        let Some(adapter_name) = adapter_name else {
+            return Err(AiChatError::GpuiError);
+        };
+        Self::stream_existing_message(state, config, adapter_name, request_body, message_id, cx)
+            .await
+    }
+
+    async fn prepare_fetch(
+        state: WeakEntity<Self>,
+        request_text: String,
+        extension_name: Option<&str>,
+        extension_container: &ExtensionContainer,
+        config: AiChatConfig,
+        now: OffsetDateTime,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
+        match extension_name {
+            Some(extension_name) => {
+                Self::prepare_extension_fetch(
+                    state,
+                    request_text,
+                    extension_name,
+                    extension_container,
+                    config,
+                    now,
+                    cx,
+                )
+                .await
+            }
+            None => Self::prepare_plain_fetch(state, request_text, config, now, cx).map(Some),
+        }
+    }
+
+    async fn prepare_extension_fetch(
+        state: WeakEntity<Self>,
+        request_text: String,
+        extension_name: &str,
+        extension_container: &ExtensionContainer,
+        config: AiChatConfig,
+        now: OffsetDateTime,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
+        let user_message_id = state.update_in_result(cx, |this, window, cx| {
+            this.input_state.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            this.add_message(
+                now,
+                Role::User,
+                Content::Text(request_text.clone()),
+                serde_json::json!({}),
+                Status::Loading,
+                None,
+            )
+            .id
+        })?;
+        state.update_result(cx, |this, _cx| {
+            this.bind_running_task_messages(Some(user_message_id), None);
+        })?;
+
+        let extension_runner = match extension_container.get_extension(extension_name).await {
+            Ok(extension_runner) => extension_runner,
+            Err(error) => {
+                Self::record_extension_error(state, user_message_id, extension_name, error, cx)?;
+                return Ok(None);
+            }
+        };
+        let content = match Runner::get_new_user_content(request_text, Some(extension_runner)).await
+        {
+            Ok(content) => content,
+            Err(error) => {
+                Self::record_extension_error(state, user_message_id, extension_name, error, cx)?;
+                return Ok(None);
+            }
+        };
+        let runner = Self::build_runner(state.clone(), config, cx)?;
+        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
+        let assistant_message_id = state.update_result(cx, |this, _cx| {
+            if let Some(message) = this
+                .messages
+                .iter_mut()
+                .find(|message| message.id == user_message_id)
+            {
+                message.resolve_extension(content.clone(), send_content.clone());
+            }
+            this.add_message(
+                now,
+                Role::Assistant,
+                Content::Text(String::new()),
+                send_content.clone(),
+                Status::Loading,
+                None,
+            )
+            .id
+        })?;
+        state.update_result(cx, |this, _cx| {
+            this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+        })?;
+        Ok(Some(PreparedTemporaryFetch {
+            runner,
+            assistant_message_id,
+        }))
+    }
+
+    fn prepare_plain_fetch(
+        state: WeakEntity<Self>,
+        request_text: String,
+        config: AiChatConfig,
+        now: OffsetDateTime,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<PreparedTemporaryFetch> {
+        let runner = Self::build_runner(state.clone(), config, cx)?;
+        let content = Content::Text(request_text);
+        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
+        let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
+            this.input_state.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            let user_message_id = this
+                .add_message(
                     now,
                     Role::User,
-                    Content::Text(text.to_string()),
-                    Status::Loading,
+                    content.clone(),
+                    send_content.clone(),
+                    Status::Normal,
+                    None,
                 )
-                .id
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-        let content = Runner::get_new_user_content(text.to_string(), extension_runner).await?;
-        state
-            .update(cx, |this, _cx| {
-                if let Some(message) = this
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == user_message_id)
-                {
-                    message.content = content;
-                    message.status = Status::Normal;
-                }
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-
-        let template = state
-            .read_with(cx, |this, _cx| this.template.clone())
-            .map_err(|_| AiChatError::GpuiError)?;
-        let messages = state
-            .read_with(cx, |this, _cx| this.messages.clone())
-            .map_err(|_| AiChatError::GpuiError)?;
-        let assistant_message_id = state
-            .update(cx, |this, _cx| {
-                this.add_message(
+                .id;
+            let assistant_message_id = this
+                .add_message(
                     now,
                     Role::Assistant,
                     Content::Text(String::new()),
+                    send_content.clone(),
                     Status::Loading,
+                    None,
                 )
-                .id
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
-        let runner = Runner {
+                .id;
+            this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+            assistant_message_id
+        })?;
+        Ok(PreparedTemporaryFetch {
+            runner,
+            assistant_message_id,
+        })
+    }
+
+    fn build_runner(
+        state: WeakEntity<Self>,
+        config: AiChatConfig,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Runner> {
+        let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
+        let messages = state.read_with_result(cx, |this, _cx| this.messages.clone())?;
+        Ok(Runner {
             config,
             template,
             messages,
-        };
+        })
+    }
 
+    async fn stream_fetch(
+        state: WeakEntity<Self>,
+        runner: Runner,
+        assistant_message_id: usize,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
         let stream = runner.fetch();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
                 Ok(message) => {
-                    state
-                        .update(cx, |this, _cx| {
-                            this.on_message(&message, assistant_message_id);
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    state.update_result(cx, |this, _cx| {
+                        this.on_message(&message, assistant_message_id);
+                    })?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    state
-                        .update(cx, |this, _cx| {
-                            this.on_error(assistant_message_id);
-                        })
-                        .map_err(|_| AiChatError::GpuiError)?;
+                    state.update_result(cx, |this, _cx| {
+                        this.on_error(assistant_message_id, error.to_string());
+                    })?;
+                    return Ok(());
                 }
             }
         }
-        state
-            .update(cx, |this, _cx| {
-                this.on_success(assistant_message_id);
-            })
-            .map_err(|_| AiChatError::GpuiError)?;
+        state.update_result(cx, |this, _cx| {
+            this.on_success(assistant_message_id);
+        })?;
         Ok(())
     }
+
+    async fn stream_existing_message(
+        state: WeakEntity<Self>,
+        config: AiChatConfig,
+        adapter_name: String,
+        request_body: serde_json::Value,
+        assistant_message_id: usize,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let adapter = adapter_by_name(&adapter_name)?;
+        let settings = config
+            .get_adapter_settings(adapter.name())
+            .ok_or(AiChatError::AdapterSettingsNotFound(
+                adapter.name().to_string(),
+            ))?
+            .clone();
+        let stream = adapter.fetch_by_request_body(config, settings, request_body);
+        pin_mut!(stream);
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(message) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_message(&message, assistant_message_id);
+                    })?;
+                }
+                Err(error) => {
+                    event!(Level::ERROR, "Connection Error: {}", error);
+                    state.update_result(cx, |this, _cx| {
+                        this.on_error(assistant_message_id, error.to_string());
+                    })?;
+                    return Ok(());
+                }
+            }
+        }
+        state.update_result(cx, |this, _cx| {
+            this.on_success(assistant_message_id);
+        })?;
+        Ok(())
+    }
+
+    fn record_extension_error(
+        state: WeakEntity<Self>,
+        user_message_id: usize,
+        extension_name: &str,
+        error: AiChatError,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let error = format!("extension {extension_name}: {error}");
+        state.update_result(cx, |this, _cx| {
+            this.on_error(user_message_id, error);
+        })?;
+        Ok(())
+    }
+}
+
+struct PreparedTemporaryFetch {
+    runner: Runner,
+    assistant_message_id: usize,
 }
 
 struct Runner {
@@ -474,8 +865,8 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn get_history(&self) -> Vec<crate::fetch::Message> {
-        use crate::fetch::Message as FetchMessage;
+    fn get_history(&self) -> Vec<crate::llm::Message> {
+        use crate::llm::Message as FetchMessage;
         let mut prompts = self
             .template
             .prompts
@@ -545,7 +936,7 @@ impl Render for TemplateDetailView {
                                     .icon(IconName::Delete)
                                     .ghost()
                                     .small()
-                                    .disabled(self.task.is_some())
+                                    .disabled(self.has_running_task())
                                     .on_click(cx.listener(Self::on_clear_conversation))
                                     .tooltip(clear_tooltip),
                             )
@@ -554,7 +945,7 @@ impl Render for TemplateDetailView {
                                     .icon(IconName::Inbox)
                                     .ghost()
                                     .small()
-                                    .disabled(self.task.is_some())
+                                    .disabled(self.has_running_task())
                                     .on_click(cx.listener(Self::on_save_conversation))
                                     .tooltip(save_tooltip),
                             ),
@@ -576,8 +967,9 @@ impl Render for TemplateDetailView {
                     .flex_initial()
                     .child(
                         ChatInput::new(&self.input_state, &self.extension_state)
-                            .disabled(self.task.is_some())
-                            .on_action(cx.listener(Self::on_send_action)),
+                            .running(self.has_running_task())
+                            .on_action(cx.listener(Self::on_send_action))
+                            .on_action(cx.listener(Self::on_pause_action)),
                     )
                     .px_2(),
             )

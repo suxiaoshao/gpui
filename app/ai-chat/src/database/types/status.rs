@@ -10,6 +10,8 @@ pub enum Status {
     Hidden,
     #[serde(rename = "loading")]
     Loading,
+    #[serde(rename = "paused")]
+    Paused,
     #[serde(rename = "error")]
     Error,
 }
@@ -22,6 +24,7 @@ impl FromStr for Status {
             "normal" => Ok(Status::Normal),
             "hidden" => Ok(Status::Hidden),
             "loading" => Ok(Status::Loading),
+            "paused" => Ok(Status::Paused),
             "error" => Ok(Status::Error),
             _ => Err(AiChatError::InvalidMessageStatus(s.to_owned())),
         }
@@ -34,6 +37,7 @@ impl Display for Status {
             Status::Normal => f.write_str("normal"),
             Status::Hidden => f.write_str("hidden"),
             Status::Loading => f.write_str("loading"),
+            Status::Paused => f.write_str("paused"),
             Status::Error => f.write_str("error"),
         }
     }
@@ -47,6 +51,7 @@ mod test {
         assert_eq!("normal".parse::<Status>()?, Status::Normal);
         assert_eq!("hidden".parse::<Status>()?, Status::Hidden);
         assert_eq!("loading".parse::<Status>()?, Status::Loading);
+        assert_eq!("paused".parse::<Status>()?, Status::Paused);
         assert_eq!("error".parse::<Status>()?, Status::Error);
         assert!("invalid".parse::<Status>().is_err());
         Ok(())

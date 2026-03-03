@@ -19,6 +19,7 @@ tab-template = Template
 
 section-information = Information
 alert-error-title = Error
+message-status-paused = Paused
 
 button-add = Add
 button-add-prompt = Add Prompt
@@ -33,6 +34,9 @@ button-submit = Submit
 tooltip-copy = Copy
 tooltip-delete = Delete
 tooltip-view-detail = View Detail
+tooltip-resend-message = Resend Message
+tooltip-send-message = Send Message
+tooltip-pause-message = Pause Generation
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
 

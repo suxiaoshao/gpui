@@ -13,6 +13,8 @@ use crate::context::{ai_chat_dir, workspace_root};
 use crate::error::{Result, XtaskError};
 use crate::manifest::get_main_binary_name;
 
+type TomlTable = toml::value::Table;
+
 pub fn run(args: BundleAiChatWindowsArgs) -> Result<()> {
     let app_dir = ai_chat_dir()?;
     let workspace_dir = workspace_root()?;
@@ -121,71 +123,28 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
         ))
     })?;
 
-    let package = root
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| XtaskError::msg("manifest missing [package] table"))?;
+    let package = required_table(&root, &["package"], "manifest missing [package] table")?;
+    let bundle = nested_table(package, &["metadata", "bundle"]);
 
-    let product_name = package
-        .get("metadata")
-        .and_then(toml::Value::as_table)
-        .and_then(|m| m.get("bundle"))
-        .and_then(toml::Value::as_table)
-        .and_then(|b| b.get("name"))
-        .and_then(toml::Value::as_str)
-        .or_else(|| package.get("name").and_then(toml::Value::as_str))
+    let homepage = optional_string(package, "homepage").map(ToString::to_string);
+    let product_name = bundle
+        .and_then(|bundle| optional_string(bundle, "name"))
+        .or_else(|| optional_string(package, "name"))
         .ok_or_else(|| XtaskError::msg("failed to resolve product name"))?
         .to_string();
-
-    let version = package
-        .get("version")
-        .and_then(toml::Value::as_str)
+    let version = optional_string(package, "version")
         .ok_or_else(|| XtaskError::msg("failed to resolve package version"))?
         .to_string();
-
-    let description = package
-        .get("description")
-        .and_then(toml::Value::as_str)
+    let description = optional_string(package, "description")
         .unwrap_or_default()
         .to_string();
-
-    let homepage = package
-        .get("homepage")
-        .and_then(toml::Value::as_str)
-        .map(ToString::to_string);
-
-    let authors = package
-        .get("authors")
-        .and_then(toml::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(toml::Value::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|v| !v.is_empty());
-
-    let default_run = package
-        .get("default-run")
-        .and_then(toml::Value::as_str)
-        .map(ToString::to_string);
+    let authors = optional_string_array(package, "authors");
+    let default_run = optional_string(package, "default-run").map(ToString::to_string);
 
     let mut bundle_settings = BundleSettings::default();
-    let bundle = package
-        .get("metadata")
-        .and_then(toml::Value::as_table)
-        .and_then(|m| m.get("bundle"))
-        .and_then(toml::Value::as_table);
-
     if let Some(bundle) = bundle {
-        bundle_settings.identifier = bundle
-            .get("identifier")
-            .and_then(toml::Value::as_str)
-            .map(ToString::to_string);
-
-        bundle_settings.publisher = bundle
-            .get("publisher")
-            .and_then(toml::Value::as_str)
+        bundle_settings.identifier = optional_string(bundle, "identifier").map(ToString::to_string);
+        bundle_settings.publisher = optional_string(bundle, "publisher")
             .map(ToString::to_string)
             .or_else(|| {
                 bundle_settings
@@ -193,32 +152,12 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
                     .as_deref()
                     .and_then(infer_publisher_from_identifier)
             });
-
-        bundle_settings.icon = bundle
-            .get("icon")
-            .and_then(toml::Value::as_array)
-            .map(|icons| {
-                icons
-                    .iter()
-                    .filter_map(toml::Value::as_str)
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|icons| !icons.is_empty());
-
-        bundle_settings.short_description = bundle
-            .get("short_description")
-            .and_then(toml::Value::as_str)
-            .map(ToString::to_string);
-
-        bundle_settings.long_description = bundle
-            .get("long_description")
-            .and_then(toml::Value::as_str)
-            .map(ToString::to_string);
-
-        bundle_settings.homepage = bundle
-            .get("homepage")
-            .and_then(toml::Value::as_str)
+        bundle_settings.icon = optional_string_array(bundle, "icon");
+        bundle_settings.short_description =
+            optional_string(bundle, "short_description").map(ToString::to_string);
+        bundle_settings.long_description =
+            optional_string(bundle, "long_description").map(ToString::to_string);
+        bundle_settings.homepage = optional_string(bundle, "homepage")
             .map(ToString::to_string)
             .or(homepage.clone());
     }
@@ -227,15 +166,8 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
         bundle_settings.homepage = homepage.clone();
     }
 
-    bundle_settings.license = package
-        .get("license")
-        .and_then(toml::Value::as_str)
-        .map(ToString::to_string);
-
-    bundle_settings.license_file = package
-        .get("license-file")
-        .and_then(toml::Value::as_str)
-        .map(PathBuf::from);
+    bundle_settings.license = optional_string(package, "license").map(ToString::to_string);
+    bundle_settings.license_file = optional_string(package, "license-file").map(PathBuf::from);
 
     let package_settings = PackageSettings {
         product_name,
@@ -247,6 +179,47 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
     };
 
     Ok((package_settings, bundle_settings))
+}
+
+fn required_table<'a>(
+    root: &'a toml::Value,
+    path: &[&str],
+    missing_message: &str,
+) -> Result<&'a TomlTable> {
+    nested_value(root, path)
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| XtaskError::msg(missing_message))
+}
+
+fn nested_table<'a>(table: &'a TomlTable, path: &[&str]) -> Option<&'a TomlTable> {
+    let value = table.get(path.first().copied()?)?;
+    nested_value(value, &path[1..]).and_then(toml::Value::as_table)
+}
+
+fn nested_value<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn optional_string<'a>(table: &'a TomlTable, key: &str) -> Option<&'a str> {
+    table.get(key).and_then(toml::Value::as_str)
+}
+
+fn optional_string_array(table: &TomlTable, key: &str) -> Option<Vec<String>> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
 }
 
 fn infer_publisher_from_identifier(identifier: &str) -> Option<String> {

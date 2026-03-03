@@ -12,12 +12,13 @@ pub struct SqlNewMessage {
     pub(in super::super) conversation_path: String,
     pub(in super::super) role: String,
     pub(in super::super) content: String,
-    // pub(in super::super) send_content: serde_json::Value,
+    pub(in super::super) send_content: serde_json::Value,
     pub(in super::super) status: String,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
     pub(in super::super) start_time: OffsetDateTime,
     pub(in super::super) end_time: OffsetDateTime,
+    pub(in super::super) error: Option<String>,
 }
 
 impl SqlNewMessage {
@@ -43,12 +44,13 @@ pub struct SqlMessage {
     pub(in super::super) conversation_path: String,
     pub role: String,
     pub content: String,
-    // pub send_content: serde_json::Value,
+    pub send_content: serde_json::Value,
     pub status: String,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
     pub end_time: OffsetDateTime,
+    pub error: Option<String>,
 }
 
 impl SqlMessage {
@@ -87,6 +89,36 @@ impl SqlMessage {
                 messages::status.eq(status.to_string()),
                 messages::updated_time.eq(time),
                 messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
+    pub fn record_error(
+        id: i32,
+        error: String,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::status.eq(Status::Error.to_string()),
+                messages::error.eq(Some(error)),
+                messages::updated_time.eq(time),
+                messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
+    pub fn update_send_content(
+        id: i32,
+        send_content: serde_json::Value,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::send_content.eq(send_content),
+                messages::updated_time.eq(time),
             ))
             .execute(conn)?;
         Ok(())
@@ -168,10 +200,31 @@ impl SqlMessage {
             .execute(conn)?;
         Ok(())
     }
+    pub fn reset_for_resend(
+        id: i32,
+        content: String,
+        time: OffsetDateTime,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        diesel::update(messages::table.filter(messages::id.eq(id)))
+            .set((
+                messages::content.eq(content),
+                messages::status.eq("loading"),
+                messages::error.eq::<Option<String>>(None),
+                messages::updated_time.eq(time),
+                messages::start_time.eq(time),
+                messages::end_time.eq(time),
+            ))
+            .execute(conn)?;
+        Ok(())
+    }
     pub fn migration_save(data: Vec<SqlMessage>, conn: &mut SqliteConnection) -> AiChatResult<()> {
         diesel::insert_into(messages::table)
             .values(data)
             .execute(conn)?;
         Ok(())
+    }
+    pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+        messages::table.load::<Self>(conn).map_err(|e| e.into())
     }
 }

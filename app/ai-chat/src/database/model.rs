@@ -12,6 +12,6 @@ mod messages;
 pub use conversation_templates::{
     SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate,
 };
-pub use conversations::{SqlConversation, SqlNewConversation, SqlUpdateConversation};
-pub use folders::{SqlFolder, SqlNewFolder, SqlUpdateFolder};
+pub use conversations::{SqlConversation, SqlNewConversation};
+pub use folders::{SqlFolder, SqlNewFolder};
 pub use messages::{SqlMessage, SqlNewMessage};

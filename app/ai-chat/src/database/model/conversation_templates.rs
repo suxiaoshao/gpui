@@ -6,9 +6,9 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/model/conversation_templates.rs
  */
 use crate::{
-    adapter::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
     database::{Mode, service::ConversationTemplatePrompt},
     errors::AiChatResult,
+    llm::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
 };
 
 use super::super::schema::conversation_templates;
@@ -23,8 +23,8 @@ pub struct SqlNewConversationTemplate {
     pub(in super::super) description: Option<String>,
     pub(in super::super) mode: String,
     pub(in super::super) adapter: String,
-    pub(in super::super) template: String,
-    pub(in super::super) prompts: String,
+    pub(in super::super) template: serde_json::Value,
+    pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
 }
@@ -37,9 +37,9 @@ impl SqlNewConversationTemplate {
             icon: "🤖".to_string(),
             description: None,
             mode: Mode::Contextual.to_string(),
-            adapter: OpenAIStreamAdapter::NAME.to_string(),
-            template: serde_json::to_string(&OpenAIConversationTemplate::default())?,
-            prompts: serde_json::to_string(&Vec::<ConversationTemplatePrompt>::new())?,
+            adapter: OpenAIStreamAdapter.name().to_string(),
+            template: serde_json::to_value(OpenAIConversationTemplate::default())?,
+            prompts: serde_json::to_value(Vec::<ConversationTemplatePrompt>::new())?,
             created_time: now,
             updated_time: now,
         })
@@ -61,8 +61,8 @@ pub struct SqlConversationTemplate {
     pub(in super::super) description: Option<String>,
     pub(in super::super) mode: String,
     pub(in super::super) adapter: String,
-    pub(in super::super) template: String,
-    pub(in super::super) prompts: String,
+    pub(in super::super) template: serde_json::Value,
+    pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
 }
@@ -100,8 +100,8 @@ pub struct SqlUpdateConversationTemplate {
     pub(in super::super) description: Option<String>,
     pub(in super::super) mode: String,
     pub(in super::super) adapter: String,
-    pub(in super::super) template: String,
-    pub(in super::super) prompts: String,
+    pub(in super::super) template: serde_json::Value,
+    pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) updated_time: OffsetDateTime,
 }
 

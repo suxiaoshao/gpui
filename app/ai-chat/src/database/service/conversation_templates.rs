@@ -17,7 +17,6 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
-use std::str::FromStr;
 use time::OffsetDateTime;
 
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
@@ -86,8 +85,8 @@ impl ConversationTemplate {
             updated_time,
             adapter,
             description,
-            template: serde_json::Value::from_str(&template)?,
-            prompts: serde_json::from_str(&prompts)?,
+            template,
+            prompts: serde_json::from_value(prompts)?,
             mode: mode.parse()?,
         })
     }
@@ -114,10 +113,10 @@ impl ConversationTemplate {
                 created_time,
                 updated_time,
                 description,
-                template: serde_json::Value::from_str(&template)?,
+                template,
                 adapter,
                 mode: mode.parse()?,
-                prompts: serde_json::from_str(&prompts)?,
+                prompts: serde_json::from_value(prompts)?,
             });
         }
         Ok(conversation_templates)
@@ -143,11 +142,11 @@ impl ConversationTemplate {
                 name,
                 icon,
                 adapter,
-                template: serde_json::to_string(&template)?,
+                template,
                 updated_time: time,
                 description,
                 mode: mode.to_string(),
-                prompts: serde_json::to_string(&prompts)?,
+                prompts: serde_json::to_value(prompts)?,
             };
             sql_new.update(conn)?;
             Ok(())
@@ -192,13 +191,13 @@ impl NewConversationTemplate {
             let sql_new = SqlNewConversationTemplate {
                 name,
                 icon,
-                template: serde_json::to_string(&template)?,
+                template,
                 adapter,
                 created_time: time,
                 updated_time: time,
                 description,
                 mode: mode.to_string(),
-                prompts: serde_json::to_string(&prompts)?,
+                prompts: serde_json::to_value(prompts)?,
             };
             let SqlConversationTemplate { id, .. } = sql_new.insert(conn)?;
             Ok(id)

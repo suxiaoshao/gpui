@@ -1,10 +1,10 @@
 use crate::{
-    adapter::{InputItem, InputType, adapter_names, template_inputs_by_adapter},
     config::AiChatConfig,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, Mode, NewConversationTemplate, Role,
     },
     i18n::{I18n, t_static},
+    llm::{InputItem, InputType, adapter_names, template_inputs_by_adapter},
 };
 use gpui::*;
 use gpui_component::{
@@ -59,6 +59,40 @@ struct TemplateFormContainer {
 }
 
 type OnSaved = Rc<dyn Fn(ConversationTemplate, &mut Window, &mut App) + 'static>;
+
+#[derive(Clone)]
+struct TemplateDialogI18n {
+    dialog_title: SharedString,
+    submit_label: SharedString,
+    success_title: SharedString,
+    failure_title: SharedString,
+    name_label: SharedString,
+    icon_label: SharedString,
+    description_label: SharedString,
+    mode_label: SharedString,
+    adapter_label: SharedString,
+    template_label: SharedString,
+    prompts_label: SharedString,
+    cancel_label: SharedString,
+    load_schema_failed_title: SharedString,
+}
+
+#[derive(Clone)]
+struct TemplateDialogFields {
+    name_input: Entity<InputState>,
+    icon_input: Entity<InputState>,
+    description_input: Entity<InputState>,
+    mode_input: Entity<SelectState<Vec<Mode>>>,
+    adapter_input: Entity<SelectState<Vec<String>>>,
+    template_form_container: Entity<TemplateFormContainer>,
+    prompt_form_input: Entity<PromptListForm>,
+}
+
+struct TemplateFormSubmission {
+    new_template: NewConversationTemplate,
+    failure_title: SharedString,
+    success_title: SharedString,
+}
 
 impl TemplateEditForm {
     fn new(
@@ -610,108 +644,31 @@ fn open_template_dialog(
         success_title_key,
         failure_title_key,
     } = params;
-    let i18n = cx.global::<I18n>();
-    let dialog_title = i18n.t(dialog_title_key);
-    let submit_label = i18n.t(submit_label_key);
-    let success_title = i18n.t(success_title_key);
-    let failure_title = i18n.t(failure_title_key);
-    let name_label = i18n.t("field-name");
-    let icon_label = i18n.t("field-icon");
-    let description_label = i18n.t("field-description");
-    let mode_label = i18n.t("field-mode");
-    let adapter_label = i18n.t("field-adapter");
-    let template_label = i18n.t("field-template");
-    let prompts_label = i18n.t("field-prompts");
-    let cancel_label = i18n.t("button-cancel");
-    let load_schema_failed_title = i18n.t("notify-load-template-schema-failed");
-
-    let name_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
-    name_input.update(cx, |input, cx| input.set_value(&template.name, window, cx));
-
-    let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder(icon_label.clone()));
-    icon_input.update(cx, |input, cx| input.set_value(&template.icon, window, cx));
-
-    let description_input =
-        cx.new(|cx| InputState::new(window, cx).placeholder(description_label.clone()));
-    description_input.update(cx, |input, cx| {
-        input.set_value(template.description.clone().unwrap_or_default(), window, cx)
-    });
-
-    let mode_options: Vec<Mode> = match template.mode {
-        Mode::Contextual => vec![Mode::Contextual, Mode::Single, Mode::AssistantOnly],
-        Mode::Single => vec![Mode::Single, Mode::Contextual, Mode::AssistantOnly],
-        Mode::AssistantOnly => vec![Mode::AssistantOnly, Mode::Contextual, Mode::Single],
-    };
-    let mode_input: Entity<SelectState<Vec<Mode>>> =
-        cx.new(|cx| SelectState::new(mode_options, Some(IndexPath::default()), window, cx));
-
-    let mut adapter_options = vec![template.adapter.clone()];
-    adapter_options.extend(
-        adapter_names()
-            .into_iter()
-            .filter(|adapter| *adapter != template.adapter)
-            .map(ToString::to_string),
+    let labels = template_dialog_i18n(
+        dialog_title_key,
+        submit_label_key,
+        success_title_key,
+        failure_title_key,
+        cx,
     );
-    let adapter_input: Entity<SelectState<Vec<String>>> =
-        cx.new(|cx| SelectState::new(adapter_options, Some(IndexPath::default()), window, cx));
-
-    let template_items =
-        match template_inputs_by_adapter(&template.adapter, cx.global::<AiChatConfig>()) {
-            Ok(items) => items,
-            Err(err) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(load_schema_failed_title)
-                        .message(err.to_string())
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-                return;
-            }
-        };
-    let template_value = template.template.clone();
-    let template_form_input =
-        cx.new(|cx| TemplateEditForm::new(template_items, &template_value, window, cx));
-    let template_form_container =
-        cx.new(|_cx| TemplateFormContainer::new(template_form_input.clone()));
-    let prompt_form_input = cx.new(|cx| PromptListForm::new(&template, window, cx));
-    let adapter_subscription = window.subscribe(&adapter_input, cx, {
-        let template_form_container = template_form_container.clone();
+    let Some(fields) = build_template_dialog_fields(&template, &labels, window, cx) else {
+        return;
+    };
+    let adapter_subscription = window.subscribe(&fields.adapter_input, cx, {
+        let template_form_container = fields.template_form_container.clone();
         move |_state, event: &SelectEvent<Vec<String>>, window, cx| {
             let SelectEvent::Confirm(adapter) = event;
             let Some(adapter) = adapter.as_deref() else {
                 return;
             };
-            let current_template = template_form_container
-                .read(cx)
-                .collect_template(cx)
-                .unwrap_or_else(|_| serde_json::json!({}));
-            let template_items =
-                match template_inputs_by_adapter(adapter, cx.global::<AiChatConfig>()) {
-                    Ok(items) => items,
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(cx.global::<I18n>().t("notify-load-template-schema-failed"))
-                                .message(err.to_string())
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        return;
-                    }
-                };
-            let next_form =
-                cx.new(|cx| TemplateEditForm::new(template_items, &current_template, window, cx));
-            template_form_container.update(cx, |container, cx| {
-                container.set_form(next_form, cx);
-            });
+            reload_template_form_for_adapter(adapter, &template_form_container, window, cx);
         }
     });
     let adapter_subscription = Rc::new(RefCell::new(Some(adapter_subscription)));
 
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(dialog_title.clone())
+            .title(labels.dialog_title.clone())
             .w(px(900.))
             .h(px(600.))
             .child(
@@ -719,236 +676,78 @@ fn open_template_dialog(
                     .child(
                         field()
                             .required(true)
-                            .label(name_label.clone())
-                            .child(Input::new(&name_input)),
+                            .label(labels.name_label.clone())
+                            .child(Input::new(&fields.name_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label(icon_label.clone())
-                            .child(Input::new(&icon_input)),
+                            .label(labels.icon_label.clone())
+                            .child(Input::new(&fields.icon_input)),
                     )
                     .child(
                         field()
-                            .label(description_label.clone())
-                            .child(Input::new(&description_input)),
-                    )
-                    .child(
-                        field()
-                            .required(true)
-                            .label(mode_label.clone())
-                            .child(Select::new(&mode_input)),
+                            .label(labels.description_label.clone())
+                            .child(Input::new(&fields.description_input)),
                     )
                     .child(
                         field()
                             .required(true)
-                            .label(adapter_label.clone())
-                            .child(Select::new(&adapter_input)),
+                            .label(labels.mode_label.clone())
+                            .child(Select::new(&fields.mode_input)),
                     )
                     .child(
                         field()
-                            .label(template_label.clone())
-                            .child(template_form_container.clone()),
+                            .required(true)
+                            .label(labels.adapter_label.clone())
+                            .child(Select::new(&fields.adapter_input)),
                     )
                     .child(
                         field()
-                            .label(prompts_label.clone())
-                            .child(prompt_form_input.clone()),
+                            .label(labels.template_label.clone())
+                            .child(fields.template_form_container.clone()),
+                    )
+                    .child(
+                        field()
+                            .label(labels.prompts_label.clone())
+                            .child(fields.prompt_form_input.clone()),
                     ),
             )
             .footer({
-                let name_input = name_input.clone();
-                let icon_input = icon_input.clone();
-                let description_input = description_input.clone();
-                let mode_input = mode_input.clone();
-                let adapter_input = adapter_input.clone();
-                let template_form_container = template_form_container.clone();
-                let prompt_form_input = prompt_form_input.clone();
+                let fields = fields.clone();
                 let adapter_subscription = adapter_subscription.clone();
                 let on_saved = on_saved.clone();
-                let cancel_label = cancel_label.clone();
-                let submit_label = submit_label.clone();
-                let failure_title = failure_title.clone();
-                let success_title = success_title.clone();
+                let labels = labels.clone();
                 move |_dialog, _state, _window, _cx| {
                     let _keep_subscription_alive = adapter_subscription.borrow();
                     vec![
-                        Button::new("cancel").label(cancel_label.clone()).on_click(
-                            |_, window, cx| {
+                        Button::new("cancel")
+                            .label(labels.cancel_label.clone())
+                            .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
-                            },
-                        ),
+                            }),
                         Button::new("submit")
                             .primary()
-                            .label(submit_label.clone())
+                            .label(labels.submit_label.clone())
                             .on_click({
-                                let name_input = name_input.clone();
-                                let icon_input = icon_input.clone();
-                                let description_input = description_input.clone();
-                                let mode_input = mode_input.clone();
-                                let adapter_input = adapter_input.clone();
-                                let template_form_container = template_form_container.clone();
-                                let prompt_form_input = prompt_form_input.clone();
+                                let fields = fields.clone();
                                 let on_saved = on_saved.clone();
-                                let failure_title = failure_title.clone();
-                                let success_title = success_title.clone();
+                                let labels = labels.clone();
                                 move |_, window, cx| {
-                                    let name = name_input.read(cx).value().trim().to_string();
-                                    let icon = icon_input.read(cx).value().trim().to_string();
-                                    let description = {
-                                        let value =
-                                            description_input.read(cx).value().trim().to_string();
-                                        if value.is_empty() { None } else { Some(value) }
+                                    let Some(submission) =
+                                        collect_template_submission(&fields, &labels, window, cx)
+                                    else {
+                                        return;
                                     };
-                                    let mode = match mode_input.read(cx).selected_value().copied() {
-                                        Some(mode) => mode,
-                                        None => {
-                                            window.push_notification(
-                                                Notification::new()
-                                                    .title(
-                                                        cx.global::<I18n>().t("notify-select-mode"),
-                                                    )
-                                                    .with_type(NotificationType::Error),
-                                                cx,
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    let adapter = match adapter_input.read(cx).selected_value() {
-                                        Some(adapter) => adapter.clone(),
-                                        None => {
-                                            window.push_notification(
-                                                Notification::new()
-                                                    .title(
-                                                        cx.global::<I18n>()
-                                                            .t("notify-select-adapter"),
-                                                    )
-                                                    .with_type(NotificationType::Error),
-                                                cx,
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    let template =
-                                        match template_form_container.read(cx).collect_template(cx)
-                                        {
-                                            Ok(template) => template,
-                                            Err(err) => {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(
-                                                            cx.global::<I18n>()
-                                                                .t("notify-invalid-template"),
-                                                        )
-                                                        .message(err)
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                        };
-                                    let prompts =
-                                        match prompt_form_input.read(cx).collect_prompts(cx) {
-                                            Ok(prompts) => prompts,
-                                            Err(err) => {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(
-                                                            cx.global::<I18n>()
-                                                                .t("notify-invalid-prompts"),
-                                                        )
-                                                        .message(err)
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                        };
-
-                                    let mut conn = match cx.global::<Db>().get() {
-                                        Ok(conn) => conn,
-                                        Err(err) => {
-                                            window.push_notification(
-                                                Notification::new()
-                                                    .title(
-                                                        cx.global::<I18n>()
-                                                            .t("notify-open-database-failed"),
-                                                    )
-                                                    .message(err.to_string())
-                                                    .with_type(NotificationType::Error),
-                                                cx,
-                                            );
-                                            return;
-                                        }
-                                    };
-
-                                    let new_template = NewConversationTemplate {
-                                        name,
-                                        icon,
-                                        description,
-                                        mode,
-                                        adapter,
-                                        template,
-                                        prompts,
-                                    };
-                                    let template_id = match template_id {
-                                        Some(template_id) => {
-                                            if let Err(err) = ConversationTemplate::update(
-                                                new_template,
-                                                template_id,
-                                                &mut conn,
-                                            ) {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(failure_title.clone())
-                                                        .message(err.to_string())
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                            template_id
-                                        }
-                                        None => match new_template.insert(&mut conn) {
-                                            Ok(template_id) => template_id,
-                                            Err(err) => {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(failure_title.clone())
-                                                        .message(err.to_string())
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                        },
-                                    };
-
-                                    let latest =
-                                        match ConversationTemplate::find(template_id, &mut conn) {
-                                            Ok(template) => template,
-                                            Err(err) => {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(
-                                                            cx.global::<I18n>()
-                                                                .t("notify-reload-template-failed"),
-                                                        )
-                                                        .message(err.to_string())
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                        };
-
-                                    (on_saved)(latest, window, cx);
-                                    window.push_notification(
-                                        Notification::new()
-                                            .title(success_title.clone())
-                                            .with_type(NotificationType::Success),
+                                    let Some(latest) = save_template_submission(
+                                        template_id,
+                                        submission,
+                                        window,
                                         cx,
-                                    );
+                                    ) else {
+                                        return;
+                                    };
+                                    (on_saved)(latest, window, cx);
                                     window.close_dialog(cx);
                                 }
                             }),
@@ -956,4 +755,322 @@ fn open_template_dialog(
                 }
             })
     });
+}
+
+fn template_dialog_i18n(
+    dialog_title_key: &str,
+    submit_label_key: &str,
+    success_title_key: &str,
+    failure_title_key: &str,
+    cx: &App,
+) -> TemplateDialogI18n {
+    let i18n = cx.global::<I18n>();
+    TemplateDialogI18n {
+        dialog_title: i18n.t(dialog_title_key).into(),
+        submit_label: i18n.t(submit_label_key).into(),
+        success_title: i18n.t(success_title_key).into(),
+        failure_title: i18n.t(failure_title_key).into(),
+        name_label: i18n.t("field-name").into(),
+        icon_label: i18n.t("field-icon").into(),
+        description_label: i18n.t("field-description").into(),
+        mode_label: i18n.t("field-mode").into(),
+        adapter_label: i18n.t("field-adapter").into(),
+        template_label: i18n.t("field-template").into(),
+        prompts_label: i18n.t("field-prompts").into(),
+        cancel_label: i18n.t("button-cancel").into(),
+        load_schema_failed_title: i18n.t("notify-load-template-schema-failed").into(),
+    }
+}
+
+fn build_template_dialog_fields(
+    template: &ConversationTemplate,
+    labels: &TemplateDialogI18n,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<TemplateDialogFields> {
+    let name_input = create_dialog_input(&template.name, &labels.name_label, window, cx);
+    let icon_input = create_dialog_input(&template.icon, &labels.icon_label, window, cx);
+    let description_input = create_dialog_input(
+        template.description.clone().unwrap_or_default(),
+        &labels.description_label,
+        window,
+        cx,
+    );
+    let mode_input = cx.new(|cx| {
+        SelectState::new(
+            ordered_mode_options(template.mode),
+            Some(IndexPath::default()),
+            window,
+            cx,
+        )
+    });
+    let adapter_input = cx.new(|cx| {
+        SelectState::new(
+            ordered_adapter_options(&template.adapter),
+            Some(IndexPath::default()),
+            window,
+            cx,
+        )
+    });
+    let template_form =
+        load_template_form(&template.adapter, &template.template, labels, window, cx)?;
+    let template_form_container = cx.new(|_cx| TemplateFormContainer::new(template_form));
+    let prompt_form_input = cx.new(|cx| PromptListForm::new(template, window, cx));
+    Some(TemplateDialogFields {
+        name_input,
+        icon_input,
+        description_input,
+        mode_input,
+        adapter_input,
+        template_form_container,
+        prompt_form_input,
+    })
+}
+
+fn create_dialog_input(
+    value: impl Into<SharedString>,
+    placeholder: &SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<InputState> {
+    let value: SharedString = value.into();
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.clone()));
+    input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+    input
+}
+
+fn ordered_mode_options(mode: Mode) -> Vec<Mode> {
+    match mode {
+        Mode::Contextual => vec![Mode::Contextual, Mode::Single, Mode::AssistantOnly],
+        Mode::Single => vec![Mode::Single, Mode::Contextual, Mode::AssistantOnly],
+        Mode::AssistantOnly => vec![Mode::AssistantOnly, Mode::Contextual, Mode::Single],
+    }
+}
+
+fn ordered_adapter_options(current: &str) -> Vec<String> {
+    let mut adapter_options = vec![current.to_string()];
+    adapter_options.extend(
+        adapter_names()
+            .into_iter()
+            .filter(|adapter| *adapter != current)
+            .map(ToString::to_string),
+    );
+    adapter_options
+}
+
+fn load_template_form(
+    adapter: &str,
+    template_value: &serde_json::Value,
+    labels: &TemplateDialogI18n,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Entity<TemplateEditForm>> {
+    let template_items = match template_inputs_by_adapter(adapter, cx.global::<AiChatConfig>()) {
+        Ok(items) => items,
+        Err(err) => {
+            push_error_notification(
+                window,
+                labels.load_schema_failed_title.clone(),
+                err.to_string(),
+                cx,
+            );
+            return None;
+        }
+    };
+    Some(cx.new(|cx| TemplateEditForm::new(template_items, template_value, window, cx)))
+}
+
+fn reload_template_form_for_adapter(
+    adapter: &str,
+    template_form_container: &Entity<TemplateFormContainer>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let current_template = template_form_container
+        .read(cx)
+        .collect_template(cx)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let labels = TemplateDialogI18n {
+        dialog_title: SharedString::new_static(""),
+        submit_label: SharedString::new_static(""),
+        success_title: SharedString::new_static(""),
+        failure_title: SharedString::new_static(""),
+        name_label: SharedString::new_static(""),
+        icon_label: SharedString::new_static(""),
+        description_label: SharedString::new_static(""),
+        mode_label: SharedString::new_static(""),
+        adapter_label: SharedString::new_static(""),
+        template_label: SharedString::new_static(""),
+        prompts_label: SharedString::new_static(""),
+        cancel_label: SharedString::new_static(""),
+        load_schema_failed_title: cx
+            .global::<I18n>()
+            .t("notify-load-template-schema-failed")
+            .into(),
+    };
+    let Some(next_form) = load_template_form(adapter, &current_template, &labels, window, cx)
+    else {
+        return;
+    };
+    template_form_container.update(cx, |container, cx| {
+        container.set_form(next_form, cx);
+    });
+}
+
+fn collect_template_submission(
+    fields: &TemplateDialogFields,
+    labels: &TemplateDialogI18n,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<TemplateFormSubmission> {
+    let name = fields.name_input.read(cx).value().trim().to_string();
+    let icon = fields.icon_input.read(cx).value().trim().to_string();
+    let description = optional_input_value(&fields.description_input, cx);
+    let mode = fields
+        .mode_input
+        .read(cx)
+        .selected_value()
+        .copied()
+        .or_else(|| {
+            push_error_notification(
+                window,
+                cx.global::<I18n>().t("notify-select-mode").into(),
+                String::new(),
+                cx,
+            );
+            None
+        })?;
+    let adapter = fields
+        .adapter_input
+        .read(cx)
+        .selected_value()
+        .cloned()
+        .or_else(|| {
+            push_error_notification(
+                window,
+                cx.global::<I18n>().t("notify-select-adapter").into(),
+                String::new(),
+                cx,
+            );
+            None
+        })?;
+    let template = match fields.template_form_container.read(cx).collect_template(cx) {
+        Ok(template) => template,
+        Err(err) => {
+            push_error_notification(
+                window,
+                cx.global::<I18n>().t("notify-invalid-template").into(),
+                err,
+                cx,
+            );
+            return None;
+        }
+    };
+    let prompts = match fields.prompt_form_input.read(cx).collect_prompts(cx) {
+        Ok(prompts) => prompts,
+        Err(err) => {
+            push_error_notification(
+                window,
+                cx.global::<I18n>().t("notify-invalid-prompts").into(),
+                err,
+                cx,
+            );
+            return None;
+        }
+    };
+    Some(TemplateFormSubmission {
+        new_template: NewConversationTemplate {
+            name,
+            icon,
+            description,
+            mode,
+            adapter,
+            template,
+            prompts,
+        },
+        failure_title: labels.failure_title.clone(),
+        success_title: labels.success_title.clone(),
+    })
+}
+
+fn optional_input_value(input: &Entity<InputState>, cx: &App) -> Option<String> {
+    let value = input.read(cx).value().trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn save_template_submission(
+    template_id: Option<i32>,
+    submission: TemplateFormSubmission,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<ConversationTemplate> {
+    let TemplateFormSubmission {
+        new_template,
+        failure_title,
+        success_title,
+    } = submission;
+    let mut conn = match cx.global::<Db>().get() {
+        Ok(conn) => conn,
+        Err(err) => {
+            push_error_notification(
+                window,
+                cx.global::<I18n>().t("notify-open-database-failed").into(),
+                err.to_string(),
+                cx,
+            );
+            return None;
+        }
+    };
+    let template_id = match template_id {
+        Some(template_id) => {
+            if let Err(err) = ConversationTemplate::update(new_template, template_id, &mut conn) {
+                push_error_notification(window, failure_title.clone(), err.to_string(), cx);
+                return None;
+            }
+            template_id
+        }
+        None => match new_template.insert(&mut conn) {
+            Ok(template_id) => template_id,
+            Err(err) => {
+                push_error_notification(window, failure_title.clone(), err.to_string(), cx);
+                return None;
+            }
+        },
+    };
+    let latest = match ConversationTemplate::find(template_id, &mut conn) {
+        Ok(template) => template,
+        Err(err) => {
+            push_error_notification(
+                window,
+                cx.global::<I18n>()
+                    .t("notify-reload-template-failed")
+                    .into(),
+                err.to_string(),
+                cx,
+            );
+            return None;
+        }
+    };
+    window.push_notification(
+        Notification::new()
+            .title(success_title)
+            .with_type(NotificationType::Success),
+        cx,
+    );
+    Some(latest)
+}
+
+fn push_error_notification(
+    window: &mut Window,
+    title: SharedString,
+    message: impl Into<SharedString>,
+    cx: &mut App,
+) {
+    let message: SharedString = message.into();
+    let notification = if message.is_empty() {
+        Notification::new().title(title)
+    } else {
+        Notification::new().title(title).message(message)
+    };
+    window.push_notification(notification.with_type(NotificationType::Error), cx);
 }

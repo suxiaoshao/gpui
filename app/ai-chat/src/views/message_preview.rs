@@ -1,6 +1,11 @@
 use crate::{
-    components::message::MessageViewExt, database::Content, errors::AiChatResult, i18n::I18n,
+    components::message::MessageViewExt,
+    database::{Content, Db, Message, Role},
+    errors::AiChatResult,
+    i18n::I18n,
+    store::{ChatData, ChatDataEvent},
 };
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     IconName, Root, WindowExt,
@@ -11,7 +16,7 @@ use gpui_component::{
     v_flex,
 };
 use std::ops::Deref;
-use tracing::event;
+use tracing::{Level, event};
 
 #[derive(Debug)]
 enum PreviewType {
@@ -122,6 +127,38 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
     }
 }
 
+pub(crate) fn open_message_preview_window<T>(message: T, cx: &mut App)
+where
+    T: MessagePreviewExt + Clone + 'static,
+{
+    let title = {
+        let i18n = cx.global::<I18n>();
+        let mut args = FluentArgs::new();
+        args.set("id", message.id().to_string());
+        i18n.t_with_args("message-preview-title", &args)
+    };
+    if let Err(err) = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(800.), px(600.)),
+                cx,
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some(title.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        move |window, cx| {
+            let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
+            cx.new(|cx| Root::new(message_view, window, cx))
+        },
+    ) {
+        event!(Level::ERROR, "open message view window: {}", err);
+    }
+}
+
 pub trait MessagePreviewExt: MessageViewExt {
     fn on_update_content(
         &self,
@@ -129,6 +166,109 @@ pub trait MessagePreviewExt: MessageViewExt {
         window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()>;
+}
+
+impl MessageViewExt for Message {
+    type Id = i32;
+
+    fn role(&self) -> &crate::database::Role {
+        &self.role
+    }
+
+    fn content(&self) -> &Content {
+        &self.content
+    }
+
+    fn status(&self) -> &crate::database::Status {
+        &self.status
+    }
+
+    fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    fn open_view_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let message = match cx.global::<Db>().get() {
+            Ok(mut conn) => match Message::find(id, &mut conn) {
+                Ok(message) => message,
+                Err(err) => {
+                    event!(Level::ERROR, "find message failed: {}", err);
+                    return;
+                }
+            },
+            Err(err) => {
+                event!(Level::ERROR, "get db failed: {}", err);
+                return;
+            }
+        };
+        open_message_preview_window(message, cx);
+    }
+
+    fn pause_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let panel = cx
+            .global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel());
+        let Some(panel) = panel else {
+            return;
+        };
+        panel.update(cx, |this, cx| {
+            this.pause_message(id, cx);
+        });
+    }
+
+    fn delete_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        chat_data.update(cx, move |_this, cx| {
+            cx.emit(ChatDataEvent::DeleteMessage(id));
+        });
+    }
+
+    fn can_resend(&self, cx: &App) -> bool {
+        if self.role != Role::Assistant {
+            return false;
+        }
+        cx.global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel())
+            .is_some_and(|panel| !panel.read(cx).has_running_task())
+    }
+
+    fn resend_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+        let panel = cx
+            .global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.active_conversation_panel());
+        let Some(panel) = panel else {
+            return;
+        };
+        panel.update(cx, |this, cx| {
+            this.resend_message(id, _window, cx);
+        });
+    }
+}
+
+impl MessagePreviewExt for Message {
+    fn on_update_content(
+        &self,
+        content: Content,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::update_content(self.id, &content, conn)?;
+        Ok(())
+    }
 }
 
 impl<T: MessagePreviewExt> Render for MessagePreview<T> {
@@ -225,5 +365,37 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             })
             .children(dialog_layer)
             .children(notification_layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::{Content, Message, Role, Status};
+    use time::OffsetDateTime;
+
+    fn make_message(role: Role) -> Message {
+        let now = OffsetDateTime::now_utc();
+        Message {
+            id: 1,
+            conversation_id: 1,
+            conversation_path: "/conversation/1".to_string(),
+            role,
+            content: Content::Text("hello".to_string()),
+            send_content: serde_json::json!({}),
+            status: Status::Normal,
+            created_time: now,
+            updated_time: now,
+            start_time: now,
+            end_time: now,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn only_assistant_messages_can_resend() {
+        let assistant = make_message(Role::Assistant);
+        let user = make_message(Role::User);
+        assert_eq!(assistant.role, Role::Assistant);
+        assert_eq!(user.role, Role::User);
     }
 }

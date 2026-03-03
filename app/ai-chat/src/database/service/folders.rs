@@ -1,29 +1,13 @@
 use super::utils::serialize_offset_date_time;
-use crate::store::{ChatData, ChatDataEvent};
-use crate::views::home::Add;
 use crate::{
-    components::{
-        add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
-        delete_confirm::open_delete_confirm_dialog,
-    },
     database::{
-        Conversation, Message,
-        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateFolder},
+        Conversation,
+        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder},
     },
     errors::{AiChatError, AiChatResult},
-    views::home::AddShift,
 };
 use diesel::SqliteConnection;
-use gpui::*;
-use gpui_component::input::Delete;
-use gpui_component::{
-    IconName, Sizable,
-    button::{Button, ButtonVariants},
-    menu::DropdownMenu,
-    sidebar::SidebarMenuItem,
-};
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
 use time::OffsetDateTime;
 
 #[derive(Serialize, Debug)]
@@ -47,68 +31,6 @@ pub struct Folder {
     pub updated_time: OffsetDateTime,
     pub conversations: Vec<Conversation>,
     pub folders: Vec<Folder>,
-}
-
-impl From<&Folder> for SidebarMenuItem {
-    fn from(value: &Folder) -> Self {
-        let id = value.id;
-        let parent_id = Some(value.id);
-        let name = value.name.clone();
-        let children = value
-            .folders
-            .iter()
-            .map(SidebarMenuItem::from)
-            .chain(value.conversations.iter().map(SidebarMenuItem::from));
-        SidebarMenuItem::new(&value.name)
-            .icon(IconName::Folder)
-            .click_to_open(true)
-            .children(children)
-            .suffix(
-                div()
-                    .on_action(move |_: &AddShift, window, cx| {
-                        add_folder_dialog(parent_id, window, cx);
-                    })
-                    .on_action(move |_: &Add, window, cx| {
-                        add_conversation_dialog(parent_id, window, cx);
-                    })
-                    .on_action(move |_: &Delete, window, cx| {
-                        let chat_data = cx.global::<ChatData>().deref().clone();
-                        open_delete_confirm_dialog(
-                            "Delete Folder",
-                            SharedString::from(format!(
-                                "Delete folder \"{name}\" and its contents? This action cannot be undone."
-                            )),
-                            move |_window, cx| {
-                                chat_data.update(cx, move |_this, cx| {
-                                    cx.emit(ChatDataEvent::DeleteFolder(id));
-                                });
-                            },
-                            window,
-                            cx,
-                        );
-                    })
-                    .child(
-                        Button::new(id)
-                            .icon(IconName::EllipsisVertical)
-                            .ghost()
-                            .xsmall()
-                            .dropdown_menu(|this, _window, _cx| {
-                                this.check_side(gpui_component::Side::Left)
-                                    .menu_with_icon(
-                                        "Add Conversation",
-                                        IconName::Plus,
-                                        Box::new(Add),
-                                    )
-                                    .menu_with_icon(
-                                        "Add Folder",
-                                        IconName::Plus,
-                                        Box::new(AddShift),
-                                    )
-                                    .menu_with_icon("Delete", IconName::Delete, Box::new(Delete))
-                            }),
-                    ),
-            )
-    }
 }
 
 impl Folder {
@@ -140,47 +62,6 @@ impl Folder {
         let new_folder = new_folder.insert(conn)?;
         let folder = Self::from_sql_folder(new_folder, conn)?;
         Ok(folder)
-    }
-    pub fn update(
-        id: i32,
-        NewFolder { name, parent_id }: NewFolder,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let now = OffsetDateTime::now_utc();
-        let parent_folder = parent_id
-            .map(|folder_id| SqlFolder::find(folder_id, conn))
-            .transpose()?;
-        let old_folder = SqlFolder::find(id, conn)?;
-        let path = match parent_folder {
-            Some(parent_folder) => format!("{}/{}", parent_folder.path, name),
-            None => format!("/{name}"),
-        };
-
-        let path_updated = old_folder.path != path;
-        if path_updated && SqlFolder::path_exists(&path, conn)? {
-            return Err(AiChatError::FolderPathExists(path));
-        }
-        if SqlConversation::path_exists(&path, conn)? {
-            return Err(AiChatError::ConversationPathExists(path));
-        }
-        let update_folder = SqlUpdateFolder {
-            id,
-            path: path.clone(),
-            name,
-            parent_id,
-            updated_time: now,
-        };
-        conn.immediate_transaction::<_, AiChatError, _>(move |conn| {
-            update_folder.update(conn)?;
-            if path_updated {
-                Self::update_path(&old_folder.path, &path, conn)?;
-                Conversation::update_path(&old_folder.path, &path, conn)?;
-                Message::update_path(&old_folder.path, &path, conn)?;
-            }
-            Ok(())
-        })?;
-
-        Ok(())
     }
     pub fn query(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
         let sql_folders = SqlFolder::query(conn)?;
@@ -227,58 +108,6 @@ impl Folder {
             SqlConversation::delete_by_path(&folder.path, conn)?;
             SqlFolder::delete_by_path(&folder.path, conn)?;
             SqlFolder::delete_by_id(id, conn)?;
-            Ok(())
-        })?;
-        Ok(())
-    }
-    pub fn update_path(
-        old_path_pre: &str,
-        new_path_pre: &str,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let update_list = SqlFolder::find_by_path_pre(old_path_pre, conn)?;
-        let time = OffsetDateTime::now_utc();
-        update_list
-            .iter()
-            .map(|old| SqlUpdateFolder::from_new_path(old, old_path_pre, new_path_pre, time))
-            .try_for_each(|update| {
-                update.update(conn)?;
-                Ok::<(), AiChatError>(())
-            })?;
-        Ok(())
-    }
-    pub fn move_folder(
-        id: i32,
-        new_parent_id: Option<i32>,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let SqlFolder {
-            parent_id: old_parent_id,
-            mut path,
-            ..
-        } = SqlFolder::find(id, conn)?;
-        let old_path = path.clone();
-        let old_path_pre = match old_parent_id {
-            Some(parent_id) => {
-                let SqlFolder { path, .. } = SqlFolder::find(parent_id, conn)?;
-                path
-            }
-            _ => "/".to_string(),
-        };
-        let new_path_pre = match new_parent_id {
-            Some(parent_id) => {
-                let SqlFolder { path, .. } = SqlFolder::find(parent_id, conn)?;
-                path
-            }
-            _ => "/".to_string(),
-        };
-        path.replace_range(0..old_path_pre.len(), &new_path_pre);
-        conn.immediate_transaction::<_, AiChatError, _>(|conn| {
-            let time = OffsetDateTime::now_utc();
-            SqlUpdateFolder::move_folder(id, new_parent_id, &path, time, conn)?;
-            Self::update_path(&old_path, &path, conn)?;
-            Conversation::update_path(&old_path, &path, conn)?;
-            Message::update_path(&old_path, &path, conn)?;
             Ok(())
         })?;
         Ok(())

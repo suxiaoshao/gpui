@@ -1,58 +1,15 @@
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 use crate::{
-    components::message::MessageViewExt,
     database::{
-        Db, Role, Status,
+        Role, Status,
         model::{SqlConversation, SqlMessage, SqlNewMessage},
     },
     errors::{AiChatError, AiChatResult},
-    i18n::I18n,
-    store::{ChatData, ChatDataEvent},
-    views::message_preview::{MessagePreview, MessagePreviewExt},
 };
 use diesel::SqliteConnection;
-use fluent_bundle::FluentArgs;
-use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, Window, WindowBounds, WindowOptions, px, size,
-};
-use gpui_component::Root;
 use serde::{Deserialize, Serialize};
-use std::ops::{AddAssign, Deref};
+use std::ops::AddAssign;
 use time::OffsetDateTime;
-use tracing::{Level, event};
-
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
-pub struct TemporaryMessage {
-    pub id: usize,
-    pub role: Role,
-    pub content: Content,
-    pub send_content: serde_json::Value,
-    pub status: Status,
-    #[serde(
-        rename = "createdTime",
-        serialize_with = "serialize_offset_date_time",
-        deserialize_with = "deserialize_offset_date_time"
-    )]
-    pub created_time: OffsetDateTime,
-    #[serde(
-        rename = "updatedTime",
-        serialize_with = "serialize_offset_date_time",
-        deserialize_with = "deserialize_offset_date_time"
-    )]
-    pub updated_time: OffsetDateTime,
-    #[serde(
-        rename = "startTime",
-        serialize_with = "serialize_offset_date_time",
-        deserialize_with = "deserialize_offset_date_time"
-    )]
-    pub start_time: OffsetDateTime,
-    #[serde(
-        rename = "endTime",
-        serialize_with = "serialize_offset_date_time",
-        deserialize_with = "deserialize_offset_date_time"
-    )]
-    pub end_time: OffsetDateTime,
-}
 
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "tag", content = "value", rename_all = "camelCase")]
@@ -150,6 +107,8 @@ pub struct Message {
     pub conversation_path: String,
     pub role: Role,
     pub content: Content,
+    #[serde(rename = "sendContent")]
+    pub send_content: serde_json::Value,
     pub status: Status,
     #[serde(
         rename = "createdTime",
@@ -175,91 +134,7 @@ pub struct Message {
         deserialize_with = "deserialize_offset_date_time"
     )]
     pub end_time: OffsetDateTime,
-}
-
-impl MessageViewExt for Message {
-    type Id = i32;
-
-    fn role(&self) -> &Role {
-        &self.role
-    }
-
-    fn content(&self) -> &Content {
-        &self.content
-    }
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-
-    fn status(&self) -> &Status {
-        &self.status
-    }
-
-    fn open_view_by_id(id: Self::Id, _window: &mut gpui::Window, cx: &mut gpui::App) {
-        let message = match cx.global::<Db>().get() {
-            Ok(mut conn) => match Message::find(id, &mut conn) {
-                Ok(message) => message,
-                Err(err) => {
-                    event!(Level::ERROR, "find message failed: {}", err);
-                    return;
-                }
-            },
-            Err(err) => {
-                event!(Level::ERROR, "get db failed: {}", err);
-                return;
-            }
-        };
-        let title = {
-            let i18n = cx.global::<I18n>();
-            let mut args = FluentArgs::new();
-            args.set("id", message.id as i64);
-            i18n.t_with_args("message-preview-title", &args)
-        };
-        match cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(800.), px(600.)),
-                    cx,
-                ))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let message_view = cx.new(|cx| MessagePreview::new(message.clone(), window, cx));
-                cx.new(|cx| Root::new(message_view, window, cx))
-            },
-        ) {
-            Ok(_) => {}
-            Err(err) => {
-                event!(Level::ERROR, "open message view window: {}", err);
-            }
-        };
-    }
-
-    fn delete_message_by_id(message_id: Self::Id, _window: &mut gpui::Window, cx: &mut App) {
-        let chat_data = cx.global::<ChatData>().deref().clone();
-        chat_data.update(cx, move |_this, cx| {
-            cx.emit(ChatDataEvent::DeleteMessage(message_id));
-        });
-    }
-}
-
-impl MessagePreviewExt for Message {
-    fn on_update_content(
-        &self,
-        content: Content,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> AiChatResult<()> {
-        let conn = &mut cx.global::<Db>().get()?;
-        Message::update_content(self.id, &content, conn)?;
-        Ok(())
-    }
+    pub error: Option<String>,
 }
 
 impl TryFrom<SqlMessage> for Message {
@@ -272,11 +147,13 @@ impl TryFrom<SqlMessage> for Message {
             conversation_path: value.conversation_path,
             role: value.role.parse()?,
             content: serde_json::from_str(&value.content)?,
+            send_content: value.send_content,
             status: value.status.parse()?,
             created_time: value.created_time,
             updated_time: value.updated_time,
             start_time: value.start_time,
             end_time: value.end_time,
+            error: value.error,
         })
     }
 }
@@ -288,6 +165,7 @@ pub struct NewMessage {
     pub content: Content,
     pub send_content: serde_json::Value,
     pub status: Status,
+    pub error: Option<String>,
 }
 
 impl NewMessage {
@@ -304,7 +182,13 @@ impl NewMessage {
             content,
             send_content,
             status,
+            error: None,
         }
+    }
+
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error = Some(error.into());
+        self
     }
 }
 
@@ -314,8 +198,9 @@ impl Message {
             conversation_id,
             role,
             content,
-            send_content: _,
+            send_content,
             status,
+            error,
         }: NewMessage,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<Message> {
@@ -328,54 +213,17 @@ impl Message {
                 conversation_path: path,
                 role: role.to_string(),
                 content: serde_json::to_string(&content)?,
-                // send_content,
+                send_content,
                 status: status.to_string(),
                 created_time: time,
                 updated_time: time,
                 start_time: time,
                 end_time: time,
+                error,
             };
             let message = new_message.insert(conn)?;
             Message::try_from(message)
         })
-    }
-    pub fn insert_many(
-        messages: Vec<TemporaryMessage>,
-        path: String,
-        conversation_id: i32,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let messages = messages
-            .into_iter()
-            .map(
-                |TemporaryMessage {
-                     role,
-                     content,
-                     send_content: _,
-                     created_time,
-                     updated_time,
-                     start_time,
-                     end_time,
-                     status,
-                     ..
-                 }| {
-                    Ok(SqlNewMessage {
-                        conversation_id,
-                        conversation_path: path.clone(),
-                        role: role.to_string(),
-                        content: serde_json::to_string(&content)?,
-                        // send_content,
-                        status: status.to_string(),
-                        created_time,
-                        updated_time,
-                        start_time,
-                        end_time,
-                    })
-                },
-            )
-            .collect::<Result<Vec<_>, AiChatError>>()?;
-        SqlNewMessage::insert_many(&messages, conn)?;
-        Ok(())
     }
     pub fn messages_by_conversation_id(
         conversation_id: i32,
@@ -404,34 +252,26 @@ impl Message {
         SqlMessage::update_status(id, status, time, conn)?;
         Ok(())
     }
+    pub fn record_error(
+        id: i32,
+        error: impl Into<String>,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::record_error(id, error.into(), time, conn)?;
+        Ok(())
+    }
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Message> {
         let message = SqlMessage::find(id, conn)?;
         Message::try_from(message)
     }
-    pub fn update_path(
-        old_path_pre: &str,
-        new_path_pre: &str,
+    pub fn update_send_content(
+        id: i32,
+        send_content: serde_json::Value,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {
-        let update_list = SqlMessage::find_by_path_pre(old_path_pre, conn)?;
         let time = OffsetDateTime::now_utc();
-        update_list.into_iter().try_for_each(
-            |SqlMessage {
-                 id,
-                 conversation_path,
-                 ..
-             }| {
-                SqlMessage::update_path(
-                    id,
-                    conversation_path,
-                    old_path_pre,
-                    new_path_pre,
-                    time,
-                    conn,
-                )?;
-                Ok::<(), AiChatError>(())
-            },
-        )?;
+        SqlMessage::update_send_content(id, send_content, time, conn)?;
         Ok(())
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
@@ -445,6 +285,16 @@ impl Message {
     ) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();
         SqlMessage::update_content(id, serde_json::to_string(content)?, time, conn)?;
+        Ok(())
+    }
+    pub fn reset_for_resend(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
+        let time = OffsetDateTime::now_utc();
+        SqlMessage::reset_for_resend(
+            id,
+            serde_json::to_string(&Content::Text(String::new()))?,
+            time,
+            conn,
+        )?;
         Ok(())
     }
 }

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::Role;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,

@@ -20,8 +20,8 @@ CREATE TABLE conversation_templates
     description  TEXT,
     mode         TEXT                              not null check ( mode in ('contextual', 'single', 'assistant-only') ) default 'contextual',
     adapter      TEXT                              NOT NULL,
-    template     TEXT                              NOT NULL,
-    prompts      TEXT                              NOT NULL,
+    template     JSON                              NOT NULL,
+    prompts      JSON                              NOT NULL,
     created_time DateTime                          not null,
     updated_time DateTime                          not null
 );
@@ -50,11 +50,13 @@ create table messages
     conversation_path TEXT                              not null,
     role              TEXT                              not null check ( role in ('developer', 'user', 'assistant') ),
     content           TEXT                              not null,
-    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'error') ),
+    send_content      JSON                              not null,
+    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'paused', 'error') ),
     created_time      DateTime                          not null,
     updated_time      DateTime                          not null,
     start_time        DateTime                          not null,
     end_time          DateTime                          not null,
+    error             TEXT,
     foreign key (conversation_id) references conversations (id)
 );
 

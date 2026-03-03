@@ -2,19 +2,19 @@ use super::{
     Adapter, InputItem, OpenAIAdapter, description_items_default,
     openai::{OpenAIConversationTemplate, get_openai_template_inputs},
 };
+use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
     config::AiChatConfig,
     database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
-    fetch::{ChatRequest, Message, OpenAIResponseStreamEvent},
     i18n::t_static,
 };
-use futures::StreamExt;
+use futures::{StreamExt, stream::BoxStream};
 use gpui::*;
 use gpui_component::description_list::DescriptionItem;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use reqwest::Client;
-use reqwest_eventsource::{Event, RequestBuilderExt};
+use reqwest_eventsource::{Error as EventSourceError, Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use toml::Value;
@@ -64,6 +64,10 @@ impl Default for OpenAIStreamSettings {
 
 pub(crate) struct OpenAIStreamAdapter;
 
+fn is_normal_stream_end(error: &EventSourceError) -> bool {
+    matches!(error, EventSourceError::StreamEnded)
+}
+
 impl OpenAIStreamAdapter {
     fn get_body(
         template: &'_ OpenAIConversationTemplate,
@@ -103,7 +107,9 @@ impl OpenAIStreamAdapter {
 }
 
 impl Adapter for OpenAIStreamAdapter {
-    const NAME: &'static str = "OpenAI Stream";
+    fn name(&self) -> &'static str {
+        "OpenAI Stream"
+    }
 
     fn get_setting_inputs(&self) -> Vec<InputItem> {
         OpenAIAdapter.get_setting_inputs()
@@ -114,18 +120,30 @@ impl Adapter for OpenAIStreamAdapter {
         get_openai_template_inputs(&settings.models)
     }
 
-    fn fetch(
+    fn request_body(
         &self,
-        config: &AiChatConfig,
-        settings: &toml::Value,
         template: &serde_json::Value,
         history_messages: Vec<Message>,
-    ) -> impl futures::Stream<Item = AiChatResult<String>> {
+    ) -> AiChatResult<serde_json::Value> {
+        let template: OpenAIConversationTemplate = serde_json::from_value(template.clone())?;
+        Ok(serde_json::to_value(Self::get_body(
+            &template,
+            history_messages,
+        ))?)
+    }
+
+    fn fetch(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        template: serde_json::Value,
+        history_messages: Vec<Message>,
+    ) -> BoxStream<'static, AiChatResult<String>> {
         async_stream::try_stream! {
-            let template = serde_json::from_value(template.clone())?;
-            let settings = settings.clone().try_into()?;
+            let template = serde_json::from_value(template)?;
+            let settings = settings.try_into()?;
             let body = Self::get_body(&template, history_messages);
-            let client = Self::get_reqwest_client(config, &settings)?;
+            let client = Self::get_reqwest_client(&config, &settings)?;
             let mut es = client.post(settings.url.as_str()).json(&body).eventsource()?;
             while let Some(event) = es.next().await {
                 match event {
@@ -134,23 +152,67 @@ impl Adapter for OpenAIStreamAdapter {
                         let message = message.data;
                         if message == "[DONE]" {
                             es.close();
-                        } else if let Some(content) = parse_response_stream_delta(&message)? {
-                            yield content
+                            break;
+                        } else if let Some(content) = parse_response_stream_event(&message)? {
+                            yield content;
                         }
                     }
-                    Err(_err) => {
+                    Err(err) => {
                         es.close();
+                        if is_normal_stream_end(&err) {
+                            break;
+                        }
+                        Err::<(), AiChatError>(err.into())?;
                     }
                 }
             }
         }
+        .boxed()
+    }
+
+    fn fetch_by_request_body(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        request_body: serde_json::Value,
+    ) -> BoxStream<'static, AiChatResult<String>> {
+        async_stream::try_stream! {
+            let settings = settings.try_into()?;
+            let client = Self::get_reqwest_client(&config, &settings)?;
+            let mut es = client
+                .post(settings.url.as_str())
+                .json(&request_body)
+                .eventsource()?;
+            while let Some(event) = es.next().await {
+                match event {
+                    Ok(Event::Open) => {},
+                    Ok(Event::Message(message)) => {
+                        let message = message.data;
+                        if message == "[DONE]" {
+                            es.close();
+                            break;
+                        } else if let Some(content) = parse_response_stream_event(&message)? {
+                            yield content;
+                        }
+                    }
+                    Err(err) => {
+                        es.close();
+                        if is_normal_stream_end(&err) {
+                            break;
+                        }
+                        Err::<(), AiChatError>(err.into())?;
+                    }
+                }
+            }
+        }
+        .boxed()
     }
 
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAIStreamSettings {
             let config = cx.global::<AiChatConfig>();
             config
-                .get_adapter_settings(OpenAIStreamAdapter::NAME)
+                .get_adapter_settings(OpenAIStreamAdapter.name())
                 .and_then(|x| x.clone().try_into::<OpenAIStreamSettings>().ok())
                 .unwrap_or_default()
         }
@@ -173,7 +235,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
@@ -198,7 +260,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
@@ -230,7 +292,7 @@ impl Adapter for OpenAIStreamAdapter {
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIStreamAdapter::NAME, settings)
+                                config.set_adapter_settings(OpenAIStreamAdapter.name(), settings)
                             }
                             Err(err) => {
                                 event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
@@ -271,23 +333,29 @@ impl Adapter for OpenAIStreamAdapter {
     }
 }
 
-fn parse_response_stream_delta(message: &str) -> AiChatResult<Option<String>> {
+fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
-    if event.event_type == "response.output_text.delta" {
-        return Ok(event.delta);
+    match event {
+        OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => Ok(Some(delta)),
+        OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
+        OpenAIResponseStreamEvent::ResponseFailed { response } => {
+            Err(AiChatError::StreamError(response.error.message))
+        }
+        OpenAIResponseStreamEvent::Other => Ok(None),
     }
-    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_response_stream_delta;
+    use super::{is_normal_stream_end, parse_response_stream_event};
+    use crate::errors::AiChatError;
+    use reqwest_eventsource::Error as EventSourceError;
 
     #[test]
     fn parse_stream_delta_event() -> anyhow::Result<()> {
         let event = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
         assert_eq!(
-            parse_response_stream_delta(event)?,
+            parse_response_stream_event(event)?,
             Some("hello".to_string())
         );
         Ok(())
@@ -296,7 +364,29 @@ mod tests {
     #[test]
     fn ignore_non_delta_event() -> anyhow::Result<()> {
         let event = r#"{"type":"response.completed"}"#;
-        assert_eq!(parse_response_stream_delta(event)?, None);
+        assert_eq!(parse_response_stream_event(event)?, None);
         Ok(())
+    }
+
+    #[test]
+    fn parse_error_stream_event() -> anyhow::Result<()> {
+        let event = r#"{"type":"error","message":"quota exceeded"}"#;
+        let error = parse_response_stream_event(event).unwrap_err();
+        assert!(matches!(error, AiChatError::StreamError(ref msg) if msg == "quota exceeded"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_failed_response_event() -> anyhow::Result<()> {
+        let event =
+            r#"{"type":"response.failed","response":{"error":{"message":"request failed"}}}"#;
+        let error = parse_response_stream_event(event).unwrap_err();
+        assert!(matches!(error, AiChatError::StreamError(ref msg) if msg == "request failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn stream_ended_is_treated_as_normal_exit() {
+        assert!(is_normal_stream_end(&EventSourceError::StreamEnded));
     }
 }

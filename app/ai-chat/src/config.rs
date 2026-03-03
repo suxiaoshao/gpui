@@ -7,9 +7,9 @@
  */
 use crate::{
     APP_NAME,
-    adapter::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
     errors::{AiChatError, AiChatResult},
     hotkey::TemporaryData,
+    llm::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};
@@ -95,10 +95,10 @@ impl Default for AiChatConfig {
     fn default() -> Self {
         let mut adapter_settings = HashMap::new();
         if let Ok(settings) = Value::try_from(OpenAISettings::default()) {
-            adapter_settings.insert(OpenAIAdapter::NAME.to_string(), settings);
+            adapter_settings.insert(OpenAIAdapter.name().to_string(), settings);
         }
         if let Ok(settings) = Value::try_from(OpenAIStreamSettings::default()) {
-            adapter_settings.insert(OpenAIStreamAdapter::NAME.to_string(), settings);
+            adapter_settings.insert(OpenAIStreamAdapter.name().to_string(), settings);
         }
         Self {
             theme: Default::default(),

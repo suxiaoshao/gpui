@@ -98,7 +98,19 @@ impl Render for SidebarView {
                                     .upgrade()
                                     .and_then(|x| x.read(cx).as_ref().ok())
                                 {
-                                    Some(data) => data.sidebar_items(),
+                                    Some(data) => {
+                                        let mut items = data
+                                            .folders
+                                            .iter()
+                                            .map(folder_item::sidebar_item)
+                                            .collect::<Vec<_>>();
+                                        items.extend(
+                                            data.conversations
+                                                .iter()
+                                                .map(conversation_item::sidebar_item),
+                                        );
+                                        items
+                                    }
                                     None => vec![],
                                 },
                             ),
