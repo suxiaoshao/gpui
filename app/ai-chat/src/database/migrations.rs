@@ -417,7 +417,7 @@ create table messages
     conversation_path TEXT                              not null,
     role              TEXT                              not null check ( role in ('developer', 'user', 'assistant') ),
     content           TEXT                              not null,
-    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'error') ),
+    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'paused', 'error') ),
     created_time      DateTime                          not null,
     updated_time      DateTime                          not null,
     start_time        DateTime                          not null,

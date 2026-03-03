@@ -51,7 +51,7 @@ create table messages
     role              TEXT                              not null check ( role in ('developer', 'user', 'assistant') ),
     content           TEXT                              not null,
     send_content      JSON                              not null,
-    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'error') ),
+    status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'paused', 'error') ),
     created_time      DateTime                          not null,
     updated_time      DateTime                          not null,
     start_time        DateTime                          not null,

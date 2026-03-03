@@ -19,6 +19,7 @@ tab-template = Template
 
 section-information = Information
 alert-error-title = Error
+message-status-paused = Paused
 
 button-add = Add
 button-add-prompt = Add Prompt

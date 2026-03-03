@@ -88,11 +88,11 @@ impl ChatData {
         ) = {
             let i18n = cx.global::<I18n>();
             (
-                i18n.t("notify-add-conversation-failed"),
-                i18n.t("notify-add-folder-failed"),
-                i18n.t("notify-delete-message-failed"),
-                i18n.t("notify-delete-conversation-failed"),
-                i18n.t("notify-delete-folder-failed"),
+                i18n.t("notify-add-conversation-failed").into(),
+                i18n.t("notify-add-folder-failed").into(),
+                i18n.t("notify-delete-message-failed").into(),
+                i18n.t("notify-delete-conversation-failed").into(),
+                i18n.t("notify-delete-folder-failed").into(),
             )
         };
         match chat_data_event {
@@ -103,45 +103,31 @@ impl ChatData {
                 template,
                 parent_id,
                 initial_messages,
-            } => match Self::add_conversation(
-                state,
-                AddConversationInput {
-                    title: name,
-                    icon,
-                    info: info.as_ref().map(|x| x.as_str()),
-                    folder_id: *parent_id,
-                    template_id: *template,
-                    initial_messages: initial_messages.as_deref(),
-                },
+            } => Self::handle_event_result(
+                Self::add_conversation(
+                    state,
+                    AddConversationInput {
+                        title: name,
+                        icon,
+                        info: info.as_ref().map(|x| x.as_str()),
+                        folder_id: *parent_id,
+                        template_id: *template,
+                        initial_messages: initial_messages.as_deref(),
+                    },
+                    cx,
+                ),
+                window,
+                add_conversation_failed,
+                "add conversation",
                 cx,
-            ) {
-                Ok(_) => {}
-                Err(err) => {
-                    window.push_notification(
-                        Notification::new()
-                            .title(add_conversation_failed)
-                            .message(SharedString::from(err.to_string()))
-                            .with_type(NotificationType::Error),
-                        cx,
-                    );
-                    event!(Level::ERROR, "add conversation error:{err:?}")
-                }
-            },
-            ChatDataEvent::AddFolder { name, parent_id } => {
-                match Self::add_folder(state, name, *parent_id, cx) {
-                    Ok(_) => {}
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(add_folder_failed)
-                                .message(SharedString::from(err.to_string()))
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        event!(Level::ERROR, "add folder error:{err:?}")
-                    }
-                }
-            }
+            ),
+            ChatDataEvent::AddFolder { name, parent_id } => Self::handle_event_result(
+                Self::add_folder(state, name, *parent_id, cx),
+                window,
+                add_folder_failed,
+                "add folder",
+                cx,
+            ),
             ChatDataEvent::AddTab(conversation_id) => {
                 state.update(cx, |this, cx| {
                     if let Ok(this) = this {
@@ -184,53 +170,49 @@ impl ChatData {
                     }
                 });
             }
-            ChatDataEvent::DeleteMessage(message_id) => {
-                match Self::delete_message(state, *message_id, cx) {
-                    Ok(_) => {}
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(delete_message_failed)
-                                .message(SharedString::from(err.to_string()))
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        event!(Level::ERROR, "delete message error:{err:?}")
-                    }
-                }
-            }
-            ChatDataEvent::DeleteConversation(conversation_id) => {
-                match Self::delete_conversation(state, *conversation_id, cx) {
-                    Ok(_) => {}
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(delete_conversation_failed)
-                                .message(SharedString::from(err.to_string()))
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        event!(Level::ERROR, "delete conversation error:{err:?}")
-                    }
-                }
-            }
-            ChatDataEvent::DeleteFolder(folder_id) => {
-                match Self::delete_folder(state, *folder_id, cx) {
-                    Ok(_) => {}
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(delete_folder_failed)
-                                .message(SharedString::from(err.to_string()))
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        event!(Level::ERROR, "delete folder error:{err:?}")
-                    }
-                }
-            }
+            ChatDataEvent::DeleteMessage(message_id) => Self::handle_event_result(
+                Self::delete_message(state, *message_id, cx),
+                window,
+                delete_message_failed,
+                "delete message",
+                cx,
+            ),
+            ChatDataEvent::DeleteConversation(conversation_id) => Self::handle_event_result(
+                Self::delete_conversation(state, *conversation_id, cx),
+                window,
+                delete_conversation_failed,
+                "delete conversation",
+                cx,
+            ),
+            ChatDataEvent::DeleteFolder(folder_id) => Self::handle_event_result(
+                Self::delete_folder(state, *folder_id, cx),
+                window,
+                delete_folder_failed,
+                "delete folder",
+                cx,
+            ),
         }
     }
+
+    fn handle_event_result(
+        result: AiChatResult<()>,
+        window: &mut Window,
+        title: SharedString,
+        action: &'static str,
+        cx: &mut Context<HomeView>,
+    ) {
+        if let Err(err) = result {
+            window.push_notification(
+                Notification::new()
+                    .title(title)
+                    .message(SharedString::from(err.to_string()))
+                    .with_type(NotificationType::Error),
+                cx,
+            );
+            event!(Level::ERROR, "{action} error:{err:?}");
+        }
+    }
+
     fn add_folder(
         state: &Entity<AiChatResult<ChatDataInner>>,
         name: &str,

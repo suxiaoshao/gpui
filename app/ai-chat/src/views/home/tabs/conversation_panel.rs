@@ -164,7 +164,7 @@ impl ConversationPanelView {
                 {
                     continue;
                 }
-                Message::update_status(message_id, Status::Normal, conn)?;
+                Message::update_status(message_id, Status::Paused, conn)?;
                 paused_messages.push(Message::find(message_id, conn)?);
             }
             paused_messages
@@ -222,203 +222,327 @@ impl ConversationPanelView {
     ) -> AiChatResult<()> {
         event!(Level::INFO, "conversation fetch");
         let request_text = context.text.to_string();
+        Self::clear_input(state.clone(), cx)?;
+        let Some(prepared) = Self::prepare_fetch(state.clone(), &context, request_text, cx).await?
+        else {
+            return Ok(());
+        };
+        Self::bind_prepared_messages(state.clone(), &context, &prepared, cx)?;
+        Self::stream_fetch(
+            state,
+            &context,
+            prepared.runner,
+            prepared.assistant_message.id,
+            cx,
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn clear_input(state: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> AiChatResult<()> {
         state.update_in_result(cx, |this, window, cx| {
             this.input_state.update(cx, |input, cx| {
                 input.set_value("", window, cx);
             });
         })?;
+        Ok(())
+    }
 
-        let (runner, user_message, assistant_message) = if let Some(extension_name) =
-            context.extension_name.as_ref()
-        {
-            let user_message = cx.read_global_result(|db: &Db, _window, _cx| {
-                let conn = &mut db.get()?;
-                Message::insert(
-                    NewMessage::new(
-                        context.conversation_id,
-                        Role::User,
-                        Content::Text(request_text.clone()),
-                        serde_json::json!({}),
-                        Status::Loading,
-                    ),
-                    conn,
-                )
-            })??;
-            let user_message_id = user_message.id;
-            state.update_result(cx, |this, _cx| {
-                this.bind_running_task_messages(Some(user_message_id), None);
-            })?;
-            context.chat_data.update_result(cx, |data, cx| {
-                if let Ok(data) = data {
-                    data.add_message(context.conversation_id, user_message.clone());
-                    cx.notify();
-                }
-            })?;
-
-            let extension_runner = match context
-                .extension_container
-                .get_extension(extension_name)
-                .await
-            {
-                Ok(extension_runner) => extension_runner,
-                Err(error) => {
-                    Self::record_extension_error(state, user_message_id, &context, error, cx)
-                        .await?;
-                    return Ok(());
-                }
-            };
-            let user_content =
-                match Runner::get_new_user_content(request_text.clone(), Some(extension_runner))
+    async fn prepare_fetch(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        request_text: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Option<PreparedFetch>> {
+        match context.extension_name.as_deref() {
+            Some(extension_name) => {
+                Self::prepare_extension_fetch(state, context, extension_name, request_text, cx)
                     .await
-                {
-                    Ok(content) => content,
-                    Err(error) => {
-                        Self::record_extension_error(state, user_message_id, &context, error, cx)
-                            .await?;
-                        return Ok(());
-                    }
-                };
-            let (conversation, template) = cx.read_global_result(|db: &Db, _window, _cx| {
-                let conn = &mut db.get()?;
-                let conversation = Conversation::find(context.conversation_id, conn)?;
-                let template = ConversationTemplate::find(conversation.template_id, conn)?;
-                Ok::<_, AiChatError>((conversation, template))
-            })??;
-            let runner = Runner {
-                config: context.config.clone(),
-                template: template.clone(),
-                history_messages: conversation.messages,
-                user_message_role: Role::User,
-                user_message_content: user_content.send_content().to_string(),
-            };
-            let send_content = runner.request_body()?;
-            let (user_message, assistant_message) =
-                cx.read_global_result(|db: &Db, _window, _cx| {
-                    let conn = &mut db.get()?;
-                    Message::update_content(user_message_id, &user_content, conn)?;
-                    Message::update_send_content(user_message_id, send_content.clone(), conn)?;
-                    Message::update_status(user_message_id, Status::Normal, conn)?;
-                    let user_message = Message::find(user_message_id, conn)?;
-                    let assistant_message = Message::insert(
-                        NewMessage::new(
-                            context.conversation_id,
-                            Role::Assistant,
-                            Content::Text(String::new()),
-                            send_content.clone(),
-                            Status::Loading,
-                        ),
-                        conn,
-                    )?;
-                    Ok::<_, AiChatError>((user_message, assistant_message))
-                })??;
-            (runner, user_message, assistant_message)
-        } else {
-            let (conversation, template) = cx.read_global_result(|db: &Db, _window, _cx| {
-                let conn = &mut db.get()?;
-                let conversation = Conversation::find(context.conversation_id, conn)?;
-                let template = ConversationTemplate::find(conversation.template_id, conn)?;
-                Ok::<_, AiChatError>((conversation, template))
-            })??;
-            let user_content = Content::Text(request_text.clone());
-            let runner = Runner {
-                config: context.config.clone(),
-                template: template.clone(),
-                history_messages: conversation.messages,
-                user_message_role: Role::User,
-                user_message_content: user_content.send_content().to_string(),
-            };
-            let send_content = runner.request_body()?;
-            let (user_message, assistant_message) =
-                cx.read_global_result(|db: &Db, _window, _cx| {
-                    let conn = &mut db.get()?;
-                    let user_message = Message::insert(
-                        NewMessage::new(
-                            context.conversation_id,
-                            Role::User,
-                            user_content.clone(),
-                            send_content.clone(),
-                            Status::Normal,
-                        ),
-                        conn,
-                    )?;
-                    let assistant_message = Message::insert(
-                        NewMessage::new(
-                            context.conversation_id,
-                            Role::Assistant,
-                            Content::Text(String::new()),
-                            send_content.clone(),
-                            Status::Loading,
-                        ),
-                        conn,
-                    )?;
-                    Ok::<_, AiChatError>((user_message, assistant_message))
-                })??;
-            (runner, user_message, assistant_message)
-        };
+            }
+            None => Self::prepare_plain_fetch(context, request_text, cx).map(Some),
+        }
+    }
+
+    async fn prepare_extension_fetch(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        extension_name: &str,
+        request_text: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Option<PreparedFetch>> {
+        let user_message =
+            Self::insert_loading_user_message(context.conversation_id, &request_text, cx)?;
         let user_message_id = user_message.id;
-        let assistant_message_id = assistant_message.id;
         state.update_result(cx, |this, _cx| {
-            this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+            this.bind_running_task_messages(Some(user_message_id), None);
         })?;
         context.chat_data.update_result(cx, |data, cx| {
             if let Ok(data) = data {
-                data.replace_message(context.conversation_id, user_message);
-                data.add_message(context.conversation_id, assistant_message);
+                data.add_message(context.conversation_id, user_message.clone());
                 cx.notify();
             }
         })?;
 
+        let extension_runner = match context
+            .extension_container
+            .get_extension(extension_name)
+            .await
+        {
+            Ok(extension_runner) => extension_runner,
+            Err(error) => {
+                Self::record_extension_error(state, user_message_id, context, error, cx).await?;
+                return Ok(None);
+            }
+        };
+        let user_content = match Runner::get_new_user_content(request_text, Some(extension_runner))
+            .await
+        {
+            Ok(content) => content,
+            Err(error) => {
+                Self::record_extension_error(state, user_message_id, context, error, cx).await?;
+                return Ok(None);
+            }
+        };
+        let runner = Self::build_runner(
+            context.conversation_id,
+            context.config.clone(),
+            Role::User,
+            user_content.send_content().to_string(),
+            cx,
+        )?;
+        let send_content = runner.request_body()?;
+        let (user_message, assistant_message) =
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                Message::update_content(user_message_id, &user_content, conn)?;
+                Message::update_send_content(user_message_id, send_content.clone(), conn)?;
+                Message::update_status(user_message_id, Status::Normal, conn)?;
+                let user_message = Message::find(user_message_id, conn)?;
+                let assistant_message = Message::insert(
+                    NewMessage::new(
+                        context.conversation_id,
+                        Role::Assistant,
+                        Content::Text(String::new()),
+                        send_content.clone(),
+                        Status::Loading,
+                    ),
+                    conn,
+                )?;
+                Ok::<_, AiChatError>((user_message, assistant_message))
+            })??;
+        Ok(Some(PreparedFetch {
+            runner,
+            user_message,
+            assistant_message,
+        }))
+    }
+
+    fn prepare_plain_fetch(
+        context: &FetchContext,
+        request_text: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<PreparedFetch> {
+        let user_content = Content::Text(request_text);
+        let runner = Self::build_runner(
+            context.conversation_id,
+            context.config.clone(),
+            Role::User,
+            user_content.send_content().to_string(),
+            cx,
+        )?;
+        let send_content = runner.request_body()?;
+        let (user_message, assistant_message) =
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                let user_message = Message::insert(
+                    NewMessage::new(
+                        context.conversation_id,
+                        Role::User,
+                        user_content.clone(),
+                        send_content.clone(),
+                        Status::Normal,
+                    ),
+                    conn,
+                )?;
+                let assistant_message = Message::insert(
+                    NewMessage::new(
+                        context.conversation_id,
+                        Role::Assistant,
+                        Content::Text(String::new()),
+                        send_content.clone(),
+                        Status::Loading,
+                    ),
+                    conn,
+                )?;
+                Ok::<_, AiChatError>((user_message, assistant_message))
+            })??;
+        Ok(PreparedFetch {
+            runner,
+            user_message,
+            assistant_message,
+        })
+    }
+
+    fn build_runner(
+        conversation_id: i32,
+        config: AiChatConfig,
+        user_message_role: Role,
+        user_message_content: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Runner> {
+        let (conversation, template) = cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            let conversation = Conversation::find(conversation_id, conn)?;
+            let template = ConversationTemplate::find(conversation.template_id, conn)?;
+            Ok::<_, AiChatError>((conversation, template))
+        })??;
+        Ok(Runner {
+            config,
+            template,
+            history_messages: conversation.messages,
+            user_message_role,
+            user_message_content,
+        })
+    }
+
+    fn insert_loading_user_message(
+        conversation_id: i32,
+        request_text: &str,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<Message> {
+        Ok(cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            Message::insert(
+                NewMessage::new(
+                    conversation_id,
+                    Role::User,
+                    Content::Text(request_text.to_string()),
+                    serde_json::json!({}),
+                    Status::Loading,
+                ),
+                conn,
+            )
+        })??)
+    }
+
+    fn bind_prepared_messages(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        prepared: &PreparedFetch,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        state.update_result(cx, |this, _cx| {
+            this.bind_running_task_messages(
+                Some(prepared.user_message.id),
+                Some(prepared.assistant_message.id),
+            );
+        })?;
+        context.chat_data.update_result(cx, |data, cx| {
+            if let Ok(data) = data {
+                data.replace_message(context.conversation_id, prepared.user_message.clone());
+                data.add_message(context.conversation_id, prepared.assistant_message.clone());
+                cx.notify();
+            }
+        })?;
+        Ok(())
+    }
+
+    async fn stream_fetch(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        runner: Runner,
+        assistant_message_id: i32,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
         let stream = runner.fetch();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
                 Ok(message) => {
-                    let message = cx.read_global_result(|db: &Db, _window, _cx| {
-                        let conn = &mut db.get()?;
-                        Message::add_content(assistant_message_id, message, conn)?;
-                        Message::find(assistant_message_id, conn)
-                    })??;
-                    context.chat_data.update_result(cx, |data, cx| {
-                        if let Ok(data) = data {
-                            data.replace_message(context.conversation_id, message);
-                            cx.notify();
-                        }
-                    })?;
+                    Self::append_assistant_message(context, assistant_message_id, message, cx)?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    let message = cx.read_global_result(|db: &Db, _window, _cx| {
-                        let conn = &mut db.get()?;
-                        Message::record_error(assistant_message_id, error.to_string(), conn)?;
-                        Message::find(assistant_message_id, conn)
-                    })??;
-                    context.chat_data.update_result(cx, |data, cx| {
-                        if let Ok(data) = data {
-                            data.replace_message(context.conversation_id, message);
-                            cx.notify();
-                        }
-                    })?;
-                    state.update_result(cx, |this, _cx| {
-                        this.clear_running_task_for_message(Some(assistant_message_id));
-                    })?;
+                    Self::record_stream_error(
+                        state,
+                        context,
+                        assistant_message_id,
+                        error.to_string(),
+                        cx,
+                    )?;
                     return Ok(());
                 }
             }
         }
+        Self::finish_assistant_message(state, context, assistant_message_id, cx)?;
+        Ok(())
+    }
 
+    fn append_assistant_message(
+        context: &FetchContext,
+        assistant_message_id: i32,
+        content: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let message = cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            Message::add_content(assistant_message_id, content, conn)?;
+            Message::find(assistant_message_id, conn)
+        })??;
+        Self::replace_chat_message(context, message, false, cx)
+    }
+
+    fn record_stream_error(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        assistant_message_id: i32,
+        error: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let message = cx.read_global_result(|db: &Db, _window, _cx| {
+            let conn = &mut db.get()?;
+            Message::record_error(assistant_message_id, error, conn)?;
+            Message::find(assistant_message_id, conn)
+        })??;
+        Self::replace_chat_message(context, message, false, cx)?;
+        state.update_result(cx, |this, _cx| {
+            this.clear_running_task_for_message(Some(assistant_message_id));
+        })?;
+        Ok(())
+    }
+
+    fn finish_assistant_message(
+        state: WeakEntity<Self>,
+        context: &FetchContext,
+        assistant_message_id: i32,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
         let message = cx.read_global_result(|db: &Db, _window, _cx| {
             let conn = &mut db.get()?;
             Message::update_status(assistant_message_id, Status::Normal, conn)?;
             Message::find(assistant_message_id, conn)
         })??;
-        context.chat_data.update_result(cx, |data, cx| {
-            if let Ok(data) = data {
-                data.replace_message(context.conversation_id, message);
-                cx.notify();
-            }
-        })?;
+        Self::replace_chat_message(context, message, false, cx)?;
         state.update_result(cx, |this, _cx| {
             this.clear_running_task_for_message(Some(assistant_message_id));
+        })?;
+        Ok(())
+    }
+
+    fn replace_chat_message(
+        context: &FetchContext,
+        message: Message,
+        add_when_missing: bool,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        context.chat_data.update_result(cx, |data, cx| {
+            if let Ok(data) = data {
+                data.replace_message(context.conversation_id, message.clone());
+                if add_when_missing {
+                    data.add_message(context.conversation_id, message);
+                }
+                cx.notify();
+            }
         })?;
         Ok(())
     }
@@ -459,6 +583,12 @@ struct FetchContext {
     extension_name: Option<String>,
     extension_container: ExtensionContainer,
     config: AiChatConfig,
+}
+
+struct PreparedFetch {
+    runner: Runner,
+    user_message: Message,
+    assistant_message: Message,
 }
 
 impl Render for ConversationPanelView {

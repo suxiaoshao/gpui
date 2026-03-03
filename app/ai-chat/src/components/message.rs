@@ -4,9 +4,10 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    IconName, Sizable, WindowExt,
+    ActiveTheme, IconName, Sizable, WindowExt,
     alert::Alert,
     avatar::Avatar,
+    badge::Badge,
     button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
@@ -79,6 +80,16 @@ fn visible_error<'a>(status: &Status, error: Option<&'a str>) -> Option<&'a str>
     }
 }
 
+fn status_badge_color(status: &Status, cx: &App) -> Hsla {
+    match status {
+        Status::Normal => cx.theme().success,
+        Status::Hidden => cx.theme().muted_foreground.opacity(0.6),
+        Status::Loading => cx.theme().blue,
+        Status::Paused => cx.theme().warning,
+        Status::Error => cx.theme().danger,
+    }
+}
+
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = self.0;
@@ -108,6 +119,20 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
         };
         let accessory_mode = MessageAccessoryMode::from(data.status());
         let message_error = visible_error(data.status(), data.error()).map(ToOwned::to_owned);
+        let avatar = Badge::new()
+            .dot()
+            .count(1)
+            .color(status_badge_color(data.status(), cx))
+            .child(
+                Avatar::new()
+                    .name(data.role().to_string())
+                    .src(match data.role() {
+                        Role::Developer => "png/system.png",
+                        Role::User => "jpg/user.jpg",
+                        Role::Assistant => "jpg/assistant.jpg",
+                    })
+                    .with_size(px(32.)),
+            );
         let copy_text = match data.content() {
             Content::Text(content) => content.to_string(),
             Content::Extension { source, .. } => source.to_string(),
@@ -122,18 +147,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     .items_start()
                     .relative()
                     .pb_4()
-                    .child(
-                        Avatar::new()
-                            .name(data.role().to_string())
-                            .src(match data.role() {
-                                Role::Developer => "png/system.png",
-                                Role::User => "jpg/user.jpg",
-                                Role::Assistant => "jpg/assistant.jpg",
-                            })
-                            .with_size(px(32.))
-                            .ml_4()
-                            .mt_4(),
-                    )
+                    .child(div().ml_4().mt_4().child(avatar))
                     .child(
                         v_flex()
                             .flex_1()
@@ -297,6 +311,10 @@ mod tests {
         );
         assert_eq!(
             MessageAccessoryMode::from(&Status::Normal),
+            MessageAccessoryMode::Actions
+        );
+        assert_eq!(
+            MessageAccessoryMode::from(&Status::Paused),
             MessageAccessoryMode::Actions
         );
     }

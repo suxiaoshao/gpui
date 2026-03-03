@@ -19,6 +19,7 @@ tab-template = 模板
 
 section-information = 信息
 alert-error-title = 错误
+message-status-paused = 已暂停
 
 button-add = 添加
 button-add-prompt = 添加提示词
