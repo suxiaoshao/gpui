@@ -656,48 +656,74 @@ impl TemplateDetailView {
             this.bind_running_task_messages(Some(user_message_id), None);
         })?;
 
-        let extension_runner = match extension_container.get_extension(extension_name).await {
-            Ok(extension_runner) => extension_runner,
-            Err(error) => {
-                Self::record_extension_error(state, user_message_id, extension_name, error, cx)?;
-                return Ok(None);
-            }
+        let Some(extension_runner) = extension_container
+            .get_extension(extension_name)
+            .await
+            .map(Some)
+            .or_else(|error| {
+                Self::record_extension_error(
+                    state.clone(),
+                    user_message_id,
+                    extension_name,
+                    error,
+                    cx,
+                )
+                .map(|()| None)
+            })?
+        else {
+            return Ok(None);
         };
-        let content = match Runner::get_new_user_content(request_text, Some(extension_runner)).await
-        {
-            Ok(content) => content,
-            Err(error) => {
-                Self::record_extension_error(state, user_message_id, extension_name, error, cx)?;
-                return Ok(None);
-            }
+        let Some(content) = Runner::get_new_user_content(request_text, Some(extension_runner))
+            .await
+            .map(Some)
+            .or_else(|error| {
+                Self::record_extension_error(
+                    state.clone(),
+                    user_message_id,
+                    extension_name,
+                    error,
+                    cx,
+                )
+                .map(|()| None)
+            })?
+        else {
+            return Ok(None);
         };
-        let runner = Self::build_runner(state.clone(), config, cx)?;
-        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
-        let assistant_message_id = state.update_result(cx, |this, _cx| {
-            if let Some(message) = this
-                .messages
-                .iter_mut()
-                .find(|message| message.id == user_message_id)
-            {
-                message.resolve_extension(content.clone(), send_content.clone());
-            }
-            this.add_message(
-                now,
-                Role::Assistant,
-                Content::Text(String::new()),
-                send_content.clone(),
-                Status::Loading,
-                None,
-            )
-            .id
-        })?;
-        state.update_result(cx, |this, _cx| {
-            this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
-        })?;
-        Ok(Some(PreparedTemporaryFetch {
-            runner,
-            assistant_message_id,
-        }))
+        (|| -> AiChatResult<PreparedTemporaryFetch> {
+            let runner = Self::build_runner(state.clone(), config, cx)?;
+            let send_content =
+                runner.request_body_with_message(Role::User, content.send_content())?;
+            let assistant_message_id = state.update_result(cx, |this, _cx| {
+                if let Some(message) = this
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == user_message_id)
+                {
+                    message.resolve_extension(content.clone(), send_content.clone());
+                }
+                this.add_message(
+                    now,
+                    Role::Assistant,
+                    Content::Text(String::new()),
+                    send_content.clone(),
+                    Status::Loading,
+                    None,
+                )
+                .id
+            })?;
+            state.update_result(cx, |this, _cx| {
+                this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
+            })?;
+            Ok(PreparedTemporaryFetch {
+                runner,
+                assistant_message_id,
+            })
+        })()
+        .map(Some)
+        .or_else(|error| {
+            Self::record_extension_error(state, user_message_id, extension_name, error, cx)
+                .map(|()| None)
+        })
     }
 
     fn prepare_plain_fetch(
