@@ -169,6 +169,82 @@ impl ChatDataInner {
             self.conversations.push(new_conversation);
         }
     }
+    fn take_folder(folders: &mut Vec<Folder>, id: i32) -> Option<Folder> {
+        if let Some(index) = folders.iter().position(|folder| folder.id == id) {
+            return Some(folders.remove(index));
+        }
+        for folder in folders.iter_mut() {
+            if let Some(found) = Self::take_folder(&mut folder.folders, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn take_conversation(
+        folders: &mut [Folder],
+        conversations: &mut Vec<Conversation>,
+        conversation_id: i32,
+    ) -> Option<Conversation> {
+        if let Some(index) = conversations
+            .iter()
+            .position(|conversation| conversation.id == conversation_id)
+        {
+            return Some(conversations.remove(index));
+        }
+        for folder in folders {
+            if let Some(found) = Self::take_conversation(
+                &mut folder.folders,
+                &mut folder.conversations,
+                conversation_id,
+            ) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn folder_contains_descendant(folders: &[Folder], folder_id: i32, target_id: i32) -> bool {
+        folders.iter().any(|folder| {
+            (folder.id == folder_id && Self::folder_subtree_contains(&folder.folders, target_id))
+                || Self::folder_contains_descendant(&folder.folders, folder_id, target_id)
+        })
+    }
+    fn folder_subtree_contains(folders: &[Folder], target_id: i32) -> bool {
+        folders.iter().any(|folder| {
+            folder.id == target_id || Self::folder_subtree_contains(&folder.folders, target_id)
+        })
+    }
+    pub(crate) fn move_conversation(
+        &mut self,
+        conversation_id: i32,
+        _target_folder_id: Option<i32>,
+        updated: Conversation,
+    ) {
+        if Self::take_conversation(&mut self.folders, &mut self.conversations, conversation_id)
+            .is_none()
+        {
+            return;
+        }
+        self.add_conversation(updated);
+    }
+    pub(crate) fn move_folder(
+        &mut self,
+        folder_id: i32,
+        target_parent_id: Option<i32>,
+        updated: Folder,
+    ) {
+        if target_parent_id == Some(folder_id) {
+            return;
+        }
+        if let Some(target_parent_id) = target_parent_id
+            && Self::folder_contains_descendant(&self.folders, folder_id, target_parent_id)
+        {
+            return;
+        }
+        if Self::take_folder(&mut self.folders, folder_id).is_none() {
+            return;
+        }
+        self.add_folder(updated);
+    }
     fn get_conversation<'a>(
         folders: &'a [Folder],
         conversations: &'a [Conversation],
@@ -685,6 +761,73 @@ mod tests {
         data.delete_folder(2);
         let found = ChatDataInner::get_folder(&mut data.folders, 2);
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn move_conversation_from_root_to_folder() {
+        let mut data = empty_chat_data();
+        data.conversations.push(conversation(1, None));
+        data.folders.push(folder(2, None));
+
+        data.move_conversation(1, Some(2), conversation(1, Some(2)));
+
+        assert!(data.conversations.is_empty());
+        let folder = ChatDataInner::get_folder(&mut data.folders, 2).unwrap();
+        assert_eq!(folder.conversations.len(), 1);
+        assert_eq!(folder.conversations[0].folder_id, Some(2));
+    }
+
+    #[test]
+    fn move_conversation_from_folder_to_root() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.conversations.push(conversation(2, Some(1)));
+        data.folders.push(root);
+
+        data.move_conversation(2, None, conversation(2, None));
+
+        assert_eq!(data.conversations.len(), 1);
+        assert_eq!(data.conversations[0].folder_id, None);
+        let folder = ChatDataInner::get_folder(&mut data.folders, 1).unwrap();
+        assert!(folder.conversations.is_empty());
+    }
+
+    #[test]
+    fn move_folder_under_other_folder_preserves_children() {
+        let mut data = empty_chat_data();
+        let mut folder_one = folder(1, None);
+        let mut child = folder(3, Some(1));
+        child.conversations.push(conversation(4, Some(3)));
+        folder_one.folders.push(child);
+        data.folders.push(folder_one);
+        data.folders.push(folder(2, None));
+
+        let mut updated_child = folder(3, Some(2));
+        updated_child.path = "/Folder 2/Folder 3".to_string();
+        updated_child.conversations.push(conversation(4, Some(3)));
+
+        data.move_folder(3, Some(2), updated_child);
+
+        let destination = ChatDataInner::get_folder(&mut data.folders, 2).unwrap();
+        assert_eq!(destination.folders.len(), 1);
+        assert_eq!(destination.folders[0].id, 3);
+        assert_eq!(destination.folders[0].conversations.len(), 1);
+        let source = ChatDataInner::get_folder(&mut data.folders, 1).unwrap();
+        assert!(source.folders.is_empty());
+    }
+
+    #[test]
+    fn move_folder_rejects_descendant_parent() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.folders.push(folder(2, Some(1)));
+        data.folders.push(root);
+
+        data.move_folder(1, Some(2), folder(1, Some(2)));
+
+        assert_eq!(data.folders.len(), 1);
+        let root = ChatDataInner::get_folder(&mut data.folders, 1).unwrap();
+        assert_eq!(root.parent_id, None);
     }
 
     #[test]

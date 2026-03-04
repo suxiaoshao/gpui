@@ -4,7 +4,9 @@ use time::OffsetDateTime;
 use crate::{
     database::{
         Message,
-        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewConversation},
+        model::{
+            SqlConversation, SqlFolder, SqlMessage, SqlNewConversation, SqlUpdateConversation,
+        },
     },
     errors::{AiChatError, AiChatResult},
 };
@@ -141,5 +143,38 @@ impl Conversation {
             Ok::<(), AiChatError>(())
         })?;
         Ok(())
+    }
+
+    pub fn move_to_folder(
+        id: i32,
+        target_folder_id: Option<i32>,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<Self> {
+        conn.immediate_transaction(|conn| {
+            let conversation = SqlConversation::find(id, conn)?;
+            if conversation.folder_id == target_folder_id {
+                return Self::from_sql_conversation(conversation, conn);
+            }
+
+            let target_folder = target_folder_id
+                .map(|folder_id| SqlFolder::find(folder_id, conn))
+                .transpose()?;
+            let new_path = match target_folder {
+                Some(ref folder) => format!("{}/{}", folder.path, conversation.title),
+                None => format!("/{}", conversation.title),
+            };
+            if SqlFolder::path_exists(&new_path, conn)? {
+                return Err(AiChatError::FolderPathExists(new_path));
+            }
+            if SqlConversation::path_exists(&new_path, conn)? {
+                return Err(AiChatError::ConversationPathExists(new_path));
+            }
+
+            let time = OffsetDateTime::now_utc();
+            SqlUpdateConversation::move_folder(id, target_folder_id, &new_path, time, conn)?;
+            SqlMessage::move_folder(id, &new_path, time, conn)?;
+
+            Self::find(id, conn)
+        })
     }
 }
