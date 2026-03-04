@@ -15,7 +15,10 @@ use gpui_component::{
 use std::ops::Deref;
 use tracing::{Level, event};
 
+mod conversation_item;
 mod conversation_tree;
+mod folder_item;
+pub(crate) use conversation_tree::DragConversationTreeItem;
 
 actions!(sidebar_view, [Add, AddShift]);
 

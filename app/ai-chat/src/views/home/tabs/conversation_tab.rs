@@ -1,4 +1,7 @@
-use crate::store::{ChatData, ChatDataEvent};
+use crate::{
+    store::{ChatData, ChatDataEvent},
+    views::home::sidebar::DragConversationTreeItem,
+};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use std::ops::Deref;
@@ -102,6 +105,16 @@ impl RenderOnce for ConversationTabView {
                     this.border_color(cx.theme().drag_border)
                 }
             })
+            .drag_over::<DragConversationTreeItem>(move |this, drag, _window, cx| {
+                if drag.conversation_id().is_none() {
+                    return this;
+                }
+                if is_active {
+                    this.border_b_1().border_color(cx.theme().drag_border)
+                } else {
+                    this.border_color(cx.theme().drag_border)
+                }
+            })
             .on_drop(move |drag: &DragTab, _window, cx| {
                 if drag.id == self.id {
                     return;
@@ -112,6 +125,21 @@ impl RenderOnce for ConversationTabView {
                         from_id: drag.id,
                         to_id: Some(self.id),
                     });
+                });
+            })
+            .on_drop(move |drag: &DragConversationTreeItem, _window, cx| {
+                let Some(conversation_id) = drag.conversation_id() else {
+                    return;
+                };
+                let chat_data = cx.global::<ChatData>().deref().clone();
+                chat_data.update(cx, move |_this, cx| {
+                    cx.emit(ChatDataEvent::AddTab(conversation_id));
+                    if conversation_id != self.id {
+                        cx.emit(ChatDataEvent::MoveTab {
+                            from_id: conversation_id,
+                            to_id: Some(self.id),
+                        });
+                    }
                 });
             })
             .on_click(move |_this, _window, cx| {
