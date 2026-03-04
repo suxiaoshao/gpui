@@ -65,6 +65,14 @@ enum MessageAccessoryMode {
     Actions,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MessageAction {
+    Resend,
+    Copy,
+    Delete,
+    View,
+}
+
 impl From<&Status> for MessageAccessoryMode {
     fn from(value: &Status) -> Self {
         if matches!(value, Status::Loading) {
@@ -90,6 +98,18 @@ fn status_badge_color(status: &Status, cx: &App) -> Hsla {
         Status::Paused => cx.theme().warning,
         Status::Error => cx.theme().danger,
     }
+}
+
+fn message_actions(can_resend: bool) -> Vec<MessageAction> {
+    let mut actions = vec![
+        MessageAction::Copy,
+        MessageAction::Delete,
+        MessageAction::View,
+    ];
+    if can_resend {
+        actions.insert(0, MessageAction::Resend);
+    }
+    actions
 }
 
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
@@ -123,6 +143,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
         };
         let accessory_mode = MessageAccessoryMode::from(data.status());
         let message_error = visible_error(data.status(), data.error()).map(ToOwned::to_owned);
+        let can_resend = data.can_resend(cx);
         let avatar = Badge::new()
             .dot()
             .count(1)
@@ -144,6 +165,80 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
         let id = data.id();
         let button_id = id.to_string();
         let text_id = data.id();
+        let action_buttons = message_actions(can_resend)
+            .into_iter()
+            .map(|action| match action {
+                MessageAction::Resend => {
+                    Button::new(SharedString::from(format!("resend-{button_id}")))
+                        .icon(IconName::Redo2)
+                        .ghost()
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            T::resend_message_by_id(id, window, cx);
+                        })
+                        .tooltip(resend_tooltip.clone())
+                        .into_any_element()
+                }
+                MessageAction::Copy => Button::new(SharedString::from(format!("copy-{button_id}")))
+                    .icon(IconName::Copy)
+                    .ghost()
+                    .small()
+                    .on_click({
+                        let copy_text = copy_text.clone();
+                        let copy_success_title = copy_success_title.clone();
+                        let copy_success_message = copy_success_message.clone();
+                        let copy_failed_title = copy_failed_title.clone();
+                        let copy_failed_message = copy_failed_message.clone();
+                        move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                            let copied = cx
+                                .read_from_clipboard()
+                                .and_then(|item| item.text())
+                                .map(|copied| copied == copy_text)
+                                .unwrap_or(false);
+                            if copied {
+                                window.push_notification(
+                                    Notification::new()
+                                        .title(copy_success_title.clone())
+                                        .message(copy_success_message.clone())
+                                        .with_type(NotificationType::Success),
+                                    cx,
+                                );
+                            } else {
+                                window.push_notification(
+                                    Notification::new()
+                                        .title(copy_failed_title.clone())
+                                        .message(copy_failed_message.clone())
+                                        .with_type(NotificationType::Error),
+                                    cx,
+                                );
+                            }
+                        }
+                    })
+                    .tooltip(copy_tooltip.clone())
+                    .into_any_element(),
+                MessageAction::Delete => {
+                    Button::new(SharedString::from(format!("delete-{button_id}")))
+                        .icon(IconName::Delete)
+                        .ghost()
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            T::delete_message_by_id(id, window, cx);
+                        })
+                        .tooltip(delete_tooltip.clone())
+                        .into_any_element()
+                }
+                MessageAction::View => Button::new(SharedString::from(format!("view-{button_id}")))
+                    .icon(IconName::Eye)
+                    .ghost()
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        T::open_view_by_id(id, window, cx);
+                    })
+                    .tooltip(view_detail_tooltip.clone())
+                    .into_any_element(),
+            })
+            .collect::<Vec<_>>();
         v_flex()
             .group("message")
             .child(
@@ -228,87 +323,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                 .top_0()
                                 .opacity(0.)
                                 .group_hover("message", |this| this.opacity(1.))
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "copy-{}",
-                                                button_id
-                                            )))
-                                            .icon(IconName::Copy)
-                                            .ghost()
-                                            .small()
-                                            .on_click(move |_, window, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    copy_text.clone(),
-                                                ));
-                                                let copied = cx
-                                                    .read_from_clipboard()
-                                                    .and_then(|item| item.text())
-                                                    .map(|copied| copied == copy_text)
-                                                    .unwrap_or(false);
-                                                if copied {
-                                                    window.push_notification(
-                                                        Notification::new()
-                                                            .title(copy_success_title.clone())
-                                                            .message(copy_success_message.clone())
-                                                            .with_type(NotificationType::Success),
-                                                        cx,
-                                                    );
-                                                } else {
-                                                    window.push_notification(
-                                                        Notification::new()
-                                                            .title(copy_failed_title.clone())
-                                                            .message(copy_failed_message.clone())
-                                                            .with_type(NotificationType::Error),
-                                                        cx,
-                                                    );
-                                                }
-                                            })
-                                            .tooltip(copy_tooltip.clone()),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "delete-{}",
-                                                button_id
-                                            )))
-                                            .icon(IconName::Delete)
-                                            .ghost()
-                                            .small()
-                                            .on_click(move |_, window, cx| {
-                                                T::delete_message_by_id(id, window, cx);
-                                            })
-                                            .tooltip(delete_tooltip.clone()),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "resend-{}",
-                                                button_id
-                                            )))
-                                            .icon(IconName::Redo2)
-                                            .ghost()
-                                            .small()
-                                            .when(!data.can_resend(cx), |this| this.invisible())
-                                            .on_click(move |_, window, cx| {
-                                                T::resend_message_by_id(id, window, cx);
-                                            })
-                                            .tooltip(resend_tooltip.clone()),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "view-{}",
-                                                button_id
-                                            )))
-                                            .icon(IconName::Eye)
-                                            .ghost()
-                                            .small()
-                                            .on_click(move |_, window, cx| {
-                                                T::open_view_by_id(id, window, cx);
-                                            })
-                                            .tooltip(view_detail_tooltip.clone()),
-                                        ),
-                                ),
+                                .child(h_flex().gap_1().children(action_buttons)),
                         ),
                     }),
             )
@@ -318,7 +333,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageAccessoryMode, visible_error};
+    use super::{MessageAccessoryMode, MessageAction, message_actions, visible_error};
     use crate::database::Status;
 
     #[test]
@@ -350,5 +365,30 @@ mod tests {
     fn visible_error_skips_missing_or_blank_messages() {
         assert_eq!(visible_error(&Status::Error, None), None);
         assert_eq!(visible_error(&Status::Error, Some("   ")), None);
+    }
+
+    #[test]
+    fn resend_action_is_first_when_available() {
+        assert_eq!(
+            message_actions(true),
+            vec![
+                MessageAction::Resend,
+                MessageAction::Copy,
+                MessageAction::Delete,
+                MessageAction::View
+            ]
+        );
+    }
+
+    #[test]
+    fn resend_action_is_omitted_when_unavailable() {
+        assert_eq!(
+            message_actions(false),
+            vec![
+                MessageAction::Copy,
+                MessageAction::Delete,
+                MessageAction::View
+            ]
+        );
     }
 }

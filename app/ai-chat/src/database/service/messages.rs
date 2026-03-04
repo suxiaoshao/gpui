@@ -235,18 +235,6 @@ impl Message {
             .map(TryFrom::try_from)
             .collect::<AiChatResult<_>>()
     }
-    pub fn add_content(
-        id: i32,
-        new_content: String,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let time = OffsetDateTime::now_utc();
-        let SqlMessage { content, .. } = SqlMessage::find(id, conn)?;
-        let mut content = serde_json::from_str::<Content>(&content)?;
-        content += new_content;
-        SqlMessage::add_content(id, serde_json::to_string(&content)?, time, conn)?;
-        Ok(())
-    }
     pub fn update_status(id: i32, status: Status, conn: &mut SqliteConnection) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();
         SqlMessage::update_status(id, status, time, conn)?;

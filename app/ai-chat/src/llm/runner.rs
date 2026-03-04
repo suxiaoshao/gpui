@@ -1,7 +1,7 @@
 use super::{Adapter, Message, adapter_by_name};
 use crate::{
     config::AiChatConfig,
-    database::{Content, Role},
+    database::Content,
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionRunner,
 };
@@ -18,15 +18,6 @@ pub trait FetchRunner {
     fn request_body(&self) -> AiChatResult<serde_json::Value> {
         self.adapter()?
             .request_body(self.get_template(), self.get_history())
-    }
-    fn request_body_with_message(
-        &self,
-        role: Role,
-        send_content: &str,
-    ) -> AiChatResult<serde_json::Value> {
-        let mut history = self.get_history();
-        history.push(Message::new(role, send_content.to_string()));
-        self.adapter()?.request_body(self.get_template(), history)
     }
     async fn get_new_user_content(
         send_content: String,
