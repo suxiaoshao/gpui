@@ -45,6 +45,7 @@ impl TemporaryData {
             self.front_app = prev_app;
         }
         if let Err(err) = window.show() {
+            window.activate_window();
             event!(Level::ERROR, "Failed to show temporary window: {:?}", err);
         };
     }
@@ -96,6 +97,7 @@ impl TemporaryData {
                 ..Default::default()
             },
             |window, cx| {
+                window.activate_window();
                 if let Err(err) = window.set_floating() {
                     event!(Level::ERROR, error = ?err, "Failed to set floating");
                 }

@@ -63,21 +63,6 @@ impl SqlMessage {
             .load(conn)
             .map_err(|e| e.into())
     }
-    pub fn add_content(
-        id: i32,
-        content: String,
-        time: OffsetDateTime,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        diesel::update(messages::table.filter(messages::id.eq(id)))
-            .set((
-                messages::content.eq(content),
-                messages::updated_time.eq(time),
-                messages::end_time.eq(time),
-            ))
-            .execute(conn)?;
-        Ok(())
-    }
     pub fn update_status(
         id: i32,
         status: Status,

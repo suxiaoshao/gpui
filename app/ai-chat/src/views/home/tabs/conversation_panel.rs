@@ -28,6 +28,7 @@ use gpui_component::{
 };
 use smol::stream::StreamExt;
 use std::ops::Deref;
+use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
 pub(crate) struct ConversationPanelView {
@@ -155,31 +156,32 @@ impl ConversationPanelView {
         };
 
         let conversation_id = self.conversation.id;
-        let paused_messages = {
-            let conn = &mut cx.global::<Db>().get()?;
-            let mut paused_messages = Vec::new();
-            for message_id in task.message_ids().into_iter().flatten() {
-                let message = Message::find(message_id, conn)?;
-                if message.conversation_id != conversation_id
-                    || !matches!(message.status, Status::Loading)
-                {
-                    continue;
-                }
-                Message::update_status(message_id, Status::Paused, conn)?;
-                paused_messages.push(Message::find(message_id, conn)?);
-            }
-            paused_messages
-        };
-
         let chat_data = cx.global::<ChatData>().deref().clone();
-        chat_data.update(cx, move |data, cx| {
+        let paused_messages = chat_data.update(cx, move |data, cx| {
+            let mut paused_messages = Vec::new();
             if let Ok(data) = data {
-                for message in paused_messages {
-                    data.replace_message(conversation_id, message);
+                for message_id in task.message_ids().into_iter().flatten() {
+                    let Some(mut message) = data.message(conversation_id, message_id) else {
+                        continue;
+                    };
+                    if !matches!(message.status, Status::Loading) {
+                        continue;
+                    }
+                    let now = OffsetDateTime::now_utc();
+                    message.status = Status::Paused;
+                    message.updated_time = now;
+                    message.end_time = now;
+                    data.replace_message(conversation_id, message.clone());
+                    paused_messages.push(message);
                 }
                 cx.notify();
             }
+            paused_messages
         });
+        let conn = &mut cx.global::<Db>().get()?;
+        for message in &paused_messages {
+            Self::persist_message_snapshot(message, conn)?;
+        }
         cx.notify();
         Ok(())
     }
@@ -659,12 +661,19 @@ impl ConversationPanelView {
         content: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let message = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            Message::add_content(assistant_message_id, content, conn)?;
-            Message::find(assistant_message_id, conn)
-        })??;
-        Self::replace_chat_message_by_id(chat_data, conversation_id, message, false, cx)
+        let now = OffsetDateTime::now_utc();
+        let _ = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                message.content += content.as_str();
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        Ok(())
     }
 
     fn record_stream_error(
@@ -675,12 +684,25 @@ impl ConversationPanelView {
         error: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let message = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            Message::record_error(assistant_message_id, error, conn)?;
-            Message::find(assistant_message_id, conn)
-        })??;
-        Self::replace_chat_message_by_id(chat_data, conversation_id, message, false, cx)?;
+        let now = OffsetDateTime::now_utc();
+        let message = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                message.status = Status::Error;
+                message.error = Some(error.clone());
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        if let Some(message) = message {
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                Self::persist_message_snapshot(&message, conn)
+            })??;
+        }
         state.update_result(cx, |this, _cx| {
             this.clear_running_task_for_message(Some(assistant_message_id));
         })?;
@@ -694,15 +716,66 @@ impl ConversationPanelView {
         assistant_message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let message = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            Message::update_status(assistant_message_id, Status::Normal, conn)?;
-            Message::find(assistant_message_id, conn)
-        })??;
-        Self::replace_chat_message_by_id(chat_data, conversation_id, message, false, cx)?;
+        let now = OffsetDateTime::now_utc();
+        let message = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                message.status = Status::Normal;
+                message.error = None;
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        if let Some(message) = message {
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                Self::persist_message_snapshot(&message, conn)
+            })??;
+        }
         state.update_result(cx, |this, _cx| {
             this.clear_running_task_for_message(Some(assistant_message_id));
         })?;
+        Ok(())
+    }
+
+    fn update_chat_message_by_id(
+        chat_data: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        message_id: i32,
+        cx: &mut AsyncWindowContext,
+        update: impl FnOnce(&mut Message) + 'static,
+    ) -> AiChatResult<Option<Message>> {
+        let mut update = Some(update);
+        chat_data.update_result(cx, move |data, cx| {
+            let Ok(data) = data else {
+                return None;
+            };
+            let update = update.take()?;
+            if !data.update_message(conversation_id, message_id, update) {
+                return None;
+            }
+            let message = data.message(conversation_id, message_id);
+            if message.is_some() {
+                cx.notify();
+            }
+            message
+        })
+    }
+
+    fn persist_message_snapshot(
+        message: &Message,
+        conn: &mut diesel::SqliteConnection,
+    ) -> AiChatResult<()> {
+        Message::update_content(message.id, &message.content, conn)?;
+        match message.status {
+            Status::Error => {
+                Message::record_error(message.id, message.error.clone().unwrap_or_default(), conn)?
+            }
+            status => Message::update_status(message.id, status, conn)?,
+        }
         Ok(())
     }
 

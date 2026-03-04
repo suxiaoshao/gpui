@@ -690,9 +690,14 @@ impl TemplateDetailView {
             return Ok(None);
         };
         (|| -> AiChatResult<PreparedTemporaryFetch> {
-            let runner = Self::build_runner(state.clone(), config, cx)?;
-            let send_content =
-                runner.request_body_with_message(Role::User, content.send_content())?;
+            let runner = Self::build_runner(
+                state.clone(),
+                config,
+                Role::User,
+                content.send_content().to_string(),
+                cx,
+            )?;
+            let send_content = runner.request_body()?;
             let assistant_message_id = state.update_result(cx, |this, _cx| {
                 if let Some(message) = this
                     .messages
@@ -733,9 +738,15 @@ impl TemplateDetailView {
         now: OffsetDateTime,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedTemporaryFetch> {
-        let runner = Self::build_runner(state.clone(), config, cx)?;
         let content = Content::Text(request_text);
-        let send_content = runner.request_body_with_message(Role::User, content.send_content())?;
+        let runner = Self::build_runner(
+            state.clone(),
+            config,
+            Role::User,
+            content.send_content().to_string(),
+            cx,
+        )?;
+        let send_content = runner.request_body()?;
         let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
             this.input_state.update(cx, |input, cx| {
                 input.set_value("", window, cx);
@@ -772,6 +783,8 @@ impl TemplateDetailView {
     fn build_runner(
         state: WeakEntity<Self>,
         config: AiChatConfig,
+        user_message_role: Role,
+        user_message_content: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
@@ -780,6 +793,8 @@ impl TemplateDetailView {
             config,
             template,
             messages,
+            user_message_role,
+            user_message_content,
         })
     }
 
@@ -876,6 +891,8 @@ struct Runner {
     config: AiChatConfig,
     template: ConversationTemplate,
     messages: Vec<TemporaryMessage>,
+    user_message_role: Role,
+    user_message_content: String,
 }
 
 impl FetchRunner for Runner {
@@ -909,6 +926,10 @@ impl FetchRunner for Runner {
             });
 
         prompts.extend(messages);
+        prompts.push(FetchMessage::new(
+            self.user_message_role,
+            self.user_message_content.clone(),
+        ));
         prompts
     }
 }
@@ -999,5 +1020,84 @@ impl Render for TemplateDetailView {
                     )
                     .px_2(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Runner, TemporaryMessage};
+    use crate::{
+        config::AiChatConfig,
+        database::{Content, ConversationTemplate, ConversationTemplatePrompt, Mode, Role, Status},
+        llm::FetchRunner,
+    };
+    use time::OffsetDateTime;
+
+    fn make_template() -> ConversationTemplate {
+        let now = OffsetDateTime::now_utc();
+        ConversationTemplate {
+            id: 1,
+            name: "temporary".to_string(),
+            icon: "i".to_string(),
+            description: None,
+            mode: Mode::Contextual,
+            adapter: "openai".to_string(),
+            template: serde_json::json!({"model": "gpt-test"}),
+            prompts: vec![ConversationTemplatePrompt {
+                prompt: "system".to_string(),
+                role: Role::Developer,
+            }],
+            created_time: now,
+            updated_time: now,
+        }
+    }
+
+    fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
+        let now = OffsetDateTime::now_utc();
+        TemporaryMessage {
+            id: 1,
+            role,
+            content,
+            send_content: serde_json::json!({}),
+            status,
+            error: None,
+            created_time: now,
+            updated_time: now,
+            start_time: now,
+            end_time: now,
+        }
+    }
+
+    #[test]
+    fn runner_history_appends_current_user_message() {
+        let runner = Runner {
+            config: AiChatConfig::default(),
+            template: make_template(),
+            messages: vec![
+                make_message(
+                    Role::Assistant,
+                    Status::Normal,
+                    Content::Text("a1".to_string()),
+                ),
+                make_message(Role::User, Status::Error, Content::Text("bad".to_string())),
+            ],
+            user_message_role: Role::User,
+            user_message_content: "latest".to_string(),
+        };
+
+        let history = runner
+            .get_history()
+            .into_iter()
+            .map(|message| (message.role, message.content))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            history,
+            vec![
+                (Role::Developer, "system".to_string()),
+                (Role::Assistant, "a1".to_string()),
+                (Role::User, "latest".to_string()),
+            ]
+        );
     }
 }

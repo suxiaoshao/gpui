@@ -116,6 +116,12 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
     let content = fs::read_to_string(manifest_path).map_err(|err| {
         XtaskError::msg(format!("failed to read {}: {err}", manifest_path.display()))
     })?;
+    let manifest_dir = manifest_path.parent().ok_or_else(|| {
+        XtaskError::msg(format!(
+            "failed to resolve manifest dir for {}",
+            manifest_path.display()
+        ))
+    })?;
     let root: toml::Value = toml::from_str(&content).map_err(|err| {
         XtaskError::msg(format!(
             "failed to parse {}: {err}",
@@ -152,7 +158,8 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
                     .as_deref()
                     .and_then(infer_publisher_from_identifier)
             });
-        bundle_settings.icon = optional_string_array(bundle, "icon");
+        bundle_settings.icon = optional_string_array(bundle, "icon")
+            .map(|paths| resolve_manifest_paths(manifest_dir, paths));
         bundle_settings.short_description =
             optional_string(bundle, "short_description").map(ToString::to_string);
         bundle_settings.long_description =
@@ -167,7 +174,9 @@ fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bundle
     }
 
     bundle_settings.license = optional_string(package, "license").map(ToString::to_string);
-    bundle_settings.license_file = optional_string(package, "license-file").map(PathBuf::from);
+    bundle_settings.license_file = optional_string(package, "license-file")
+        .map(|path| resolve_manifest_path(manifest_dir, path));
+    sync_windows_icon_path(&mut bundle_settings);
 
     let package_settings = PackageSettings {
         product_name,
@@ -220,6 +229,52 @@ fn optional_string_array(table: &TomlTable, key: &str) -> Option<Vec<String>> {
                 .collect::<Vec<_>>()
         })
         .filter(|values| !values.is_empty())
+}
+
+fn resolve_manifest_paths(manifest_dir: &Path, paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| resolve_manifest_path(manifest_dir, &path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn resolve_manifest_path(manifest_dir: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        manifest_dir.join(path)
+    }
+}
+
+#[allow(deprecated)]
+fn sync_windows_icon_path(bundle_settings: &mut BundleSettings) {
+    if bundle_settings.windows.icon_path != default_windows_icon_path() {
+        return;
+    }
+
+    let Some(icon_path) = bundle_settings
+        .icon
+        .as_ref()
+        .and_then(|paths| {
+            paths.iter().find(|path| {
+                Path::new(path)
+                    .extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ico"))
+            })
+        })
+        .map(PathBuf::from)
+    else {
+        return;
+    };
+
+    bundle_settings.windows.icon_path = icon_path;
+}
+
+fn default_windows_icon_path() -> PathBuf {
+    PathBuf::from("icons/icon.ico")
 }
 
 fn infer_publisher_from_identifier(identifier: &str) -> Option<String> {
@@ -285,4 +340,74 @@ fn find_windows_artifacts(bundle_dir: &Path) -> Result<Vec<PathBuf>> {
 
     artifacts.sort();
     Ok(artifacts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let path = env::temp_dir().join(format!(
+                "xtask-bundle-windows-{suffix}-{}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn read_bundle_settings_resolves_relative_bundle_paths() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        let manifest_path = temp_dir.path.join("Cargo.toml");
+        fs::write(
+            &manifest_path,
+            r#"[package]
+name = "ai-chat"
+version = "0.1.0"
+license-file = "LICENSE"
+
+[package.metadata.bundle]
+name = "AI Chat"
+identifier = "top.sushao.ai-chat"
+icon = [
+  "build-assets/icon/app-icon.ico",
+  "build-assets/icon/app-icon.png",
+]
+"#,
+        )?;
+
+        let (_, bundle_settings) = read_bundle_settings(&manifest_path)?;
+        let expected_ico = temp_dir.path.join("build-assets/icon/app-icon.ico");
+        let expected_png = temp_dir.path.join("build-assets/icon/app-icon.png");
+
+        assert_eq!(
+            bundle_settings.icon,
+            Some(vec![
+                expected_ico.to_string_lossy().into_owned(),
+                expected_png.to_string_lossy().into_owned(),
+            ])
+        );
+        assert_eq!(
+            bundle_settings.license_file,
+            Some(temp_dir.path.join("LICENSE"))
+        );
+        assert_eq!(bundle_settings.windows.icon_path, expected_ico);
+
+        Ok(())
+    }
 }

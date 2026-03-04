@@ -406,6 +406,38 @@ impl ChatDataInner {
             conversation.messages.push(message);
         }
     }
+    pub(crate) fn message(&self, conversation_id: i32, message_id: i32) -> Option<Message> {
+        Self::get_conversation(&self.folders, &self.conversations, conversation_id).and_then(
+            |conversation| {
+                conversation
+                    .messages
+                    .iter()
+                    .find(|message| message.id == message_id)
+                    .cloned()
+            },
+        )
+    }
+    pub(crate) fn update_message(
+        &mut self,
+        conversation_id: i32,
+        message_id: i32,
+        update: impl FnOnce(&mut Message),
+    ) -> bool {
+        let Some(conversation) =
+            Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
+        else {
+            return false;
+        };
+        let Some(message) = conversation
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        else {
+            return false;
+        };
+        update(message);
+        true
+    }
     fn __delete_message(
         folders: &mut [Folder],
         conversations: &mut [Conversation],
@@ -605,6 +637,28 @@ mod tests {
             .messages
             .len();
         assert_eq!(after, 3);
+    }
+
+    #[test]
+    fn message_helpers_read_and_update_nested_message() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.conversations.push(conversation(2, Some(1)));
+        data.folders.push(root);
+        data.add_message(2, message(11, 2));
+
+        let found = data.message(2, 11).expect("message should exist");
+        assert_eq!(found.id, 11);
+
+        let updated = data.update_message(2, 11, |message| {
+            message.content = Content::Text("updated".to_string());
+        });
+        assert!(updated);
+        assert_eq!(
+            data.message(2, 11).expect("message should exist").content,
+            Content::Text("updated".to_string())
+        );
+        assert!(!data.update_message(2, 99, |_| {}));
     }
 
     #[test]
