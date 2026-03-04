@@ -934,85 +934,6 @@ impl FetchRunner for Runner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Runner, TemporaryMessage};
-    use crate::{
-        config::AiChatConfig,
-        database::{Content, ConversationTemplate, ConversationTemplatePrompt, Mode, Role, Status},
-        llm::FetchRunner,
-    };
-    use time::OffsetDateTime;
-
-    fn make_template() -> ConversationTemplate {
-        let now = OffsetDateTime::now_utc();
-        ConversationTemplate {
-            id: 1,
-            name: "temporary".to_string(),
-            icon: "i".to_string(),
-            description: None,
-            mode: Mode::Contextual,
-            adapter: "openai".to_string(),
-            template: serde_json::json!({"model": "gpt-test"}),
-            prompts: vec![ConversationTemplatePrompt {
-                prompt: "system".to_string(),
-                role: Role::Developer,
-            }],
-            created_time: now,
-            updated_time: now,
-        }
-    }
-
-    fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
-        let now = OffsetDateTime::now_utc();
-        TemporaryMessage {
-            id: 1,
-            role,
-            content,
-            send_content: serde_json::json!({}),
-            status,
-            error: None,
-            created_time: now,
-            updated_time: now,
-            start_time: now,
-            end_time: now,
-        }
-    }
-
-    #[test]
-    fn runner_history_appends_current_user_message() {
-        let runner = Runner {
-            config: AiChatConfig::default(),
-            template: make_template(),
-            messages: vec![
-                make_message(
-                    Role::Assistant,
-                    Status::Normal,
-                    Content::Text("a1".to_string()),
-                ),
-                make_message(Role::User, Status::Error, Content::Text("bad".to_string())),
-            ],
-            user_message_role: Role::User,
-            user_message_content: "latest".to_string(),
-        };
-
-        let history = runner
-            .get_history()
-            .into_iter()
-            .map(|message| (message.role, message.content))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            history,
-            vec![
-                (Role::Developer, "system".to_string()),
-                (Role::Assistant, "a1".to_string()),
-                (Role::User, "latest".to_string()),
-            ]
-        );
-    }
-}
-
 impl Render for TemplateDetailView {
     fn render(
         &mut self,
@@ -1099,5 +1020,84 @@ impl Render for TemplateDetailView {
                     )
                     .px_2(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Runner, TemporaryMessage};
+    use crate::{
+        config::AiChatConfig,
+        database::{Content, ConversationTemplate, ConversationTemplatePrompt, Mode, Role, Status},
+        llm::FetchRunner,
+    };
+    use time::OffsetDateTime;
+
+    fn make_template() -> ConversationTemplate {
+        let now = OffsetDateTime::now_utc();
+        ConversationTemplate {
+            id: 1,
+            name: "temporary".to_string(),
+            icon: "i".to_string(),
+            description: None,
+            mode: Mode::Contextual,
+            adapter: "openai".to_string(),
+            template: serde_json::json!({"model": "gpt-test"}),
+            prompts: vec![ConversationTemplatePrompt {
+                prompt: "system".to_string(),
+                role: Role::Developer,
+            }],
+            created_time: now,
+            updated_time: now,
+        }
+    }
+
+    fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
+        let now = OffsetDateTime::now_utc();
+        TemporaryMessage {
+            id: 1,
+            role,
+            content,
+            send_content: serde_json::json!({}),
+            status,
+            error: None,
+            created_time: now,
+            updated_time: now,
+            start_time: now,
+            end_time: now,
+        }
+    }
+
+    #[test]
+    fn runner_history_appends_current_user_message() {
+        let runner = Runner {
+            config: AiChatConfig::default(),
+            template: make_template(),
+            messages: vec![
+                make_message(
+                    Role::Assistant,
+                    Status::Normal,
+                    Content::Text("a1".to_string()),
+                ),
+                make_message(Role::User, Status::Error, Content::Text("bad".to_string())),
+            ],
+            user_message_role: Role::User,
+            user_message_content: "latest".to_string(),
+        };
+
+        let history = runner
+            .get_history()
+            .into_iter()
+            .map(|message| (message.role, message.content))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            history,
+            vec![
+                (Role::Developer, "system".to_string()),
+                (Role::Assistant, "a1".to_string()),
+                (Role::User, "latest".to_string()),
+            ]
+        );
     }
 }

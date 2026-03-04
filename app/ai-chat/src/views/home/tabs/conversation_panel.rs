@@ -753,9 +753,7 @@ impl ConversationPanelView {
             let Ok(data) = data else {
                 return None;
             };
-            let Some(update) = update.take() else {
-                return None;
-            };
+            let update = update.take()?;
             if !data.update_message(conversation_id, message_id, update) {
                 return None;
             }
