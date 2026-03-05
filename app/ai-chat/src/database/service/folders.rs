@@ -2,7 +2,10 @@ use super::utils::serialize_offset_date_time;
 use crate::{
     database::{
         Conversation,
-        model::{SqlConversation, SqlFolder, SqlMessage, SqlNewFolder},
+        model::{
+            SqlConversation, SqlFolder, SqlMessage, SqlNewFolder, SqlUpdateConversation,
+            SqlUpdateFolder,
+        },
     },
     errors::{AiChatError, AiChatResult},
 };
@@ -10,7 +13,7 @@ use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Folder {
     pub id: i32,
     pub name: String,
@@ -111,6 +114,73 @@ impl Folder {
             Ok(())
         })?;
         Ok(())
+    }
+
+    pub fn move_to_parent(
+        id: i32,
+        new_parent_id: Option<i32>,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<Self> {
+        conn.immediate_transaction::<_, AiChatError, _>(|conn| {
+            let folder = SqlFolder::find(id, conn)?;
+            if folder.parent_id == new_parent_id {
+                return Self::from_sql_folder(folder, conn);
+            }
+
+            if new_parent_id == Some(id) {
+                return Err(AiChatError::InvalidFolderMove(format!(
+                    "folder {id} cannot move into itself"
+                )));
+            }
+
+            let parent = new_parent_id
+                .map(|parent_id| SqlFolder::find(parent_id, conn))
+                .transpose()?;
+            if let Some(parent) = parent.as_ref()
+                && (parent.path == folder.path
+                    || parent.path.starts_with(&format!("{}/", folder.path)))
+            {
+                return Err(AiChatError::InvalidFolderMove(format!(
+                    "folder {id} cannot move into descendant {}",
+                    parent.id
+                )));
+            }
+
+            let new_path = match parent {
+                Some(ref parent) => format!("{}/{}", parent.path, folder.name),
+                None => format!("/{}", folder.name),
+            };
+            if SqlFolder::path_exists(&new_path, conn)? {
+                return Err(AiChatError::FolderPathExists(new_path));
+            }
+            if SqlConversation::path_exists(&new_path, conn)? {
+                return Err(AiChatError::ConversationPathExists(new_path));
+            }
+
+            let old_path = folder.path.clone();
+            let time = OffsetDateTime::now_utc();
+            SqlUpdateFolder::move_folder(id, new_parent_id, &new_path, time, conn)?;
+
+            for child in SqlFolder::find_by_path_pre(&old_path, conn)? {
+                SqlUpdateFolder::from_new_path(&child, &old_path, &new_path, time).update(conn)?;
+            }
+            for conversation in SqlConversation::find_by_path_pre(&old_path, conn)? {
+                SqlUpdateConversation::from_new_path(&conversation, &old_path, &new_path, time)
+                    .update(conn)?;
+            }
+            for message in SqlMessage::find_by_path_pre(&old_path, conn)? {
+                SqlMessage::update_path(
+                    message.id,
+                    message.conversation_path,
+                    &old_path,
+                    &new_path,
+                    time,
+                    conn,
+                )?;
+            }
+
+            Self::from_sql_folder(SqlFolder::find(id, conn)?, conn)
+        })
     }
 }
 

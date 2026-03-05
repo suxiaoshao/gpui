@@ -1,6 +1,7 @@
 use crate::{
     errors::AiChatResult,
     store::{ChatData, ChatDataEvent, ChatDataInner},
+    views::home::sidebar::DragConversationTreeItem,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
@@ -57,11 +58,33 @@ impl Render for TabsView {
                                     .drag_over::<DragTab>(|this, _drag, _window, cx| {
                                         this.bg(cx.theme().drop_target)
                                     })
+                                    .drag_over::<DragConversationTreeItem>(
+                                        |this, drag, _window, cx| {
+                                            if drag.conversation_id().is_some() {
+                                                this.bg(cx.theme().drop_target)
+                                            } else {
+                                                this
+                                            }
+                                        },
+                                    )
                                     .on_drop(move |drag: &DragTab, _window, cx| {
                                         let chat_data = cx.global::<ChatData>().deref().clone();
                                         chat_data.update(cx, move |_this, cx| {
                                             cx.emit(ChatDataEvent::MoveTab {
                                                 from_id: drag.id,
+                                                to_id: None,
+                                            });
+                                        });
+                                    })
+                                    .on_drop(move |drag: &DragConversationTreeItem, _window, cx| {
+                                        let Some(conversation_id) = drag.conversation_id() else {
+                                            return;
+                                        };
+                                        let chat_data = cx.global::<ChatData>().deref().clone();
+                                        chat_data.update(cx, move |_this, cx| {
+                                            cx.emit(ChatDataEvent::AddTab(conversation_id));
+                                            cx.emit(ChatDataEvent::MoveTab {
+                                                from_id: conversation_id,
                                                 to_id: None,
                                             });
                                         });

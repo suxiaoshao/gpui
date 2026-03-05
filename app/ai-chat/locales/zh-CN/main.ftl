@@ -13,6 +13,7 @@ sidebar-settings = 设置
 sidebar-template-list = 模板列表
 sidebar-add-conversation = 新建会话
 sidebar-add-folder = 新建文件夹
+sidebar-root = 根目录
 
 tab-templates = 模板
 tab-template = 模板
@@ -77,6 +78,8 @@ notify-get-templates-failed = 获取模板失败
 notify-select-template = 请选择一个模板
 notify-add-conversation-failed = 新建会话失败
 notify-add-folder-failed = 新建文件夹失败
+notify-move-conversation-failed = 移动会话失败
+notify-move-folder-failed = 移动文件夹失败
 notify-delete-message-failed = 删除消息失败
 notify-delete-conversation-failed = 删除会话失败
 notify-delete-folder-failed = 删除文件夹失败

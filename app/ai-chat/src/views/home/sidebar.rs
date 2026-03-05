@@ -7,7 +7,7 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    IconName, Side,
+    Collapsible, IconName, Side,
     menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     v_flex,
@@ -16,18 +16,50 @@ use std::ops::Deref;
 use tracing::{Level, event};
 
 mod conversation_item;
+mod conversation_tree;
 mod folder_item;
+pub(crate) use conversation_tree::DragConversationTreeItem;
 
-actions!(sidebar_view, [Add, AddShift, Delete, Edit]);
+actions!(sidebar_view, [Add, AddShift]);
 
 const CONTEXT: &str = "sidebar_view";
+
+#[derive(IntoElement)]
+enum SidebarSection {
+    Tree(SidebarGroup<conversation_tree::ConversationTree>),
+    Menu(SidebarGroup<SidebarMenu>),
+}
+
+impl Collapsible for SidebarSection {
+    fn collapsed(self, collapsed: bool) -> Self {
+        match self {
+            Self::Tree(group) => Self::Tree(group.collapsed(collapsed)),
+            Self::Menu(group) => Self::Menu(group.collapsed(collapsed)),
+        }
+    }
+
+    fn is_collapsed(&self) -> bool {
+        match self {
+            Self::Tree(group) => group.is_collapsed(),
+            Self::Menu(group) => group.is_collapsed(),
+        }
+    }
+}
+
+impl RenderOnce for SidebarSection {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        match self {
+            Self::Tree(group) => group.into_any_element(),
+            Self::Menu(group) => group.into_any_element(),
+        }
+    }
+}
 
 pub fn init(cx: &mut App) {
     event!(Level::INFO, "init sidebar_view");
     cx.bind_keys([
         KeyBinding::new("secondary-n", Add, None),
         KeyBinding::new("secondary-shift-n", AddShift, None),
-        KeyBinding::new("backspace", Delete, None),
     ])
 }
 
@@ -68,6 +100,7 @@ impl Render for SidebarView {
             template_list_label,
             add_conversation_label,
             add_folder_label,
+            root_label,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -78,6 +111,7 @@ impl Render for SidebarView {
                 i18n.t("sidebar-template-list"),
                 i18n.t("sidebar-add-conversation"),
                 i18n.t("sidebar-add-folder"),
+                i18n.t("sidebar-root"),
             )
         };
         v_flex()
@@ -90,33 +124,26 @@ impl Render for SidebarView {
                 Sidebar::new(Side::Left)
                     .w_full()
                     .header(SidebarHeader::new().child(app_title))
-                    .child(
+                    .child(SidebarSection::Tree(
                         SidebarGroup::new(conversation_tree_title).child(
-                            SidebarMenu::new().children(
-                                match self
-                                    .chat_data
-                                    .upgrade()
-                                    .and_then(|x| x.read(cx).as_ref().ok())
-                                {
-                                    Some(data) => {
-                                        let mut items = data
-                                            .folders
-                                            .iter()
-                                            .map(folder_item::sidebar_item)
-                                            .collect::<Vec<_>>();
-                                        items.extend(
-                                            data.conversations
-                                                .iter()
-                                                .map(conversation_item::sidebar_item),
-                                        );
-                                        items
-                                    }
-                                    None => vec![],
-                                },
-                            ),
+                            self.chat_data
+                                .upgrade()
+                                .and_then(|x| {
+                                    x.read(cx).as_ref().ok().map(|data| {
+                                        conversation_tree::ConversationTree::new(
+                                            data,
+                                            root_label.clone().into(),
+                                        )
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    conversation_tree::ConversationTree::empty_with_label(
+                                        root_label.clone().into(),
+                                    )
+                                }),
                         ),
-                    )
-                    .child(
+                    ))
+                    .child(SidebarSection::Menu(
                         SidebarGroup::new(actions_title).child(
                             SidebarMenu::new()
                                 .child(
@@ -151,7 +178,7 @@ impl Render for SidebarView {
                                         })),
                                 ),
                         ),
-                    ),
+                    )),
             )
             .context_menu(move |this, _window, _cx| {
                 let add_conversation_label = add_conversation_label.clone();

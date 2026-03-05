@@ -38,6 +38,8 @@ pub enum AiChatError {
     ConversationPathExists(String),
     #[error("folder path exists:{}",.0)]
     FolderPathExists(String),
+    #[error("invalid folder move:{}",.0)]
+    InvalidFolderMove(String),
     #[error("这个 template 的 conversation 还存在,不能删除")]
     TemplateHasConversation,
     #[error("Extension runtime error")]

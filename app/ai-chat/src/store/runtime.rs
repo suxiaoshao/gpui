@@ -36,6 +36,14 @@ pub enum ChatDataEvent {
         from_id: i32,
         to_id: Option<i32>,
     },
+    MoveConversation {
+        conversation_id: i32,
+        target_folder_id: Option<i32>,
+    },
+    MoveFolder {
+        folder_id: i32,
+        target_parent_id: Option<i32>,
+    },
     DeleteMessage(i32),
     DeleteConversation(i32),
     DeleteFolder(i32),
@@ -85,6 +93,8 @@ impl ChatData {
             delete_message_failed,
             delete_conversation_failed,
             delete_folder_failed,
+            move_conversation_failed,
+            move_folder_failed,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -93,6 +103,8 @@ impl ChatData {
                 i18n.t("notify-delete-message-failed").into(),
                 i18n.t("notify-delete-conversation-failed").into(),
                 i18n.t("notify-delete-folder-failed").into(),
+                i18n.t("notify-move-conversation-failed").into(),
+                i18n.t("notify-move-folder-failed").into(),
             )
         };
         match chat_data_event {
@@ -170,6 +182,26 @@ impl ChatData {
                     }
                 });
             }
+            ChatDataEvent::MoveConversation {
+                conversation_id,
+                target_folder_id,
+            } => Self::handle_event_result(
+                Self::move_conversation(state, *conversation_id, *target_folder_id, cx),
+                window,
+                move_conversation_failed,
+                "move conversation",
+                cx,
+            ),
+            ChatDataEvent::MoveFolder {
+                folder_id,
+                target_parent_id,
+            } => Self::handle_event_result(
+                Self::move_folder(state, *folder_id, *target_parent_id, cx),
+                window,
+                move_folder_failed,
+                "move folder",
+                cx,
+            ),
             ChatDataEvent::DeleteMessage(message_id) => Self::handle_event_result(
                 Self::delete_message(state, *message_id, cx),
                 window,
@@ -276,6 +308,36 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.delete_conversation(id);
+            }
+        });
+        Ok(())
+    }
+    fn move_conversation(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        target_folder_id: Option<i32>,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        let conversation = Conversation::move_to_folder(conversation_id, target_folder_id, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.move_conversation(conversation_id, target_folder_id, conversation);
+            }
+        });
+        Ok(())
+    }
+    fn move_folder(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        folder_id: i32,
+        target_parent_id: Option<i32>,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        let folder = Folder::move_to_parent(folder_id, target_parent_id, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.move_folder(folder_id, target_parent_id, folder);
             }
         });
         Ok(())

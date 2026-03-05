@@ -13,6 +13,7 @@ sidebar-settings = Settings
 sidebar-template-list = Template List
 sidebar-add-conversation = Add Conversation
 sidebar-add-folder = Add Folder
+sidebar-root = Root
 
 tab-templates = Templates
 tab-template = Template
@@ -77,6 +78,8 @@ notify-get-templates-failed = Get Templates Failed
 notify-select-template = Please select a template
 notify-add-conversation-failed = Add Conversation Failed
 notify-add-folder-failed = Add Folder Failed
+notify-move-conversation-failed = Move Conversation Failed
+notify-move-folder-failed = Move Folder Failed
 notify-delete-message-failed = Delete Message Failed
 notify-delete-conversation-failed = Delete Conversation Failed
 notify-delete-folder-failed = Delete Folder Failed
