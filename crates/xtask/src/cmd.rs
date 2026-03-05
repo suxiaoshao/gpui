@@ -4,16 +4,7 @@ use std::process::{Command, ExitStatus};
 
 use crate::error::{Result, XtaskError};
 
-pub fn ensure_command_installed(command: &str, install_hint: &str) -> Result<()> {
-    if command_exists(command) {
-        Ok(())
-    } else {
-        Err(XtaskError::msg(format!(
-            "{command} 未安装，请先执行: {install_hint}"
-        )))
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub fn command_exists(command: &str) -> bool {
     which::which(command).is_ok()
 }
