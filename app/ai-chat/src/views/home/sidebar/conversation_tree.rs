@@ -401,6 +401,16 @@ pub(super) fn target_for_folder(
     }
 }
 
+pub(super) fn target_for_conversation_row(
+    drag: &DragConversationTreeItem,
+    target_folder: Option<(i32, &str)>,
+) -> Option<ActiveDropTarget> {
+    match target_folder {
+        Some((folder_id, folder_path)) => target_for_folder(drag, folder_id, folder_path),
+        None => target_for_root(drag),
+    }
+}
+
 pub(super) fn folder_block_drop_target(
     active_drop_target: Option<ActiveDropTarget>,
     folder_id: i32,
@@ -478,7 +488,7 @@ mod tests {
     use super::{
         ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
         folder_block_drop_target, folder_drop_state, project_conversations, project_folders,
-        root_drop_state, target_for_folder, target_for_root,
+        root_drop_state, target_for_conversation_row, target_for_folder, target_for_root,
     };
     use crate::database::{Content, Conversation, Folder, Message, Role, Status};
     use gpui::SharedString;
@@ -676,6 +686,24 @@ mod tests {
     fn conversation_drag_exposes_conversation_id_only() {
         assert_eq!(conversation_drag(7, None).conversation_id(), Some(7));
         assert_eq!(folder_drag(3, None, "/root/folder").conversation_id(), None);
+    }
+
+    #[test]
+    fn conversation_row_target_does_not_fall_back_to_root_for_folder_noop_drag() {
+        let drag = conversation_drag(7, Some(2));
+        assert_eq!(
+            target_for_conversation_row(&drag, Some((2, "/root/folder"))),
+            None
+        );
+    }
+
+    #[test]
+    fn conversation_row_target_uses_root_only_for_root_rows() {
+        let drag = conversation_drag(7, Some(2));
+        assert_eq!(
+            target_for_conversation_row(&drag, None),
+            Some(ActiveDropTarget::Root)
+        );
     }
 
     #[test]

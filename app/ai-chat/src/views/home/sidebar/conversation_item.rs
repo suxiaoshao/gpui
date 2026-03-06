@@ -1,6 +1,6 @@
 use super::conversation_tree::{
     DragConversationTreeItem, DropState, SidebarConversationNode, folder_drop_state,
-    reset_drop_target, root_drop_state, set_drop_target, target_for_folder, target_for_root,
+    reset_drop_target, root_drop_state, set_drop_target, target_for_conversation_row,
 };
 use crate::{
     components::delete_confirm::open_delete_confirm_dialog,
@@ -109,12 +109,12 @@ impl RenderOnce for ConversationTreeItem {
             .on_drag_move::<DragConversationTreeItem>({
                 let target_folder = target_folder.clone();
                 move |event, window, cx| {
-                    let target = target_folder
-                        .as_ref()
-                        .and_then(|(folder_id, folder_path)| {
-                            target_for_folder(event.drag(cx), *folder_id, folder_path)
-                        })
-                        .or_else(|| target_for_root(event.drag(cx)));
+                    let target = target_for_conversation_row(
+                        event.drag(cx),
+                        target_folder
+                            .as_ref()
+                            .map(|(folder_id, folder_path)| (*folder_id, folder_path.as_ref())),
+                    );
                     if event.bounds.contains(&event.event.position) {
                         match target {
                             Some(target) => set_drop_target(window, cx, target),
