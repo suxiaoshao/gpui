@@ -494,7 +494,7 @@ impl Render for PromptListForm {
                 i18n.t("button-add-prompt"),
             )
         };
-        let this = cx.entity().clone();
+        let this = cx.entity().downgrade();
         let prompt_fields = self
             .prompt_rows
             .iter()
@@ -512,7 +512,7 @@ impl Render for PromptListForm {
                                 Button::new(("prompt-delete", index))
                                     .label(delete_label.clone())
                                     .on_click(move |_, _window, cx| {
-                                        this.update(cx, |form, cx| {
+                                        let _ = this.update(cx, |form, cx| {
                                             form.remove_prompt_row(index, cx);
                                         });
                                     }),
@@ -543,7 +543,7 @@ impl Render for PromptListForm {
                     .child(Label::new(prompts_label))
                     .child(Button::new("prompt-add").label(add_prompt_label).on_click(
                         move |_, window, cx| {
-                            this.update(cx, |form, cx| {
+                            let _ = this.update(cx, |form, cx| {
                                 form.add_prompt_row(window, cx);
                             });
                         },

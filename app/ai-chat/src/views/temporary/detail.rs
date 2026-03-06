@@ -52,7 +52,7 @@ pub struct TemporaryMessage {
     pub id: usize,
     pub role: Role,
     pub content: Content,
-    pub send_content: serde_json::Value,
+    pub send_content: Rc<serde_json::Value>,
     pub status: Status,
     pub error: Option<String>,
     pub created_time: OffsetDateTime,
@@ -218,7 +218,7 @@ impl TemporaryMessage {
         self.updated_time = now;
         self.end_time = now;
     }
-    fn resolve_extension(&mut self, content: Content, send_content: serde_json::Value) {
+    fn resolve_extension(&mut self, content: Content, send_content: Rc<serde_json::Value>) {
         let now = OffsetDateTime::now_utc();
         self.content = content;
         self.send_content = send_content;
@@ -443,7 +443,7 @@ impl TemplateDetailView {
             .map(|message| AddConversationMessage {
                 role: message.role,
                 content: message.content,
-                send_content: message.send_content,
+                send_content: (*message.send_content).clone(),
                 status: message.status,
                 error: message.error,
             })
@@ -459,7 +459,7 @@ impl TemplateDetailView {
         now: OffsetDateTime,
         role: Role,
         content: Content,
-        send_content: serde_json::Value,
+        send_content: Rc<serde_json::Value>,
         status: Status,
         error: Option<String>,
     ) -> &mut TemporaryMessage {
@@ -571,7 +571,7 @@ impl TemplateDetailView {
             else {
                 return (
                     None,
-                    serde_json::Value::Null,
+                    Rc::new(serde_json::Value::Null),
                     Some(AiChatError::StreamError(
                         "temporary assistant message not found".to_string(),
                     )),
@@ -580,7 +580,7 @@ impl TemplateDetailView {
             if message.role != Role::Assistant {
                 return (
                     None,
-                    serde_json::Value::Null,
+                    Rc::new(serde_json::Value::Null),
                     Some(AiChatError::StreamError(
                         "temporary message is not assistant".to_string(),
                     )),
@@ -646,7 +646,7 @@ impl TemplateDetailView {
                 now,
                 Role::User,
                 Content::Text(request_text.clone()),
-                serde_json::json!({}),
+                Rc::new(serde_json::json!({})),
                 Status::Loading,
                 None,
             )
@@ -697,14 +697,14 @@ impl TemplateDetailView {
                 content.send_content().to_string(),
                 cx,
             )?;
-            let send_content = runner.request_body()?;
+            let send_content = runner.request_body.clone();
             let assistant_message_id = state.update_result(cx, |this, _cx| {
                 if let Some(message) = this
                     .messages
                     .iter_mut()
                     .find(|message| message.id == user_message_id)
                 {
-                    message.resolve_extension(content.clone(), send_content.clone());
+                    message.resolve_extension(content, send_content.clone());
                 }
                 this.add_message(
                     now,
@@ -746,7 +746,7 @@ impl TemplateDetailView {
             content.send_content().to_string(),
             cx,
         )?;
-        let send_content = runner.request_body()?;
+        let send_content = runner.request_body.clone();
         let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
             this.input_state.update(cx, |input, cx| {
                 input.set_value("", window, cx);
@@ -755,7 +755,7 @@ impl TemplateDetailView {
                 .add_message(
                     now,
                     Role::User,
-                    content.clone(),
+                    content,
                     send_content.clone(),
                     Status::Normal,
                     None,
@@ -787,15 +787,22 @@ impl TemplateDetailView {
         user_message_content: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
-        let template = state.read_with_result(cx, |this, _cx| this.template.clone())?;
-        let messages = state.read_with_result(cx, |this, _cx| this.messages.clone())?;
-        Ok(Runner {
-            config,
-            template,
-            messages,
-            user_message_role,
-            user_message_content,
-        })
+        state.read_with_result(cx, |this, _cx| {
+            let adapter_name = this.template.adapter.clone();
+            let request_body = build_request_body(
+                &adapter_name,
+                &this.template.template,
+                &this.template.prompts,
+                &this.messages,
+                user_message_role,
+                &user_message_content,
+            )?;
+            Ok(Runner {
+                config,
+                adapter_name,
+                request_body: Rc::new(request_body),
+            })
+        })?
     }
 
     async fn stream_fetch(
@@ -832,7 +839,7 @@ impl TemplateDetailView {
         state: WeakEntity<Self>,
         config: AiChatConfig,
         adapter_name: String,
-        request_body: serde_json::Value,
+        request_body: Rc<serde_json::Value>,
         assistant_message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
@@ -843,7 +850,7 @@ impl TemplateDetailView {
                 adapter.name().to_string(),
             ))?
             .clone();
-        let stream = adapter.fetch_by_request_body(config, settings, request_body);
+        let stream = adapter.fetch_by_request_body(config, settings, request_body.as_ref());
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
@@ -889,49 +896,63 @@ struct PreparedTemporaryFetch {
 
 struct Runner {
     config: AiChatConfig,
-    template: ConversationTemplate,
-    messages: Vec<TemporaryMessage>,
-    user_message_role: Role,
-    user_message_content: String,
+    adapter_name: String,
+    request_body: Rc<serde_json::Value>,
 }
 
 impl FetchRunner for Runner {
     fn get_adapter(&self) -> &str {
-        &self.template.adapter
-    }
-
-    fn get_template(&self) -> &serde_json::Value {
-        &self.template.template
+        &self.adapter_name
     }
 
     fn get_config(&self) -> &crate::config::AiChatConfig {
         &self.config
     }
 
-    fn get_history(&self) -> Vec<crate::llm::Message> {
-        use crate::llm::Message as FetchMessage;
-        let mut prompts = self
-            .template
-            .prompts
-            .iter()
-            .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt.clone()))
-            .collect::<Vec<_>>();
+    fn request_body(&self) -> &serde_json::Value {
+        self.request_body.as_ref()
+    }
+}
 
-        let messages = self
-            .messages
+fn build_history_messages(
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    messages: &[TemporaryMessage],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> Vec<crate::llm::Message> {
+    use crate::llm::Message as FetchMessage;
+
+    let mut request_messages = prompts
+        .iter()
+        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt.clone()))
+        .collect::<Vec<_>>();
+
+    request_messages.extend(
+        messages
             .iter()
             .filter(|message| message.status == Status::Normal)
             .map(|message| {
                 FetchMessage::new(message.role, message.content.send_content().to_string())
-            });
+            }),
+    );
+    request_messages.push(FetchMessage::new(
+        user_message_role,
+        user_message_content.to_string(),
+    ));
+    request_messages
+}
 
-        prompts.extend(messages);
-        prompts.push(FetchMessage::new(
-            self.user_message_role,
-            self.user_message_content.clone(),
-        ));
-        prompts
-    }
+fn build_request_body(
+    adapter_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    messages: &[TemporaryMessage],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> AiChatResult<serde_json::Value> {
+    let history =
+        build_history_messages(prompts, messages, user_message_role, user_message_content);
+    adapter_by_name(adapter_name)?.request_body(template, history)
 }
 
 impl Render for TemplateDetailView {
@@ -1025,32 +1046,10 @@ impl Render for TemplateDetailView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Runner, TemporaryMessage};
-    use crate::{
-        config::AiChatConfig,
-        database::{Content, ConversationTemplate, ConversationTemplatePrompt, Mode, Role, Status},
-        llm::FetchRunner,
-    };
+    use super::{TemporaryMessage, build_history_messages};
+    use crate::database::{Content, ConversationTemplatePrompt, Role, Status};
+    use std::rc::Rc;
     use time::OffsetDateTime;
-
-    fn make_template() -> ConversationTemplate {
-        let now = OffsetDateTime::now_utc();
-        ConversationTemplate {
-            id: 1,
-            name: "temporary".to_string(),
-            icon: "i".to_string(),
-            description: None,
-            mode: Mode::Contextual,
-            adapter: "openai".to_string(),
-            template: serde_json::json!({"model": "gpt-test"}),
-            prompts: vec![ConversationTemplatePrompt {
-                prompt: "system".to_string(),
-                role: Role::Developer,
-            }],
-            created_time: now,
-            updated_time: now,
-        }
-    }
 
     fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
         let now = OffsetDateTime::now_utc();
@@ -1058,7 +1057,7 @@ mod tests {
             id: 1,
             role,
             content,
-            send_content: serde_json::json!({}),
+            send_content: Rc::new(serde_json::json!({})),
             status,
             error: None,
             created_time: now,
@@ -1070,10 +1069,12 @@ mod tests {
 
     #[test]
     fn runner_history_appends_current_user_message() {
-        let runner = Runner {
-            config: AiChatConfig::default(),
-            template: make_template(),
-            messages: vec![
+        let history = build_history_messages(
+            &[ConversationTemplatePrompt {
+                prompt: "system".to_string(),
+                role: Role::Developer,
+            }],
+            &[
                 make_message(
                     Role::Assistant,
                     Status::Normal,
@@ -1081,15 +1082,12 @@ mod tests {
                 ),
                 make_message(Role::User, Status::Error, Content::Text("bad".to_string())),
             ],
-            user_message_role: Role::User,
-            user_message_content: "latest".to_string(),
-        };
-
-        let history = runner
-            .get_history()
-            .into_iter()
-            .map(|message| (message.role, message.content))
-            .collect::<Vec<_>>();
+            Role::User,
+            "latest",
+        )
+        .into_iter()
+        .map(|message| (message.role, message.content))
+        .collect::<Vec<_>>();
 
         assert_eq!(
             history,

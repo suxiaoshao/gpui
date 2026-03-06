@@ -348,7 +348,7 @@ impl ConversationPanelView {
                 adapter.name().to_string(),
             ))?
             .clone();
-        let stream = adapter.fetch_by_request_body(context.config, settings, context.request_body);
+        let stream = adapter.fetch_by_request_body(context.config, settings, &context.request_body);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
@@ -459,20 +459,20 @@ impl ConversationPanelView {
                 user_content.send_content().to_string(),
                 cx,
             )?;
-            let send_content = runner.request_body()?;
+            let send_content = runner.request_body();
             let (user_message, assistant_message) =
                 cx.read_global_result(|db: &Db, _window, _cx| {
                     let conn = &mut db.get()?;
                     Message::update_content(user_message_id, &user_content, conn)?;
-                    Message::update_send_content(user_message_id, send_content.clone(), conn)?;
+                    Message::update_send_content(user_message_id, send_content, conn)?;
                     Message::update_status(user_message_id, Status::Normal, conn)?;
                     let user_message = Message::find(user_message_id, conn)?;
                     let assistant_message = Message::insert(
                         NewMessage::new(
                             context.conversation_id,
                             Role::Assistant,
-                            Content::Text(String::new()),
-                            send_content.clone(),
+                            &Content::Text(String::new()),
+                            send_content,
                             Status::Loading,
                         ),
                         conn,
@@ -504,7 +504,7 @@ impl ConversationPanelView {
             user_content.send_content().to_string(),
             cx,
         )?;
-        let send_content = runner.request_body()?;
+        let send_content = runner.request_body();
         let (user_message, assistant_message) =
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
@@ -512,8 +512,8 @@ impl ConversationPanelView {
                     NewMessage::new(
                         context.conversation_id,
                         Role::User,
-                        user_content.clone(),
-                        send_content.clone(),
+                        &user_content,
+                        send_content,
                         Status::Normal,
                     ),
                     conn,
@@ -522,8 +522,8 @@ impl ConversationPanelView {
                     NewMessage::new(
                         context.conversation_id,
                         Role::Assistant,
-                        Content::Text(String::new()),
-                        send_content.clone(),
+                        &Content::Text(String::new()),
+                        send_content,
                         Status::Loading,
                     ),
                     conn,
@@ -550,12 +550,20 @@ impl ConversationPanelView {
             let template = ConversationTemplate::find(conversation.template_id, conn)?;
             Ok::<_, AiChatError>((conversation, template))
         })??;
+        let adapter_name = template.adapter.clone();
+        let request_body = build_request_body(
+            &adapter_name,
+            &template.template,
+            template.prompts,
+            template.mode,
+            &conversation.messages,
+            user_message_role,
+            &user_message_content,
+        )?;
         Ok(Runner {
             config,
-            template,
-            history_messages: conversation.messages,
-            user_message_role,
-            user_message_content,
+            adapter_name,
+            request_body,
         })
     }
 
@@ -570,8 +578,8 @@ impl ConversationPanelView {
                 NewMessage::new(
                     conversation_id,
                     Role::User,
-                    Content::Text(request_text.to_string()),
-                    serde_json::json!({}),
+                    &Content::Text(request_text.to_string()),
+                    &serde_json::json!({}),
                     Status::Loading,
                 ),
                 conn,
@@ -902,65 +910,75 @@ impl Render for ConversationPanelView {
 
 struct Runner {
     config: AiChatConfig,
-    template: ConversationTemplate,
-    history_messages: Vec<Message>,
-    user_message_role: Role,
-    user_message_content: String,
+    adapter_name: String,
+    request_body: serde_json::Value,
 }
 
 impl FetchRunner for Runner {
     fn get_adapter(&self) -> &str {
-        &self.template.adapter
-    }
-
-    fn get_template(&self) -> &serde_json::Value {
-        &self.template.template
+        &self.adapter_name
     }
 
     fn get_config(&self) -> &AiChatConfig {
         &self.config
     }
 
-    fn get_history(&self) -> Vec<crate::llm::Message> {
-        use crate::llm::Message as FetchMessage;
-        let mut prompts_messages = self
-            .template
-            .prompts
-            .iter()
-            .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt.clone()))
-            .collect::<Vec<_>>();
-
-        match self.template.mode {
-            Mode::Contextual => {
-                let history_messages = self
-                    .history_messages
-                    .iter()
-                    .filter(|message| message.status == Status::Normal)
-                    .map(|message| {
-                        FetchMessage::new(message.role, message.content.send_content().to_string())
-                    });
-                prompts_messages.extend(history_messages);
-            }
-            Mode::Single => {}
-            Mode::AssistantOnly => {
-                let history_messages = self
-                    .history_messages
-                    .iter()
-                    .filter(|message| message.status == Status::Normal)
-                    .filter(|message| message.role == Role::Assistant)
-                    .map(|message| {
-                        FetchMessage::new(message.role, message.content.send_content().to_string())
-                    });
-                prompts_messages.extend(history_messages);
-            }
-        }
-
-        prompts_messages.push(FetchMessage::new(
-            self.user_message_role,
-            self.user_message_content.clone(),
-        ));
-        prompts_messages
+    fn request_body(&self) -> &serde_json::Value {
+        &self.request_body
     }
+}
+
+fn build_history_messages(
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> Vec<crate::llm::Message> {
+    use crate::llm::Message as FetchMessage;
+
+    let mut request_messages = prompts
+        .into_iter()
+        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
+        .collect::<Vec<_>>();
+
+    request_messages.extend(
+        history_messages
+            .iter()
+            .filter(|message| message.status == Status::Normal)
+            .filter(|message| match mode {
+                Mode::Contextual => true,
+                Mode::Single => false,
+                Mode::AssistantOnly => message.role == Role::Assistant,
+            })
+            .map(|message| {
+                FetchMessage::new(message.role, message.content.send_content().to_string())
+            }),
+    );
+    request_messages.push(FetchMessage::new(
+        user_message_role,
+        user_message_content.to_string(),
+    ));
+    request_messages
+}
+
+fn build_request_body(
+    adapter_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> AiChatResult<serde_json::Value> {
+    let history = build_history_messages(
+        prompts,
+        mode,
+        history_messages,
+        user_message_role,
+        user_message_content,
+    );
+    adapter_by_name(adapter_name)?.request_body(template, history)
 }
 
 #[cfg(test)]
@@ -1021,43 +1039,39 @@ mod tests {
 
     #[test]
     fn get_history_contextual_includes_all_normal_messages_and_user() {
-        let template = make_template(Mode::Contextual);
-        let history_messages = vec![
-            make_message(
-                1,
-                Role::User,
-                Status::Normal,
-                Content::Text("u1".to_string()),
-            ),
-            make_message(
-                2,
-                Role::Assistant,
-                Status::Normal,
-                Content::Extension {
-                    source: "src".to_string(),
-                    extension_name: "ext".to_string(),
-                    content: "a1".to_string(),
-                },
-            ),
-            make_message(
-                3,
-                Role::User,
-                Status::Error,
-                Content::Text("bad".to_string()),
-            ),
-        ];
-        let runner = Runner {
-            config: AiChatConfig::default(),
-            template,
-            history_messages,
-            user_message_role: Role::User,
-            user_message_content: "latest".to_string(),
-        };
-        let history = runner.get_history();
-        let contents = history
-            .into_iter()
-            .map(|message| (message.role, message.content))
-            .collect::<Vec<_>>();
+        let contents = build_history_messages(
+            make_template(Mode::Contextual).prompts,
+            Mode::Contextual,
+            &[
+                make_message(
+                    1,
+                    Role::User,
+                    Status::Normal,
+                    Content::Text("u1".to_string()),
+                ),
+                make_message(
+                    2,
+                    Role::Assistant,
+                    Status::Normal,
+                    Content::Extension {
+                        source: "src".to_string(),
+                        extension_name: "ext".to_string(),
+                        content: "a1".to_string(),
+                    },
+                ),
+                make_message(
+                    3,
+                    Role::User,
+                    Status::Error,
+                    Content::Text("bad".to_string()),
+                ),
+            ],
+            Role::User,
+            "latest",
+        )
+        .into_iter()
+        .map(|message| (message.role, message.content))
+        .collect::<Vec<_>>();
         assert_eq!(
             contents,
             vec![
@@ -1072,25 +1086,21 @@ mod tests {
 
     #[test]
     fn get_history_single_only_prompts_and_user() {
-        let template = make_template(Mode::Single);
-        let history_messages = vec![make_message(
-            1,
-            Role::Assistant,
-            Status::Normal,
-            Content::Text("a1".to_string()),
-        )];
-        let runner = Runner {
-            config: AiChatConfig::default(),
-            template,
-            history_messages,
-            user_message_role: Role::User,
-            user_message_content: "latest".to_string(),
-        };
-        let history = runner.get_history();
-        let contents = history
-            .into_iter()
-            .map(|message| message.content)
-            .collect::<Vec<_>>();
+        let contents = build_history_messages(
+            make_template(Mode::Single).prompts,
+            Mode::Single,
+            &[make_message(
+                1,
+                Role::Assistant,
+                Status::Normal,
+                Content::Text("a1".to_string()),
+            )],
+            Role::User,
+            "latest",
+        )
+        .into_iter()
+        .map(|message| message.content)
+        .collect::<Vec<_>>();
         assert_eq!(
             contents,
             vec![
@@ -1103,39 +1113,35 @@ mod tests {
 
     #[test]
     fn get_history_assistant_only_filters_roles() {
-        let template = make_template(Mode::AssistantOnly);
-        let history_messages = vec![
-            make_message(
-                1,
-                Role::User,
-                Status::Normal,
-                Content::Text("u1".to_string()),
-            ),
-            make_message(
-                2,
-                Role::Assistant,
-                Status::Normal,
-                Content::Text("a1".to_string()),
-            ),
-            make_message(
-                3,
-                Role::Assistant,
-                Status::Error,
-                Content::Text("bad".to_string()),
-            ),
-        ];
-        let runner = Runner {
-            config: AiChatConfig::default(),
-            template,
-            history_messages,
-            user_message_role: Role::User,
-            user_message_content: "latest".to_string(),
-        };
-        let history = runner.get_history();
-        let contents = history
-            .into_iter()
-            .map(|message| (message.role, message.content))
-            .collect::<Vec<_>>();
+        let contents = build_history_messages(
+            make_template(Mode::AssistantOnly).prompts,
+            Mode::AssistantOnly,
+            &[
+                make_message(
+                    1,
+                    Role::User,
+                    Status::Normal,
+                    Content::Text("u1".to_string()),
+                ),
+                make_message(
+                    2,
+                    Role::Assistant,
+                    Status::Normal,
+                    Content::Text("a1".to_string()),
+                ),
+                make_message(
+                    3,
+                    Role::Assistant,
+                    Status::Error,
+                    Content::Text("bad".to_string()),
+                ),
+            ],
+            Role::User,
+            "latest",
+        )
+        .into_iter()
+        .map(|message| (message.role, message.content))
+        .collect::<Vec<_>>();
         assert_eq!(
             contents,
             vec![
