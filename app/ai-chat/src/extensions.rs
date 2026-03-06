@@ -6,7 +6,7 @@ use crate::{
 use gpui::{App, Global};
 use std::{collections::HashMap, path::PathBuf};
 use tracing::{Level, event};
-use wasmtime::{Config, Engine, Store, component::*};
+use wasmtime::{Engine, Store, component::*};
 mod component;
 pub(crate) use component::{ChatRequest, Extension, ExtensionState};
 
@@ -30,9 +30,7 @@ impl ExtensionConfig {
 }
 
 fn initialize_wasmtime_engine() -> AiChatResult<Engine> {
-    let mut config = Config::new();
-    config.async_support(true);
-    let engine = Engine::new(&config).map_err(|_err| AiChatError::WasmtimeEngineCreationFailed)?;
+    let engine = Engine::default();
     Ok(engine)
 }
 

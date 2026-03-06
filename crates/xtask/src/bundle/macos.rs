@@ -1,35 +1,40 @@
-#[cfg(target_os = "macos")]
 use std::env;
-#[cfg(target_os = "macos")]
 use std::ffi::OsStr;
-#[cfg(target_os = "macos")]
 use std::fs;
-#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
 use std::time::SystemTime;
-#[cfg(target_os = "macos")]
 use tracing::{info, warn};
 
-#[cfg(target_os = "macos")]
 use crate::cmd::{command_exists, run_cmd_os};
-#[cfg(target_os = "macos")]
 use crate::error::{Result, XtaskError};
 
-#[cfg(target_os = "macos")]
-pub fn first_app_bundle(osx_dir: &Path) -> Result<Option<PathBuf>> {
-    if !osx_dir.exists() {
+pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
+    for bundle_subdir in ["macos", "osx"] {
+        let app_bundle_dir = bundle_dir.join(bundle_subdir);
+        if let Some(app_path) = first_app_bundle_in_dir(&app_bundle_dir)? {
+            return Ok(Some(app_path));
+        }
+    }
+
+    Ok(None)
+}
+
+fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
+    if !app_bundle_dir.exists() {
         return Ok(None);
     }
 
-    for entry in fs::read_dir(osx_dir)
-        .map_err(|err| XtaskError::msg(format!("failed to read {}: {err}", osx_dir.display())))?
-    {
+    for entry in fs::read_dir(app_bundle_dir).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to read {}: {err}",
+            app_bundle_dir.display()
+        ))
+    })? {
         let path = entry
             .map_err(|err| {
                 XtaskError::msg(format!(
                     "failed to read entry under {}: {err}",
-                    osx_dir.display()
+                    app_bundle_dir.display()
                 ))
             })?
             .path();
@@ -41,7 +46,6 @@ pub fn first_app_bundle(osx_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-#[cfg(target_os = "macos")]
 pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     let icon_dir = app_dir.join("build-assets/icon/ChatGPT.icon");
     let icon_name = icon_dir
@@ -145,7 +149,6 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
     let mut value = plist::Value::from_file(plist_path)?;
     let dict = value.as_dictionary_mut().ok_or_else(|| {
@@ -160,4 +163,61 @@ fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
     );
     value.to_file_xml(plist_path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_app_bundle;
+    use crate::error::Result;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "xtask-macos-bundle-{suffix}-{}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn first_app_bundle_prefers_macos_directory() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        let macos_app = temp_dir.path.join("macos/AI Chat.app");
+        let osx_app = temp_dir.path.join("osx/Legacy.app");
+        fs::create_dir_all(&macos_app)?;
+        fs::create_dir_all(&osx_app)?;
+
+        let app_path = first_app_bundle(&temp_dir.path)?;
+
+        assert_eq!(app_path, Some(macos_app));
+        Ok(())
+    }
+
+    #[test]
+    fn first_app_bundle_falls_back_to_osx_directory() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        let osx_app = temp_dir.path.join("osx/AI Chat.app");
+        fs::create_dir_all(&osx_app)?;
+
+        let app_path = first_app_bundle(&temp_dir.path)?;
+
+        assert_eq!(app_path, Some(osx_app));
+        Ok(())
+    }
 }

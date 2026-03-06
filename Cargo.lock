@@ -13511,6 +13511,7 @@ dependencies = [
  "clap",
  "image",
  "plist",
+ "serde",
  "tauri-bundler",
  "thiserror 2.0.18",
  "toml 1.0.4+spec-1.1.0",

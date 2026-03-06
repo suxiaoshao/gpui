@@ -76,19 +76,22 @@ impl Render for TabsView {
                                             });
                                         });
                                     })
-                                    .on_drop(move |drag: &DragConversationTreeItem, _window, cx| {
-                                        let Some(conversation_id) = drag.conversation_id() else {
-                                            return;
-                                        };
-                                        let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, move |_this, cx| {
-                                            cx.emit(ChatDataEvent::AddTab(conversation_id));
-                                            cx.emit(ChatDataEvent::MoveTab {
-                                                from_id: conversation_id,
-                                                to_id: None,
+                                    .on_drop(
+                                        move |drag: &DragConversationTreeItem, _window, cx| {
+                                            let Some(conversation_id) = drag.conversation_id()
+                                            else {
+                                                return;
+                                            };
+                                            let chat_data = cx.global::<ChatData>().deref().clone();
+                                            chat_data.update(cx, move |_this, cx| {
+                                                cx.emit(ChatDataEvent::AddTab(conversation_id));
+                                                cx.emit(ChatDataEvent::MoveTab {
+                                                    from_id: conversation_id,
+                                                    to_id: None,
+                                                });
                                             });
-                                        });
-                                    }),
+                                        },
+                                    ),
                             ),
                     )
                     .when_some(chat_data.panel(), |this, panel| this.child(panel)),

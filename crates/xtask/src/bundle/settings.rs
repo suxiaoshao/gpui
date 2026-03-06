@@ -1,12 +1,60 @@
+use crate::error::{Result, XtaskError};
+use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri_bundler::{AppCategory, BundleSettings, PackageSettings};
 
-use tauri_bundler::{BundleSettings, PackageSettings};
+#[derive(Deserialize)]
+struct Manifest {
+    package: ManifestPackage,
+}
 
-use crate::error::{Result, XtaskError};
+#[derive(Deserialize)]
+struct ManifestPackage {
+    name: String,
+    version: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    homepage: Option<String>,
+    #[serde(default)]
+    authors: Option<Vec<String>>,
+    #[serde(rename = "default-run", default)]
+    default_run: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(rename = "license-file", default)]
+    license_file: Option<String>,
+    #[serde(default)]
+    metadata: Option<ManifestMetadata>,
+}
 
-type TomlTable = toml::value::Table;
+#[derive(Deserialize)]
+struct ManifestMetadata {
+    #[serde(default)]
+    bundle: Option<ManifestBundle>,
+}
+
+#[derive(Deserialize)]
+struct ManifestBundle {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    identifier: Option<String>,
+    #[serde(default)]
+    publisher: Option<String>,
+    #[serde(default)]
+    icon: Option<Vec<String>>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    homepage: Option<String>,
+    #[serde(default)]
+    short_description: Option<String>,
+    #[serde(default)]
+    long_description: Option<String>,
+}
 
 pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, BundleSettings)> {
     let content = fs::read_to_string(manifest_path).map_err(|err| {
@@ -18,60 +66,62 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
             manifest_path.display()
         ))
     })?;
-    let root: toml::Value = toml::from_str(&content).map_err(|err| {
+    let manifest: Manifest = toml::from_str(&content).map_err(|err| {
         XtaskError::msg(format!(
             "failed to parse {}: {err}",
             manifest_path.display()
         ))
     })?;
 
-    let package = required_table(&root, &["package"], "manifest missing [package] table")?;
-    let bundle = nested_table(package, &["metadata", "bundle"]);
+    let Manifest { package } = manifest;
+    let ManifestPackage {
+        name,
+        version,
+        description,
+        homepage,
+        authors,
+        default_run,
+        license,
+        license_file,
+        metadata,
+    } = package;
+    let bundle = metadata.and_then(|metadata| metadata.bundle);
 
-    let homepage = optional_string(package, "homepage").map(ToString::to_string);
     let product_name = bundle
-        .and_then(|bundle| optional_string(bundle, "name"))
-        .or_else(|| optional_string(package, "name"))
-        .ok_or_else(|| XtaskError::msg("failed to resolve product name"))?
-        .to_string();
-    let version = optional_string(package, "version")
-        .ok_or_else(|| XtaskError::msg("failed to resolve package version"))?
-        .to_string();
-    let description = optional_string(package, "description")
-        .unwrap_or_default()
-        .to_string();
-    let authors = optional_string_array(package, "authors");
-    let default_run = optional_string(package, "default-run").map(ToString::to_string);
+        .as_ref()
+        .and_then(|bundle| bundle.name.clone())
+        .unwrap_or(name);
+    let description = description.unwrap_or_default();
 
     let mut bundle_settings = BundleSettings::default();
     if let Some(bundle) = bundle {
-        bundle_settings.identifier = optional_string(bundle, "identifier").map(ToString::to_string);
-        bundle_settings.publisher = optional_string(bundle, "publisher")
-            .map(ToString::to_string)
-            .or_else(|| {
-                bundle_settings
-                    .identifier
-                    .as_deref()
-                    .and_then(infer_publisher_from_identifier)
-            });
-        bundle_settings.icon = optional_string_array(bundle, "icon")
+        bundle_settings.identifier = bundle.identifier;
+        bundle_settings.publisher = bundle.publisher.or_else(|| {
+            bundle_settings
+                .identifier
+                .as_deref()
+                .and_then(infer_publisher_from_identifier)
+        });
+        bundle_settings.icon = bundle
+            .icon
             .map(|paths| resolve_manifest_paths(manifest_dir, paths));
-        bundle_settings.short_description =
-            optional_string(bundle, "short_description").map(ToString::to_string);
-        bundle_settings.long_description =
-            optional_string(bundle, "long_description").map(ToString::to_string);
-        bundle_settings.homepage = optional_string(bundle, "homepage")
-            .map(ToString::to_string)
-            .or(homepage.clone());
+        bundle_settings.category = bundle
+            .category
+            .as_deref()
+            .map(parse_app_category)
+            .transpose()?;
+        bundle_settings.short_description = bundle.short_description;
+        bundle_settings.long_description = bundle.long_description;
+        bundle_settings.homepage = bundle.homepage.or_else(|| homepage.clone());
     }
 
     if bundle_settings.homepage.is_none() {
         bundle_settings.homepage = homepage.clone();
     }
 
-    bundle_settings.license = optional_string(package, "license").map(ToString::to_string);
-    bundle_settings.license_file = optional_string(package, "license-file")
-        .map(|path| resolve_manifest_path(manifest_dir, path));
+    bundle_settings.license = license;
+    bundle_settings.license_file =
+        license_file.map(|path| resolve_manifest_path(manifest_dir, &path));
     sync_windows_icon_path(&mut bundle_settings);
 
     let package_settings = PackageSettings {
@@ -84,47 +134,6 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
     };
 
     Ok((package_settings, bundle_settings))
-}
-
-fn required_table<'a>(
-    root: &'a toml::Value,
-    path: &[&str],
-    missing_message: &str,
-) -> Result<&'a TomlTable> {
-    nested_value(root, path)
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| XtaskError::msg(missing_message))
-}
-
-fn nested_table<'a>(table: &'a TomlTable, path: &[&str]) -> Option<&'a TomlTable> {
-    let value = table.get(path.first().copied()?)?;
-    nested_value(value, &path[1..]).and_then(toml::Value::as_table)
-}
-
-fn nested_value<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
-    let mut current = value;
-    for segment in path {
-        current = current.get(*segment)?;
-    }
-    Some(current)
-}
-
-fn optional_string<'a>(table: &'a TomlTable, key: &str) -> Option<&'a str> {
-    table.get(key).and_then(toml::Value::as_str)
-}
-
-fn optional_string_array(table: &TomlTable, key: &str) -> Option<Vec<String>> {
-    table
-        .get(key)
-        .and_then(toml::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|values| !values.is_empty())
 }
 
 fn resolve_manifest_paths(manifest_dir: &Path, paths: Vec<String>) -> Vec<String> {
@@ -182,6 +191,18 @@ fn infer_publisher_from_identifier(identifier: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn parse_app_category(category: &str) -> Result<AppCategory> {
+    category.parse().map_err(|suggestion| {
+        let message = match suggestion {
+            Some(suggestion) => {
+                format!("invalid bundle category `{category}`, did you mean `{suggestion}`?")
+            }
+            None => format!("invalid bundle category `{category}`"),
+        };
+        XtaskError::msg(message)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +245,7 @@ license-file = "LICENSE"
 [package.metadata.bundle]
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
+category = "DeveloperTool"
 icon = [
   "build-assets/icon/app-icon.ico",
   "build-assets/icon/app-icon.png",
@@ -246,6 +268,7 @@ icon = [
             bundle_settings.license_file,
             Some(temp_dir.path.join("LICENSE"))
         );
+        assert_eq!(bundle_settings.category, Some(AppCategory::DeveloperTool));
         assert_eq!(bundle_settings.windows.icon_path, expected_ico);
 
         Ok(())

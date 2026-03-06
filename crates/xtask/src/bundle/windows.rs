@@ -3,21 +3,14 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tauri_bundler::{BundleBinary, PackageType, SettingsBuilder};
-use tracing::{info, warn};
+use tracing::info;
 use walkdir::WalkDir;
 
-use crate::bundle::settings::read_bundle_settings;
-use crate::cli::BundleAiChatArgs;
-use crate::cmd::{run_cmd, run_cmd_os, run_cmd_program_os};
-use crate::context::{ai_chat_dir, workspace_root};
+use crate::cmd::{run_cmd_os, run_cmd_program_os};
 use crate::error::{Result, XtaskError};
-use crate::manifest::get_main_binary_name;
 
-pub fn run(args: BundleAiChatArgs) -> Result<()> {
-    let app_dir = ai_chat_dir()?;
-    let workspace_dir = workspace_root()?;
-    let target_root = env::var_os("CARGO_TARGET_DIR")
+pub(crate) fn resolve_target_root(workspace_dir: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .map(|path| {
             if path.is_absolute() {
@@ -26,79 +19,13 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
                 workspace_dir.join(path)
             }
         })
-        .unwrap_or_else(|| workspace_dir.join("target"));
-
-    if args.arch.is_some() || args.target.is_some() {
-        warn!("--arch/--target are ignored on Windows; cargo build uses default host target");
-    }
-
-    run_cmd(
-        "cargo",
-        &["build", "-p", "ai-chat", "--release"],
-        Some(&workspace_dir),
-    )?;
-
-    let manifest_path = app_dir.join("Cargo.toml");
-    let main_bin_name = get_main_binary_name(&manifest_path)?;
-    let (package_settings, bundle_settings) = read_bundle_settings(&manifest_path)?;
-
-    let out_dir = prepare_windows_bundle_staging(&target_root, &main_bin_name)?;
-    info!(bundle_out_dir = %out_dir.display(), "using isolated bundle staging dir");
-
-    let mut settings_builder = SettingsBuilder::new()
-        .project_out_directory(&out_dir)
-        .package_types(vec![PackageType::WindowsMsi])
-        .package_settings(package_settings)
-        .bundle_settings(bundle_settings)
-        .binaries(vec![BundleBinary::new(main_bin_name, true)]);
-
-    if let Ok(local_tools_dir) = env::var("TAURI_BUNDLER_TOOLS_DIR") {
-        settings_builder = settings_builder.local_tools_directory(local_tools_dir);
-        info!("using local tauri-bundler tools dir from TAURI_BUNDLER_TOOLS_DIR");
-    }
-
-    let settings = settings_builder
-        .build()
-        .map_err(|err| XtaskError::msg(format!("failed to build tauri bundle settings: {err}")))?;
-
-    let bundles = tauri_bundler::bundle_project(&settings)
-        .map_err(|err| XtaskError::msg(format!("failed to bundle MSI with tauri-bundler: {err}")))?;
-
-    let mut artifacts: Vec<PathBuf> = bundles
-        .into_iter()
-        .flat_map(|bundle| bundle.bundle_paths.into_iter())
-        .filter(|path| {
-            path.extension()
-                .and_then(OsStr::to_str)
-                .map(|ext| ext.eq_ignore_ascii_case("msi") || ext.eq_ignore_ascii_case("exe"))
-                .unwrap_or(false)
-        })
-        .collect();
-
-    artifacts.sort();
-    if artifacts.is_empty() {
-        let bundle_dir = out_dir.join("bundle");
-        artifacts = find_windows_artifacts(&bundle_dir)?;
-    }
-
-    if artifacts.is_empty() {
-        info!("bundle completed but no .msi/.exe artifacts found");
-        return Ok(());
-    }
-
-    info!("bundle completed. artifacts:");
-    for item in &artifacts {
-        info!(artifact = %item.display());
-    }
-
-    if args.install {
-        install_windows_artifact(&artifacts)?;
-    }
-
-    Ok(())
+        .unwrap_or_else(|| workspace_dir.join("target"))
 }
 
-fn prepare_windows_bundle_staging(target_root: &Path, main_bin_name: &str) -> Result<PathBuf> {
+pub(crate) fn prepare_windows_bundle_staging(
+    target_root: &Path,
+    main_bin_name: &str,
+) -> Result<PathBuf> {
     let build_out_dir = target_root.join("release");
     let staging_out_dir = target_root.join("xtask-bundle").join("release");
 
@@ -158,7 +85,7 @@ fn prepare_windows_bundle_staging(target_root: &Path, main_bin_name: &str) -> Re
     Ok(staging_out_dir)
 }
 
-fn install_windows_artifact(artifacts: &[PathBuf]) -> Result<()> {
+pub(crate) fn install_windows_artifact(artifacts: &[PathBuf]) -> Result<()> {
     if !cfg!(target_os = "windows") {
         info!("current OS is not Windows, skipping installer launch");
         return Ok(());
@@ -187,7 +114,7 @@ fn install_windows_artifact(artifacts: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn find_windows_artifacts(bundle_dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn find_windows_artifacts(bundle_dir: &Path) -> Result<Vec<PathBuf>> {
     if !bundle_dir.exists() {
         return Ok(Vec::new());
     }

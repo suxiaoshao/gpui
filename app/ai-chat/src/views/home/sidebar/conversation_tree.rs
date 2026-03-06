@@ -1,13 +1,13 @@
+use super::{conversation_item::ConversationTreeItem, folder_item::FolderTreeItem};
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     database::{Conversation, Folder},
     store::{ChatData, ChatDataEvent, ChatDataInner},
 };
-use super::{conversation_item::ConversationTreeItem, folder_item::FolderTreeItem};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Collapsible, Icon, IconName, Side,
-    h_flex, label::Label,
+    ActiveTheme, Collapsible, Icon, IconName, Side, h_flex,
+    label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     v_flex,
 };
@@ -179,12 +179,12 @@ impl RenderOnce for ConversationTree {
                             let target = target_for_root(event.drag(cx));
                             if event.bounds.contains(&event.event.position) {
                                 match target {
-                            Some(target) => set_drop_target(window, cx, target),
-                            None => reset_drop_target(window, cx),
+                                    Some(target) => set_drop_target(window, cx, target),
+                                    None => reset_drop_target(window, cx),
+                                }
+                            }
                         }
-                    }
-                }
-            })
+                    })
                     .on_drop(move |drag: &DragConversationTreeItem, window, cx| {
                         cx.stop_propagation();
                         reset_drop_target(window, cx);
@@ -408,19 +408,11 @@ fn root_context_menu(
         )
 }
 
-pub(super) fn set_drop_target(
-    window: &mut Window,
-    cx: &mut App,
-    target: ActiveDropTarget,
-) {
+pub(super) fn set_drop_target(window: &mut Window, cx: &mut App, target: ActiveDropTarget) {
     window.dispatch_action(SetDropTarget(target).boxed_clone(), cx);
 }
 
-pub(super) fn clear_drop_target(
-    window: &mut Window,
-    cx: &mut App,
-    target: ActiveDropTarget,
-) {
+pub(super) fn clear_drop_target(window: &mut Window, cx: &mut App, target: ActiveDropTarget) {
     window.dispatch_action(ClearDropTarget(target).boxed_clone(), cx);
 }
 

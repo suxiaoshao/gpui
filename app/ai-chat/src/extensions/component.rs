@@ -135,16 +135,14 @@ mod tests {
     use super::exports::chatgpt::extension::extension_api::ChatRequest;
     use super::*;
     use anyhow::anyhow;
-    use wasmtime::{Config, Engine, Store};
+    use wasmtime::{Engine, Store};
 
     #[tokio::test]
     async fn test_extension() -> anyhow::Result<()> {
         if std::env::var("AI_CHAT_RUN_EXTENSION_TEST").is_err() {
             return Ok(());
         }
-        let mut config = Config::new();
-        config.async_support(true);
-        let engine = Engine::new(&config)?;
+        let engine = Engine::default();
         let component = Component::from_binary(&engine, include_bytes!("../../url_search.wasm"))?;
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
