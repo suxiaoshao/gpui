@@ -92,6 +92,7 @@ global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"
+wasmtime = { version = "42.0.1", features = ["anyhow"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
