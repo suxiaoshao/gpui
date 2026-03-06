@@ -7,21 +7,21 @@ use time::OffsetDateTime;
 
 #[derive(Insertable)]
 #[diesel(table_name = messages)]
-pub struct SqlNewMessage {
+pub struct SqlNewMessage<'a> {
     pub(in super::super) conversation_id: i32,
-    pub(in super::super) conversation_path: String,
-    pub(in super::super) role: String,
-    pub(in super::super) content: String,
-    pub(in super::super) send_content: serde_json::Value,
-    pub(in super::super) status: String,
+    pub(in super::super) conversation_path: &'a str,
+    pub(in super::super) role: &'a str,
+    pub(in super::super) content: &'a str,
+    pub(in super::super) send_content: &'a serde_json::Value,
+    pub(in super::super) status: &'a str,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
     pub(in super::super) start_time: OffsetDateTime,
     pub(in super::super) end_time: OffsetDateTime,
-    pub(in super::super) error: Option<String>,
+    pub(in super::super) error: Option<&'a str>,
 }
 
-impl SqlNewMessage {
+impl SqlNewMessage<'_> {
     pub fn insert(&self, conn: &mut SqliteConnection) -> AiChatResult<SqlMessage> {
         let sql_message = diesel::insert_into(messages::table)
             .values(self)
@@ -96,7 +96,7 @@ impl SqlMessage {
     }
     pub fn update_send_content(
         id: i32,
-        send_content: serde_json::Value,
+        send_content: &serde_json::Value,
         time: OffsetDateTime,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {

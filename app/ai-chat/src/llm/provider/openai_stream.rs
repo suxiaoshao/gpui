@@ -115,8 +115,8 @@ impl Adapter for OpenAIStreamAdapter {
         OpenAIAdapter.get_setting_inputs()
     }
 
-    fn get_template_inputs(&self, settings: &serde_json::Value) -> AiChatResult<Vec<InputItem>> {
-        let settings: OpenAIStreamSettings = serde_json::from_value(settings.clone())?;
+    fn get_template_inputs(&self, settings: serde_json::Value) -> AiChatResult<Vec<InputItem>> {
+        let settings: OpenAIStreamSettings = serde_json::from_value(settings)?;
         get_openai_template_inputs(&settings.models)
     }
 
@@ -125,57 +125,19 @@ impl Adapter for OpenAIStreamAdapter {
         template: &serde_json::Value,
         history_messages: Vec<Message>,
     ) -> AiChatResult<serde_json::Value> {
-        let template: OpenAIConversationTemplate = serde_json::from_value(template.clone())?;
+        let template = OpenAIConversationTemplate::deserialize(template)?;
         Ok(serde_json::to_value(Self::get_body(
             &template,
             history_messages,
         ))?)
     }
 
-    fn fetch(
+    fn fetch_by_request_body<'a>(
         &self,
         config: AiChatConfig,
         settings: toml::Value,
-        template: serde_json::Value,
-        history_messages: Vec<Message>,
-    ) -> BoxStream<'static, AiChatResult<String>> {
-        async_stream::try_stream! {
-            let template = serde_json::from_value(template)?;
-            let settings = settings.try_into()?;
-            let body = Self::get_body(&template, history_messages);
-            let client = Self::get_reqwest_client(&config, &settings)?;
-            let mut es = client.post(settings.url.as_str()).json(&body).eventsource()?;
-            while let Some(event) = es.next().await {
-                match event {
-                    Ok(Event::Open) => {},
-                    Ok(Event::Message(message)) => {
-                        let message = message.data;
-                        if message == "[DONE]" {
-                            es.close();
-                            break;
-                        } else if let Some(content) = parse_response_stream_event(&message)? {
-                            yield content;
-                        }
-                    }
-                    Err(err) => {
-                        es.close();
-                        if is_normal_stream_end(&err) {
-                            break;
-                        }
-                        Err::<(), AiChatError>(err.into())?;
-                    }
-                }
-            }
-        }
-        .boxed()
-    }
-
-    fn fetch_by_request_body(
-        &self,
-        config: AiChatConfig,
-        settings: toml::Value,
-        request_body: serde_json::Value,
-    ) -> BoxStream<'static, AiChatResult<String>> {
+        request_body: &'a serde_json::Value,
+    ) -> BoxStream<'a, AiChatResult<String>> {
         async_stream::try_stream! {
             let settings = settings.try_into()?;
             let client = Self::get_reqwest_client(&config, &settings)?;

@@ -142,6 +142,9 @@ impl RenderOnce for FolderTreeItem {
                                         .group_hover(format!("folder-group-{id}"), |style| {
                                             style.opacity(1.)
                                         })
+                                        .on_click(|_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
                                         .dropdown_menu({
                                             let folder = folder.clone();
                                             move |menu, window, cx| {

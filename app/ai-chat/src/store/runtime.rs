@@ -280,12 +280,12 @@ impl ChatData {
                 let mut new_message = NewMessage::new(
                     conversation.id,
                     initial_message.role,
-                    initial_message.content.clone(),
-                    initial_message.send_content.clone(),
+                    &initial_message.content,
+                    &initial_message.send_content,
                     initial_message.status,
                 );
                 if let Some(error) = initial_message.error.as_ref() {
-                    new_message = new_message.with_error(error.clone());
+                    new_message = new_message.with_error(error);
                 }
                 let message = Message::insert(new_message, conn)?;
                 conversation.messages.push(message);

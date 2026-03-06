@@ -93,27 +93,20 @@ pub trait Adapter: Sync {
             .ok_or_else(|| AiChatError::AdapterSettingsNotFound(self.name().to_string()))?
             .clone();
         let settings = serde_json::to_value(settings)?;
-        self.get_template_inputs(&settings)
+        self.get_template_inputs(settings)
     }
-    fn get_template_inputs(&self, settings: &serde_json::Value) -> AiChatResult<Vec<InputItem>>;
+    fn get_template_inputs(&self, settings: serde_json::Value) -> AiChatResult<Vec<InputItem>>;
     fn request_body(
         &self,
         template: &serde_json::Value,
         history_messages: Vec<Message>,
     ) -> AiChatResult<serde_json::Value>;
-    fn fetch(
+    fn fetch_by_request_body<'a>(
         &self,
         config: AiChatConfig,
         settings: toml::Value,
-        template: serde_json::Value,
-        history_messages: Vec<Message>,
-    ) -> BoxStream<'static, AiChatResult<String>>;
-    fn fetch_by_request_body(
-        &self,
-        config: AiChatConfig,
-        settings: toml::Value,
-        request_body: serde_json::Value,
-    ) -> BoxStream<'static, AiChatResult<String>>;
+        request_body: &'a serde_json::Value,
+    ) -> BoxStream<'a, AiChatResult<String>>;
     fn setting_group(&self) -> SettingGroup;
     fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
         description_items_default(template)

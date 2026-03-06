@@ -103,7 +103,7 @@ struct Runner<'a> {
     start_page: u32,
     end_page: u32,
     cookie: String,
-    form: Entity<FetchForm>,
+    form: WeakEntity<FetchForm>,
     conn: PooledConnection<ConnectionManager<SqliteConnection>>,
     cx: &'a mut AsyncApp,
 }
@@ -474,7 +474,7 @@ impl FetchView {
         let start_page = form.start_page;
         let end_page = form.end_page;
         let cookie = form.cookie.clone();
-        let form = subscriber.clone();
+        let form = subscriber.downgrade();
         let task = cx.spawn(async move |_, cx| {
             let span = tracing::info_span!("send", url, start_page, end_page, cookie);
             let mut runner = Runner {

@@ -158,22 +158,22 @@ impl TryFrom<SqlMessage> for Message {
     }
 }
 
-#[derive(Deserialize, Debug)]
-pub struct NewMessage {
+#[derive(Debug, Clone, Copy)]
+pub struct NewMessage<'a> {
     pub conversation_id: i32,
     pub role: Role,
-    pub content: Content,
-    pub send_content: serde_json::Value,
+    pub content: &'a Content,
+    pub send_content: &'a serde_json::Value,
     pub status: Status,
-    pub error: Option<String>,
+    pub error: Option<&'a str>,
 }
 
-impl NewMessage {
+impl<'a> NewMessage<'a> {
     pub fn new(
         conversation_id: i32,
         role: Role,
-        content: Content,
-        send_content: serde_json::Value,
+        content: &'a Content,
+        send_content: &'a serde_json::Value,
         status: Status,
     ) -> Self {
         Self {
@@ -186,8 +186,8 @@ impl NewMessage {
         }
     }
 
-    pub fn with_error(mut self, error: impl Into<String>) -> Self {
-        self.error = Some(error.into());
+    pub fn with_error(mut self, error: &'a str) -> Self {
+        self.error = Some(error);
         self
     }
 }
@@ -201,20 +201,23 @@ impl Message {
             send_content,
             status,
             error,
-        }: NewMessage,
+        }: NewMessage<'_>,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<Message> {
         conn.immediate_transaction(|conn| {
             let time = OffsetDateTime::now_utc();
             let SqlConversation { path, .. } = SqlConversation::find(conversation_id, conn)?;
+            let role = role.to_string();
+            let content = serde_json::to_string(content)?;
+            let status = status.to_string();
 
             let new_message = SqlNewMessage {
                 conversation_id,
-                conversation_path: path,
-                role: role.to_string(),
-                content: serde_json::to_string(&content)?,
+                conversation_path: &path,
+                role: &role,
+                content: &content,
                 send_content,
-                status: status.to_string(),
+                status: &status,
                 created_time: time,
                 updated_time: time,
                 start_time: time,
@@ -255,7 +258,7 @@ impl Message {
     }
     pub fn update_send_content(
         id: i32,
-        send_content: serde_json::Value,
+        send_content: &serde_json::Value,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();

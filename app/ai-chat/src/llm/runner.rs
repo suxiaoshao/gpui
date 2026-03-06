@@ -1,4 +1,4 @@
-use super::{Adapter, Message, adapter_by_name};
+use super::{Adapter, adapter_by_name};
 use crate::{
     config::AiChatConfig,
     database::Content,
@@ -9,15 +9,10 @@ use futures::pin_mut;
 
 pub trait FetchRunner {
     fn get_adapter(&self) -> &str;
-    fn get_template(&self) -> &serde_json::Value;
     fn get_config(&self) -> &AiChatConfig;
-    fn get_history(&self) -> Vec<Message>;
+    fn request_body(&self) -> &serde_json::Value;
     fn adapter(&self) -> AiChatResult<&'static dyn Adapter> {
         adapter_by_name(self.get_adapter())
-    }
-    fn request_body(&self) -> AiChatResult<serde_json::Value> {
-        self.adapter()?
-            .request_body(self.get_template(), self.get_history())
     }
     async fn get_new_user_content(
         send_content: String,
@@ -54,9 +49,7 @@ pub trait FetchRunner {
                 .get_adapter_settings(adapter.name())
                 .ok_or(AiChatError::AdapterSettingsNotFound(adapter.name().to_string()))?;
             let settings = settings.clone();
-            let template = self.get_template().clone();
-            let history = self.get_history();
-            let stream = adapter.fetch(config, settings, template, history);
+            let stream = adapter.fetch_by_request_body(config, settings, self.request_body());
             pin_mut!(stream);
             for await item in stream {
                 yield item?;
@@ -80,18 +73,14 @@ mod tests {
             "noop"
         }
 
-        fn get_template(&self) -> &serde_json::Value {
-            static TEMPLATE: OnceLock<serde_json::Value> = OnceLock::new();
-            TEMPLATE.get_or_init(|| serde_json::Value::Null)
-        }
-
         fn get_config(&self) -> &crate::config::AiChatConfig {
             static CONFIG: OnceLock<crate::config::AiChatConfig> = OnceLock::new();
             CONFIG.get_or_init(crate::config::AiChatConfig::default)
         }
 
-        fn get_history(&self) -> Vec<crate::llm::Message> {
-            Vec::new()
+        fn request_body(&self) -> &serde_json::Value {
+            static TEMPLATE: OnceLock<serde_json::Value> = OnceLock::new();
+            TEMPLATE.get_or_init(|| serde_json::Value::Null)
         }
     }
 

@@ -96,7 +96,7 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 struct Runner<'a> {
     novel_id: String,
-    workspace: Entity<Workspace>,
+    workspace: WeakEntity<Workspace>,
     cx: &'a mut AsyncApp,
 }
 
@@ -244,10 +244,11 @@ impl WorkspaceView {
         cx.notify();
     }
     fn fetch(&mut self, subscriber: Entity<Workspace>, cx: &mut Context<Self>, novel_id: String) {
+        let workspace = subscriber.downgrade();
         let task = cx.spawn(async move |_, cx| {
             let mut runner = Runner {
                 novel_id: novel_id.clone(),
-                workspace: subscriber,
+                workspace,
                 cx,
             };
             Compat::new(async move {
