@@ -16,8 +16,4 @@ pub enum Commands {
 pub struct BundleAiChatArgs {
     #[arg(short = 'i', long)]
     pub install: bool,
-    #[arg(short = 'a', long, alias = "architecture")]
-    pub arch: Option<String>,
-    #[arg(short = 't', long)]
-    pub target: Option<String>,
 }

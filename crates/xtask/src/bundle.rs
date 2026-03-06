@@ -65,13 +65,8 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
 
 fn validate_platform_args(args: &BundleAiChatArgs) {
     #[cfg(not(target_os = "windows"))]
-    if args.install || args.arch.is_some() || args.target.is_some() {
-        warn!("--install/--arch/--target are only used on Windows and will be ignored");
-    }
-
-    #[cfg(target_os = "windows")]
-    if args.arch.is_some() || args.target.is_some() {
-        warn!("--arch/--target are ignored on Windows; cargo build uses default host target");
+    if args.install {
+        warn!("--install is only used on Windows and will be ignored");
     }
 }
 

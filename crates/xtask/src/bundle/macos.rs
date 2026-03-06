@@ -171,7 +171,10 @@ mod tests {
     use crate::error::Result;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEST_DIR_ID: AtomicU64 = AtomicU64::new(0);
 
     struct TestDir {
         path: PathBuf,
@@ -180,9 +183,10 @@ mod tests {
     impl TestDir {
         fn new() -> Result<Self> {
             let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let id = NEXT_TEST_DIR_ID.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "xtask-macos-bundle-{suffix}-{}",
-                std::process::id()
+                "xtask-macos-bundle-{suffix}-{}-{id}",
+                std::process::id(),
             ));
             fs::create_dir_all(&path)?;
             Ok(Self { path })
