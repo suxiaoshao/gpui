@@ -2,37 +2,11 @@ use image::ImageDecoder;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::cmd::{ensure_command_installed, run_cmd};
-use crate::context::{ai_chat_dir, workspace_root};
 use crate::error::{Result, XtaskError};
 
-pub fn run() -> Result<()> {
-    ensure_command_installed("cargo-bundle", "cargo install cargo-bundle")?;
-
-    let app_dir = ai_chat_dir()?;
-    let workspace_dir = workspace_root()?;
-    let bundle_dir = workspace_dir.join("target/release/bundle");
-
-    prepare_bundle_icons(&app_dir)?;
-    run_cmd("cargo", &["bundle", "--release"], Some(&app_dir))?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let osx_dir = bundle_dir.join("osx");
-        if let Some(app_path) = crate::bundle::macos::first_app_bundle(&osx_dir)? {
-            crate::bundle::macos::inject_liquid_glass_icon(&app_dir, &app_path)?;
-        } else {
-            warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
-        }
-    }
-
-    info!(bundle_dir = %bundle_dir.display(), "打包完成");
-    Ok(())
-}
-
-fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
+pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
     let mut src_png = app_dir.join("build-assets/icon/ChatGPT.icon/Assets/logo.png");
     if !src_png.exists() {
         src_png = app_dir.join("build-assets/icon/app-icon.png");

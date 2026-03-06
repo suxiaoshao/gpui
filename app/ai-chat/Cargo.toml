@@ -61,7 +61,7 @@ tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
 
 # http request
 reqwest = { version = "0.12.25", features = ["json"] }
-tokio = { version = "1.49.0", features = [
+tokio = { version = "1.50.0", features = [
   "rt",
   "rt-multi-thread",
   "sync",
@@ -76,12 +76,12 @@ async-compat = "0.2.5"
 smol = "2.0.2"
 
 # extension
-wasmtime = { version = "41.0.3" }
-wasmtime-wasi = "41.0.3"
+wasmtime = { version = "42.0.1" }
+wasmtime-wasi = "42.0.1"
 get-selected-text = "0.1.6"
 
 # config
-toml = "1.0.3"
+toml = "1.0.4"
 
 # hotkey
 global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }

@@ -67,7 +67,7 @@ cargo bundle -p ai-chat --release
 # 方式 2：使用 xtask（macOS/Linux）
 cargo run -p xtask -- bundle-ai-chat
 
-# Windows MSI（xtask 内部使用 tauri-bundler + WiX，支持 --arch/--target/--install）
+# Windows MSI（xtask 内部使用 tauri-bundler + WiX，支持 --install）
 cargo run -p xtask -- bundle-ai-chat-windows
 ```
 

@@ -8,9 +8,10 @@ publish = false
 clap = { version = "4.5.60", features = ["derive"] }
 image = "0.25.9"
 plist = "1.8.0"
+serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-toml = "1.0.3"
-tauri-bundler = "2.8.0"
+toml = "1.0.4"
+tauri-bundler = "2.8.1"
 toml_edit = "0.25"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
