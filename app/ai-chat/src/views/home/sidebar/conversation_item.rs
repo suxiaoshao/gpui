@@ -1,7 +1,4 @@
-use super::conversation_tree::{
-    DragConversationTreeItem, DropState, SidebarConversationNode, folder_drop_state,
-    reset_drop_target, root_drop_state, set_drop_target, target_for_conversation_row,
-};
+use super::conversation_tree::{DragConversationTreeItem, SidebarConversationNode};
 use crate::{
     components::delete_confirm::open_delete_confirm_dialog,
     store::{ChatData, ChatDataEvent},
@@ -22,7 +19,6 @@ pub(super) struct ConversationTreeItem {
     collapsed: bool,
     depth: usize,
     active_conversation_id: Option<i32>,
-    target_folder: Option<(i32, SharedString)>,
     root_drop_target: bool,
 }
 
@@ -32,7 +28,6 @@ impl ConversationTreeItem {
         collapsed: bool,
         depth: usize,
         active_conversation_id: Option<i32>,
-        target_folder: Option<(i32, SharedString)>,
         root_drop_target: bool,
     ) -> Self {
         Self {
@@ -40,7 +35,6 @@ impl ConversationTreeItem {
             collapsed,
             depth,
             active_conversation_id,
-            target_folder,
             root_drop_target,
         }
     }
@@ -53,8 +47,6 @@ impl RenderOnce for ConversationTreeItem {
         let title = conversation.title.clone();
         let padding_left = px((self.depth as f32) * 14. + 26.);
         let is_active = self.active_conversation_id == Some(id);
-        let target_folder = self.target_folder.clone();
-        let is_root_conversation = target_folder.is_none();
         let root_drop_target = self.root_drop_target;
 
         h_flex()
@@ -105,40 +97,6 @@ impl RenderOnce for ConversationTreeItem {
                                 }),
                         ),
                 )
-            })
-            .on_drag_move::<DragConversationTreeItem>({
-                let target_folder = target_folder.clone();
-                move |event, window, cx| {
-                    let target = target_for_conversation_row(
-                        event.drag(cx),
-                        target_folder
-                            .as_ref()
-                            .map(|(folder_id, folder_path)| (*folder_id, folder_path.as_ref())),
-                    );
-                    if event.bounds.contains(&event.event.position) {
-                        match target {
-                            Some(target) => set_drop_target(window, cx, target),
-                            None => reset_drop_target(window, cx),
-                        }
-                    } else if is_root_conversation && let Some(target) = target {
-                        super::conversation_tree::clear_drop_target(window, cx, target);
-                    }
-                }
-            })
-            .on_drop({
-                let target_folder = target_folder.clone();
-                move |drag: &DragConversationTreeItem, window, cx| {
-                    cx.stop_propagation();
-                    reset_drop_target(window, cx);
-                    if let Some((folder_id, folder_path)) = target_folder.as_ref() {
-                        if folder_drop_state(drag, *folder_id, folder_path) != DropState::Valid {
-                            return;
-                        }
-                        drag.move_to_folder(*folder_id, cx);
-                    } else if root_drop_state(drag) == DropState::Valid {
-                        drag.move_to_root(cx);
-                    }
-                }
             })
             .cursor_pointer()
             .on_click(move |_this, _window, cx| {

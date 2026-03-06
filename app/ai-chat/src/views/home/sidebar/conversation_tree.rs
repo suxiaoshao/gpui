@@ -41,6 +41,10 @@ impl ActiveDropTarget {
     fn folder(id: i32, invalid: bool) -> Self {
         Self::Folder { id, invalid }
     }
+
+    pub(super) fn is_root(self) -> bool {
+        matches!(self, Self::Root)
+    }
 }
 
 const DROP_TARGET_KEY: (&str, usize) = ("conversation-tree-drop-target", 0);
@@ -53,8 +57,8 @@ pub(super) struct SidebarConversationNode {
     pub(super) icon: SharedString,
 }
 
-impl SidebarConversationNode {
-    fn from_conversation(conversation: &Conversation) -> Self {
+impl From<&Conversation> for SidebarConversationNode {
+    fn from(conversation: &Conversation) -> Self {
         Self {
             id: conversation.id,
             folder_id: conversation.folder_id,
@@ -74,8 +78,8 @@ pub(super) struct SidebarFolderNode {
     pub(super) conversations: Vec<SidebarConversationNode>,
 }
 
-impl SidebarFolderNode {
-    fn from_folder(folder: &Folder) -> Self {
+impl From<&Folder> for SidebarFolderNode {
+    fn from(folder: &Folder) -> Self {
         Self {
             id: folder.id,
             parent_id: folder.parent_id,
@@ -88,14 +92,11 @@ impl SidebarFolderNode {
 }
 
 fn project_folders(folders: &[Folder]) -> Vec<SidebarFolderNode> {
-    folders.iter().map(SidebarFolderNode::from_folder).collect()
+    folders.iter().map(Into::into).collect()
 }
 
 fn project_conversations(conversations: &[Conversation]) -> Vec<SidebarConversationNode> {
-    conversations
-        .iter()
-        .map(SidebarConversationNode::from_conversation)
-        .collect()
+    conversations.iter().map(Into::into).collect()
 }
 
 #[derive(IntoElement)]
@@ -142,11 +143,15 @@ impl Collapsible for ConversationTree {
 
 impl RenderOnce for ConversationTree {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let collapsed = self.collapsed;
+        let active_conversation_id = self.active_conversation_id;
+        let folders = self.folders;
+        let conversations = self.conversations;
         let root_label = self.root_label.clone();
         let drop_target =
             window.use_keyed_state(DROP_TARGET_KEY, cx, |_, _| Option::<ActiveDropTarget>::None);
         let active_drop_target = *drop_target.read(cx);
-        let root_is_highlighted = active_drop_target == Some(ActiveDropTarget::Root);
+        let root_is_highlighted = active_drop_target.is_some_and(ActiveDropTarget::is_root);
         v_flex()
             .id("conversation-tree")
             .focusable()
@@ -192,41 +197,45 @@ impl RenderOnce for ConversationTree {
                     });
                 }
             })
-            .children(
-                self.folders
-                    .into_iter()
-                    .map(|folder| {
-                        FolderTreeItem::new(
-                            folder,
-                            self.collapsed,
-                            0,
-                            self.active_conversation_id,
-                            active_drop_target,
-                        )
-                        .into_any_element()
-                    })
-                    .chain(self.conversations.into_iter().map(|conversation| {
-                        ConversationTreeItem::new(
-                            conversation,
-                            self.collapsed,
-                            0,
-                            self.active_conversation_id,
-                            None,
-                            active_drop_target == Some(ActiveDropTarget::Root),
-                        )
-                        .into_any_element()
-                    })),
-            )
+            .children(folders.into_iter().map(|folder| {
+                FolderTreeItem::new(
+                    folder,
+                    collapsed,
+                    0,
+                    active_conversation_id,
+                    active_drop_target,
+                )
+                .into_any_element()
+            }))
             .child(
-                div()
-                    .min_h(px(52.))
+                v_flex()
                     .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(root_label)
+                    .gap_1()
+                    .when(!conversations.is_empty(), |this| {
+                        this.child(v_flex().gap_1().children(conversations.into_iter().map(
+                            move |conversation| {
+                                ConversationTreeItem::new(
+                                    conversation,
+                                    collapsed,
+                                    0,
+                                    active_conversation_id,
+                                    root_is_highlighted,
+                                )
+                                .into_any_element()
+                            },
+                        )))
+                    })
+                    .child(
+                        div()
+                            .min_h(px(52.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(root_label),
+                    )
                     .on_drag_move::<DragConversationTreeItem>({
                         move |event, window, cx| {
                             let target = target_for_root(event.drag(cx));
@@ -235,6 +244,8 @@ impl RenderOnce for ConversationTree {
                                     Some(target) => set_drop_target(window, cx, target),
                                     None => reset_drop_target(window, cx),
                                 }
+                            } else if let Some(target) = target {
+                                clear_drop_target(window, cx, target);
                             }
                         }
                     })
@@ -389,6 +400,16 @@ pub(super) fn target_for_root(drag: &DragConversationTreeItem) -> Option<ActiveD
     }
 }
 
+pub(super) fn target_for_conversation_group(
+    drag: &DragConversationTreeItem,
+    target_folder: Option<(i32, &str)>,
+) -> Option<ActiveDropTarget> {
+    match target_folder {
+        Some((folder_id, folder_path)) => target_for_folder(drag, folder_id, folder_path),
+        None => target_for_root(drag),
+    }
+}
+
 pub(super) fn target_for_folder(
     drag: &DragConversationTreeItem,
     target_folder_id: i32,
@@ -398,16 +419,6 @@ pub(super) fn target_for_folder(
         DropState::Valid => Some(ActiveDropTarget::folder(target_folder_id, false)),
         DropState::InvalidDescendant => Some(ActiveDropTarget::folder(target_folder_id, true)),
         DropState::Noop => None,
-    }
-}
-
-pub(super) fn target_for_conversation_row(
-    drag: &DragConversationTreeItem,
-    target_folder: Option<(i32, &str)>,
-) -> Option<ActiveDropTarget> {
-    match target_folder {
-        Some((folder_id, folder_path)) => target_for_folder(drag, folder_id, folder_path),
-        None => target_for_root(drag),
     }
 }
 
@@ -488,7 +499,7 @@ mod tests {
     use super::{
         ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
         folder_block_drop_target, folder_drop_state, project_conversations, project_folders,
-        root_drop_state, target_for_conversation_row, target_for_folder, target_for_root,
+        root_drop_state, target_for_conversation_group, target_for_folder, target_for_root,
     };
     use crate::database::{Content, Conversation, Folder, Message, Role, Status};
     use gpui::SharedString;
@@ -689,20 +700,23 @@ mod tests {
     }
 
     #[test]
-    fn conversation_row_target_does_not_fall_back_to_root_for_folder_noop_drag() {
+    fn conversation_group_target_uses_root_for_root_group_gaps() {
         let drag = conversation_drag(7, Some(2));
         assert_eq!(
-            target_for_conversation_row(&drag, Some((2, "/root/folder"))),
-            None
+            target_for_conversation_group(&drag, None),
+            Some(ActiveDropTarget::Root)
         );
     }
 
     #[test]
-    fn conversation_row_target_uses_root_only_for_root_rows() {
+    fn conversation_group_target_uses_folder_for_folder_group_gaps() {
         let drag = conversation_drag(7, Some(2));
         assert_eq!(
-            target_for_conversation_row(&drag, None),
-            Some(ActiveDropTarget::Root)
+            target_for_conversation_group(&drag, Some((3, "/root/folder"))),
+            Some(ActiveDropTarget::Folder {
+                id: 3,
+                invalid: false
+            })
         );
     }
 
