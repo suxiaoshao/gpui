@@ -1,10 +1,9 @@
 use super::conversation_tree::{
-    DragConversationTreeItem, DropState, folder_drop_state, reset_drop_target, root_drop_state,
-    set_drop_target, target_for_folder, target_for_root,
+    DragConversationTreeItem, DropState, SidebarConversationNode, folder_drop_state,
+    reset_drop_target, root_drop_state, set_drop_target, target_for_folder, target_for_root,
 };
 use crate::{
     components::delete_confirm::open_delete_confirm_dialog,
-    database::Conversation,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -19,7 +18,7 @@ use std::ops::Deref;
 
 #[derive(IntoElement)]
 pub(super) struct ConversationTreeItem {
-    conversation: Conversation,
+    conversation: SidebarConversationNode,
     collapsed: bool,
     depth: usize,
     active_conversation_id: Option<i32>,
@@ -29,7 +28,7 @@ pub(super) struct ConversationTreeItem {
 
 impl ConversationTreeItem {
     pub(super) fn new(
-        conversation: Conversation,
+        conversation: SidebarConversationNode,
         collapsed: bool,
         depth: usize,
         active_conversation_id: Option<i32>,
@@ -164,7 +163,7 @@ impl RenderOnce for ConversationTreeItem {
 
 pub(super) fn conversation_popup_menu(
     menu: PopupMenu,
-    conversation: &Conversation,
+    conversation: &SidebarConversationNode,
     _window: &mut Window,
     _cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {

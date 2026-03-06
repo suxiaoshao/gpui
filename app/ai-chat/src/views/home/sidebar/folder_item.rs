@@ -1,8 +1,9 @@
 use super::{
     conversation_item::ConversationTreeItem,
     conversation_tree::{
-        ActiveDropTarget, DragConversationTreeItem, DropState, folder_block_drop_target,
-        folder_drop_state, reset_drop_target, set_drop_target, target_for_folder,
+        ActiveDropTarget, DragConversationTreeItem, DropState, SidebarFolderNode,
+        folder_block_drop_target, folder_drop_state, reset_drop_target, set_drop_target,
+        target_for_folder,
     },
 };
 use crate::{
@@ -10,7 +11,6 @@ use crate::{
         add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
         delete_confirm::open_delete_confirm_dialog,
     },
-    database::Folder,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -25,7 +25,7 @@ use std::ops::Deref;
 
 #[derive(IntoElement)]
 pub(super) struct FolderTreeItem {
-    folder: Folder,
+    folder: SidebarFolderNode,
     collapsed: bool,
     depth: usize,
     active_conversation_id: Option<i32>,
@@ -34,7 +34,7 @@ pub(super) struct FolderTreeItem {
 
 impl FolderTreeItem {
     pub(super) fn new(
-        folder: Folder,
+        folder: SidebarFolderNode,
         collapsed: bool,
         depth: usize,
         active_conversation_id: Option<i32>,
@@ -222,7 +222,7 @@ impl RenderOnce for FolderTreeItem {
                                     self.collapsed,
                                     self.depth + 1,
                                     self.active_conversation_id,
-                                    Some((id, path.clone().into())),
+                                    Some((id, path.clone())),
                                     root_drop_target,
                                 )
                                 .into_any_element()
@@ -235,7 +235,7 @@ impl RenderOnce for FolderTreeItem {
 
 pub(super) fn folder_popup_menu(
     menu: PopupMenu,
-    folder: &Folder,
+    folder: &SidebarFolderNode,
     _window: &mut Window,
     _cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
