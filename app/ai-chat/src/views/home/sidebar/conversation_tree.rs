@@ -41,15 +41,69 @@ impl ActiveDropTarget {
     fn folder(id: i32, invalid: bool) -> Self {
         Self::Folder { id, invalid }
     }
+
+    pub(super) fn is_root(self) -> bool {
+        matches!(self, Self::Root)
+    }
 }
 
 const DROP_TARGET_KEY: (&str, usize) = ("conversation-tree-drop-target", 0);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SidebarConversationNode {
+    pub(super) id: i32,
+    pub(super) folder_id: Option<i32>,
+    pub(super) title: SharedString,
+    pub(super) icon: SharedString,
+}
+
+impl From<&Conversation> for SidebarConversationNode {
+    fn from(conversation: &Conversation) -> Self {
+        Self {
+            id: conversation.id,
+            folder_id: conversation.folder_id,
+            title: conversation.title.clone().into(),
+            icon: conversation.icon.clone().into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SidebarFolderNode {
+    pub(super) id: i32,
+    pub(super) parent_id: Option<i32>,
+    pub(super) name: SharedString,
+    pub(super) path: SharedString,
+    pub(super) folders: Vec<SidebarFolderNode>,
+    pub(super) conversations: Vec<SidebarConversationNode>,
+}
+
+impl From<&Folder> for SidebarFolderNode {
+    fn from(folder: &Folder) -> Self {
+        Self {
+            id: folder.id,
+            parent_id: folder.parent_id,
+            name: folder.name.clone().into(),
+            path: folder.path.clone().into(),
+            folders: project_folders(&folder.folders),
+            conversations: project_conversations(&folder.conversations),
+        }
+    }
+}
+
+fn project_folders(folders: &[Folder]) -> Vec<SidebarFolderNode> {
+    folders.iter().map(Into::into).collect()
+}
+
+fn project_conversations(conversations: &[Conversation]) -> Vec<SidebarConversationNode> {
+    conversations.iter().map(Into::into).collect()
+}
+
 #[derive(IntoElement)]
 pub(super) struct ConversationTree {
     collapsed: bool,
-    folders: Vec<Folder>,
-    conversations: Vec<Conversation>,
+    folders: Vec<SidebarFolderNode>,
+    conversations: Vec<SidebarConversationNode>,
     active_conversation_id: Option<i32>,
     root_label: SharedString,
 }
@@ -68,8 +122,8 @@ impl ConversationTree {
     pub(super) fn new(data: &ChatDataInner, root_label: SharedString) -> Self {
         Self {
             collapsed: false,
-            folders: data.folders.clone(),
-            conversations: data.conversations.clone(),
+            folders: project_folders(&data.folders),
+            conversations: project_conversations(&data.conversations),
             active_conversation_id: data.active_tab_key().filter(|id| *id > 0),
             root_label,
         }
@@ -89,15 +143,19 @@ impl Collapsible for ConversationTree {
 
 impl RenderOnce for ConversationTree {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let collapsed = self.collapsed;
+        let active_conversation_id = self.active_conversation_id;
+        let folders = self.folders;
+        let conversations = self.conversations;
         let root_label = self.root_label.clone();
         let drop_target =
             window.use_keyed_state(DROP_TARGET_KEY, cx, |_, _| Option::<ActiveDropTarget>::None);
         let active_drop_target = *drop_target.read(cx);
-        let root_is_highlighted = active_drop_target == Some(ActiveDropTarget::Root);
+        let root_is_highlighted = active_drop_target.is_some_and(ActiveDropTarget::is_root);
         v_flex()
             .id("conversation-tree")
             .focusable()
-            .gap_2()
+            .gap_1()
             .border_1()
             .border_color(cx.theme().transparent)
             .rounded(cx.theme().radius)
@@ -139,41 +197,45 @@ impl RenderOnce for ConversationTree {
                     });
                 }
             })
-            .children(
-                self.folders
-                    .into_iter()
-                    .map(|folder| {
-                        FolderTreeItem::new(
-                            folder,
-                            self.collapsed,
-                            0,
-                            self.active_conversation_id,
-                            active_drop_target,
-                        )
-                        .into_any_element()
-                    })
-                    .chain(self.conversations.into_iter().map(|conversation| {
-                        ConversationTreeItem::new(
-                            conversation,
-                            self.collapsed,
-                            0,
-                            self.active_conversation_id,
-                            None,
-                            active_drop_target == Some(ActiveDropTarget::Root),
-                        )
-                        .into_any_element()
-                    })),
-            )
+            .children(folders.into_iter().map(|folder| {
+                FolderTreeItem::new(
+                    folder,
+                    collapsed,
+                    0,
+                    active_conversation_id,
+                    active_drop_target,
+                )
+                .into_any_element()
+            }))
             .child(
-                div()
-                    .min_h(px(52.))
+                v_flex()
                     .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(root_label)
+                    .gap_1()
+                    .when(!conversations.is_empty(), |this| {
+                        this.child(v_flex().gap_1().children(conversations.into_iter().map(
+                            move |conversation| {
+                                ConversationTreeItem::new(
+                                    conversation,
+                                    collapsed,
+                                    0,
+                                    active_conversation_id,
+                                    root_is_highlighted,
+                                )
+                                .into_any_element()
+                            },
+                        )))
+                    })
+                    .child(
+                        div()
+                            .min_h(px(52.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(root_label),
+                    )
                     .on_drag_move::<DragConversationTreeItem>({
                         move |event, window, cx| {
                             let target = target_for_root(event.drag(cx));
@@ -182,6 +244,8 @@ impl RenderOnce for ConversationTree {
                                     Some(target) => set_drop_target(window, cx, target),
                                     None => reset_drop_target(window, cx),
                                 }
+                            } else if let Some(target) = target {
+                                clear_drop_target(window, cx, target);
                             }
                         }
                     })
@@ -220,23 +284,23 @@ pub(crate) struct DragConversationTreeItem {
 }
 
 impl DragConversationTreeItem {
-    pub(super) fn folder(folder: &Folder) -> Self {
+    pub(super) fn folder(folder: &SidebarFolderNode) -> Self {
         Self {
             kind: DragConversationTreeKind::Folder {
                 id: folder.id,
-                name: folder.name.clone().into(),
-                path: folder.path.clone().into(),
+                name: folder.name.clone(),
+                path: folder.path.clone(),
             },
             source_parent_id: folder.parent_id,
         }
     }
 
-    pub(super) fn conversation(conversation: &Conversation) -> Self {
+    pub(super) fn conversation(conversation: &SidebarConversationNode) -> Self {
         Self {
             kind: DragConversationTreeKind::Conversation {
                 id: conversation.id,
-                icon: conversation.icon.clone().into(),
-                title: conversation.title.clone().into(),
+                icon: conversation.icon.clone(),
+                title: conversation.title.clone(),
             },
             source_parent_id: conversation.folder_id,
         }
@@ -336,6 +400,16 @@ pub(super) fn target_for_root(drag: &DragConversationTreeItem) -> Option<ActiveD
     }
 }
 
+pub(super) fn target_for_conversation_group(
+    drag: &DragConversationTreeItem,
+    target_folder: Option<(i32, &str)>,
+) -> Option<ActiveDropTarget> {
+    match target_folder {
+        Some((folder_id, folder_path)) => target_for_folder(drag, folder_id, folder_path),
+        None => target_for_root(drag),
+    }
+}
+
 pub(super) fn target_for_folder(
     drag: &DragConversationTreeItem,
     target_folder_id: i32,
@@ -424,10 +498,74 @@ pub(super) fn reset_drop_target(window: &mut Window, cx: &mut App) {
 mod tests {
     use super::{
         ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
-        folder_block_drop_target, folder_drop_state, root_drop_state, target_for_folder,
-        target_for_root,
+        folder_block_drop_target, folder_drop_state, project_conversations, project_folders,
+        root_drop_state, target_for_conversation_group, target_for_folder, target_for_root,
     };
+    use crate::database::{Content, Conversation, Folder, Message, Role, Status};
     use gpui::SharedString;
+    use time::OffsetDateTime;
+
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::now_utc()
+    }
+
+    fn message(id: i32, conversation_id: i32) -> Message {
+        Message {
+            id,
+            conversation_id,
+            conversation_path: format!("/conversation-{conversation_id}"),
+            role: Role::User,
+            content: Content::Text(format!("message-{id}")),
+            send_content: serde_json::json!({ "message_id": id }),
+            status: Status::Normal,
+            error: None,
+            created_time: now(),
+            updated_time: now(),
+            start_time: now(),
+            end_time: now(),
+        }
+    }
+
+    fn conversation(
+        id: i32,
+        folder_id: Option<i32>,
+        title: &str,
+        icon: &str,
+        messages: Vec<Message>,
+    ) -> Conversation {
+        Conversation {
+            id,
+            path: format!("/{title}"),
+            folder_id,
+            title: title.to_string(),
+            icon: icon.to_string(),
+            created_time: now(),
+            updated_time: now(),
+            info: Some(format!("info-{id}")),
+            messages,
+            template_id: 1,
+        }
+    }
+
+    fn folder(
+        id: i32,
+        parent_id: Option<i32>,
+        name: &str,
+        path: &str,
+        conversations: Vec<Conversation>,
+        folders: Vec<Folder>,
+    ) -> Folder {
+        Folder {
+            id,
+            name: name.to_string(),
+            path: path.to_string(),
+            parent_id,
+            created_time: now(),
+            updated_time: now(),
+            conversations,
+            folders,
+        }
+    }
 
     fn folder_drag(id: i32, parent_id: Option<i32>, path: &str) -> DragConversationTreeItem {
         DragConversationTreeItem {
@@ -559,5 +697,77 @@ mod tests {
     fn conversation_drag_exposes_conversation_id_only() {
         assert_eq!(conversation_drag(7, None).conversation_id(), Some(7));
         assert_eq!(folder_drag(3, None, "/root/folder").conversation_id(), None);
+    }
+
+    #[test]
+    fn conversation_group_target_uses_root_for_root_group_gaps() {
+        let drag = conversation_drag(7, Some(2));
+        assert_eq!(
+            target_for_conversation_group(&drag, None),
+            Some(ActiveDropTarget::Root)
+        );
+    }
+
+    #[test]
+    fn conversation_group_target_uses_folder_for_folder_group_gaps() {
+        let drag = conversation_drag(7, Some(2));
+        assert_eq!(
+            target_for_conversation_group(&drag, Some((3, "/root/folder"))),
+            Some(ActiveDropTarget::Folder {
+                id: 3,
+                invalid: false
+            })
+        );
+    }
+
+    #[test]
+    fn project_conversations_keeps_only_sidebar_fields() {
+        let projected = project_conversations(&[conversation(
+            7,
+            Some(3),
+            "Alpha",
+            "A",
+            vec![message(1, 7), message(2, 7)],
+        )]);
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id, 7);
+        assert_eq!(projected[0].folder_id, Some(3));
+        assert_eq!(projected[0].title.as_ref(), "Alpha");
+        assert_eq!(projected[0].icon.as_ref(), "A");
+    }
+
+    #[test]
+    fn project_folders_preserves_nested_sidebar_tree_shape() {
+        let projected = project_folders(&[folder(
+            1,
+            None,
+            "root",
+            "/root",
+            vec![conversation(8, Some(1), "Leaf", "L", vec![message(2, 8)])],
+            vec![folder(
+                2,
+                Some(1),
+                "child",
+                "/root/child",
+                vec![conversation(9, Some(2), "Nested", "N", vec![message(3, 9)])],
+                Vec::new(),
+            )],
+        )]);
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id, 1);
+        assert_eq!(projected[0].name.as_ref(), "root");
+        assert_eq!(projected[0].path.as_ref(), "/root");
+        assert_eq!(projected[0].conversations.len(), 1);
+        assert_eq!(projected[0].conversations[0].title.as_ref(), "Leaf");
+        assert_eq!(projected[0].folders.len(), 1);
+        assert_eq!(projected[0].folders[0].id, 2);
+        assert_eq!(projected[0].folders[0].parent_id, Some(1));
+        assert_eq!(projected[0].folders[0].path.as_ref(), "/root/child");
+        assert_eq!(
+            projected[0].folders[0].conversations[0].title.as_ref(),
+            "Nested"
+        );
     }
 }

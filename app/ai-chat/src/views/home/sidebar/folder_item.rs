@@ -1,16 +1,14 @@
-use super::{
-    conversation_item::ConversationTreeItem,
-    conversation_tree::{
-        ActiveDropTarget, DragConversationTreeItem, DropState, folder_block_drop_target,
-        folder_drop_state, reset_drop_target, set_drop_target, target_for_folder,
-    },
+use super::conversation_item::ConversationTreeItem;
+use super::conversation_tree::{
+    ActiveDropTarget, DragConversationTreeItem, DropState, SidebarFolderNode,
+    folder_block_drop_target, folder_drop_state, reset_drop_target, set_drop_target,
+    target_for_conversation_group, target_for_folder,
 };
 use crate::{
     components::{
         add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
         delete_confirm::open_delete_confirm_dialog,
     },
-    database::Folder,
     store::{ChatData, ChatDataEvent},
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -25,7 +23,7 @@ use std::ops::Deref;
 
 #[derive(IntoElement)]
 pub(super) struct FolderTreeItem {
-    folder: Folder,
+    folder: SidebarFolderNode,
     collapsed: bool,
     depth: usize,
     active_conversation_id: Option<i32>,
@@ -34,7 +32,7 @@ pub(super) struct FolderTreeItem {
 
 impl FolderTreeItem {
     pub(super) fn new(
-        folder: Folder,
+        folder: SidebarFolderNode,
         collapsed: bool,
         depth: usize,
         active_conversation_id: Option<i32>,
@@ -58,11 +56,11 @@ impl RenderOnce for FolderTreeItem {
         let path = folder.path.clone();
         let active_drop_target = self.active_drop_target;
         let block_drop_target = folder_block_drop_target(active_drop_target, id);
-        let root_drop_target = active_drop_target == Some(ActiveDropTarget::Root);
+        let root_drop_target = active_drop_target.is_some_and(ActiveDropTarget::is_root);
         let open_state = window.use_keyed_state(
             ("conversation-tree-folder-open", id as usize),
             cx,
-            |_, _| true,
+            |_, _| false,
         );
         let is_open = !self.collapsed && *open_state.read(cx);
         let padding_left = px((self.depth as f32) * 14.);
@@ -201,33 +199,63 @@ impl RenderOnce for FolderTreeItem {
                 }
             })
             .when(is_open, |this| {
+                let has_conversations = !folder.conversations.is_empty();
+                let child_folders = folder.folders;
+                let child_conversations = folder.conversations;
+                let conversation_group = v_flex()
+                    .gap_1()
+                    .children(child_conversations.into_iter().map(|conversation| {
+                        ConversationTreeItem::new(
+                            conversation,
+                            self.collapsed,
+                            self.depth + 1,
+                            self.active_conversation_id,
+                            root_drop_target,
+                        )
+                        .into_any_element()
+                    }))
+                    .on_drag_move::<DragConversationTreeItem>({
+                        let path = path.clone();
+                        move |event, window, cx| {
+                            let target = target_for_conversation_group(
+                                event.drag(cx),
+                                Some((id, path.as_ref())),
+                            );
+                            if event.bounds.contains(&event.event.position) {
+                                match target {
+                                    Some(target) => set_drop_target(window, cx, target),
+                                    None => reset_drop_target(window, cx),
+                                }
+                            } else if let Some(target) = target {
+                                super::conversation_tree::clear_drop_target(window, cx, target);
+                            }
+                        }
+                    })
+                    .on_drop({
+                        let path = path.clone();
+                        move |drag: &DragConversationTreeItem, window, cx| {
+                            cx.stop_propagation();
+                            reset_drop_target(window, cx);
+                            if folder_drop_state(drag, id, &path) != DropState::Valid {
+                                return;
+                            }
+                            drag.move_to_folder(id, cx);
+                        }
+                    });
                 this.child(
-                    v_flex().gap_1().children(
-                        folder
-                            .folders
-                            .into_iter()
-                            .map(|child| {
-                                FolderTreeItem::new(
-                                    child,
-                                    self.collapsed,
-                                    self.depth + 1,
-                                    self.active_conversation_id,
-                                    active_drop_target,
-                                )
-                                .into_any_element()
-                            })
-                            .chain(folder.conversations.into_iter().map(|conversation| {
-                                ConversationTreeItem::new(
-                                    conversation,
-                                    self.collapsed,
-                                    self.depth + 1,
-                                    self.active_conversation_id,
-                                    Some((id, path.clone().into())),
-                                    root_drop_target,
-                                )
-                                .into_any_element()
-                            })),
-                    ),
+                    v_flex()
+                        .gap_1()
+                        .children(child_folders.into_iter().map(|child| {
+                            FolderTreeItem::new(
+                                child,
+                                self.collapsed,
+                                self.depth + 1,
+                                self.active_conversation_id,
+                                active_drop_target,
+                            )
+                            .into_any_element()
+                        }))
+                        .when(has_conversations, |this| this.child(conversation_group)),
                 )
             })
     }
@@ -235,7 +263,7 @@ impl RenderOnce for FolderTreeItem {
 
 pub(super) fn folder_popup_menu(
     menu: PopupMenu,
-    folder: &Folder,
+    folder: &SidebarFolderNode,
     _window: &mut Window,
     _cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
