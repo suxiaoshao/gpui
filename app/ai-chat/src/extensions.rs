@@ -158,9 +158,8 @@ impl ExtensionContainer {
 
     pub(crate) fn get_all_config(&self) -> Vec<ExtensionConfig> {
         self.extensions
-            .iter()
-            .map(|(_, extension)| &extension.config)
-            .cloned()
+            .values()
+            .map(|extension| extension.config.clone())
             .collect()
     }
 }
