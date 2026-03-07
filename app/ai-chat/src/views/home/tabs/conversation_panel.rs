@@ -1,5 +1,6 @@
 use crate::{
     components::chat_input::{ChatInput, Pause, Send, input_state},
+    components::message::MessageView,
     config::AiChatConfig,
     database::{
         Content, Conversation, ConversationTemplate, Db, Message, Mode, NewMessage, Role, Status,
@@ -15,8 +16,8 @@ use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{
     AppContext, AsyncWindowContext, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder,
+    ListAlignment, ListState, ParentElement, Render, SharedString, Styled, Subscription, Task,
+    WeakEntity, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_component::{
     h_flex,
@@ -32,11 +33,46 @@ use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
 pub(crate) struct ConversationPanelView {
-    conversation: Conversation,
+    conversation_id: i32,
+    conversation_icon: SharedString,
+    conversation_title: SharedString,
+    conversation_info: Option<SharedString>,
+    message_list: ListState,
+    message_revisions: Vec<MessageRevision>,
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
     _subscriptions: Vec<Subscription>,
     task: Option<RunningTask>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MessageRevision {
+    id: i32,
+    status: Status,
+    updated_time_nanos: i128,
+    content_len: usize,
+    error_len: usize,
+}
+
+impl MessageRevision {
+    fn new(message: &Message) -> Self {
+        let content_len = match &message.content {
+            Content::Text(content) => content.len(),
+            Content::Extension {
+                source,
+                extension_name,
+                content,
+            } => source.len() + extension_name.len() + content.len(),
+        };
+
+        Self {
+            id: message.id,
+            status: message.status,
+            updated_time_nanos: message.updated_time.unix_timestamp_nanos(),
+            content_len,
+            error_len: message.error.as_ref().map_or(0, String::len),
+        }
+    }
 }
 
 struct RunningTask {
@@ -83,7 +119,12 @@ impl ConversationPanelView {
         let extension_container = cx.global::<ExtensionContainer>();
         let all_extensions = extension_container.get_all_config();
         Self {
-            conversation: conversation.clone(),
+            conversation_id: conversation.id,
+            conversation_icon: conversation.icon.clone().into(),
+            conversation_title: conversation.title.clone().into(),
+            conversation_info: conversation.info.clone().map(Into::into),
+            message_list: ListState::new(0, ListAlignment::Top, px(1000.)),
+            message_revisions: Vec::new(),
             input_state,
             _subscriptions,
             extension_state: cx.new(|cx| {
@@ -104,6 +145,31 @@ impl ConversationPanelView {
         }
     }
 
+    fn sync_message_list(&mut self, next_revisions: Vec<MessageRevision>) {
+        if self.message_list.item_count() != self.message_revisions.len() {
+            self.message_list.reset(next_revisions.len());
+            self.message_revisions = next_revisions;
+            return;
+        }
+
+        if self.message_revisions == next_revisions {
+            return;
+        }
+
+        let first_diff = self
+            .message_revisions
+            .iter()
+            .zip(next_revisions.iter())
+            .position(|(left, right)| left != right)
+            .unwrap_or_else(|| self.message_revisions.len().min(next_revisions.len()));
+
+        self.message_list.splice(
+            first_diff..self.message_revisions.len(),
+            next_revisions.len().saturating_sub(first_diff),
+        );
+        self.message_revisions = next_revisions;
+    }
+
     fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input_state.read(cx).value();
         let extension_name = self.extension_state.read(cx).selected_value().cloned();
@@ -116,7 +182,7 @@ impl ConversationPanelView {
         if self.can_start_task() && !text.is_empty() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
-            let conversation_id = self.conversation.id;
+            let conversation_id = self.conversation_id;
             let chat_data = cx.global::<ChatData>().deref().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
                 let state = this.clone();
@@ -155,7 +221,7 @@ impl ConversationPanelView {
             return Ok(());
         };
 
-        let conversation_id = self.conversation.id;
+        let conversation_id = self.conversation_id;
         let chat_data = cx.global::<ChatData>().deref().clone();
         let paused_messages = chat_data.update(cx, move |data, cx| {
             let mut paused_messages = Vec::new();
@@ -211,7 +277,7 @@ impl ConversationPanelView {
 
         let config = cx.global::<AiChatConfig>().clone();
         let chat_data = cx.global::<ChatData>().deref().clone();
-        let conversation_id = self.conversation.id;
+        let conversation_id = self.conversation_id;
         let span = span!(Level::INFO, "ResendMessage", message_id, conversation_id);
         let task = cx.spawn_in(window, async move |this, cx| {
             let state = this.clone();
@@ -862,7 +928,23 @@ struct ExistingMessageFetchContext {
 impl Render for ConversationPanelView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chat_data = cx.global::<ChatData>().deref().clone();
-        let chat_data = chat_data.read(cx).as_ref().ok();
+        let message_revisions = chat_data
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.conversation_messages(self.conversation_id))
+            .map(|messages| {
+                messages
+                    .iter()
+                    .map(MessageRevision::new)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.sync_message_list(message_revisions);
+
+        let message_list = self.message_list.clone();
+        let conversation_id = self.conversation_id;
+        let chat_data_for_list = chat_data.clone();
         v_flex()
             .flex_1()
             .w_full()
@@ -873,11 +955,11 @@ impl Render for ConversationPanelView {
                     .flex_initial()
                     .p_2()
                     .gap_2()
-                    .child(Label::new(&self.conversation.icon))
+                    .child(Label::new(&self.conversation_icon))
                     .child(
-                        Label::new(&self.conversation.title)
+                        Label::new(&self.conversation_title)
                             .text_xl()
-                            .when_some(self.conversation.info.as_ref(), |this, description| {
+                            .when_some(self.conversation_info.as_ref(), |this, description| {
                                 this.secondary(description)
                             }),
                     ),
@@ -887,11 +969,21 @@ impl Render for ConversationPanelView {
                     .id("conversation-panel")
                     .flex_1()
                     .overflow_hidden()
-                    .when_some(chat_data.map(|x| x.panel_messages()), |this, messages| {
-                        this.children(messages)
-                    })
-                    .child(div().h_2())
-                    .overflow_y_scrollbar(),
+                    .relative()
+                    .w_full()
+                    .child(
+                        list(message_list.clone(), move |ix, _window, cx| {
+                            chat_data_for_list
+                                .read(cx)
+                                .as_ref()
+                                .ok()
+                                .and_then(|data| data.conversation_message_at(conversation_id, ix))
+                                .map(|message| MessageView::new(message).into_any_element())
+                                .unwrap_or_else(|| div().into_any_element())
+                        })
+                        .size_full(),
+                    )
+                    .vertical_scrollbar(&message_list),
             )
             .child(
                 div()
