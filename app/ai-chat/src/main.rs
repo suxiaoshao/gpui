@@ -31,7 +31,84 @@ static APP_NAME: &str = "top.sushao.ai-chat";
 
 actions!(ai_chat, [Quit]);
 
+#[cfg(feature = "dhat-heap")]
+mod profiling {
+    use super::*;
+
+    const PROFILE_EXIT_AFTER_SECS_ENV: &str = "AI_CHAT_PROFILE_EXIT_AFTER_SECS";
+    const PROFILE_OUTPUT_FILE: &str = "dhat-heap.json";
+
+    #[global_allocator]
+    static ALLOC: dhat::Alloc = dhat::Alloc;
+
+    thread_local! {
+        static HEAP_PROFILER: std::cell::RefCell<Option<dhat::Profiler>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    fn profile_exit_after() -> Option<std::time::Duration> {
+        let secs = std::env::var(PROFILE_EXIT_AFTER_SECS_ENV)
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        (secs > 0).then_some(std::time::Duration::from_secs(secs))
+    }
+
+    pub(super) fn init() {
+        HEAP_PROFILER.with(|profiler| {
+            *profiler.borrow_mut() = Some(
+                dhat::Profiler::builder()
+                    .file_name(PROFILE_OUTPUT_FILE)
+                    .build(),
+            );
+        });
+    }
+
+    pub(super) fn flush() {
+        HEAP_PROFILER.with(|profiler| {
+            drop(profiler.borrow_mut().take());
+        });
+    }
+
+    pub(super) fn schedule_auto_quit(cx: &mut App) {
+        let Some(delay) = profile_exit_after() else {
+            return;
+        };
+
+        cx.spawn(async move |cx| {
+            Timer::after(delay).await;
+            event!(
+                Level::INFO,
+                seconds = delay.as_secs(),
+                "profiling auto quit triggered"
+            );
+            flush();
+            if let Err(err) = cx.update(|cx| cx.quit()) {
+                event!(
+                    Level::ERROR,
+                    error = ?err,
+                    "failed to quit after profiling delay"
+                );
+            }
+        })
+        .detach();
+    }
+}
+
+#[cfg(not(feature = "dhat-heap"))]
+mod profiling {
+    use super::*;
+
+    pub(super) fn init() {}
+
+    pub(super) fn flush() {}
+
+    pub(super) fn schedule_auto_quit(_: &mut App) {}
+}
+
 fn quit(_: &Quit, cx: &mut App) {
+    profiling::flush();
     event!(Level::INFO, "quit by action");
     cx.quit();
 }
@@ -71,6 +148,8 @@ fn get_logs_dir() -> AiChatResult<PathBuf> {
 }
 
 fn main() -> AiChatResult<()> {
+    profiling::init();
+
     // tracing
     tracing_subscriber::registry()
         .with(
@@ -100,6 +179,7 @@ fn main() -> AiChatResult<()> {
 
     app.run(|cx: &mut App| {
         init(cx);
+        profiling::schedule_auto_quit(cx);
         let title = cx.global::<I18n>().t("app-title");
         if let Err(err) = cx.open_window(
             WindowOptions {
@@ -107,7 +187,7 @@ fn main() -> AiChatResult<()> {
                     title: Some(title.into()),
                     ..TitleBar::title_bar_options()
                 }),
-                window_background: WindowBackgroundAppearance::Blurred,
+                window_background: WindowBackgroundAppearance::Opaque,
                 ..Default::default()
             },
             |window, cx| {

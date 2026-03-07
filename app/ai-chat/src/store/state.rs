@@ -1,5 +1,4 @@
 use crate::{
-    components::message::MessageView,
     database::{Content, Conversation, ConversationTemplate, Db, Folder, Message, Role, Status},
     errors::AiChatResult,
     i18n::I18n,
@@ -460,20 +459,18 @@ impl ChatDataInner {
             }
         })
     }
-    pub(crate) fn panel_messages(&self) -> Vec<MessageView<Message>> {
-        if let Some(TabKind::Conversation(conversation_id)) = self.active_tab
-            && let Some(conversation) =
-                Self::get_conversation(&self.folders, &self.conversations, conversation_id)
-        {
-            conversation
-                .messages
-                .iter()
-                .cloned()
-                .map(MessageView::new)
-                .collect()
-        } else {
-            vec![]
-        }
+    pub(crate) fn conversation_messages(&self, conversation_id: i32) -> Option<&[Message]> {
+        Self::get_conversation(&self.folders, &self.conversations, conversation_id)
+            .map(|conversation| conversation.messages.as_slice())
+    }
+    pub(crate) fn conversation_message_at(
+        &self,
+        conversation_id: i32,
+        index: usize,
+    ) -> Option<Message> {
+        self.conversation_messages(conversation_id)?
+            .get(index)
+            .cloned()
     }
     pub(crate) fn add_message(&mut self, conversation_id: i32, message: Message) {
         if let Some(conversation) =

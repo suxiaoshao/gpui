@@ -24,7 +24,11 @@ streaming responses, and extension support.
 """
 category = "DeveloperTool"
 
+[features]
+dhat-heap = ["dep:dhat"]
+
 [dependencies]
+dhat = { version = "0.3.3", optional = true }
 # ui
 gpui.workspace = true
 gpui-component.workspace = true
