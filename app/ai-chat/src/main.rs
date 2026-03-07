@@ -187,7 +187,7 @@ fn main() -> AiChatResult<()> {
                     title: Some(title.into()),
                     ..TitleBar::title_bar_options()
                 }),
-                window_background: WindowBackgroundAppearance::Blurred,
+                window_background: WindowBackgroundAppearance::Opaque,
                 ..Default::default()
             },
             |window, cx| {
