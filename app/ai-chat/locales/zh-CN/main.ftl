@@ -38,6 +38,7 @@ tooltip-view-detail = 查看详情
 tooltip-resend-message = 重新发送消息
 tooltip-send-message = 发送消息
 tooltip-pause-message = 暂停生成
+tooltip-chat-form-settings = Provider 设置
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
 

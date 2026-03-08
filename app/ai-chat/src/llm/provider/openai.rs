@@ -1,4 +1,4 @@
-use super::{Adapter, InputItem, InputType, description_items_default};
+use super::{Adapter, ChatFormGroup, ChatFormLayout, InputItem, InputType, description_items_default};
 use crate::llm::{ChatRequest, Message};
 use crate::{
     config::AiChatConfig,
@@ -287,6 +287,24 @@ impl Adapter for OpenAIAdapter {
         .boxed()
     }
 
+    fn chat_form_layout(&self) -> ChatFormLayout {
+        ChatFormLayout {
+            inline_field_ids: vec!["model"],
+            popover_groups: vec![ChatFormGroup::new(
+                None,
+                None,
+                vec![
+                    "temperature",
+                    "top_p",
+                    "n",
+                    "max_completion_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
+                ],
+            )],
+        }
+    }
+
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAISettings {
             let config = cx.global::<AiChatConfig>();
@@ -442,7 +460,8 @@ impl ResponsesCreateResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::ResponsesCreateResponse;
+    use super::{OpenAIAdapter, ResponsesCreateResponse};
+    use crate::llm::Adapter;
 
     #[test]
     fn parse_response_output_text() -> anyhow::Result<()> {
@@ -460,5 +479,23 @@ mod tests {
         )?;
         assert_eq!(response.output_text(), "hello world");
         Ok(())
+    }
+
+    #[test]
+    fn chat_form_layout_places_model_inline() {
+        let layout = OpenAIAdapter.chat_form_layout();
+        assert_eq!(layout.inline_field_ids, vec!["model"]);
+        assert_eq!(layout.popover_groups.len(), 1);
+        assert_eq!(
+            layout.popover_groups[0].field_ids,
+            vec![
+                "temperature",
+                "top_p",
+                "n",
+                "max_completion_tokens",
+                "presence_penalty",
+                "frequency_penalty",
+            ]
+        );
     }
 }

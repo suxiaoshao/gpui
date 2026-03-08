@@ -1,5 +1,5 @@
-use crate::i18n::I18n;
-use gpui::*;
+use crate::{components::provider_chat_form::ProviderChatFormView, i18n::I18n};
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, IconName, Sizable,
     button::Button,
@@ -35,6 +35,7 @@ pub(crate) struct ChatInput {
     base: Div,
     input_state: Entity<InputState>,
     extension_state: Entity<SelectState<SearchableVec<String>>>,
+    provider_chat_form: Option<Entity<ProviderChatFormView>>,
     running: bool,
 }
 
@@ -51,14 +52,27 @@ impl ChatInput {
             input_state: input_state.clone(),
             extension_state: extension_state.clone(),
             base: div().key_context(CONTEXT),
+            provider_chat_form: None,
             running: false,
         }
     }
+
+    pub(crate) fn provider_chat_form(self, provider_chat_form: &Entity<ProviderChatFormView>) -> Self {
+        Self {
+            base: self.base,
+            input_state: self.input_state,
+            extension_state: self.extension_state,
+            provider_chat_form: Some(provider_chat_form.clone()),
+            running: self.running,
+        }
+    }
+
     pub(crate) fn running(self, running: bool) -> Self {
         Self {
             base: self.base,
             input_state: self.input_state,
             extension_state: self.extension_state,
+            provider_chat_form: self.provider_chat_form,
             running,
         }
     }
@@ -93,6 +107,9 @@ impl RenderOnce for ChatInput {
                             .cleanable(true)
                             .w(px(150.)),
                     )
+                    .when_some(self.provider_chat_form, |this, provider_chat_form| {
+                        this.child(provider_chat_form)
+                    })
                     .child(match button_mode {
                         SubmitButtonMode::Send => Button::new("send")
                             .disabled(button_disabled)

@@ -78,8 +78,39 @@ impl InputItem {
         self.name
     }
 
+    pub(crate) fn description(&self) -> &'static str {
+        self.description
+    }
+
     pub(crate) fn input_type(&self) -> &InputType {
         &self.input_type
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChatFormLayout {
+    pub(crate) inline_field_ids: Vec<&'static str>,
+    pub(crate) popover_groups: Vec<ChatFormGroup>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChatFormGroup {
+    pub(crate) title_key: Option<&'static str>,
+    pub(crate) description_key: Option<&'static str>,
+    pub(crate) field_ids: Vec<&'static str>,
+}
+
+impl ChatFormGroup {
+    pub(crate) fn new(
+        title_key: Option<&'static str>,
+        description_key: Option<&'static str>,
+        field_ids: Vec<&'static str>,
+    ) -> Self {
+        Self {
+            title_key,
+            description_key,
+            field_ids,
+        }
     }
 }
 
@@ -107,6 +138,12 @@ pub trait Adapter: Sync {
         settings: toml::Value,
         request_body: &'a serde_json::Value,
     ) -> BoxStream<'a, AiChatResult<String>>;
+    fn chat_form_layout(&self) -> ChatFormLayout {
+        ChatFormLayout {
+            inline_field_ids: Vec::new(),
+            popover_groups: Vec::new(),
+        }
+    }
     fn setting_group(&self) -> SettingGroup;
     fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
         description_items_default(template)
@@ -142,6 +179,10 @@ pub(crate) fn template_inputs_by_adapter(
     config: &AiChatConfig,
 ) -> AiChatResult<Vec<InputItem>> {
     adapter_by_name(adapter)?.get_template_inputs_by_config(config)
+}
+
+pub(crate) fn chat_form_layout_by_adapter(adapter: &str) -> AiChatResult<ChatFormLayout> {
+    Ok(adapter_by_name(adapter)?.chat_form_layout())
 }
 
 pub(crate) fn description_items_by_adapter(

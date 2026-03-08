@@ -1,5 +1,5 @@
 use super::{
-    Adapter, InputItem, OpenAIAdapter, description_items_default,
+    Adapter, ChatFormGroup, ChatFormLayout, InputItem, OpenAIAdapter, description_items_default,
     openai::{OpenAIConversationTemplate, get_openai_template_inputs},
 };
 use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
@@ -170,6 +170,24 @@ impl Adapter for OpenAIStreamAdapter {
         .boxed()
     }
 
+    fn chat_form_layout(&self) -> ChatFormLayout {
+        ChatFormLayout {
+            inline_field_ids: vec!["model"],
+            popover_groups: vec![ChatFormGroup::new(
+                None,
+                None,
+                vec![
+                    "temperature",
+                    "top_p",
+                    "n",
+                    "max_completion_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
+                ],
+            )],
+        }
+    }
+
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAIStreamSettings {
             let config = cx.global::<AiChatConfig>();
@@ -309,8 +327,9 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_normal_stream_end, parse_response_stream_event};
+    use super::{OpenAIStreamAdapter, is_normal_stream_end, parse_response_stream_event};
     use crate::errors::AiChatError;
+    use crate::llm::Adapter;
     use reqwest_eventsource::Error as EventSourceError;
 
     #[test]
@@ -350,5 +369,23 @@ mod tests {
     #[test]
     fn stream_ended_is_treated_as_normal_exit() {
         assert!(is_normal_stream_end(&EventSourceError::StreamEnded));
+    }
+
+    #[test]
+    fn chat_form_layout_places_model_inline() {
+        let layout = OpenAIStreamAdapter.chat_form_layout();
+        assert_eq!(layout.inline_field_ids, vec!["model"]);
+        assert_eq!(layout.popover_groups.len(), 1);
+        assert_eq!(
+            layout.popover_groups[0].field_ids,
+            vec![
+                "temperature",
+                "top_p",
+                "n",
+                "max_completion_tokens",
+                "presence_penalty",
+                "frequency_penalty",
+            ]
+        );
     }
 }

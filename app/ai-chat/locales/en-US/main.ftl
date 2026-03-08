@@ -38,6 +38,7 @@ tooltip-view-detail = View Detail
 tooltip-resend-message = Resend Message
 tooltip-send-message = Send Message
 tooltip-pause-message = Pause Generation
+tooltip-chat-form-settings = Provider Settings
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
 
