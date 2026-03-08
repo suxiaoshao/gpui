@@ -6,9 +6,6 @@ diesel::table! {
         name -> Text,
         icon -> Text,
         description -> Nullable<Text>,
-        mode -> Text,
-        adapter -> Text,
-        template -> Json,
         prompts -> Json,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
@@ -25,7 +22,6 @@ diesel::table! {
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
         info -> Nullable<Text>,
-        template_id -> Integer,
     }
 }
 
@@ -45,6 +41,7 @@ diesel::table! {
         id -> Integer,
         conversation_id -> Integer,
         conversation_path -> Text,
+        provider -> Text,
         role -> Text,
         content -> Text,
         send_content -> Json,
@@ -57,7 +54,6 @@ diesel::table! {
     }
 }
 
-diesel::joinable!(conversations -> conversation_templates (template_id));
 diesel::joinable!(conversations -> folders (folder_id));
 diesel::joinable!(messages -> conversations (conversation_id));
 

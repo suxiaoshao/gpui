@@ -1,18 +1,16 @@
 use crate::{
     components::{
         add_conversation::add_conversation_dialog_with_messages,
-        chat_input::{ChatInput, Pause, Send, input_state},
+        chat_form::{ChatForm, ChatFormEvent, ChatFormSnapshot},
         message::{MessageView, MessageViewExt},
-        provider_chat_form::ProviderChatFormView,
-        provider_template_form::ProviderTemplateFormState,
     },
     config::AiChatConfig,
-    database::{Content, ConversationTemplate, Role, Status},
+    database::{Content, ConversationTemplate, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::WeakEntityResultExt,
     i18n::I18n,
-    llm::{FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter},
+    llm::{FetchRunner, provider_by_name},
     store::AddConversationMessage,
     views::{
         message_preview::{MessagePreviewExt, open_message_preview_window},
@@ -27,11 +25,9 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
-    input::InputState,
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
-    select::{SearchableVec, SelectState},
     v_flex,
 };
 use smol::stream::StreamExt;
@@ -52,6 +48,7 @@ type OnEsc = Rc<dyn Fn(&Esc, &mut Window, &mut App) + 'static>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryMessage {
     pub id: usize,
+    pub provider: String,
     pub role: Role,
     pub content: Content,
     pub send_content: Rc<serde_json::Value>,
@@ -262,9 +259,7 @@ pub(crate) struct TemplateDetailView {
     template: ConversationTemplate,
     on_esc: OnEsc,
     messages: Vec<TemporaryMessage>,
-    input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<SearchableVec<String>>>,
-    provider_chat_form: Option<Entity<ProviderChatFormView>>,
+    chat_form: Entity<ChatForm>,
     _subscriptions: Vec<Subscription>,
     task: Option<RunningTask>,
     autoincrement_id: usize,
@@ -303,6 +298,16 @@ impl RunningTask {
     }
 }
 
+struct NewTemporaryMessage {
+    now: OffsetDateTime,
+    provider: String,
+    role: Role,
+    content: Content,
+    send_content: Rc<serde_json::Value>,
+    status: Status,
+    error: Option<String>,
+}
+
 // Initializes the temporary conversation view and template-backed form state.
 impl TemplateDetailView {
     pub fn new(
@@ -313,94 +318,27 @@ impl TemplateDetailView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
-        let input_state = input_state(window, cx);
-        input_state.focus_handle(cx).focus(window);
-        let _subscriptions = vec![];
-        let extension_container = cx.global::<ExtensionContainer>();
-        let all_extensions = extension_container.get_all_config();
-        let provider_chat_form = Self::build_provider_chat_form(template, window, cx);
+        let chat_form = cx.new(|cx| ChatForm::new(None, window, cx));
+        chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_selected_template(Some(template.clone()), cx);
+        });
+        let _subscriptions = vec![cx.subscribe_in(
+            &chat_form,
+            window,
+            |this, _chat_form, event: &ChatFormEvent, window, cx| match event {
+                ChatFormEvent::SendRequested => this.on_send_requested(window, cx),
+                ChatFormEvent::PauseRequested => this.on_pause_requested(cx),
+            },
+        )];
         Self {
             focus_handle,
             template: template.clone(),
             on_esc: Rc::new(on_esc),
             messages: Vec::new(),
-            input_state,
-            provider_chat_form,
+            chat_form,
             _subscriptions,
             task: None,
             autoincrement_id: 0,
-            extension_state: cx.new(|cx| {
-                SelectState::new(
-                    SearchableVec::new(
-                        all_extensions
-                            .into_iter()
-                            .map(|x| x.name)
-                            .collect::<Vec<_>>(),
-                    ),
-                    None,
-                    window,
-                    cx,
-                )
-                .searchable(true)
-            }),
-        }
-    }
-
-    fn build_provider_chat_form(
-        template: &ConversationTemplate,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<ProviderChatFormView>> {
-        let template_items =
-            match template_inputs_by_adapter(&template.adapter, cx.global::<AiChatConfig>()) {
-                Ok(items) => items,
-                Err(err) => {
-                    event!(
-                        Level::ERROR,
-                        "load temporary chat form template inputs failed: {}",
-                        err
-                    );
-                    return None;
-                }
-            };
-        let layout = match chat_form_layout_by_adapter(&template.adapter) {
-            Ok(layout) => layout,
-            Err(err) => {
-                event!(
-                    Level::ERROR,
-                    "load temporary chat form layout failed: {}",
-                    err
-                );
-                return None;
-            }
-        };
-        let base_template = template.template.clone();
-        let form = cx.new(|cx| {
-            ProviderTemplateFormState::new(template_items, &template.template, window, cx)
-        });
-        Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)))
-    }
-
-    fn collect_runtime_template(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<serde_json::Value> {
-        let Some(provider_chat_form) = &self.provider_chat_form else {
-            return Some(self.template.template.clone());
-        };
-        match provider_chat_form.read(cx).effective_template(cx) {
-            Ok(template) => Some(template),
-            Err(err) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t("notify-invalid-template"))
-                        .message(err)
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-                None
-            }
         }
     }
 }
@@ -418,29 +356,29 @@ impl TemplateDetailView {
 
 // Handles user-facing actions for sending, pausing, and saving drafts.
 impl TemplateDetailView {
-    fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input_state.read(cx).value();
-
-        let extension_name = self.extension_state.read(cx).selected_value().cloned();
+    fn on_send_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = match self.chat_form.read(cx).snapshot(cx) {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return,
+            Err(err) => {
+                event!(Level::ERROR, "collect chat form snapshot failed: {}", err);
+                return;
+            }
+        };
         let span = span!(
             Level::INFO,
             "Fetch",
-            send_content = text.to_string(),
-            extension_name = extension_name.clone()
+            send_content = snapshot.text.clone(),
+            extension_name = snapshot.extension_name.clone()
         );
-        if self.can_start_task() && !text.is_empty() {
-            let Some(runtime_template) = self.collect_runtime_template(window, cx) else {
-                return;
-            };
+        if self.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
                 let context = TemporaryFetchContext {
-                    request_text: text.to_string(),
-                    extension_name,
+                    composer_snapshot: snapshot,
                     extension_container,
                     config,
-                    runtime_template,
                     now: OffsetDateTime::now_utc(),
                 };
                 if let Err(err) = Self::fetch(this, context, cx)
@@ -452,9 +390,11 @@ impl TemplateDetailView {
                 };
             });
             self.task = Some(RunningTask::new(task));
+            self.chat_form
+                .update(cx, |chat_form, cx| chat_form.set_running(true, cx));
         }
     }
-    fn on_pause_action(&mut self, _: &Pause, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_pause_requested(&mut self, cx: &mut Context<Self>) {
         self.pause_running_task(cx);
     }
     fn has_running_task(&self) -> bool {
@@ -487,8 +427,8 @@ impl TemplateDetailView {
                 .await
             {
                 event!(Level::ERROR, "temporary resend message failed: {}", err);
-                let _ = this.update_result(cx, |this, _cx| {
-                    this.clear_running_task_for_message(Some(message_id));
+                let _ = this.update_result(cx, |this, cx| {
+                    this.clear_running_task_for_message(Some(message_id), cx);
                 });
             }
         });
@@ -517,6 +457,7 @@ impl TemplateDetailView {
             .iter()
             .cloned()
             .map(|message| AddConversationMessage {
+                provider: message.provider,
                 role: message.role,
                 content: message.content,
                 send_content: (*message.send_content).clone(),
@@ -534,27 +475,20 @@ impl TemplateDetailView {
         self.autoincrement_id += 1;
         self.autoincrement_id
     }
-    fn add_message(
-        &mut self,
-        now: OffsetDateTime,
-        role: Role,
-        content: Content,
-        send_content: Rc<serde_json::Value>,
-        status: Status,
-        error: Option<String>,
-    ) -> &mut TemporaryMessage {
+    fn add_message(&mut self, input: NewTemporaryMessage) -> &mut TemporaryMessage {
         let id = self.new_id();
         let message = TemporaryMessage {
             id,
-            role,
-            content,
-            send_content,
-            status,
-            error,
-            created_time: now,
-            updated_time: now,
-            start_time: now,
-            end_time: now,
+            provider: input.provider,
+            role: input.role,
+            content: input.content,
+            send_content: input.send_content,
+            status: input.status,
+            error: input.error,
+            created_time: input.now,
+            updated_time: input.now,
+            start_time: input.now,
+            end_time: input.now,
         };
         self.messages.push(message);
         self.messages.last_mut().unwrap()
@@ -564,17 +498,17 @@ impl TemplateDetailView {
             last.add_content(content);
         }
     }
-    fn on_error(&mut self, message_id: usize, error: String) {
+    fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
         }
-        self.clear_running_task_for_message(Some(message_id));
+        self.clear_running_task_for_message(Some(message_id), cx);
     }
-    fn on_success(&mut self, message_id: usize) {
+    fn on_success(&mut self, message_id: usize, cx: &mut Context<Self>) {
         if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
         }
-        self.clear_running_task_for_message(Some(message_id));
+        self.clear_running_task_for_message(Some(message_id), cx);
     }
     fn bind_running_task_messages(
         &mut self,
@@ -585,12 +519,14 @@ impl TemplateDetailView {
             task.bind_messages(user_message_id, assistant_message_id);
         }
     }
-    fn clear_running_task_for_message(&mut self, message_id: Option<usize>) {
+    fn clear_running_task_for_message(&mut self, message_id: Option<usize>, cx: &mut Context<Self>) {
         let should_clear = self.task.as_ref().is_some_and(|task| {
             message_id.is_none_or(|message_id| task.contains_message(message_id))
         });
         if should_clear {
             self.task = None;
+            self.chat_form
+                .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
         }
     }
     fn pause_running_task(&mut self, cx: &mut Context<Self>) {
@@ -607,6 +543,8 @@ impl TemplateDetailView {
                 message.update_status(Status::Paused);
             }
         }
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
         cx.notify();
     }
 }
@@ -632,7 +570,7 @@ impl TemplateDetailView {
         message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let (adapter_name, request_body, error) = state.update_result(cx, |this, _cx| {
+        let (provider_name, request_body, error) = state.update_result(cx, |this, _cx| {
             let Some(message) = this
                 .messages
                 .iter_mut()
@@ -656,19 +594,15 @@ impl TemplateDetailView {
                 );
             }
             message.reset_for_resend();
-            (
-                Some(this.template.adapter.clone()),
-                message.send_content.clone(),
-                None,
-            )
+            (Some(message.provider.clone()), message.send_content.clone(), None)
         })?;
         if let Some(err) = error {
             return Err(err);
         }
-        let Some(adapter_name) = adapter_name else {
+        let Some(provider_name) = provider_name else {
             return Err(AiChatError::GpuiError);
         };
-        Self::stream_existing_message(state, config, adapter_name, request_body, message_id, cx)
+        Self::stream_existing_message(state, config, provider_name, request_body, message_id, cx)
             .await
     }
 
@@ -677,7 +611,7 @@ impl TemplateDetailView {
         context: &TemporaryFetchContext,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
-        match context.extension_name.as_deref() {
+        match context.composer_snapshot.extension_name.as_deref() {
             Some(extension_name) => {
                 Self::prepare_extension_fetch(state, context, extension_name, cx).await
             }
@@ -692,17 +626,17 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
         let user_message_id = state.update_in_result(cx, |this, window, cx| {
-            this.input_state.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-            });
-            this.add_message(
-                context.now,
-                Role::User,
-                Content::Text(context.request_text.clone()),
-                Rc::new(serde_json::json!({})),
-                Status::Loading,
-                None,
-            )
+            this.chat_form
+                .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
+            this.add_message(NewTemporaryMessage {
+                now: context.now,
+                provider: context.composer_snapshot.provider_name.clone(),
+                role: Role::User,
+                content: Content::Text(context.composer_snapshot.text.clone()),
+                send_content: Rc::new(serde_json::json!({})),
+                status: Status::Loading,
+                error: None,
+            })
             .id
         })?;
         state.update_result(cx, |this, _cx| {
@@ -728,7 +662,10 @@ impl TemplateDetailView {
             return Ok(None);
         };
         let Some(content) =
-            Runner::get_new_user_content(context.request_text.clone(), Some(extension_runner))
+            Runner::get_new_user_content(
+                context.composer_snapshot.text.clone(),
+                Some(extension_runner),
+            )
                 .await
                 .map(Some)
                 .or_else(|error| {
@@ -748,7 +685,7 @@ impl TemplateDetailView {
             let runner = Self::build_runner(
                 state.clone(),
                 context.config.clone(),
-                context.runtime_template.clone(),
+                context.composer_snapshot.clone(),
                 Role::User,
                 content.send_content().to_string(),
                 cx,
@@ -762,14 +699,15 @@ impl TemplateDetailView {
                 {
                     message.resolve_extension(content, send_content.clone());
                 }
-                this.add_message(
-                    context.now,
-                    Role::Assistant,
-                    Content::Text(String::new()),
-                    send_content.clone(),
-                    Status::Loading,
-                    None,
-                )
+                this.add_message(NewTemporaryMessage {
+                    now: context.now,
+                    provider: context.composer_snapshot.provider_name.clone(),
+                    role: Role::Assistant,
+                    content: Content::Text(String::new()),
+                    send_content: send_content.clone(),
+                    status: Status::Loading,
+                    error: None,
+                })
                 .id
             })?;
             state.update_result(cx, |this, _cx| {
@@ -792,38 +730,43 @@ impl TemplateDetailView {
         context: &TemporaryFetchContext,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedTemporaryFetch> {
-        let content = Content::Text(context.request_text.clone());
+        let content = Content::Text(context.composer_snapshot.text.clone());
         let runner = Self::build_runner(
             state.clone(),
             context.config.clone(),
-            context.runtime_template.clone(),
+            context.composer_snapshot.clone(),
             Role::User,
             content.send_content().to_string(),
             cx,
         )?;
         let send_content = runner.request_body.clone();
         let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
-            this.input_state.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-            });
+            this.chat_form
+                .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
             let user_message_id = this
                 .add_message(
-                    context.now,
-                    Role::User,
-                    content,
-                    send_content.clone(),
-                    Status::Normal,
-                    None,
+                    NewTemporaryMessage {
+                        now: context.now,
+                        provider: context.composer_snapshot.provider_name.clone(),
+                        role: Role::User,
+                        content,
+                        send_content: send_content.clone(),
+                        status: Status::Normal,
+                        error: None,
+                    },
                 )
                 .id;
             let assistant_message_id = this
                 .add_message(
-                    context.now,
-                    Role::Assistant,
-                    Content::Text(String::new()),
-                    send_content.clone(),
-                    Status::Loading,
-                    None,
+                    NewTemporaryMessage {
+                        now: context.now,
+                        provider: context.composer_snapshot.provider_name.clone(),
+                        role: Role::Assistant,
+                        content: Content::Text(String::new()),
+                        send_content: send_content.clone(),
+                        status: Status::Loading,
+                        error: None,
+                    },
                 )
                 .id;
             this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
@@ -838,24 +781,24 @@ impl TemplateDetailView {
     fn build_runner(
         state: WeakEntity<Self>,
         config: AiChatConfig,
-        runtime_template: serde_json::Value,
+        composer_snapshot: ChatFormSnapshot,
         user_message_role: Role,
         user_message_content: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         state.read_with_result(cx, |this, _cx| {
-            let adapter_name = this.template.adapter.clone();
             let request_body = build_request_body(
-                &adapter_name,
-                &runtime_template,
-                &this.template.prompts,
+                &composer_snapshot.provider_name,
+                &composer_snapshot.request_template,
+                &composer_snapshot.prompts,
+                composer_snapshot.mode,
                 &this.messages,
                 user_message_role,
                 &user_message_content,
             )?;
             Ok(Runner {
                 config,
-                adapter_name,
+                provider_name: composer_snapshot.provider_name.clone(),
                 request_body: Rc::new(request_body),
             })
         })?
@@ -881,15 +824,15 @@ impl TemplateDetailView {
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    state.update_result(cx, |this, _cx| {
-                        this.on_error(assistant_message_id, error.to_string());
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(assistant_message_id, error.to_string(), cx);
                     })?;
                     return Ok(());
                 }
             }
         }
-        state.update_result(cx, |this, _cx| {
-            this.on_success(assistant_message_id);
+        state.update_result(cx, |this, cx| {
+            this.on_success(assistant_message_id, cx);
         })?;
         Ok(())
     }
@@ -897,19 +840,19 @@ impl TemplateDetailView {
     async fn stream_existing_message(
         state: WeakEntity<Self>,
         config: AiChatConfig,
-        adapter_name: String,
+        provider_name: String,
         request_body: Rc<serde_json::Value>,
         assistant_message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let adapter = adapter_by_name(&adapter_name)?;
+        let provider = provider_by_name(&provider_name)?;
         let settings = config
-            .get_adapter_settings(adapter.name())
-            .ok_or(AiChatError::AdapterSettingsNotFound(
-                adapter.name().to_string(),
+            .get_provider_settings(provider.name())
+            .ok_or(AiChatError::ProviderSettingsNotFound(
+                provider.name().to_string(),
             ))?
             .clone();
-        let stream = adapter.fetch_by_request_body(config, settings, request_body.as_ref());
+        let stream = provider.fetch_by_request_body(config, settings, request_body.as_ref());
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
@@ -920,15 +863,15 @@ impl TemplateDetailView {
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
-                    state.update_result(cx, |this, _cx| {
-                        this.on_error(assistant_message_id, error.to_string());
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(assistant_message_id, error.to_string(), cx);
                     })?;
                     return Ok(());
                 }
             }
         }
-        state.update_result(cx, |this, _cx| {
-            this.on_success(assistant_message_id);
+        state.update_result(cx, |this, cx| {
+            this.on_success(assistant_message_id, cx);
         })?;
         Ok(())
     }
@@ -941,8 +884,8 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         let error = format!("extension {extension_name}: {error}");
-        state.update_result(cx, |this, _cx| {
-            this.on_error(user_message_id, error);
+        state.update_result(cx, |this, cx| {
+            this.on_error(user_message_id, error, cx);
         })?;
         Ok(())
     }
@@ -954,23 +897,21 @@ struct PreparedTemporaryFetch {
 }
 
 struct TemporaryFetchContext {
-    request_text: String,
-    extension_name: Option<String>,
+    composer_snapshot: ChatFormSnapshot,
     extension_container: ExtensionContainer,
     config: AiChatConfig,
-    runtime_template: serde_json::Value,
     now: OffsetDateTime,
 }
 
 struct Runner {
     config: AiChatConfig,
-    adapter_name: String,
+    provider_name: String,
     request_body: Rc<serde_json::Value>,
 }
 
 impl FetchRunner for Runner {
-    fn get_adapter(&self) -> &str {
-        &self.adapter_name
+    fn get_provider(&self) -> &str {
+        &self.provider_name
     }
 
     fn get_config(&self) -> &crate::config::AiChatConfig {
@@ -984,6 +925,7 @@ impl FetchRunner for Runner {
 
 fn build_history_messages(
     prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
     messages: &[TemporaryMessage],
     user_message_role: Role,
     user_message_content: &str,
@@ -999,6 +941,11 @@ fn build_history_messages(
         messages
             .iter()
             .filter(|message| message.status == Status::Normal)
+            .filter(|message| match mode {
+                Mode::Contextual => true,
+                Mode::Single => false,
+                Mode::AssistantOnly => message.role == Role::Assistant,
+            })
             .map(|message| {
                 FetchMessage::new(message.role, message.content.send_content().to_string())
             }),
@@ -1011,16 +958,22 @@ fn build_history_messages(
 }
 
 fn build_request_body(
-    adapter_name: &str,
+    provider_name: &str,
     template: &serde_json::Value,
     prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
     messages: &[TemporaryMessage],
     user_message_role: Role,
     user_message_content: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let history =
-        build_history_messages(prompts, messages, user_message_role, user_message_content);
-    adapter_by_name(adapter_name)?.request_body(template, history)
+    let history = build_history_messages(
+        prompts,
+        mode,
+        messages,
+        user_message_role,
+        user_message_content,
+    );
+    provider_by_name(provider_name)?.request_body(template, history)
 }
 
 // Renders the temporary conversation header, message list, and composer.
@@ -1102,18 +1055,7 @@ impl Render for TemplateDetailView {
                 div()
                     .w_full()
                     .flex_initial()
-                    .child(
-                        ChatInput::new(&self.input_state, &self.extension_state)
-                            .when_some(
-                                self.provider_chat_form.as_ref(),
-                                |this, provider_chat_form| {
-                                    this.provider_chat_form(provider_chat_form)
-                                },
-                            )
-                            .running(self.has_running_task())
-                            .on_action(cx.listener(Self::on_send_action))
-                            .on_action(cx.listener(Self::on_pause_action)),
-                    )
+                    .child(self.chat_form.clone())
                     .px_2(),
             )
     }
@@ -1122,7 +1064,7 @@ impl Render for TemplateDetailView {
 #[cfg(test)]
 mod tests {
     use super::{TemporaryMessage, build_history_messages, build_request_body};
-    use crate::database::{Content, ConversationTemplatePrompt, Role, Status};
+    use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
     use std::rc::Rc;
     use time::OffsetDateTime;
 
@@ -1130,6 +1072,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
         TemporaryMessage {
             id: 1,
+            provider: "OpenAI".to_string(),
             role,
             content,
             send_content: Rc::new(serde_json::json!({})),
@@ -1149,6 +1092,7 @@ mod tests {
                 prompt: "system".to_string(),
                 role: Role::Developer,
             }],
+            Mode::Contextual,
             &[
                 make_message(
                     Role::Assistant,
@@ -1176,9 +1120,19 @@ mod tests {
 
     #[test]
     fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
-        let mut template = serde_json::to_value(crate::llm::OpenAIConversationTemplate::default())?;
+        let mut template = serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false,
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "n": 1,
+            "max_completion_tokens": null,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0
+        });
         template["model"] = serde_json::json!("override-model");
-        let request_body = build_request_body("OpenAI", &template, &[], &[], Role::User, "hello")?;
+        let request_body =
+            build_request_body("OpenAI", &template, &[], Mode::Contextual, &[], Role::User, "hello")?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
     }

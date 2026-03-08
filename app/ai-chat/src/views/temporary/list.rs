@@ -1,6 +1,6 @@
 use crate::database::ConversationTemplate;
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, Selectable, h_flex, label::Label, list::ListDelegate, tag::Tag};
+use gpui_component::{ActiveTheme, Selectable, h_flex, label::Label, list::ListDelegate};
 use pinyin::ToPinyin;
 use std::rc::Rc;
 
@@ -17,7 +17,7 @@ impl RenderOnce for TemplateItem {
             name,
             icon,
             description,
-            mode,
+            prompts,
             ..
         } = self.template.as_ref();
         h_flex()
@@ -31,15 +31,7 @@ impl RenderOnce for TemplateItem {
                     this.secondary(description)
                 }),
             )
-            .child(
-                match mode {
-                    crate::database::Mode::Contextual => Tag::primary(),
-                    crate::database::Mode::Single => Tag::info(),
-                    crate::database::Mode::AssistantOnly => Tag::success(),
-                }
-                .child(mode.to_string())
-                .outline(),
-            )
+            .child(Label::new(format!("{} prompts", prompts.len())).text_xs())
     }
 }
 

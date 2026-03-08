@@ -148,6 +148,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "libsqlite3-sys",
+ "nom 8.0.0",
  "pinyin",
  "reqwest 0.12.28",
  "reqwest-eventsource",

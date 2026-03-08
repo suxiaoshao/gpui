@@ -1,4 +1,5 @@
 use crate::config::AiChatConfig;
+use async_compat::CompatExt;
 use chatgpt::extension::http_client::{HttpRequest, HttpResponse};
 pub use exports::chatgpt::extension::extension_api::ChatRequest;
 use reqwest::{header::HeaderValue, redirect::Policy};
@@ -109,7 +110,11 @@ impl chatgpt::extension::http_client::Host for ExtensionState {
         }
 
         // send
-        let response = request.send().await.map_err(|err| err.to_string())?;
+        let response = request
+            .send()
+            .compat()
+            .await
+            .map_err(|err| err.to_string())?;
         let response_headers = response.headers();
         let mut headers = vec![];
         for (header_name, header_value) in response_headers {
@@ -123,6 +128,7 @@ impl chatgpt::extension::http_client::Host for ExtensionState {
         }
         let body = response
             .bytes()
+            .compat()
             .await
             .map_err(|err| err.to_string())?
             .into();

@@ -105,6 +105,7 @@ pub struct Message {
     pub conversation_id: i32,
     #[serde(rename = "conversationPath")]
     pub conversation_path: String,
+    pub provider: String,
     pub role: Role,
     pub content: Content,
     #[serde(rename = "sendContent")]
@@ -145,6 +146,7 @@ impl TryFrom<SqlMessage> for Message {
             id: value.id,
             conversation_id: value.conversation_id,
             conversation_path: value.conversation_path,
+            provider: value.provider,
             role: value.role.parse()?,
             content: serde_json::from_str(&value.content)?,
             send_content: value.send_content,
@@ -161,6 +163,7 @@ impl TryFrom<SqlMessage> for Message {
 #[derive(Debug, Clone, Copy)]
 pub struct NewMessage<'a> {
     pub conversation_id: i32,
+    pub provider: &'a str,
     pub role: Role,
     pub content: &'a Content,
     pub send_content: &'a serde_json::Value,
@@ -171,6 +174,7 @@ pub struct NewMessage<'a> {
 impl<'a> NewMessage<'a> {
     pub fn new(
         conversation_id: i32,
+        provider: &'a str,
         role: Role,
         content: &'a Content,
         send_content: &'a serde_json::Value,
@@ -178,6 +182,7 @@ impl<'a> NewMessage<'a> {
     ) -> Self {
         Self {
             conversation_id,
+            provider,
             role,
             content,
             send_content,
@@ -196,6 +201,7 @@ impl Message {
     pub fn insert(
         NewMessage {
             conversation_id,
+            provider,
             role,
             content,
             send_content,
@@ -214,6 +220,7 @@ impl Message {
             let new_message = SqlNewMessage {
                 conversation_id,
                 conversation_path: &path,
+                provider,
                 role: &role,
                 content: &content,
                 send_content,

@@ -2,7 +2,7 @@ use crate::{
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     config::{AiChatConfig, ThemeMode},
     i18n::I18n,
-    llm::adapter_setting_groups,
+    llm::provider_setting_groups,
 };
 use gpui::*;
 use gpui_component::{
@@ -77,7 +77,7 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
             page_general,
-            page_adapter,
+            page_provider,
             group_basic_options,
             field_theme,
             field_http_proxy,
@@ -86,7 +86,7 @@ impl Render for SettingsView {
             let i18n = cx.global::<I18n>();
             (
                 i18n.t("settings-page-general"),
-                i18n.t("settings-page-adapter"),
+                i18n.t("settings-page-provider"),
                 i18n.t("settings-group-basic-options"),
                 i18n.t("field-theme"),
                 i18n.t("field-http-proxy"),
@@ -96,9 +96,9 @@ impl Render for SettingsView {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let hotkey_input = self.hotkey_input.clone();
-        let adapter_page = adapter_setting_groups()
+        let provider_page = provider_setting_groups()
             .into_iter()
-            .fold(SettingPage::new(page_adapter), |page, group| {
+            .fold(SettingPage::new(page_provider), |page: SettingPage, group| {
                 page.group(group)
             });
         v_flex()
@@ -173,7 +173,7 @@ impl Render for SettingsView {
                                     }),
                                 )),
                         ),
-                        adapter_page,
+                        provider_page,
                     ]),
             )
     }

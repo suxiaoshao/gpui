@@ -3,7 +3,7 @@ settings-title = 设置
 message-preview-title = 消息预览：{ $id }
 
 settings-page-general = 通用
-settings-page-adapter = 适配器
+settings-page-provider = 提供方
 settings-group-basic-options = 基础选项
 
 sidebar-app-title = AI 对话
@@ -51,13 +51,15 @@ field-http-proxy = HTTP 代理
 field-temporary-conversation-hotkey = 临时会话快捷键
 field-template = 模板
 field-template-prefix = 模板
-field-adapter = 适配器
+field-provider = 提供方
 field-mode = 模式
 field-description = 描述
 field-prompts = 提示词
 field-role = 角色
 field-prompt = 提示词
 field-model = 模型
+field-extension = 扩展
+field-loading = 加载中...
 field-models = 模型集合
 field-temperature = Temperature
 field-top-p = Top P
@@ -66,7 +68,7 @@ field-max-completion-tokens = 最大补全 Token
 field-presence-penalty = Presence Penalty
 field-frequency-penalty = Frequency Penalty
 field-api-key = API Key
-field-api-url = API 地址
+field-base-url = Base URL
 
 dialog-add-folder-title = 新建文件夹
 dialog-add-conversation-title = 新建会话

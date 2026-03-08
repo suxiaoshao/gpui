@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 pub struct SqlNewMessage<'a> {
     pub(in super::super) conversation_id: i32,
     pub(in super::super) conversation_path: &'a str,
+    pub(in super::super) provider: &'a str,
     pub(in super::super) role: &'a str,
     pub(in super::super) content: &'a str,
     pub(in super::super) send_content: &'a serde_json::Value,
@@ -42,6 +43,7 @@ pub struct SqlMessage {
     pub id: i32,
     pub conversation_id: i32,
     pub(in super::super) conversation_path: String,
+    pub provider: String,
     pub role: String,
     pub content: String,
     pub send_content: serde_json::Value,

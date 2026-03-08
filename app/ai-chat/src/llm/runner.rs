@@ -1,4 +1,4 @@
-use super::{Adapter, adapter_by_name};
+use super::{Provider, provider_by_name};
 use crate::{
     config::AiChatConfig,
     database::Content,
@@ -8,11 +8,11 @@ use crate::{
 use futures::pin_mut;
 
 pub trait FetchRunner {
-    fn get_adapter(&self) -> &str;
+    fn get_provider(&self) -> &str;
     fn get_config(&self) -> &AiChatConfig;
     fn request_body(&self) -> &serde_json::Value;
-    fn adapter(&self) -> AiChatResult<&'static dyn Adapter> {
-        adapter_by_name(self.get_adapter())
+    fn provider(&self) -> AiChatResult<&'static dyn Provider> {
+        provider_by_name(self.get_provider())
     }
     async fn get_new_user_content(
         send_content: String,
@@ -43,13 +43,13 @@ pub trait FetchRunner {
     }
     fn fetch(&self) -> impl futures::Stream<Item = AiChatResult<String>> {
         async_stream::try_stream! {
-            let adapter = self.adapter()?;
+            let provider = self.provider()?;
             let config = self.get_config().clone();
             let settings = config
-                .get_adapter_settings(adapter.name())
-                .ok_or(AiChatError::AdapterSettingsNotFound(adapter.name().to_string()))?;
+                .get_provider_settings(provider.name())
+                .ok_or(AiChatError::ProviderSettingsNotFound(provider.name().to_string()))?;
             let settings = settings.clone();
-            let stream = adapter.fetch_by_request_body(config, settings, self.request_body());
+            let stream = provider.fetch_by_request_body(config, settings, self.request_body());
             pin_mut!(stream);
             for await item in stream {
                 yield item?;
@@ -69,7 +69,7 @@ mod tests {
     struct DummyRunner;
 
     impl FetchRunner for DummyRunner {
-        fn get_adapter(&self) -> &str {
+        fn get_provider(&self) -> &str {
             "noop"
         }
 

@@ -514,6 +514,7 @@ mod tests {
             id,
             conversation_id,
             conversation_path: format!("/conversation-{conversation_id}"),
+            provider: "OpenAI".to_string(),
             role: Role::User,
             content: Content::Text(format!("message-{id}")),
             send_content: serde_json::json!({ "message_id": id }),
@@ -543,7 +544,6 @@ mod tests {
             updated_time: now(),
             info: Some(format!("info-{id}")),
             messages,
-            template_id: 1,
         }
     }
 

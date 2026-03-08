@@ -96,10 +96,6 @@ impl ProviderTemplateFormState {
         this
     }
 
-    pub(crate) fn collect_template(&self, cx: &App) -> Result<serde_json::Value, String> {
-        Ok(serde_json::Value::Object(self.collect_value_map(cx)?))
-    }
-
     pub(crate) fn collect_merged_template(
         &self,
         base_template: &serde_json::Value,

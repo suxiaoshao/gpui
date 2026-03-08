@@ -19,7 +19,6 @@ pub enum ChatDataEvent {
         name: SharedString,
         icon: SharedString,
         info: Option<SharedString>,
-        template: i32,
         parent_id: Option<i32>,
         initial_messages: Option<Vec<AddConversationMessage>>,
     },
@@ -72,7 +71,6 @@ struct AddConversationInput<'a> {
     icon: &'a str,
     info: Option<&'a str>,
     folder_id: Option<i32>,
-    template_id: i32,
     initial_messages: Option<&'a [AddConversationMessage]>,
 }
 
@@ -113,7 +111,6 @@ impl ChatData {
                 name,
                 icon,
                 info,
-                template,
                 parent_id,
                 initial_messages,
             } => Self::handle_event_result(
@@ -124,7 +121,6 @@ impl ChatData {
                         icon,
                         info: info.as_ref().map(|x| x.as_str()),
                         folder_id: *parent_id,
-                        template_id: *template,
                         initial_messages: initial_messages.as_deref(),
                     },
                     cx,
@@ -275,7 +271,6 @@ impl ChatData {
             folder_id: input.folder_id,
             icon: input.icon,
             info: input.info,
-            template_id: input.template_id,
         };
         let conn = &mut cx.global::<Db>().get()?;
         let mut conversation = Conversation::insert(new_conversation, conn)?;
@@ -283,6 +278,7 @@ impl ChatData {
             for initial_message in initial_messages {
                 let mut new_message = NewMessage::new(
                     conversation.id,
+                    &initial_message.provider,
                     initial_message.role,
                     &initial_message.content,
                     &initial_message.send_content,

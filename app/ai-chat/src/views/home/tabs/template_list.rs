@@ -1,6 +1,6 @@
 use crate::{
     components::template_edit_dialog::open_add_template_dialog,
-    database::{ConversationTemplate, Db, Mode},
+    database::{ConversationTemplate, Db},
     errors::AiChatResult,
     i18n::I18n,
     store::{ChatData, ChatDataEvent},
@@ -12,7 +12,6 @@ use gpui_component::{
     h_flex,
     label::Label,
     list::{List, ListDelegate, ListState},
-    tag::Tag,
     v_flex,
 };
 use std::{ops::Deref, rc::Rc};
@@ -69,21 +68,14 @@ impl RenderOnce for TemplateItem {
                     }),
             )
             .child(
-                v_flex().flex_1().gap_1().child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(Label::new(&template.name).text_sm())
-                        .child(
-                            match template.mode {
-                                Mode::Contextual => Tag::primary(),
-                                Mode::Single => Tag::info(),
-                                Mode::AssistantOnly => Tag::success(),
-                            }
-                            .outline()
-                            .child(template.mode.to_string()),
-                        ),
-                ),
+                v_flex()
+                    .flex_1()
+                    .gap_1()
+                    .child(Label::new(&template.name).text_sm())
+                    .when_some(template.description.as_ref(), |this, description| {
+                        this.child(Label::new(description).text_sm())
+                    })
+                    .child(Label::new(format!("{} prompts", template.prompts.len())).text_xs()),
             )
     }
 }

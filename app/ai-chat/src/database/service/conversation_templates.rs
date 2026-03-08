@@ -7,11 +7,8 @@
  */
 use crate::{
     database::{
-        Mode, Role,
-        model::{
-            SqlConversation, SqlConversationTemplate, SqlNewConversationTemplate,
-            SqlUpdateConversationTemplate,
-        },
+        Role,
+        model::{SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate},
     },
     errors::AiChatResult,
 };
@@ -33,9 +30,6 @@ pub struct ConversationTemplate {
     pub name: String,
     pub icon: String,
     pub description: Option<String>,
-    pub mode: Mode,
-    pub adapter: String,
-    pub template: serde_json::Value,
     pub prompts: Vec<ConversationTemplatePrompt>,
     #[serde(
         rename = "createdTime",
@@ -69,12 +63,9 @@ impl ConversationTemplate {
             id,
             name,
             icon,
-            template,
-            adapter,
             created_time,
             updated_time,
             description,
-            mode,
             prompts,
         } = SqlConversationTemplate::find(id, conn)?;
         Ok(Self {
@@ -83,11 +74,8 @@ impl ConversationTemplate {
             icon,
             created_time,
             updated_time,
-            adapter,
             description,
-            template,
             prompts: serde_json::from_value(prompts)?,
-            mode: mode.parse()?,
         })
     }
     pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
@@ -100,9 +88,6 @@ impl ConversationTemplate {
             created_time,
             updated_time,
             description,
-            template,
-            adapter,
-            mode,
             prompts,
         } in sql_conversation_templates
         {
@@ -113,9 +98,6 @@ impl ConversationTemplate {
                 created_time,
                 updated_time,
                 description,
-                template,
-                adapter,
-                mode: mode.parse()?,
                 prompts: serde_json::from_value(prompts)?,
             });
         }
@@ -125,10 +107,7 @@ impl ConversationTemplate {
         NewConversationTemplate {
             name,
             icon,
-            template,
-            adapter,
             description,
-            mode,
             prompts,
         }: NewConversationTemplate,
         id: i32,
@@ -141,11 +120,8 @@ impl ConversationTemplate {
                 id,
                 name,
                 icon,
-                adapter,
-                template,
                 updated_time: time,
                 description,
-                mode: mode.to_string(),
                 prompts: serde_json::to_value(prompts)?,
             };
             sql_new.update(conn)?;
@@ -154,9 +130,6 @@ impl ConversationTemplate {
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         conn.immediate_transaction(|conn| {
-            if SqlConversation::exists_by_template_id(id, conn)? {
-                return Err(crate::errors::AiChatError::TemplateHasConversation);
-            }
             SqlConversationTemplate::delete_by_id(id, conn)?;
             Ok(())
         })
@@ -168,9 +141,6 @@ pub struct NewConversationTemplate {
     pub name: String,
     pub icon: String,
     pub description: Option<String>,
-    pub mode: Mode,
-    pub adapter: String,
-    pub template: serde_json::Value,
     pub prompts: Vec<ConversationTemplatePrompt>,
 }
 
@@ -180,9 +150,6 @@ impl NewConversationTemplate {
             name,
             icon,
             description,
-            mode,
-            template,
-            adapter,
             prompts,
         } = self;
         let time = OffsetDateTime::now_utc();
@@ -191,12 +158,9 @@ impl NewConversationTemplate {
             let sql_new = SqlNewConversationTemplate {
                 name,
                 icon,
-                template,
-                adapter,
                 created_time: time,
                 updated_time: time,
                 description,
-                mode: mode.to_string(),
                 prompts: serde_json::to_value(prompts)?,
             };
             let SqlConversationTemplate { id, .. } = sql_new.insert(conn)?;

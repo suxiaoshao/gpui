@@ -17,6 +17,7 @@ pub struct ChatDataInner {
 
 #[derive(Debug, Clone)]
 pub struct AddConversationMessage {
+    pub provider: String,
     pub role: Role,
     pub content: Content,
     pub send_content: serde_json::Value,
@@ -577,6 +578,7 @@ mod tests {
             id,
             conversation_id,
             conversation_path: format!("/conversation/{conversation_id}"),
+            provider: "OpenAI".to_string(),
             role: Role::User,
             content: Content::Text(format!("message {id}")),
             send_content: serde_json::json!({}),
@@ -600,7 +602,6 @@ mod tests {
             updated_time: now(),
             info: None,
             messages: vec![],
-            template_id: 1,
         }
     }
 

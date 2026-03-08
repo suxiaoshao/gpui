@@ -6,9 +6,8 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/model/conversation_templates.rs
  */
 use crate::{
-    database::{Mode, service::ConversationTemplatePrompt},
+    database::service::ConversationTemplatePrompt,
     errors::AiChatResult,
-    llm::{Adapter, OpenAIConversationTemplate, OpenAIStreamAdapter},
 };
 
 use super::super::schema::conversation_templates;
@@ -21,9 +20,6 @@ pub struct SqlNewConversationTemplate {
     pub(in super::super) name: String,
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
-    pub(in super::super) mode: String,
-    pub(in super::super) adapter: String,
-    pub(in super::super) template: serde_json::Value,
     pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
@@ -36,9 +32,6 @@ impl SqlNewConversationTemplate {
             name: "基础模板".to_string(),
             icon: "🤖".to_string(),
             description: None,
-            mode: Mode::Contextual.to_string(),
-            adapter: OpenAIStreamAdapter.name().to_string(),
-            template: serde_json::to_value(OpenAIConversationTemplate::default())?,
             prompts: serde_json::to_value(Vec::<ConversationTemplatePrompt>::new())?,
             created_time: now,
             updated_time: now,
@@ -59,9 +52,6 @@ pub struct SqlConversationTemplate {
     pub(in super::super) name: String,
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
-    pub(in super::super) mode: String,
-    pub(in super::super) adapter: String,
-    pub(in super::super) template: serde_json::Value,
     pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
@@ -98,9 +88,6 @@ pub struct SqlUpdateConversationTemplate {
     pub(in super::super) name: String,
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
-    pub(in super::super) mode: String,
-    pub(in super::super) adapter: String,
-    pub(in super::super) template: serde_json::Value,
     pub(in super::super) prompts: serde_json::Value,
     pub(in super::super) updated_time: OffsetDateTime,
 }

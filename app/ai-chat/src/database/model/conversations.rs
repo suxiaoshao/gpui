@@ -13,7 +13,6 @@ pub struct SqlNewConversation<'a> {
     pub(crate) created_time: OffsetDateTime,
     pub(crate) updated_time: OffsetDateTime,
     pub(crate) info: Option<&'a str>,
-    pub(crate) template_id: i32,
 }
 
 impl SqlNewConversation<'_> {
@@ -36,7 +35,6 @@ pub struct SqlConversation {
     pub(crate) created_time: OffsetDateTime,
     pub(crate) updated_time: OffsetDateTime,
     pub(crate) info: Option<String>,
-    pub(crate) template_id: i32,
 }
 
 impl SqlConversation {
@@ -94,17 +92,6 @@ impl SqlConversation {
             .execute(conn)?;
         Ok(())
     }
-    /// check conversation exists by template_id
-    pub fn exists_by_template_id(
-        template_id: i32,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<bool> {
-        let count = diesel::select(diesel::dsl::exists(
-            conversations::table.filter(conversations::template_id.eq(template_id)),
-        ))
-        .get_result(conn)?;
-        Ok(count)
-    }
     /// get all conversations
     pub fn get_all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
         let sql_conversations = conversations::table.load::<Self>(conn)?;
@@ -122,7 +109,6 @@ pub struct SqlUpdateConversation<'a> {
     pub(crate) icon: &'a str,
     pub(crate) updated_time: OffsetDateTime,
     pub(crate) info: Option<&'a str>,
-    pub(crate) template_id: i32,
 }
 
 impl SqlUpdateConversation<'_> {
@@ -141,7 +127,6 @@ impl SqlUpdateConversation<'_> {
             icon,
             path,
             info,
-            template_id,
             ..
         }: &'a SqlConversation,
         old_path_pre: &str,
@@ -158,7 +143,6 @@ impl SqlUpdateConversation<'_> {
             icon,
             updated_time: time,
             info: info.as_ref().map(|a| a.as_str()),
-            template_id: *template_id,
         }
     }
     pub fn move_folder(

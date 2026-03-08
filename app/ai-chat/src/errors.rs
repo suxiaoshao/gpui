@@ -40,14 +40,12 @@ pub enum AiChatError {
     FolderPathExists(String),
     #[error("invalid folder move:{}",.0)]
     InvalidFolderMove(String),
-    #[error("这个 template 的 conversation 还存在,不能删除")]
-    TemplateHasConversation,
     #[error("Extension runtime error")]
     ExtensionRuntimeError,
-    #[error("adapter {} settings not found",.0)]
-    AdapterSettingsNotFound(String),
-    #[error("adapter {} not found",.0)]
-    AdapterNotFound(String),
+    #[error("provider {} settings not found",.0)]
+    ProviderSettingsNotFound(String),
+    #[error("provider {} not found",.0)]
+    ProviderNotFound(String),
     #[error("Wasmtime engine creation failed")]
     WasmtimeEngineCreationFailed,
     #[error("Wasmtime component creation failed")]

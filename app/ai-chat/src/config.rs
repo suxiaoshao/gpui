@@ -9,7 +9,7 @@ use crate::{
     APP_NAME,
     errors::{AiChatError, AiChatResult},
     hotkey::TemporaryData,
-    llm::{Adapter, OpenAIAdapter, OpenAISettings, OpenAIStreamAdapter, OpenAIStreamSettings},
+    llm::{OpenAIProvider, OpenAISettings, Provider, provider_names},
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};
@@ -87,25 +87,22 @@ pub struct AiChatConfig {
     pub http_proxy: Option<String>,
     #[serde(rename = "temporaryHotkey")]
     pub temporary_hotkey: Option<String>,
-    #[serde(rename = "adapterSettings", default)]
-    adapter_settings: HashMap<String, toml::Value>,
+    #[serde(rename = "providerSettings", alias = "adapterSettings", default)]
+    provider_settings: HashMap<String, toml::Value>,
 }
 
 impl Default for AiChatConfig {
     fn default() -> Self {
-        let mut adapter_settings = HashMap::new();
+        let mut provider_settings = HashMap::new();
         if let Ok(settings) = Value::try_from(OpenAISettings::default()) {
-            adapter_settings.insert(OpenAIAdapter.name().to_string(), settings);
-        }
-        if let Ok(settings) = Value::try_from(OpenAIStreamSettings::default()) {
-            adapter_settings.insert(OpenAIStreamAdapter.name().to_string(), settings);
+            provider_settings.insert(OpenAIProvider.name().to_string(), settings);
         }
         Self {
             theme: Default::default(),
             language: Default::default(),
             http_proxy: Default::default(),
             temporary_hotkey: Default::default(),
-            adapter_settings,
+            provider_settings,
         }
     }
 }
@@ -113,6 +110,22 @@ impl Default for AiChatConfig {
 impl Global for AiChatConfig {}
 
 impl AiChatConfig {
+    fn normalize_provider_settings(&mut self) {
+        let current_openai = self.provider_settings.remove(OpenAIProvider.name());
+        let legacy_stream = self.provider_settings.remove("OpenAI Stream");
+        let legacy_openai = self.provider_settings.remove("OpenAI");
+        let selected = current_openai.or(legacy_stream).or(legacy_openai);
+        self.provider_settings.retain(|name, _| provider_names().contains(&name.as_str()));
+        let normalized = selected
+            .and_then(|value| value.try_into::<OpenAISettings>().ok())
+            .map(OpenAISettings::normalized)
+            .unwrap_or_default();
+        if let Ok(settings) = Value::try_from(normalized) {
+            self.provider_settings
+                .insert(OpenAIProvider.name().to_string(), settings);
+        }
+    }
+
     pub fn path() -> AiChatResult<PathBuf> {
         let file = dirs_next::config_dir()
             .ok_or(AiChatError::DbPath)?
@@ -125,7 +138,9 @@ impl AiChatConfig {
     }
     pub fn save(&self) -> AiChatResult<()> {
         let config_path = Self::path()?;
-        let config_str = toml::to_string_pretty(&self)?;
+        let mut config = self.clone();
+        config.normalize_provider_settings();
+        let config_str = toml::to_string_pretty(&config)?;
         std::fs::write(config_path, config_str)?;
         Ok(())
     }
@@ -153,13 +168,15 @@ impl AiChatConfig {
                 }
             }
         };
+        let mut config = config;
+        config.normalize_provider_settings();
         Ok(config)
     }
-    pub(crate) fn get_adapter_settings(&self, adapter: &str) -> Option<&toml::Value> {
-        self.adapter_settings.get(adapter)
+    pub(crate) fn get_provider_settings(&self, provider: &str) -> Option<&toml::Value> {
+        self.provider_settings.get(provider)
     }
-    pub(crate) fn set_adapter_settings(&mut self, adapter: &str, settings: toml::Value) {
-        self.adapter_settings.insert(adapter.to_string(), settings);
+    pub(crate) fn set_provider_settings(&mut self, provider: &str, settings: toml::Value) {
+        self.provider_settings.insert(provider.to_string(), settings);
     }
     pub(crate) fn get_http_proxy(&self) -> Option<&str> {
         self.http_proxy.as_deref()

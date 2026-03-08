@@ -4,13 +4,13 @@ use crate::{
         model::{SqlConversation, SqlConversationTemplate, SqlFolder, SqlMessage},
     },
     errors::AiChatResult,
-    llm::{Message as FetchMessage, adapter_by_name},
+    llm::{Message as FetchMessage, provider_by_name},
 };
 use diesel::{SqliteConnection, connection::SimpleConnection};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
-pub(super) fn v1_to_v2(
+pub(super) fn v1_to_v3(
     v1_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -21,11 +21,42 @@ pub(super) fn v1_to_v2(
                 .into_iter()
                 .map(LegacyTemplate::try_from)
                 .collect::<AiChatResult<_>>()?,
-            conversations: SqlConversation::get_all(v1_conn)?,
-            messages: v1::SqlMessageV1::all(v1_conn)?
+            conversations: v2::SqlConversationV2::all(v1_conn)?
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            messages: LegacyMessageSource::V1(
+                v1::SqlMessageV1::all(v1_conn)?
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            ),
+        },
+        target_conn,
+    )
+}
+
+pub(super) fn v2_to_v3(
+    v2_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    migrate_legacy_store(
+        LegacyData {
+            folders: SqlFolder::all(v2_conn)?,
+            templates: v2::SqlConversationTemplateV2::all(v2_conn)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            conversations: v2::SqlConversationV2::all(v2_conn)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            messages: LegacyMessageSource::V2(
+                v2::SqlMessageV2::all(v2_conn)?
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            ),
         },
         target_conn,
     )
@@ -41,21 +72,22 @@ fn migrate_legacy_store(data: LegacyData, target_conn: &mut SqliteConnection) ->
     target_conn.immediate_transaction(|target_conn| {
         target_conn.batch_execute(CREATE_TABLE_SQL)?;
 
-        let migrated_messages = build_migrated_messages(&templates, &conversations, messages)?;
+        let migrated_messages = match messages {
+            LegacyMessageSource::V1(messages) => {
+                build_v1_migrated_messages(&templates, &conversations, messages)?
+            }
+            LegacyMessageSource::V2(messages) => {
+                build_v2_migrated_messages(&templates, &conversations, messages)?
+            }
+        };
 
         SqlFolder::migration_save(folders, target_conn)?;
-
-        let templates = templates
-            .iter()
-            .cloned()
-            .map(Into::into)
-            .collect::<Vec<SqlConversationTemplate>>();
-        SqlConversationTemplate::migration_save(templates, target_conn)?;
-
-        SqlConversation::migration_save(conversations, target_conn)?;
-
+        SqlConversationTemplate::migration_save(
+            templates.iter().cloned().map(Into::into).collect(),
+            target_conn,
+        )?;
+        SqlConversation::migration_save(conversations.iter().cloned().map(Into::into).collect(), target_conn)?;
         SqlMessage::migration_save(migrated_messages, target_conn)?;
-
         Ok(())
     })
 }
@@ -63,8 +95,13 @@ fn migrate_legacy_store(data: LegacyData, target_conn: &mut SqliteConnection) ->
 struct LegacyData {
     folders: Vec<SqlFolder>,
     templates: Vec<LegacyTemplate>,
-    conversations: Vec<SqlConversation>,
-    messages: Vec<LegacyMessage>,
+    conversations: Vec<LegacyConversation>,
+    messages: LegacyMessageSource,
+}
+
+enum LegacyMessageSource {
+    V1(Vec<LegacyMessageV1>),
+    V2(Vec<LegacyMessageV2>),
 }
 
 #[derive(Clone)]
@@ -74,7 +111,7 @@ struct LegacyTemplate {
     icon: String,
     description: Option<String>,
     mode: Mode,
-    adapter: String,
+    provider: String,
     template: serde_json::Value,
     prompts: serde_json::Value,
     created_time: OffsetDateTime,
@@ -88,9 +125,6 @@ impl From<LegacyTemplate> for SqlConversationTemplate {
             name: value.name,
             icon: value.icon,
             description: value.description,
-            mode: value.mode.to_string(),
-            adapter: value.adapter,
-            template: value.template,
             prompts: value.prompts,
             created_time: value.created_time,
             updated_time: value.updated_time,
@@ -99,7 +133,35 @@ impl From<LegacyTemplate> for SqlConversationTemplate {
 }
 
 #[derive(Clone)]
-struct LegacyMessage {
+struct LegacyConversation {
+    id: i32,
+    folder_id: Option<i32>,
+    path: String,
+    title: String,
+    icon: String,
+    created_time: OffsetDateTime,
+    updated_time: OffsetDateTime,
+    info: Option<String>,
+    template_id: i32,
+}
+
+impl From<LegacyConversation> for SqlConversation {
+    fn from(value: LegacyConversation) -> Self {
+        Self {
+            id: value.id,
+            folder_id: value.folder_id,
+            path: value.path,
+            title: value.title,
+            icon: value.icon,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+            info: value.info,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LegacyMessageV1 {
     id: i32,
     conversation_id: i32,
     conversation_path: String,
@@ -112,27 +174,33 @@ struct LegacyMessage {
     end_time: OffsetDateTime,
 }
 
-impl From<v1::SqlMessageV1> for LegacyMessage {
-    fn from(value: v1::SqlMessageV1) -> Self {
-        Self {
-            id: value.id,
-            conversation_id: value.conversation_id,
-            conversation_path: value.conversation_path,
-            role: value.role,
-            content: value.content,
-            status: value.status,
-            created_time: value.created_time,
-            updated_time: value.updated_time,
-            start_time: value.start_time,
-            end_time: value.end_time,
-        }
+#[derive(Clone)]
+struct LegacyMessageV2 {
+    id: i32,
+    conversation_id: i32,
+    conversation_path: String,
+    role: String,
+    content: String,
+    send_content: serde_json::Value,
+    status: String,
+    created_time: OffsetDateTime,
+    updated_time: OffsetDateTime,
+    start_time: OffsetDateTime,
+    end_time: OffsetDateTime,
+    error: Option<String>,
+}
+
+fn normalize_legacy_provider_name(name: &str) -> &str {
+    match name {
+        "OpenAI Stream" | "OpenAI" => "OpenAI",
+        _ => name,
     }
 }
 
-fn build_migrated_messages(
+fn build_v1_migrated_messages(
     templates: &[LegacyTemplate],
-    conversations: &[SqlConversation],
-    messages: Vec<LegacyMessage>,
+    conversations: &[LegacyConversation],
+    messages: Vec<LegacyMessageV1>,
 ) -> AiChatResult<Vec<SqlMessage>> {
     let templates_by_id = templates
         .iter()
@@ -142,8 +210,7 @@ fn build_migrated_messages(
         .iter()
         .map(|conversation| (conversation.id, conversation.template_id))
         .collect::<HashMap<_, _>>();
-
-    let mut messages_by_conversation = HashMap::<i32, Vec<LegacyMessage>>::new();
+    let mut messages_by_conversation = HashMap::<i32, Vec<LegacyMessageV1>>::new();
     for message in messages {
         messages_by_conversation
             .entry(message.conversation_id)
@@ -160,20 +227,17 @@ fn build_migrated_messages(
         let Some(template) = templates_by_id.get(template_id) else {
             continue;
         };
-        migrated.extend(build_conversation_messages(
-            template,
-            conversation_messages,
-        )?);
+        migrated.extend(build_conversation_messages(template, conversation_messages)?);
     }
-
     migrated.sort_by_key(|message| (message.conversation_id, message.created_time, message.id));
     Ok(migrated)
 }
 
 fn build_conversation_messages(
     template: &LegacyTemplate,
-    messages: Vec<LegacyMessage>,
+    messages: Vec<LegacyMessageV1>,
 ) -> AiChatResult<Vec<SqlMessage>> {
+    let provider = normalize_legacy_provider_name(&template.provider).to_string();
     let mut history = Vec::<FetchMessage>::new();
     let mut current_round_payload = None::<serde_json::Value>;
     let mut last_payload = None::<serde_json::Value>;
@@ -199,6 +263,7 @@ fn build_conversation_messages(
             id: message.id,
             conversation_id: message.conversation_id,
             conversation_path: message.conversation_path.clone(),
+            provider: provider.clone(),
             role: message.role.clone(),
             content: message.content.clone(),
             send_content,
@@ -217,8 +282,51 @@ fn build_conversation_messages(
             current_round_payload = None;
         }
     }
-
     Ok(migrated)
+}
+
+fn build_v2_migrated_messages(
+    templates: &[LegacyTemplate],
+    conversations: &[LegacyConversation],
+    messages: Vec<LegacyMessageV2>,
+) -> AiChatResult<Vec<SqlMessage>> {
+    let templates_by_id = templates
+        .iter()
+        .map(|template| (template.id, template))
+        .collect::<HashMap<_, _>>();
+    let conversations_by_id = conversations
+        .iter()
+        .map(|conversation| (conversation.id, conversation.template_id))
+        .collect::<HashMap<_, _>>();
+
+    messages
+        .into_iter()
+        .map(|message| {
+            let template_id = conversations_by_id
+                .get(&message.conversation_id)
+                .copied()
+                .unwrap_or_default();
+            let provider = templates_by_id
+                .get(&template_id)
+                .map(|template| normalize_legacy_provider_name(&template.provider).to_string())
+                .unwrap_or_else(|| "OpenAI".to_string());
+            Ok(SqlMessage {
+                id: message.id,
+                conversation_id: message.conversation_id,
+                conversation_path: message.conversation_path,
+                provider,
+                role: message.role,
+                content: message.content,
+                send_content: message.send_content,
+                status: message.status,
+                created_time: message.created_time,
+                updated_time: message.updated_time,
+                start_time: message.start_time,
+                end_time: message.end_time,
+                error: message.error,
+            })
+        })
+        .collect()
 }
 
 fn build_request_payload(
@@ -246,7 +354,11 @@ fn build_request_payload(
     let mut request_messages = prompts;
     request_messages.extend(history);
     request_messages.push(FetchMessage::new(role, send_text.to_string()));
-    adapter_by_name(&template.adapter)?.request_body(&template.template, request_messages)
+
+    let mut request_template = template.template.clone();
+    request_template["stream"] = serde_json::Value::Bool(template.provider == "OpenAI Stream");
+    provider_by_name(normalize_legacy_provider_name(&template.provider))?
+        .request_body(&request_template, request_messages)
 }
 
 fn message_send_text(content: &str) -> AiChatResult<String> {
@@ -317,7 +429,7 @@ pub(super) mod v1 {
     pub(crate) struct SqlMessageV1 {
         pub id: i32,
         pub conversation_id: i32,
-        pub(crate) conversation_path: String,
+        pub conversation_path: String,
         pub role: String,
         pub content: String,
         pub status: String,
@@ -334,6 +446,121 @@ pub(super) mod v1 {
     }
 }
 
+pub(super) mod v2 {
+    use crate::errors::AiChatResult;
+    use diesel::prelude::*;
+    use time::OffsetDateTime;
+
+    diesel::table! {
+        conversation_templates (id) {
+            id -> Integer,
+            name -> Text,
+            icon -> Text,
+            description -> Nullable<Text>,
+            mode -> Text,
+            adapter -> Text,
+            template -> Json,
+            prompts -> Json,
+            created_time -> TimestamptzSqlite,
+            updated_time -> TimestamptzSqlite,
+        }
+    }
+
+    diesel::table! {
+        conversations (id) {
+            id -> Integer,
+            folder_id -> Nullable<Integer>,
+            path -> Text,
+            title -> Text,
+            icon -> Text,
+            created_time -> TimestamptzSqlite,
+            updated_time -> TimestamptzSqlite,
+            info -> Nullable<Text>,
+            template_id -> Integer,
+        }
+    }
+
+    diesel::table! {
+        messages (id) {
+            id -> Integer,
+            conversation_id -> Integer,
+            conversation_path -> Text,
+            role -> Text,
+            content -> Text,
+            send_content -> Json,
+            status -> Text,
+            created_time -> TimestamptzSqlite,
+            updated_time -> TimestamptzSqlite,
+            start_time -> TimestamptzSqlite,
+            end_time -> TimestamptzSqlite,
+            error -> Nullable<Text>,
+        }
+    }
+
+    #[derive(Debug, Queryable)]
+    pub(crate) struct SqlConversationTemplateV2 {
+        pub id: i32,
+        pub name: String,
+        pub icon: String,
+        pub description: Option<String>,
+        pub mode: String,
+        pub adapter: String,
+        pub template: serde_json::Value,
+        pub prompts: serde_json::Value,
+        pub created_time: OffsetDateTime,
+        pub updated_time: OffsetDateTime,
+    }
+
+    impl SqlConversationTemplateV2 {
+        pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+            conversation_templates::table
+                .load::<Self>(conn)
+                .map_err(|e| e.into())
+        }
+    }
+
+    #[derive(Debug, Queryable)]
+    pub(crate) struct SqlConversationV2 {
+        pub id: i32,
+        pub folder_id: Option<i32>,
+        pub path: String,
+        pub title: String,
+        pub icon: String,
+        pub created_time: OffsetDateTime,
+        pub updated_time: OffsetDateTime,
+        pub info: Option<String>,
+        pub template_id: i32,
+    }
+
+    impl SqlConversationV2 {
+        pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+            conversations::table.load::<Self>(conn).map_err(|e| e.into())
+        }
+    }
+
+    #[derive(Debug, Queryable)]
+    pub(crate) struct SqlMessageV2 {
+        pub id: i32,
+        pub conversation_id: i32,
+        pub conversation_path: String,
+        pub role: String,
+        pub content: String,
+        pub send_content: serde_json::Value,
+        pub status: String,
+        pub created_time: OffsetDateTime,
+        pub updated_time: OffsetDateTime,
+        pub start_time: OffsetDateTime,
+        pub end_time: OffsetDateTime,
+        pub error: Option<String>,
+    }
+
+    impl SqlMessageV2 {
+        pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+            messages::table.load::<Self>(conn).map_err(|e| e.into())
+        }
+    }
+}
+
 impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
     type Error = crate::errors::AiChatError;
 
@@ -344,7 +571,7 @@ impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
             icon: value.icon,
             description: value.description,
             mode: value.mode.parse()?,
-            adapter: value.adapter,
+            provider: value.adapter,
             template: serde_json::from_str(&value.template)?,
             prompts: serde_json::from_str(&value.prompts)?,
             created_time: value.created_time,
@@ -353,10 +580,79 @@ impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
     }
 }
 
+impl From<v2::SqlConversationTemplateV2> for LegacyTemplate {
+    fn from(value: v2::SqlConversationTemplateV2) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            icon: value.icon,
+            description: value.description,
+            mode: value.mode.parse().unwrap_or(Mode::Contextual),
+            provider: value.adapter,
+            template: value.template,
+            prompts: value.prompts,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+        }
+    }
+}
+
+impl From<v2::SqlConversationV2> for LegacyConversation {
+    fn from(value: v2::SqlConversationV2) -> Self {
+        Self {
+            id: value.id,
+            folder_id: value.folder_id,
+            path: value.path,
+            title: value.title,
+            icon: value.icon,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+            info: value.info,
+            template_id: value.template_id,
+        }
+    }
+}
+
+impl From<v1::SqlMessageV1> for LegacyMessageV1 {
+    fn from(value: v1::SqlMessageV1) -> Self {
+        Self {
+            id: value.id,
+            conversation_id: value.conversation_id,
+            conversation_path: value.conversation_path,
+            role: value.role,
+            content: value.content,
+            status: value.status,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+            start_time: value.start_time,
+            end_time: value.end_time,
+        }
+    }
+}
+
+impl From<v2::SqlMessageV2> for LegacyMessageV2 {
+    fn from(value: v2::SqlMessageV2) -> Self {
+        Self {
+            id: value.id,
+            conversation_id: value.conversation_id,
+            conversation_path: value.conversation_path,
+            role: value.role,
+            content: value.content,
+            send_content: value.send_content,
+            status: value.status,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            error: value.error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::v1_to_v2;
-    use crate::database::model::{SqlConversationTemplate, SqlMessage};
+    use super::{v1_to_v3, v2_to_v3};
+    use crate::database::model::{SqlConversation, SqlConversationTemplate, SqlMessage};
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query,
     };
@@ -426,6 +722,9 @@ create table messages
 );
 "#;
 
+    const V2_CREATE_TABLE_SQL: &str =
+        include_str!("../../migrations/2025-12-23-141452-0000_create_tables/up.sql");
+
     fn temp_db_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -435,7 +734,7 @@ create table messages
     }
 
     fn template_json() -> &'static str {
-        r#"{"model":"gpt-4o","temperature":1.0,"top_p":1.0,"n":1,"max_completion_tokens":null,"presence_penalty":0.0,"frequency_penalty":0.0}"#
+        r#"{"model":"gpt-4o","stream":false,"temperature":1.0,"top_p":1.0,"n":1,"max_completion_tokens":null,"presence_penalty":0.0,"frequency_penalty":0.0}"#
     }
 
     fn insert_seed_data(
@@ -455,10 +754,10 @@ create table messages
         .execute(conn)?;
         if with_send_content {
             sql_query(
-                "insert into messages (id, conversation_id, conversation_path, role, content, send_content, status, created_time, updated_time, start_time, end_time)
+                "insert into messages (id, conversation_id, conversation_path, role, content, send_content, status, created_time, updated_time, start_time, end_time, error)
                  values
-                 (1, 1, '/默认', 'user', '{\"tag\":\"text\",\"value\":\"hello\"}', '{\"stale\":true}', 'normal', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00'),
-                 (2, 1, '/默认', 'assistant', '{\"tag\":\"text\",\"value\":\"world\"}', '{\"stale\":true}', 'normal', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00')",
+                 (1, 1, '/默认', 'user', '{\"tag\":\"text\",\"value\":\"hello\"}', '{\"model\":\"gpt-4o\",\"stream\":false}', 'normal', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null),
+                 (2, 1, '/默认', 'assistant', '{\"tag\":\"text\",\"value\":\"world\"}', '{\"model\":\"gpt-4o\",\"stream\":false}', 'normal', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00', '2026-01-01 00:00:01+00:00', null)",
             )
             .execute(conn)?;
         } else {
@@ -476,22 +775,26 @@ create table messages
     #[test]
     fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()> {
         let v1_path = temp_db_path("v1");
-        let v2_path = temp_db_path("v2");
+        let v3_path = temp_db_path("v3");
         let mut v1_conn = SqliteConnection::establish(v1_path.to_str().expect("v1 path"))?;
-        let mut v2_conn = SqliteConnection::establish(v2_path.to_str().expect("v2 path"))?;
+        let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
 
         v1_conn.batch_execute(V1_CREATE_TABLE_SQL)?;
         insert_seed_data(&mut v1_conn, false)?;
 
-        v1_to_v2(&mut v1_conn, &mut v2_conn)?;
+        v1_to_v3(&mut v1_conn, &mut v3_conn)?;
 
-        let templates = SqlConversationTemplate::all(&mut v2_conn)?;
+        let templates = SqlConversationTemplate::all(&mut v3_conn)?;
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].prompts, serde_json::json!([]));
 
-        let messages = SqlMessage::all(&mut v2_conn)?;
+        let conversations = SqlConversation::get_all(&mut v3_conn)?;
+        assert_eq!(conversations.len(), 1);
+
+        let messages = SqlMessage::all(&mut v3_conn)?;
         assert_eq!(messages.len(), 2);
         assert!(messages.iter().all(|message| message.error.is_none()));
+        assert!(messages.iter().all(|message| message.provider == "OpenAI"));
         let first_send_content = &messages[0].send_content;
         let second_send_content = &messages[1].send_content;
         assert_eq!(first_send_content["model"], "gpt-4o");
@@ -499,9 +802,33 @@ create table messages
         assert_eq!(second_send_content, first_send_content);
 
         drop(v1_conn);
-        drop(v2_conn);
+        drop(v3_conn);
         let _ = fs::remove_file(v1_path);
+        let _ = fs::remove_file(v3_path);
+        Ok(())
+    }
+
+    #[test]
+    fn v2_migration_keeps_send_content_and_adds_provider() -> anyhow::Result<()> {
+        let v2_path = temp_db_path("v2");
+        let v3_path = temp_db_path("v3");
+        let mut v2_conn = SqliteConnection::establish(v2_path.to_str().expect("v2 path"))?;
+        let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
+
+        v2_conn.batch_execute(V2_CREATE_TABLE_SQL)?;
+        insert_seed_data(&mut v2_conn, true)?;
+
+        v2_to_v3(&mut v2_conn, &mut v3_conn)?;
+
+        let messages = SqlMessage::all(&mut v3_conn)?;
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|message| message.provider == "OpenAI"));
+        assert_eq!(messages[0].send_content["model"], "gpt-4o");
+
+        drop(v2_conn);
+        drop(v3_conn);
         let _ = fs::remove_file(v2_path);
+        let _ = fs::remove_file(v3_path);
         Ok(())
     }
 }

@@ -1,18 +1,14 @@
 use crate::{
-    components::chat_input::{ChatInput, Pause, Send, input_state},
+    components::chat_form::{ChatForm, ChatFormEvent, ChatFormSnapshot},
     components::message::MessageView,
-    components::provider_chat_form::ProviderChatFormView,
-    components::provider_template_form::ProviderTemplateFormState,
     config::AiChatConfig,
     database::{
-        Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Db, Message, Mode,
-        NewMessage, Role, Status,
+        Content, Conversation, Db, Message, Mode, NewMessage, Role, Status,
     },
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
-    i18n::I18n,
-    llm::{FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter},
+    llm::{FetchRunner, provider_by_name},
     store::{ChatData, ChatDataInner},
 };
 use async_compat::CompatExt;
@@ -22,15 +18,7 @@ use gpui::{
     ListAlignment, ListState, ParentElement, Render, SharedString, Styled, Subscription, Task,
     WeakEntity, Window, div, list, prelude::FluentBuilder, px,
 };
-use gpui_component::{
-    WindowExt, h_flex,
-    input::InputState,
-    label::Label,
-    notification::{Notification, NotificationType},
-    scroll::ScrollableElement,
-    select::{SearchableVec, SelectState},
-    v_flex,
-};
+use gpui_component::{h_flex, label::Label, scroll::ScrollableElement, v_flex};
 use smol::stream::StreamExt;
 use std::ops::Deref;
 use time::OffsetDateTime;
@@ -43,10 +31,7 @@ pub(crate) struct ConversationPanelView {
     conversation_info: Option<SharedString>,
     message_list: ListState,
     message_revisions: Vec<MessageRevision>,
-    input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<SearchableVec<String>>>,
-    template_snapshot: Option<ConversationTemplateSnapshot>,
-    provider_chat_form: Option<Entity<ProviderChatFormView>>,
+    chat_form: Entity<ChatForm>,
     _subscriptions: Vec<Subscription>,
     task: Option<RunningTask>,
 }
@@ -118,23 +103,18 @@ fn running_task_contains_message(
     user_message_id == Some(message_id) || assistant_message_id == Some(message_id)
 }
 
-#[derive(Clone)]
-struct ConversationTemplateSnapshot {
-    adapter_name: String,
-    template: serde_json::Value,
-    prompts: Vec<ConversationTemplatePrompt>,
-    mode: Mode,
-}
-
-// Initializes the panel and keeps template-backed input state in sync.
+// Initializes the panel and keeps chat-form state in sync.
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input_state = input_state(window, cx);
-        let _subscriptions = vec![];
-        let extension_container = cx.global::<ExtensionContainer>();
-        let all_extensions = extension_container.get_all_config();
-        let (template_snapshot, provider_chat_form) =
-            Self::load_template_state(conversation.template_id, window, cx);
+        let chat_form = cx.new(|cx| ChatForm::new(None, window, cx));
+        let _subscriptions = vec![cx.subscribe_in(
+            &chat_form,
+            window,
+            |this, _chat_form, event: &ChatFormEvent, window, cx| match event {
+                ChatFormEvent::SendRequested => this.on_send_requested(window, cx),
+                ChatFormEvent::PauseRequested => this.on_pause_requested(cx),
+            },
+        )];
         Self {
             conversation_id: conversation.id,
             conversation_icon: conversation.icon.clone().into(),
@@ -142,114 +122,9 @@ impl ConversationPanelView {
             conversation_info: conversation.info.clone().map(Into::into),
             message_list: ListState::new(0, ListAlignment::Top, px(1000.)),
             message_revisions: Vec::new(),
-            input_state,
-            template_snapshot,
-            provider_chat_form,
+            chat_form,
             _subscriptions,
-            extension_state: cx.new(|cx| {
-                SelectState::new(
-                    SearchableVec::new(
-                        all_extensions
-                            .into_iter()
-                            .map(|x| x.name)
-                            .collect::<Vec<_>>(),
-                    ),
-                    None,
-                    window,
-                    cx,
-                )
-                .searchable(true)
-            }),
             task: None,
-        }
-    }
-
-    fn load_template_state(
-        template_id: i32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> (
-        Option<ConversationTemplateSnapshot>,
-        Option<Entity<ProviderChatFormView>>,
-    ) {
-        let template = {
-            let Ok(mut conn) = cx.global::<Db>().get() else {
-                event!(
-                    Level::ERROR,
-                    "load conversation template failed: open database"
-                );
-                return (None, None);
-            };
-            match ConversationTemplate::find(template_id, &mut conn) {
-                Ok(template) => template,
-                Err(err) => {
-                    event!(Level::ERROR, "load conversation template failed: {}", err);
-                    return (None, None);
-                }
-            }
-        };
-        let snapshot = ConversationTemplateSnapshot {
-            adapter_name: template.adapter.clone(),
-            template: template.template.clone(),
-            prompts: template.prompts.clone(),
-            mode: template.mode,
-        };
-        let provider_chat_form =
-            Self::build_provider_chat_form(&snapshot.adapter_name, &snapshot.template, window, cx);
-        (Some(snapshot), provider_chat_form)
-    }
-
-    fn build_provider_chat_form(
-        adapter_name: &str,
-        template: &serde_json::Value,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<ProviderChatFormView>> {
-        let template_items =
-            match template_inputs_by_adapter(adapter_name, cx.global::<AiChatConfig>()) {
-                Ok(items) => items,
-                Err(err) => {
-                    event!(
-                        Level::ERROR,
-                        "load chat form template inputs failed: {}",
-                        err
-                    );
-                    return None;
-                }
-            };
-        let layout = match chat_form_layout_by_adapter(adapter_name) {
-            Ok(layout) => layout,
-            Err(err) => {
-                event!(Level::ERROR, "load chat form layout failed: {}", err);
-                return None;
-            }
-        };
-        let base_template = template.clone();
-        let form =
-            cx.new(|cx| ProviderTemplateFormState::new(template_items, template, window, cx));
-        Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)))
-    }
-
-    fn collect_runtime_template_override(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Option<serde_json::Value>> {
-        let Some(provider_chat_form) = &self.provider_chat_form else {
-            return Some(None);
-        };
-        match provider_chat_form.read(cx).effective_template(cx) {
-            Ok(template) => Some(Some(template)),
-            Err(err) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t("notify-invalid-template"))
-                        .message(err)
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-                None
-            }
         }
     }
 
@@ -281,35 +156,34 @@ impl ConversationPanelView {
 
 // Handles user-triggered conversation actions.
 impl ConversationPanelView {
-    fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input_state.read(cx).value();
-        let extension_name = self.extension_state.read(cx).selected_value().cloned();
+    fn on_send_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = match self.chat_form.read(cx).snapshot(cx) {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return,
+            Err(err) => {
+                event!(Level::ERROR, "collect chat form snapshot failed: {}", err);
+                return;
+            }
+        };
         let span = span!(
             Level::INFO,
             "Fetch",
-            send_content = text.to_string(),
-            extension_name = extension_name.clone()
+            send_content = snapshot.text.clone(),
+            extension_name = snapshot.extension_name.clone()
         );
-        if self.can_start_task() && !text.is_empty() {
-            let Some(runtime_template) = self.collect_runtime_template_override(window, cx) else {
-                return;
-            };
+        if self.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
             let conversation_id = self.conversation_id;
             let chat_data = cx.global::<ChatData>().deref().clone();
-            let template_snapshot = self.template_snapshot.clone();
             let task = cx.spawn_in(window, async move |this, cx| {
                 let state = this.clone();
                 let context = FetchContext {
                     chat_data,
                     conversation_id,
-                    text: text.clone(),
-                    extension_name,
+                    composer_snapshot: snapshot,
                     extension_container,
                     config,
-                    template_snapshot,
-                    runtime_template,
                 };
                 if let Err(err) = Self::fetch(state, context, cx)
                     .compat()
@@ -317,16 +191,18 @@ impl ConversationPanelView {
                     .await
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
-                    let _ = this.update_result(cx, |this, _cx| {
-                        this.clear_running_task_for_message(None);
+                    let _ = this.update_result(cx, |this, cx| {
+                        this.clear_running_task_for_message(None, cx);
                     });
                 }
             });
             self.task = Some(RunningTask::new(task));
+            self.chat_form
+                .update(cx, |chat_form, cx| chat_form.set_running(true, cx));
         }
     }
 
-    fn on_pause_action(&mut self, _: &Pause, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_pause_requested(&mut self, cx: &mut Context<Self>) {
         if let Err(err) = self.pause_task(cx) {
             event!(Level::ERROR, "pause fetch failed: {}", err);
             cx.notify();
@@ -365,6 +241,8 @@ impl ConversationPanelView {
         for message in &paused_messages {
             Self::persist_message_snapshot(message, conn)?;
         }
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
         cx.notify();
         Ok(())
     }
@@ -411,8 +289,8 @@ impl ConversationPanelView {
             .await
             {
                 event!(Level::ERROR, "resend message failed: {}", err);
-                let _ = this.update_result(cx, |this, _cx| {
-                    this.clear_running_task_for_message(Some(message_id));
+                let _ = this.update_result(cx, |this, cx| {
+                    this.clear_running_task_for_message(Some(message_id), cx);
                 });
             }
         });
@@ -442,12 +320,14 @@ impl ConversationPanelView {
         }
     }
 
-    fn clear_running_task_for_message(&mut self, message_id: Option<i32>) {
+    fn clear_running_task_for_message(&mut self, message_id: Option<i32>, cx: &mut Context<Self>) {
         let should_clear = self.task.as_ref().is_some_and(|task| {
             message_id.is_none_or(|message_id| task.contains_message(message_id))
         });
         if should_clear {
             self.task = None;
+            self.chat_form
+                .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
         }
     }
 }
@@ -460,7 +340,7 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "conversation fetch");
-        let request_text = context.text.to_string();
+        let request_text = context.composer_snapshot.text.clone();
         Self::clear_input(state.clone(), cx)?;
         let Some(prepared) = Self::prepare_fetch(state.clone(), &context, request_text, cx).await?
         else {
@@ -486,17 +366,14 @@ impl ConversationPanelView {
         message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let (message, template) = cx.read_global_result(|db: &Db, _window, _cx| {
+        let message = cx.read_global_result(|db: &Db, _window, _cx| {
             let conn = &mut db.get()?;
-            let message = Message::find(message_id, conn)?;
-            let conversation = Conversation::find(conversation_id, conn)?;
-            let template = ConversationTemplate::find(conversation.template_id, conn)?;
-            Ok::<_, AiChatError>((message, template))
+            Message::find(message_id, conn)
         })??;
 
         if message.conversation_id != conversation_id || message.role != Role::Assistant {
-            state.update_result(cx, |this, _cx| {
-                this.clear_running_task_for_message(Some(message_id));
+            state.update_result(cx, |this, cx| {
+                this.clear_running_task_for_message(Some(message_id), cx);
             })?;
             return Ok(());
         }
@@ -514,7 +391,7 @@ impl ConversationPanelView {
                 chat_data,
                 conversation_id,
                 config,
-                adapter_name: template.adapter,
+                provider_name: message.provider.clone(),
                 request_body: message.send_content,
             },
             message_id,
@@ -529,15 +406,15 @@ impl ConversationPanelView {
         assistant_message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let adapter = adapter_by_name(&context.adapter_name)?;
+        let provider = provider_by_name(&context.provider_name)?;
         let settings = context
             .config
-            .get_adapter_settings(adapter.name())
-            .ok_or(AiChatError::AdapterSettingsNotFound(
-                adapter.name().to_string(),
+            .get_provider_settings(provider.name())
+            .ok_or(AiChatError::ProviderSettingsNotFound(
+                provider.name().to_string(),
             ))?
             .clone();
-        let stream = adapter.fetch_by_request_body(context.config, settings, &context.request_body);
+        let stream = provider.fetch_by_request_body(context.config, settings, &context.request_body);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
@@ -576,9 +453,8 @@ impl ConversationPanelView {
 
     fn clear_input(state: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> AiChatResult<()> {
         state.update_in_result(cx, |this, window, cx| {
-            this.input_state.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-            });
+            this.chat_form
+                .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
         })?;
         Ok(())
     }
@@ -589,7 +465,7 @@ impl ConversationPanelView {
         request_text: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Option<PreparedFetch>> {
-        match context.extension_name.as_deref() {
+        match context.composer_snapshot.extension_name.as_deref() {
             Some(extension_name) => {
                 Self::prepare_extension_fetch(state, context, extension_name, request_text, cx)
                     .await
@@ -606,7 +482,12 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Option<PreparedFetch>> {
         let user_message =
-            Self::insert_loading_user_message(context.conversation_id, &request_text, cx)?;
+            Self::insert_loading_user_message(
+                context.conversation_id,
+                &context.composer_snapshot.provider_name,
+                &request_text,
+                cx,
+            )?;
         let user_message_id = user_message.id;
         state.update_result(cx, |this, _cx| {
             this.bind_running_task_messages(Some(user_message_id), None);
@@ -658,6 +539,7 @@ impl ConversationPanelView {
                     let assistant_message = Message::insert(
                         NewMessage::new(
                             context.conversation_id,
+                            &context.composer_snapshot.provider_name,
                             Role::Assistant,
                             &Content::Text(String::new()),
                             send_content,
@@ -698,6 +580,7 @@ impl ConversationPanelView {
                 let user_message = Message::insert(
                     NewMessage::new(
                         context.conversation_id,
+                        &context.composer_snapshot.provider_name,
                         Role::User,
                         &user_content,
                         send_content,
@@ -708,6 +591,7 @@ impl ConversationPanelView {
                 let assistant_message = Message::insert(
                     NewMessage::new(
                         context.conversation_id,
+                        &context.composer_snapshot.provider_name,
                         Role::Assistant,
                         &Content::Text(String::new()),
                         send_content,
@@ -735,34 +619,12 @@ impl ConversationPanelView {
             let conversation = Conversation::find(context.conversation_id, conn)?;
             Ok::<_, AiChatError>(conversation.messages)
         })??;
-        let (adapter_name, template, prompts, mode) = match &context.template_snapshot {
-            Some(snapshot) => (
-                snapshot.adapter_name.clone(),
-                context
-                    .runtime_template
-                    .clone()
-                    .unwrap_or_else(|| snapshot.template.clone()),
-                snapshot.prompts.clone(),
-                snapshot.mode,
-            ),
-            None => {
-                let (adapter_name, template, prompts, mode) =
-                    cx.read_global_result(|db: &Db, _window, _cx| {
-                        let conn = &mut db.get()?;
-                        let conversation = Conversation::find(context.conversation_id, conn)?;
-                        let template = ConversationTemplate::find(conversation.template_id, conn)?;
-                        Ok::<_, AiChatError>((
-                            template.adapter,
-                            template.template,
-                            template.prompts,
-                            template.mode,
-                        ))
-                    })??;
-                (adapter_name, template, prompts, mode)
-            }
-        };
+        let provider_name = context.composer_snapshot.provider_name.clone();
+        let template = context.composer_snapshot.request_template.clone();
+        let prompts = context.composer_snapshot.prompts.clone();
+        let mode = context.composer_snapshot.mode;
         let request_body = build_request_body(
-            &adapter_name,
+            &provider_name,
             &template,
             prompts,
             mode,
@@ -772,13 +634,14 @@ impl ConversationPanelView {
         )?;
         Ok(Runner {
             config: context.config.clone(),
-            adapter_name,
+            provider_name,
             request_body,
         })
     }
 
     fn insert_loading_user_message(
         conversation_id: i32,
+        provider_name: &str,
         request_text: &str,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Message> {
@@ -787,6 +650,7 @@ impl ConversationPanelView {
             Message::insert(
                 NewMessage::new(
                     conversation_id,
+                    provider_name,
                     Role::User,
                     &Content::Text(request_text.to_string()),
                     &serde_json::json!({}),
@@ -924,8 +788,8 @@ impl ConversationPanelView {
                 Self::persist_message_snapshot(&message, conn)
             })??;
         }
-        state.update_result(cx, |this, _cx| {
-            this.clear_running_task_for_message(Some(assistant_message_id));
+        state.update_result(cx, |this, cx| {
+            this.clear_running_task_for_message(Some(assistant_message_id), cx);
         })?;
         Ok(())
     }
@@ -956,8 +820,8 @@ impl ConversationPanelView {
                 Self::persist_message_snapshot(&message, conn)
             })??;
         }
-        state.update_result(cx, |this, _cx| {
-            this.clear_running_task_for_message(Some(assistant_message_id));
+        state.update_result(cx, |this, cx| {
+            this.clear_running_task_for_message(Some(assistant_message_id), cx);
         })?;
         Ok(())
     }
@@ -1026,7 +890,7 @@ impl ConversationPanelView {
         error: AiChatError,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let error = match context.extension_name.as_deref() {
+        let error = match context.composer_snapshot.extension_name.as_deref() {
             Some(extension_name) => format!("extension {extension_name}: {error}"),
             None => error.to_string(),
         };
@@ -1042,8 +906,8 @@ impl ConversationPanelView {
             false,
             cx,
         )?;
-        state.update_result(cx, |this, _cx| {
-            this.clear_running_task_for_message(Some(user_message_id));
+        state.update_result(cx, |this, cx| {
+            this.clear_running_task_for_message(Some(user_message_id), cx);
         })?;
         Ok(())
     }
@@ -1052,12 +916,9 @@ impl ConversationPanelView {
 struct FetchContext {
     chat_data: Entity<AiChatResult<ChatDataInner>>,
     conversation_id: i32,
-    text: SharedString,
-    extension_name: Option<String>,
+    composer_snapshot: ChatFormSnapshot,
     extension_container: ExtensionContainer,
     config: AiChatConfig,
-    template_snapshot: Option<ConversationTemplateSnapshot>,
-    runtime_template: Option<serde_json::Value>,
 }
 
 struct PreparedFetch {
@@ -1070,7 +931,7 @@ struct ExistingMessageFetchContext {
     chat_data: Entity<AiChatResult<ChatDataInner>>,
     conversation_id: i32,
     config: AiChatConfig,
-    adapter_name: String,
+    provider_name: String,
     request_body: serde_json::Value,
 }
 
@@ -1139,18 +1000,7 @@ impl Render for ConversationPanelView {
                 div()
                     .w_full()
                     .flex_initial()
-                    .child(
-                        ChatInput::new(&self.input_state, &self.extension_state)
-                            .when_some(
-                                self.provider_chat_form.as_ref(),
-                                |this, provider_chat_form| {
-                                    this.provider_chat_form(provider_chat_form)
-                                },
-                            )
-                            .running(self.has_running_task())
-                            .on_action(cx.listener(Self::on_send_action))
-                            .on_action(cx.listener(Self::on_pause_action)),
-                    )
+                    .child(self.chat_form.clone())
                     .px_2(),
             )
     }
@@ -1158,13 +1008,13 @@ impl Render for ConversationPanelView {
 
 struct Runner {
     config: AiChatConfig,
-    adapter_name: String,
+    provider_name: String,
     request_body: serde_json::Value,
 }
 
 impl FetchRunner for Runner {
-    fn get_adapter(&self) -> &str {
-        &self.adapter_name
+    fn get_provider(&self) -> &str {
+        &self.provider_name
     }
 
     fn get_config(&self) -> &AiChatConfig {
@@ -1211,7 +1061,7 @@ fn build_history_messages(
 }
 
 fn build_request_body(
-    adapter_name: &str,
+    provider_name: &str,
     template: &serde_json::Value,
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
@@ -1226,7 +1076,7 @@ fn build_request_body(
         user_message_role,
         user_message_content,
     );
-    adapter_by_name(adapter_name)?.request_body(template, history)
+    provider_by_name(provider_name)?.request_body(template, history)
 }
 
 #[cfg(test)]
@@ -1241,6 +1091,7 @@ mod tests {
             id,
             conversation_id: 1,
             conversation_path: "/test".to_string(),
+            provider: "OpenAI".to_string(),
             role,
             content,
             send_content: serde_json::json!({}),
@@ -1260,17 +1111,10 @@ mod tests {
         assert!(!running_task_contains_message(Some(7), Some(8), 9));
     }
 
-    fn make_template(mode: Mode) -> ConversationTemplate {
-        let now = OffsetDateTime::now_utc();
-        ConversationTemplate {
-            id: 1,
-            name: "t".to_string(),
-            icon: "i".to_string(),
-            description: None,
-            mode,
-            adapter: "openai".to_string(),
-            template: serde_json::json!({"model": "gpt-test"}),
-            prompts: vec![
+    #[test]
+    fn get_history_contextual_includes_all_normal_messages_and_user() {
+        let contents = build_history_messages(
+            vec![
                 ConversationTemplatePrompt {
                     prompt: "system".to_string(),
                     role: Role::Developer,
@@ -1280,15 +1124,6 @@ mod tests {
                     role: Role::Assistant,
                 },
             ],
-            created_time: now,
-            updated_time: now,
-        }
-    }
-
-    #[test]
-    fn get_history_contextual_includes_all_normal_messages_and_user() {
-        let contents = build_history_messages(
-            make_template(Mode::Contextual).prompts,
             Mode::Contextual,
             &[
                 make_message(
@@ -1335,7 +1170,16 @@ mod tests {
     #[test]
     fn get_history_single_only_prompts_and_user() {
         let contents = build_history_messages(
-            make_template(Mode::Single).prompts,
+            vec![
+                ConversationTemplatePrompt {
+                    prompt: "system".to_string(),
+                    role: Role::Developer,
+                },
+                ConversationTemplatePrompt {
+                    prompt: "primer".to_string(),
+                    role: Role::Assistant,
+                },
+            ],
             Mode::Single,
             &[make_message(
                 1,
@@ -1362,7 +1206,16 @@ mod tests {
     #[test]
     fn get_history_assistant_only_filters_roles() {
         let contents = build_history_messages(
-            make_template(Mode::AssistantOnly).prompts,
+            vec![
+                ConversationTemplatePrompt {
+                    prompt: "system".to_string(),
+                    role: Role::Developer,
+                },
+                ConversationTemplatePrompt {
+                    prompt: "primer".to_string(),
+                    role: Role::Assistant,
+                },
+            ],
             Mode::AssistantOnly,
             &[
                 make_message(
@@ -1403,7 +1256,16 @@ mod tests {
 
     #[test]
     fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
-        let mut template = serde_json::to_value(crate::llm::OpenAIConversationTemplate::default())?;
+        let mut template = serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false,
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "n": 1,
+            "max_completion_tokens": null,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0
+        });
         template["model"] = serde_json::json!("override-model");
         let request_body = build_request_body(
             "OpenAI",
