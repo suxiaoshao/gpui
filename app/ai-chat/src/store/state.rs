@@ -66,6 +66,7 @@ struct AppTab {
     panel: TabPanel,
 }
 
+// Bootstraps chat data and builds tab panels for each top-level view.
 impl ChatDataInner {
     pub(crate) fn new(
         window: &mut Window,
@@ -139,6 +140,10 @@ impl ChatDataInner {
             ),
         }
     }
+}
+
+// Traverses the folder tree and mutates folder or conversation placement.
+impl ChatDataInner {
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {
         for folder in folders {
             if folder.id == id {
@@ -244,6 +249,10 @@ impl ChatDataInner {
         }
         self.add_folder(updated);
     }
+}
+
+// Resolves conversations and manages tab ordering and activation.
+impl ChatDataInner {
     fn get_conversation<'a>(
         folders: &'a [Folder],
         conversations: &'a [Conversation],
@@ -376,6 +385,10 @@ impl ChatDataInner {
             None => items.push(item),
         }
     }
+}
+
+// Exposes active tab state and keeps panels aligned with existing data.
+impl ChatDataInner {
     pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
         self.tabs
             .iter()
@@ -459,6 +472,10 @@ impl ChatDataInner {
             }
         })
     }
+}
+
+// Reads and mutates conversation messages inside the folder tree.
+impl ChatDataInner {
     pub(crate) fn conversation_messages(&self, conversation_id: i32) -> Option<&[Message]> {
         Self::get_conversation(&self.folders, &self.conversations, conversation_id)
             .map(|conversation| conversation.messages.as_slice())

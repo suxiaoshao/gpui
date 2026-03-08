@@ -12,9 +12,7 @@ use crate::{
     extensions::ExtensionContainer,
     gpui_ext::WeakEntityResultExt,
     i18n::I18n,
-    llm::{
-        FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter,
-    },
+    llm::{FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter},
     store::AddConversationMessage,
     views::{
         message_preview::{MessagePreviewExt, open_message_preview_window},
@@ -305,6 +303,7 @@ impl RunningTask {
     }
 }
 
+// Initializes the temporary conversation view and template-backed form state.
 impl TemplateDetailView {
     pub fn new(
         template: &ConversationTemplate,
@@ -356,14 +355,22 @@ impl TemplateDetailView {
             match template_inputs_by_adapter(&template.adapter, cx.global::<AiChatConfig>()) {
                 Ok(items) => items,
                 Err(err) => {
-                    event!(Level::ERROR, "load temporary chat form template inputs failed: {}", err);
+                    event!(
+                        Level::ERROR,
+                        "load temporary chat form template inputs failed: {}",
+                        err
+                    );
                     return None;
                 }
             };
         let layout = match chat_form_layout_by_adapter(&template.adapter) {
             Ok(layout) => layout,
             Err(err) => {
-                event!(Level::ERROR, "load temporary chat form layout failed: {}", err);
+                event!(
+                    Level::ERROR,
+                    "load temporary chat form layout failed: {}",
+                    err
+                );
                 return None;
             }
         };
@@ -371,9 +378,7 @@ impl TemplateDetailView {
         let form = cx.new(|cx| {
             ProviderTemplateFormState::new(template_items, &template.template, window, cx)
         });
-        Some(cx.new(move |_cx| {
-            ProviderChatFormView::new(form, base_template, layout)
-        }))
+        Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)))
     }
 
     fn collect_runtime_template(
@@ -398,6 +403,10 @@ impl TemplateDetailView {
             }
         }
     }
+}
+
+// Exposes the current temporary messages for rendering.
+impl TemplateDetailView {
     fn messages(&self) -> Vec<MessageView<TemporaryMessage>> {
         self.messages
             .iter()
@@ -405,6 +414,10 @@ impl TemplateDetailView {
             .map(MessageView::new)
             .collect()
     }
+}
+
+// Handles user-facing actions for sending, pausing, and saving drafts.
+impl TemplateDetailView {
     fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input_state.read(cx).value();
 
@@ -430,14 +443,10 @@ impl TemplateDetailView {
                     runtime_template,
                     now: OffsetDateTime::now_utc(),
                 };
-                if let Err(err) = Self::fetch(
-                    this,
-                    context,
-                    cx,
-                )
-                .compat()
-                .instrument(span)
-                .await
+                if let Err(err) = Self::fetch(this, context, cx)
+                    .compat()
+                    .instrument(span)
+                    .await
                 {
                     event!(Level::ERROR, "fetch failed: {}", err);
                 };
@@ -517,6 +526,10 @@ impl TemplateDetailView {
             .collect::<Vec<_>>();
         add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
     }
+}
+
+// Manages the in-memory temporary messages and active running task.
+impl TemplateDetailView {
     fn new_id(&mut self) -> usize {
         self.autoincrement_id += 1;
         self.autoincrement_id
@@ -596,14 +609,17 @@ impl TemplateDetailView {
         }
         cx.notify();
     }
+}
+
+// Prepares request state and coordinates async fetch execution.
+impl TemplateDetailView {
     async fn fetch(
         state: WeakEntity<Self>,
         context: TemporaryFetchContext,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "temporary fetch");
-        let Some(prepared) = Self::prepare_fetch(state.clone(), &context, cx).await?
-        else {
+        let Some(prepared) = Self::prepare_fetch(state.clone(), &context, cx).await? else {
             return Ok(());
         };
         Self::stream_fetch(state, prepared.runner, prepared.assistant_message_id, cx).await?;
@@ -711,22 +727,20 @@ impl TemplateDetailView {
         else {
             return Ok(None);
         };
-        let Some(content) = Runner::get_new_user_content(
-            context.request_text.clone(),
-            Some(extension_runner),
-        )
-            .await
-            .map(Some)
-            .or_else(|error| {
-                Self::record_extension_error(
-                    state.clone(),
-                    user_message_id,
-                    extension_name,
-                    error,
-                    cx,
-                )
-                .map(|()| None)
-            })?
+        let Some(content) =
+            Runner::get_new_user_content(context.request_text.clone(), Some(extension_runner))
+                .await
+                .map(Some)
+                .or_else(|error| {
+                    Self::record_extension_error(
+                        state.clone(),
+                        user_message_id,
+                        extension_name,
+                        error,
+                        cx,
+                    )
+                    .map(|()| None)
+                })?
         else {
             return Ok(None);
         };
@@ -846,7 +860,10 @@ impl TemplateDetailView {
             })
         })?
     }
+}
 
+// Applies streamed assistant output and records extension failures.
+impl TemplateDetailView {
     async fn stream_fetch(
         state: WeakEntity<Self>,
         runner: Runner,
@@ -1006,6 +1023,7 @@ fn build_request_body(
     adapter_by_name(adapter_name)?.request_body(template, history)
 }
 
+// Renders the temporary conversation header, message list, and composer.
 impl Render for TemplateDetailView {
     fn render(
         &mut self,
@@ -1086,9 +1104,12 @@ impl Render for TemplateDetailView {
                     .flex_initial()
                     .child(
                         ChatInput::new(&self.input_state, &self.extension_state)
-                            .when_some(self.provider_chat_form.as_ref(), |this, provider_chat_form| {
-                                this.provider_chat_form(provider_chat_form)
-                            })
+                            .when_some(
+                                self.provider_chat_form.as_ref(),
+                                |this, provider_chat_form| {
+                                    this.provider_chat_form(provider_chat_form)
+                                },
+                            )
                             .running(self.has_running_task())
                             .on_action(cx.listener(Self::on_send_action))
                             .on_action(cx.listener(Self::on_pause_action)),
@@ -1157,14 +1178,7 @@ mod tests {
     fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         let mut template = serde_json::to_value(crate::llm::OpenAIConversationTemplate::default())?;
         template["model"] = serde_json::json!("override-model");
-        let request_body = build_request_body(
-            "OpenAI",
-            &template,
-            &[],
-            &[],
-            Role::User,
-            "hello",
-        )?;
+        let request_body = build_request_body("OpenAI", &template, &[], &[], Role::User, "hello")?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
     }

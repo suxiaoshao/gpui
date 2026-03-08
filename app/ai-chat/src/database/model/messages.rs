@@ -53,6 +53,7 @@ pub struct SqlMessage {
     pub error: Option<String>,
 }
 
+// Queries persisted messages for a conversation.
 impl SqlMessage {
     pub fn query_by_conversation_id(
         conversation_id: i32,
@@ -63,6 +64,10 @@ impl SqlMessage {
             .load(conn)
             .map_err(|e| e.into())
     }
+}
+
+// Updates persisted message status and send payload state.
+impl SqlMessage {
     pub fn update_status(
         id: i32,
         status: Status,
@@ -108,6 +113,10 @@ impl SqlMessage {
             .execute(conn)?;
         Ok(())
     }
+}
+
+// Looks up persisted messages and deletes them by id, path, or conversation.
+impl SqlMessage {
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Self> {
         messages::table
             .filter(messages::id.eq(id))
@@ -135,6 +144,10 @@ impl SqlMessage {
             .load::<Self>(conn)
             .map_err(|e| e.into())
     }
+}
+
+// Rewrites persisted message paths and content during moves or resend flows.
+impl SqlMessage {
     pub fn update_path(
         id: i32,
         mut path: String,

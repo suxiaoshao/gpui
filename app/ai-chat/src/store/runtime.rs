@@ -76,6 +76,7 @@ struct AddConversationInput<'a> {
     initial_messages: Option<&'a [AddConversationMessage]>,
 }
 
+// Subscribes UI views to chat-data events and dispatches them to handlers.
 impl ChatData {
     pub fn subscribe_in(
         _this: &mut HomeView,
@@ -244,7 +245,10 @@ impl ChatData {
             event!(Level::ERROR, "{action} error:{err:?}");
         }
     }
+}
 
+// Persists folder and conversation changes before updating in-memory state.
+impl ChatData {
     fn add_folder(
         state: &Entity<AiChatResult<ChatDataInner>>,
         name: &str,
@@ -298,6 +302,10 @@ impl ChatData {
         });
         Ok(())
     }
+}
+
+// Persists folder, conversation, and message deletions or moves.
+impl ChatData {
     fn delete_conversation(
         state: &Entity<AiChatResult<ChatDataInner>>,
         id: i32,

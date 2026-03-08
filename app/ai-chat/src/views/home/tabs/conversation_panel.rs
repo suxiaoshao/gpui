@@ -5,16 +5,14 @@ use crate::{
     components::provider_template_form::ProviderTemplateFormState,
     config::AiChatConfig,
     database::{
-        Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Db, Message,
-        Mode, NewMessage, Role, Status,
+        Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Db, Message, Mode,
+        NewMessage, Role, Status,
     },
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     i18n::I18n,
-    llm::{
-        FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter,
-    },
+    llm::{FetchRunner, adapter_by_name, chat_form_layout_by_adapter, template_inputs_by_adapter},
     store::{ChatData, ChatDataInner},
 };
 use async_compat::CompatExt;
@@ -128,6 +126,7 @@ struct ConversationTemplateSnapshot {
     mode: Mode,
 }
 
+// Initializes the panel and keeps template-backed input state in sync.
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = input_state(window, cx);
@@ -175,7 +174,10 @@ impl ConversationPanelView {
     ) {
         let template = {
             let Ok(mut conn) = cx.global::<Db>().get() else {
-                event!(Level::ERROR, "load conversation template failed: open database");
+                event!(
+                    Level::ERROR,
+                    "load conversation template failed: open database"
+                );
                 return (None, None);
             };
             match ConversationTemplate::find(template_id, &mut conn) {
@@ -192,12 +194,8 @@ impl ConversationPanelView {
             prompts: template.prompts.clone(),
             mode: template.mode,
         };
-        let provider_chat_form = Self::build_provider_chat_form(
-            &snapshot.adapter_name,
-            &snapshot.template,
-            window,
-            cx,
-        );
+        let provider_chat_form =
+            Self::build_provider_chat_form(&snapshot.adapter_name, &snapshot.template, window, cx);
         (Some(snapshot), provider_chat_form)
     }
 
@@ -207,14 +205,18 @@ impl ConversationPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<ProviderChatFormView>> {
-        let template_items = match template_inputs_by_adapter(adapter_name, cx.global::<AiChatConfig>())
-        {
-            Ok(items) => items,
-            Err(err) => {
-                event!(Level::ERROR, "load chat form template inputs failed: {}", err);
-                return None;
-            }
-        };
+        let template_items =
+            match template_inputs_by_adapter(adapter_name, cx.global::<AiChatConfig>()) {
+                Ok(items) => items,
+                Err(err) => {
+                    event!(
+                        Level::ERROR,
+                        "load chat form template inputs failed: {}",
+                        err
+                    );
+                    return None;
+                }
+            };
         let layout = match chat_form_layout_by_adapter(adapter_name) {
             Ok(layout) => layout,
             Err(err) => {
@@ -223,10 +225,9 @@ impl ConversationPanelView {
             }
         };
         let base_template = template.clone();
-        let form = cx.new(|cx| ProviderTemplateFormState::new(template_items, template, window, cx));
-        Some(cx.new(move |_cx| {
-            ProviderChatFormView::new(form, base_template, layout)
-        }))
+        let form =
+            cx.new(|cx| ProviderTemplateFormState::new(template_items, template, window, cx));
+        Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)))
     }
 
     fn collect_runtime_template_override(
@@ -276,7 +277,10 @@ impl ConversationPanelView {
         );
         self.message_revisions = next_revisions;
     }
+}
 
+// Handles user-triggered conversation actions.
+impl ConversationPanelView {
     fn on_send_action(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input_state.read(cx).value();
         let extension_name = self.extension_state.read(cx).selected_value().cloned();
@@ -416,7 +420,10 @@ impl ConversationPanelView {
         running_task.bind_messages(None, Some(message_id));
         self.task = Some(running_task);
     }
+}
 
+// Tracks the active fetch task and its bound messages.
+impl ConversationPanelView {
     pub(crate) fn has_running_task(&self) -> bool {
         self.task.is_some()
     }
@@ -443,7 +450,10 @@ impl ConversationPanelView {
             self.task = None;
         }
     }
+}
 
+// Prepares request state and coordinates async fetch execution.
+impl ConversationPanelView {
     async fn fetch(
         state: WeakEntity<Self>,
         context: FetchContext,
@@ -631,8 +641,12 @@ impl ConversationPanelView {
             return Ok(None);
         };
         (|| -> AiChatResult<PreparedFetch> {
-            let runner =
-                Self::build_runner(context, Role::User, user_content.send_content().to_string(), cx)?;
+            let runner = Self::build_runner(
+                context,
+                Role::User,
+                user_content.send_content().to_string(),
+                cx,
+            )?;
             let send_content = runner.request_body();
             let (user_message, assistant_message) =
                 cx.read_global_result(|db: &Db, _window, _cx| {
@@ -671,8 +685,12 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedFetch> {
         let user_content = Content::Text(request_text);
-        let runner =
-            Self::build_runner(context, Role::User, user_content.send_content().to_string(), cx)?;
+        let runner = Self::build_runner(
+            context,
+            Role::User,
+            user_content.send_content().to_string(),
+            cx,
+        )?;
         let send_content = runner.request_body();
         let (user_message, assistant_message) =
             cx.read_global_result(|db: &Db, _window, _cx| {
@@ -838,7 +856,10 @@ impl ConversationPanelView {
         )?;
         Ok(())
     }
+}
 
+// Applies streamed message updates and persists terminal state.
+impl ConversationPanelView {
     fn append_assistant_message(
         context: &FetchContext,
         assistant_message_id: i32,
@@ -1053,6 +1074,7 @@ struct ExistingMessageFetchContext {
     request_body: serde_json::Value,
 }
 
+// Renders the conversation header, message list, and input composer.
 impl Render for ConversationPanelView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chat_data = cx.global::<ChatData>().deref().clone();
@@ -1119,9 +1141,12 @@ impl Render for ConversationPanelView {
                     .flex_initial()
                     .child(
                         ChatInput::new(&self.input_state, &self.extension_state)
-                            .when_some(self.provider_chat_form.as_ref(), |this, provider_chat_form| {
-                                this.provider_chat_form(provider_chat_form)
-                            })
+                            .when_some(
+                                self.provider_chat_form.as_ref(),
+                                |this, provider_chat_form| {
+                                    this.provider_chat_form(provider_chat_form)
+                                },
+                            )
                             .running(self.has_running_task())
                             .on_action(cx.listener(Self::on_send_action))
                             .on_action(cx.listener(Self::on_pause_action)),

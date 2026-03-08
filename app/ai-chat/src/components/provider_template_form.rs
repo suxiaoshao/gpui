@@ -34,6 +34,7 @@ pub(crate) struct ProviderTemplateFormState {
     _subscriptions: Vec<Subscription>,
 }
 
+// Builds field state from adapter metadata and binds interactive inputs.
 impl ProviderTemplateFormState {
     pub(crate) fn new(
         items: Vec<InputItem>,
@@ -109,7 +110,10 @@ impl ProviderTemplateFormState {
             self.collect_value_map(cx)?,
         ))
     }
+}
 
+// Renders individual template controls in inline and popover layouts.
+impl ProviderTemplateFormState {
     pub(crate) fn render_inline_field(&self, id: &str) -> Option<AnyElement> {
         let row = self.find_row(id)?;
         Some(
@@ -132,7 +136,10 @@ impl ProviderTemplateFormState {
                 .into_any_element(),
         )
     }
+}
 
+// Subscribes numeric inputs and collects typed field values.
+impl ProviderTemplateFormState {
     fn bind_number_input_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for row in &self.template_rows {
             let Some(options) = Self::number_options(row.item.input_type()) else {
@@ -195,7 +202,10 @@ impl ProviderTemplateFormState {
         self.template_rows.iter().find(|row| row.item.id() == id)
     }
 
-    fn collect_value_map(&self, cx: &App) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    fn collect_value_map(
+        &self,
+        cx: &App,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let mut map = serde_json::Map::new();
         for row in &self.template_rows {
             let raw = match &row.value_state {
@@ -218,7 +228,10 @@ impl ProviderTemplateFormState {
         }
         Ok(map)
     }
+}
 
+// Maps field definitions to reusable GPUI controls and layout hints.
+impl ProviderTemplateFormState {
     fn render_input_control(row: &ProviderTemplateFieldRow, compact: bool) -> AnyElement {
         match &row.value_state {
             ProviderTemplateFieldValueState::Input(input) => {
@@ -256,7 +269,10 @@ impl ProviderTemplateFormState {
             _ => px(140.),
         }
     }
+}
 
+// Converts between serialized template values and typed form data.
+impl ProviderTemplateFormState {
     fn merge_template(
         base_template: &serde_json::Value,
         updates: serde_json::Map<String, serde_json::Value>,
@@ -381,6 +397,7 @@ impl ProviderTemplateFormState {
     }
 }
 
+// Renders the full template editor form.
 impl Render for ProviderTemplateFormState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let template_prefix = cx.global::<I18n>().t("field-template-prefix");

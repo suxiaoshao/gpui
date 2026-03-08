@@ -28,6 +28,7 @@ pub(crate) struct TemplateDetailView {
     template: AiChatResult<ConversationTemplate>,
 }
 
+// Loads the selected template and keeps its local snapshot up to date.
 impl TemplateDetailView {
     pub fn new(template_id: i32, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
@@ -43,7 +44,10 @@ impl TemplateDetailView {
         let conn = &mut cx.global::<Db>().get()?;
         ConversationTemplate::find(template_id, conn)
     }
+}
 
+// Opens template editing flows and applies local updates.
+impl TemplateDetailView {
     fn open_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let load_template_failed = cx.global::<I18n>().t("notify-load-template-failed");
         let template = match &self.template {
@@ -72,7 +76,10 @@ impl TemplateDetailView {
             cx,
         );
     }
+}
 
+// Deletes the current template and routes the UI back to the template list.
+impl TemplateDetailView {
     fn template_tab_key(template_id: i32) -> i32 {
         template_id.saturating_add(1).saturating_neg()
     }
@@ -171,6 +178,7 @@ impl TemplateDetailView {
     }
 }
 
+// Renders template actions and the current template details.
 impl Render for TemplateDetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (edit_label, delete_label, load_template_failed) = {
