@@ -276,6 +276,13 @@ impl Message {
         SqlMessage::delete(id, conn)?;
         Ok(())
     }
+    pub fn delete_by_conversation_id(
+        conversation_id: i32,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<()> {
+        SqlMessage::delete_by_conversation_id(conversation_id, conn)?;
+        Ok(())
+    }
     pub fn update_content(
         id: i32,
         content: &Content,

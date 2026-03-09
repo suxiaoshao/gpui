@@ -1,41 +1,36 @@
 use crate::{
-    components::chat_form::{ChatForm, ChatFormEvent, ChatFormSnapshot},
-    components::message::MessageView,
+    components::chat_form::ChatFormSnapshot,
     config::AiChatConfig,
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, provider_by_name},
-    store::{ChatData, ChatDataInner},
+    store::{ChatData, ChatDataEvent, ChatDataInner},
+    views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{
-    AlignItems, AppContext, AsyncWindowContext, Context, Entity, InteractiveElement, IntoElement,
-    ListAlignment, ListState, ParentElement, Render, SharedString, Styled, Subscription, Task,
-    WeakEntity, Window, div, list, prelude::FluentBuilder, px,
+    AsyncWindowContext, Context, Entity, IntoElement, ListAlignment, SharedString, WeakEntity,
+    Window,
 };
-use gpui_component::{h_flex, label::Label, scroll::ScrollableElement, v_flex};
 use smol::stream::StreamExt;
 use std::ops::Deref;
 use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
-pub(crate) struct ConversationPanelView {
+pub(crate) type ConversationPanelView = ConversationDetailView<ConversationPanelState>;
+
+pub(crate) struct ConversationPanelState {
     conversation_id: i32,
     conversation_icon: SharedString,
     conversation_title: SharedString,
     conversation_info: Option<SharedString>,
-    message_list: ListState,
-    message_revisions: Vec<MessageRevision>,
-    chat_form: Entity<ChatForm>,
-    _subscriptions: Vec<Subscription>,
-    task: Option<RunningTask>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct MessageRevision {
+pub(crate) struct MessageRevision {
     id: i32,
     status: Status,
     updated_time_nanos: i128,
@@ -64,98 +59,76 @@ impl MessageRevision {
     }
 }
 
-struct RunningTask {
-    user_message_id: Option<i32>,
-    assistant_message_id: Option<i32>,
-    _task: Task<()>,
-}
-
-impl RunningTask {
-    fn new(task: Task<()>) -> Self {
-        Self {
-            user_message_id: None,
-            assistant_message_id: None,
-            _task: task,
-        }
-    }
-
-    fn bind_messages(&mut self, user_message_id: Option<i32>, assistant_message_id: Option<i32>) {
-        self.user_message_id = user_message_id;
-        self.assistant_message_id = assistant_message_id;
-    }
-
-    fn contains_message(&self, message_id: i32) -> bool {
-        running_task_contains_message(self.user_message_id, self.assistant_message_id, message_id)
-    }
-
-    fn message_ids(&self) -> [Option<i32>; 2] {
-        [self.user_message_id, self.assistant_message_id]
-    }
-}
-
-fn running_task_contains_message(
-    user_message_id: Option<i32>,
-    assistant_message_id: Option<i32>,
-    message_id: i32,
-) -> bool {
-    user_message_id == Some(message_id) || assistant_message_id == Some(message_id)
-}
-
-// Initializes the panel and keeps chat-form state in sync.
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
-        let _subscriptions = vec![cx.subscribe_in(
-            &chat_form,
-            window,
-            |this, _chat_form, event: &ChatFormEvent, window, cx| match event {
-                ChatFormEvent::SendRequested => this.on_send_requested(window, cx),
-                ChatFormEvent::PauseRequested => this.on_pause_requested(cx),
+        ConversationDetailView::new_with_detail(
+            ConversationPanelState {
+                conversation_id: conversation.id,
+                conversation_icon: conversation.icon.clone().into(),
+                conversation_title: conversation.title.clone().into(),
+                conversation_info: conversation.info.clone().map(Into::into),
             },
-        )];
-        Self {
-            conversation_id: conversation.id,
-            conversation_icon: conversation.icon.clone().into(),
-            conversation_title: conversation.title.clone().into(),
-            conversation_info: conversation.info.clone().map(Into::into),
-            message_list: ListState::new(0, ListAlignment::Top, px(1000.)),
-            message_revisions: Vec::new(),
-            chat_form,
-            _subscriptions,
-            task: None,
-        }
-    }
-
-    fn sync_message_list(&mut self, next_revisions: Vec<MessageRevision>) {
-        if self.message_list.item_count() != self.message_revisions.len() {
-            self.message_list.reset(next_revisions.len());
-            self.message_revisions = next_revisions;
-            return;
-        }
-
-        if self.message_revisions == next_revisions {
-            return;
-        }
-
-        let first_diff = self
-            .message_revisions
-            .iter()
-            .zip(next_revisions.iter())
-            .position(|(left, right)| left != right)
-            .unwrap_or_else(|| self.message_revisions.len().min(next_revisions.len()));
-
-        self.message_list.splice(
-            first_diff..self.message_revisions.len(),
-            next_revisions.len().saturating_sub(first_diff),
-        );
-        self.message_revisions = next_revisions;
+            window,
+            cx,
+        )
     }
 }
 
-// Handles user-triggered conversation actions.
-impl ConversationPanelView {
-    fn on_send_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = match self.chat_form.read(cx).snapshot(cx) {
+impl ConversationDetailViewExt for ConversationPanelState {
+    type Message = Message;
+    type MessageId = i32;
+    type Revision = MessageRevision;
+
+    fn title(&self, _cx: &gpui::App) -> SharedString {
+        self.conversation_title.clone()
+    }
+
+    fn subtitle(&self, _cx: &gpui::App) -> Option<SharedString> {
+        self.conversation_info
+            .clone()
+            .filter(|info| !info.as_ref().trim().is_empty())
+    }
+
+    fn header_leading(&self, _cx: &gpui::App) -> Option<gpui::AnyElement> {
+        Some(gpui_component::label::Label::new(&self.conversation_icon).into_any_element())
+    }
+
+    fn element_prefix(&self) -> SharedString {
+        SharedString::from(format!("conversation-panel-{}", self.conversation_id))
+    }
+
+    fn message_list_alignment(&self) -> ListAlignment {
+        ListAlignment::Bottom
+    }
+
+    fn auto_scroll_new_messages_when_at_end(&self) -> bool {
+        true
+    }
+
+    fn message_revisions(&self, cx: &gpui::App) -> Vec<Self::Revision> {
+        cx.global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.conversation_messages(self.conversation_id))
+            .map(|messages| messages.iter().map(MessageRevision::new).collect())
+            .unwrap_or_default()
+    }
+
+    fn message_at(&self, index: usize, cx: &gpui::App) -> Option<Self::Message> {
+        cx.global::<ChatData>()
+            .read(cx)
+            .as_ref()
+            .ok()
+            .and_then(|data| data.conversation_message_at(self.conversation_id, index))
+    }
+
+    fn on_send_requested(
+        view: &mut ConversationDetailView<Self>,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        let snapshot = match view.chat_form.read(cx).snapshot(cx) {
             Ok(Some(snapshot)) => snapshot,
             Ok(None) => return,
             Err(err) => {
@@ -169,10 +142,10 @@ impl ConversationPanelView {
             send_content = snapshot.text.clone(),
             extension_name = snapshot.extension_name.clone()
         );
-        if self.can_start_task() {
+        if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
-            let conversation_id = self.conversation_id;
+            let conversation_id = view.detail.conversation_id;
             let chat_data = cx.global::<ChatData>().deref().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
                 let state = this.clone();
@@ -183,7 +156,7 @@ impl ConversationPanelView {
                     extension_container,
                     config,
                 };
-                if let Err(err) = Self::fetch(state, context, cx)
+                if let Err(err) = ConversationPanelView::fetch(state, context, cx)
                     .compat()
                     .instrument(span)
                     .await
@@ -194,25 +167,44 @@ impl ConversationPanelView {
                     });
                 }
             });
-            self.task = Some(RunningTask::new(task));
-            self.chat_form
-                .update(cx, |chat_form, cx| chat_form.set_running(true, cx));
+            view.set_running_task(task, cx);
         }
     }
 
-    fn on_pause_requested(&mut self, cx: &mut Context<Self>) {
-        if let Err(err) = self.pause_task(cx) {
+    fn on_pause_requested(
+        view: &mut ConversationDetailView<Self>,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        if let Err(err) = view.pause_task(cx) {
             event!(Level::ERROR, "pause fetch failed: {}", err);
             cx.notify();
         }
     }
 
+    fn supports_clear(&self) -> bool {
+        true
+    }
+
+    fn clear(
+        view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        let conversation_id = view.detail.conversation_id;
+        chat_data.update(cx, move |_this, cx| {
+            cx.emit(ChatDataEvent::ClearConversationMessages(conversation_id));
+        });
+    }
+}
+
+impl ConversationPanelView {
     fn pause_task(&mut self, cx: &mut Context<Self>) -> AiChatResult<()> {
         let Some(task) = self.task.take() else {
             return Ok(());
         };
 
-        let conversation_id = self.conversation_id;
+        let conversation_id = self.detail.conversation_id;
         let chat_data = cx.global::<ChatData>().deref().clone();
         let paused_messages = chat_data.update(cx, move |data, cx| {
             let mut paused_messages = Vec::new();
@@ -239,8 +231,7 @@ impl ConversationPanelView {
         for message in &paused_messages {
             Self::persist_message_snapshot(message, conn)?;
         }
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
+        self.set_chat_form_running(false, cx);
         cx.notify();
         Ok(())
     }
@@ -270,7 +261,7 @@ impl ConversationPanelView {
 
         let config = cx.global::<AiChatConfig>().clone();
         let chat_data = cx.global::<ChatData>().deref().clone();
-        let conversation_id = self.conversation_id;
+        let conversation_id = self.detail.conversation_id;
         let span = span!(Level::INFO, "ResendMessage", message_id, conversation_id);
         let task = cx.spawn_in(window, async move |this, cx| {
             let state = this.clone();
@@ -292,41 +283,8 @@ impl ConversationPanelView {
                 });
             }
         });
-        let mut running_task = RunningTask::new(task);
-        running_task.bind_messages(None, Some(message_id));
-        self.task = Some(running_task);
-    }
-}
-
-// Tracks the active fetch task and its bound messages.
-impl ConversationPanelView {
-    pub(crate) fn has_running_task(&self) -> bool {
-        self.task.is_some()
-    }
-
-    fn can_start_task(&self) -> bool {
-        !self.has_running_task()
-    }
-
-    fn bind_running_task_messages(
-        &mut self,
-        user_message_id: Option<i32>,
-        assistant_message_id: Option<i32>,
-    ) {
-        if let Some(task) = self.task.as_mut() {
-            task.bind_messages(user_message_id, assistant_message_id);
-        }
-    }
-
-    fn clear_running_task_for_message(&mut self, message_id: Option<i32>, cx: &mut Context<Self>) {
-        let should_clear = self.task.as_ref().is_some_and(|task| {
-            message_id.is_none_or(|message_id| task.contains_message(message_id))
-        });
-        if should_clear {
-            self.task = None;
-            self.chat_form
-                .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
-        }
+        self.set_running_task(task, cx);
+        self.bind_running_task_messages(None, Some(message_id));
     }
 }
 
@@ -933,79 +891,6 @@ struct ExistingMessageFetchContext {
     request_body: serde_json::Value,
 }
 
-// Renders the conversation header, message list, and input composer.
-impl Render for ConversationPanelView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let chat_data = cx.global::<ChatData>().deref().clone();
-        let message_revisions = chat_data
-            .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.conversation_messages(self.conversation_id))
-            .map(|messages| {
-                messages
-                    .iter()
-                    .map(MessageRevision::new)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        self.sync_message_list(message_revisions);
-
-        let message_list = self.message_list.clone();
-        let conversation_id = self.conversation_id;
-        let chat_data_for_list = chat_data.clone();
-        v_flex()
-            .flex_1()
-            .w_full()
-            .overflow_hidden()
-            .pb_2()
-            .child(
-                h_flex()
-                    .flex_initial()
-                    .p_2()
-                    .gap_2()
-                    .child(Label::new(&self.conversation_icon))
-                    .child(
-                        Label::new(&self.conversation_title)
-                            .text_xl()
-                            .when_some(self.conversation_info.as_ref(), |this, description| {
-                                this.secondary(description)
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("conversation-panel")
-                    .flex_1()
-                    .overflow_hidden()
-                    .relative()
-                    .w_full()
-                    .child(
-                        list(message_list.clone(), move |ix, _window, cx| {
-                            chat_data_for_list
-                                .read(cx)
-                                .as_ref()
-                                .ok()
-                                .and_then(|data| data.conversation_message_at(conversation_id, ix))
-                                .map(|message| MessageView::new(message).into_any_element())
-                                .unwrap_or_else(|| div().into_any_element())
-                        })
-                        .size_full(),
-                    )
-                    .vertical_scrollbar(&message_list),
-            )
-            .child({
-                let mut footer = v_flex();
-                footer.style().align_items = Some(AlignItems::Stretch);
-                footer
-                    .w_full()
-                    .flex_initial()
-                    .px_2()
-                    .child(self.chat_form.clone())
-            })
-    }
-}
-
 struct Runner {
     config: AiChatConfig,
     provider_name: String,
@@ -1102,13 +987,6 @@ mod tests {
             end_time: now,
             error: None,
         }
-    }
-
-    #[test]
-    fn running_task_contains_any_bound_message() {
-        assert!(running_task_contains_message(Some(7), Some(8), 7));
-        assert!(running_task_contains_message(Some(7), Some(8), 8));
-        assert!(!running_task_contains_message(Some(7), Some(8), 9));
     }
 
     #[test]

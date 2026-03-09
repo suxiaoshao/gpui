@@ -27,11 +27,25 @@ impl TemporaryData {
             };
         })
     }
-    pub fn hide_with_delay(window: &mut Window, cx: &mut App) {
+
+    fn hide_with_delay(&mut self, window: &mut Window, cx: &mut App) {
         let task = Self::delay_close(window, cx);
-        let temporary_data = cx.global_mut::<TemporaryData>();
-        temporary_data.delay_close = Some(task);
-        temporary_data.hide(window);
+        self.delay_close = Some(task);
+        self.hide(window);
+    }
+
+    pub fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
+        if !cx.has_global::<TemporaryData>() {
+            event!(
+                Level::ERROR,
+                "Failed to hide temporary window with delay: TemporaryData is not initialized"
+            );
+            return;
+        }
+
+        cx.update_global::<TemporaryData, _>(|temporary_data, cx| {
+            temporary_data.hide_with_delay(window, cx);
+        });
     }
     pub fn hide(&mut self, window: &mut Window) {
         if let Err(err) = window.hide() {
@@ -68,7 +82,7 @@ impl TemporaryData {
             Some(temporary_window) => {
                 if let Err(err) = temporary_window.update(cx, |_this, window, cx| {
                     if window.is_visible().unwrap_or(false) {
-                        Self::hide_with_delay(window, cx);
+                        self.hide_with_delay(window, cx);
                     } else {
                         self.show(window);
                     }

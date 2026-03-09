@@ -546,6 +546,13 @@ impl ChatDataInner {
     pub(crate) fn delete_message(&mut self, message_id: i32) {
         Self::__delete_message(&mut self.folders, &mut self.conversations, message_id);
     }
+    pub(crate) fn clear_conversation_messages(&mut self, conversation_id: i32) {
+        if let Some(conversation) =
+            Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
+        {
+            conversation.messages.clear();
+        }
+    }
     pub(crate) fn replace_message(&mut self, conversation_id: i32, message: Message) {
         if let Some(conversation) =
             Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
@@ -750,6 +757,31 @@ mod tests {
             Content::Text("updated".to_string())
         );
         assert!(!data.update_message(2, 99, |_| {}));
+    }
+
+    #[test]
+    fn clear_conversation_messages_only_resets_target_conversation() {
+        let mut data = empty_chat_data();
+        data.conversations.push(conversation(1, None));
+        data.conversations.push(conversation(2, None));
+        data.add_message(1, message(10, 1));
+        data.add_message(1, message(11, 1));
+        data.add_message(2, message(20, 2));
+
+        data.clear_conversation_messages(1);
+
+        assert_eq!(
+            data.conversation_messages(1)
+                .expect("conversation 1 should exist")
+                .len(),
+            0
+        );
+        assert_eq!(
+            data.conversation_messages(2)
+                .expect("conversation 2 should exist")
+                .len(),
+            1
+        );
     }
 
     #[test]

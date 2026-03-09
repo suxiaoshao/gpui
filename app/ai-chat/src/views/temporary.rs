@@ -18,7 +18,7 @@ impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _subscription = vec![cx.observe_window_activation(window, |_this, window, cx| {
             if !window.is_window_active() {
-                TemporaryData::hide_with_delay(window, cx);
+                TemporaryData::request_hide_with_delay(window, cx);
             }
         })];
         let detail = cx.new(|cx| TemplateDetailView::new(window, cx));

@@ -1,8 +1,7 @@
 use crate::{
     components::{
-        add_conversation::add_conversation_dialog_with_messages,
-        chat_form::{ChatForm, ChatFormEvent, ChatFormSnapshot},
-        message::{MessageView, MessageViewExt},
+        add_conversation::add_conversation_dialog_with_messages, chat_form::ChatFormSnapshot,
+        message::MessageViewExt,
     },
     config::AiChatConfig,
     database::{Content, Mode, Role, Status},
@@ -14,6 +13,7 @@ use crate::{
     llm::{FetchRunner, provider_by_name},
     store::AddConversationMessage,
     views::{
+        conversation_detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
         message_preview::{MessagePreviewExt, open_message_preview_window},
         temporary::TemporaryView,
     },
@@ -22,27 +22,21 @@ use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Root, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
-    divider::Divider,
-    h_flex,
-    label::Label,
+    Root, WindowExt,
     notification::{Notification, NotificationType},
-    scroll::ScrollableElement,
-    v_flex,
 };
 use smol::stream::StreamExt;
 use std::{any::TypeId, rc::Rc};
 use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
-actions!([Esc]);
-
 const CONTEXT: &str = "template-detail";
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", Esc, Some(CONTEXT))]);
+    cx.bind_keys([KeyBinding::new("escape", DetailEscape, Some(CONTEXT))]);
 }
+
+pub(crate) type TemplateDetailView = ConversationDetailView<TemporaryDetailState>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryMessage {
@@ -88,6 +82,7 @@ impl MessageViewExt for TemporaryMessage {
             let template_detail = temporary_view.detail.clone();
             let template_detail = template_detail.read(cx);
             template_detail
+                .detail
                 .messages
                 .iter()
                 .find(|message| message.id == id)
@@ -115,7 +110,9 @@ impl MessageViewExt for TemporaryMessage {
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
                 this.detail.update(cx, |this, _cx| {
-                    this.messages.retain(|message| message.id != message_id);
+                    this.detail
+                        .messages
+                        .retain(|message| message.id != message_id);
                 });
             });
         } else {
@@ -184,6 +181,7 @@ impl MessagePreviewExt for TemporaryMessage {
             temporary_view.update(cx, |this, cx| {
                 this.detail.update(cx, |this, _cx| {
                     if let Some(message) = this
+                        .detail
                         .messages
                         .iter_mut()
                         .find(|message| message.id == self.id)
@@ -241,46 +239,9 @@ fn find_temporary_view(window: &mut Window, cx: &App) -> Option<Entity<Temporary
     view.downcast::<TemporaryView>().ok()
 }
 
-pub(crate) struct TemplateDetailView {
-    focus_handle: FocusHandle,
+pub(crate) struct TemporaryDetailState {
     messages: Vec<TemporaryMessage>,
-    chat_form: Entity<ChatForm>,
-    _subscriptions: Vec<Subscription>,
-    task: Option<RunningTask>,
     autoincrement_id: usize,
-}
-
-struct RunningTask {
-    user_message_id: Option<usize>,
-    assistant_message_id: Option<usize>,
-    _task: Task<()>,
-}
-
-impl RunningTask {
-    fn new(task: Task<()>) -> Self {
-        Self {
-            user_message_id: None,
-            assistant_message_id: None,
-            _task: task,
-        }
-    }
-
-    fn bind_messages(
-        &mut self,
-        user_message_id: Option<usize>,
-        assistant_message_id: Option<usize>,
-    ) {
-        self.user_message_id = user_message_id;
-        self.assistant_message_id = assistant_message_id;
-    }
-
-    fn contains_message(&self, message_id: usize) -> bool {
-        self.user_message_id == Some(message_id) || self.assistant_message_id == Some(message_id)
-    }
-
-    fn message_ids(&self) -> [Option<usize>; 2] {
-        [self.user_message_id, self.assistant_message_id]
-    }
 }
 
 struct NewTemporaryMessage {
@@ -293,46 +254,91 @@ struct NewTemporaryMessage {
     error: Option<String>,
 }
 
-// Initializes the temporary conversation view and template-backed form state.
-impl TemplateDetailView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
-        let _subscriptions = vec![cx.subscribe_in(
-            &chat_form,
-            window,
-            |this, _chat_form, event: &ChatFormEvent, window, cx| match event {
-                ChatFormEvent::SendRequested => this.on_send_requested(window, cx),
-                ChatFormEvent::PauseRequested => this.on_pause_requested(cx),
-            },
-        )];
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TemporaryMessageRevision {
+    id: usize,
+    status: Status,
+    updated_time_nanos: i128,
+    content_len: usize,
+    error_len: usize,
+}
+
+impl TemporaryMessageRevision {
+    fn new(message: &TemporaryMessage) -> Self {
+        let content_len = match &message.content {
+            Content::Text(content) => content.len(),
+            Content::Extension {
+                source,
+                extension_name,
+                content,
+            } => source.len() + extension_name.len() + content.len(),
+        };
+
         Self {
-            focus_handle,
-            messages: Vec::new(),
-            chat_form,
-            _subscriptions,
-            task: None,
-            autoincrement_id: 0,
+            id: message.id,
+            status: message.status,
+            updated_time_nanos: message.updated_time.unix_timestamp_nanos(),
+            content_len,
+            error_len: message.error.as_ref().map_or(0, String::len),
         }
     }
 }
 
-// Exposes the current temporary messages for rendering.
 impl TemplateDetailView {
-    fn messages(&self) -> Vec<MessageView<TemporaryMessage>> {
-        self.messages
-            .iter()
-            .cloned()
-            .map(MessageView::new)
-            .collect()
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        ConversationDetailView::new_with_detail(
+            TemporaryDetailState {
+                messages: Vec::new(),
+                autoincrement_id: 0,
+            },
+            window,
+            cx,
+        )
     }
 }
 
-// Handles user-facing actions for sending, pausing, and saving drafts.
-impl TemplateDetailView {
-    fn on_send_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = match self.chat_form.read(cx).snapshot(cx) {
+impl ConversationDetailViewExt for TemporaryDetailState {
+    type Message = TemporaryMessage;
+    type MessageId = usize;
+    type Revision = TemporaryMessageRevision;
+
+    fn title(&self, cx: &App) -> SharedString {
+        cx.global::<I18n>().t("temporary-chat-title").into()
+    }
+
+    fn subtitle(&self, cx: &App) -> Option<SharedString> {
+        Some(cx.global::<I18n>().t("temporary-chat-description").into())
+    }
+
+    fn key_context(&self) -> Option<&'static str> {
+        Some(CONTEXT)
+    }
+
+    fn focus_on_init(&self) -> bool {
+        true
+    }
+
+    fn element_prefix(&self) -> SharedString {
+        "temporary-detail".into()
+    }
+
+    fn message_revisions(&self, _cx: &App) -> Vec<Self::Revision> {
+        self.messages
+            .iter()
+            .map(TemporaryMessageRevision::new)
+            .collect()
+    }
+
+    fn message_at(&self, index: usize, _cx: &App) -> Option<Self::Message> {
+        self.messages.get(index).cloned()
+    }
+
+    fn on_send_requested(
+        view: &mut ConversationDetailView<Self>,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        let snapshot = match view.chat_form.read(cx).snapshot(cx) {
             Ok(Some(snapshot)) => snapshot,
             Ok(None) => return,
             Err(err) => {
@@ -346,7 +352,7 @@ impl TemplateDetailView {
             send_content = snapshot.text.clone(),
             extension_name = snapshot.extension_name.clone()
         );
-        if self.can_start_task() {
+        if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let extension_container = cx.global::<ExtensionContainer>().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
@@ -356,7 +362,7 @@ impl TemplateDetailView {
                     config,
                     now: OffsetDateTime::now_utc(),
                 };
-                if let Err(err) = Self::fetch(this, context, cx)
+                if let Err(err) = TemplateDetailView::fetch(this, context, cx)
                     .compat()
                     .instrument(span)
                     .await
@@ -364,23 +370,67 @@ impl TemplateDetailView {
                     event!(Level::ERROR, "fetch failed: {}", err);
                 };
             });
-            self.task = Some(RunningTask::new(task));
-            self.chat_form
-                .update(cx, |chat_form, cx| chat_form.set_running(true, cx));
+            view.set_running_task(task, cx);
         }
     }
-    fn on_pause_requested(&mut self, cx: &mut Context<Self>) {
-        self.pause_running_task(cx);
+
+    fn on_pause_requested(
+        view: &mut ConversationDetailView<Self>,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        view.pause_running_task(cx);
     }
-    fn on_escape(&mut self, _: &Esc, window: &mut Window, cx: &mut Context<Self>) {
-        TemporaryData::hide_with_delay(window, cx);
+
+    fn on_escape(
+        _view: &mut ConversationDetailView<Self>,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        TemporaryData::request_hide_with_delay(window, cx);
     }
-    fn has_running_task(&self) -> bool {
-        self.task.is_some()
+
+    fn supports_clear(&self) -> bool {
+        true
     }
-    fn can_start_task(&self) -> bool {
-        !self.has_running_task()
+
+    fn clear(
+        view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        view.detail.messages.clear();
+        view.detail.autoincrement_id = 0;
+        cx.notify();
     }
+
+    fn supports_save(&self) -> bool {
+        true
+    }
+
+    fn save(
+        view: &mut ConversationDetailView<Self>,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        let initial_messages = view
+            .detail
+            .messages
+            .iter()
+            .cloned()
+            .map(|message| AddConversationMessage {
+                provider: message.provider,
+                role: message.role,
+                content: message.content,
+                send_content: (*message.send_content).clone(),
+                status: message.status,
+                error: message.error,
+            })
+            .collect::<Vec<_>>();
+        add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
+    }
+}
+
+impl TemplateDetailView {
     fn pause_message(&mut self, message_id: usize, cx: &mut Context<Self>) {
         if !self
             .task
@@ -391,6 +441,7 @@ impl TemplateDetailView {
         }
         self.pause_running_task(cx);
     }
+
     fn resend_message(&mut self, message_id: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_running_task() {
             return;
@@ -410,48 +461,15 @@ impl TemplateDetailView {
                 });
             }
         });
-        let mut running_task = RunningTask::new(task);
-        running_task.bind_messages(None, Some(message_id));
-        self.task = Some(running_task);
-    }
-    fn on_clear_conversation(
-        &mut self,
-        _: &ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.messages.clear();
-        self.autoincrement_id = 0;
-        cx.notify();
-    }
-    fn on_save_conversation(
-        &mut self,
-        _: &ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let initial_messages = self
-            .messages
-            .iter()
-            .cloned()
-            .map(|message| AddConversationMessage {
-                provider: message.provider,
-                role: message.role,
-                content: message.content,
-                send_content: (*message.send_content).clone(),
-                status: message.status,
-                error: message.error,
-            })
-            .collect::<Vec<_>>();
-        add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
+        self.set_running_task(task, cx);
+        self.bind_running_task_messages(None, Some(message_id));
     }
 }
 
-// Manages the in-memory temporary messages and active running task.
 impl TemplateDetailView {
     fn new_id(&mut self) -> usize {
-        self.autoincrement_id += 1;
-        self.autoincrement_id
+        self.detail.autoincrement_id += 1;
+        self.detail.autoincrement_id
     }
     fn add_message(&mut self, input: NewTemporaryMessage) -> &mut TemporaryMessage {
         let id = self.new_id();
@@ -468,48 +486,25 @@ impl TemplateDetailView {
             start_time: input.now,
             end_time: input.now,
         };
-        self.messages.push(message);
-        self.messages.last_mut().unwrap()
+        self.detail.messages.push(message);
+        self.detail.messages.last_mut().unwrap()
     }
     fn on_message(&mut self, content: &str, message_id: usize) {
-        if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.add_content(content);
         }
     }
     fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
-        if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
         }
         self.clear_running_task_for_message(Some(message_id), cx);
     }
     fn on_success(&mut self, message_id: usize, cx: &mut Context<Self>) {
-        if let Some(last) = self.messages.iter_mut().find(|m| m.id == message_id) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
         }
         self.clear_running_task_for_message(Some(message_id), cx);
-    }
-    fn bind_running_task_messages(
-        &mut self,
-        user_message_id: Option<usize>,
-        assistant_message_id: Option<usize>,
-    ) {
-        if let Some(task) = self.task.as_mut() {
-            task.bind_messages(user_message_id, assistant_message_id);
-        }
-    }
-    fn clear_running_task_for_message(
-        &mut self,
-        message_id: Option<usize>,
-        cx: &mut Context<Self>,
-    ) {
-        let should_clear = self.task.as_ref().is_some_and(|task| {
-            message_id.is_none_or(|message_id| task.contains_message(message_id))
-        });
-        if should_clear {
-            self.task = None;
-            self.chat_form
-                .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
-        }
     }
     fn pause_running_task(&mut self, cx: &mut Context<Self>) {
         let Some(task) = self.task.take() else {
@@ -517,6 +512,7 @@ impl TemplateDetailView {
         };
         for message_id in task.message_ids().into_iter().flatten() {
             if let Some(message) = self
+                .detail
                 .messages
                 .iter_mut()
                 .find(|message| message.id == message_id)
@@ -525,8 +521,7 @@ impl TemplateDetailView {
                 message.update_status(Status::Paused);
             }
         }
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.set_running(false, cx));
+        self.set_chat_form_running(false, cx);
         cx.notify();
     }
 }
@@ -554,6 +549,7 @@ impl TemplateDetailView {
     ) -> AiChatResult<()> {
         let (provider_name, request_body, error) = state.update_result(cx, |this, _cx| {
             let Some(message) = this
+                .detail
                 .messages
                 .iter_mut()
                 .find(|message| message.id == message_id)
@@ -672,6 +668,7 @@ impl TemplateDetailView {
             let send_content = runner.request_body.clone();
             let assistant_message_id = state.update_result(cx, |this, _cx| {
                 if let Some(message) = this
+                    .detail
                     .messages
                     .iter_mut()
                     .find(|message| message.id == user_message_id)
@@ -767,7 +764,7 @@ impl TemplateDetailView {
                 &composer_snapshot.request_template,
                 &composer_snapshot.prompts,
                 composer_snapshot.mode,
-                &this.messages,
+                &this.detail.messages,
                 user_message_role,
                 &user_message_content,
             )?;
@@ -949,89 +946,6 @@ fn build_request_body(
         user_message_content,
     );
     provider_by_name(provider_name)?.request_body(template, history)
-}
-
-// Renders the temporary conversation header, message list, and composer.
-impl Render for TemplateDetailView {
-    fn render(
-        &mut self,
-        _window: &mut gpui::Window,
-        cx: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
-        let (title, subtitle, clear_tooltip, save_tooltip) = {
-            let i18n = cx.global::<I18n>();
-            (
-                i18n.t("temporary-chat-title"),
-                i18n.t("temporary-chat-description"),
-                i18n.t("tooltip-clear-conversation"),
-                i18n.t("tooltip-save-conversation"),
-            )
-        };
-        v_flex()
-            .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_escape))
-            .size_full()
-            .overflow_hidden()
-            .pb_2()
-            .child(
-                h_flex()
-                    .flex_initial()
-                    .p_2()
-                    .gap_2()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        v_flex().gap_1().child(Label::new(title).text_xl()).child(
-                            Label::new(subtitle)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        ),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                Button::new("temporary-clear")
-                                    .icon(IconName::Delete)
-                                    .ghost()
-                                    .small()
-                                    .disabled(self.has_running_task())
-                                    .on_click(cx.listener(Self::on_clear_conversation))
-                                    .tooltip(clear_tooltip),
-                            )
-                            .child(
-                                Button::new("temporary-save")
-                                    .icon(IconName::Inbox)
-                                    .ghost()
-                                    .small()
-                                    .disabled(self.has_running_task())
-                                    .on_click(cx.listener(Self::on_save_conversation))
-                                    .tooltip(save_tooltip),
-                            ),
-                    ),
-            )
-            .child(Divider::horizontal())
-            .child(
-                div()
-                    .id("template-detail-content")
-                    .flex_1()
-                    .overflow_hidden()
-                    .children(self.messages())
-                    .child(div().h_2())
-                    .overflow_y_scrollbar(),
-            )
-            .child({
-                let mut footer = v_flex();
-                footer.style().align_items = Some(AlignItems::Stretch);
-                footer
-                    .w_full()
-                    .flex_initial()
-                    .px_2()
-                    .child(self.chat_form.clone())
-            })
-    }
 }
 
 #[cfg(test)]

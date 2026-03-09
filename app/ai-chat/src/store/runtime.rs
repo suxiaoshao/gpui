@@ -44,6 +44,7 @@ pub enum ChatDataEvent {
         target_parent_id: Option<i32>,
     },
     DeleteMessage(i32),
+    ClearConversationMessages(i32),
     DeleteConversation(i32),
     DeleteFolder(i32),
 }
@@ -204,6 +205,13 @@ impl ChatData {
                 window,
                 delete_message_failed,
                 "delete message",
+                cx,
+            ),
+            ChatDataEvent::ClearConversationMessages(conversation_id) => Self::handle_event_result(
+                Self::clear_conversation_messages(state, *conversation_id, cx),
+                window,
+                delete_message_failed,
+                "clear conversation messages",
                 cx,
             ),
             ChatDataEvent::DeleteConversation(conversation_id) => Self::handle_event_result(
@@ -370,6 +378,20 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.delete_message(message_id);
+            }
+        });
+        Ok(())
+    }
+    fn clear_conversation_messages(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::delete_by_conversation_id(conversation_id, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.clear_conversation_messages(conversation_id);
             }
         });
         Ok(())
