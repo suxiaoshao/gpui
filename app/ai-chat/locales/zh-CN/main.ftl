@@ -56,6 +56,7 @@ field-template-prefix = 模板
 field-provider = 提供方
 field-mode = 模式
 field-description = 描述
+field-search-template = 搜索模板
 field-prompts = 提示词
 field-role = 角色
 field-prompt = 提示词

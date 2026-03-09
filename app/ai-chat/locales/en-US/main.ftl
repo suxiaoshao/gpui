@@ -56,6 +56,7 @@ field-template-prefix = Template
 field-provider = Provider
 field-mode = Mode
 field-description = Description
+field-search-template = Search templates
 field-prompts = Prompts
 field-role = Role
 field-prompt = Prompt
