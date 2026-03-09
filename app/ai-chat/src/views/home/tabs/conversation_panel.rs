@@ -2,9 +2,7 @@ use crate::{
     components::chat_form::{ChatForm, ChatFormEvent, ChatFormSnapshot},
     components::message::MessageView,
     config::AiChatConfig,
-    database::{
-        Content, Conversation, Db, Message, Mode, NewMessage, Role, Status,
-    },
+    database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
@@ -14,7 +12,7 @@ use crate::{
 use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::{
-    AppContext, AsyncWindowContext, Context, Entity, InteractiveElement, IntoElement,
+    AlignItems, AppContext, AsyncWindowContext, Context, Entity, InteractiveElement, IntoElement,
     ListAlignment, ListState, ParentElement, Render, SharedString, Styled, Subscription, Task,
     WeakEntity, Window, div, list, prelude::FluentBuilder, px,
 };
@@ -414,7 +412,8 @@ impl ConversationPanelView {
                 provider.name().to_string(),
             ))?
             .clone();
-        let stream = provider.fetch_by_request_body(context.config, settings, &context.request_body);
+        let stream =
+            provider.fetch_by_request_body(context.config, settings, &context.request_body);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
@@ -481,13 +480,12 @@ impl ConversationPanelView {
         request_text: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Option<PreparedFetch>> {
-        let user_message =
-            Self::insert_loading_user_message(
-                context.conversation_id,
-                &context.composer_snapshot.provider_name,
-                &request_text,
-                cx,
-            )?;
+        let user_message = Self::insert_loading_user_message(
+            context.conversation_id,
+            &context.composer_snapshot.provider_name,
+            &request_text,
+            cx,
+        )?;
         let user_message_id = user_message.id;
         state.update_result(cx, |this, _cx| {
             this.bind_running_task_messages(Some(user_message_id), None);
@@ -996,13 +994,15 @@ impl Render for ConversationPanelView {
                     )
                     .vertical_scrollbar(&message_list),
             )
-            .child(
-                div()
+            .child({
+                let mut footer = v_flex();
+                footer.style().align_items = Some(AlignItems::Stretch);
+                footer
                     .w_full()
                     .flex_initial()
+                    .px_2()
                     .child(self.chat_form.clone())
-                    .px_2(),
-            )
+            })
     }
 }
 

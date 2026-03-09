@@ -519,7 +519,11 @@ impl TemplateDetailView {
             task.bind_messages(user_message_id, assistant_message_id);
         }
     }
-    fn clear_running_task_for_message(&mut self, message_id: Option<usize>, cx: &mut Context<Self>) {
+    fn clear_running_task_for_message(
+        &mut self,
+        message_id: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         let should_clear = self.task.as_ref().is_some_and(|task| {
             message_id.is_none_or(|message_id| task.contains_message(message_id))
         });
@@ -594,7 +598,11 @@ impl TemplateDetailView {
                 );
             }
             message.reset_for_resend();
-            (Some(message.provider.clone()), message.send_content.clone(), None)
+            (
+                Some(message.provider.clone()),
+                message.send_content.clone(),
+                None,
+            )
         })?;
         if let Some(err) = error {
             return Err(err);
@@ -661,23 +669,16 @@ impl TemplateDetailView {
         else {
             return Ok(None);
         };
-        let Some(content) =
-            Runner::get_new_user_content(
-                context.composer_snapshot.text.clone(),
-                Some(extension_runner),
-            )
-                .await
-                .map(Some)
-                .or_else(|error| {
-                    Self::record_extension_error(
-                        state.clone(),
-                        user_message_id,
-                        extension_name,
-                        error,
-                        cx,
-                    )
-                    .map(|()| None)
-                })?
+        let Some(content) = Runner::get_new_user_content(
+            context.composer_snapshot.text.clone(),
+            Some(extension_runner),
+        )
+        .await
+        .map(Some)
+        .or_else(|error| {
+            Self::record_extension_error(state.clone(), user_message_id, extension_name, error, cx)
+                .map(|()| None)
+        })?
         else {
             return Ok(None);
         };
@@ -744,30 +745,26 @@ impl TemplateDetailView {
             this.chat_form
                 .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
             let user_message_id = this
-                .add_message(
-                    NewTemporaryMessage {
-                        now: context.now,
-                        provider: context.composer_snapshot.provider_name.clone(),
-                        role: Role::User,
-                        content,
-                        send_content: send_content.clone(),
-                        status: Status::Normal,
-                        error: None,
-                    },
-                )
+                .add_message(NewTemporaryMessage {
+                    now: context.now,
+                    provider: context.composer_snapshot.provider_name.clone(),
+                    role: Role::User,
+                    content,
+                    send_content: send_content.clone(),
+                    status: Status::Normal,
+                    error: None,
+                })
                 .id;
             let assistant_message_id = this
-                .add_message(
-                    NewTemporaryMessage {
-                        now: context.now,
-                        provider: context.composer_snapshot.provider_name.clone(),
-                        role: Role::Assistant,
-                        content: Content::Text(String::new()),
-                        send_content: send_content.clone(),
-                        status: Status::Loading,
-                        error: None,
-                    },
-                )
+                .add_message(NewTemporaryMessage {
+                    now: context.now,
+                    provider: context.composer_snapshot.provider_name.clone(),
+                    role: Role::Assistant,
+                    content: Content::Text(String::new()),
+                    send_content: send_content.clone(),
+                    status: Status::Loading,
+                    error: None,
+                })
                 .id;
             this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
             assistant_message_id
@@ -1051,13 +1048,15 @@ impl Render for TemplateDetailView {
                     .child(div().h_2())
                     .overflow_y_scrollbar(),
             )
-            .child(
-                div()
+            .child({
+                let mut footer = v_flex();
+                footer.style().align_items = Some(AlignItems::Stretch);
+                footer
                     .w_full()
                     .flex_initial()
+                    .px_2()
                     .child(self.chat_form.clone())
-                    .px_2(),
-            )
+            })
     }
 }
 
@@ -1131,8 +1130,15 @@ mod tests {
             "frequency_penalty": 0.0
         });
         template["model"] = serde_json::json!("override-model");
-        let request_body =
-            build_request_body("OpenAI", &template, &[], Mode::Contextual, &[], Role::User, "hello")?;
+        let request_body = build_request_body(
+            "OpenAI",
+            &template,
+            &[],
+            Mode::Contextual,
+            &[],
+            Role::User,
+            "hello",
+        )?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
     }
