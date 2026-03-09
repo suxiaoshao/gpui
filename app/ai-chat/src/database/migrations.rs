@@ -667,6 +667,7 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -733,12 +734,18 @@ create table messages
     const V2_CREATE_TABLE_SQL: &str =
         include_str!("../../migrations/2025-12-23-141452-0000_create_tables/up.sql");
 
+    static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn temp_db_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("gpui-ai-chat-{name}-{unique}.sqlite3"))
+        let counter = TEMP_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!(
+            "gpui-ai-chat-{name}-{pid}-{unique}-{counter}.sqlite3"
+        ))
     }
 
     fn template_json() -> &'static str {
