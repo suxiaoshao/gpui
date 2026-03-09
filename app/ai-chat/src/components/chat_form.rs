@@ -1,5 +1,6 @@
 mod provider_chat_form;
 mod provider_template_form;
+mod template_picker;
 
 use crate::{
     config::AiChatConfig,
@@ -14,18 +15,19 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, IconName, Sizable, Size, StyledExt as _,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
-    label::Label,
-    scroll::ScrollableElement,
+    input::{Input, InputEvent, InputState, Position},
+    list::{List, ListState},
     select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState},
     tag::Tag,
     v_flex,
 };
 use provider_chat_form::ProviderChatFormView;
 use provider_template_form::ProviderTemplateFormState;
+use std::sync::Arc;
+use template_picker::TemplatePickerDelegate;
 
 pub(crate) fn init(_cx: &mut App) {}
 
@@ -89,9 +91,13 @@ pub(crate) struct ChatForm {
     selected_model: Option<ProviderModel>,
     selected_template: Option<ConversationTemplate>,
     provider_chat_form: Option<Entity<ProviderChatFormView>>,
+    template_picker: Option<Entity<ListState<TemplatePickerDelegate>>>,
+    template_picker_bounds: Bounds<Pixels>,
     running: bool,
     template_picker_open: bool,
-    restore_slash_on_close: bool,
+    slash_restore_position: Option<Position>,
+    suppress_template_trigger_once: bool,
+    last_input_text: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -141,9 +147,13 @@ impl ChatForm {
             selected_model: None,
             selected_template: None,
             provider_chat_form: None,
+            template_picker: None,
+            template_picker_bounds: Bounds::default(),
             running: false,
             template_picker_open: false,
-            restore_slash_on_close: false,
+            slash_restore_position: None,
+            suppress_template_trigger_once: false,
+            last_input_text: String::new(),
             _subscriptions: Vec::new(),
         };
         this.bind_input_events(window, cx);
@@ -313,52 +323,84 @@ impl ChatForm {
     }
 
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input_state.read(cx).value().to_string();
-        if self.template_picker_open || !text.ends_with('/') {
+        let (text, cursor, cursor_position) = {
+            let input = self.input_state.read(cx);
+            (
+                input.value().to_string(),
+                input.cursor(),
+                input.cursor_position(),
+            )
+        };
+        if self.suppress_template_trigger_once {
+            self.suppress_template_trigger_once = false;
+            self.last_input_text = text;
             cx.notify();
             return;
         }
-        let mut next = text;
-        next.pop();
-        self.input_state
-            .update(cx, |input, cx| input.set_value(next, window, cx));
+        if self.template_picker_open {
+            self.last_input_text = text;
+            cx.notify();
+            return;
+        }
+        let Some((next, slash_restore_position)) =
+            detect_template_trigger(&self.last_input_text, &text, cursor, cursor_position)
+        else {
+            self.last_input_text = text;
+            cx.notify();
+            return;
+        };
         self.template_picker_open = true;
-        self.restore_slash_on_close = true;
+        self.slash_restore_position = Some(slash_restore_position);
+        self.last_input_text = next.clone();
+        self.rebuild_template_picker(window, cx);
+        self.input_state.update(cx, |input, cx| {
+            input.set_value(next, window, cx);
+            input.set_cursor_position(slash_restore_position, window, cx);
+        });
+        self.focus_template_picker(window, cx);
         cx.notify();
     }
 
     fn close_template_picker(
         &mut self,
         restore_slash: bool,
+        focus_input: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.template_picker_open = false;
-        if restore_slash && self.restore_slash_on_close {
-            let mut text = self.input_state.read(cx).value().to_string();
-            text.push('/');
-            self.input_state
-                .update(cx, |input, cx| input.set_value(text, window, cx));
+        self.template_picker = None;
+        if restore_slash && let Some(slash_restore_position) = self.slash_restore_position.take() {
+            self.suppress_template_trigger_once = true;
+            self.input_state.update(cx, |input, cx| {
+                input.set_cursor_position(slash_restore_position, window, cx);
+                input.insert("/", window, cx);
+            });
+            self.last_input_text = self.input_state.read(cx).value().to_string();
+        } else {
+            self.slash_restore_position = None;
         }
-        self.restore_slash_on_close = false;
+        if focus_input {
+            self.input_state
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
         cx.notify();
     }
 
     fn choose_template(
         &mut self,
         template: ConversationTemplate,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.selected_template = Some(template);
-        self.template_picker_open = false;
-        self.restore_slash_on_close = false;
-        cx.notify();
+        self.close_template_picker(false, true, window, cx);
     }
 
     pub(crate) fn clear_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.input_state
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.last_input_text.clear();
     }
 
     pub(crate) fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
@@ -406,7 +448,7 @@ impl ChatForm {
 }
 
 impl Render for ChatForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_tooltip = cx.global::<I18n>().t("tooltip-send-message");
         let pause_tooltip = cx.global::<I18n>().t("tooltip-pause-message");
         let settings_tooltip = cx.global::<I18n>().t("tooltip-chat-form-settings");
@@ -420,8 +462,24 @@ impl Render for ChatForm {
             .p_1()
             .child(
                 h_flex()
+                    .relative()
                     .w_full()
-                    .child(Input::new(&self.input_state).flex_1().appearance(false)),
+                    .child(Input::new(&self.input_state).flex_1().appearance(false))
+                    .child(
+                        canvas(
+                            {
+                                let state = cx.entity();
+                                move |bounds, _, cx| {
+                                    state.update(cx, |form, _| {
+                                        form.template_picker_bounds = bounds;
+                                    })
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
             )
             .when_some(self.selected_template.clone(), |this, template| {
                 let tag = Tag::primary()
@@ -434,51 +492,6 @@ impl Render for ChatForm {
                         cx.notify();
                     }),
                 )))
-            })
-            .when(self.template_picker_open, |this| {
-                let items = self
-                    .templates
-                    .iter()
-                    .map(|template| {
-                        let template = template.clone();
-                        Button::new(("template-pick", template.id as usize))
-                            .ghost()
-                            .label(format!("{} {}", template.icon, template.name))
-                            .on_click(cx.listener(move |form, _event, window, cx| {
-                                form.choose_template(template.clone(), window, cx);
-                            }))
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>();
-                this.child(
-                    v_flex()
-                        .gap_2()
-                        .p_2()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().popover)
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .child(Label::new(cx.global::<I18n>().t("field-template")))
-                                .child(
-                                    Button::new("template-picker-close")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Close)
-                                        .on_click(cx.listener(|form, _event, window, cx| {
-                                            form.close_template_picker(true, window, cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            v_flex()
-                                .max_h(px(220.))
-                                .overflow_y_scrollbar()
-                                .children(items),
-                        ),
-                )
             })
             .child(
                 h_flex()
@@ -539,5 +552,177 @@ impl Render for ChatForm {
                             }),
                     ),
             )
+            .when(self.template_picker_open, |this| {
+                this.child(self.render_template_picker(window, cx))
+            })
+    }
+}
+
+impl ChatForm {
+    fn rebuild_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let templates = self.templates.clone();
+        let selected_template = self.selected_template.clone();
+        let initial_ix =
+            TemplatePickerDelegate::selected_index_for(&templates, selected_template.as_ref());
+        let state = cx.entity().downgrade();
+        let on_confirm = Arc::new(
+            move |template: ConversationTemplate, window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |form, cx| {
+                    form.choose_template(template, window, cx);
+                });
+            },
+        );
+        let state = cx.entity().downgrade();
+        let on_cancel = Arc::new(move |window: &mut Window, cx: &mut App| {
+            let _ = state.update(cx, |form, cx| {
+                form.close_template_picker(true, true, window, cx);
+            });
+        });
+        self.template_picker = Some(cx.new(move |cx| {
+            let mut state = ListState::new(
+                TemplatePickerDelegate::new(templates, on_confirm, on_cancel),
+                window,
+                cx,
+            );
+            state.set_selected_index(initial_ix, window, cx);
+            state
+        }));
+    }
+
+    fn focus_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(template_picker) = &self.template_picker {
+            template_picker.update(cx, |picker, cx| {
+                picker.focus(window, cx);
+            });
+        }
+    }
+
+    fn render_template_picker(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let bounds = self.template_picker_bounds;
+        let popup_radius = cx.theme().radius.min(px(8.));
+        let template_picker = self
+            .template_picker
+            .clone()
+            .expect("template picker exists while open");
+        deferred(
+            anchored()
+                .anchor(Corner::BottomLeft)
+                .snap_to_window_with_margin(px(8.))
+                .position(point(bounds.left(), bounds.top()))
+                .child(
+                    div()
+                        .w(bounds.size.width + px(2.))
+                        .on_mouse_down_out(cx.listener(|form, _, window, cx| {
+                            form.close_template_picker(true, false, window, cx);
+                        }))
+                        .child(
+                            v_flex()
+                                .occlude()
+                                .mb_1p5()
+                                .bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded(popup_radius)
+                                .shadow_md()
+                                .child(
+                                    List::new(&template_picker)
+                                        .with_size(Size::Medium)
+                                        .max_h(rems(20.))
+                                        .paddings(Edges::all(px(4.))),
+                                ),
+                        ),
+                ),
+        )
+        .with_priority(1)
+    }
+}
+
+fn detect_template_trigger(
+    previous_text: &str,
+    current_text: &str,
+    cursor: usize,
+    cursor_position: Position,
+) -> Option<(String, Position)> {
+    if cursor == 0
+        || current_text.len() != previous_text.len().saturating_add(1)
+        || current_text.as_bytes().get(cursor - 1) != Some(&b'/')
+    {
+        return None;
+    }
+    let mut next = current_text.to_string();
+    next.remove(cursor - 1);
+    if next != previous_text {
+        return None;
+    }
+    Some((
+        next,
+        Position {
+            line: cursor_position.line,
+            character: cursor_position.character.saturating_sub(1),
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_template_trigger;
+    use gpui_component::input::Position;
+
+    #[test]
+    fn detect_template_trigger_supports_middle_cursor_insertions() {
+        let result = detect_template_trigger(
+            "hello world",
+            "hello /world",
+            7,
+            Position {
+                line: 0,
+                character: 7,
+            },
+        );
+
+        assert_eq!(
+            result,
+            Some((
+                "hello world".to_string(),
+                Position {
+                    line: 0,
+                    character: 6,
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn detect_template_trigger_ignores_non_insert_changes() {
+        let result = detect_template_trigger(
+            "hello world",
+            "hello /world!",
+            7,
+            Position {
+                line: 0,
+                character: 7,
+            },
+        );
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn detect_template_trigger_ignores_non_slash_insertions() {
+        let result = detect_template_trigger(
+            "hello world",
+            "hello !world",
+            7,
+            Position {
+                line: 0,
+                character: 7,
+            },
+        );
+
+        assert_eq!(result, None);
     }
 }
