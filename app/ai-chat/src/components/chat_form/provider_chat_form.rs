@@ -1,6 +1,5 @@
-use crate::{
-    components::provider_template_form::ProviderTemplateFormState, i18n::I18n, llm::ChatFormLayout,
-};
+use super::provider_template_form::ProviderTemplateFormState;
+use crate::{i18n::I18n, llm::ChatFormLayout};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, IconName, Sizable,

@@ -41,6 +41,8 @@ tooltip-pause-message = 暂停生成
 tooltip-chat-form-settings = Provider 设置
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
+temporary-chat-title = 临时对话
+temporary-chat-description = 开始一段临时对话，需要时可在聊天表单中选择模板。
 
 field-id = ID
 field-name = 名称

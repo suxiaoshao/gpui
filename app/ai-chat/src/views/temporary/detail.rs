@@ -5,10 +5,11 @@ use crate::{
         message::{MessageView, MessageViewExt},
     },
     config::AiChatConfig,
-    database::{Content, ConversationTemplate, Mode, Role, Status},
+    database::{Content, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::WeakEntityResultExt,
+    hotkey::TemporaryData,
     i18n::I18n,
     llm::{FetchRunner, provider_by_name},
     store::AddConversationMessage,
@@ -19,9 +20,9 @@ use crate::{
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 use gpui_component::{
-    Disableable, IconName, Root, Sizable, WindowExt,
+    ActiveTheme, Disableable, IconName, Root, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
@@ -42,8 +43,6 @@ const CONTEXT: &str = "template-detail";
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Esc, Some(CONTEXT))]);
 }
-
-type OnEsc = Rc<dyn Fn(&Esc, &mut Window, &mut App) + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryMessage {
@@ -86,7 +85,7 @@ impl MessageViewExt for TemporaryMessage {
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
         let message = find_temporary_view(window, cx).and_then(|temporary_view| {
             let temporary_view = temporary_view.read(cx);
-            let template_detail = temporary_view.selected_item.as_ref()?.clone();
+            let template_detail = temporary_view.detail.clone();
             let template_detail = template_detail.read(cx);
             template_detail
                 .messages
@@ -104,11 +103,9 @@ impl MessageViewExt for TemporaryMessage {
         let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
-                if let Some(template_detail) = this.selected_item.as_ref() {
-                    template_detail.update(cx, |this, cx| {
-                        this.pause_message(message_id, cx);
-                    });
-                }
+                this.detail.update(cx, |this, cx| {
+                    this.pause_message(message_id, cx);
+                });
             });
         }
     }
@@ -117,11 +114,9 @@ impl MessageViewExt for TemporaryMessage {
         let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
-                if let Some(template_detail) = this.selected_item.as_ref() {
-                    template_detail.update(cx, |this, _cx| {
-                        this.messages.retain(|message| message.id != message_id);
-                    });
-                }
+                this.detail.update(cx, |this, _cx| {
+                    this.messages.retain(|message| message.id != message_id);
+                });
             });
         } else {
             let (title, message) = {
@@ -161,11 +156,7 @@ impl MessageViewExt for TemporaryMessage {
                     .and_then(|root| root.view().clone().downcast::<TemporaryView>().ok())
             })
             .is_some_and(|temporary_view| {
-                temporary_view
-                    .read(cx)
-                    .selected_item
-                    .as_ref()
-                    .is_some_and(|detail| !detail.read(cx).has_running_task())
+                !temporary_view.read(cx).detail.read(cx).has_running_task()
             })
     }
 
@@ -173,11 +164,9 @@ impl MessageViewExt for TemporaryMessage {
         let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
-                if let Some(template_detail) = this.selected_item.as_ref() {
-                    template_detail.update(cx, |this, cx| {
-                        this.resend_message(message_id, window, cx);
-                    });
-                }
+                this.detail.update(cx, |this, cx| {
+                    this.resend_message(message_id, window, cx);
+                });
             });
         }
     }
@@ -193,17 +182,15 @@ impl MessagePreviewExt for TemporaryMessage {
         let temporary_view = find_temporary_view(window, cx);
         if let Some(temporary_view) = temporary_view {
             temporary_view.update(cx, |this, cx| {
-                if let Some(template_detail) = this.selected_item.as_ref() {
-                    template_detail.update(cx, |this, _cx| {
-                        if let Some(message) = this
-                            .messages
-                            .iter_mut()
-                            .find(|message| message.id == self.id)
-                        {
-                            message.content = content;
-                        }
-                    });
-                }
+                this.detail.update(cx, |this, _cx| {
+                    if let Some(message) = this
+                        .messages
+                        .iter_mut()
+                        .find(|message| message.id == self.id)
+                    {
+                        message.content = content;
+                    }
+                });
             });
         }
         Ok(())
@@ -256,8 +243,6 @@ fn find_temporary_view(window: &mut Window, cx: &App) -> Option<Entity<Temporary
 
 pub(crate) struct TemplateDetailView {
     focus_handle: FocusHandle,
-    template: ConversationTemplate,
-    on_esc: OnEsc,
     messages: Vec<TemporaryMessage>,
     chat_form: Entity<ChatForm>,
     _subscriptions: Vec<Subscription>,
@@ -310,18 +295,10 @@ struct NewTemporaryMessage {
 
 // Initializes the temporary conversation view and template-backed form state.
 impl TemplateDetailView {
-    pub fn new(
-        template: &ConversationTemplate,
-        on_esc: impl Fn(&Esc, &mut Window, &mut App) + 'static,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
-        let chat_form = cx.new(|cx| ChatForm::new(None, window, cx));
-        chat_form.update(cx, |chat_form, cx| {
-            chat_form.set_selected_template(Some(template.clone()), cx);
-        });
+        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
         let _subscriptions = vec![cx.subscribe_in(
             &chat_form,
             window,
@@ -332,8 +309,6 @@ impl TemplateDetailView {
         )];
         Self {
             focus_handle,
-            template: template.clone(),
-            on_esc: Rc::new(on_esc),
             messages: Vec::new(),
             chat_form,
             _subscriptions,
@@ -396,6 +371,9 @@ impl TemplateDetailView {
     }
     fn on_pause_requested(&mut self, cx: &mut Context<Self>) {
         self.pause_running_task(cx);
+    }
+    fn on_escape(&mut self, _: &Esc, window: &mut Window, cx: &mut Context<Self>) {
+        TemporaryData::hide_with_delay(window, cx);
     }
     fn has_running_task(&self) -> bool {
         self.task.is_some()
@@ -980,10 +958,11 @@ impl Render for TemplateDetailView {
         _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        let on_esc = self.on_esc.clone();
-        let (clear_tooltip, save_tooltip) = {
+        let (title, subtitle, clear_tooltip, save_tooltip) = {
             let i18n = cx.global::<I18n>();
             (
+                i18n.t("temporary-chat-title"),
+                i18n.t("temporary-chat-description"),
                 i18n.t("tooltip-clear-conversation"),
                 i18n.t("tooltip-save-conversation"),
             )
@@ -991,9 +970,7 @@ impl Render for TemplateDetailView {
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_action(move |action, window, cx| {
-                (on_esc)(action, window, cx);
-            })
+            .on_action(cx.listener(Self::on_escape))
             .size_full()
             .overflow_hidden()
             .pb_2()
@@ -1005,14 +982,11 @@ impl Render for TemplateDetailView {
                     .items_center()
                     .justify_between()
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(Label::new(&self.template.icon))
-                            .child(Label::new(&self.template.name).text_xl().when_some(
-                                self.template.description.as_ref(),
-                                |this, description| this.secondary(description),
-                            )),
+                        v_flex().gap_1().child(Label::new(title).text_xl()).child(
+                            Label::new(subtitle)
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                        ),
                     )
                     .child(
                         h_flex()

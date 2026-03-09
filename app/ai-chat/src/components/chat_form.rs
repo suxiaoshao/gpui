@@ -1,6 +1,7 @@
+mod provider_chat_form;
+mod provider_template_form;
+
 use crate::{
-    components::provider_chat_form::ProviderChatFormView,
-    components::provider_template_form::ProviderTemplateFormState,
     config::AiChatConfig,
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::{AiChatError, AiChatResult},
@@ -23,6 +24,8 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
+use provider_chat_form::ProviderChatFormView;
+use provider_template_form::ProviderTemplateFormState;
 
 pub(crate) fn init(_cx: &mut App) {}
 
@@ -41,8 +44,6 @@ pub(crate) struct ChatFormSnapshot {
     pub(crate) provider_name: String,
     pub(crate) request_template: serde_json::Value,
     pub(crate) prompts: Vec<ConversationTemplatePrompt>,
-    pub(crate) selected_model: ProviderModel,
-    pub(crate) selected_template: Option<ConversationTemplate>,
     pub(crate) mode: Mode,
 }
 
@@ -95,11 +96,7 @@ pub(crate) struct ChatForm {
 }
 
 impl ChatForm {
-    pub(crate) fn new(
-        initial_snapshot: Option<ChatFormSnapshot>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
         let extension_state = cx.new(|cx| {
             let extension_container = cx.global::<crate::extensions::ExtensionContainer>();
@@ -110,14 +107,9 @@ impl ChatForm {
                 .collect::<Vec<_>>();
             SelectState::new(SearchableVec::new(names), None, window, cx).searchable(true)
         });
-        let snapshot = initial_snapshot.clone();
-        let selected_mode = snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.mode)
-            .unwrap_or(Mode::Contextual);
         let mode_state = cx.new(|cx| {
             SelectState::new(
-                mode_options(selected_mode),
+                mode_options(Mode::Contextual),
                 Some(gpui_component::IndexPath::default()),
                 window,
                 cx,
@@ -146,12 +138,8 @@ impl ChatForm {
             model_state,
             models: Vec::new(),
             templates,
-            selected_model: snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.selected_model.clone()),
-            selected_template: snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.selected_template.clone()),
+            selected_model: None,
+            selected_template: None,
             provider_chat_form: None,
             running: false,
             template_picker_open: false,
@@ -160,14 +148,6 @@ impl ChatForm {
         };
         this.bind_input_events(window, cx);
         this.bind_model_events(window, cx);
-        if let Some(snapshot) = snapshot {
-            this.rebuild_provider_chat_form(
-                &snapshot.selected_model,
-                snapshot.request_template,
-                window,
-                cx,
-            );
-        }
         this.load_models(window, cx);
         this
     }
@@ -381,15 +361,6 @@ impl ChatForm {
             .update(cx, |input, cx| input.set_value("", window, cx));
     }
 
-    pub(crate) fn set_selected_template(
-        &mut self,
-        template: Option<ConversationTemplate>,
-        cx: &mut Context<Self>,
-    ) {
-        self.selected_template = template;
-        cx.notify();
-    }
-
     pub(crate) fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         self.running = running;
         cx.notify();
@@ -422,8 +393,6 @@ impl ChatForm {
                 .as_ref()
                 .map(|template| template.prompts.clone())
                 .unwrap_or_default(),
-            selected_model,
-            selected_template: self.selected_template.clone(),
             mode,
         }))
     }
@@ -446,11 +415,12 @@ impl Render for ChatForm {
 
         root.w_full()
             .gap_2()
+            .bg(cx.theme().input)
+            .rounded(cx.theme().radius)
+            .p_1()
             .child(
                 h_flex()
                     .w_full()
-                    .bg(cx.theme().input)
-                    .rounded(cx.theme().radius)
                     .child(Input::new(&self.input_state).flex_1().appearance(false)),
             )
             .when_some(self.selected_template.clone(), |this, template| {

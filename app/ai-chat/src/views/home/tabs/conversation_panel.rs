@@ -104,7 +104,7 @@ fn running_task_contains_message(
 // Initializes the panel and keeps chat-form state in sync.
 impl ConversationPanelView {
     pub fn new(conversation: &Conversation, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_form = cx.new(|cx| ChatForm::new(None, window, cx));
+        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
         let _subscriptions = vec![cx.subscribe_in(
             &chat_form,
             window,

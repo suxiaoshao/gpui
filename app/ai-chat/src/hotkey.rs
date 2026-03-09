@@ -27,6 +27,12 @@ impl TemporaryData {
             };
         })
     }
+    pub fn hide_with_delay(window: &mut Window, cx: &mut App) {
+        let task = Self::delay_close(window, cx);
+        let temporary_data = cx.global_mut::<TemporaryData>();
+        temporary_data.delay_close = Some(task);
+        temporary_data.hide(window);
+    }
     pub fn hide(&mut self, window: &mut Window) {
         if let Err(err) = window.hide() {
             event!(Level::ERROR, "Failed to hide temporary window: {:?}", err);
@@ -62,8 +68,7 @@ impl TemporaryData {
             Some(temporary_window) => {
                 if let Err(err) = temporary_window.update(cx, |_this, window, cx| {
                     if window.is_visible().unwrap_or(false) {
-                        self.delay_close = Some(Self::delay_close(window, cx));
-                        self.hide(window);
+                        Self::hide_with_delay(window, cx);
                     } else {
                         self.show(window);
                     }

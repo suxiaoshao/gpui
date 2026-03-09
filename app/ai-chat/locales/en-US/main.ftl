@@ -41,6 +41,8 @@ tooltip-pause-message = Pause Generation
 tooltip-chat-form-settings = Provider Settings
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
+temporary-chat-title = Temporary Chat
+temporary-chat-description = Start a temporary conversation and choose a template from the chat form when needed.
 
 field-id = ID
 field-name = Name
