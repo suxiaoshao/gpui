@@ -8,7 +8,9 @@
 use crate::{
     database::{
         Role,
-        model::{SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate},
+        model::{
+            SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate,
+        },
     },
     errors::AiChatResult,
 };

@@ -1,5 +1,7 @@
 use crate::{
-    database::{ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role},
+    database::{
+        ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role,
+    },
     i18n::{I18n, t_static},
 };
 use gpui::*;
@@ -12,8 +14,8 @@ use gpui_component::{
     input::{Input, InputState},
     label::Label,
     notification::{Notification, NotificationType},
+    select::Select,
     select::SelectState,
-    select::{Select},
     v_flex,
 };
 use std::rc::Rc;
@@ -83,10 +85,16 @@ impl PromptListForm {
                 .read(cx)
                 .selected_value()
                 .copied()
-                .ok_or_else(|| format!("{} {}", t_static("template-error-select-role"), index + 1))?;
+                .ok_or_else(|| {
+                    format!("{} {}", t_static("template-error-select-role"), index + 1)
+                })?;
             let prompt = row.prompt_input.read(cx).value().trim().to_string();
             if prompt.is_empty() {
-                return Err(format!("{} {}", t_static("template-error-prompt-empty"), index + 1));
+                return Err(format!(
+                    "{} {}",
+                    t_static("template-error-prompt-empty"),
+                    index + 1
+                ));
             }
             prompts.push(ConversationTemplatePrompt { role, prompt });
         }
@@ -166,7 +174,9 @@ impl Render for PromptListForm {
                                 Button::new(("prompt-delete", index))
                                     .label(delete_label.clone())
                                     .on_click(move |_, _window, cx| {
-                                        let _ = this.update(cx, |form, cx| form.remove_prompt_row(index, cx));
+                                        let _ = this.update(cx, |form, cx| {
+                                            form.remove_prompt_row(index, cx)
+                                        });
                                     }),
                             ),
                     )
@@ -269,7 +279,13 @@ fn open_template_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let labels = dialog_labels(params.dialog_title_key, params.submit_label_key, params.success_title_key, params.failure_title_key, cx);
+    let labels = dialog_labels(
+        params.dialog_title_key,
+        params.submit_label_key,
+        params.success_title_key,
+        params.failure_title_key,
+        cx,
+    );
     let fields = dialog_fields(&template, window, cx);
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
@@ -316,7 +332,8 @@ fn open_template_dialog(
                                 let fields = fields.clone();
                                 let on_saved = on_saved.clone();
                                 move |_, window, cx| {
-                                    let submission = match collect_submission(&fields, &labels, cx) {
+                                    let submission = match collect_submission(&fields, &labels, cx)
+                                    {
                                         Ok(submission) => submission,
                                         Err(err) => {
                                             window.push_notification(
@@ -329,7 +346,13 @@ fn open_template_dialog(
                                             return;
                                         }
                                     };
-                                    save_template(params.template_id, submission, on_saved.clone(), window, cx);
+                                    save_template(
+                                        params.template_id,
+                                        submission,
+                                        on_saved.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 }
                             }),
                     ]
@@ -368,8 +391,12 @@ fn dialog_fields(
     let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder(t_static("field-icon")));
     let description_input =
         cx.new(|cx| InputState::new(window, cx).placeholder(t_static("field-description")));
-    name_input.update(cx, |input, cx| input.set_value(template.name.clone(), window, cx));
-    icon_input.update(cx, |input, cx| input.set_value(template.icon.clone(), window, cx));
+    name_input.update(cx, |input, cx| {
+        input.set_value(template.name.clone(), window, cx)
+    });
+    icon_input.update(cx, |input, cx| {
+        input.set_value(template.icon.clone(), window, cx)
+    });
     description_input.update(cx, |input, cx| {
         input.set_value(template.description.clone().unwrap_or_default(), window, cx)
     });
@@ -432,7 +459,9 @@ fn save_template(
     };
     let template_id = match template_id {
         Some(template_id) => {
-            if let Err(err) = ConversationTemplate::update(submission.new_template, template_id, &mut conn) {
+            if let Err(err) =
+                ConversationTemplate::update(submission.new_template, template_id, &mut conn)
+            {
                 window.push_notification(
                     Notification::new()
                         .title(submission.failure_title)

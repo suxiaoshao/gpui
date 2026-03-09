@@ -61,7 +61,10 @@ fn load_all_extensions(
             let wasm_path = path.join(WASM_FILE_NAME);
             let config_path = path.join(CONFIG_FILE_NAME);
             let config = ExtensionConfig::load(config_path)?;
-            map.insert(config.name.clone(), ExtensionDescriptor { config, wasm_path });
+            map.insert(
+                config.name.clone(),
+                ExtensionDescriptor { config, wasm_path },
+            );
         }
     }
     Ok(map)
@@ -198,8 +201,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir()
-            .join(format!("ai-chat-extensions-test-{}-{unique}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "ai-chat-extensions-test-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -216,7 +221,11 @@ description = "example extension"
 "#,
         )
         .unwrap();
-        fs::write(extension_dir.join(WASM_FILE_NAME), b"not a valid wasm module").unwrap();
+        fs::write(
+            extension_dir.join(WASM_FILE_NAME),
+            b"not a valid wasm module",
+        )
+        .unwrap();
 
         let loaded = load_all_extensions(&root).unwrap();
         let descriptor = loaded.get("Example").unwrap();

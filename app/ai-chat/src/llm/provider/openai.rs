@@ -2,13 +2,13 @@ use super::{
     ChatFormGroup, ChatFormLayout, InputItem, InputType, Provider, ProviderModel,
     ProviderModelCapability,
 };
-use async_compat::CompatExt;
 use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
     config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     i18n::t_static,
 };
+use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
@@ -192,8 +192,9 @@ fn detect_family(first: &str) -> Option<OpenAIModelFamily> {
 fn parse_openai_model(input: &str) -> IResult<&str, ParsedOpenAIModel<'_>> {
     let (input, _) = opt(tag("ft:")).parse(input)?;
     let (input, segments) = parse_model_segments(input)?;
-    let family = detect_family(segments.first().copied().unwrap_or_default())
-        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))?;
+    let family = detect_family(segments.first().copied().unwrap_or_default()).ok_or_else(|| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
+    })?;
     let has_date_suffix = matches!(
         segments.as_slice(),
         [.., year, month, day]
@@ -223,7 +224,10 @@ fn classify_model(id: &str) -> Option<ProviderModelCapability> {
         .segments
         .last()
         .is_some_and(|segment| segment.len() == 4 && segment.chars().all(|ch| ch.is_ascii_digit()));
-    let has_preview_suffix = parsed.segments.last().is_some_and(|segment| *segment == "preview");
+    let has_preview_suffix = parsed
+        .segments
+        .last()
+        .is_some_and(|segment| *segment == "preview");
     if parsed.has_date_suffix || has_short_numeric_suffix || has_preview_suffix {
         return None;
     }
@@ -460,12 +464,7 @@ impl Provider for OpenAIProvider {
                 .into_iter()
                 .filter_map(|model| {
                     let capability = classify_model(&model.id)?;
-                    ProviderModel::new(
-                        OpenAIProvider.name(),
-                        model.id.clone(),
-                        capability,
-                    )
-                    .into()
+                    ProviderModel::new(OpenAIProvider.name(), model.id.clone(), capability).into()
                 })
                 .collect::<Vec<_>>();
             models.sort_by(|left, right| left.id.cmp(&right.id));
@@ -520,8 +519,12 @@ impl Provider for OpenAIProvider {
                         };
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => config.set_provider_settings(OpenAIProvider.name(), settings),
-                            Err(err) => event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err),
+                            Ok(settings) => {
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
+                            }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
@@ -538,8 +541,12 @@ impl Provider for OpenAIProvider {
                         open_settings.base_url = normalize_base_url(&value);
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => config.set_provider_settings(OpenAIProvider.name(), settings),
-                            Err(err) => event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err),
+                            Ok(settings) => {
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
+                            }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
@@ -565,8 +572,12 @@ impl Provider for OpenAIProvider {
                         };
                         let config = cx.global_mut::<AiChatConfig>();
                         match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => config.set_provider_settings(OpenAIProvider.name(), settings),
-                            Err(err) => event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err),
+                            Ok(settings) => {
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
+                            }
+                            Err(err) => {
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
+                            }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);

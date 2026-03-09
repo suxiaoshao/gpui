@@ -26,14 +26,7 @@ pub fn add_conversation_dialog_with_messages(
     let _enter = span.enter();
     event!(Level::INFO, "add_conversation action");
 
-    let (
-        dialog_title,
-        name_label,
-        icon_label,
-        info_label,
-        cancel_label,
-        submit_label,
-    ) = {
+    let (dialog_title, name_label, icon_label, info_label, cancel_label, submit_label) = {
         let i18n = cx.global::<I18n>();
         (
             i18n.t("dialog-add-conversation-title"),

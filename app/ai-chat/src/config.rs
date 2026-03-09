@@ -115,7 +115,8 @@ impl AiChatConfig {
         let legacy_stream = self.provider_settings.remove("OpenAI Stream");
         let legacy_openai = self.provider_settings.remove("OpenAI");
         let selected = current_openai.or(legacy_stream).or(legacy_openai);
-        self.provider_settings.retain(|name, _| provider_names().contains(&name.as_str()));
+        self.provider_settings
+            .retain(|name, _| provider_names().contains(&name.as_str()));
         let normalized = selected
             .and_then(|value| value.try_into::<OpenAISettings>().ok())
             .map(OpenAISettings::normalized)
@@ -176,7 +177,8 @@ impl AiChatConfig {
         self.provider_settings.get(provider)
     }
     pub(crate) fn set_provider_settings(&mut self, provider: &str, settings: toml::Value) {
-        self.provider_settings.insert(provider.to_string(), settings);
+        self.provider_settings
+            .insert(provider.to_string(), settings);
     }
     pub(crate) fn get_http_proxy(&self) -> Option<&str> {
         self.http_proxy.as_deref()

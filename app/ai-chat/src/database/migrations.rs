@@ -86,7 +86,10 @@ fn migrate_legacy_store(data: LegacyData, target_conn: &mut SqliteConnection) ->
             templates.iter().cloned().map(Into::into).collect(),
             target_conn,
         )?;
-        SqlConversation::migration_save(conversations.iter().cloned().map(Into::into).collect(), target_conn)?;
+        SqlConversation::migration_save(
+            conversations.iter().cloned().map(Into::into).collect(),
+            target_conn,
+        )?;
         SqlMessage::migration_save(migrated_messages, target_conn)?;
         Ok(())
     })
@@ -227,7 +230,10 @@ fn build_v1_migrated_messages(
         let Some(template) = templates_by_id.get(template_id) else {
             continue;
         };
-        migrated.extend(build_conversation_messages(template, conversation_messages)?);
+        migrated.extend(build_conversation_messages(
+            template,
+            conversation_messages,
+        )?);
     }
     migrated.sort_by_key(|message| (message.conversation_id, message.created_time, message.id));
     Ok(migrated)
@@ -534,7 +540,9 @@ pub(super) mod v2 {
 
     impl SqlConversationV2 {
         pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
-            conversations::table.load::<Self>(conn).map_err(|e| e.into())
+            conversations::table
+                .load::<Self>(conn)
+                .map_err(|e| e.into())
         }
     }
 

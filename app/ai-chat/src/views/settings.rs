@@ -96,11 +96,10 @@ impl Render for SettingsView {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let hotkey_input = self.hotkey_input.clone();
-        let provider_page = provider_setting_groups()
-            .into_iter()
-            .fold(SettingPage::new(page_provider), |page: SettingPage, group| {
-                page.group(group)
-            });
+        let provider_page = provider_setting_groups().into_iter().fold(
+            SettingPage::new(page_provider),
+            |page: SettingPage, group| page.group(group),
+        );
         v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)

@@ -5,10 +5,7 @@
  * @LastEditTime: 2024-05-01 02:15:54
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/store/model/conversation_templates.rs
  */
-use crate::{
-    database::service::ConversationTemplatePrompt,
-    errors::AiChatResult,
-};
+use crate::{database::service::ConversationTemplatePrompt, errors::AiChatResult};
 
 use super::super::schema::conversation_templates;
 use diesel::prelude::*;
