@@ -35,8 +35,6 @@ pub struct Conversation {
     pub updated_time: OffsetDateTime,
     pub info: Option<String>,
     pub messages: Vec<Message>,
-    #[serde(rename = "templateId")]
-    pub template_id: i32,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -46,8 +44,6 @@ pub struct NewConversation<'a> {
     pub folder_id: Option<i32>,
     pub icon: &'a str,
     pub info: Option<&'a str>,
-    #[serde(rename = "templateId")]
-    pub template_id: i32,
 }
 
 impl Conversation {
@@ -61,7 +57,6 @@ impl Conversation {
             folder_id,
             icon,
             info,
-            template_id,
         }: NewConversation,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<Self> {
@@ -87,7 +82,6 @@ impl Conversation {
             info,
             created_time: time,
             updated_time: time,
-            template_id,
         };
         let conversation = sql_new.insert(conn)?;
         Self::from_sql_conversation(conversation, conn)
@@ -109,7 +103,6 @@ impl Conversation {
             created_time,
             updated_time,
             info,
-            template_id,
         }: SqlConversation,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<Conversation> {
@@ -124,7 +117,6 @@ impl Conversation {
             updated_time,
             info,
             messages,
-            template_id,
         })
     }
     pub fn find_by_folder_id(

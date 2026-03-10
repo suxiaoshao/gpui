@@ -1,70 +1,90 @@
-use super::{Adapter, InputItem, InputType, description_items_default};
-use crate::llm::{ChatRequest, Message};
+use super::{
+    ChatFormGroup, ChatFormLayout, InputItem, InputType, Provider, ProviderModel,
+    ProviderModelCapability,
+};
+use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
     config::AiChatConfig,
-    database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
     i18n::t_static,
 };
-use futures::{StreamExt, stream::BoxStream};
+use async_compat::CompatExt;
+use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
-use gpui_component::description_list::DescriptionItem;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+use nom::{
+    IResult, Parser,
+    branch::alt,
+    bytes::complete::{tag, take_while1},
+    character::complete::digit1,
+    combinator::{all_consuming, map, opt},
+    multi::separated_list1,
+};
 use reqwest::Client;
+use reqwest_eventsource::{Error as EventSourceError, Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use toml::Value;
 use tracing::{Level, event};
 
-pub(crate) struct OpenAIAdapter;
+pub(crate) struct OpenAIProvider;
 
-fn default_url() -> String {
-    "https://api.openai.com/v1/responses".to_string()
+fn default_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
 }
 
-fn default_models() -> HashSet<String> {
-    let mut models = HashSet::new();
-    models.insert("o3-mini".into());
-    models.insert("o4-mini".into());
-    models.insert("gpt-4o".into());
-    models.insert("gpt-4o-mini".into());
-    models.insert("gpt-4.1".into());
-    models.insert("gpt-4.1-mini".into());
-    models.insert("gpt-4.1-nano".into());
-    models.insert("gpt-5".into());
-    models.insert("gpt-5-mini".into());
-    models.insert("gpt-5-nano".into());
-    models.insert("gpt-5.2".into());
-    models.insert("gpt-5.2-pro".into());
-    models
+pub(crate) fn normalize_base_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/').to_string();
+    if trimmed.is_empty() {
+        return default_base_url();
+    }
+    if let Some(base) = trimmed.strip_suffix("/responses") {
+        return base.to_string();
+    }
+    if let Some(base) = trimmed.strip_suffix("/models") {
+        return base.to_string();
+    }
+    trimmed
 }
 
-#[derive(Deserialize, Serialize)]
+fn responses_url(base_url: &str) -> String {
+    format!("{}/responses", normalize_base_url(base_url))
+}
+
+fn models_url(base_url: &str) -> String {
+    format!("{}/models", normalize_base_url(base_url))
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct OpenAISettings {
     #[serde(rename = "apiKey")]
     api_key: Option<String>,
-    #[serde(default = "default_url")]
-    pub url: String,
+    #[serde(rename = "baseUrl", alias = "url", default = "default_base_url")]
+    pub base_url: String,
     #[serde(rename = "httpProxy")]
     pub http_proxy: Option<String>,
-    #[serde(default = "default_models")]
-    pub models: HashSet<String>,
 }
 
 impl Default for OpenAISettings {
     fn default() -> Self {
         Self {
             api_key: Default::default(),
-            url: Default::default(),
+            base_url: default_base_url(),
             http_proxy: Default::default(),
-            models: default_models(),
         }
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub(crate) struct OpenAIConversationTemplate {
+impl OpenAISettings {
+    pub(crate) fn normalized(mut self) -> Self {
+        self.base_url = normalize_base_url(&self.base_url);
+        self
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct OpenAIRequestTemplate {
     pub(crate) model: String,
+    pub(crate) stream: bool,
     pub(crate) temperature: f64,
     pub(crate) top_p: f64,
     pub(crate) n: u32,
@@ -73,10 +93,11 @@ pub(crate) struct OpenAIConversationTemplate {
     pub(crate) frequency_penalty: f64,
 }
 
-impl Default for OpenAIConversationTemplate {
+impl Default for OpenAIRequestTemplate {
     fn default() -> Self {
         Self {
             model: "gpt-4o".to_string(),
+            stream: true,
             temperature: 1.0,
             top_p: 1.0,
             n: 1,
@@ -87,14 +108,149 @@ impl Default for OpenAIConversationTemplate {
     }
 }
 
-pub(super) fn get_openai_template_inputs(models: &HashSet<String>) -> AiChatResult<Vec<InputItem>> {
-    let inputs = vec![
-        InputItem::new(
-            "model",
-            "Model",
-            "Your model",
-            InputType::Select(models.iter().cloned().collect()),
-        ),
+#[derive(Debug, Deserialize)]
+struct ModelListResponse {
+    data: Vec<ModelListItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelListItem {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesCreateResponse {
+    output: Vec<OutputItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputItem {
+    content: Option<Vec<OutputContent>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: Option<String>,
+}
+
+impl ResponsesCreateResponse {
+    fn output_text(self) -> String {
+        self.output
+            .into_iter()
+            .flat_map(|item| item.content.unwrap_or_default())
+            .filter(|part| part.content_type == "output_text")
+            .filter_map(|part| part.text)
+            .collect::<String>()
+    }
+}
+
+fn is_normal_stream_end(error: &EventSourceError) -> bool {
+    matches!(error, EventSourceError::StreamEnded)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenAIModelFamily {
+    Gpt,
+    ChatGpt,
+    OSeries,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedOpenAIModel<'a> {
+    family: OpenAIModelFamily,
+    has_date_suffix: bool,
+    segments: Vec<&'a str>,
+}
+
+fn is_model_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_')
+}
+
+fn parse_model_segments(input: &str) -> IResult<&str, Vec<&str>> {
+    separated_list1(tag("-"), take_while1(is_model_char)).parse(input)
+}
+
+fn parse_oseries_segment(input: &str) -> IResult<&str, &str> {
+    map((tag("o"), digit1), |_| input).parse(input)
+}
+
+fn detect_family(first: &str) -> Option<OpenAIModelFamily> {
+    match all_consuming(alt((
+        map(tag("gpt"), |_| OpenAIModelFamily::Gpt),
+        map(tag("chatgpt"), |_| OpenAIModelFamily::ChatGpt),
+        map(parse_oseries_segment, |_| OpenAIModelFamily::OSeries),
+    )))
+    .parse(first)
+    {
+        Ok((_, family)) => Some(family),
+        Err(_) => None,
+    }
+}
+
+fn parse_openai_model(input: &str) -> IResult<&str, ParsedOpenAIModel<'_>> {
+    let (input, _) = opt(tag("ft:")).parse(input)?;
+    let (input, segments) = parse_model_segments(input)?;
+    let family = detect_family(segments.first().copied().unwrap_or_default()).ok_or_else(|| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
+    })?;
+    let has_date_suffix = matches!(
+        segments.as_slice(),
+        [.., year, month, day]
+            if year.len() == 4
+                && month.len() == 2
+                && day.len() == 2
+                && year.chars().all(|ch| ch.is_ascii_digit())
+                && month.chars().all(|ch| ch.is_ascii_digit())
+                && day.chars().all(|ch| ch.is_ascii_digit())
+    );
+    Ok((
+        input,
+        ParsedOpenAIModel {
+            family,
+            has_date_suffix,
+            segments,
+        },
+    ))
+}
+
+fn classify_model(id: &str) -> Option<ProviderModelCapability> {
+    if id.strip_prefix("ft:").unwrap_or(id).starts_with("fp") {
+        return None;
+    }
+    let parsed = all_consuming(parse_openai_model).parse(id).ok()?.1;
+    let has_short_numeric_suffix = parsed
+        .segments
+        .last()
+        .is_some_and(|segment| segment.len() == 4 && segment.chars().all(|ch| ch.is_ascii_digit()));
+    let has_preview_suffix = parsed
+        .segments
+        .last()
+        .is_some_and(|segment| *segment == "preview");
+    if parsed.has_date_suffix || has_short_numeric_suffix || has_preview_suffix {
+        return None;
+    }
+    Some(match parsed.family {
+        OpenAIModelFamily::OSeries => ProviderModelCapability::NonStreaming,
+        OpenAIModelFamily::Gpt | OpenAIModelFamily::ChatGpt => ProviderModelCapability::Streaming,
+    })
+}
+
+fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
+    let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
+    match event {
+        OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => Ok(Some(delta)),
+        OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
+        OpenAIResponseStreamEvent::ResponseFailed { response } => {
+            Err(AiChatError::StreamError(response.error.message))
+        }
+        OpenAIResponseStreamEvent::Other => Ok(None),
+    }
+}
+
+fn request_inputs() -> Vec<InputItem> {
+    vec![
         InputItem::new(
             "temperature",
             "Temperature",
@@ -161,19 +317,18 @@ pub(super) fn get_openai_template_inputs(models: &HashSet<String>) -> AiChatResu
                 default: Some(0.0),
             },
         ),
-    ];
-    Ok(inputs)
+    ]
 }
 
-impl OpenAIAdapter {
+impl OpenAIProvider {
     fn get_body(
-        template: &'_ OpenAIConversationTemplate,
+        template: &OpenAIRequestTemplate,
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
         ChatRequest {
             input: history_messages,
             model: template.model.as_str(),
-            stream: false,
+            stream: template.stream,
             temperature: template.temperature,
             top_p: template.top_p,
             max_output_tokens: template.max_completion_tokens,
@@ -181,6 +336,7 @@ impl OpenAIAdapter {
             frequency_penalty: template.frequency_penalty,
         }
     }
+
     fn get_reqwest_client(
         config: &AiChatConfig,
         settings: &OpenAISettings,
@@ -194,69 +350,27 @@ impl OpenAIAdapter {
         let mut client = reqwest::ClientBuilder::new().default_headers(headers);
         match settings.http_proxy.as_deref().or(config.get_http_proxy()) {
             None => {}
-            Some(proxy) => {
-                client = client.proxy(reqwest::Proxy::all(proxy)?);
-            }
+            Some(proxy) => client = client.proxy(reqwest::Proxy::all(proxy)?),
         }
-        let client = client.build()?;
-        Ok(client)
+        Ok(client.build()?)
     }
 }
 
-impl Adapter for OpenAIAdapter {
+impl Provider for OpenAIProvider {
     fn name(&self) -> &'static str {
         "OpenAI"
     }
 
-    fn get_setting_inputs(&self) -> Vec<InputItem> {
-        let setting_inputs = vec![
-            InputItem::new(
-                "apiKey",
-                "API Key",
-                "Your OpenAI API key",
-                InputType::Text {
-                    max_length: None,
-                    min_length: None,
-                },
-            ),
-            InputItem::new(
-                "url",
-                "API URL",
-                "Your OpenAI API URL",
-                InputType::Text {
-                    max_length: None,
-                    min_length: None,
-                },
-            ),
-            InputItem::new(
-                "httpProxy",
-                "HTTP Proxy",
-                "Your HTTP proxy",
-                InputType::Optional(Box::new(InputType::Text {
-                    max_length: None,
-                    min_length: None,
-                })),
-            ),
-            InputItem::new(
-                "models",
-                "Models",
-                "Your models",
-                InputType::Array {
-                    input_type: Box::new(InputType::Text {
-                        max_length: None,
-                        min_length: None,
-                    }),
-                    name: "Model",
-                    description: "The model to use",
-                },
-            ),
-        ];
-        setting_inputs
+    fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value> {
+        Ok(serde_json::to_value(OpenAIRequestTemplate {
+            model: model.id.clone(),
+            stream: model.capability.stream_flag(),
+            ..OpenAIRequestTemplate::default()
+        })?)
     }
 
-    fn get_template_inputs(&self, settings: serde_json::Value) -> AiChatResult<Vec<InputItem>> {
-        let settings: OpenAISettings = serde_json::from_value(settings)?;
-        get_openai_template_inputs(&settings.models)
+    fn get_template_inputs(&self) -> Vec<InputItem> {
+        request_inputs()
     }
 
     fn request_body(
@@ -264,7 +378,7 @@ impl Adapter for OpenAIAdapter {
         template: &serde_json::Value,
         history_messages: Vec<Message>,
     ) -> AiChatResult<serde_json::Value> {
-        let template = OpenAIConversationTemplate::deserialize(template)?;
+        let template = OpenAIRequestTemplate::deserialize(template)?;
         Ok(serde_json::to_value(Self::get_body(
             &template,
             history_messages,
@@ -278,23 +392,115 @@ impl Adapter for OpenAIAdapter {
         request_body: &'a serde_json::Value,
     ) -> BoxStream<'a, AiChatResult<String>> {
         async_stream::try_stream! {
-            let settings = settings.try_into()?;
+            let settings: OpenAISettings = settings.try_into()?;
+            let settings = settings.normalized();
             let client = Self::get_reqwest_client(&config, &settings)?;
-            let response = client.post(settings.url.clone()).json(&request_body).send().await?;
-            let response = response.json::<ResponsesCreateResponse>().await?;
-            yield response.output_text();
+            let stream = request_body
+                .get("stream")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if stream {
+                let mut es = client
+                    .post(responses_url(&settings.base_url))
+                    .json(&request_body)
+                    .eventsource()?;
+                while let Some(event) = es.next().await {
+                    match event {
+                        Ok(Event::Open) => {}
+                        Ok(Event::Message(message)) => {
+                            let message = message.data;
+                            if message == "[DONE]" {
+                                es.close();
+                                break;
+                            } else if let Some(content) = parse_response_stream_event(&message)? {
+                                yield content;
+                            }
+                        }
+                        Err(err) => {
+                            es.close();
+                            if is_normal_stream_end(&err) {
+                                break;
+                            }
+                            Err::<(), AiChatError>(err.into())?;
+                        }
+                    }
+                }
+            } else {
+                let response = client
+                    .post(responses_url(&settings.base_url))
+                    .json(&request_body)
+                    .send()
+                    .compat()
+                    .await?;
+                let response = response
+                    .json::<ResponsesCreateResponse>()
+                    .compat()
+                    .await?;
+                yield response.output_text();
+            }
         }
         .boxed()
+    }
+
+    fn list_models(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+    ) -> BoxFuture<'static, AiChatResult<Vec<ProviderModel>>> {
+        async move {
+            let settings: OpenAISettings = settings.try_into()?;
+            let settings = settings.normalized();
+            let client = Self::get_reqwest_client(&config, &settings)?;
+            let response = client
+                .get(models_url(&settings.base_url))
+                .send()
+                .compat()
+                .await?
+                .json::<ModelListResponse>()
+                .compat()
+                .await?;
+            let mut models = response
+                .data
+                .into_iter()
+                .filter_map(|model| {
+                    let capability = classify_model(&model.id)?;
+                    ProviderModel::new(OpenAIProvider.name(), model.id.clone(), capability).into()
+                })
+                .collect::<Vec<_>>();
+            models.sort_by(|left, right| left.id.cmp(&right.id));
+            Ok(models)
+        }
+        .boxed()
+    }
+
+    fn chat_form_layout(&self) -> ChatFormLayout {
+        ChatFormLayout {
+            inline_field_ids: Vec::new(),
+            popover_groups: vec![ChatFormGroup::new(
+                None,
+                None,
+                vec![
+                    "temperature",
+                    "top_p",
+                    "n",
+                    "max_completion_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
+                ],
+            )],
+        }
     }
 
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
         fn get_openai_setting(cx: &App) -> OpenAISettings {
             let config = cx.global::<AiChatConfig>();
             config
-                .get_adapter_settings(OpenAIAdapter.name())
+                .get_provider_settings(OpenAIProvider.name())
                 .and_then(|x| x.clone().try_into::<OpenAISettings>().ok())
+                .map(OpenAISettings::normalized)
                 .unwrap_or_default()
         }
+
         SettingGroup::new()
             .title(t_static("settings-openai-title"))
             .item(SettingItem::new(
@@ -302,7 +508,7 @@ impl Adapter for OpenAIAdapter {
                 SettingField::input(
                     |cx| {
                         let openai_setting = get_openai_setting(cx);
-                        openai_setting.api_key.map(|x| x.into()).unwrap_or_default()
+                        openai_setting.api_key.map(Into::into).unwrap_or_default()
                     },
                     |value, cx| {
                         let mut open_settings = get_openai_setting(cx);
@@ -312,42 +518,39 @@ impl Adapter for OpenAIAdapter {
                             Some(value.into())
                         };
                         let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings) {
+                        match Value::try_from(open_settings.normalized()) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIAdapter.name(), settings)
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
                             }
                             Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
                             }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        };
+                        }
                     },
                 ),
             ))
             .item(SettingItem::new(
-                t_static("field-api-url"),
+                t_static("field-base-url"),
                 SettingField::input(
-                    |cx| {
-                        let openai_setting = get_openai_setting(cx);
-                        openai_setting.url.into()
-                    },
+                    |cx| get_openai_setting(cx).base_url.into(),
                     |value, cx| {
                         let mut open_settings = get_openai_setting(cx);
-                        open_settings.url = value.into();
+                        open_settings.base_url = normalize_base_url(&value);
                         let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings) {
+                        match Value::try_from(open_settings.normalized()) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIAdapter.name(), settings)
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
                             }
                             Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
                             }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        };
+                        }
                     },
                 ),
             ))
@@ -355,10 +558,9 @@ impl Adapter for OpenAIAdapter {
                 t_static("field-http-proxy"),
                 SettingField::input(
                     |cx| {
-                        let openai_setting = get_openai_setting(cx);
-                        openai_setting
+                        get_openai_setting(cx)
                             .http_proxy
-                            .map(|x| x.into())
+                            .map(Into::into)
                             .unwrap_or_default()
                     },
                     |value, cx| {
@@ -369,96 +571,89 @@ impl Adapter for OpenAIAdapter {
                             Some(value.into())
                         };
                         let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings) {
+                        match Value::try_from(open_settings.normalized()) {
                             Ok(settings) => {
-                                config.set_adapter_settings(OpenAIAdapter.name(), settings)
+                                config.set_provider_settings(OpenAIProvider.name(), settings)
                             }
                             Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
                             }
                         }
                         if let Err(err) = config.save() {
                             event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        };
+                        }
                     },
                 ),
             ))
-    }
-
-    fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
-        let Ok(settings) =
-            serde_json::from_value::<OpenAIConversationTemplate>(template.template.clone())
-        else {
-            return description_items_default(template);
-        };
-
-        vec![
-            DescriptionItem::new(t_static("field-model")).value(settings.model),
-            DescriptionItem::new(t_static("field-temperature"))
-                .value(settings.temperature.to_string()),
-            DescriptionItem::new(t_static("field-top-p")).value(settings.top_p.to_string()),
-            DescriptionItem::new(t_static("field-n")).value(settings.n.to_string()),
-            DescriptionItem::new(t_static("field-max-completion-tokens")).value(
-                settings
-                    .max_completion_tokens
-                    .map(|x| x.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
-            DescriptionItem::new(t_static("field-presence-penalty"))
-                .value(settings.presence_penalty.to_string()),
-            DescriptionItem::new(t_static("field-frequency-penalty"))
-                .value(settings.frequency_penalty.to_string()),
-        ]
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponsesCreateResponse {
-    output: Vec<OutputItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OutputItem {
-    content: Option<Vec<OutputContent>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OutputContent {
-    #[serde(rename = "type")]
-    content_type: String,
-    text: Option<String>,
-}
-
-impl ResponsesCreateResponse {
-    fn output_text(self) -> String {
-        self.output
-            .into_iter()
-            .flat_map(|item| item.content.unwrap_or_default())
-            .filter(|part| part.content_type == "output_text")
-            .filter_map(|part| part.text)
-            .collect::<String>()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ResponsesCreateResponse;
+    use super::{
+        OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
+        classify_model, normalize_base_url,
+    };
 
     #[test]
-    fn parse_response_output_text() -> anyhow::Result<()> {
-        let response = serde_json::from_str::<ResponsesCreateResponse>(
-            r#"{
-                "output": [
-                    {
-                        "content": [
-                            {"type":"output_text","text":"hello "},
-                            {"type":"output_text","text":"world"}
-                        ]
-                    }
-                ]
-            }"#,
+    fn normalize_base_url_strips_terminal_api_paths() {
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1/responses"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1/models"),
+            "https://api.openai.com/v1"
+        );
+    }
+
+    #[test]
+    fn default_template_uses_model_stream_capability() -> anyhow::Result<()> {
+        let model = ProviderModel::new("OpenAI", "gpt-5", ProviderModelCapability::Streaming);
+        let template = serde_json::from_value::<OpenAIRequestTemplate>(
+            OpenAIProvider.default_template_for_model(&model)?,
         )?;
-        assert_eq!(response.output_text(), "hello world");
+        assert_eq!(template.model, "gpt-5");
+        assert!(template.stream);
         Ok(())
+    }
+
+    #[test]
+    fn chat_form_layout_uses_only_popover_fields() {
+        let layout = OpenAIProvider.chat_form_layout();
+        assert!(layout.inline_field_ids.is_empty());
+        assert_eq!(layout.popover_groups.len(), 1);
+    }
+
+    #[test]
+    fn classify_model_marks_o_series_as_non_streaming() {
+        assert_eq!(
+            classify_model("o3-mini"),
+            Some(ProviderModelCapability::NonStreaming)
+        );
+        assert_eq!(
+            classify_model("o4-mini"),
+            Some(ProviderModelCapability::NonStreaming)
+        );
+    }
+
+    #[test]
+    fn classify_model_marks_gpt_series_as_streaming() {
+        assert_eq!(
+            classify_model("gpt-5"),
+            Some(ProviderModelCapability::Streaming)
+        );
+        assert_eq!(
+            classify_model("chatgpt-4o-latest"),
+            Some(ProviderModelCapability::Streaming)
+        );
+    }
+
+    #[test]
+    fn classify_model_filters_dated_and_fp_models() {
+        assert_eq!(classify_model("gpt-4o-2024-11-20"), None);
+        assert_eq!(classify_model("gpt-3.5-0125"), None);
+        assert_eq!(classify_model("gpt-4o-realtime-preview"), None);
+        assert_eq!(classify_model("fp-model"), None);
     }
 }

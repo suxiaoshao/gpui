@@ -1,16 +1,12 @@
 use super::Message;
 use crate::{
     config::AiChatConfig,
-    database::ConversationTemplate,
     errors::{AiChatError, AiChatResult},
-    i18n::t_static,
 };
-use futures::stream::BoxStream;
-use gpui_component::description_list::DescriptionItem;
+use futures::{future::BoxFuture, stream::BoxStream};
 use gpui_component::setting::SettingGroup;
 
 mod openai;
-mod openai_stream;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "tag", content = "value", rename_all = "camelCase")]
@@ -56,7 +52,7 @@ pub(crate) struct InputItem {
 }
 
 impl InputItem {
-    fn new(
+    pub(crate) fn new(
         id: &'static str,
         name: &'static str,
         description: &'static str,
@@ -78,24 +74,79 @@ impl InputItem {
         self.name
     }
 
+    pub(crate) fn description(&self) -> &'static str {
+        self.description
+    }
+
     pub(crate) fn input_type(&self) -> &InputType {
         &self.input_type
     }
 }
 
-pub trait Adapter: Sync {
-    fn name(&self) -> &'static str;
-    #[allow(dead_code)]
-    fn get_setting_inputs(&self) -> Vec<InputItem>;
-    fn get_template_inputs_by_config(&self, config: &AiChatConfig) -> AiChatResult<Vec<InputItem>> {
-        let settings = config
-            .get_adapter_settings(self.name())
-            .ok_or_else(|| AiChatError::AdapterSettingsNotFound(self.name().to_string()))?
-            .clone();
-        let settings = serde_json::to_value(settings)?;
-        self.get_template_inputs(settings)
+#[derive(Debug, Clone)]
+pub(crate) struct ChatFormLayout {
+    pub(crate) inline_field_ids: Vec<&'static str>,
+    pub(crate) popover_groups: Vec<ChatFormGroup>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChatFormGroup {
+    pub(crate) title_key: Option<&'static str>,
+    pub(crate) description_key: Option<&'static str>,
+    pub(crate) field_ids: Vec<&'static str>,
+}
+
+impl ChatFormGroup {
+    pub(crate) fn new(
+        title_key: Option<&'static str>,
+        description_key: Option<&'static str>,
+        field_ids: Vec<&'static str>,
+    ) -> Self {
+        Self {
+            title_key,
+            description_key,
+            field_ids,
+        }
     }
-    fn get_template_inputs(&self, settings: serde_json::Value) -> AiChatResult<Vec<InputItem>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderModelCapability {
+    Streaming,
+    NonStreaming,
+}
+
+impl ProviderModelCapability {
+    pub(crate) fn stream_flag(self) -> bool {
+        matches!(self, Self::Streaming)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderModel {
+    pub(crate) provider_name: String,
+    pub(crate) id: String,
+    pub(crate) capability: ProviderModelCapability,
+}
+
+impl ProviderModel {
+    pub(crate) fn new(
+        provider_name: impl Into<String>,
+        id: impl Into<String>,
+        capability: ProviderModelCapability,
+    ) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            id: id.into(),
+            capability,
+        }
+    }
+}
+
+pub(crate) trait Provider: Sync {
+    fn name(&self) -> &'static str;
+    fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value>;
+    fn get_template_inputs(&self) -> Vec<InputItem>;
     fn request_body(
         &self,
         template: &serde_json::Value,
@@ -107,72 +158,63 @@ pub trait Adapter: Sync {
         settings: toml::Value,
         request_body: &'a serde_json::Value,
     ) -> BoxStream<'a, AiChatResult<String>>;
-    fn setting_group(&self) -> SettingGroup;
-    fn description_items(&self, template: &ConversationTemplate) -> Vec<DescriptionItem> {
-        description_items_default(template)
+    fn list_models(
+        &self,
+        config: AiChatConfig,
+        settings: toml::Value,
+    ) -> BoxFuture<'static, AiChatResult<Vec<ProviderModel>>>;
+    fn chat_form_layout(&self) -> ChatFormLayout {
+        ChatFormLayout {
+            inline_field_ids: Vec::new(),
+            popover_groups: Vec::new(),
+        }
     }
+    fn setting_group(&self) -> SettingGroup;
 }
 
-pub(crate) use openai::{OpenAIAdapter, OpenAIConversationTemplate, OpenAISettings};
-pub(crate) use openai_stream::{OpenAIStreamAdapter, OpenAIStreamSettings};
+pub(crate) use openai::{OpenAIProvider, OpenAISettings};
 
-const ADAPTERS: [&dyn Adapter; 2] = [&OpenAIAdapter, &OpenAIStreamAdapter];
+const PROVIDERS: [&dyn Provider; 1] = [&OpenAIProvider];
 
-pub(crate) fn adapter_names() -> Vec<&'static str> {
-    ADAPTERS.iter().map(|adapter| adapter.name()).collect()
+pub(crate) fn provider_names() -> Vec<&'static str> {
+    PROVIDERS.iter().map(|provider| provider.name()).collect()
 }
 
-pub(crate) fn adapter_setting_groups() -> Vec<SettingGroup> {
-    ADAPTERS
+pub(crate) fn provider_setting_groups() -> Vec<SettingGroup> {
+    PROVIDERS
         .iter()
-        .map(|adapter| adapter.setting_group())
+        .map(|provider| provider.setting_group())
         .collect()
 }
 
-pub(crate) fn adapter_by_name(name: &str) -> AiChatResult<&'static dyn Adapter> {
-    ADAPTERS
+pub(crate) fn provider_by_name(name: &str) -> AiChatResult<&'static dyn Provider> {
+    PROVIDERS
         .iter()
         .copied()
-        .find(|adapter| adapter.name() == name)
-        .ok_or_else(|| AiChatError::AdapterNotFound(name.to_string()))
+        .find(|provider| provider.name() == name)
+        .ok_or_else(|| AiChatError::ProviderNotFound(name.to_string()))
 }
 
-pub(crate) fn template_inputs_by_adapter(
-    adapter: &str,
-    config: &AiChatConfig,
-) -> AiChatResult<Vec<InputItem>> {
-    adapter_by_name(adapter)?.get_template_inputs_by_config(config)
+pub(crate) fn template_inputs_by_provider(provider: &str) -> AiChatResult<Vec<InputItem>> {
+    Ok(provider_by_name(provider)?.get_template_inputs())
 }
 
-pub(crate) fn description_items_by_adapter(
-    template: &ConversationTemplate,
-) -> AiChatResult<Vec<DescriptionItem>> {
-    Ok(adapter_by_name(&template.adapter)?.description_items(template))
+pub(crate) fn chat_form_layout_by_provider(provider: &str) -> AiChatResult<ChatFormLayout> {
+    Ok(provider_by_name(provider)?.chat_form_layout())
 }
 
-pub(crate) fn description_items_default(template: &ConversationTemplate) -> Vec<DescriptionItem> {
-    match template.template.as_object() {
-        Some(map) if !map.is_empty() => map
-            .iter()
-            .map(|(key, value)| {
-                DescriptionItem::new(key.clone()).value(format_template_value(value))
-            })
-            .collect(),
-        _ => vec![
-            DescriptionItem::new(t_static("field-raw"))
-                .value(format_template_value(&template.template)),
-        ],
+pub(crate) async fn available_models(config: AiChatConfig) -> AiChatResult<Vec<ProviderModel>> {
+    let mut models = Vec::new();
+    for provider in PROVIDERS {
+        let Some(settings) = config.get_provider_settings(provider.name()).cloned() else {
+            continue;
+        };
+        models.extend(provider.list_models(config.clone(), settings).await?);
     }
-}
-
-fn format_template_value(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Number(num) => num.to_string(),
-        serde_json::Value::Bool(boolean) => boolean.to_string(),
-        serde_json::Value::Null => "null".to_string(),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            serde_json::to_string_pretty(value).unwrap_or_default()
-        }
-    }
+    models.sort_by(|left, right| {
+        left.provider_name
+            .cmp(&right.provider_name)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(models)
 }

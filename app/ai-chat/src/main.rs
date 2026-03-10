@@ -9,6 +9,7 @@ use crate::views::home::HomeView;
 use gpui::*;
 use gpui_component::Root;
 use gpui_component::TitleBar;
+use gpui_component::input;
 use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
@@ -115,7 +116,14 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn init(cx: &mut App) {
     gpui_component::init(cx);
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new(
+            "shift-enter",
+            input::Enter { secondary: true },
+            Some("Input"),
+        ),
+    ]);
     cx.activate(true);
     cx.on_action(quit);
 

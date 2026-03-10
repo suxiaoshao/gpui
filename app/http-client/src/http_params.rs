@@ -28,6 +28,7 @@ pub struct HttpParamsView {
     _subscriptions: Vec<Subscription>,
 }
 
+// Reads and rewrites the request URL as query parameters change.
 impl HttpParamsView {
     fn get_url(&self, cx: &mut Context<Self>) -> HttpClientResult<Url> {
         let form = self.http_form.read(cx);
@@ -54,6 +55,7 @@ impl HttpParamsView {
             });
         }
     }
+
     fn add_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.add_key_input.read(cx).value();
         let value = self.add_value_input.read(cx).value();
@@ -75,6 +77,7 @@ impl HttpParamsView {
         });
         self.open_popover = false;
     }
+
     fn delete_param(&self, skip_index: usize, cx: &mut Context<Self>) {
         if let Ok(mut url) = self.get_url(cx) {
             let mut query_pairs = url
@@ -91,6 +94,7 @@ impl HttpParamsView {
             });
         }
     }
+
     pub fn new(http_form: Entity<HttpForm>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url = http_form.read(cx);
         let url = url.url.clone();
@@ -110,7 +114,10 @@ impl HttpParamsView {
             open_popover: false,
         }
     }
+}
 
+// Rebuilds parameter inputs when the backing HTTP form emits URL updates.
+impl HttpParamsView {
     fn subscribe(
         &mut self,
         _subscriber: &Entity<HttpForm>,
@@ -190,6 +197,7 @@ impl HttpParamsView {
     }
 }
 
+// Renders the editable query parameter table and add-parameter popover.
 impl Render for HttpParamsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (key_label, value_label, add_label, confirm_label, delete_label) = {

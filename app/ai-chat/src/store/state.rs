@@ -17,6 +17,7 @@ pub struct ChatDataInner {
 
 #[derive(Debug, Clone)]
 pub struct AddConversationMessage {
+    pub provider: String,
     pub role: Role,
     pub content: Content,
     pub send_content: serde_json::Value,
@@ -66,6 +67,7 @@ struct AppTab {
     panel: TabPanel,
 }
 
+// Bootstraps chat data and builds tab panels for each top-level view.
 impl ChatDataInner {
     pub(crate) fn new(
         window: &mut Window,
@@ -139,6 +141,10 @@ impl ChatDataInner {
             ),
         }
     }
+}
+
+// Traverses the folder tree and mutates folder or conversation placement.
+impl ChatDataInner {
     fn get_folder(folders: &mut Vec<Folder>, id: i32) -> Option<&mut Folder> {
         for folder in folders {
             if folder.id == id {
@@ -244,6 +250,10 @@ impl ChatDataInner {
         }
         self.add_folder(updated);
     }
+}
+
+// Resolves conversations and manages tab ordering and activation.
+impl ChatDataInner {
     fn get_conversation<'a>(
         folders: &'a [Folder],
         conversations: &'a [Conversation],
@@ -376,6 +386,10 @@ impl ChatDataInner {
             None => items.push(item),
         }
     }
+}
+
+// Exposes active tab state and keeps panels aligned with existing data.
+impl ChatDataInner {
     pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
         self.tabs
             .iter()
@@ -459,6 +473,10 @@ impl ChatDataInner {
             }
         })
     }
+}
+
+// Reads and mutates conversation messages inside the folder tree.
+impl ChatDataInner {
     pub(crate) fn conversation_messages(&self, conversation_id: i32) -> Option<&[Message]> {
         Self::get_conversation(&self.folders, &self.conversations, conversation_id)
             .map(|conversation| conversation.messages.as_slice())
@@ -528,6 +546,13 @@ impl ChatDataInner {
     pub(crate) fn delete_message(&mut self, message_id: i32) {
         Self::__delete_message(&mut self.folders, &mut self.conversations, message_id);
     }
+    pub(crate) fn clear_conversation_messages(&mut self, conversation_id: i32) {
+        if let Some(conversation) =
+            Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
+        {
+            conversation.messages.clear();
+        }
+    }
     pub(crate) fn replace_message(&mut self, conversation_id: i32, message: Message) {
         if let Some(conversation) =
             Self::get_conversation_mut(&mut self.folders, &mut self.conversations, conversation_id)
@@ -560,6 +585,7 @@ mod tests {
             id,
             conversation_id,
             conversation_path: format!("/conversation/{conversation_id}"),
+            provider: "OpenAI".to_string(),
             role: Role::User,
             content: Content::Text(format!("message {id}")),
             send_content: serde_json::json!({}),
@@ -583,7 +609,6 @@ mod tests {
             updated_time: now(),
             info: None,
             messages: vec![],
-            template_id: 1,
         }
     }
 
@@ -732,6 +757,31 @@ mod tests {
             Content::Text("updated".to_string())
         );
         assert!(!data.update_message(2, 99, |_| {}));
+    }
+
+    #[test]
+    fn clear_conversation_messages_only_resets_target_conversation() {
+        let mut data = empty_chat_data();
+        data.conversations.push(conversation(1, None));
+        data.conversations.push(conversation(2, None));
+        data.add_message(1, message(10, 1));
+        data.add_message(1, message(11, 1));
+        data.add_message(2, message(20, 2));
+
+        data.clear_conversation_messages(1);
+
+        assert_eq!(
+            data.conversation_messages(1)
+                .expect("conversation 1 should exist")
+                .len(),
+            0
+        );
+        assert_eq!(
+            data.conversation_messages(2)
+                .expect("conversation 2 should exist")
+                .len(),
+            1
+        );
     }
 
     #[test]

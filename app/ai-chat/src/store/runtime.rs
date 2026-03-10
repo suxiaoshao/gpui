@@ -19,7 +19,6 @@ pub enum ChatDataEvent {
         name: SharedString,
         icon: SharedString,
         info: Option<SharedString>,
-        template: i32,
         parent_id: Option<i32>,
         initial_messages: Option<Vec<AddConversationMessage>>,
     },
@@ -45,6 +44,7 @@ pub enum ChatDataEvent {
         target_parent_id: Option<i32>,
     },
     DeleteMessage(i32),
+    ClearConversationMessages(i32),
     DeleteConversation(i32),
     DeleteFolder(i32),
 }
@@ -72,10 +72,10 @@ struct AddConversationInput<'a> {
     icon: &'a str,
     info: Option<&'a str>,
     folder_id: Option<i32>,
-    template_id: i32,
     initial_messages: Option<&'a [AddConversationMessage]>,
 }
 
+// Subscribes UI views to chat-data events and dispatches them to handlers.
 impl ChatData {
     pub fn subscribe_in(
         _this: &mut HomeView,
@@ -112,7 +112,6 @@ impl ChatData {
                 name,
                 icon,
                 info,
-                template,
                 parent_id,
                 initial_messages,
             } => Self::handle_event_result(
@@ -123,7 +122,6 @@ impl ChatData {
                         icon,
                         info: info.as_ref().map(|x| x.as_str()),
                         folder_id: *parent_id,
-                        template_id: *template,
                         initial_messages: initial_messages.as_deref(),
                     },
                     cx,
@@ -209,6 +207,13 @@ impl ChatData {
                 "delete message",
                 cx,
             ),
+            ChatDataEvent::ClearConversationMessages(conversation_id) => Self::handle_event_result(
+                Self::clear_conversation_messages(state, *conversation_id, cx),
+                window,
+                delete_message_failed,
+                "clear conversation messages",
+                cx,
+            ),
             ChatDataEvent::DeleteConversation(conversation_id) => Self::handle_event_result(
                 Self::delete_conversation(state, *conversation_id, cx),
                 window,
@@ -244,7 +249,10 @@ impl ChatData {
             event!(Level::ERROR, "{action} error:{err:?}");
         }
     }
+}
 
+// Persists folder and conversation changes before updating in-memory state.
+impl ChatData {
     fn add_folder(
         state: &Entity<AiChatResult<ChatDataInner>>,
         name: &str,
@@ -271,7 +279,6 @@ impl ChatData {
             folder_id: input.folder_id,
             icon: input.icon,
             info: input.info,
-            template_id: input.template_id,
         };
         let conn = &mut cx.global::<Db>().get()?;
         let mut conversation = Conversation::insert(new_conversation, conn)?;
@@ -279,6 +286,7 @@ impl ChatData {
             for initial_message in initial_messages {
                 let mut new_message = NewMessage::new(
                     conversation.id,
+                    &initial_message.provider,
                     initial_message.role,
                     &initial_message.content,
                     &initial_message.send_content,
@@ -298,6 +306,10 @@ impl ChatData {
         });
         Ok(())
     }
+}
+
+// Persists folder, conversation, and message deletions or moves.
+impl ChatData {
     fn delete_conversation(
         state: &Entity<AiChatResult<ChatDataInner>>,
         id: i32,
@@ -366,6 +378,20 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.delete_message(message_id);
+            }
+        });
+        Ok(())
+    }
+    fn clear_conversation_messages(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::delete_by_conversation_id(conversation_id, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.clear_conversation_messages(conversation_id);
             }
         });
         Ok(())

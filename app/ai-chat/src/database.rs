@@ -27,8 +27,9 @@ pub use types::{Mode, Role, Status};
 
 const DATABASE_FILE_V1: &str = "history.sqlite3";
 const DATABASE_FILE_V2: &str = "history_v2.sqlite3";
+const DATABASE_FILE_V3: &str = "history_v3.sqlite3";
 const CREATE_TABLE_SQL: &str =
-    include_str!("../migrations/2025-12-23-141452-0000_create_tables/up.sql");
+    include_str!("../migrations/2026-03-08-000000_create_tables_v3/up.sql");
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -67,41 +68,61 @@ enum StoreVersion {
         conn: DbConn,
         v1_db: SqliteConnection,
     },
-    V2(DbConn),
+    V2 {
+        conn: DbConn,
+        v2_path: std::path::PathBuf,
+    },
+    V3(DbConn),
 }
 
 impl StoreVersion {
     fn new(data_dir: &Path) -> AiChatResult<Self> {
         let v1_path = data_dir.join(DATABASE_FILE_V1);
         let v2_path = data_dir.join(DATABASE_FILE_V2);
-        match (v1_path.exists(), v2_path.exists()) {
-            (_, true) => Ok(Self::V2(get_dbconn(&v2_path)?)),
-            (true, false) => Ok(Self::V1 {
-                conn: get_dbconn(&v2_path)?,
+        let v3_path = data_dir.join(DATABASE_FILE_V3);
+        match (v1_path.exists(), v2_path.exists(), v3_path.exists()) {
+            (_, _, true) => Ok(Self::V3(get_dbconn(&v3_path)?)),
+            (_, true, false) => Ok(Self::V2 {
+                conn: get_dbconn(&v3_path)?,
+                v2_path,
+            }),
+            (true, false, false) => Ok(Self::V1 {
+                conn: get_dbconn(&v3_path)?,
                 v1_db: SqliteConnection::establish(v1_path.to_str().ok_or(AiChatError::DbPath)?)?,
             }),
-            _ => Ok(Self::None(get_dbconn(&v2_path)?)),
+            _ => Ok(Self::None(get_dbconn(&v3_path)?)),
         }
     }
 
     fn migration(self) -> AiChatResult<DbConn> {
         match self {
             Self::None(conn) => {
-                event!(Level::INFO, "initialize database v2");
+                event!(Level::INFO, "initialize database v3");
                 let mut db = conn.get()?;
                 init_tables(&mut db)?;
                 Ok(conn)
             }
             Self::V1 { conn, mut v1_db } => {
-                event!(Level::INFO, "migrate database from v1 to v2");
-                let v2_db = &mut conn.get()?;
-                if let Err(err) = migrations::v1_to_v2(&mut v1_db, v2_db) {
-                    event!(Level::ERROR, "database migration v1 -> v2 failed: {}", err);
-                    init_tables(v2_db)?;
+                event!(Level::INFO, "migrate database from v1 to v3");
+                let v3_db = &mut conn.get()?;
+                if let Err(err) = migrations::v1_to_v3(&mut v1_db, v3_db) {
+                    event!(Level::ERROR, "database migration v1 -> v3 failed: {}", err);
+                    init_tables(v3_db)?;
                 }
                 Ok(conn)
             }
-            Self::V2(conn) => Ok(conn),
+            Self::V2 { conn, v2_path } => {
+                event!(Level::INFO, "migrate database from v2 to v3");
+                let mut v2_db =
+                    SqliteConnection::establish(v2_path.to_str().ok_or(AiChatError::DbPath)?)?;
+                let v3_db = &mut conn.get()?;
+                if let Err(err) = migrations::v2_to_v3(&mut v2_db, v3_db) {
+                    event!(Level::ERROR, "database migration v2 -> v3 failed: {}", err);
+                    init_tables(v3_db)?;
+                }
+                Ok(conn)
+            }
+            Self::V3(conn) => Ok(conn),
         }
     }
 }
@@ -130,7 +151,7 @@ fn init_tables(conn: &mut SqliteConnection) -> AiChatResult<()> {
     conn.immediate_transaction(|conn| {
         conn.batch_execute(CREATE_TABLE_SQL)?;
         let default_conversation_template = SqlNewConversationTemplate::default()?;
-        let SqlConversationTemplate { id, .. } = default_conversation_template.insert(conn)?;
+        let SqlConversationTemplate { .. } = default_conversation_template.insert(conn)?;
         let now = OffsetDateTime::now_utc();
         let default_conversation = SqlNewConversation {
             title: "默认",
@@ -138,7 +159,6 @@ fn init_tables(conn: &mut SqliteConnection) -> AiChatResult<()> {
             folder_id: None,
             icon: "🤖",
             info: None,
-            template_id: id,
             created_time: now,
             updated_time: now,
         };

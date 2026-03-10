@@ -3,10 +3,9 @@ mod runner;
 mod types;
 
 pub(crate) use provider::{
-    Adapter, InputItem, InputType, OpenAIAdapter, OpenAIConversationTemplate, OpenAISettings,
-    OpenAIStreamAdapter, OpenAIStreamSettings, adapter_by_name, adapter_names,
-    adapter_setting_groups, description_items_by_adapter, description_items_default,
-    template_inputs_by_adapter,
+    ChatFormLayout, InputItem, InputType, OpenAIProvider, OpenAISettings, Provider, ProviderModel,
+    available_models, chat_form_layout_by_provider, provider_by_name, provider_names,
+    provider_setting_groups, template_inputs_by_provider,
 };
 pub(crate) use runner::FetchRunner;
 pub(crate) use types::{ChatRequest, Message, OpenAIResponseStreamEvent};

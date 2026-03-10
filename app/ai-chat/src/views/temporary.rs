@@ -1,22 +1,8 @@
-use crate::{
-    database::{ConversationTemplate, Db},
-    errors::AiChatResult,
-    hotkey::TemporaryData,
-    i18n::I18n,
-    views::temporary::{detail::TemplateDetailView, list::TemporaryList},
-};
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
-    Sizable,
-    alert::Alert,
-    list::{List, ListState},
-};
+use crate::{hotkey::TemporaryData, views::temporary::detail::TemplateDetailView};
+use gpui::*;
 use tracing::{Level, event};
 
 mod detail;
-mod list;
-
-const CONTEXT: &str = "temporary-list";
 
 pub fn init(cx: &mut App) {
     event!(Level::INFO, "Initializing temporary view");
@@ -25,73 +11,26 @@ pub fn init(cx: &mut App) {
 
 pub(crate) struct TemporaryView {
     _subscription: Vec<Subscription>,
-    templates: AiChatResult<Entity<ListState<TemporaryList>>>,
-    focus_handle: FocusHandle,
-    selected_item: Option<Entity<TemplateDetailView>>,
+    pub(crate) detail: Entity<TemplateDetailView>,
 }
 
 impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _subscription = vec![cx.observe_window_activation(window, |_this, window, cx| {
             if !window.is_window_active() {
-                let task = TemporaryData::delay_close(window, cx);
-                let temporary_data = cx.global_mut::<TemporaryData>();
-                temporary_data.delay_close = Some(task);
-                temporary_data.hide(window);
+                TemporaryData::request_hide_with_delay(window, cx);
             }
         })];
-        let templates = Self::get_templates(cx).map(|templates| {
-            let on_confirm = cx.listener(move |this, state: &ConversationTemplate, window, cx| {
-                let on_esc = cx.listener(|this, _, window, cx| {
-                    this.selected_item = None;
-                    if let Ok(templates) = &this.templates {
-                        templates.update(cx, |this, cx| {
-                            this.focus(window, cx);
-                        });
-                    }
-                    cx.notify();
-                });
-                this.selected_item =
-                    Some(cx.new(move |cx| TemplateDetailView::new(state, on_esc, window, cx)));
-            });
-            cx.new(move |cx| {
-                let mut list_state =
-                    ListState::new(TemporaryList::new(templates, on_confirm), window, cx)
-                        .searchable(true);
-                list_state.focus(window, cx);
-                list_state
-            })
-        });
+        let detail = cx.new(|cx| TemplateDetailView::new(window, cx));
         Self {
             _subscription,
-            templates,
-            focus_handle: cx.focus_handle(),
-            selected_item: None,
+            detail,
         }
-    }
-    fn get_templates(cx: &mut Context<Self>) -> AiChatResult<Vec<ConversationTemplate>> {
-        let conn = &mut cx.global::<Db>().get()?;
-        ConversationTemplate::all(conn)
     }
 }
 
 impl Render for TemporaryView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let error_title = _cx.global::<I18n>().t("alert-error-title");
-        div()
-            .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .map(|this| {
-                this.map(|this| match &self.selected_item {
-                    Some(selected_item) => this.child(selected_item.clone()),
-                    None => match &self.templates {
-                        Ok(templates) => this.child(List::new(templates).large()),
-                        Err(err) => this.child(
-                            Alert::error("temporary-alert", err.to_string()).title(error_title),
-                        ),
-                    },
-                })
-            })
+        div().size_full().child(self.detail.clone())
     }
 }

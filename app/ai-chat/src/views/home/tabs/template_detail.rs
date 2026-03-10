@@ -1,9 +1,8 @@
 use crate::{
     components::template_edit_dialog::open_template_edit_dialog,
-    database::{ConversationTemplate, Db, Mode, Role},
+    database::{ConversationTemplate, Db, Role},
     errors::AiChatResult,
     i18n::I18n,
-    llm::{description_items_by_adapter, description_items_default},
     store::{ChatData, ChatDataEvent},
 };
 use gpui::*;
@@ -17,7 +16,6 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
-    tag::Tag,
     text::TextView,
     v_flex,
 };
@@ -28,6 +26,7 @@ pub(crate) struct TemplateDetailView {
     template: AiChatResult<ConversationTemplate>,
 }
 
+// Loads the selected template and keeps its local snapshot up to date.
 impl TemplateDetailView {
     pub fn new(template_id: i32, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
@@ -43,7 +42,10 @@ impl TemplateDetailView {
         let conn = &mut cx.global::<Db>().get()?;
         ConversationTemplate::find(template_id, conn)
     }
+}
 
+// Opens template editing flows and applies local updates.
+impl TemplateDetailView {
     fn open_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let load_template_failed = cx.global::<I18n>().t("notify-load-template-failed");
         let template = match &self.template {
@@ -72,7 +74,10 @@ impl TemplateDetailView {
             cx,
         );
     }
+}
 
+// Deletes the current template and routes the UI back to the template list.
+impl TemplateDetailView {
     fn template_tab_key(template_id: i32) -> i32 {
         template_id.saturating_add(1).saturating_neg()
     }
@@ -171,6 +176,7 @@ impl TemplateDetailView {
     }
 }
 
+// Renders template actions and the current template details.
 impl Render for TemplateDetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (edit_label, delete_label, load_template_failed) = {
@@ -227,43 +233,15 @@ fn render_template_detail(
     cx: &mut App,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>();
-    let mode_tag = match template.mode {
-        Mode::Contextual => Tag::primary(),
-        Mode::Single => Tag::info(),
-        Mode::AssistantOnly => Tag::success(),
-    }
-    .outline()
-    .flex_initial()
-    .child(template.mode.to_string());
-
-    let base_items = {
-        let items = vec![
-            DescriptionItem::new(i18n.t("field-id")).value(template.id.to_string()),
-            DescriptionItem::new(i18n.t("field-name")).value(template.name.clone()),
-            DescriptionItem::new(i18n.t("field-icon")).value(template.icon.clone()),
-            DescriptionItem::new(i18n.t("field-mode"))
-                .value(div().flex().child(mode_tag).into_any_element()),
-            DescriptionItem::new(i18n.t("field-adapter")).value(template.adapter.clone()),
-            DescriptionItem::new(i18n.t("field-prompts")).value(template.prompts.len().to_string()),
-        ];
-        items
-    };
-
-    let detail_items = description_items_by_adapter(template)
-        .unwrap_or_else(|_| description_items_default(template));
-    let merged_items = {
-        let mut items = base_items;
-        if !items.is_empty() && !detail_items.is_empty() {
-            items.push(DescriptionItem::Divider);
-        }
-        items.extend(detail_items);
-        items.push(
-            DescriptionItem::new(i18n.t("field-description"))
-                .value(template.description.clone().unwrap_or("-".to_string()))
-                .span(3),
-        );
-        items
-    };
+    let merged_items = vec![
+        DescriptionItem::new(i18n.t("field-id")).value(template.id.to_string()),
+        DescriptionItem::new(i18n.t("field-name")).value(template.name.clone()),
+        DescriptionItem::new(i18n.t("field-icon")).value(template.icon.clone()),
+        DescriptionItem::new(i18n.t("field-prompts")).value(template.prompts.len().to_string()),
+        DescriptionItem::new(i18n.t("field-description"))
+            .value(template.description.clone().unwrap_or("-".to_string()))
+            .span(3),
+    ];
 
     div()
         .id(template.id)

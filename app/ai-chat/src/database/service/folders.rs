@@ -36,6 +36,7 @@ pub struct Folder {
     pub folders: Vec<Folder>,
 }
 
+// Creates folders and rebuilds nested folder trees from persisted data.
 impl Folder {
     pub fn insert(
         NewFolder { name, parent_id }: NewFolder,
@@ -73,6 +74,7 @@ impl Folder {
             .map(|sql_folder| Self::from_sql_folder(sql_folder, conn))
             .collect()
     }
+
     fn from_sql_folder(
         SqlFolder {
             id,
@@ -104,6 +106,10 @@ impl Folder {
             .map(|sql_folder| Self::from_sql_folder(sql_folder, conn))
             .collect()
     }
+}
+
+// Deletes folders and rewrites descendant paths when folders move.
+impl Folder {
     pub fn delete_by_id(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         conn.immediate_transaction::<_, AiChatError, _>(|conn| {
             let folder = SqlFolder::find(id, conn)?;

@@ -216,6 +216,7 @@ pub(crate) struct FetchView {
     _subscriptions: Vec<Subscription>,
 }
 
+// Initializes the fetch form inputs and wires their subscriptions.
 impl FetchView {
     pub(crate) fn new(
         window: &mut Window,
@@ -384,6 +385,10 @@ impl FetchView {
             _subscriptions,
         }
     }
+}
+
+// Syncs fetch form events and starts background fetch tasks.
+impl FetchView {
     fn subscribe(
         &mut self,
         subscriber: Entity<FetchForm>,
@@ -494,6 +499,7 @@ impl FetchView {
     }
 }
 
+// Renders the fetch controls and the current fetch state.
 impl Render for FetchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (query_button_label, fetch_button_label, state_element) = {

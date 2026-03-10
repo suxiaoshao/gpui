@@ -3,7 +3,7 @@ settings-title = Settings
 message-preview-title = Message Preview: { $id }
 
 settings-page-general = General
-settings-page-adapter = Adapter
+settings-page-provider = Provider
 settings-group-basic-options = Basic Options
 
 sidebar-app-title = AI Chat
@@ -38,8 +38,11 @@ tooltip-view-detail = View Detail
 tooltip-resend-message = Resend Message
 tooltip-send-message = Send Message
 tooltip-pause-message = Pause Generation
+tooltip-chat-form-settings = Provider Settings
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
+temporary-chat-title = Temporary Chat
+temporary-chat-description = Start a temporary conversation and choose a template from the chat form when needed.
 
 field-id = ID
 field-name = Name
@@ -50,13 +53,16 @@ field-http-proxy = Http Proxy
 field-temporary-conversation-hotkey = Temporary Conversation Hotkey
 field-template = Template
 field-template-prefix = Template
-field-adapter = Adapter
+field-provider = Provider
 field-mode = Mode
 field-description = Description
+field-search-template = Search templates
 field-prompts = Prompts
 field-role = Role
 field-prompt = Prompt
 field-model = Model
+field-extension = Extension
+field-loading = Loading...
 field-models = Models
 field-temperature = Temperature
 field-top-p = Top P
@@ -65,7 +71,7 @@ field-max-completion-tokens = Max Completion Tokens
 field-presence-penalty = Presence Penalty
 field-frequency-penalty = Frequency Penalty
 field-api-key = Api Key
-field-api-url = Api Url
+field-base-url = Base URL
 
 dialog-add-folder-title = Add Folder
 dialog-add-conversation-title = Add Conversation

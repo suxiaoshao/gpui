@@ -241,6 +241,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             .collect::<Vec<_>>();
         v_flex()
             .group("message")
+            .w_full()
             .child(
                 h_flex()
                     .items_start()

@@ -379,6 +379,7 @@ mod tests {
             id: 1,
             conversation_id: 1,
             conversation_path: "/conversation/1".to_string(),
+            provider: "OpenAI".to_string(),
             role,
             content: Content::Text("hello".to_string()),
             send_content: serde_json::json!({}),
