@@ -8,7 +8,7 @@ use crate::{
 use gpui::actions;
 use gpui::{
     AlignItems, AnyElement, App, AppContext, Context, Entity, FocusHandle, InteractiveElement,
-    IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString, Styled,
+    IntoElement, ListAlignment, ListOffset, ListState, ParentElement, Render, SharedString, Styled,
     Subscription, Task, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_component::{
@@ -127,7 +127,6 @@ pub(crate) struct ConversationDetailView<T: ConversationDetailViewExt> {
     focus_handle: FocusHandle,
     pub(crate) message_list: ListState,
     pub(crate) message_revisions: Vec<T::Revision>,
-    is_pinned_to_end: bool,
     pub(crate) chat_form: Entity<ChatForm>,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) task: Option<RunningTask<T::MessageId>>,
@@ -141,15 +140,11 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         if detail.focus_on_init() {
             focus_handle.focus(window);
         }
-        let message_list = ListState::new(0, alignment, px(1000.));
-        if auto_scroll_new_messages && alignment == ListAlignment::Bottom {
-            let view = cx.entity().downgrade();
-            message_list.set_scroll_handler(move |event, _window, cx| {
-                let _ = view.update(cx, |view, _cx| {
-                    view.is_pinned_to_end = list_is_pinned_to_end(alignment, event.is_scrolled);
-                });
-            });
-        }
+        let message_list = if should_measure_all_message_list(auto_scroll_new_messages) {
+            ListState::new(0, alignment, px(1000.)).measure_all()
+        } else {
+            ListState::new(0, alignment, px(1000.))
+        };
         let chat_form = cx.new(|cx| ChatForm::new(window, cx));
         let _subscriptions = vec![cx.subscribe_in(
             &chat_form,
@@ -164,7 +159,6 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             focus_handle,
             message_list,
             message_revisions: Vec::new(),
-            is_pinned_to_end: auto_scroll_new_messages && alignment == ListAlignment::Bottom,
             chat_form,
             _subscriptions,
             task: None,
@@ -246,15 +240,23 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         self.message_revisions = next_revisions;
     }
 
-    fn maybe_reveal_latest_message(&mut self, previous_count: usize) {
-        let next_count = self.message_revisions.len();
+    fn maybe_reveal_latest_message(
+        &mut self,
+        previous_revisions: &[T::Revision],
+        was_at_end: bool,
+    ) {
+        let next_revisions = &self.message_revisions;
         if should_reveal_latest_message(
             self.detail.auto_scroll_new_messages_when_at_end(),
-            self.is_pinned_to_end,
-            previous_count,
-            next_count,
+            was_at_end,
+            previous_revisions,
+            next_revisions,
         ) {
-            self.message_list.scroll_to_reveal_item(next_count - 1);
+            scroll_to_message_end(
+                &self.message_list,
+                self.detail.message_list_alignment(),
+                next_revisions.len(),
+            );
         }
     }
 }
@@ -262,9 +264,11 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
 impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message_revisions = self.detail.message_revisions(cx);
-        let previous_count = self.message_revisions.len();
+        let previous_revisions = self.message_revisions.clone();
+        let alignment = self.detail.message_list_alignment();
+        let was_at_end = list_is_at_end(&self.message_list, alignment);
         self.sync_message_list(message_revisions);
-        self.maybe_reveal_latest_message(previous_count);
+        self.maybe_reveal_latest_message(&previous_revisions, was_at_end);
 
         let title = self.detail.title(cx);
         let subtitle = self
@@ -410,26 +414,74 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
     }
 }
 
-fn list_is_pinned_to_end(alignment: ListAlignment, is_scrolled: bool) -> bool {
-    alignment == ListAlignment::Bottom && !is_scrolled
+fn should_measure_all_message_list(auto_scroll_new_messages: bool) -> bool {
+    auto_scroll_new_messages
 }
 
-fn should_reveal_latest_message(
+fn scroll_to_message_end(message_list: &ListState, alignment: ListAlignment, item_count: usize) {
+    if item_count == 0 {
+        return;
+    }
+
+    match alignment {
+        ListAlignment::Bottom => message_list.scroll_to_reveal_item(item_count - 1),
+        ListAlignment::Top => message_list.scroll_to(ListOffset {
+            item_ix: item_count,
+            offset_in_item: px(0.),
+        }),
+    }
+}
+fn list_is_at_end(message_list: &ListState, alignment: ListAlignment) -> bool {
+    match alignment {
+        ListAlignment::Bottom => {
+            let scroll_top = message_list.logical_scroll_top();
+            scroll_top.item_ix >= message_list.item_count() && scroll_top.offset_in_item == px(0.)
+        }
+        ListAlignment::Top => {
+            let max_offset = message_list.max_offset_for_scrollbar().height;
+            if max_offset == px(0.) {
+                true
+            } else {
+                let current_offset = (-message_list.scroll_px_offset_for_scrollbar().y).max(px(0.));
+                current_offset + px(1.) >= max_offset
+            }
+        }
+    }
+}
+
+fn latest_revision_changed<T: PartialEq>(previous_revisions: &[T], next_revisions: &[T]) -> bool {
+    match (previous_revisions.last(), next_revisions.last()) {
+        (Some(previous), Some(next)) => previous != next,
+        _ => false,
+    }
+}
+
+fn should_reveal_latest_message<T: PartialEq>(
     auto_scroll_new_messages: bool,
-    is_pinned_to_end: bool,
-    previous_count: usize,
-    next_count: usize,
+    was_at_end: bool,
+    previous_revisions: &[T],
+    next_revisions: &[T],
 ) -> bool {
-    auto_scroll_new_messages
-        && is_pinned_to_end
-        && previous_count > 0
-        && next_count > previous_count
+    if !auto_scroll_new_messages || next_revisions.is_empty() {
+        return false;
+    }
+
+    if next_revisions.len() > previous_revisions.len() {
+        return true;
+    }
+
+    was_at_end
+        && next_revisions.len() == previous_revisions.len()
+        && latest_revision_changed(previous_revisions, next_revisions)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RunningTask, list_is_pinned_to_end, should_reveal_latest_message};
-    use gpui::{ListAlignment, Task};
+    use super::{
+        RunningTask, latest_revision_changed, list_is_at_end, should_measure_all_message_list,
+        should_reveal_latest_message,
+    };
+    use gpui::{ListAlignment, ListState, Task, px};
 
     #[test]
     fn running_task_binds_and_matches_messages() {
@@ -444,18 +496,34 @@ mod tests {
     }
 
     #[test]
-    fn bottom_aligned_list_is_pinned_only_when_not_scrolled() {
-        assert!(list_is_pinned_to_end(ListAlignment::Bottom, false));
-        assert!(!list_is_pinned_to_end(ListAlignment::Bottom, true));
-        assert!(!list_is_pinned_to_end(ListAlignment::Top, false));
+    fn auto_scrolling_lists_use_full_measurement() {
+        assert!(should_measure_all_message_list(true));
+        assert!(!should_measure_all_message_list(false));
     }
 
     #[test]
-    fn reveal_latest_message_only_when_at_end_and_count_grows() {
-        assert!(should_reveal_latest_message(true, true, 1, 2));
-        assert!(!should_reveal_latest_message(true, false, 1, 2));
-        assert!(!should_reveal_latest_message(true, true, 0, 1));
-        assert!(!should_reveal_latest_message(true, true, 2, 2));
-        assert!(!should_reveal_latest_message(false, true, 1, 2));
+    fn bottom_aligned_list_is_at_end_only_at_bottom_offset() {
+        let state = ListState::new(3, ListAlignment::Bottom, px(100.));
+        assert!(list_is_at_end(&state, ListAlignment::Bottom));
+
+        state.scroll_to_reveal_item(0);
+        assert!(!list_is_at_end(&state, ListAlignment::Bottom));
+        assert!(list_is_at_end(&state, ListAlignment::Top));
+    }
+
+    #[test]
+    fn latest_revision_change_only_tracks_last_message() {
+        assert!(latest_revision_changed(&[1, 2], &[1, 3]));
+        assert!(!latest_revision_changed(&[1, 2], &[9, 2]));
+        assert!(!latest_revision_changed::<i32>(&[], &[]));
+    }
+
+    #[test]
+    fn reveal_latest_message_for_new_message_or_tail_chunk_at_end() {
+        assert!(should_reveal_latest_message(true, false, &[1], &[1, 2]));
+        assert!(should_reveal_latest_message(true, true, &[1, 2], &[1, 3]));
+        assert!(!should_reveal_latest_message(true, false, &[1, 2], &[1, 3]));
+        assert!(!should_reveal_latest_message(true, true, &[1, 2], &[1, 2]));
+        assert!(!should_reveal_latest_message(false, true, &[1], &[1, 2]));
     }
 }
