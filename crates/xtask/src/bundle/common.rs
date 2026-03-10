@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "windows"))]
 use image::ImageDecoder;
 use std::ffi::OsStr;
 use std::fs;
@@ -6,6 +7,7 @@ use tracing::warn;
 
 use crate::error::{Result, XtaskError};
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
     let mut src_png = app_dir.join("build-assets/icon/ChatGPT.icon/Assets/logo.png");
     if !src_png.exists() {
@@ -90,6 +92,7 @@ pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn is_rgba16_png(path: &Path) -> Result<bool> {
     let file = fs::File::open(path)
         .map_err(|err| XtaskError::msg(format!("failed to open {}: {err}", path.display())))?;

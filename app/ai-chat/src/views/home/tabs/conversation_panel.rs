@@ -98,7 +98,7 @@ impl ConversationDetailViewExt for ConversationPanelState {
     }
 
     fn message_list_alignment(&self) -> ListAlignment {
-        ListAlignment::Bottom
+        ListAlignment::Top
     }
 
     fn auto_scroll_new_messages_when_at_end(&self) -> bool {

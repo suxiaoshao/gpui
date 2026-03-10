@@ -1,6 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_os = "windows"))]
 pub mod common;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -14,7 +15,9 @@ use crate::context::{ai_chat_dir, workspace_root};
 use crate::error::Result;
 use crate::manifest::get_main_binary_name;
 use tauri_bundler::{BundleBinary, PackageType, SettingsBuilder};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(not(target_os = "windows"))]
+use tracing::warn;
 
 pub fn run(args: BundleAiChatArgs) -> Result<()> {
     let app_dir = ai_chat_dir()?;
@@ -63,31 +66,31 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
     Ok(())
 }
 
-fn validate_platform_args(args: &BundleAiChatArgs) {
+fn validate_platform_args(_args: &BundleAiChatArgs) {
     #[cfg(not(target_os = "windows"))]
-    if args.install {
+    if _args.install {
         warn!("--install is only used on Windows and will be ignored");
     }
 }
 
-fn prepare_platform_bundle(app_dir: &Path) -> Result<()> {
+fn prepare_platform_bundle(_app_dir: &Path) -> Result<()> {
     #[cfg(not(target_os = "windows"))]
-    common::prepare_bundle_icons(app_dir)?;
+    common::prepare_bundle_icons(_app_dir)?;
 
     Ok(())
 }
 
 fn finalize_platform_bundle(
     _args: &BundleAiChatArgs,
-    app_dir: &Path,
-    bundle_dir: &Path,
+    _app_dir: &Path,
+    _bundle_dir: &Path,
     _out_dir: &Path,
     _bundles: Vec<tauri_bundler::Bundle>,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(app_path) = macos::first_app_bundle(bundle_dir)? {
-            macos::inject_liquid_glass_icon(app_dir, &app_path)?;
+        if let Some(app_path) = macos::first_app_bundle(_bundle_dir)? {
+            macos::inject_liquid_glass_icon(_app_dir, &app_path)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
         }
@@ -122,7 +125,7 @@ fn finalize_platform_bundle(
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (_args, app_dir, bundle_dir, _out_dir, _bundles);
+        let _ = (_args, _app_dir, _bundle_dir, _out_dir, _bundles);
     }
 
     Ok(())
