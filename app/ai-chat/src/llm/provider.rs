@@ -145,6 +145,7 @@ impl ProviderModel {
 
 pub(crate) trait Provider: Sync {
     fn name(&self) -> &'static str;
+    fn is_configured(&self, settings: &serde_json::Value) -> bool;
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value>;
     fn get_template_inputs(&self) -> Vec<InputItem>;
     fn request_body(
@@ -203,12 +204,33 @@ pub(crate) fn chat_form_layout_by_provider(provider: &str) -> AiChatResult<ChatF
     Ok(provider_by_name(provider)?.chat_form_layout())
 }
 
+fn provider_settings_json(
+    config: &AiChatConfig,
+    provider: &'static dyn Provider,
+) -> Option<(toml::Value, serde_json::Value)> {
+    let settings = config.get_provider_settings(provider.name())?.clone();
+    let settings_json = serde_json::to_value(&settings).ok()?;
+    Some((settings, settings_json))
+}
+
+pub(crate) fn provider_is_configured(
+    config: &AiChatConfig,
+    provider_name: &str,
+) -> AiChatResult<bool> {
+    let provider = provider_by_name(provider_name)?;
+    Ok(provider_settings_json(config, provider)
+        .is_some_and(|(_, settings)| provider.is_configured(&settings)))
+}
+
 pub(crate) async fn available_models(config: AiChatConfig) -> AiChatResult<Vec<ProviderModel>> {
     let mut models = Vec::new();
     for provider in PROVIDERS {
-        let Some(settings) = config.get_provider_settings(provider.name()).cloned() else {
+        let Some((settings, settings_json)) = provider_settings_json(&config, provider) else {
             continue;
         };
+        if !provider.is_configured(&settings_json) {
+            continue;
+        }
         models.extend(provider.list_models(config.clone(), settings).await?);
     }
     models.sort_by(|left, right| {

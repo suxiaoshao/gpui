@@ -183,6 +183,20 @@ impl AiChatConfig {
     pub(crate) fn get_http_proxy(&self) -> Option<&str> {
         self.http_proxy.as_deref()
     }
+    pub(crate) fn model_settings_fingerprint(&self) -> AiChatResult<String> {
+        #[derive(Serialize)]
+        struct Fingerprint<'a> {
+            http_proxy: &'a Option<String>,
+            provider_settings: &'a HashMap<String, toml::Value>,
+        }
+
+        let mut config = self.clone();
+        config.normalize_provider_settings();
+        Ok(serde_json::to_string(&Fingerprint {
+            http_proxy: &config.http_proxy,
+            provider_settings: &config.provider_settings,
+        })?)
+    }
     pub(crate) fn gpui_theme(
         &self,
         theme_registry: &ThemeRegistry,

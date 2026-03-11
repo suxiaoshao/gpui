@@ -132,6 +132,7 @@ fn init(cx: &mut App) {
     components::init(cx);
     views::init(cx);
     config::init(cx);
+    store::init_global(cx);
     hotkey::init(cx);
     extensions::init(cx);
 }

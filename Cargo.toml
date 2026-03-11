@@ -18,10 +18,39 @@ gpui-component = "0.5.1"
 gpui-component-assets = "0.5.1"
 window-ext = { path = "./crates/window-ext" }
 
+[profile.dev]
+split-debuginfo = "unpacked"
+incremental = true
+codegen-units = 16
+
+[profile.dev.build-override]
+codegen-units = 16
+split-debuginfo = "unpacked"
+debug = true
+
+[profile.dev.package]
+proc-macro2 = { opt-level = 3 }
+quote = { opt-level = 3 }
+syn = { opt-level = 3 }
+wasmtime = { opt-level = 3 }
+taffy = { opt-level = 3 }
+resvg = { opt-level = 3 }
+gpui = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+
 [profile.release]
-lto = true
+debug = "limited"
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
-debug = 0
 incremental = false
+
+[profile.release.package]
+ai-chat = { codegen-units = 16 }
+
+[profile.release-fast]
+inherits = "release"
+debug = "full"
+lto = false
+codegen-units = 16
