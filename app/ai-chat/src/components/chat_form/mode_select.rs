@@ -7,6 +7,13 @@ use gpui_component::{list::ListState, select::SelectItem};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeSelectEvent {
+    Change(Mode),
+}
+
+impl EventEmitter<ModeSelectEvent> for ModeSelect {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ModeOption {
     mode: Mode,
 }
@@ -110,6 +117,15 @@ impl ModeSelect {
         self.selected_mode
     }
 
+    pub(crate) fn set_selected_mode(
+        &mut self,
+        mode: Mode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select(mode, window, cx);
+    }
+
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = true;
         self.picker.update(cx, |picker, cx| picker.focus(window, cx));
@@ -137,6 +153,7 @@ impl ModeSelect {
             picker.delegate_mut().set_sections(sections);
             picker.set_selected_index(selected_ix, window, cx);
         });
+        cx.emit(ModeSelectEvent::Change(mode));
         self.close(window, cx);
     }
 }

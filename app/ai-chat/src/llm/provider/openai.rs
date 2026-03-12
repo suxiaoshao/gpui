@@ -4,8 +4,8 @@ use super::{
 };
 use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
-    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
+    config::AiChatConfig,
     i18n::t_static,
 };
 use async_compat::CompatExt;

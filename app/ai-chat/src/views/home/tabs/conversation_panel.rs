@@ -8,6 +8,7 @@ use crate::{
     llm::{FetchRunner, provider_by_name},
     store::{ChatData, ChatDataEvent, ChatDataInner},
     views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
+    workspace_state::{ConversationDraft, WorkspaceStore},
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
@@ -71,6 +72,16 @@ impl ConversationPanelView {
             window,
             cx,
         )
+    }
+
+    pub(crate) fn restore_draft(
+        &mut self,
+        draft: ConversationDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.restore_draft(draft, window, cx));
     }
 }
 
@@ -179,6 +190,20 @@ impl ConversationDetailViewExt for ConversationPanelState {
             event!(Level::ERROR, "pause fetch failed: {}", err);
             cx.notify();
         }
+    }
+
+    fn on_chat_form_state_changed(
+        view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+        let draft = view.chat_form.read(cx).draft_snapshot(cx);
+        cx.global::<WorkspaceStore>()
+            .deref()
+            .clone()
+            .update(cx, |workspace, cx| {
+                workspace.update_conversation_draft(view.detail.conversation_id, draft, cx);
+            });
     }
 
     fn supports_clear(&self) -> bool {

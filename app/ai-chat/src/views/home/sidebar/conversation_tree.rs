@@ -12,7 +12,7 @@ use gpui_component::{
     v_flex,
 };
 use serde::Deserialize;
-use std::ops::Deref;
+use std::{collections::BTreeSet, ops::Deref};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DropState {
@@ -105,6 +105,7 @@ pub(super) struct ConversationTree {
     folders: Vec<SidebarFolderNode>,
     conversations: Vec<SidebarConversationNode>,
     active_conversation_id: Option<i32>,
+    open_folder_ids: BTreeSet<i32>,
     root_label: SharedString,
 }
 
@@ -115,16 +116,23 @@ impl ConversationTree {
             folders: Vec::new(),
             conversations: Vec::new(),
             active_conversation_id: None,
+            open_folder_ids: BTreeSet::new(),
             root_label,
         }
     }
 
-    pub(super) fn new(data: &ChatDataInner, root_label: SharedString) -> Self {
+    pub(super) fn new(
+        data: &ChatDataInner,
+        active_conversation_id: Option<i32>,
+        open_folder_ids: BTreeSet<i32>,
+        root_label: SharedString,
+    ) -> Self {
         Self {
             collapsed: false,
             folders: project_folders(&data.folders),
             conversations: project_conversations(&data.conversations),
-            active_conversation_id: data.active_tab_key().filter(|id| *id > 0),
+            active_conversation_id,
+            open_folder_ids,
             root_label,
         }
     }
@@ -145,6 +153,7 @@ impl RenderOnce for ConversationTree {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let collapsed = self.collapsed;
         let active_conversation_id = self.active_conversation_id;
+        let open_folder_ids = self.open_folder_ids;
         let folders = self.folders;
         let conversations = self.conversations;
         let root_label = self.root_label.clone();
@@ -203,6 +212,7 @@ impl RenderOnce for ConversationTree {
                     collapsed,
                     0,
                     active_conversation_id,
+                    &open_folder_ids,
                     active_drop_target,
                 )
                 .into_any_element()

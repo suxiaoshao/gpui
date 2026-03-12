@@ -2,6 +2,7 @@ use super::conversation_tree::{DragConversationTreeItem, SidebarConversationNode
 use crate::{
     components::delete_confirm::open_delete_confirm_dialog,
     store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -99,11 +100,13 @@ impl RenderOnce for ConversationTreeItem {
                 )
             })
             .cursor_pointer()
-            .on_click(move |_this, _window, cx| {
-                let chat_data = cx.global::<ChatData>().deref().clone();
-                chat_data.update(cx, |_this, cx| {
-                    cx.emit(ChatDataEvent::AddTab(id));
-                });
+            .on_click(move |_this, window, cx| {
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, |workspace, cx| {
+                        workspace.add_conversation_tab(id, window, cx);
+                    });
             })
             .on_drag(
                 DragConversationTreeItem::conversation(&conversation),

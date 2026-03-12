@@ -11,6 +11,13 @@ use gpui_component::{
     v_flex,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProviderTemplateFormEvent {
+    Changed,
+}
+
+impl EventEmitter<ProviderTemplateFormEvent> for ProviderTemplateFormState {}
+
 struct ProviderTemplateFieldRow {
     item: InputItem,
     value_state: ProviderTemplateFieldValueState,
@@ -106,6 +113,36 @@ impl ProviderTemplateFormState {
             self.collect_value_map(cx)?,
         ))
     }
+
+    pub(crate) fn apply_template(
+        &mut self,
+        template: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for row in &self.template_rows {
+            let value = template
+                .get(row.item.id())
+                .cloned()
+                .or_else(|| Self::default_value(row.item.input_type()))
+                .unwrap_or(serde_json::Value::Null);
+            match &row.value_state {
+                ProviderTemplateFieldValueState::Input(input) => {
+                    input.update(cx, |state, cx| {
+                        state.set_value(Self::value_as_string(&value), window, cx);
+                    });
+                }
+                ProviderTemplateFieldValueState::Select(select) => {
+                    let selected = value.as_str().map(ToString::to_string).unwrap_or_default();
+                    select.update(cx, |state, cx| {
+                        state.set_selected_value(&selected, window, cx);
+                    });
+                }
+            }
+        }
+        cx.emit(ProviderTemplateFormEvent::Changed);
+        cx.notify();
+    }
 }
 
 // Renders individual template controls in inline and popover layouts.
@@ -191,6 +228,28 @@ impl ProviderTemplateFormState {
             });
             self._subscriptions.push(step_subscription);
             self._subscriptions.push(clamp_subscription);
+        }
+        self.bind_change_events(window, cx);
+    }
+
+    fn bind_change_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for row in &self.template_rows {
+            match &row.value_state {
+                ProviderTemplateFieldValueState::Input(input) => {
+                    let subscription = cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            cx.emit(ProviderTemplateFormEvent::Changed);
+                        }
+                    });
+                    self._subscriptions.push(subscription);
+                }
+                ProviderTemplateFieldValueState::Select(select) => {
+                    let subscription = cx.observe_in(select, window, |_, _, _, cx| {
+                        cx.emit(ProviderTemplateFormEvent::Changed);
+                    });
+                    self._subscriptions.push(subscription);
+                }
+            }
         }
     }
 

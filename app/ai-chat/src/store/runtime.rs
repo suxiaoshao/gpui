@@ -4,6 +4,7 @@ use crate::{
     errors::AiChatResult,
     i18n::I18n,
     views::home::HomeView,
+    workspace_state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::{
@@ -25,15 +26,6 @@ pub enum ChatDataEvent {
     AddFolder {
         name: SharedString,
         parent_id: Option<i32>,
-    },
-    AddTab(i32),
-    ActivateTab(i32),
-    OpenTemplateList,
-    OpenTemplateDetail(i32),
-    RemoveTab(i32),
-    MoveTab {
-        from_id: i32,
-        to_id: Option<i32>,
     },
     MoveConversation {
         conversation_id: i32,
@@ -138,48 +130,6 @@ impl ChatData {
                 "add folder",
                 cx,
             ),
-            ChatDataEvent::AddTab(conversation_id) => {
-                state.update(cx, |this, cx| {
-                    if let Ok(this) = this {
-                        this.add_tab(*conversation_id, window, cx);
-                    }
-                });
-            }
-            ChatDataEvent::ActivateTab(tab_key) => {
-                state.update(cx, |this, _cx| {
-                    if let Ok(this) = this {
-                        this.activate_tab(*tab_key);
-                    }
-                });
-            }
-            ChatDataEvent::OpenTemplateList => {
-                state.update(cx, |this, cx| {
-                    if let Ok(this) = this {
-                        this.open_template_list_tab(window, cx);
-                    }
-                });
-            }
-            ChatDataEvent::OpenTemplateDetail(template_id) => {
-                state.update(cx, |this, cx| {
-                    if let Ok(this) = this {
-                        this.open_template_detail_tab(*template_id, window, cx);
-                    }
-                });
-            }
-            ChatDataEvent::RemoveTab(conversation_id) => {
-                state.update(cx, |this, _cx| {
-                    if let Ok(this) = this {
-                        this.remove_tab(*conversation_id);
-                    }
-                });
-            }
-            ChatDataEvent::MoveTab { from_id, to_id } => {
-                state.update(cx, |this, _cx| {
-                    if let Ok(this) = this {
-                        this.move_tab(*from_id, *to_id);
-                    }
-                });
-            }
             ChatDataEvent::MoveConversation {
                 conversation_id,
                 target_folder_id,
@@ -322,6 +272,12 @@ impl ChatData {
                 data.delete_conversation(id);
             }
         });
+        cx.global::<WorkspaceStore>()
+            .deref()
+            .clone()
+            .update(cx, |workspace, cx| {
+                workspace.remove_conversation_tab(id, cx);
+            });
         Ok(())
     }
     fn move_conversation(
@@ -366,6 +322,12 @@ impl ChatData {
                 data.delete_folder(id);
             }
         });
+        cx.global::<WorkspaceStore>()
+            .deref()
+            .clone()
+            .update(cx, |workspace, cx| {
+                workspace.sanitize_open_folders(cx);
+            });
         Ok(())
     }
     fn delete_message(

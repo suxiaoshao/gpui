@@ -1,7 +1,7 @@
 use crate::{
     APP_NAME,
-    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
+    config::AiChatConfig,
 };
 use gpui::{App, Global};
 use std::{

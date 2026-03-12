@@ -27,6 +27,7 @@ mod i18n;
 mod llm;
 mod store;
 mod views;
+mod workspace_state;
 
 static APP_NAME: &str = "top.sushao.ai-chat";
 
@@ -109,6 +110,7 @@ mod profiling {
 }
 
 fn quit(_: &Quit, cx: &mut App) {
+    workspace_state::save_now(cx);
     profiling::flush();
     event!(Level::INFO, "quit by action");
     cx.quit();

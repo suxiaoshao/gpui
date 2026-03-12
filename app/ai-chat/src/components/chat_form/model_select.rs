@@ -86,6 +86,29 @@ impl ModelSelect {
         self.selected_model.clone()
     }
 
+    pub(crate) fn restore_selected_model(
+        &mut self,
+        provider_name: &str,
+        model_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ProviderModel> {
+        let model = self
+            .models
+            .iter()
+            .find(|model| model.provider_name == provider_name && model.id == model_id)
+            .cloned()?;
+        self.selected_model = Some(model.clone());
+        let sections = model_sections(&self.models);
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&model));
+        self.model_picker.update(cx, |picker, cx| {
+            picker.delegate_mut().set_sections(sections);
+            picker.set_selected_index(selected_ix, window, cx);
+        });
+        cx.notify();
+        Some(model)
+    }
+
     fn bind_store_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store_subscription = cx.observe_in(
             &cx.global::<ModelStore>().deref().clone(),
@@ -94,10 +117,11 @@ impl ModelSelect {
                 this.sync_models_from_store(window, cx);
             },
         );
-        let config_subscription = cx.observe_global_in::<AiChatConfig>(window, |this, window, cx| {
-            this.sync_selection_with_config(cx);
-            this.sync_models_from_store(window, cx);
-        });
+        let config_subscription =
+            cx.observe_global_in::<AiChatConfig>(window, |this, window, cx| {
+                this.sync_selection_with_config(cx);
+                this.sync_models_from_store(window, cx);
+            });
         self._subscriptions.push(store_subscription);
         self._subscriptions.push(config_subscription);
     }
@@ -130,7 +154,8 @@ impl ModelSelect {
         }
 
         let sections = model_sections(&self.models);
-        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected_model.as_ref());
+        let selected_ix =
+            PickerListDelegate::selected_index_for(&sections, self.selected_model.as_ref());
         let is_loading = matches!(
             snapshot.status,
             Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
@@ -174,15 +199,11 @@ impl ModelSelect {
     }
 
     fn focus_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model_picker.update(cx, |picker, cx| picker.focus(window, cx));
+        self.model_picker
+            .update(cx, |picker, cx| picker.focus(window, cx));
     }
 
-    fn select_model(
-        &mut self,
-        model: ProviderModel,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn select_model(&mut self, model: ProviderModel, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
         self.close_model_picker(true, window, cx);
         cx.emit(ModelSelectEvent::Change(Some(model)));
@@ -210,7 +231,7 @@ impl ModelSelect {
             bounds,
             self.model_picker.clone(),
             PickerPopoverOptions {
-                min_width: Some(px(180.)),
+                min_width: Some(px(220.)),
                 search_placeholder: Some(search_label.into()),
                 footer: Some(
                     h_flex()
@@ -241,7 +262,8 @@ impl ModelSelect {
                                 .disabled(matches!(
                                     snapshot.status,
                                     Some(
-                                        ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing
+                                        ModelStoreStatus::InitialLoading
+                                            | ModelStoreStatus::Refreshing
                                     )
                                 ))
                                 .on_click(cx.listener(|select, _event, window, cx| {

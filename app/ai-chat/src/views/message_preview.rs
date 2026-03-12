@@ -4,6 +4,7 @@ use crate::{
     errors::AiChatResult,
     i18n::I18n,
     store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
@@ -210,11 +211,9 @@ impl MessageViewExt for Message {
 
     fn pause_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
         let panel = cx
-            .global::<ChatData>()
+            .global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel());
+            .active_conversation_panel();
         let Some(panel) = panel else {
             return;
         };
@@ -234,21 +233,17 @@ impl MessageViewExt for Message {
         if self.role != Role::Assistant {
             return false;
         }
-        cx.global::<ChatData>()
+        cx.global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel())
+            .active_conversation_panel()
             .is_some_and(|panel| !panel.read(cx).has_running_task())
     }
 
     fn resend_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
         let panel = cx
-            .global::<ChatData>()
+            .global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel());
+            .active_conversation_panel();
         let Some(panel) = panel else {
             return;
         };

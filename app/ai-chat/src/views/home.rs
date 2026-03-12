@@ -3,6 +3,8 @@ use crate::{
     i18n::I18n,
     store,
     views::home::{sidebar::SidebarView, tabs::TabsView},
+    workspace_state,
+    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -11,6 +13,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
+use std::ops::Deref;
 pub(crate) use tabs::{
     ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
 };
@@ -32,6 +35,7 @@ pub(crate) struct HomeView {
 impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         store::init(window, cx);
+        workspace_state::init(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
 
@@ -68,6 +72,7 @@ impl Render for HomeView {
         let notification_layer = Root::render_notification_layer(window, cx);
         let error_title = cx.global::<I18n>().t("alert-error-title");
         let chat_data = cx.global::<store::ChatData>().read(cx);
+        let sidebar_width = cx.global::<WorkspaceStore>().read(cx).sidebar_width();
         v_flex()
             .size_full()
             .overflow_hidden()
@@ -78,7 +83,25 @@ impl Render for HomeView {
                         .overflow_hidden()
                         .child(
                             h_resizable("vertical-layout")
-                                .child(resizable_panel().size(px(300.)).child(self.sidebar.clone()))
+                                .on_resize(|state, _window, cx| {
+                                    let width = state
+                                        .read(cx)
+                                        .sizes()
+                                        .first()
+                                        .copied()
+                                        .unwrap_or(px(300.));
+                                    cx.global::<WorkspaceStore>()
+                                        .deref()
+                                        .clone()
+                                        .update(cx, |workspace, cx| {
+                                            workspace.set_sidebar_width(width, cx);
+                                        });
+                                })
+                                .child(
+                                    resizable_panel()
+                                        .size(sidebar_width)
+                                        .child(self.sidebar.clone()),
+                                )
                                 .child(self.tabs.clone().into_any_element()),
                         )
                         .flex_1(),

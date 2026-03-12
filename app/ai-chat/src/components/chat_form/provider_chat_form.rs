@@ -37,6 +37,10 @@ impl ProviderChatFormView {
             .collect_merged_template(&self.base_template, cx)
     }
 
+    pub(crate) fn form(&self) -> &Entity<ProviderTemplateFormState> {
+        &self.form
+    }
+
     fn has_inline_fields(&self) -> bool {
         !self.layout.inline_field_ids.is_empty()
     }

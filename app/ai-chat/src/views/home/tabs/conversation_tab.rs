@@ -1,6 +1,6 @@
 use crate::{
-    store::{ChatData, ChatDataEvent},
     views::home::sidebar::DragConversationTreeItem,
+    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
@@ -55,11 +55,7 @@ impl ConversationTabView {
 
 impl RenderOnce for ConversationTabView {
     fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
-        let chat_data = cx.global::<ChatData>().read(cx);
-        let active_id = chat_data
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_tab_key());
+        let active_id = cx.global::<WorkspaceStore>().read(cx).active_tab_key();
         let is_active = active_id == Some(self.id);
         let icon = self.icon.clone();
         let name = self.name.clone();
@@ -83,10 +79,12 @@ impl RenderOnce for ConversationTabView {
                     .group_hover("tab", |style| style.opacity(1.))
                     .on_click(move |_state, _window, cx| {
                         cx.stop_propagation();
-                        let chat_data = cx.global::<ChatData>().deref().clone();
-                        chat_data.update(cx, |_chat_data, cx| {
-                            cx.emit(ChatDataEvent::RemoveTab(self.id));
-                        });
+                        cx.global::<WorkspaceStore>()
+                            .deref()
+                            .clone()
+                            .update(cx, |workspace, cx| {
+                                workspace.remove_tab(self.id, cx);
+                            });
                     }),
             )
             .child(Label::new(icon.clone()).text_xs().line_height(rems(0.75)))
@@ -119,34 +117,34 @@ impl RenderOnce for ConversationTabView {
                 if drag.id == self.id {
                     return;
                 }
-                let chat_data = cx.global::<ChatData>().deref().clone();
-                chat_data.update(cx, move |_this, cx| {
-                    cx.emit(ChatDataEvent::MoveTab {
-                        from_id: drag.id,
-                        to_id: Some(self.id),
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, move |workspace, cx| {
+                        workspace.move_tab(drag.id, Some(self.id), cx);
                     });
-                });
             })
-            .on_drop(move |drag: &DragConversationTreeItem, _window, cx| {
+            .on_drop(move |drag: &DragConversationTreeItem, window, cx| {
                 let Some(conversation_id) = drag.conversation_id() else {
                     return;
                 };
-                let chat_data = cx.global::<ChatData>().deref().clone();
-                chat_data.update(cx, move |_this, cx| {
-                    cx.emit(ChatDataEvent::AddTab(conversation_id));
-                    if conversation_id != self.id {
-                        cx.emit(ChatDataEvent::MoveTab {
-                            from_id: conversation_id,
-                            to_id: Some(self.id),
-                        });
-                    }
-                });
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, move |workspace, cx| {
+                        workspace.add_conversation_tab(conversation_id, window, cx);
+                        if conversation_id != self.id {
+                            workspace.move_tab(conversation_id, Some(self.id), cx);
+                        }
+                    });
             })
             .on_click(move |_this, _window, cx| {
-                let chat_data = cx.global::<ChatData>().deref().clone();
-                chat_data.update(cx, move |_this, cx| {
-                    cx.emit(ChatDataEvent::ActivateTab(self.id));
-                });
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, move |workspace, cx| {
+                        workspace.activate_tab(self.id, cx);
+                    });
             })
             .on_drag(
                 DragTab::new(self.id, icon, name),

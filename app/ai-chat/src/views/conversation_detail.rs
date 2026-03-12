@@ -61,6 +61,12 @@ pub(crate) trait ConversationDetailViewExt: Sized + 'static {
         view: &mut ConversationDetailView<Self>,
         cx: &mut Context<ConversationDetailView<Self>>,
     );
+    fn on_chat_form_state_changed(
+        _view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        _cx: &mut Context<ConversationDetailView<Self>>,
+    ) {
+    }
     fn on_escape(
         _view: &mut ConversationDetailView<Self>,
         _window: &mut Window,
@@ -152,6 +158,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             |this, _chat_form, event: &ChatFormEvent, window, cx| match event {
                 ChatFormEvent::SendRequested => T::on_send_requested(this, window, cx),
                 ChatFormEvent::PauseRequested => T::on_pause_requested(this, cx),
+                ChatFormEvent::StateChanged => T::on_chat_form_state_changed(this, window, cx),
             },
         )];
         Self {

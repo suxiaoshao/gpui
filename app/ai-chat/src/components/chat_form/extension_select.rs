@@ -6,6 +6,13 @@ use gpui::{ParentElement as _, Styled as _, prelude::FluentBuilder as _, *};
 use gpui_component::{h_flex, label::Label, list::ListState, select::SelectItem};
 use std::rc::Rc;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ExtensionSelectEvent {
+    Change(Option<String>),
+}
+
+impl EventEmitter<ExtensionSelectEvent> for ExtensionSelect {}
+
 #[derive(Clone, Debug)]
 struct ExtensionOption {
     config: ExtensionConfig,
@@ -115,6 +122,18 @@ impl ExtensionSelect {
         self.selected_name.as_ref()
     }
 
+    pub(crate) fn set_selected_name(
+        &mut self,
+        selected_name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match selected_name {
+            Some(selected_name) => self.select(selected_name, window, cx),
+            None => self.clear(window, cx),
+        }
+    }
+
     fn sync_items(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let extension_container = cx.global::<crate::extensions::ExtensionContainer>();
         let mut items = extension_container
@@ -155,6 +174,7 @@ impl ExtensionSelect {
 
     fn select(&mut self, selected_name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_name = Some(selected_name);
+        cx.emit(ExtensionSelectEvent::Change(self.selected_name.clone()));
         self.close(window, cx);
     }
 
@@ -165,6 +185,7 @@ impl ExtensionSelect {
             picker.delegate_mut().set_sections(sections);
             picker.set_selected_index(None, window, cx);
         });
+        cx.emit(ExtensionSelectEvent::Change(None));
         cx.notify();
     }
 }
