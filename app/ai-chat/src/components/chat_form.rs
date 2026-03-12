@@ -1,4 +1,3 @@
-mod extension_select;
 mod mode_select;
 mod model_select;
 mod picker;
@@ -13,7 +12,6 @@ use crate::{
     llm::{ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider},
     workspace_state::ConversationDraft,
 };
-use extension_select::{ExtensionSelect, ExtensionSelectEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, IconName, Sizable,
@@ -46,7 +44,6 @@ impl EventEmitter<ChatFormEvent> for ChatForm {}
 #[derive(Clone)]
 pub(crate) struct ChatFormSnapshot {
     pub(crate) text: String,
-    pub(crate) extension_name: Option<String>,
     pub(crate) provider_name: String,
     pub(crate) request_template: serde_json::Value,
     pub(crate) prompts: Vec<ConversationTemplatePrompt>,
@@ -55,7 +52,6 @@ pub(crate) struct ChatFormSnapshot {
 
 pub(crate) struct ChatForm {
     input_state: Entity<InputState>,
-    extension_select: Entity<ExtensionSelect>,
     mode_select: Entity<ModeSelect>,
     model_select: Entity<ModelSelect>,
     templates: Vec<ConversationTemplate>,
@@ -76,7 +72,6 @@ pub(crate) struct ChatForm {
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
-        let extension_select = cx.new(|cx| ExtensionSelect::new(window, cx));
         let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
         let model_select = cx.new(|cx| ModelSelect::new(window, cx));
         let templates = cx
@@ -88,7 +83,6 @@ impl ChatForm {
 
         let mut this = Self {
             input_state,
-            extension_select,
             mode_select,
             model_select,
             templates,
@@ -107,7 +101,6 @@ impl ChatForm {
         };
         this.bind_input_events(window, cx);
         this.bind_model_select_events(window, cx);
-        this.bind_extension_select_events(window, cx);
         this.bind_mode_select_events(window, cx);
         this
     }
@@ -158,19 +151,6 @@ impl ChatForm {
             },
         );
         self._subscriptions.push(model_select_subscription);
-    }
-
-    fn bind_extension_select_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let subscription = cx.subscribe_in(
-            &self.extension_select,
-            window,
-            |_this, _, event: &ExtensionSelectEvent, _window, cx| {
-                if matches!(event, ExtensionSelectEvent::Change(_)) {
-                    cx.emit(ChatFormEvent::StateChanged);
-                }
-            },
-        );
-        self._subscriptions.push(subscription);
     }
 
     fn bind_mode_select_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -328,7 +308,6 @@ impl ChatForm {
         let mode = self.mode_select.read(cx).selected_value();
         Ok(Some(ChatFormSnapshot {
             text: self.input_state.read(cx).value().to_string(),
-            extension_name: self.extension_select.read(cx).selected_value().cloned(),
             provider_name: selected_model.provider_name.clone(),
             request_template,
             prompts: self
@@ -342,12 +321,10 @@ impl ChatForm {
 
     pub(crate) fn draft_snapshot(&self, cx: &App) -> Option<ConversationDraft> {
         let text = self.input_state.read(cx).value().to_string();
-        let extension_name = self.extension_select.read(cx).selected_value().cloned();
         let mode = self.mode_select.read(cx).selected_value();
         let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
         let selected_model = self.model_select.read(cx).selected_model();
         if text.trim().is_empty()
-            && extension_name.is_none()
             && selected_template_id.is_none()
             && selected_model.is_none()
             && mode == Mode::Contextual
@@ -369,7 +346,6 @@ impl ChatForm {
                 .as_ref()
                 .map(|model| model.id.clone())
                 .unwrap_or_default(),
-            extension_name,
             mode,
             selected_template_id,
             request_template,
@@ -387,9 +363,6 @@ impl ChatForm {
             input.set_value(draft.text.clone(), window, cx);
         });
         self.last_input_text = draft.text;
-        self.extension_select.update(cx, |select, cx| {
-            select.set_selected_name(draft.extension_name.clone(), window, cx);
-        });
         self.mode_select.update(cx, |select, cx| {
             select.set_selected_mode(draft.mode, window, cx);
         });
@@ -491,7 +464,6 @@ impl Render for ChatForm {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(self.extension_select.clone())
                             .child(self.model_select.clone())
                             .child(self.mode_select.clone()),
                     )

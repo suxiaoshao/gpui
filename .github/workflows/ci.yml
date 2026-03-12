@@ -44,23 +44,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          targets: |
-            ${{ matrix.target }}
-            wasm32-wasip2
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo build
-        run: cargo build --workspace --exclude url_search --locked
+        run: cargo build --workspace --locked
 
       - name: Cargo test
-        run: cargo test --workspace --exclude url_search --locked
-
-      - name: Build url_search extension
-        if: ${{ matrix.runs_on == 'macos-latest' }}
-        run: cargo build -p url_search --target wasm32-wasip2 --locked
+        run: cargo test --workspace --locked
 
       - name: Cargo clippy
         if: ${{ matrix.runs_on == 'macos-latest' }}
-        run: cargo clippy --workspace --exclude url_search --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

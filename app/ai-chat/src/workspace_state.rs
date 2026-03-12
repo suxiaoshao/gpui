@@ -26,8 +26,6 @@ pub(crate) struct ConversationDraft {
     pub(crate) provider_name: String,
     #[serde(default)]
     pub(crate) model_id: String,
-    #[serde(default)]
-    pub(crate) extension_name: Option<String>,
     #[serde(default = "default_mode")]
     pub(crate) mode: Mode,
     #[serde(default)]

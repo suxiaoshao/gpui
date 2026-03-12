@@ -40,11 +40,6 @@ enum MessageInput {
         text: Entity<InputState>,
         citations: Entity<InputState>,
     },
-    Extension {
-        source: Entity<InputState>,
-        content: Entity<InputState>,
-        extension_name: String,
-    },
 }
 
 impl MessageInput {
@@ -77,27 +72,6 @@ impl MessageInput {
                                 .unwrap_or_else(|_| "[]".to_string()),
                         )
                 }),
-            },
-            crate::database::Content::Extension {
-                source,
-                content,
-                extension_name,
-            } => Self::Extension {
-                source: cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true) // Language for syntax highlighting
-                        .line_number(true) // Show line numbers
-                        .searchable(true)
-                        .default_value(source)
-                }),
-                content: cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true) // Language for syntax highlighting
-                        .line_number(true) // Show line numbers
-                        .searchable(true)
-                        .default_value(content)
-                }),
-                extension_name: extension_name.to_string(),
             },
         }
     }
@@ -137,19 +111,6 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
                 let citations = serde_json::from_str(&citations.read(cx).value())
                     .map_err(|err| AiChatError::StreamError(err.to_string()))?;
                 Content::WebSearch { text, citations }
-            }
-            MessageInput::Extension {
-                source,
-                content,
-                extension_name,
-            } => {
-                let source = source.read(cx).value().to_string();
-                let content = content.read(cx).value().to_string();
-                Content::Extension {
-                    source,
-                    content,
-                    extension_name: extension_name.to_string(),
-                }
             }
         };
         self.on_update_content(content, window, cx)?;
@@ -383,13 +344,6 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                         .gap_2()
                         .child(Input::new(text).disabled(disabled).size_full())
                         .child(Input::new(citations).disabled(disabled).size_full()),
-                    MessageInput::Extension {
-                        source, content, ..
-                    } => h_flex()
-                        .flex_1()
-                        .gap_2()
-                        .child(Input::new(source).disabled(disabled).size_full())
-                        .child(Input::new(content).disabled(disabled).size_full()),
                 }
             })
             .children(dialog_layer)

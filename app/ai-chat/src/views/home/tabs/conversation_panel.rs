@@ -3,7 +3,6 @@ use crate::{
     config::AiChatConfig,
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
-    extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     store::{ChatData, ChatDataEvent, ChatDataInner},
@@ -46,11 +45,6 @@ impl MessageRevision {
             Content::WebSearch { text, citations } => {
                 text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
             }
-            Content::Extension {
-                source,
-                extension_name,
-                content,
-            } => source.len() + extension_name.len() + content.len(),
         };
 
         Self {
@@ -153,12 +147,10 @@ impl ConversationDetailViewExt for ConversationPanelState {
         let span = span!(
             Level::INFO,
             "Fetch",
-            send_content = snapshot.text.clone(),
-            extension_name = snapshot.extension_name.clone()
+            send_content = snapshot.text.clone()
         );
         if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
-            let extension_container = cx.global::<ExtensionContainer>().clone();
             let conversation_id = view.detail.conversation_id;
             let chat_data = cx.global::<ChatData>().deref().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
@@ -167,7 +159,6 @@ impl ConversationDetailViewExt for ConversationPanelState {
                     chat_data,
                     conversation_id,
                     composer_snapshot: snapshot,
-                    extension_container,
                     config,
                 };
                 if let Err(err) = ConversationPanelView::fetch(state, context, cx)
@@ -326,10 +317,7 @@ impl ConversationPanelView {
         event!(Level::INFO, "conversation fetch");
         let request_text = context.composer_snapshot.text.clone();
         Self::clear_input(state.clone(), cx)?;
-        let Some(prepared) = Self::prepare_fetch(state.clone(), &context, request_text, cx).await?
-        else {
-            return Ok(());
-        };
+        let prepared = Self::prepare_fetch(&context, request_text, cx).await?;
         Self::bind_prepared_messages(state.clone(), &context, &prepared, cx)?;
         Self::stream_fetch(
             state,
@@ -454,104 +442,11 @@ impl ConversationPanelView {
     }
 
     async fn prepare_fetch(
-        state: WeakEntity<Self>,
         context: &FetchContext,
         request_text: String,
         cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<Option<PreparedFetch>> {
-        match context.composer_snapshot.extension_name.as_deref() {
-            Some(extension_name) => {
-                Self::prepare_extension_fetch(state, context, extension_name, request_text, cx)
-                    .await
-            }
-            None => Self::prepare_plain_fetch(context, request_text, cx).map(Some),
-        }
-    }
-
-    async fn prepare_extension_fetch(
-        state: WeakEntity<Self>,
-        context: &FetchContext,
-        extension_name: &str,
-        request_text: String,
-        cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<Option<PreparedFetch>> {
-        let user_message = Self::insert_loading_user_message(
-            context.conversation_id,
-            &context.composer_snapshot.provider_name,
-            &request_text,
-            cx,
-        )?;
-        let user_message_id = user_message.id;
-        state.update_result(cx, |this, _cx| {
-            this.bind_running_task_messages(Some(user_message_id), None);
-        })?;
-        context.chat_data.update_result(cx, |data, cx| {
-            if let Ok(data) = data {
-                data.add_message(context.conversation_id, user_message.clone());
-                cx.notify();
-            }
-        })?;
-
-        let Some(extension_runner) = context
-            .extension_container
-            .get_extension(extension_name)
-            .await
-            .map(Some)
-            .or_else(|error| {
-                Self::record_extension_error(state.clone(), user_message_id, context, error, cx)
-                    .map(|()| None)
-            })?
-        else {
-            return Ok(None);
-        };
-        let Some(user_content) = Runner::get_new_user_content(request_text, Some(extension_runner))
-            .await
-            .map(Some)
-            .or_else(|error| {
-                Self::record_extension_error(state.clone(), user_message_id, context, error, cx)
-                    .map(|()| None)
-            })?
-        else {
-            return Ok(None);
-        };
-        (|| -> AiChatResult<PreparedFetch> {
-            let runner = Self::build_runner(
-                context,
-                Role::User,
-                user_content.send_content().to_string(),
-                cx,
-            )?;
-            let send_content = runner.request_body();
-            let (user_message, assistant_message) =
-                cx.read_global_result(|db: &Db, _window, _cx| {
-                    let conn = &mut db.get()?;
-                    Message::update_content(user_message_id, &user_content, conn)?;
-                    Message::update_send_content(user_message_id, send_content, conn)?;
-                    Message::update_status(user_message_id, Status::Normal, conn)?;
-                    let user_message = Message::find(user_message_id, conn)?;
-                    let assistant_message = Message::insert(
-                        NewMessage::new(
-                            context.conversation_id,
-                            &context.composer_snapshot.provider_name,
-                            Role::Assistant,
-                            &Content::Text(String::new()),
-                            send_content,
-                            Status::Loading,
-                        ),
-                        conn,
-                    )?;
-                    Ok::<_, AiChatError>((user_message, assistant_message))
-                })??;
-            Ok(PreparedFetch {
-                runner,
-                user_message,
-                assistant_message,
-            })
-        })()
-        .map(Some)
-        .or_else(|error| {
-            Self::record_extension_error(state, user_message_id, context, error, cx).map(|()| None)
-        })
+    ) -> AiChatResult<PreparedFetch> {
+        Self::prepare_plain_fetch(context, request_text, cx)
     }
 
     fn prepare_plain_fetch(
@@ -630,28 +525,6 @@ impl ConversationPanelView {
             provider_name,
             request_body,
         })
-    }
-
-    fn insert_loading_user_message(
-        conversation_id: i32,
-        provider_name: &str,
-        request_text: &str,
-        cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<Message> {
-        cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            Message::insert(
-                NewMessage::new(
-                    conversation_id,
-                    provider_name,
-                    Role::User,
-                    &Content::Text(request_text.to_string()),
-                    &serde_json::json!({}),
-                    Status::Loading,
-                ),
-                conn,
-            )
-        })?
     }
 
     fn bind_prepared_messages(
@@ -921,41 +794,12 @@ impl ConversationPanelView {
         Ok(())
     }
 
-    fn record_extension_error(
-        state: WeakEntity<Self>,
-        user_message_id: i32,
-        context: &FetchContext,
-        error: AiChatError,
-        cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<()> {
-        let error = match context.composer_snapshot.extension_name.as_deref() {
-            Some(extension_name) => format!("extension {extension_name}: {error}"),
-            None => error.to_string(),
-        };
-        let user_message = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            Message::record_error(user_message_id, error, conn)?;
-            Message::find(user_message_id, conn)
-        })??;
-        Self::replace_chat_message_by_id(
-            &context.chat_data,
-            context.conversation_id,
-            user_message,
-            false,
-            cx,
-        )?;
-        state.update_result(cx, |this, cx| {
-            this.clear_running_task_for_message(Some(user_message_id), cx);
-        })?;
-        Ok(())
-    }
 }
 
 struct FetchContext {
     chat_data: Entity<AiChatResult<ChatDataInner>>,
     conversation_id: i32,
     composer_snapshot: ChatFormSnapshot,
-    extension_container: ExtensionContainer,
     config: AiChatConfig,
 }
 
@@ -1096,11 +940,7 @@ mod tests {
                     2,
                     Role::Assistant,
                     Status::Normal,
-                    Content::Extension {
-                        source: "src".to_string(),
-                        extension_name: "ext".to_string(),
-                        content: "a1".to_string(),
-                    },
+                    Content::Text("a1".to_string()),
                 ),
                 make_message(
                     3,

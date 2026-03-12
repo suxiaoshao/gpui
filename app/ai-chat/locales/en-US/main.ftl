@@ -125,7 +125,6 @@ delete-message-failed-title = Delete Message Failed
 delete-message-failed-message = Message view not available.
 
 settings-openai-title = OpenAI
-settings-openai-stream-title = OpenAI Stream
 
 template-error-float = Must be a valid float
 template-error-boolean = Must be true or false
@@ -139,4 +138,3 @@ template-error-prompt-empty = Prompt cannot be empty:
 field-raw = Raw
 empty-model-picker = No models available
 empty-template-picker = No templates available
-empty-extension-picker = No extensions available

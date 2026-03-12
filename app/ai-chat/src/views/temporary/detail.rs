@@ -6,7 +6,6 @@ use crate::{
     config::AiChatConfig,
     database::{Content, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
-    extensions::ExtensionContainer,
     gpui_ext::WeakEntityResultExt,
     hotkey::TemporaryData,
     i18n::I18n,
@@ -202,15 +201,6 @@ impl TemporaryMessage {
         self.updated_time = now;
         self.end_time = now;
     }
-    fn resolve_extension(&mut self, content: Content, send_content: Rc<serde_json::Value>) {
-        let now = OffsetDateTime::now_utc();
-        self.content = content;
-        self.send_content = send_content;
-        self.status = Status::Normal;
-        self.error = None;
-        self.updated_time = now;
-        self.end_time = now;
-    }
     fn update_status(&mut self, status: Status) {
         let now = OffsetDateTime::now_utc();
         self.status = status;
@@ -270,11 +260,6 @@ impl TemporaryMessageRevision {
             Content::WebSearch { text, citations } => {
                 text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
             }
-            Content::Extension {
-                source,
-                extension_name,
-                content,
-            } => source.len() + extension_name.len() + content.len(),
         };
 
         Self {
@@ -352,16 +337,13 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         let span = span!(
             Level::INFO,
             "Fetch",
-            send_content = snapshot.text.clone(),
-            extension_name = snapshot.extension_name.clone()
+            send_content = snapshot.text.clone()
         );
         if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
-            let extension_container = cx.global::<ExtensionContainer>().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
                 let context = TemporaryFetchContext {
                     composer_snapshot: snapshot,
-                    extension_container,
                     config,
                     now: OffsetDateTime::now_utc(),
                 };
@@ -545,9 +527,7 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         event!(Level::INFO, "temporary fetch");
-        let Some(prepared) = Self::prepare_fetch(state.clone(), &context, cx).await? else {
-            return Ok(());
-        };
+        let prepared = Self::prepare_fetch(state.clone(), &context, cx).await?;
         Self::stream_fetch(state, prepared.runner, prepared.assistant_message_id, cx).await?;
         Ok(())
     }
@@ -603,113 +583,8 @@ impl TemplateDetailView {
         state: WeakEntity<Self>,
         context: &TemporaryFetchContext,
         cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
-        match context.composer_snapshot.extension_name.as_deref() {
-            Some(extension_name) => {
-                Self::prepare_extension_fetch(state, context, extension_name, cx).await
-            }
-            None => Self::prepare_plain_fetch(state, context, cx).map(Some),
-        }
-    }
-
-    async fn prepare_extension_fetch(
-        state: WeakEntity<Self>,
-        context: &TemporaryFetchContext,
-        extension_name: &str,
-        cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<Option<PreparedTemporaryFetch>> {
-        let user_message_id = state.update_in_result(cx, |this, window, cx| {
-            this.chat_form
-                .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
-            this.add_message(NewTemporaryMessage {
-                now: context.now,
-                provider: context.composer_snapshot.provider_name.clone(),
-                role: Role::User,
-                content: Content::Text(context.composer_snapshot.text.clone()),
-                send_content: Rc::new(serde_json::json!({})),
-                status: Status::Loading,
-                error: None,
-            })
-            .id
-        })?;
-        state.update_result(cx, |this, _cx| {
-            this.bind_running_task_messages(Some(user_message_id), None);
-        })?;
-
-        let Some(extension_runner) = context
-            .extension_container
-            .get_extension(extension_name)
-            .await
-            .map(Some)
-            .or_else(|error| {
-                Self::record_extension_error(
-                    state.clone(),
-                    user_message_id,
-                    extension_name,
-                    error,
-                    cx,
-                )
-                .map(|()| None)
-            })?
-        else {
-            return Ok(None);
-        };
-        let Some(content) = Runner::get_new_user_content(
-            context.composer_snapshot.text.clone(),
-            Some(extension_runner),
-        )
-        .await
-        .map(Some)
-        .or_else(|error| {
-            Self::record_extension_error(state.clone(), user_message_id, extension_name, error, cx)
-                .map(|()| None)
-        })?
-        else {
-            return Ok(None);
-        };
-        (|| -> AiChatResult<PreparedTemporaryFetch> {
-            let runner = Self::build_runner(
-                state.clone(),
-                context.config.clone(),
-                context.composer_snapshot.clone(),
-                Role::User,
-                content.send_content().to_string(),
-                cx,
-            )?;
-            let send_content = runner.request_body.clone();
-            let assistant_message_id = state.update_result(cx, |this, _cx| {
-                if let Some(message) = this
-                    .detail
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == user_message_id)
-                {
-                    message.resolve_extension(content, send_content.clone());
-                }
-                this.add_message(NewTemporaryMessage {
-                    now: context.now,
-                    provider: context.composer_snapshot.provider_name.clone(),
-                    role: Role::Assistant,
-                    content: Content::Text(String::new()),
-                    send_content: send_content.clone(),
-                    status: Status::Loading,
-                    error: None,
-                })
-                .id
-            })?;
-            state.update_result(cx, |this, _cx| {
-                this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
-            })?;
-            Ok(PreparedTemporaryFetch {
-                runner,
-                assistant_message_id,
-            })
-        })()
-        .map(Some)
-        .or_else(|error| {
-            Self::record_extension_error(state, user_message_id, extension_name, error, cx)
-                .map(|()| None)
-        })
+    ) -> AiChatResult<PreparedTemporaryFetch> {
+        Self::prepare_plain_fetch(state, context, cx)
     }
 
     fn prepare_plain_fetch(
@@ -788,7 +663,7 @@ impl TemplateDetailView {
     }
 }
 
-// Applies streamed assistant output and records extension failures.
+// Applies streamed assistant output.
 impl TemplateDetailView {
     async fn stream_fetch(
         state: WeakEntity<Self>,
@@ -869,19 +744,6 @@ impl TemplateDetailView {
         Ok(())
     }
 
-    fn record_extension_error(
-        state: WeakEntity<Self>,
-        user_message_id: usize,
-        extension_name: &str,
-        error: AiChatError,
-        cx: &mut AsyncWindowContext,
-    ) -> AiChatResult<()> {
-        let error = format!("extension {extension_name}: {error}");
-        state.update_result(cx, |this, cx| {
-            this.on_error(user_message_id, error, cx);
-        })?;
-        Ok(())
-    }
 }
 
 struct PreparedTemporaryFetch {
@@ -891,7 +753,6 @@ struct PreparedTemporaryFetch {
 
 struct TemporaryFetchContext {
     composer_snapshot: ChatFormSnapshot,
-    extension_container: ExtensionContainer,
     config: AiChatConfig,
     now: OffsetDateTime,
 }

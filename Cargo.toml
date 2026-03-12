@@ -4,7 +4,6 @@ members = [
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
-  "app/ai-chat/extensions/url_search",
   "crates/window-ext",
   "crates/xtask",
 ]
@@ -32,7 +31,6 @@ debug = true
 proc-macro2 = { opt-level = 3 }
 quote = { opt-level = 3 }
 syn = { opt-level = 3 }
-wasmtime = { opt-level = 3 }
 taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
 gpui = { opt-level = 3 }

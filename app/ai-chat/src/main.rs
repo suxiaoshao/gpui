@@ -20,7 +20,6 @@ mod components;
 mod config;
 mod database;
 mod errors;
-mod extensions;
 mod gpui_ext;
 mod hotkey;
 mod i18n;
@@ -136,7 +135,6 @@ fn init(cx: &mut App) {
     config::init(cx);
     store::init_global(cx);
     hotkey::init(cx);
-    extensions::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {

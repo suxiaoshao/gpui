@@ -29,12 +29,6 @@ pub enum Content {
         text: String,
         citations: Vec<UrlCitation>,
     },
-    Extension {
-        source: String,
-        #[serde(rename = "extensionName")]
-        extension_name: String,
-        content: String,
-    },
 }
 
 impl AddAssign<String> for Content {
@@ -45,9 +39,6 @@ impl AddAssign<String> for Content {
             }
             Content::WebSearch { text, .. } => {
                 *text += &rhs;
-            }
-            Content::Extension { source, .. } => {
-                *source += &rhs;
             }
         }
     }
@@ -62,9 +53,6 @@ impl AddAssign<&str> for Content {
             Content::WebSearch { text, .. } => {
                 *text += rhs;
             }
-            Content::Extension { source, .. } => {
-                *source += rhs;
-            }
         }
     }
 }
@@ -74,7 +62,6 @@ impl Content {
         match self {
             Content::Text(content) => content,
             Content::WebSearch { text, .. } => text,
-            Content::Extension { source, .. } => source,
         }
     }
 
@@ -82,7 +69,6 @@ impl Content {
         match self {
             Content::Text(content) => content,
             Content::WebSearch { text, .. } => text,
-            Content::Extension { content, .. } => content,
         }
     }
 
@@ -153,34 +139,6 @@ mod content_tests {
                 citations: vec![],
             }
         );
-    }
-
-    #[test]
-    fn add_assign_appends_extension_source() {
-        let mut content = Content::Extension {
-            source: "src".to_string(),
-            extension_name: "ext".to_string(),
-            content: "payload".to_string(),
-        };
-        content += " more";
-        assert_eq!(
-            content,
-            Content::Extension {
-                source: "src more".to_string(),
-                extension_name: "ext".to_string(),
-                content: "payload".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn send_content_uses_extension_payload() {
-        let content = Content::Extension {
-            source: "src".to_string(),
-            extension_name: "ext".to_string(),
-            content: "payload".to_string(),
-        };
-        assert_eq!(content.send_content(), "payload");
     }
 
     #[test]
@@ -387,15 +345,6 @@ impl Message {
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Message> {
         let message = SqlMessage::find(id, conn)?;
         Message::try_from(message)
-    }
-    pub fn update_send_content(
-        id: i32,
-        send_content: &serde_json::Value,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let time = OffsetDateTime::now_utc();
-        SqlMessage::update_send_content(id, send_content, time, conn)?;
-        Ok(())
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         SqlMessage::delete(id, conn)?;

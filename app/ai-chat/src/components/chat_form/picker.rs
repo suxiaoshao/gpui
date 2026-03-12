@@ -385,9 +385,7 @@ pub(crate) struct PickerTrigger {
     selected: bool,
     open: bool,
     disabled: bool,
-    cleanable: bool,
     on_toggle: TriggerClickHandler,
-    on_clear: Option<TriggerClickHandler>,
     on_bounds_change: BoundsChangeHandler,
 }
 
@@ -404,9 +402,7 @@ impl PickerTrigger {
             selected: false,
             open: false,
             disabled: false,
-            cleanable: false,
             on_toggle: Rc::new(on_toggle),
-            on_clear: None,
             on_bounds_change: Rc::new(on_bounds_change),
         }
     }
@@ -420,21 +416,11 @@ impl PickerTrigger {
         self.open = open;
         self
     }
-
-    pub(crate) fn cleanable(
-        mut self,
-        on_clear: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.cleanable = true;
-        self.on_clear = Some(Rc::new(on_clear));
-        self
-    }
 }
 
 impl RenderOnce for PickerTrigger {
     fn render(self, _: &mut Window, _cx: &mut App) -> impl IntoElement {
         let is_active = self.selected || self.open;
-        let clearable = self.cleanable && self.selected;
         let title = self.title;
         let on_bounds_change = self.on_bounds_change;
 
@@ -459,31 +445,14 @@ impl RenderOnce for PickerTrigger {
                             .font_weight(FontWeight::MEDIUM)
                             .child(title),
                     )
-                    .when(clearable, |this| {
-                        let Some(on_clear) = self.on_clear else {
-                            return this;
-                        };
-                        this.child(
-                            Button::new("picker-trigger-clear")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .xsmall()
-                                .on_click(move |event, window, cx| {
-                                    cx.stop_propagation();
-                                    (on_clear)(event, window, cx);
-                                }),
-                        )
-                    })
-                    .when(!clearable, |this| {
-                        this.child(
-                            Icon::new(if self.open {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .xsmall(),
-                        )
-                    }),
+                    .child(
+                        Icon::new(if self.open {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall(),
+                    ),
             )
             .child(
                 canvas(
