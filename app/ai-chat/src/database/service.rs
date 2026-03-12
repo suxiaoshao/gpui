@@ -17,4 +17,4 @@ pub use conversation_templates::{
 
 pub use conversations::{Conversation, NewConversation};
 pub use folders::{Folder, NewFolder};
-pub use messages::{Content, Message, NewMessage};
+pub use messages::{Content, Message, NewMessage, UrlCitation};

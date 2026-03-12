@@ -3,7 +3,7 @@ use serde::Deserialize;
 mod chat_request;
 mod message;
 
-pub use chat_request::ChatRequest;
+pub use chat_request::{ChatRequest, HostedTool};
 pub use message::Message;
 
 #[derive(Debug, Deserialize)]
@@ -11,6 +11,10 @@ pub use message::Message;
 pub enum OpenAIResponseStreamEvent {
     #[serde(rename = "response.output_text.delta")]
     ResponseOutputTextDelta { delta: String },
+    #[serde(rename = "response.completed")]
+    ResponseCompleted {
+        response: serde_json::Value,
+    },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "response.failed")]

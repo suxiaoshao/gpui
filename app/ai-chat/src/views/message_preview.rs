@@ -1,7 +1,7 @@
 use crate::{
     components::message::MessageViewExt,
     database::{Content, Db, Message, Role},
-    errors::AiChatResult,
+    errors::{AiChatError, AiChatResult},
     i18n::I18n,
     store::{ChatData, ChatDataEvent},
     workspace_state::WorkspaceStore,
@@ -36,6 +36,10 @@ impl PreviewType {
 
 enum MessageInput {
     Text(Entity<InputState>),
+    WebSearch {
+        text: Entity<InputState>,
+        citations: Entity<InputState>,
+    },
     Extension {
         source: Entity<InputState>,
         content: Entity<InputState>,
@@ -55,6 +59,25 @@ impl MessageInput {
                         .default_value(value)
                 }))
             }
+            crate::database::Content::WebSearch { text, citations } => Self::WebSearch {
+                text: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .multi_line(true)
+                        .line_number(true)
+                        .searchable(true)
+                        .default_value(text)
+                }),
+                citations: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .multi_line(true)
+                        .line_number(true)
+                        .searchable(true)
+                        .default_value(
+                            serde_json::to_string_pretty(&citations)
+                                .unwrap_or_else(|_| "[]".to_string()),
+                        )
+                }),
+            },
             crate::database::Content::Extension {
                 source,
                 content,
@@ -108,6 +131,12 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
             MessageInput::Text(entity) => {
                 let text = entity.read(cx).value().to_string();
                 Content::Text(text)
+            }
+            MessageInput::WebSearch { text, citations } => {
+                let text = text.read(cx).value().to_string();
+                let citations = serde_json::from_str(&citations.read(cx).value())
+                    .map_err(|err| AiChatError::StreamError(err.to_string()))?;
+                Content::WebSearch { text, citations }
             }
             MessageInput::Extension {
                 source,
@@ -349,6 +378,11 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                     MessageInput::Text(entity) => div()
                         .flex_1()
                         .child(Input::new(entity).disabled(disabled).size_full()),
+                    MessageInput::WebSearch { text, citations } => h_flex()
+                        .flex_1()
+                        .gap_2()
+                        .child(Input::new(text).disabled(disabled).size_full())
+                        .child(Input::new(citations).disabled(disabled).size_full()),
                     MessageInput::Extension {
                         source, content, ..
                     } => h_flex()

@@ -5,7 +5,7 @@ use crate::{
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionContainer,
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
-    llm::{FetchRunner, provider_by_name},
+    llm::{FetchRunner, FetchUpdate, provider_by_name},
     store::{ChatData, ChatDataEvent, ChatDataInner},
     views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
     workspace_state::{ConversationDraft, WorkspaceStore},
@@ -43,6 +43,9 @@ impl MessageRevision {
     fn new(message: &Message) -> Self {
         let content_len = match &message.content {
             Content::Text(content) => content.len(),
+            Content::WebSearch { text, citations } => {
+                text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
+            }
             Content::Extension {
                 source,
                 extension_name,
@@ -400,12 +403,21 @@ impl ConversationPanelView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(message) => {
+                Ok(FetchUpdate::TextDelta(delta)) => {
                     Self::append_assistant_message_by_id(
                         &context.chat_data,
                         context.conversation_id,
                         assistant_message_id,
-                        message,
+                        delta,
+                        cx,
+                    )?;
+                }
+                Ok(FetchUpdate::Complete(content)) => {
+                    Self::replace_assistant_message_content_by_id(
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        content,
                         cx,
                     )?;
                 }
@@ -675,8 +687,16 @@ impl ConversationPanelView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(message) => {
-                    Self::append_assistant_message(context, assistant_message_id, message, cx)?;
+                Ok(FetchUpdate::TextDelta(delta)) => {
+                    Self::append_assistant_message(context, assistant_message_id, delta, cx)?;
+                }
+                Ok(FetchUpdate::Complete(content)) => {
+                    Self::replace_assistant_message_content(
+                        context,
+                        assistant_message_id,
+                        content,
+                        cx,
+                    )?;
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -720,6 +740,21 @@ impl ConversationPanelView {
         )
     }
 
+    fn replace_assistant_message_content(
+        context: &FetchContext,
+        assistant_message_id: i32,
+        content: Content,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        Self::replace_assistant_message_content_by_id(
+            &context.chat_data,
+            context.conversation_id,
+            assistant_message_id,
+            content,
+            cx,
+        )
+    }
+
     fn append_assistant_message_by_id(
         chat_data: &Entity<AiChatResult<ChatDataInner>>,
         conversation_id: i32,
@@ -735,6 +770,28 @@ impl ConversationPanelView {
             cx,
             move |message| {
                 message.content += content.as_str();
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        Ok(())
+    }
+
+    fn replace_assistant_message_content_by_id(
+        chat_data: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        assistant_message_id: i32,
+        content: Content,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let now = OffsetDateTime::now_utc();
+        let _ = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                message.content = content;
                 message.updated_time = now;
                 message.end_time = now;
             },

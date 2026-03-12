@@ -21,7 +21,7 @@ mod types;
 
 pub use service::{
     Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Folder, Message,
-    NewConversation, NewConversationTemplate, NewFolder, NewMessage,
+    NewConversation, NewConversationTemplate, NewFolder, NewMessage, UrlCitation,
 };
 pub use types::{Mode, Role, Status};
 

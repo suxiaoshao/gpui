@@ -10,7 +10,7 @@ use crate::{
     gpui_ext::WeakEntityResultExt,
     hotkey::TemporaryData,
     i18n::I18n,
-    llm::{FetchRunner, provider_by_name},
+    llm::{FetchRunner, FetchUpdate, provider_by_name},
     store::AddConversationMessage,
     views::{
         conversation_detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
@@ -267,6 +267,9 @@ impl TemporaryMessageRevision {
     fn new(message: &TemporaryMessage) -> Self {
         let content_len = match &message.content {
             Content::Text(content) => content.len(),
+            Content::WebSearch { text, citations } => {
+                text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
+            }
             Content::Extension {
                 source,
                 extension_name,
@@ -492,6 +495,14 @@ impl TemplateDetailView {
     fn on_message(&mut self, content: &str, message_id: usize) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.add_content(content);
+        }
+    }
+    fn on_complete_content(&mut self, content: Content, message_id: usize) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
+            let now = OffsetDateTime::now_utc();
+            last.content = content;
+            last.updated_time = now;
+            last.end_time = now;
         }
     }
     fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
@@ -789,9 +800,14 @@ impl TemplateDetailView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(message) => {
+                Ok(FetchUpdate::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
+                    })?;
+                }
+                Ok(FetchUpdate::Complete(content)) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
                 Err(error) => {
@@ -828,9 +844,14 @@ impl TemplateDetailView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(message) => {
+                Ok(FetchUpdate::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
+                    })?;
+                }
+                Ok(FetchUpdate::Complete(content)) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
                 Err(error) => {

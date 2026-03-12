@@ -79,6 +79,8 @@ field-presence-penalty = Presence Penalty
 field-frequency-penalty = Frequency Penalty
 field-api-key = API Key
 field-base-url = Base URL
+field-web-search = Web Search
+field-sources = Sources
 
 dialog-add-folder-title = 新建文件夹
 dialog-add-conversation-title = 新建会话

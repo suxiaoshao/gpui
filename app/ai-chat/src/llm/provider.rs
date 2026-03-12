@@ -1,5 +1,6 @@
 use super::Message;
 use crate::{
+    database::Content,
     errors::{AiChatError, AiChatResult},
     config::AiChatConfig,
 };
@@ -158,7 +159,7 @@ pub(crate) trait Provider: Sync {
         config: AiChatConfig,
         settings: toml::Value,
         request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<String>>;
+    ) -> BoxStream<'a, AiChatResult<FetchUpdate>>;
     fn list_models(
         &self,
         config: AiChatConfig,
@@ -174,6 +175,12 @@ pub(crate) trait Provider: Sync {
 }
 
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FetchUpdate {
+    TextDelta(String),
+    Complete(Content),
+}
 
 const PROVIDERS: [&dyn Provider; 1] = [&OpenAIProvider];
 

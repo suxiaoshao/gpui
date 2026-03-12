@@ -4,6 +4,7 @@ use crate::{
     database::Content,
     errors::{AiChatError, AiChatResult},
     extensions::ExtensionRunner,
+    llm::FetchUpdate,
 };
 use futures::pin_mut;
 
@@ -41,7 +42,7 @@ pub trait FetchRunner {
         }
         Ok(Content::Text(send_content))
     }
-    fn fetch(&self) -> impl futures::Stream<Item = AiChatResult<String>> {
+    fn fetch(&self) -> impl futures::Stream<Item = AiChatResult<FetchUpdate>> {
         async_stream::try_stream! {
             let provider = self.provider()?;
             let config = self.get_config().clone();

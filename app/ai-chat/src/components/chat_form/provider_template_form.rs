@@ -58,6 +58,26 @@ impl ProviderTemplateFormState {
                     .or_else(|| Self::default_value(item.input_type()))
                     .unwrap_or(serde_json::Value::Null);
                 let value_state = match item.input_type() {
+                    InputType::Boolean { .. } => {
+                        let options = vec!["true".to_string(), "false".to_string()];
+                        let selected = value
+                            .as_bool()
+                            .unwrap_or_default()
+                            .to_string();
+                        let selected_index = options
+                            .iter()
+                            .position(|option| *option == selected)
+                            .unwrap_or(0);
+                        let select_state = cx.new(|cx| {
+                            SelectState::new(
+                                options,
+                                Some(IndexPath::default().row(selected_index)),
+                                window,
+                                cx,
+                            )
+                        });
+                        ProviderTemplateFieldValueState::Select(select_state)
+                    }
                     InputType::Select(options) => {
                         let mut options = options.clone();
                         let selected = value
@@ -320,6 +340,7 @@ impl ProviderTemplateFormState {
     fn inline_width(input_type: &InputType) -> Pixels {
         match input_type {
             InputType::Select(_) => px(150.),
+            InputType::Boolean { .. } => px(120.),
             _ if Self::number_options(input_type).is_some() => px(110.),
             _ => px(140.),
         }
@@ -441,6 +462,7 @@ impl ProviderTemplateFormState {
     fn localized_item_name(id: &str, fallback: &str) -> String {
         match id {
             "model" => t_static("field-model"),
+            "web_search" => t_static("field-web-search"),
             "temperature" => t_static("field-temperature"),
             "top_p" => t_static("field-top-p"),
             "n" => t_static("field-n"),

@@ -1,12 +1,13 @@
 use super::{
-    ChatFormGroup, ChatFormLayout, InputItem, InputType, Provider, ProviderModel,
+    ChatFormGroup, ChatFormLayout, FetchUpdate, InputItem, InputType, Provider, ProviderModel,
     ProviderModelCapability,
 };
-use crate::llm::{ChatRequest, Message, OpenAIResponseStreamEvent};
 use crate::{
+    database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
     config::AiChatConfig,
     i18n::t_static,
+    llm::{ChatRequest, HostedTool, Message, OpenAIResponseStreamEvent},
 };
 use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
@@ -118,6 +119,8 @@ struct BaseUrlFieldState {
 pub(crate) struct OpenAIRequestTemplate {
     pub(crate) model: String,
     pub(crate) stream: bool,
+    #[serde(default)]
+    pub(crate) web_search: bool,
     pub(crate) temperature: f64,
     pub(crate) top_p: f64,
     pub(crate) n: u32,
@@ -131,6 +134,7 @@ impl Default for OpenAIRequestTemplate {
         Self {
             model: "gpt-4o".to_string(),
             stream: true,
+            web_search: false,
             temperature: 1.0,
             top_p: 1.0,
             n: 1,
@@ -158,6 +162,8 @@ struct ResponsesCreateResponse {
 
 #[derive(Debug, Deserialize)]
 struct OutputItem {
+    #[serde(rename = "type")]
+    item_type: Option<String>,
     content: Option<Vec<OutputContent>>,
 }
 
@@ -166,16 +172,57 @@ struct OutputContent {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
+    #[serde(default)]
+    annotations: Vec<OutputAnnotation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputAnnotation {
+    #[serde(rename = "type")]
+    annotation_type: String,
+    title: Option<String>,
+    url: Option<String>,
+    start_index: Option<usize>,
+    end_index: Option<usize>,
+}
+
+impl OutputAnnotation {
+    fn into_citation(self) -> Option<UrlCitation> {
+        if self.annotation_type != "url_citation" {
+            return None;
+        }
+        Some(UrlCitation {
+            title: self.title,
+            url: self.url?,
+            start_index: self.start_index,
+            end_index: self.end_index,
+        })
+    }
 }
 
 impl ResponsesCreateResponse {
-    fn output_text(self) -> String {
-        self.output
-            .into_iter()
-            .flat_map(|item| item.content.unwrap_or_default())
-            .filter(|part| part.content_type == "output_text")
-            .filter_map(|part| part.text)
-            .collect::<String>()
+    fn into_content(self) -> Content {
+        let mut text = String::new();
+        let mut citations = Vec::new();
+        for item in self.output {
+            if item.item_type.as_deref() == Some("web_search_call") {
+                continue;
+            }
+            for part in item.content.unwrap_or_default() {
+                if part.content_type != "output_text" {
+                    continue;
+                }
+                if let Some(part_text) = part.text {
+                    text.push_str(&part_text);
+                }
+                citations.extend(part.annotations.into_iter().filter_map(OutputAnnotation::into_citation));
+            }
+        }
+        if citations.is_empty() {
+            Content::Text(text)
+        } else {
+            Content::WebSearch { text, citations }
+        }
     }
 }
 
@@ -270,10 +317,16 @@ fn classify_model(id: &str) -> Option<ProviderModelCapability> {
     })
 }
 
-fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
+fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
     match event {
-        OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => Ok(Some(delta)),
+        OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => {
+            Ok(Some(FetchUpdate::TextDelta(delta)))
+        }
+        OpenAIResponseStreamEvent::ResponseCompleted { response } => {
+            let response = serde_json::from_value::<ResponsesCreateResponse>(response)?;
+            Ok(Some(FetchUpdate::Complete(response.into_content())))
+        }
         OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
         OpenAIResponseStreamEvent::ResponseFailed { response } => {
             Err(AiChatError::StreamError(response.error.message))
@@ -284,6 +337,14 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<String>> {
 
 fn request_inputs() -> Vec<InputItem> {
     vec![
+        InputItem::new(
+            "web_search",
+            "Web Search",
+            "Enable OpenAI web search for supported models only.",
+            InputType::Boolean {
+                default: Some(false),
+            },
+        ),
         InputItem::new(
             "temperature",
             "Temperature",
@@ -354,10 +415,26 @@ fn request_inputs() -> Vec<InputItem> {
 }
 
 impl OpenAIProvider {
+    fn supports_web_search(model: &str) -> bool {
+        let model = model.strip_prefix("ft:").unwrap_or(model);
+        if model == "gpt-4o-search-preview" || model == "gpt-4o-mini-search-preview" {
+            return true;
+        }
+        if model == "gpt-4.1" || model == "gpt-4.1-mini" {
+            return true;
+        }
+        model.starts_with("gpt-5")
+    }
+
     fn get_body(
         template: &OpenAIRequestTemplate,
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
+        let tools = (template.web_search && Self::supports_web_search(&template.model)).then(|| {
+            vec![HostedTool {
+                tool_type: "web_search",
+            }]
+        });
         ChatRequest {
             input: history_messages,
             model: template.model.as_str(),
@@ -367,6 +444,7 @@ impl OpenAIProvider {
             max_output_tokens: template.max_completion_tokens,
             presence_penalty: template.presence_penalty,
             frequency_penalty: template.frequency_penalty,
+            tools,
         }
     }
 
@@ -405,6 +483,7 @@ impl Provider for OpenAIProvider {
         Ok(serde_json::to_value(OpenAIRequestTemplate {
             model: model.id.clone(),
             stream: model.capability.stream_flag(),
+            web_search: Self::supports_web_search(&model.id),
             ..OpenAIRequestTemplate::default()
         })?)
     }
@@ -430,7 +509,7 @@ impl Provider for OpenAIProvider {
         config: AiChatConfig,
         settings: toml::Value,
         request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<String>> {
+    ) -> BoxStream<'a, AiChatResult<FetchUpdate>> {
         async_stream::try_stream! {
             let settings: OpenAISettings = settings.try_into()?;
             let settings = settings.normalized();
@@ -476,7 +555,7 @@ impl Provider for OpenAIProvider {
                     .json::<ResponsesCreateResponse>()
                     .compat()
                     .await?;
-                yield response.output_text();
+                yield FetchUpdate::Complete(response.into_content());
             }
         }
         .boxed()
@@ -520,6 +599,7 @@ impl Provider for OpenAIProvider {
                 None,
                 None,
                 vec![
+                    "web_search",
                     "temperature",
                     "top_p",
                     "n",
@@ -638,8 +718,9 @@ impl Provider for OpenAIProvider {
 mod tests {
     use super::{
         OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
-        classify_model, normalize_base_url,
+        ResponsesCreateResponse, classify_model, normalize_base_url, parse_response_stream_event,
     };
+    use crate::{database::Content, llm::FetchUpdate};
     use serde_json::json;
 
     #[test]
@@ -675,6 +756,17 @@ mod tests {
         )?;
         assert_eq!(template.model, "gpt-5");
         assert!(template.stream);
+        assert!(template.web_search);
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_models_default_web_search_to_false() -> anyhow::Result<()> {
+        let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
+        let template = serde_json::from_value::<OpenAIRequestTemplate>(
+            OpenAIProvider.default_template_for_model(&model)?,
+        )?;
+        assert!(!template.web_search);
         Ok(())
     }
 
@@ -715,5 +807,105 @@ mod tests {
         assert_eq!(classify_model("gpt-3.5-0125"), None);
         assert_eq!(classify_model("gpt-4o-realtime-preview"), None);
         assert_eq!(classify_model("fp-model"), None);
+    }
+
+    #[test]
+    fn request_body_includes_web_search_tool_for_supported_models() -> anyhow::Result<()> {
+        let request_body = OpenAIProvider.request_body(
+            &json!({
+                "model": "gpt-5",
+                "stream": false,
+                "web_search": true,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "n": 1,
+                "max_completion_tokens": null,
+                "presence_penalty": 0.0,
+                "frequency_penalty": 0.0
+            }),
+            vec![],
+        )?;
+        assert_eq!(request_body["tools"][0]["type"], "web_search");
+        Ok(())
+    }
+
+    #[test]
+    fn request_body_omits_web_search_for_unsupported_models() -> anyhow::Result<()> {
+        let request_body = OpenAIProvider.request_body(
+            &json!({
+                "model": "gpt-4o",
+                "stream": false,
+                "web_search": true,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "n": 1,
+                "max_completion_tokens": null,
+                "presence_penalty": 0.0,
+                "frequency_penalty": 0.0
+            }),
+            vec![],
+        )?;
+        assert!(request_body.get("tools").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn responses_create_response_extracts_web_search_citations() {
+        let response = serde_json::from_value::<ResponsesCreateResponse>(json!({
+            "output": [
+                { "type": "web_search_call" },
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "hello",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "title": "Example",
+                                    "url": "https://example.com",
+                                    "start_index": 0,
+                                    "end_index": 5
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("response");
+        assert_eq!(
+            response.into_content(),
+            Content::WebSearch {
+                text: "hello".to_string(),
+                citations: vec![crate::database::UrlCitation {
+                    title: Some("Example".to_string()),
+                    url: "https://example.com".to_string(),
+                    start_index: Some(0),
+                    end_index: Some(5),
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn response_completed_event_yields_complete_update() -> anyhow::Result<()> {
+        let update = parse_response_stream_event(
+            r#"{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"done","annotations":[{"type":"url_citation","title":"Example","url":"https://example.com","start_index":0,"end_index":4}]}]}]}}"#,
+        )?;
+        assert_eq!(
+            update,
+            Some(FetchUpdate::Complete(Content::WebSearch {
+                text: "done".to_string(),
+                citations: vec![crate::database::UrlCitation {
+                    title: Some("Example".to_string()),
+                    url: "https://example.com".to_string(),
+                    start_index: Some(0),
+                    end_index: Some(4),
+                }]
+            }))
+        );
+        Ok(())
     }
 }
