@@ -1,5 +1,8 @@
 mod model_picker;
 
+use super::picker::{
+    PickerListDelegate, PickerPopoverOptions, PickerTrigger, render_picker_popover,
+};
 use crate::{
     config::AiChatConfig,
     i18n::I18n,
@@ -9,13 +12,12 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable, Size, StyledExt as _,
+    ActiveTheme, Disableable, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
-    list::{List, ListState},
-    v_flex,
+    list::ListState,
 };
-use model_picker::{ModelPickerDelegate, ModelPickerSection};
+use model_picker::{ModelOption, model_sections};
 use std::ops::Deref;
 
 #[derive(Clone)]
@@ -28,7 +30,7 @@ impl EventEmitter<ModelSelectEvent> for ModelSelect {}
 pub(crate) struct ModelSelect {
     models: Vec<ProviderModel>,
     selected_model: Option<ProviderModel>,
-    model_picker: Entity<ListState<ModelPickerDelegate>>,
+    model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
     model_picker_bounds: Bounds<Pixels>,
     model_picker_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -38,9 +40,9 @@ impl ModelSelect {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.entity().downgrade();
         let on_confirm = std::rc::Rc::new(
-            move |model: ProviderModel, window: &mut Window, cx: &mut App| {
+            move |model: ModelOption, window: &mut Window, cx: &mut App| {
                 let _ = state.update(cx, |select, cx| {
-                    select.select_model(model, window, cx);
+                    select.select_model(model.into_model(), window, cx);
                 });
             },
         );
@@ -50,12 +52,13 @@ impl ModelSelect {
                 select.close_model_picker(false, window, cx);
             });
         });
+        let empty_label = cx.global::<I18n>().t("empty-model-picker");
         let model_picker = cx.new(|cx| {
             ListState::new(
-                ModelPickerDelegate::new(
+                PickerListDelegate::new(
                     Vec::new(),
                     false,
-                    cx.global::<I18n>().t("empty-model-picker").into(),
+                    empty_label.into(),
                     on_confirm.clone(),
                     on_cancel.clone(),
                 ),
@@ -126,9 +129,8 @@ impl ModelSelect {
             cx.emit(ModelSelectEvent::Change(None));
         }
 
-        let sections = ModelPickerSection::from_models(&self.models);
-        let selected_ix =
-            ModelPickerDelegate::selected_index_for(&sections, self.selected_model.as_ref());
+        let sections = model_sections(&self.models);
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected_model.as_ref());
         let is_loading = matches!(
             snapshot.status,
             Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
@@ -193,93 +195,67 @@ impl ModelSelect {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let bounds = self.model_picker_bounds;
-        let popup_radius = cx.theme().radius.min(px(8.));
-        let popup_width = if bounds.size.width < px(180.) {
-            px(180.)
-        } else {
-            bounds.size.width + px(2.)
-        };
         let search_label = cx.global::<I18n>().t("field-search-models");
         let reload_tooltip = cx.global::<I18n>().t("button-reload");
         let configure_label = cx.global::<I18n>().t("button-configure");
         let snapshot = self.model_store_snapshot(cx);
-        let model_picker = self.model_picker.clone();
+        let on_mouse_down_out = cx.listener(|select, ev: &MouseDownEvent, window, cx| {
+            if select.model_picker_bounds.contains(&ev.position) {
+                return;
+            }
+            select.close_model_picker(false, window, cx);
+        });
 
-        deferred(
-            anchored()
-                .anchor(Corner::BottomLeft)
-                .snap_to_window_with_margin(px(8.))
-                .position(point(bounds.left(), bounds.top()))
-                .child(
-                    div()
-                        .w(popup_width)
-                        .on_mouse_down_out(cx.listener(|select, ev: &MouseDownEvent, window, cx| {
-                            if select.model_picker_bounds.contains(&ev.position) {
-                                return;
-                            }
-                            select.close_model_picker(false, window, cx);
-                        }))
+        render_picker_popover(
+            bounds,
+            self.model_picker.clone(),
+            PickerPopoverOptions {
+                min_width: Some(px(180.)),
+                search_placeholder: Some(search_label.into()),
+                footer: Some(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .pb_2()
+                        .pt_1()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
                         .child(
-                            v_flex()
-                                .occlude()
-                                .mb_1p5()
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded(popup_radius)
-                                .shadow_md()
-                                .child(
-                                    List::new(&model_picker)
-                                        .search_placeholder(search_label)
-                                        .with_size(Size::Medium)
-                                        .max_h(rems(20.))
-                                        .paddings(Edges::all(px(4.))),
-                                )
-                                .child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .px_2()
-                                        .pb_2()
-                                        .pt_1()
-                                        .border_t_1()
-                                        .border_color(cx.theme().border)
-                                        .child(
-                                            Button::new("model-picker-configure")
-                                                .label(configure_label)
-                                                .ghost()
-                                                .small()
-                                                .flex_1()
-                                                .on_click(cx.listener(
-                                                    |select, _event, window, cx| {
-                                                        cx.stop_propagation();
-                                                        select.close_model_picker(false, window, cx);
-                                                        open_provider_settings_window(cx);
-                                                    },
-                                                )),
-                                        )
-                                        .child(
-                                            Button::new("model-picker-reload")
-                                                .icon(IconName::Redo2)
-                                                .ghost()
-                                                .small()
-                                                .tooltip(reload_tooltip)
-                                                .disabled(matches!(
-                                                    snapshot.status,
-                                                    Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
-                                                ))
-                                                .on_click(cx.listener(
-                                                    |select, _event, window, cx| {
-                                                        cx.stop_propagation();
-                                                        select.reload_models(window, cx);
-                                                    },
-                                                )),
-                                        ),
-                                ),
-                        ),
+                            Button::new("model-picker-configure")
+                                .label(configure_label)
+                                .small()
+                                .flex_1()
+                                .on_click(cx.listener(|select, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    select.close_model_picker(false, window, cx);
+                                    open_provider_settings_window(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("model-picker-reload")
+                                .icon(IconName::Redo2)
+                                .ghost()
+                                .small()
+                                .tooltip(reload_tooltip)
+                                .disabled(matches!(
+                                    snapshot.status,
+                                    Some(
+                                        ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing
+                                    )
+                                ))
+                                .on_click(cx.listener(|select, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    select.reload_models(window, cx);
+                                })),
+                        )
+                        .into_any_element(),
                 ),
+                ..Default::default()
+            },
+            on_mouse_down_out,
+            cx,
         )
-        .with_priority(1)
     }
 }
 
@@ -295,56 +271,27 @@ impl Render for ModelSelect {
 
         div()
             .child(
-                Button::new("model-picker-button")
-                    .ghost()
-                    .selected(is_selected || is_open)
-                    .rounded(px(8.))
-                    .small()
-                    .on_click(cx.listener(|select, _event, window, cx| {
+                PickerTrigger::new(
+                    "model-picker-button",
+                    title,
+                    cx.listener(|select, _event, window, cx| {
                         if select.model_picker_open {
                             select.close_model_picker(false, window, cx);
                         } else {
                             select.open_model_picker(window, cx);
                         }
-                    }))
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_1p5()
-                            .child(
-                                div()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(title),
-                            )
-                            .child(
-                                gpui_component::Icon::new(if is_open {
-                                    IconName::ChevronUp
-                                } else {
-                                    IconName::ChevronDown
-                                })
-                                .xsmall(),
-                            ),
-                    )
-                    .child(
-                        canvas(
-                            {
-                                let state = cx.entity();
-                                move |bounds, _, cx| {
-                                    state.update(cx, |select, _| {
-                                        select.model_picker_bounds = bounds;
-                                    })
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
-                    ),
+                    }),
+                    {
+                        let state = cx.entity();
+                        move |bounds, cx| {
+                            state.update(cx, |select, _| {
+                                select.model_picker_bounds = bounds;
+                            })
+                        }
+                    },
+                )
+                .selected(is_selected)
+                .open(is_open),
             )
             .when(self.model_picker_open, |this| {
                 this.child(self.render_model_picker(window, cx))

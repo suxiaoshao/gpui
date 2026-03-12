@@ -1,0 +1,188 @@
+use super::picker::{
+    PickerListDelegate, PickerPopoverOptions, PickerSection, PickerTrigger, render_picker_popover,
+};
+use crate::{database::Mode, i18n::I18n};
+use gpui::{prelude::FluentBuilder as _, *};
+use gpui_component::{list::ListState, select::SelectItem};
+use std::rc::Rc;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModeOption {
+    mode: Mode,
+}
+
+impl ModeOption {
+    fn new(mode: Mode) -> Self {
+        Self { mode }
+    }
+
+    fn i18n_key(self) -> &'static str {
+        match self.mode {
+            Mode::Contextual => "mode-contextual",
+            Mode::Single => "mode-single",
+            Mode::AssistantOnly => "mode-assistant-only",
+        }
+    }
+
+    fn label(self, cx: &App) -> SharedString {
+        cx.global::<I18n>().t(self.i18n_key()).into()
+    }
+}
+
+impl SelectItem for ModeOption {
+    type Value = Mode;
+
+    fn title(&self) -> SharedString {
+        self.mode.to_string().into()
+    }
+
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div().text_sm().child(self.label(cx))
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.mode
+    }
+}
+
+fn mode_options(mode: Mode) -> Vec<ModeOption> {
+    let _ = mode;
+    vec![
+        ModeOption::new(Mode::Contextual),
+        ModeOption::new(Mode::Single),
+        ModeOption::new(Mode::AssistantOnly),
+    ]
+}
+
+pub(crate) struct ModeSelect {
+    selected_mode: Mode,
+    picker: Entity<ListState<PickerListDelegate<ModeOption>>>,
+    picker_bounds: Bounds<Pixels>,
+    picker_open: bool,
+}
+
+impl ModeSelect {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = cx.entity().downgrade();
+        let on_confirm = Rc::new(move |mode: ModeOption, window: &mut Window, cx: &mut App| {
+            let state = state.clone();
+            window.defer(cx, move |window, cx| {
+                let _ = state.update(cx, |select, cx| {
+                    select.select(mode.mode, window, cx);
+                });
+            });
+        });
+        let state = cx.entity().downgrade();
+        let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let _ = state.update(cx, |select, cx| {
+                select.close(window, cx);
+            });
+        });
+        let selected_mode = Mode::Contextual;
+        let sections = PickerSection::flat(mode_options(selected_mode));
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&selected_mode));
+        let empty_label = cx.global::<I18n>().t("field-mode");
+        let picker = cx.new(|cx| {
+            let mut state = ListState::new(
+                PickerListDelegate::new(
+                    sections.clone(),
+                    false,
+                    empty_label.into(),
+                    on_confirm.clone(),
+                    on_cancel.clone(),
+                ),
+                window,
+                cx,
+            );
+            state.set_selected_index(selected_ix, window, cx);
+            state
+        });
+
+        Self {
+            selected_mode,
+            picker,
+            picker_bounds: Bounds::default(),
+            picker_open: false,
+        }
+    }
+
+    pub(crate) fn selected_value(&self) -> Mode {
+        self.selected_mode
+    }
+
+    fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = true;
+        self.picker.update(cx, |picker, cx| picker.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = false;
+        cx.notify();
+    }
+
+    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open {
+            self.close(window, cx);
+        } else {
+            self.open(window, cx);
+        }
+    }
+
+    fn select(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_mode = mode;
+        let sections = PickerSection::flat(mode_options(mode));
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&mode));
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate_mut().set_sections(sections);
+            picker.set_selected_index(selected_ix, window, cx);
+        });
+        self.close(window, cx);
+    }
+}
+
+impl Render for ModeSelect {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let picker = self.picker.clone();
+        let bounds = self.picker_bounds;
+        let on_mouse_down_out = cx.listener(|select, event: &MouseDownEvent, window, cx| {
+            if select.picker_bounds.contains(&event.position) {
+                return;
+            }
+            select.close(window, cx);
+        });
+
+        div()
+            .child(
+                PickerTrigger::new(
+                    "mode-picker-trigger",
+                    ModeOption::new(self.selected_mode).label(cx),
+                    cx.listener(|select, _event, window, cx| {
+                        select.toggle(window, cx);
+                    }),
+                    {
+                        let state = cx.entity();
+                        move |next_bounds, cx| {
+                            state.update(cx, |select, _| {
+                                select.picker_bounds = next_bounds;
+                            })
+                        }
+                    },
+                )
+                .selected(false)
+                .open(self.picker_open),
+            )
+            .when(self.picker_open, |this| {
+                this.child(render_picker_popover(
+                    bounds,
+                    picker,
+                    PickerPopoverOptions {
+                        min_width: Some(px(220.)),
+                        ..Default::default()
+                    },
+                    on_mouse_down_out,
+                    cx,
+                ))
+            })
+    }
+}

@@ -1,4 +1,7 @@
+mod extension_select;
+mod mode_select;
 mod model_select;
+mod picker;
 mod provider_chat_form;
 mod provider_template_form;
 mod template_picker;
@@ -9,22 +12,24 @@ use crate::{
     i18n::I18n,
     llm::{ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider},
 };
+use extension_select::ExtensionSelect;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable, Size, StyledExt as _,
+    ActiveTheme, Disableable, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Position},
-    list::{List, ListState},
-    select::{SearchableVec, Select, SelectState},
+    list::ListState,
     tag::Tag,
     v_flex,
 };
+use mode_select::ModeSelect;
 use model_select::{ModelSelect, ModelSelectEvent};
+use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
 use provider_chat_form::ProviderChatFormView;
 use provider_template_form::ProviderTemplateFormState;
-use std::sync::Arc;
-use template_picker::TemplatePickerDelegate;
+use std::rc::Rc;
+use template_picker::{TemplateOption, template_sections};
 
 pub(crate) fn init(_cx: &mut App) {}
 
@@ -46,23 +51,15 @@ pub(crate) struct ChatFormSnapshot {
     pub(crate) mode: Mode,
 }
 
-fn mode_options(mode: Mode) -> Vec<Mode> {
-    match mode {
-        Mode::Contextual => vec![Mode::Contextual, Mode::Single, Mode::AssistantOnly],
-        Mode::Single => vec![Mode::Single, Mode::Contextual, Mode::AssistantOnly],
-        Mode::AssistantOnly => vec![Mode::AssistantOnly, Mode::Contextual, Mode::Single],
-    }
-}
-
 pub(crate) struct ChatForm {
     input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<SearchableVec<String>>>,
-    mode_state: Entity<SelectState<Vec<Mode>>>,
+    extension_select: Entity<ExtensionSelect>,
+    mode_select: Entity<ModeSelect>,
     model_select: Entity<ModelSelect>,
     templates: Vec<ConversationTemplate>,
     selected_template: Option<ConversationTemplate>,
     provider_chat_form: Option<Entity<ProviderChatFormView>>,
-    template_picker: Option<Entity<ListState<TemplatePickerDelegate>>>,
+    template_picker: Option<Entity<ListState<PickerListDelegate<TemplateOption>>>>,
     template_picker_bounds: Bounds<Pixels>,
     running: bool,
     template_picker_open: bool,
@@ -75,23 +72,8 @@ pub(crate) struct ChatForm {
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
-        let extension_state = cx.new(|cx| {
-            let extension_container = cx.global::<crate::extensions::ExtensionContainer>();
-            let names = extension_container
-                .get_all_config()
-                .into_iter()
-                .map(|config| config.name)
-                .collect::<Vec<_>>();
-            SelectState::new(SearchableVec::new(names), None, window, cx).searchable(true)
-        });
-        let mode_state = cx.new(|cx| {
-            SelectState::new(
-                mode_options(Mode::Contextual),
-                Some(gpui_component::IndexPath::default()),
-                window,
-                cx,
-            )
-        });
+        let extension_select = cx.new(|cx| ExtensionSelect::new(window, cx));
+        let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
         let model_select = cx.new(|cx| ModelSelect::new(window, cx));
         let templates = cx
             .global::<Db>()
@@ -102,8 +84,8 @@ impl ChatForm {
 
         let mut this = Self {
             input_state,
-            extension_state,
-            mode_state,
+            extension_select,
+            mode_select,
             model_select,
             templates,
             selected_template: None,
@@ -292,15 +274,10 @@ impl ChatForm {
             .read(cx)
             .effective_template(cx)
             .map_err(AiChatError::StreamError)?;
-        let mode = self
-            .mode_state
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(Mode::Contextual);
+        let mode = self.mode_select.read(cx).selected_value();
         Ok(Some(ChatFormSnapshot {
             text: self.input_state.read(cx).value().to_string(),
-            extension_name: self.extension_state.read(cx).selected_value().cloned(),
+            extension_name: self.extension_select.read(cx).selected_value().cloned(),
             provider_name: selected_model.provider_name.clone(),
             request_template,
             prompts: self
@@ -374,13 +351,9 @@ impl Render for ChatForm {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(
-                                Select::new(&self.extension_state)
-                                    .cleanable(true)
-                                    .w(px(150.)),
-                            )
+                            .child(self.extension_select.clone())
                             .child(self.model_select.clone())
-                            .child(Select::new(&self.mode_state).w(px(160.))),
+                            .child(self.mode_select.clone()),
                     )
                     .child(div().flex_1())
                     .child(
@@ -430,32 +403,39 @@ impl Render for ChatForm {
             })
     }
 }
+
 impl ChatForm {
     fn rebuild_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let templates = self.templates.clone();
-        let selected_template = self.selected_template.clone();
+        let sections = template_sections(self.templates.clone());
+        let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
         let initial_ix =
-            TemplatePickerDelegate::selected_index_for(&templates, selected_template.as_ref());
+            PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
         let state = cx.entity().downgrade();
-        let on_confirm = Arc::new(
-            move |template: ConversationTemplate, window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |form, cx| {
-                    form.choose_template(template, window, cx);
-                });
-            },
-        );
+        let on_confirm = Rc::new(move |template: TemplateOption, window: &mut Window, cx: &mut App| {
+            let _ = state.update(cx, |form, cx| {
+                form.choose_template(template.into_template(), window, cx);
+            });
+        });
         let state = cx.entity().downgrade();
-        let on_cancel = Arc::new(move |window: &mut Window, cx: &mut App| {
+        let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
             let _ = state.update(cx, |form, cx| {
                 form.close_template_picker(true, true, window, cx);
             });
         });
+        let empty_label = cx.global::<I18n>().t("empty-template-picker");
         self.template_picker = Some(cx.new(move |cx| {
             let mut state = ListState::new(
-                TemplatePickerDelegate::new(templates, on_confirm, on_cancel),
+                PickerListDelegate::new(
+                    sections.clone(),
+                    false,
+                    empty_label.into(),
+                    on_confirm.clone(),
+                    on_cancel.clone(),
+                ),
                 window,
                 cx,
-            );
+            )
+            .searchable(true);
             state.set_selected_index(initial_ix, window, cx);
             state
         }));
@@ -474,42 +454,23 @@ impl ChatForm {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let bounds = self.template_picker_bounds;
-        let popup_radius = cx.theme().radius.min(px(8.));
         let template_picker = self
             .template_picker
             .clone()
             .expect("template picker exists while open");
-        deferred(
-            anchored()
-                .anchor(Corner::BottomLeft)
-                .snap_to_window_with_margin(px(8.))
-                .position(point(bounds.left(), bounds.top()))
-                .child(
-                    div()
-                        .w(bounds.size.width + px(2.))
-                        .on_mouse_down_out(cx.listener(|form, _, window, cx| {
-                            form.close_template_picker(true, false, window, cx);
-                        }))
-                        .child(
-                            v_flex()
-                                .occlude()
-                                .mb_1p5()
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded(popup_radius)
-                                .shadow_md()
-                                .child(
-                                    List::new(&template_picker)
-                                        .with_size(Size::Medium)
-                                        .max_h(rems(20.))
-                                        .paddings(Edges::all(px(4.))),
-                                ),
-                        ),
-                ),
+        let on_mouse_down_out = cx.listener(|form, _event: &MouseDownEvent, window, cx| {
+            form.close_template_picker(true, false, window, cx);
+        });
+        render_picker_popover(
+            self.template_picker_bounds,
+            template_picker,
+            PickerPopoverOptions {
+                search_placeholder: Some(cx.global::<I18n>().t("field-search-template").into()),
+                ..Default::default()
+            },
+            on_mouse_down_out,
+            cx,
         )
-        .with_priority(1)
     }
 }
 
