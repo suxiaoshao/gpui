@@ -1,158 +1,71 @@
+use super::picker::PickerSection;
 use crate::database::ConversationTemplate;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
-    ActiveTheme, IndexPath, Selectable, Size, StyleSized, h_flex,
-    label::Label,
-    list::{ListDelegate, ListState},
-};
-use std::{rc::Rc, sync::Arc};
+use gpui::{App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div};
+use gpui_component::{h_flex, label::Label, select::SelectItem};
 
-type OnConfirm = Arc<dyn Fn(ConversationTemplate, &mut Window, &mut App) + 'static>;
-type OnCancel = Arc<dyn Fn(&mut Window, &mut App) + 'static>;
-
-#[derive(IntoElement, Clone)]
-pub(crate) struct TemplatePickerItem {
-    template: Rc<ConversationTemplate>,
-    is_selected: bool,
+#[derive(Clone)]
+pub(crate) struct TemplateOption {
+    template: ConversationTemplate,
 }
 
-impl TemplatePickerItem {
-    fn new(template: Rc<ConversationTemplate>) -> Self {
-        Self {
-            template,
-            is_selected: false,
-        }
+impl TemplateOption {
+    pub(crate) fn new(template: ConversationTemplate) -> Self {
+        Self { template }
+    }
+
+    pub(crate) fn into_template(self) -> ConversationTemplate {
+        self.template
     }
 }
 
-impl Selectable for TemplatePickerItem {
-    fn selected(mut self, selected: bool) -> Self {
-        self.is_selected = selected;
-        self
+impl SelectItem for TemplateOption {
+    type Value = i32;
+
+    fn title(&self) -> SharedString {
+        self.template.name.clone().into()
     }
 
-    fn is_selected(&self) -> bool {
-        self.is_selected
-    }
-}
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let label = if let Some(description) = self.template.description.clone() {
+            Label::new(self.template.name.clone())
+                .text_sm()
+                .secondary(description)
+        } else {
+            Label::new(self.template.name.clone()).text_sm()
+        };
 
-impl RenderOnce for TemplatePickerItem {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let template = self.template;
         h_flex()
-            .id(template.id)
-            .relative()
-            .gap_x_1()
-            .py_1()
-            .px_2()
-            .rounded(cx.theme().radius)
-            .text_base()
-            .text_color(cx.theme().foreground)
+            .w_full()
             .items_center()
-            .justify_between()
-            .input_text_size(Size::Medium)
-            .list_size(Size::Medium)
-            .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().accent.alpha(0.7)))
-            })
-            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .gap_3()
+            .child(Label::new(self.template.icon.clone()))
             .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_3()
-                    .child(Label::new(&template.icon))
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(
-                                Label::new(&template.name).text_sm().when_some(
-                                    template.description.as_ref(),
-                                    |this, description| this.secondary(description),
-                                ),
-                            ),
-                    ),
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .child(label),
             )
     }
-}
 
-pub(crate) struct TemplatePickerDelegate {
-    ix: Option<IndexPath>,
-    items: Vec<Rc<ConversationTemplate>>,
-    on_confirm: OnConfirm,
-    on_cancel: OnCancel,
-}
-
-impl TemplatePickerDelegate {
-    pub(crate) fn new(
-        items: Vec<ConversationTemplate>,
-        on_confirm: OnConfirm,
-        on_cancel: OnCancel,
-    ) -> Self {
-        Self {
-            ix: None,
-            items: items.into_iter().map(Rc::new).collect(),
-            on_confirm,
-            on_cancel,
-        }
+    fn value(&self) -> &Self::Value {
+        &self.template.id
     }
 
-    pub(crate) fn selected_index_for(
-        items: &[ConversationTemplate],
-        selected_template: Option<&ConversationTemplate>,
-    ) -> Option<IndexPath> {
-        let selected_template = selected_template?;
-        items
-            .iter()
-            .position(|template| template.id == selected_template.id)
-            .map(|ix| IndexPath::default().row(ix))
+    fn matches(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.template.name.to_lowercase().contains(&query)
+            || self
+                .template
+                .description
+                .as_ref()
+                .is_some_and(|description| description.to_lowercase().contains(&query))
     }
 }
 
-impl ListDelegate for TemplatePickerDelegate {
-    type Item = TemplatePickerItem;
-
-    fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.items.len()
-    }
-
-    fn render_item(
-        &mut self,
-        ix: IndexPath,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        self.items.get(ix.row).cloned().map(TemplatePickerItem::new)
-    }
-
-    fn set_selected_index(
-        &mut self,
-        ix: Option<IndexPath>,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) {
-        self.ix = ix;
-    }
-
-    fn confirm(
-        &mut self,
-        _secondary: bool,
-        window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
-        let Some(ix) = self.ix else {
-            return;
-        };
-        let Some(template) = self.items.get(ix.row) else {
-            return;
-        };
-        (self.on_confirm)(template.as_ref().clone(), window, cx);
-    }
-
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        (self.on_cancel)(window, cx);
-    }
+pub(crate) fn template_sections(
+    templates: impl IntoIterator<Item = ConversationTemplate>,
+) -> Vec<PickerSection<TemplateOption>> {
+    PickerSection::flat(templates.into_iter().map(TemplateOption::new))
 }

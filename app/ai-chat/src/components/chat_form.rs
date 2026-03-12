@@ -1,33 +1,35 @@
+mod extension_select;
+mod mode_select;
+mod model_select;
+mod picker;
 mod provider_chat_form;
 mod provider_template_form;
 mod template_picker;
 
 use crate::{
-    config::AiChatConfig,
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::{AiChatError, AiChatResult},
-    gpui_ext::WeakEntityResultExt,
     i18n::I18n,
-    llm::{
-        ProviderModel, available_models, chat_form_layout_by_provider, provider_by_name,
-        template_inputs_by_provider,
-    },
+    llm::{ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider},
 };
+use extension_select::ExtensionSelect;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable, Size, StyledExt as _,
+    ActiveTheme, Disableable, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Position},
-    list::{List, ListState},
-    select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState},
+    list::ListState,
     tag::Tag,
     v_flex,
 };
+use mode_select::ModeSelect;
+use model_select::{ModelSelect, ModelSelectEvent};
+use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
 use provider_chat_form::ProviderChatFormView;
 use provider_template_form::ProviderTemplateFormState;
-use std::sync::Arc;
-use template_picker::TemplatePickerDelegate;
+use std::rc::Rc;
+use template_picker::{TemplateOption, template_sections};
 
 pub(crate) fn init(_cx: &mut App) {}
 
@@ -49,49 +51,15 @@ pub(crate) struct ChatFormSnapshot {
     pub(crate) mode: Mode,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct ModelSelectionValue {
-    provider_name: String,
-    model_id: String,
-}
-
-#[derive(Clone)]
-struct ModelSelectItem {
-    title: SharedString,
-    value: ModelSelectionValue,
-}
-
-impl SelectItem for ModelSelectItem {
-    type Value = ModelSelectionValue;
-
-    fn title(&self) -> SharedString {
-        self.title.clone()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-}
-
-fn mode_options(mode: Mode) -> Vec<Mode> {
-    match mode {
-        Mode::Contextual => vec![Mode::Contextual, Mode::Single, Mode::AssistantOnly],
-        Mode::Single => vec![Mode::Single, Mode::Contextual, Mode::AssistantOnly],
-        Mode::AssistantOnly => vec![Mode::AssistantOnly, Mode::Contextual, Mode::Single],
-    }
-}
-
 pub(crate) struct ChatForm {
     input_state: Entity<InputState>,
-    extension_state: Entity<SelectState<SearchableVec<String>>>,
-    mode_state: Entity<SelectState<Vec<Mode>>>,
-    model_state: Entity<SelectState<SearchableVec<SelectGroup<ModelSelectItem>>>>,
-    models: Vec<ProviderModel>,
+    extension_select: Entity<ExtensionSelect>,
+    mode_select: Entity<ModeSelect>,
+    model_select: Entity<ModelSelect>,
     templates: Vec<ConversationTemplate>,
-    selected_model: Option<ProviderModel>,
     selected_template: Option<ConversationTemplate>,
     provider_chat_form: Option<Entity<ProviderChatFormView>>,
-    template_picker: Option<Entity<ListState<TemplatePickerDelegate>>>,
+    template_picker: Option<Entity<ListState<PickerListDelegate<TemplateOption>>>>,
     template_picker_bounds: Bounds<Pixels>,
     running: bool,
     template_picker_open: bool,
@@ -104,32 +72,9 @@ pub(crate) struct ChatForm {
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
-        let extension_state = cx.new(|cx| {
-            let extension_container = cx.global::<crate::extensions::ExtensionContainer>();
-            let names = extension_container
-                .get_all_config()
-                .into_iter()
-                .map(|config| config.name)
-                .collect::<Vec<_>>();
-            SelectState::new(SearchableVec::new(names), None, window, cx).searchable(true)
-        });
-        let mode_state = cx.new(|cx| {
-            SelectState::new(
-                mode_options(Mode::Contextual),
-                Some(gpui_component::IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        let model_state = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(Vec::<SelectGroup<ModelSelectItem>>::new()),
-                None,
-                window,
-                cx,
-            )
-            .searchable(true)
-        });
+        let extension_select = cx.new(|cx| ExtensionSelect::new(window, cx));
+        let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
+        let model_select = cx.new(|cx| ModelSelect::new(window, cx));
         let templates = cx
             .global::<Db>()
             .get()
@@ -139,12 +84,10 @@ impl ChatForm {
 
         let mut this = Self {
             input_state,
-            extension_state,
-            mode_state,
-            model_state,
-            models: Vec::new(),
+            extension_select,
+            mode_select,
+            model_select,
             templates,
-            selected_model: None,
             selected_template: None,
             provider_chat_form: None,
             template_picker: None,
@@ -157,8 +100,7 @@ impl ChatForm {
             _subscriptions: Vec::new(),
         };
         this.bind_input_events(window, cx);
-        this.bind_model_events(window, cx);
-        this.load_models(window, cx);
+        this.bind_model_select_events(window, cx);
         this
     }
 
@@ -179,113 +121,29 @@ impl ChatForm {
         self._subscriptions.push(input_subscription);
     }
 
-    fn bind_model_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let model_subscription = cx.subscribe_in(
-            &self.model_state,
+    fn bind_model_select_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model_select_subscription = cx.subscribe_in(
+            &self.model_select,
             window,
-            |this,
-             _state,
-             event: &SelectEvent<SearchableVec<SelectGroup<ModelSelectItem>>>,
-             window,
-             cx| {
-                let SelectEvent::Confirm(value) = event;
-                let Some(value) = value else {
-                    this.selected_model = None;
+            |this, _state, event: &ModelSelectEvent, window, cx| match event {
+                ModelSelectEvent::Change(Some(model)) => {
+                    let provider = match provider_by_name(&model.provider_name) {
+                        Ok(provider) => provider,
+                        Err(_) => return,
+                    };
+                    let template = match provider.default_template_for_model(model) {
+                        Ok(template) => template,
+                        Err(_) => return,
+                    };
+                    this.rebuild_provider_chat_form(model, template, window, cx);
+                }
+                ModelSelectEvent::Change(None) => {
                     this.provider_chat_form = None;
                     cx.notify();
-                    return;
-                };
-                let Some(model) = this
-                    .models
-                    .iter()
-                    .find(|model| {
-                        model.provider_name == value.provider_name && model.id == value.model_id
-                    })
-                    .cloned()
-                else {
-                    return;
-                };
-                let provider = match provider_by_name(&model.provider_name) {
-                    Ok(provider) => provider,
-                    Err(_) => return,
-                };
-                let template = match provider.default_template_for_model(&model) {
-                    Ok(template) => template,
-                    Err(_) => return,
-                };
-                this.rebuild_provider_chat_form(&model, template, window, cx);
+                }
             },
         );
-        self._subscriptions.push(model_subscription);
-    }
-
-    fn load_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = cx.entity().downgrade();
-        let config = cx.global::<AiChatConfig>().clone();
-        cx.spawn_in(window, async move |_, cx| {
-            let result = available_models(config).await;
-            let _ = state.update_in_result(cx, |this, window, cx| {
-                if let Ok(models) = result {
-                    this.set_models(models, window, cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn set_models(
-        &mut self,
-        models: Vec<ProviderModel>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.models = models.clone();
-        let mut provider_groups = std::collections::BTreeMap::<String, Vec<ModelSelectItem>>::new();
-        for model in models {
-            provider_groups
-                .entry(model.provider_name.clone())
-                .or_default()
-                .push(ModelSelectItem {
-                    title: model.id.clone().into(),
-                    value: ModelSelectionValue {
-                        provider_name: model.provider_name.clone(),
-                        model_id: model.id.clone(),
-                    },
-                });
-        }
-        let groups = provider_groups
-            .into_iter()
-            .map(|(provider, mut items)| {
-                items.sort_by(|left, right| left.title.cmp(&right.title));
-                SelectGroup::new(provider).items(items)
-            })
-            .collect::<Vec<_>>();
-        let selected = self.selected_model.as_ref().map(|model| {
-            gpui_component::IndexPath::default()
-                .section(
-                    groups
-                        .iter()
-                        .position(|group| group.title == model.provider_name)
-                        .unwrap_or_default(),
-                )
-                .row(
-                    groups
-                        .iter()
-                        .find(|group| group.title == model.provider_name)
-                        .and_then(|group| {
-                            group
-                                .items
-                                .iter()
-                                .position(|item| item.value.model_id == model.id)
-                        })
-                        .unwrap_or_default(),
-                )
-        });
-        self.model_state = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(groups), selected, window, cx).searchable(true)
-        });
-        self.bind_model_events(window, cx);
-        cx.notify();
+        self._subscriptions.push(model_select_subscription);
     }
 
     fn rebuild_provider_chat_form(
@@ -298,7 +156,6 @@ impl ChatForm {
         let template_items = match template_inputs_by_provider(&model.provider_name) {
             Ok(items) => items,
             Err(_) => {
-                self.selected_model = Some(model.clone());
                 self.provider_chat_form = None;
                 cx.notify();
                 return;
@@ -307,7 +164,6 @@ impl ChatForm {
         let layout = match chat_form_layout_by_provider(&model.provider_name) {
             Ok(layout) => layout,
             Err(_) => {
-                self.selected_model = Some(model.clone());
                 self.provider_chat_form = None;
                 cx.notify();
                 return;
@@ -316,7 +172,6 @@ impl ChatForm {
         let form =
             cx.new(|cx| ProviderTemplateFormState::new(template_items, &template, window, cx));
         let base_template = template.clone();
-        self.selected_model = Some(model.clone());
         self.provider_chat_form =
             Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)));
         cx.notify();
@@ -409,7 +264,7 @@ impl ChatForm {
     }
 
     pub(crate) fn snapshot(&self, cx: &App) -> AiChatResult<Option<ChatFormSnapshot>> {
-        let Some(selected_model) = self.selected_model.clone() else {
+        let Some(selected_model) = self.model_select.read(cx).selected_model() else {
             return Ok(None);
         };
         let Some(provider_chat_form) = &self.provider_chat_form else {
@@ -419,15 +274,10 @@ impl ChatForm {
             .read(cx)
             .effective_template(cx)
             .map_err(AiChatError::StreamError)?;
-        let mode = self
-            .mode_state
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(Mode::Contextual);
+        let mode = self.mode_select.read(cx).selected_value();
         Ok(Some(ChatFormSnapshot {
             text: self.input_state.read(cx).value().to_string(),
-            extension_name: self.extension_state.read(cx).selected_value().cloned(),
+            extension_name: self.extension_select.read(cx).selected_value().cloned(),
             provider_name: selected_model.provider_name.clone(),
             request_template,
             prompts: self
@@ -442,7 +292,7 @@ impl ChatForm {
     fn can_send(&self, cx: &App) -> bool {
         !self.running
             && !self.input_state.read(cx).value().is_empty()
-            && self.selected_model.is_some()
+            && self.model_select.read(cx).selected_model().is_some()
             && self.provider_chat_form.is_some()
     }
 }
@@ -501,13 +351,9 @@ impl Render for ChatForm {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(
-                                Select::new(&self.extension_state)
-                                    .cleanable(true)
-                                    .w(px(150.)),
-                            )
-                            .child(Select::new(&self.model_state).cleanable(true).w(px(220.)))
-                            .child(Select::new(&self.mode_state).w(px(160.))),
+                            .child(self.extension_select.clone())
+                            .child(self.model_select.clone())
+                            .child(self.mode_select.clone()),
                     )
                     .child(div().flex_1())
                     .child(
@@ -560,30 +406,36 @@ impl Render for ChatForm {
 
 impl ChatForm {
     fn rebuild_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let templates = self.templates.clone();
-        let selected_template = self.selected_template.clone();
+        let sections = template_sections(self.templates.clone());
+        let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
         let initial_ix =
-            TemplatePickerDelegate::selected_index_for(&templates, selected_template.as_ref());
+            PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
         let state = cx.entity().downgrade();
-        let on_confirm = Arc::new(
-            move |template: ConversationTemplate, window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |form, cx| {
-                    form.choose_template(template, window, cx);
-                });
-            },
-        );
+        let on_confirm = Rc::new(move |template: TemplateOption, window: &mut Window, cx: &mut App| {
+            let _ = state.update(cx, |form, cx| {
+                form.choose_template(template.into_template(), window, cx);
+            });
+        });
         let state = cx.entity().downgrade();
-        let on_cancel = Arc::new(move |window: &mut Window, cx: &mut App| {
+        let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
             let _ = state.update(cx, |form, cx| {
                 form.close_template_picker(true, true, window, cx);
             });
         });
+        let empty_label = cx.global::<I18n>().t("empty-template-picker");
         self.template_picker = Some(cx.new(move |cx| {
             let mut state = ListState::new(
-                TemplatePickerDelegate::new(templates, on_confirm, on_cancel),
+                PickerListDelegate::new(
+                    sections.clone(),
+                    false,
+                    empty_label.into(),
+                    on_confirm.clone(),
+                    on_cancel.clone(),
+                ),
                 window,
                 cx,
-            );
+            )
+            .searchable(true);
             state.set_selected_index(initial_ix, window, cx);
             state
         }));
@@ -602,42 +454,23 @@ impl ChatForm {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let bounds = self.template_picker_bounds;
-        let popup_radius = cx.theme().radius.min(px(8.));
         let template_picker = self
             .template_picker
             .clone()
             .expect("template picker exists while open");
-        deferred(
-            anchored()
-                .anchor(Corner::BottomLeft)
-                .snap_to_window_with_margin(px(8.))
-                .position(point(bounds.left(), bounds.top()))
-                .child(
-                    div()
-                        .w(bounds.size.width + px(2.))
-                        .on_mouse_down_out(cx.listener(|form, _, window, cx| {
-                            form.close_template_picker(true, false, window, cx);
-                        }))
-                        .child(
-                            v_flex()
-                                .occlude()
-                                .mb_1p5()
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded(popup_radius)
-                                .shadow_md()
-                                .child(
-                                    List::new(&template_picker)
-                                        .with_size(Size::Medium)
-                                        .max_h(rems(20.))
-                                        .paddings(Edges::all(px(4.))),
-                                ),
-                        ),
-                ),
+        let on_mouse_down_out = cx.listener(|form, _event: &MouseDownEvent, window, cx| {
+            form.close_template_picker(true, false, window, cx);
+        });
+        render_picker_popover(
+            self.template_picker_bounds,
+            template_picker,
+            PickerPopoverOptions {
+                search_placeholder: Some(cx.global::<I18n>().t("field-search-template").into()),
+                ..Default::default()
+            },
+            on_mouse_down_out,
+            cx,
         )
-        .with_priority(1)
     }
 }
 

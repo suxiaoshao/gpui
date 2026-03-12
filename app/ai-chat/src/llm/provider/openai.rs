@@ -11,7 +11,11 @@ use crate::{
 use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
-use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+use gpui_component::{
+    Sizable,
+    input::{Input, InputEvent, InputState},
+    setting::{SettingField, SettingGroup, SettingItem},
+};
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -79,6 +83,35 @@ impl OpenAISettings {
         self.base_url = normalize_base_url(&self.base_url);
         self
     }
+}
+
+fn openai_settings(cx: &App) -> OpenAISettings {
+    let config = cx.global::<AiChatConfig>();
+    config
+        .get_provider_settings(OpenAIProvider.name())
+        .and_then(|x| x.clone().try_into::<OpenAISettings>().ok())
+        .map(OpenAISettings::normalized)
+        .unwrap_or_default()
+}
+
+fn save_openai_settings(settings: OpenAISettings, cx: &mut App) {
+    let config = cx.global_mut::<AiChatConfig>();
+    match Value::try_from(settings.normalized()) {
+        Ok(settings) => config.set_provider_settings(OpenAIProvider.name(), settings),
+        Err(err) => {
+            event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err);
+            return;
+        }
+    }
+    if let Err(err) = config.save() {
+        event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
+    }
+}
+
+struct BaseUrlFieldState {
+    input: Entity<InputState>,
+    last_value: String,
+    _subscription: Subscription,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -361,6 +394,13 @@ impl Provider for OpenAIProvider {
         "OpenAI"
     }
 
+    fn is_configured(&self, settings: &serde_json::Value) -> bool {
+        settings
+            .get("apiKey")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|api_key| !api_key.trim().is_empty())
+    }
+
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value> {
         Ok(serde_json::to_value(OpenAIRequestTemplate {
             model: model.id.clone(),
@@ -492,65 +532,82 @@ impl Provider for OpenAIProvider {
     }
 
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
-        fn get_openai_setting(cx: &App) -> OpenAISettings {
-            let config = cx.global::<AiChatConfig>();
-            config
-                .get_provider_settings(OpenAIProvider.name())
-                .and_then(|x| x.clone().try_into::<OpenAISettings>().ok())
-                .map(OpenAISettings::normalized)
-                .unwrap_or_default()
-        }
-
         SettingGroup::new()
             .title(t_static("settings-openai-title"))
             .item(SettingItem::new(
                 t_static("field-api-key"),
                 SettingField::input(
                     |cx| {
-                        let openai_setting = get_openai_setting(cx);
+                        let openai_setting = openai_settings(cx);
                         openai_setting.api_key.map(Into::into).unwrap_or_default()
                     },
                     |value, cx| {
-                        let mut open_settings = get_openai_setting(cx);
+                        let mut open_settings = openai_settings(cx);
                         open_settings.api_key = if value.is_empty() {
                             None
                         } else {
                             Some(value.into())
                         };
-                        let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => {
-                                config.set_provider_settings(OpenAIProvider.name(), settings)
-                            }
-                            Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
-                            }
-                        }
-                        if let Err(err) = config.save() {
-                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        }
+                        save_openai_settings(open_settings, cx);
                     },
                 ),
             ))
             .item(SettingItem::new(
                 t_static("field-base-url"),
-                SettingField::input(
-                    |cx| get_openai_setting(cx).base_url.into(),
-                    |value, cx| {
-                        let mut open_settings = get_openai_setting(cx);
-                        open_settings.base_url = normalize_base_url(&value);
-                        let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => {
-                                config.set_provider_settings(OpenAIProvider.name(), settings)
-                            }
-                            Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
-                            }
-                        }
-                        if let Err(err) = config.save() {
-                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        }
+                SettingField::render(
+                    |options, window, cx| {
+                        let initial_value = openai_settings(cx).base_url;
+                        let state = window
+                            .use_keyed_state("openai-base-url-field", cx, |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial_value.clone())
+                                });
+                                let _subscription = cx.subscribe_in(&input, window, {
+                                    move |state: &mut BaseUrlFieldState,
+                                          input,
+                                          event: &InputEvent,
+                                          window,
+                                          cx| {
+                                        if !matches!(event, InputEvent::Change) {
+                                            return;
+                                        }
+
+                                        let current_value = input.read(cx).value().to_string();
+                                        let next_value = if current_value.trim().is_empty() {
+                                            default_base_url()
+                                        } else {
+                                            normalize_base_url(&current_value)
+                                        };
+
+                                        if next_value == state.last_value {
+                                            return;
+                                        }
+
+                                        if current_value != next_value {
+                                            input.update(cx, |input, cx| {
+                                                input.set_value(next_value.clone(), window, cx);
+                                            });
+                                        }
+
+                                        let mut settings = openai_settings(cx);
+                                        settings.base_url = next_value.clone();
+                                        save_openai_settings(settings, cx);
+                                        state.last_value = next_value;
+                                    }
+                                });
+
+                                BaseUrlFieldState {
+                                    input,
+                                    last_value: initial_value,
+                                    _subscription,
+                                }
+                            })
+                            .read(cx);
+
+                        Input::new(&state.input)
+                            .with_size(options.size)
+                            .w(px(256.))
                     },
                 ),
             ))
@@ -558,30 +615,19 @@ impl Provider for OpenAIProvider {
                 t_static("field-http-proxy"),
                 SettingField::input(
                     |cx| {
-                        get_openai_setting(cx)
+                        openai_settings(cx)
                             .http_proxy
                             .map(Into::into)
                             .unwrap_or_default()
                     },
                     |value, cx| {
-                        let mut open_settings = get_openai_setting(cx);
+                        let mut open_settings = openai_settings(cx);
                         open_settings.http_proxy = if value.is_empty() {
                             None
                         } else {
                             Some(value.into())
                         };
-                        let config = cx.global_mut::<AiChatConfig>();
-                        match Value::try_from(open_settings.normalized()) {
-                            Ok(settings) => {
-                                config.set_provider_settings(OpenAIProvider.name(), settings)
-                            }
-                            Err(err) => {
-                                event!(Level::ERROR, "Failed to convert OpenAI settings: {}", err)
-                            }
-                        }
-                        if let Err(err) = config.save() {
-                            event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
-                        }
+                        save_openai_settings(open_settings, cx);
                     },
                 ),
             ))
@@ -594,6 +640,7 @@ mod tests {
         OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
         classify_model, normalize_base_url,
     };
+    use serde_json::json;
 
     #[test]
     fn normalize_base_url_strips_terminal_api_paths() {
@@ -605,6 +652,19 @@ mod tests {
             normalize_base_url("https://api.openai.com/v1/models"),
             "https://api.openai.com/v1"
         );
+    }
+
+    #[test]
+    fn normalize_base_url_defaults_when_empty() {
+        assert_eq!(normalize_base_url(""), "https://api.openai.com/v1");
+        assert_eq!(normalize_base_url("   "), "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn openai_provider_requires_non_empty_api_key() {
+        assert!(!OpenAIProvider.is_configured(&json!({})));
+        assert!(!OpenAIProvider.is_configured(&json!({ "apiKey": "   " })));
+        assert!(OpenAIProvider.is_configured(&json!({ "apiKey": "sk-test" })));
     }
 
     #[test]

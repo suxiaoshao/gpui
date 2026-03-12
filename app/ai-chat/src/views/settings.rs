@@ -15,6 +15,12 @@ use tracing::{Level, event};
 
 actions!([OpenSetting]);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsOpenTarget {
+    General,
+    Provider,
+}
+
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(
         if cfg!(target_os = "macos") {
@@ -31,11 +37,16 @@ pub fn init(cx: &mut App) {
 pub struct SettingsView {
     focus_handle: FocusHandle,
     hotkey_input: Entity<HotkeyInput>,
+    open_target: SettingsOpenTarget,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        open_target: SettingsOpenTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
         let hotkey_input = cx.new(|cx| {
@@ -47,6 +58,7 @@ impl SettingsView {
         Self {
             focus_handle,
             hotkey_input,
+            open_target,
             _subscriptions,
         }
     }
@@ -100,6 +112,66 @@ impl Render for SettingsView {
             SettingPage::new(page_provider),
             |page: SettingPage, group| page.group(group),
         );
+        let general_page = SettingPage::new(page_general).group(
+            SettingGroup::new()
+                .title(group_basic_options)
+                .item(SettingItem::new(
+                    field_theme,
+                    SettingField::dropdown(
+                        vec![
+                            (
+                                ThemeMode::Light.to_string().into(),
+                                ThemeMode::Light.to_string().into(),
+                            ),
+                            (
+                                ThemeMode::Dark.to_string().into(),
+                                ThemeMode::Dark.to_string().into(),
+                            ),
+                            (
+                                ThemeMode::System.to_string().into(),
+                                ThemeMode::System.to_string().into(),
+                            ),
+                        ],
+                        |cx: &App| {
+                            let config = cx.global::<AiChatConfig>();
+                            config.theme_mode().to_string().into()
+                        },
+                        |val: SharedString, cx: &mut App| {
+                            let config = cx.global_mut::<AiChatConfig>();
+                            config.set_theme_mode(ThemeMode::from_str(&val));
+                        },
+                    ),
+                ))
+                .item(SettingItem::new(
+                    field_http_proxy,
+                    SettingField::input(
+                        |cx: &App| {
+                            let config = cx.global::<AiChatConfig>();
+                            config
+                                .http_proxy
+                                .as_ref()
+                                .map(|proxy| proxy.into())
+                                .unwrap_or_default()
+                        },
+                        |val: SharedString, cx: &mut App| {
+                            if val.is_empty() {
+                                cx.global_mut::<AiChatConfig>().set_http_proxy(None);
+                            } else {
+                                cx.global_mut::<AiChatConfig>()
+                                    .set_http_proxy(Some(val.into()));
+                            }
+                        },
+                    ),
+                ))
+                .item(SettingItem::new(
+                    field_temporary_hotkey,
+                    SettingField::render(move |_options, _window, _cx| hotkey_input.clone()),
+                )),
+        );
+        let (settings_id, pages) = match self.open_target {
+            SettingsOpenTarget::General => ("my-settings-general", vec![general_page, provider_page]),
+            SettingsOpenTarget::Provider => ("my-settings-provider", vec![provider_page, general_page]),
+        };
         v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)
@@ -110,75 +182,22 @@ impl Render for SettingsView {
                 window.remove_window();
             }))
             .child(
-                Settings::new("my-settings")
+                Settings::new(settings_id)
                     .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
-                    .pages(vec![
-                        SettingPage::new(page_general).group(
-                            SettingGroup::new()
-                                .title(group_basic_options)
-                                .item(SettingItem::new(
-                                    field_theme,
-                                    SettingField::dropdown(
-                                        vec![
-                                            (
-                                                ThemeMode::Light.to_string().into(),
-                                                ThemeMode::Light.to_string().into(),
-                                            ),
-                                            (
-                                                ThemeMode::Dark.to_string().into(),
-                                                ThemeMode::Dark.to_string().into(),
-                                            ),
-                                            (
-                                                ThemeMode::System.to_string().into(),
-                                                ThemeMode::System.to_string().into(),
-                                            ),
-                                        ],
-                                        |cx: &App| {
-                                            let config = cx.global::<AiChatConfig>();
-                                            config.theme_mode().to_string().into()
-                                        },
-                                        |val: SharedString, cx: &mut App| {
-                                            let config = cx.global_mut::<AiChatConfig>();
-                                            config.set_theme_mode(ThemeMode::from_str(&val));
-                                        },
-                                    ),
-                                ))
-                                .item(SettingItem::new(
-                                    field_http_proxy,
-                                    SettingField::input(
-                                        |cx: &App| {
-                                            let config = cx.global::<AiChatConfig>();
-                                            config
-                                                .http_proxy
-                                                .as_ref()
-                                                .map(|proxy| proxy.into())
-                                                .unwrap_or_default()
-                                        },
-                                        |val: SharedString, cx: &mut App| {
-                                            if val.is_empty() {
-                                                cx.global_mut::<AiChatConfig>()
-                                                    .set_http_proxy(None);
-                                            } else {
-                                                cx.global_mut::<AiChatConfig>()
-                                                    .set_http_proxy(Some(val.into()));
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .item(SettingItem::new(
-                                    field_temporary_hotkey,
-                                    SettingField::render(move |_options, _window, _cx| {
-                                        hotkey_input.clone()
-                                    }),
-                                )),
-                        ),
-                        provider_page,
-                    ]),
+                    .pages(pages),
             )
     }
 }
 
 pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
+    open_settings_window_to(SettingsOpenTarget::General, true, cx);
+}
+
+pub(crate) fn open_provider_settings_window(cx: &mut App) {
+    open_settings_window_to(SettingsOpenTarget::Provider, false, cx);
+}
+
+fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, cx: &mut App) {
     let span = tracing::info_span!("open_settings_window");
     let _guard = span.enter();
     let exists_settings = cx.windows().iter().find_map(|window| {
@@ -193,8 +212,14 @@ pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
     });
     match exists_settings {
         Some(window) => {
-            match window.update(cx, |_this, window, _cx| {
-                if window.is_window_active() {
+            match window.update(cx, |root, window, cx| {
+                if let Ok(settings) = root.view().clone().downcast::<SettingsView>() {
+                    settings.update(cx, |settings, cx| {
+                        settings.open_target = target;
+                        cx.notify();
+                    });
+                }
+                if toggle_if_active && window.is_window_active() {
                     window.remove_window();
                 } else {
                     window.activate_window();
@@ -207,12 +232,12 @@ pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
             };
         }
         None => {
-            inner_open_settings_window(cx);
+            inner_open_settings_window(target, cx);
         }
     }
 }
 
-fn inner_open_settings_window(cx: &mut App) {
+fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
     let title = cx.global::<I18n>().t("settings-title");
     match cx.open_window(
         WindowOptions {
@@ -224,7 +249,7 @@ fn inner_open_settings_window(cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            let setting = cx.new(|cx| SettingsView::new(window, cx));
+            let setting = cx.new(|cx| SettingsView::new(target, window, cx));
             cx.new(|cx| Root::new(setting, window, cx))
         },
     ) {
