@@ -439,26 +439,11 @@ impl Render for ChatForm {
             .bg(cx.theme().input)
             .rounded(cx.theme().radius)
             .p_1()
+            .relative()
             .child(
-                h_flex()
-                    .relative()
+                div()
                     .w_full()
-                    .child(Input::new(&self.input_state).flex_1().appearance(false))
-                    .child(
-                        canvas(
-                            {
-                                let state = cx.entity();
-                                move |bounds, _, cx| {
-                                    state.update(cx, |form, _| {
-                                        form.template_picker_bounds = bounds;
-                                    })
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
-                    ),
+                    .child(Input::new(&self.input_state).w_full().appearance(false)),
             )
             .when_some(self.selected_template.clone(), |this, template| {
                 let tag = Tag::primary()
@@ -530,6 +515,21 @@ impl Render for ChatForm {
             .when(self.template_picker_open, |this| {
                 this.child(self.render_template_picker(window, cx))
             })
+            .child(
+                canvas(
+                    {
+                        let state = cx.entity();
+                        move |bounds, _, cx| {
+                            state.update(cx, |form, _| {
+                                form.template_picker_bounds = bounds;
+                            })
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
