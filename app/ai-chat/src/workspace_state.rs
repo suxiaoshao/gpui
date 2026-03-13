@@ -38,6 +38,45 @@ pub(crate) struct ConversationDraft {
     pub(crate) request_template: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct LatestModelPreset {
+    #[serde(default)]
+    provider_name: String,
+    #[serde(default)]
+    model_id: String,
+    #[serde(
+        default = "default_request_template",
+        serialize_with = "serialize_request_template",
+        deserialize_with = "deserialize_request_template"
+    )]
+    request_template: serde_json::Value,
+}
+
+impl ConversationDraft {
+    fn to_latest_model_preset(&self) -> Option<LatestModelPreset> {
+        if self.provider_name.is_empty() || self.model_id.is_empty() {
+            return None;
+        }
+
+        Some(LatestModelPreset {
+            provider_name: self.provider_name.clone(),
+            model_id: self.model_id.clone(),
+            request_template: self.request_template.clone(),
+        })
+    }
+
+    fn from_latest_model_preset(preset: &LatestModelPreset) -> Self {
+        Self {
+            text: String::new(),
+            provider_name: preset.provider_name.clone(),
+            model_id: preset.model_id.clone(),
+            mode: Mode::Contextual,
+            selected_template_id: None,
+            request_template: preset.request_template.clone(),
+        }
+    }
+}
+
 fn default_mode() -> Mode {
     Mode::Contextual
 }
@@ -68,8 +107,9 @@ where
     }
 
     match StoredRequestTemplate::deserialize(deserializer)? {
-        StoredRequestTemplate::Json(value) => serde_json::from_str(&value)
-            .map_err(serde::de::Error::custom),
+        StoredRequestTemplate::Json(value) => {
+            serde_json::from_str(&value).map_err(serde::de::Error::custom)
+        }
         StoredRequestTemplate::Toml(value) => {
             serde_json::to_value(value).map_err(serde::de::Error::custom)
         }
@@ -110,6 +150,8 @@ struct PersistedWorkspaceState {
     tabs: Vec<PersistedTab>,
     #[serde(default)]
     active_tab: Option<PersistedTabKey>,
+    #[serde(default)]
+    latest_model_preset: Option<LatestModelPreset>,
 }
 
 fn default_state_version() -> u32 {
@@ -128,6 +170,7 @@ impl Default for PersistedWorkspaceState {
             open_folder_ids: Default::default(),
             tabs: Vec::new(),
             active_tab: None,
+            latest_model_preset: None,
         }
     }
 }
@@ -270,14 +313,18 @@ impl WorkspaceState {
                 .and_then(ChatDataInner::first_conversation)
                 .cloned()
         {
-            self.tabs.push(Self::conversation_tab(conversation, None, window, cx));
+            self.push_conversation_tab(conversation, None, window, cx);
         }
 
         self.active_tab = self
             .persisted
             .active_tab
             .as_ref()
-            .and_then(|active| self.tabs.iter().find(|tab| &tab.kind.persisted_key() == active))
+            .and_then(|active| {
+                self.tabs
+                    .iter()
+                    .find(|tab| &tab.kind.persisted_key() == active)
+            })
             .map(|tab| tab.kind)
             .or_else(|| self.tabs.first().map(|tab| tab.kind));
         self.sync_persisted_tabs();
@@ -300,8 +347,7 @@ impl WorkspaceState {
         else {
             return false;
         };
-        self.tabs
-            .push(Self::conversation_tab(conversation, draft, window, cx));
+        self.push_conversation_tab(conversation, draft, window, cx);
         true
     }
 
@@ -331,6 +377,38 @@ impl WorkspaceState {
             name: SharedString::from(conversation.title),
             panel: TabPanel::Conversation(panel),
         }
+    }
+
+    fn push_conversation_tab(
+        &mut self,
+        conversation: crate::database::Conversation,
+        draft: Option<ConversationDraft>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let resolved_draft = self.resolve_initial_conversation_draft(conversation.id, draft);
+        self.upsert_persisted_conversation_draft(conversation.id, resolved_draft.clone());
+        self.tabs.push(Self::conversation_tab(
+            conversation,
+            resolved_draft,
+            window,
+            cx,
+        ));
+    }
+
+    fn resolve_initial_conversation_draft(
+        &self,
+        conversation_id: i32,
+        explicit_draft: Option<ConversationDraft>,
+    ) -> Option<ConversationDraft> {
+        explicit_draft
+            .or_else(|| self.draft_for(conversation_id))
+            .or_else(|| {
+                self.persisted
+                    .latest_model_preset
+                    .as_ref()
+                    .map(ConversationDraft::from_latest_model_preset)
+            })
     }
 
     fn template_tab(window: &mut Window, cx: &mut App) -> AppTab {
@@ -471,16 +549,15 @@ impl WorkspaceState {
                 .as_ref()
                 .ok()
                 .and_then(|data| data.conversation(conversation_id)),
-                self.draft_for(conversation_id),
+            self.draft_for(conversation_id),
         ) {
             (true, Some(_), _) => {
                 self.active_tab = Some(TabKind::Conversation(conversation_id));
             }
-            (false, Some(conversation), draft) => {
+            (false, Some(conversation), _) => {
                 let conversation = conversation.clone();
                 let conversation_id = conversation.id;
-                self.tabs
-                    .push(Self::conversation_tab(conversation, draft, window, cx));
+                self.push_conversation_tab(conversation, None, window, cx);
                 self.active_tab = Some(TabKind::Conversation(conversation_id));
             }
             (false, None, _) => {}
@@ -568,8 +645,8 @@ impl WorkspaceState {
         };
         let moved_kind = self.tabs[from_ix].kind;
         let item = self.tabs.remove(from_ix);
-        let to_ix =
-            to_id.and_then(|target_id| self.tabs.iter().position(|tab| tab.kind.key() == target_id));
+        let to_ix = to_id
+            .and_then(|target_id| self.tabs.iter().position(|tab| tab.kind.key() == target_id));
         match to_ix {
             Some(target_ix) => self.tabs.insert(target_ix.min(self.tabs.len()), item),
             None => self.tabs.push(item),
@@ -588,7 +665,12 @@ impl WorkspaceState {
         self.tabs
             .retain(|tab| tab.kind != TabKind::Conversation(conversation_id));
         self.remove_draft(conversation_id);
-        if existed && !self.tabs.iter().any(|tab| Some(tab.kind) == self.active_tab) {
+        if existed
+            && !self
+                .tabs
+                .iter()
+                .any(|tab| Some(tab.kind) == self.active_tab)
+        {
             self.active_tab = self.tabs.first().map(|tab| tab.kind);
         }
         self.sync_persisted_tabs();
@@ -596,18 +678,19 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    pub(crate) fn remove_template_detail_tab(
-        &mut self,
-        template_id: i32,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn remove_template_detail_tab(&mut self, template_id: i32, cx: &mut Context<Self>) {
         let existed = self
             .tabs
             .iter()
             .any(|tab| tab.kind == TabKind::TemplateDetail(template_id));
         self.tabs
             .retain(|tab| tab.kind != TabKind::TemplateDetail(template_id));
-        if existed && !self.tabs.iter().any(|tab| Some(tab.kind) == self.active_tab) {
+        if existed
+            && !self
+                .tabs
+                .iter()
+                .any(|tab| Some(tab.kind) == self.active_tab)
+        {
             self.active_tab = self.tabs.first().map(|tab| tab.kind);
         }
         self.sync_persisted_tabs();
@@ -615,7 +698,7 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    pub(crate) fn update_conversation_draft(
+    pub(crate) fn sync_conversation_chat_form_state(
         &mut self,
         conversation_id: i32,
         draft: Option<ConversationDraft>,
@@ -628,15 +711,43 @@ impl WorkspaceState {
         {
             return;
         }
-        let persisted = self
-            .persisted
-            .tabs
-            .iter_mut()
-            .find(|tab| matches!(tab, PersistedTab::Conversation { id, .. } if *id == conversation_id));
-        if let Some(PersistedTab::Conversation { draft: current, .. }) = persisted {
-            *current = draft;
+        let next_preset = draft
+            .as_ref()
+            .and_then(ConversationDraft::to_latest_model_preset);
+        let draft_changed = self.upsert_persisted_conversation_draft(conversation_id, draft);
+        let preset_changed = self.persisted.latest_model_preset != next_preset;
+
+        if preset_changed {
+            self.persisted.latest_model_preset = next_preset;
+        }
+
+        if draft_changed || preset_changed {
             self.schedule_save(cx);
         }
+    }
+
+    fn upsert_persisted_conversation_draft(
+        &mut self,
+        conversation_id: i32,
+        draft: Option<ConversationDraft>,
+    ) -> bool {
+        if let Some(PersistedTab::Conversation { draft: current, .. }) =
+            self.persisted.tabs.iter_mut().find(|tab| {
+                matches!(tab, PersistedTab::Conversation { id, .. } if *id == conversation_id)
+            })
+        {
+            if *current == draft {
+                return false;
+            }
+            *current = draft;
+            return true;
+        }
+
+        self.persisted.tabs.push(PersistedTab::Conversation {
+            id: conversation_id,
+            draft,
+        });
+        true
     }
 
     fn draft_for(&self, conversation_id: i32) -> Option<ConversationDraft> {
@@ -647,11 +758,9 @@ impl WorkspaceState {
     }
 
     fn remove_draft(&mut self, conversation_id: i32) {
-        if let Some(PersistedTab::Conversation { draft, .. }) =
-            self.persisted.tabs.iter_mut().find(|tab| {
-                matches!(tab, PersistedTab::Conversation { id, .. } if *id == conversation_id)
-            })
-        {
+        if let Some(PersistedTab::Conversation { draft, .. }) = self.persisted.tabs.iter_mut().find(
+            |tab| matches!(tab, PersistedTab::Conversation { id, .. } if *id == conversation_id),
+        ) {
             *draft = None;
         }
     }
@@ -693,6 +802,10 @@ impl WorkspaceState {
         self.persisted.open_folder_ids.clone()
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_state_tests.rs"]
+mod tests;
 
 pub(crate) struct WorkspaceStore {
     data: Entity<WorkspaceState>,
