@@ -3,7 +3,7 @@ use crate::{
     database::{ConversationTemplate, Db, Role},
     errors::AiChatResult,
     i18n::I18n,
-    store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::description_list::{DescriptionItem, DescriptionList};
@@ -78,10 +78,6 @@ impl TemplateDetailView {
 
 // Deletes the current template and routes the UI back to the template list.
 impl TemplateDetailView {
-    fn template_tab_key(template_id: i32) -> i32 {
-        template_id.saturating_add(1).saturating_neg()
-    }
-
     fn delete_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (open_db_failed, delete_failed, delete_success) = {
             let i18n = cx.global::<I18n>();
@@ -114,12 +110,13 @@ impl TemplateDetailView {
             );
             return;
         }
-        let chat_data = cx.global::<ChatData>().deref().clone();
-        let tab_key = Self::template_tab_key(self.template_id);
-        chat_data.update(cx, |_this, cx| {
-            cx.emit(ChatDataEvent::RemoveTab(tab_key));
-            cx.emit(ChatDataEvent::OpenTemplateList);
-        });
+        cx.global::<WorkspaceStore>()
+            .deref()
+            .clone()
+            .update(cx, |workspace, cx| {
+                workspace.remove_template_detail_tab(self.template_id, cx);
+                workspace.open_template_list_tab(window, cx);
+            });
         window.push_notification(
             Notification::new()
                 .title(delete_success)

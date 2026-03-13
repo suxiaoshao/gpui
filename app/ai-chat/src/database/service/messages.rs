@@ -12,14 +12,22 @@ use std::ops::AddAssign;
 use time::OffsetDateTime;
 
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
+pub struct UrlCitation {
+    pub title: Option<String>,
+    pub url: String,
+    #[serde(rename = "startIndex")]
+    pub start_index: Option<usize>,
+    #[serde(rename = "endIndex")]
+    pub end_index: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "tag", content = "value", rename_all = "camelCase")]
 pub enum Content {
     Text(String),
-    Extension {
-        source: String,
-        #[serde(rename = "extensionName")]
-        extension_name: String,
-        content: String,
+    WebSearch {
+        text: String,
+        citations: Vec<UrlCitation>,
     },
 }
 
@@ -29,8 +37,8 @@ impl AddAssign<String> for Content {
             Content::Text(text) => {
                 *text += &rhs;
             }
-            Content::Extension { source, .. } => {
-                *source += &rhs;
+            Content::WebSearch { text, .. } => {
+                *text += &rhs;
             }
         }
     }
@@ -42,25 +50,73 @@ impl AddAssign<&str> for Content {
             Content::Text(text) => {
                 *text += rhs;
             }
-            Content::Extension { source, .. } => {
-                *source += rhs;
+            Content::WebSearch { text, .. } => {
+                *text += rhs;
             }
         }
     }
 }
 
 impl Content {
+    pub(crate) fn display_text(&self) -> &str {
+        match self {
+            Content::Text(content) => content,
+            Content::WebSearch { text, .. } => text,
+        }
+    }
+
     pub(crate) fn send_content(&self) -> &str {
         match self {
             Content::Text(content) => content,
-            Content::Extension { content, .. } => content,
+            Content::WebSearch { text, .. } => text,
         }
+    }
+
+    pub(crate) fn display_markdown(&self, sources_label: &str) -> String {
+        match self {
+            Content::WebSearch { text, citations } => {
+                let mut markdown = text.clone();
+                let sources = format_sources_markdown(citations, sources_label);
+                if !sources.is_empty() {
+                    if !markdown.is_empty() {
+                        markdown.push_str("\n\n");
+                    }
+                    markdown.push_str(&sources);
+                }
+                markdown
+            }
+            _ => self.display_text().to_string(),
+        }
+    }
+}
+
+fn format_sources_markdown(citations: &[UrlCitation], sources_label: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut lines = Vec::new();
+    for citation in citations {
+        if !seen.insert(citation.url.as_str()) {
+            continue;
+        }
+        let title = citation
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or(citation.url.as_str())
+            .replace(']', "\\]");
+        let url = citation.url.replace(')', "\\)");
+        lines.push(format!("- [{title}]({url})"));
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{sources_label}\n{}", lines.join("\n"))
     }
 }
 
 #[cfg(test)]
 mod content_tests {
-    use super::Content;
+    use super::{Content, UrlCitation};
 
     #[test]
     fn add_assign_appends_text_content() {
@@ -70,31 +126,58 @@ mod content_tests {
     }
 
     #[test]
-    fn add_assign_appends_extension_source() {
-        let mut content = Content::Extension {
-            source: "src".to_string(),
-            extension_name: "ext".to_string(),
-            content: "payload".to_string(),
+    fn add_assign_appends_web_search_text() {
+        let mut content = Content::WebSearch {
+            text: "hello".to_string(),
+            citations: vec![],
         };
-        content += " more";
+        content += " world";
         assert_eq!(
             content,
-            Content::Extension {
-                source: "src more".to_string(),
-                extension_name: "ext".to_string(),
-                content: "payload".to_string(),
+            Content::WebSearch {
+                text: "hello world".to_string(),
+                citations: vec![],
             }
         );
     }
 
     #[test]
-    fn send_content_uses_extension_payload() {
-        let content = Content::Extension {
-            source: "src".to_string(),
-            extension_name: "ext".to_string(),
-            content: "payload".to_string(),
+    fn send_content_uses_web_search_body() {
+        let content = Content::WebSearch {
+            text: "body".to_string(),
+            citations: vec![UrlCitation {
+                title: Some("Example".to_string()),
+                url: "https://example.com".to_string(),
+                start_index: Some(0),
+                end_index: Some(4),
+            }],
         };
-        assert_eq!(content.send_content(), "payload");
+        assert_eq!(content.send_content(), "body");
+    }
+
+    #[test]
+    fn display_markdown_renders_deduped_sources() {
+        let content = Content::WebSearch {
+            text: "answer".to_string(),
+            citations: vec![
+                UrlCitation {
+                    title: Some("Example".to_string()),
+                    url: "https://example.com".to_string(),
+                    start_index: Some(0),
+                    end_index: Some(4),
+                },
+                UrlCitation {
+                    title: Some("Duplicate".to_string()),
+                    url: "https://example.com".to_string(),
+                    start_index: Some(5),
+                    end_index: Some(9),
+                },
+            ],
+        };
+        assert_eq!(
+            content.display_markdown("Sources"),
+            "answer\n\nSources\n- [Example](https://example.com)"
+        );
     }
 }
 
@@ -262,15 +345,6 @@ impl Message {
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Message> {
         let message = SqlMessage::find(id, conn)?;
         Message::try_from(message)
-    }
-    pub fn update_send_content(
-        id: i32,
-        send_content: &serde_json::Value,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        let time = OffsetDateTime::now_utc();
-        SqlMessage::update_send_content(id, send_content, time, conn)?;
-        Ok(())
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         SqlMessage::delete(id, conn)?;

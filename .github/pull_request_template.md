@@ -1,7 +1,7 @@
 ## Summary
 
 - What changed in this PR?
-- Which app or crate is affected: `ai-chat`, `feiwen`, `http-client`, `novel-download`, `window-ext`, `xtask`, `url_search`, or `workspace`?
+- Which app or crate is affected: `ai-chat`, `feiwen`, `http-client`, `novel-download`, `window-ext`, `xtask`, or `workspace`?
 
 ## Motivation
 

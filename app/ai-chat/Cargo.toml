@@ -20,7 +20,7 @@ icon = [
 short_description = "A desktop AI chat app built with GPUI."
 long_description = """
 AI Chat is a GPUI-based desktop application with chat history, templates,
-streaming responses, and extension support.
+streaming responses, and web search support.
 """
 category = "DeveloperTool"
 
@@ -79,14 +79,6 @@ async-stream = "0.3.6"
 async-compat = "0.2.5"
 smol = "2.0.2"
 
-# extension
-wasmtime = { version = "42.0.1", default-features = false, features = [
-  "cranelift",
-  "runtime",
-  "std",
-  "component-model-async",
-] }
-wasmtime-wasi = { version = "42.0.1", default-features = false, features = ["p2"] }
 get-selected-text = "0.1.6"
 
 # config
@@ -97,7 +89,6 @@ global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"
-wasmtime = { version = "42.0.1", features = ["anyhow"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

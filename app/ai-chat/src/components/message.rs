@@ -126,6 +126,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             view_detail_tooltip,
             pause_tooltip,
             error_title,
+            sources_label,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -139,6 +140,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                 i18n.t("tooltip-view-detail"),
                 i18n.t("tooltip-pause-message"),
                 i18n.t("alert-error-title"),
+                i18n.t("field-sources"),
             )
         };
         let accessory_mode = MessageAccessoryMode::from(data.status());
@@ -158,10 +160,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     })
                     .with_size(px(32.)),
             );
-        let copy_text = match data.content() {
-            Content::Text(content) => content.to_string(),
-            Content::Extension { source, .. } => source.to_string(),
-        };
+        let copy_text = data.content().display_markdown(&sources_label);
         let id = data.id();
         let button_id = id.to_string();
         let text_id = data.id();

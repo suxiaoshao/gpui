@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 #[derive(thiserror::Error, Debug)]
 pub enum AiChatError {
     #[error("数据库错误:{}",.0)]
@@ -40,22 +38,10 @@ pub enum AiChatError {
     FolderPathExists(String),
     #[error("invalid folder move:{}",.0)]
     InvalidFolderMove(String),
-    #[error("Extension runtime error")]
-    ExtensionRuntimeError,
     #[error("provider {} settings not found",.0)]
     ProviderSettingsNotFound(String),
     #[error("provider {} not found",.0)]
     ProviderNotFound(String),
-    #[error("Wasmtime engine creation failed")]
-    WasmtimeEngineCreationFailed,
-    #[error("Wasmtime component creation failed")]
-    WasmtimeComponentCreationFailed(PathBuf),
-    #[error("Wasmtime error")]
-    WasmtimeError,
-    #[error("Extension {} not found",.0)]
-    ExtensionNotFound(String),
-    #[error("Extension {} error",.0)]
-    ExtensionError(String),
     #[error("toml解析错误:{}",.0)]
     TomlParse(#[from] toml::de::Error),
     #[error("toml序列化错误:{}",.0)]

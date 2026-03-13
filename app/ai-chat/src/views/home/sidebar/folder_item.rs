@@ -10,6 +10,7 @@ use crate::{
         delete_confirm::open_delete_confirm_dialog,
     },
     store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -19,6 +20,7 @@ use gpui_component::{
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     v_flex,
 };
+use std::collections::BTreeSet;
 use std::ops::Deref;
 
 #[derive(IntoElement)]
@@ -27,6 +29,7 @@ pub(super) struct FolderTreeItem {
     collapsed: bool,
     depth: usize,
     active_conversation_id: Option<i32>,
+    open_folder_ids: BTreeSet<i32>,
     active_drop_target: Option<ActiveDropTarget>,
 }
 
@@ -36,6 +39,7 @@ impl FolderTreeItem {
         collapsed: bool,
         depth: usize,
         active_conversation_id: Option<i32>,
+        open_folder_ids: &BTreeSet<i32>,
         active_drop_target: Option<ActiveDropTarget>,
     ) -> Self {
         Self {
@@ -43,13 +47,14 @@ impl FolderTreeItem {
             collapsed,
             depth,
             active_conversation_id,
+            open_folder_ids: open_folder_ids.clone(),
             active_drop_target,
         }
     }
 }
 
 impl RenderOnce for FolderTreeItem {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let folder = self.folder;
         let id = folder.id;
         let name = folder.name.clone();
@@ -57,12 +62,7 @@ impl RenderOnce for FolderTreeItem {
         let active_drop_target = self.active_drop_target;
         let block_drop_target = folder_block_drop_target(active_drop_target, id);
         let root_drop_target = active_drop_target.is_some_and(ActiveDropTarget::is_root);
-        let open_state = window.use_keyed_state(
-            ("conversation-tree-folder-open", id as usize),
-            cx,
-            |_, _| false,
-        );
-        let is_open = !self.collapsed && *open_state.read(cx);
+        let is_open = !self.collapsed && self.open_folder_ids.contains(&id);
         let padding_left = px((self.depth as f32) * 14.);
 
         v_flex()
@@ -113,15 +113,14 @@ impl RenderOnce for FolderTreeItem {
                                     .when(is_open, |this| this.rotate(percentage(90. / 360.))),
                             )
                             .when(self.collapsed, |this| this.invisible())
-                            .on_click({
-                                let open_state = open_state.clone();
-                                move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    open_state.update(cx, |is_open, cx| {
-                                        *is_open = !*is_open;
-                                        cx.notify();
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.global::<WorkspaceStore>()
+                                    .deref()
+                                    .clone()
+                                    .update(cx, |workspace, cx| {
+                                        workspace.toggle_folder_open(id, cx);
                                     });
-                                }
                             }),
                     )
                     .child(Icon::new(IconName::Folder).size_4())
@@ -155,14 +154,13 @@ impl RenderOnce for FolderTreeItem {
                         )
                     })
                     .cursor_pointer()
-                    .on_click({
-                        let open_state = open_state.clone();
-                        move |_event, _window, cx| {
-                            open_state.update(cx, |is_open, cx| {
-                                *is_open = !*is_open;
-                                cx.notify();
+                    .on_click(move |_event, _window, cx| {
+                        cx.global::<WorkspaceStore>()
+                            .deref()
+                            .clone()
+                            .update(cx, |workspace, cx| {
+                                workspace.toggle_folder_open(id, cx);
                             });
-                        }
                     })
                     .on_drag(
                         DragConversationTreeItem::folder(&folder),
@@ -254,6 +252,7 @@ impl RenderOnce for FolderTreeItem {
                                 self.collapsed,
                                 self.depth + 1,
                                 self.active_conversation_id,
+                                &self.open_folder_ids,
                                 active_drop_target,
                             )
                             .into_any_element()

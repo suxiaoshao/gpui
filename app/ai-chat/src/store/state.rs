@@ -1,18 +1,13 @@
 use crate::{
-    database::{Content, Conversation, ConversationTemplate, Db, Folder, Message, Role, Status},
+    database::{Content, Conversation, Db, Folder, Message, Role, Status},
     errors::AiChatResult,
-    i18n::I18n,
-    views::home::{
-        ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
-    },
 };
 use gpui::*;
+use std::collections::BTreeSet;
 
 pub struct ChatDataInner {
     pub(crate) conversations: Vec<Conversation>,
     pub(crate) folders: Vec<Folder>,
-    tabs: Vec<AppTab>,
-    active_tab: Option<TabKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,121 +20,22 @@ pub struct AddConversationMessage {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TabKind {
-    Conversation(i32),
-    TemplateList,
-    TemplateDetail(i32),
-}
-
-impl TabKind {
-    fn key(self) -> i32 {
-        match self {
-            TabKind::Conversation(id) => id,
-            TabKind::TemplateList => i32::MIN,
-            TabKind::TemplateDetail(id) => id.saturating_add(1).saturating_neg(),
-        }
-    }
-}
-
-#[derive(Clone)]
-enum TabPanel {
-    Conversation(Entity<ConversationPanelView>),
-    TemplateList(Entity<TemplateListView>),
-    TemplateDetail(Entity<TemplateDetailView>),
-}
-
-impl TabPanel {
-    fn into_any_element(self) -> AnyElement {
-        match self {
-            TabPanel::Conversation(panel) => panel.into_any_element(),
-            TabPanel::TemplateList(panel) => panel.into_any_element(),
-            TabPanel::TemplateDetail(panel) => panel.into_any_element(),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct AppTab {
-    kind: TabKind,
-    icon: SharedString,
-    name: SharedString,
-    panel: TabPanel,
-}
-
-// Bootstraps chat data and builds tab panels for each top-level view.
+// Bootstraps chat data from the database-backed tree.
 impl ChatDataInner {
     pub(crate) fn new(
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<AiChatResult<Self>>,
     ) -> AiChatResult<Self> {
         let conn = &mut cx.global::<Db>().get()?;
         let conversations = Conversation::query_without_folder(conn)?;
         let folders = Folder::query(conn)?;
-        let active_tab = conversations.first();
-        let mut tabs = Vec::new();
-        if let Some(tab) = active_tab {
-            tabs.push(Self::conversation_tab(tab, window, cx));
-        }
-        let active_tab_kind = active_tab.map(|tab| TabKind::Conversation(tab.id));
         Ok(Self {
             conversations,
             folders,
-            tabs,
-            active_tab: active_tab_kind,
         })
     }
-    fn conversation_tab(conversation: &Conversation, window: &mut Window, cx: &mut App) -> AppTab {
-        AppTab {
-            kind: TabKind::Conversation(conversation.id),
-            icon: SharedString::from(&conversation.icon),
-            name: SharedString::from(&conversation.title),
-            panel: TabPanel::Conversation(
-                cx.new(|cx| ConversationPanelView::new(conversation, window, cx)),
-            ),
-        }
-    }
-    fn template_tab(window: &mut Window, cx: &mut App) -> AppTab {
-        AppTab {
-            kind: TabKind::TemplateList,
-            icon: "📋".into(),
-            name: cx.global::<I18n>().t("tab-templates").into(),
-            panel: TabPanel::TemplateList(cx.new(|cx| TemplateListView::new(window, cx))),
-        }
-    }
-    fn template_detail_tab(template_id: i32, window: &mut Window, cx: &mut App) -> AppTab {
-        let (icon, name) = cx
-            .global::<Db>()
-            .get()
-            .ok()
-            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok())
-            .map(|template| {
-                (
-                    SharedString::from(template.icon),
-                    SharedString::from(format!(
-                        "{}: {}",
-                        cx.global::<I18n>().t("tab-template"),
-                        template.name
-                    )),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    SharedString::from("🧩"),
-                    SharedString::from(format!(
-                        "{} #{template_id}",
-                        cx.global::<I18n>().t("tab-template")
-                    )),
-                )
-            });
-        AppTab {
-            kind: TabKind::TemplateDetail(template_id),
-            icon,
-            name,
-            panel: TabPanel::TemplateDetail(
-                cx.new(|cx| TemplateDetailView::new(template_id, window, cx)),
-            ),
-        }
+    pub(crate) fn first_conversation(&self) -> Option<&Conversation> {
+        self.conversations.first()
     }
 }
 
@@ -296,89 +192,17 @@ impl ChatDataInner {
         }
         None
     }
-    pub(crate) fn add_tab(&mut self, conversation_id: i32, window: &mut Window, cx: &mut App) {
-        match (
-            self.tabs
-                .iter()
-                .any(|tab| tab.kind == TabKind::Conversation(conversation_id)),
-            Self::get_conversation(&self.folders, &self.conversations, conversation_id),
-        ) {
-            (true, Some(_)) => {
-                self.active_tab = Some(TabKind::Conversation(conversation_id));
-            }
-            (false, Some(conversation)) => {
-                self.tabs
-                    .push(Self::conversation_tab(conversation, window, cx));
-                self.active_tab = Some(TabKind::Conversation(conversation.id));
-            }
-            (false, None) => {}
-            (true, None) => {
-                self.tabs = self
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.kind != TabKind::Conversation(conversation_id))
-                    .cloned()
-                    .collect();
-                self.active_tab = self.tabs.first().map(|tab| tab.kind);
-            }
-        }
+    pub(crate) fn conversation(&self, conversation_id: i32) -> Option<&Conversation> {
+        Self::get_conversation(&self.folders, &self.conversations, conversation_id)
     }
-    pub(crate) fn open_template_list_tab(&mut self, window: &mut Window, cx: &mut App) {
-        if self
-            .tabs
-            .iter()
-            .all(|tab| tab.kind != TabKind::TemplateList)
-        {
-            self.tabs.push(Self::template_tab(window, cx));
-        }
-        self.active_tab = Some(TabKind::TemplateList);
+
+    pub(crate) fn folder_ids(&self) -> BTreeSet<i32> {
+        let mut ids = BTreeSet::new();
+        Self::collect_folder_ids(&self.folders, &mut ids);
+        ids
     }
-    pub(crate) fn open_template_detail_tab(
-        &mut self,
-        template_id: i32,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let kind = TabKind::TemplateDetail(template_id);
-        if self.tabs.iter().all(|tab| tab.kind != kind) {
-            self.tabs
-                .push(Self::template_detail_tab(template_id, window, cx));
-        }
-        self.active_tab = Some(kind);
-    }
-    pub(crate) fn activate_tab(&mut self, tab_key: i32) {
-        self.active_tab = self
-            .tabs
-            .iter()
-            .find(|tab| tab.kind.key() == tab_key)
-            .map(|tab| tab.kind);
-    }
-    pub(crate) fn remove_tab(&mut self, tab_key: i32) {
-        if self.tabs.iter().any(|tab| tab.kind.key() == tab_key) {
-            self.tabs = self
-                .tabs
-                .iter()
-                .filter(|tab| tab.kind.key() != tab_key)
-                .cloned()
-                .collect();
-            if self.active_tab.is_some_and(|kind| kind.key() == tab_key) {
-                self.active_tab = self.tabs.first().map(|tab| tab.kind);
-            }
-        }
-    }
-    pub(crate) fn move_tab(&mut self, from_id: i32, to_id: Option<i32>) {
-        if to_id == Some(from_id) {
-            return;
-        }
-        let Some(from_ix) = self.tabs.iter().position(|tab| tab.kind.key() == from_id) else {
-            return;
-        };
-        let moved_kind = self.tabs[from_ix].kind;
-        let to_ix = to_id
-            .and_then(|target_id| self.tabs.iter().position(|tab| tab.kind.key() == target_id));
-        Self::move_item(&mut self.tabs, from_ix, to_ix);
-        self.active_tab = Some(moved_kind);
-    }
+
+    #[cfg(test)]
     fn move_item<T>(items: &mut Vec<T>, from_ix: usize, to_ix: Option<usize>) {
         let item = items.remove(from_ix);
         match to_ix {
@@ -386,19 +210,17 @@ impl ChatDataInner {
             None => items.push(item),
         }
     }
+
+    fn collect_folder_ids(folders: &[Folder], ids: &mut BTreeSet<i32>) {
+        for folder in folders {
+            ids.insert(folder.id);
+            Self::collect_folder_ids(&folder.folders, ids);
+        }
+    }
 }
 
-// Exposes active tab state and keeps panels aligned with existing data.
+// Keeps the in-memory tree aligned after destructive mutations.
 impl ChatDataInner {
-    pub(crate) fn tabs(&self) -> Vec<ConversationTabView> {
-        self.tabs
-            .iter()
-            .map(|tab| ConversationTabView::new(tab.kind.key(), tab.icon.clone(), tab.name.clone()))
-            .collect()
-    }
-    pub(crate) fn active_tab_key(&self) -> Option<i32> {
-        self.active_tab.map(TabKind::key)
-    }
     fn __delete_conversation(
         folders: &mut [Folder],
         conversations: &mut Vec<Conversation>,
@@ -417,12 +239,10 @@ impl ChatDataInner {
     }
     pub(crate) fn delete_conversation(&mut self, conversation_id: i32) {
         Self::__delete_conversation(&mut self.folders, &mut self.conversations, conversation_id);
-        self.check_tabs();
     }
 
     pub(crate) fn delete_folder(&mut self, folder_id: i32) {
         Self::__delete_folder(&mut self.folders, folder_id);
-        self.check_tabs();
     }
     fn __delete_folder(folders: &mut Vec<Folder>, folder_id: i32) {
         if let Some(index) = folders.iter().position(|f| f.id == folder_id) {
@@ -432,51 +252,6 @@ impl ChatDataInner {
             Self::__delete_folder(&mut folder.folders, folder_id);
         }
     }
-    fn check_tabs(&mut self) {
-        self.tabs = self
-            .tabs
-            .iter()
-            .filter(|tab| match tab.kind {
-                TabKind::Conversation(id) => {
-                    Self::get_conversation(&self.folders, &self.conversations, id).is_some()
-                }
-                TabKind::TemplateList => true,
-                TabKind::TemplateDetail(_) => true,
-            })
-            .cloned()
-            .collect();
-        if !self
-            .tabs
-            .iter()
-            .any(|tab| Some(tab.kind) == self.active_tab)
-        {
-            self.active_tab = self.tabs.first().map(|tab| tab.kind);
-        }
-    }
-    pub(crate) fn panel(&self) -> Option<AnyElement> {
-        self.tabs.iter().find_map(|tab| {
-            if Some(tab.kind) == self.active_tab {
-                Some(tab.panel.clone().into_any_element())
-            } else {
-                None
-            }
-        })
-    }
-    pub(crate) fn active_conversation_panel(&self) -> Option<Entity<ConversationPanelView>> {
-        self.tabs.iter().find_map(|tab| {
-            if Some(tab.kind) != self.active_tab {
-                return None;
-            }
-            match &tab.panel {
-                TabPanel::Conversation(panel) => Some(panel.clone()),
-                TabPanel::TemplateList(_) | TabPanel::TemplateDetail(_) => None,
-            }
-        })
-    }
-}
-
-// Reads and mutates conversation messages inside the folder tree.
-impl ChatDataInner {
     pub(crate) fn conversation_messages(&self, conversation_id: i32) -> Option<&[Message]> {
         Self::get_conversation(&self.folders, &self.conversations, conversation_id)
             .map(|conversation| conversation.messages.as_slice())
@@ -629,8 +404,6 @@ mod tests {
         ChatDataInner {
             conversations: vec![],
             folders: vec![],
-            tabs: vec![],
-            active_tab: None,
         }
     }
 

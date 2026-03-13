@@ -1,9 +1,10 @@
 use crate::{
     components::message::MessageViewExt,
     database::{Content, Db, Message, Role},
-    errors::AiChatResult,
+    errors::{AiChatError, AiChatResult},
     i18n::I18n,
     store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
@@ -35,10 +36,9 @@ impl PreviewType {
 
 enum MessageInput {
     Text(Entity<InputState>),
-    Extension {
-        source: Entity<InputState>,
-        content: Entity<InputState>,
-        extension_name: String,
+    WebSearch {
+        text: Entity<InputState>,
+        citations: Entity<InputState>,
     },
 }
 
@@ -54,26 +54,24 @@ impl MessageInput {
                         .default_value(value)
                 }))
             }
-            crate::database::Content::Extension {
-                source,
-                content,
-                extension_name,
-            } => Self::Extension {
-                source: cx.new(|cx| {
+            crate::database::Content::WebSearch { text, citations } => Self::WebSearch {
+                text: cx.new(|cx| {
                     InputState::new(window, cx)
-                        .multi_line(true) // Language for syntax highlighting
-                        .line_number(true) // Show line numbers
+                        .multi_line(true)
+                        .line_number(true)
                         .searchable(true)
-                        .default_value(source)
+                        .default_value(text)
                 }),
-                content: cx.new(|cx| {
+                citations: cx.new(|cx| {
                     InputState::new(window, cx)
-                        .multi_line(true) // Language for syntax highlighting
-                        .line_number(true) // Show line numbers
+                        .multi_line(true)
+                        .line_number(true)
                         .searchable(true)
-                        .default_value(content)
+                        .default_value(
+                            serde_json::to_string_pretty(&citations)
+                                .unwrap_or_else(|_| "[]".to_string()),
+                        )
                 }),
-                extension_name: extension_name.to_string(),
             },
         }
     }
@@ -108,18 +106,11 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
                 let text = entity.read(cx).value().to_string();
                 Content::Text(text)
             }
-            MessageInput::Extension {
-                source,
-                content,
-                extension_name,
-            } => {
-                let source = source.read(cx).value().to_string();
-                let content = content.read(cx).value().to_string();
-                Content::Extension {
-                    source,
-                    content,
-                    extension_name: extension_name.to_string(),
-                }
+            MessageInput::WebSearch { text, citations } => {
+                let text = text.read(cx).value().to_string();
+                let citations = serde_json::from_str(&citations.read(cx).value())
+                    .map_err(|err| AiChatError::StreamError(err.to_string()))?;
+                Content::WebSearch { text, citations }
             }
         };
         self.on_update_content(content, window, cx)?;
@@ -210,11 +201,9 @@ impl MessageViewExt for Message {
 
     fn pause_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
         let panel = cx
-            .global::<ChatData>()
+            .global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel());
+            .active_conversation_panel();
         let Some(panel) = panel else {
             return;
         };
@@ -234,21 +223,17 @@ impl MessageViewExt for Message {
         if self.role != Role::Assistant {
             return false;
         }
-        cx.global::<ChatData>()
+        cx.global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel())
+            .active_conversation_panel()
             .is_some_and(|panel| !panel.read(cx).has_running_task())
     }
 
     fn resend_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
         let panel = cx
-            .global::<ChatData>()
+            .global::<WorkspaceStore>()
             .read(cx)
-            .as_ref()
-            .ok()
-            .and_then(|data| data.active_conversation_panel());
+            .active_conversation_panel();
         let Some(panel) = panel else {
             return;
         };
@@ -354,13 +339,11 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                     MessageInput::Text(entity) => div()
                         .flex_1()
                         .child(Input::new(entity).disabled(disabled).size_full()),
-                    MessageInput::Extension {
-                        source, content, ..
-                    } => h_flex()
+                    MessageInput::WebSearch { text, citations } => h_flex()
                         .flex_1()
                         .gap_2()
-                        .child(Input::new(source).disabled(disabled).size_full())
-                        .child(Input::new(content).disabled(disabled).size_full()),
+                        .child(Input::new(text).disabled(disabled).size_full())
+                        .child(Input::new(citations).disabled(disabled).size_full()),
                 }
             })
             .children(dialog_layer)

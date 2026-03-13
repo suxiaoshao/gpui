@@ -5,11 +5,17 @@
  * @LastEditTime: 2024-04-28 07:30:56
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/fetch/types/chat_request.rs
  */
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::message::Message;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
+pub struct HostedTool {
+    #[serde(rename = "type")]
+    pub tool_type: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub input: Vec<Message>,
@@ -20,4 +26,6 @@ pub struct ChatRequest<'a> {
     pub max_output_tokens: Option<u32>,
     pub presence_penalty: f64,
     pub frequency_penalty: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<HostedTool>>,
 }

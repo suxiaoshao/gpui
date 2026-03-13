@@ -4,7 +4,7 @@
 
 ## 应用列表
 
-- **ai-chat**：AI 聊天应用，支持会话管理、流式响应与 WebAssembly 扩展
+- **ai-chat**：AI 聊天应用，支持会话管理、流式响应与 Web 搜索
 - **feiwen**：小说 / 网页内容阅读器，支持本地数据库存储
 - **http-client**：HTTP 请求测试工具（类似 Postman）
 - **novel-download**：小说 / 网页内容下载工具
@@ -27,11 +27,8 @@
 ## 构建与运行
 
 ```bash
-# 构建原生工作区（排除 wasm 扩展 url_search）
-cargo build --workspace --exclude url_search
-
-# 构建指定 wasm 扩展
-cargo build -p url_search --target wasm32-wasip2
+# 构建工作区
+cargo build --workspace
 
 # 构建指定应用
 cargo build -p ai-chat
@@ -106,22 +103,6 @@ cd app/ai-chat
 # 生成迁移（需要 diesel_cli）
 diesel migration generate migration_name
 ```
-
-### 扩展（WASM）
-
-ai-chat 支持 WebAssembly 组件扩展：
-
-```bash
-# 方式 1：直接指定 wasm target 构建
-cargo build -p url_search --target wasm32-wasip2
-
-# 方式 2：在扩展目录中构建 component 产物
-cargo component build --release
-```
-
-扩展目录：`app/ai-chat/extensions/`
-- `extension.wasm`：编译后的 WASM 组件
-- `config.toml`：扩展元数据
 
 ## 技术栈
 

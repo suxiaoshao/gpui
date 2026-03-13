@@ -2,8 +2,9 @@ use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
     i18n::I18n,
-    store::{ChatData, ChatDataEvent, ChatDataInner},
+    store::{ChatData, ChatDataInner},
     views::settings::OpenSetting,
+    workspace_state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::{
@@ -65,15 +66,18 @@ pub fn init(cx: &mut App) {
 
 pub(crate) struct SidebarView {
     chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
+    workspace: WeakEntity<crate::workspace_state::WorkspaceState>,
     focus_handle: FocusHandle,
 }
 
 impl SidebarView {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_data = cx.global::<ChatData>().downgrade();
+        let workspace = cx.global::<WorkspaceStore>().deref().downgrade();
         let focus_handle = cx.focus_handle();
         Self {
             chat_data,
+            workspace,
             focus_handle,
         }
     }
@@ -128,13 +132,24 @@ impl Render for SidebarView {
                         SidebarGroup::new(conversation_tree_title).child(
                             self.chat_data
                                 .upgrade()
-                                .and_then(|x| {
-                                    x.read(cx).as_ref().ok().map(|data| {
-                                        conversation_tree::ConversationTree::new(
-                                            data,
-                                            root_label.clone().into(),
-                                        )
-                                    })
+                                .and_then(|x| x.read(cx).as_ref().ok())
+                                .map(|data| {
+                                    let active_conversation_id = self
+                                        .workspace
+                                        .upgrade()
+                                        .and_then(|workspace| workspace.read(cx).active_tab_key())
+                                        .filter(|id| *id > 0);
+                                    let open_folder_ids = self
+                                        .workspace
+                                        .upgrade()
+                                        .map(|workspace| workspace.read(cx).open_folder_ids())
+                                        .unwrap_or_default();
+                                    conversation_tree::ConversationTree::new(
+                                        data,
+                                        active_conversation_id,
+                                        open_folder_ids,
+                                        root_label.clone().into(),
+                                    )
                                 })
                                 .unwrap_or_else(|| {
                                     conversation_tree::ConversationTree::empty_with_label(
@@ -156,11 +171,13 @@ impl Render for SidebarView {
                                 .child(
                                     SidebarMenuItem::new(template_list_label)
                                         .icon(IconName::Bot)
-                                        .on_click(cx.listener(|_this, _event, _window, cx| {
-                                            let chat_data = cx.global::<ChatData>().deref().clone();
-                                            chat_data.update(cx, |_this, cx| {
-                                                cx.emit(ChatDataEvent::OpenTemplateList);
-                                            });
+                                        .on_click(cx.listener(|_this, _event, window, cx| {
+                                            cx.global::<WorkspaceStore>()
+                                                .deref()
+                                                .clone()
+                                                .update(cx, |workspace, cx| {
+                                                    workspace.open_template_list_tab(window, cx);
+                                                });
                                         })),
                                 )
                                 .child(

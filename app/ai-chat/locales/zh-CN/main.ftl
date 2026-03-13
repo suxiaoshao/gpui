@@ -79,6 +79,8 @@ field-presence-penalty = Presence Penalty
 field-frequency-penalty = Frequency Penalty
 field-api-key = API Key
 field-base-url = Base URL
+field-web-search = Web Search
+field-sources = Sources
 
 dialog-add-folder-title = 新建文件夹
 dialog-add-conversation-title = 新建会话
@@ -123,7 +125,6 @@ delete-message-failed-title = 删除消息失败
 delete-message-failed-message = 消息窗口不可用。
 
 settings-openai-title = OpenAI
-settings-openai-stream-title = OpenAI Stream
 
 template-error-float = 必须是合法的小数
 template-error-boolean = 必须是 true 或 false
@@ -137,4 +138,3 @@ template-error-prompt-empty = 提示词不能为空：
 field-raw = 原始内容
 empty-model-picker = 暂无可用模型
 empty-template-picker = 暂无模板
-empty-extension-picker = 暂无扩展

@@ -101,20 +101,6 @@ impl SqlMessage {
             .execute(conn)?;
         Ok(())
     }
-    pub fn update_send_content(
-        id: i32,
-        send_content: &serde_json::Value,
-        time: OffsetDateTime,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
-        diesel::update(messages::table.filter(messages::id.eq(id)))
-            .set((
-                messages::send_content.eq(send_content),
-                messages::updated_time.eq(time),
-            ))
-            .execute(conn)?;
-        Ok(())
-    }
 }
 
 // Looks up persisted messages and deletes them by id, path, or conversation.

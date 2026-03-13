@@ -1,7 +1,6 @@
 use crate::{
-    errors::AiChatResult,
-    store::{ChatData, ChatDataEvent, ChatDataInner},
     views::home::sidebar::DragConversationTreeItem,
+    workspace_state::{WorkspaceState, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
@@ -22,33 +21,30 @@ pub fn init(cx: &mut App) {
 }
 
 pub(crate) struct TabsView {
-    chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
+    workspace: WeakEntity<WorkspaceState>,
 }
 
 impl TabsView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let chat_data = cx.global::<ChatData>().deref().downgrade();
-        Self { chat_data }
+        let workspace = cx.global::<WorkspaceStore>().deref().downgrade();
+        Self { workspace }
     }
 }
 
 impl Render for TabsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let chat_data = self
-            .chat_data
-            .upgrade()
-            .and_then(|x| x.read(cx).as_ref().ok());
+        let workspace = self.workspace.upgrade().map(|x| x.read(cx));
         v_flex()
             .flex_1()
             .overflow_hidden()
-            .map(|this| match chat_data {
-                Some(chat_data) => this
+            .map(|this| match workspace {
+                Some(workspace) => this
                     .child(
                         h_flex()
                             .flex_initial()
                             .h_7()
                             .bg(cx.theme().accent)
-                            .children(chat_data.tabs())
+                            .children(workspace.tabs())
                             .child(
                                 div()
                                     .flex_1()
@@ -68,33 +64,35 @@ impl Render for TabsView {
                                         },
                                     )
                                     .on_drop(move |drag: &DragTab, _window, cx| {
-                                        let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, move |_this, cx| {
-                                            cx.emit(ChatDataEvent::MoveTab {
-                                                from_id: drag.id,
-                                                to_id: None,
+                                        cx.global::<WorkspaceStore>()
+                                            .deref()
+                                            .clone()
+                                            .update(cx, move |workspace, cx| {
+                                                workspace.move_tab(drag.id, None, cx);
                                             });
-                                        });
                                     })
                                     .on_drop(
-                                        move |drag: &DragConversationTreeItem, _window, cx| {
+                                        move |drag: &DragConversationTreeItem, window, cx| {
                                             let Some(conversation_id) = drag.conversation_id()
                                             else {
                                                 return;
                                             };
-                                            let chat_data = cx.global::<ChatData>().deref().clone();
-                                            chat_data.update(cx, move |_this, cx| {
-                                                cx.emit(ChatDataEvent::AddTab(conversation_id));
-                                                cx.emit(ChatDataEvent::MoveTab {
-                                                    from_id: conversation_id,
-                                                    to_id: None,
+                                            cx.global::<WorkspaceStore>()
+                                                .deref()
+                                                .clone()
+                                                .update(cx, move |workspace, cx| {
+                                                    workspace.add_conversation_tab(
+                                                        conversation_id,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                    workspace.move_tab(conversation_id, None, cx);
                                                 });
-                                            });
                                         },
                                     ),
                             ),
                     )
-                    .when_some(chat_data.panel(), |this, panel| this.child(panel)),
+                    .when_some(workspace.panel(), |this, panel| this.child(panel)),
                 None => this,
             })
     }

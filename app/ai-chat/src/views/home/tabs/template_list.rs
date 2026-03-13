@@ -3,7 +3,7 @@ use crate::{
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     i18n::I18n,
-    store::{ChatData, ChatDataEvent},
+    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -238,11 +238,13 @@ impl TemplateListView {
     ) -> AiChatResult<Entity<ListState<TemplateListDelegate>>> {
         let templates = Self::get_templates(cx)?;
         let query = query.trim().to_string();
-        let on_confirm: OnConfirm = Rc::new(|template_id, _window, cx| {
-            let chat_data = cx.global::<ChatData>().deref().clone();
-            chat_data.update(cx, |_this, cx| {
-                cx.emit(ChatDataEvent::OpenTemplateDetail(template_id));
-            });
+        let on_confirm: OnConfirm = Rc::new(|template_id, window, cx| {
+            cx.global::<WorkspaceStore>()
+                .deref()
+                .clone()
+                .update(cx, |workspace, cx| {
+                    workspace.open_template_detail_tab(template_id, window, cx);
+                });
         });
         let list = cx.new(move |cx| {
             let mut state =
@@ -272,10 +274,12 @@ impl TemplateListView {
                 let _ = this.update(cx, |view, cx| {
                     view.reload_templates(window, cx);
                 });
-                let chat_data = cx.global::<ChatData>().deref().clone();
-                chat_data.update(cx, |_this, cx| {
-                    cx.emit(ChatDataEvent::OpenTemplateDetail(template.id));
-                });
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, |workspace, cx| {
+                        workspace.open_template_detail_tab(template.id, window, cx);
+                    });
             }),
             window,
             cx,

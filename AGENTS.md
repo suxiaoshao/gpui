@@ -10,7 +10,6 @@
   - `app/feiwen`
   - `app/http-client`
   - `app/novel-download`
-  - `app/ai-chat/extensions/url_search`
   - `crates/window-ext`
   - `crates/xtask`
 - 技术基线：
@@ -52,6 +51,7 @@
   - `.github/ISSUE_TEMPLATE/feature_request.yml`
   - `.github/ISSUE_TEMPLATE/tech_request.yml`
 - PR 默认使用 `.github/pull_request_template.md`。
+- 编写 PR 内容时，必须基于“当前分支相对远程最新 `main`”的整体差异进行总结，不要只根据最后一次提交或本次会话中的改动来写。
 - issue / PR 标题和描述要明确对应应用或 crate，例如 `ai-chat`、`feiwen`、`http-client`、`novel-download`、`window-ext`、`xtask`。
 
 ## 5. 验证与 CI
@@ -71,8 +71,4 @@
 - 应用入口通常位于 `app/{name}/src/main.rs`。
 - 公共能力优先放在 `crates/window-ext` 等共享 crate，避免在多个 app 中复制实现。
 - `ai-chat` 使用 Diesel + SQLite；涉及数据层变更时要同步检查 migration、schema 和 service 映射。
-- `app/ai-chat/extensions/url_search` 是 wasm 扩展，不应按宿主平台直接参与原生 workspace 构建。
-- 验证 `url_search` 时应显式指定 wasm target，例如：
-  - `cargo build -p url_search --target wasm32-wasip2 --locked`
-  - `cargo component build --release`
 - `ai-chat` 运行时资源在 `app/ai-chat/assets/`，打包资源在 `app/ai-chat/build-assets/`；不要混用。

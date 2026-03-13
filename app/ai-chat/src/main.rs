@@ -20,13 +20,13 @@ mod components;
 mod config;
 mod database;
 mod errors;
-mod extensions;
 mod gpui_ext;
 mod hotkey;
 mod i18n;
 mod llm;
 mod store;
 mod views;
+mod workspace_state;
 
 static APP_NAME: &str = "top.sushao.ai-chat";
 
@@ -109,6 +109,7 @@ mod profiling {
 }
 
 fn quit(_: &Quit, cx: &mut App) {
+    workspace_state::save_now(cx);
     profiling::flush();
     event!(Level::INFO, "quit by action");
     cx.quit();
@@ -134,7 +135,6 @@ fn init(cx: &mut App) {
     config::init(cx);
     store::init_global(cx);
     hotkey::init(cx);
-    extensions::init(cx);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {
