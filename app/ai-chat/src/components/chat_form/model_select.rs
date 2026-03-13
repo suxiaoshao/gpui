@@ -23,6 +23,7 @@ use std::ops::Deref;
 #[derive(Clone)]
 pub(crate) enum ModelSelectEvent {
     Change(Option<ProviderModel>),
+    ModelsChanged,
 }
 
 impl EventEmitter<ModelSelectEvent> for ModelSelect {}
@@ -165,6 +166,7 @@ impl ModelSelect {
             picker.delegate_mut().set_loading(is_loading);
             picker.set_selected_index(selected_ix, window, cx);
         });
+        cx.emit(ModelSelectEvent::ModelsChanged);
         cx.notify();
     }
 

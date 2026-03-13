@@ -148,6 +148,9 @@ impl ChatForm {
                     cx.emit(ChatFormEvent::StateChanged);
                     cx.notify();
                 }
+                ModelSelectEvent::ModelsChanged => {
+                    this.try_restore_pending_draft(window, cx);
+                }
             },
         );
         self._subscriptions.push(model_select_subscription);
