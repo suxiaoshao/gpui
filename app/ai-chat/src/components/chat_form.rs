@@ -397,7 +397,15 @@ impl ChatForm {
         }) else {
             return;
         };
-        self.rebuild_provider_chat_form(&model, draft.request_template.clone(), window, cx);
+        let provider = match provider_by_name(&model.provider_name) {
+            Ok(provider) => provider,
+            Err(_) => return,
+        };
+        let base_template = match provider.default_template_for_model(&model) {
+            Ok(template) => template,
+            Err(_) => return,
+        };
+        self.rebuild_provider_chat_form(&model, base_template, window, cx);
         if let Some(form) = self
             .provider_chat_form
             .clone()

@@ -59,12 +59,13 @@ impl Render for ProviderChatFormView {
             return div();
         }
 
+        let form_weak = self.form.downgrade();
         let inline_fields = {
             let form = self.form.read(cx);
             self.layout
                 .inline_field_ids
                 .iter()
-                .filter_map(|id| form.render_inline_field(id))
+                .filter_map(|id| form.render_inline_field(id, form_weak.clone()))
                 .collect::<Vec<_>>()
         };
         let show_popover = self.has_popover_fields();
@@ -103,7 +104,10 @@ impl Render for ProviderChatFormView {
                                     let fields = group
                                         .field_ids
                                         .iter()
-                                        .filter_map(|field_id| form.read(cx).render_popover_field(field_id))
+                                        .filter_map(|field_id| {
+                                            form.read(cx)
+                                                .render_popover_field(field_id, form_weak.clone())
+                                        })
                                         .collect::<Vec<_>>();
                                     if fields.is_empty() {
                                         return None;
