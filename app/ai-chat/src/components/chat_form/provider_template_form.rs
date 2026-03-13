@@ -150,7 +150,7 @@ impl ProviderTemplateFormState {
                     });
                 }
                 ProviderTemplateFieldValueState::Select(select) => {
-                    let selected = value.as_str().map(ToString::to_string).unwrap_or_default();
+                    let selected = Self::value_as_string(&value);
                     select.update(cx, |state, cx| {
                         state.set_selected_value(&selected, window, cx);
                     });
@@ -542,5 +542,17 @@ mod tests {
         )
         .expect_err("invalid float");
         assert_eq!(err, crate::i18n::t_static("template-error-float"));
+    }
+
+    #[test]
+    fn value_as_string_converts_booleans_for_select_restoration() {
+        assert_eq!(
+            ProviderTemplateFormState::value_as_string(&serde_json::json!(true)),
+            "true"
+        );
+        assert_eq!(
+            ProviderTemplateFormState::value_as_string(&serde_json::json!(false)),
+            "false"
+        );
     }
 }
