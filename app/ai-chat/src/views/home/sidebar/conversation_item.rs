@@ -90,6 +90,9 @@ impl RenderOnce for ConversationTreeItem {
                                 .group_hover(format!("conversation-group-{id}"), |style| {
                                     style.opacity(1.)
                                 })
+                                .on_click(|_, _, cx| {
+                                    cx.stop_propagation();
+                                })
                                 .dropdown_menu({
                                     let conversation = conversation.clone();
                                     move |menu, window, cx| {

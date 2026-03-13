@@ -325,9 +325,24 @@ where
 #[derive(Default)]
 pub(crate) struct PickerPopoverOptions {
     pub(crate) min_width: Option<Pixels>,
+    pub(crate) max_width: Option<Pixels>,
     pub(crate) max_height: Option<Length>,
     pub(crate) search_placeholder: Option<SharedString>,
     pub(crate) footer: Option<AnyElement>,
+}
+
+fn picker_popover_width(bounds: Bounds<Pixels>, options: &PickerPopoverOptions) -> Pixels {
+    let mut width = bounds.size.width + px(2.);
+
+    if let Some(min_width) = options.min_width {
+        width = width.max(min_width);
+    }
+
+    if let Some(max_width) = options.max_width {
+        width = width.min(max_width);
+    }
+
+    width
 }
 
 pub(crate) fn render_picker_popover<D, F>(
@@ -342,11 +357,7 @@ where
     F: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 {
     let popup_radius = cx.theme().radius.min(px(8.));
-    let width = options
-        .min_width
-        .map_or(bounds.size.width + px(2.), |min_width| {
-            min_width.max(bounds.size.width + px(2.))
-        });
+    let width = picker_popover_width(bounds, &options);
 
     deferred(
         anchored()
@@ -468,8 +479,8 @@ impl RenderOnce for PickerTrigger {
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerListDelegate, PickerSection};
-    use gpui::{App, IntoElement, SharedString, Window};
+    use super::{PickerListDelegate, PickerPopoverOptions, PickerSection, picker_popover_width};
+    use gpui::{App, Bounds, IntoElement, SharedString, Window, point, px};
     use gpui_component::{IndexPath, select::SelectItem};
     use std::rc::Rc;
 
@@ -567,5 +578,27 @@ mod tests {
 
         assert_eq!(delegate.sections[0].items.len(), 1);
         assert_eq!(delegate.sections[0].items[0].value(), &2);
+    }
+
+    #[test]
+    fn picker_popover_width_respects_max_width() {
+        let bounds = Bounds::from_corners(point(px(0.), px(0.)), point(px(520.), px(40.)));
+        let options = PickerPopoverOptions {
+            max_width: Some(px(320.)),
+            ..Default::default()
+        };
+
+        assert_eq!(picker_popover_width(bounds, &options), px(320.));
+    }
+
+    #[test]
+    fn picker_popover_width_respects_min_width() {
+        let bounds = Bounds::from_corners(point(px(0.), px(0.)), point(px(120.), px(40.)));
+        let options = PickerPopoverOptions {
+            min_width: Some(px(240.)),
+            ..Default::default()
+        };
+
+        assert_eq!(picker_popover_width(bounds, &options), px(240.));
     }
 }

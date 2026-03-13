@@ -596,6 +596,7 @@ impl ChatForm {
             self.template_picker_bounds,
             template_picker,
             PickerPopoverOptions {
+                max_width: Some(px(320.)),
                 search_placeholder: Some(cx.global::<I18n>().t("field-search-template").into()),
                 ..Default::default()
             },
