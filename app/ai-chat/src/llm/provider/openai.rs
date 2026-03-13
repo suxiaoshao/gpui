@@ -3,9 +3,9 @@ use super::{
     ProviderModelCapability,
 };
 use crate::{
+    config::AiChatConfig,
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    config::AiChatConfig,
     i18n::t_static,
     llm::{ChatRequest, HostedTool, Message, OpenAIResponseStreamEvent},
 };
@@ -215,7 +215,11 @@ impl ResponsesCreateResponse {
                 if let Some(part_text) = part.text {
                     text.push_str(&part_text);
                 }
-                citations.extend(part.annotations.into_iter().filter_map(OutputAnnotation::into_citation));
+                citations.extend(
+                    part.annotations
+                        .into_iter()
+                        .filter_map(OutputAnnotation::into_citation),
+                );
             }
         }
         if citations.is_empty() {
@@ -430,11 +434,12 @@ impl OpenAIProvider {
         template: &OpenAIRequestTemplate,
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
-        let tools = (template.web_search && Self::supports_web_search(&template.model)).then(|| {
-            vec![HostedTool {
-                tool_type: "web_search",
-            }]
-        });
+        let tools =
+            (template.web_search && Self::supports_web_search(&template.model)).then(|| {
+                vec![HostedTool {
+                    tool_type: "web_search",
+                }]
+            });
         ChatRequest {
             input: history_messages,
             model: template.model.as_str(),
@@ -634,62 +639,57 @@ impl Provider for OpenAIProvider {
             ))
             .item(SettingItem::new(
                 t_static("field-base-url"),
-                SettingField::render(
-                    |options, window, cx| {
-                        let initial_value = openai_settings(cx).base_url;
-                        let state = window
-                            .use_keyed_state("openai-base-url-field", cx, |window, cx| {
-                                let input = cx.new(|cx| {
-                                    InputState::new(window, cx)
-                                        .default_value(initial_value.clone())
-                                });
-                                let _subscription = cx.subscribe_in(&input, window, {
-                                    move |state: &mut BaseUrlFieldState,
-                                          input,
-                                          event: &InputEvent,
-                                          window,
-                                          cx| {
-                                        if !matches!(event, InputEvent::Change) {
-                                            return;
-                                        }
-
-                                        let current_value = input.read(cx).value().to_string();
-                                        let next_value = if current_value.trim().is_empty() {
-                                            default_base_url()
-                                        } else {
-                                            normalize_base_url(&current_value)
-                                        };
-
-                                        if next_value == state.last_value {
-                                            return;
-                                        }
-
-                                        if current_value != next_value {
-                                            input.update(cx, |input, cx| {
-                                                input.set_value(next_value.clone(), window, cx);
-                                            });
-                                        }
-
-                                        let mut settings = openai_settings(cx);
-                                        settings.base_url = next_value.clone();
-                                        save_openai_settings(settings, cx);
-                                        state.last_value = next_value;
+                SettingField::render(|options, window, cx| {
+                    let initial_value = openai_settings(cx).base_url;
+                    let state = window
+                        .use_keyed_state("openai-base-url-field", cx, |window, cx| {
+                            let input = cx.new(|cx| {
+                                InputState::new(window, cx).default_value(initial_value.clone())
+                            });
+                            let _subscription = cx.subscribe_in(&input, window, {
+                                move |state: &mut BaseUrlFieldState,
+                                      input,
+                                      event: &InputEvent,
+                                      window,
+                                      cx| {
+                                    if !matches!(event, InputEvent::Change) {
+                                        return;
                                     }
-                                });
 
-                                BaseUrlFieldState {
-                                    input,
-                                    last_value: initial_value,
-                                    _subscription,
+                                    let current_value = input.read(cx).value().to_string();
+                                    let next_value = if current_value.trim().is_empty() {
+                                        default_base_url()
+                                    } else {
+                                        normalize_base_url(&current_value)
+                                    };
+
+                                    if next_value == state.last_value {
+                                        return;
+                                    }
+
+                                    if current_value != next_value {
+                                        input.update(cx, |input, cx| {
+                                            input.set_value(next_value.clone(), window, cx);
+                                        });
+                                    }
+
+                                    let mut settings = openai_settings(cx);
+                                    settings.base_url = next_value.clone();
+                                    save_openai_settings(settings, cx);
+                                    state.last_value = next_value;
                                 }
-                            })
-                            .read(cx);
+                            });
 
-                        Input::new(&state.input)
-                            .with_size(options.size)
-                            .w(px(256.))
-                    },
-                ),
+                            BaseUrlFieldState {
+                                input,
+                                last_value: initial_value,
+                                _subscription,
+                            }
+                        })
+                        .read(cx);
+
+                    Input::new(&state.input).with_size(options.size).w(px(256.))
+                }),
             ))
             .item(SettingItem::new(
                 t_static("field-http-proxy"),

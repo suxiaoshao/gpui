@@ -64,7 +64,11 @@ impl ModelStoreState {
         let fingerprint = match config.model_settings_fingerprint() {
             Ok(fingerprint) => fingerprint,
             Err(err) => {
-                event!(Level::ERROR, "build model settings fingerprint failed: {}", err);
+                event!(
+                    Level::ERROR,
+                    "build model settings fingerprint failed: {}",
+                    err
+                );
                 return;
             }
         };

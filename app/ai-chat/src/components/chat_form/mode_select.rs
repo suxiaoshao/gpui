@@ -128,7 +128,8 @@ impl ModeSelect {
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = true;
-        self.picker.update(cx, |picker, cx| picker.focus(window, cx));
+        self.picker
+            .update(cx, |picker, cx| picker.focus(window, cx));
         cx.notify();
     }
 
@@ -194,7 +195,7 @@ impl Render for ModeSelect {
                     bounds,
                     picker,
                     PickerPopoverOptions {
-                        min_width: Some(px(220.)),
+                        min_width: Some(px(110.)),
                         ..Default::default()
                     },
                     on_mouse_down_out,

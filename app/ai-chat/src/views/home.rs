@@ -84,18 +84,14 @@ impl Render for HomeView {
                         .child(
                             h_resizable("vertical-layout")
                                 .on_resize(|state, _window, cx| {
-                                    let width = state
-                                        .read(cx)
-                                        .sizes()
-                                        .first()
-                                        .copied()
-                                        .unwrap_or(px(300.));
-                                    cx.global::<WorkspaceStore>()
-                                        .deref()
-                                        .clone()
-                                        .update(cx, |workspace, cx| {
+                                    let width =
+                                        state.read(cx).sizes().first().copied().unwrap_or(px(300.));
+                                    cx.global::<WorkspaceStore>().deref().clone().update(
+                                        cx,
+                                        |workspace, cx| {
                                             workspace.set_sidebar_width(width, cx);
-                                        });
+                                        },
+                                    );
                                 })
                                 .child(
                                     resizable_panel()

@@ -1,8 +1,8 @@
 use super::Message;
 use crate::{
+    config::AiChatConfig,
     database::Content,
     errors::{AiChatError, AiChatResult},
-    config::AiChatConfig,
 };
 use futures::{future::BoxFuture, stream::BoxStream};
 use gpui_component::setting::SettingGroup;

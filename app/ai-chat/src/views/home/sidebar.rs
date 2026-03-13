@@ -172,12 +172,12 @@ impl Render for SidebarView {
                                     SidebarMenuItem::new(template_list_label)
                                         .icon(IconName::Bot)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
-                                            cx.global::<WorkspaceStore>()
-                                                .deref()
-                                                .clone()
-                                                .update(cx, |workspace, cx| {
+                                            cx.global::<WorkspaceStore>().deref().clone().update(
+                                                cx,
+                                                |workspace, cx| {
                                                     workspace.open_template_list_tab(window, cx);
-                                                });
+                                                },
+                                            );
                                         })),
                                 )
                                 .child(

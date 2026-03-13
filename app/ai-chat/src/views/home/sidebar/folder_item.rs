@@ -115,12 +115,12 @@ impl RenderOnce for FolderTreeItem {
                             .when(self.collapsed, |this| this.invisible())
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
-                                cx.global::<WorkspaceStore>()
-                                    .deref()
-                                    .clone()
-                                    .update(cx, |workspace, cx| {
+                                cx.global::<WorkspaceStore>().deref().clone().update(
+                                    cx,
+                                    |workspace, cx| {
                                         workspace.toggle_folder_open(id, cx);
-                                    });
+                                    },
+                                );
                             }),
                     )
                     .child(Icon::new(IconName::Folder).size_4())
@@ -155,12 +155,12 @@ impl RenderOnce for FolderTreeItem {
                     })
                     .cursor_pointer()
                     .on_click(move |_event, _window, cx| {
-                        cx.global::<WorkspaceStore>()
-                            .deref()
-                            .clone()
-                            .update(cx, |workspace, cx| {
+                        cx.global::<WorkspaceStore>().deref().clone().update(
+                            cx,
+                            |workspace, cx| {
                                 workspace.toggle_folder_open(id, cx);
-                            });
+                            },
+                        );
                     })
                     .on_drag(
                         DragConversationTreeItem::folder(&folder),

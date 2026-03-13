@@ -64,32 +64,29 @@ impl Render for TabsView {
                                         },
                                     )
                                     .on_drop(move |drag: &DragTab, _window, cx| {
-                                        cx.global::<WorkspaceStore>()
-                                            .deref()
-                                            .clone()
-                                            .update(cx, move |workspace, cx| {
+                                        cx.global::<WorkspaceStore>().deref().clone().update(
+                                            cx,
+                                            move |workspace, cx| {
                                                 workspace.move_tab(drag.id, None, cx);
-                                            });
+                                            },
+                                        );
                                     })
-                                    .on_drop(
-                                        move |drag: &DragConversationTreeItem, window, cx| {
-                                            let Some(conversation_id) = drag.conversation_id()
-                                            else {
-                                                return;
-                                            };
-                                            cx.global::<WorkspaceStore>()
-                                                .deref()
-                                                .clone()
-                                                .update(cx, move |workspace, cx| {
-                                                    workspace.add_conversation_tab(
-                                                        conversation_id,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                    workspace.move_tab(conversation_id, None, cx);
-                                                });
-                                        },
-                                    ),
+                                    .on_drop(move |drag: &DragConversationTreeItem, window, cx| {
+                                        let Some(conversation_id) = drag.conversation_id() else {
+                                            return;
+                                        };
+                                        cx.global::<WorkspaceStore>().deref().clone().update(
+                                            cx,
+                                            move |workspace, cx| {
+                                                workspace.add_conversation_tab(
+                                                    conversation_id,
+                                                    window,
+                                                    cx,
+                                                );
+                                                workspace.move_tab(conversation_id, None, cx);
+                                            },
+                                        );
+                                    }),
                             ),
                     )
                     .when_some(workspace.panel(), |this, panel| this.child(panel)),

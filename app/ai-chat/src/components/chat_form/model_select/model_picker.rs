@@ -1,7 +1,4 @@
-use crate::{
-    llm::ProviderModel,
-    components::chat_form::picker::PickerSection,
-};
+use crate::{components::chat_form::picker::PickerSection, llm::ProviderModel};
 use gpui::{App, IntoElement, ParentElement as _, SharedString, Styled as _, Window};
 use gpui_component::{h_flex, label::Label, select::SelectItem};
 use std::collections::BTreeMap;
@@ -32,11 +29,7 @@ impl SelectItem for ModelOption {
         h_flex()
             .w_full()
             .items_center()
-            .child(
-                Label::new(self.model.id.clone())
-                    .text_sm()
-                    .truncate(),
-            )
+            .child(Label::new(self.model.id.clone()).text_sm().truncate())
     }
 
     fn value(&self) -> &Self::Value {
@@ -84,11 +77,8 @@ mod tests {
             ProviderModelCapability::Streaming,
         )]);
 
-        let missing_model = ProviderModel::new(
-            "OpenAI",
-            "gpt-5",
-            ProviderModelCapability::Streaming,
-        );
+        let missing_model =
+            ProviderModel::new("OpenAI", "gpt-5", ProviderModelCapability::Streaming);
         assert_eq!(
             PickerListDelegate::selected_index_for(&sections, Some(&missing_model)),
             None

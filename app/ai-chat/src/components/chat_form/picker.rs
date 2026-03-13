@@ -111,11 +111,7 @@ where
                     .items_center()
                     .justify_between()
                     .gap_x_1()
-                    .child(
-                        div()
-                            .w_full()
-                            .child(self.item.render(window, cx)),
-                    ),
+                    .child(div().w_full().child(self.item.render(window, cx))),
             )
     }
 }
@@ -172,13 +168,16 @@ where
         V: ?Sized,
     {
         let selected_value = selected_value?;
-        sections.iter().enumerate().find_map(|(section_ix, section)| {
-            section
-                .items
-                .iter()
-                .position(|item| item.value() == selected_value)
-                .map(|row_ix| IndexPath::default().section(section_ix).row(row_ix))
-        })
+        sections
+            .iter()
+            .enumerate()
+            .find_map(|(section_ix, section)| {
+                section
+                    .items
+                    .iter()
+                    .position(|item| item.value() == selected_value)
+                    .map(|row_ix| IndexPath::default().section(section_ix).row(row_ix))
+            })
     }
 
     fn apply_query(&mut self) {
@@ -233,7 +232,9 @@ where
     }
 
     fn items_count(&self, section: usize, _cx: &App) -> usize {
-        self.sections.get(section).map_or(0, |section| section.items.len())
+        self.sections
+            .get(section)
+            .map_or(0, |section| section.items.len())
     }
 
     fn render_section_header(
@@ -264,7 +265,10 @@ where
             .and_then(|section| section.items.get(ix.row))
             .cloned()
             .map(|item| {
-                PickerListItem::new(format!("picker-item-{}-{}", ix.section, ix.row).into(), item)
+                PickerListItem::new(
+                    format!("picker-item-{}-{}", ix.section, ix.row).into(),
+                    item,
+                )
             })
     }
 
@@ -350,29 +354,26 @@ where
             .snap_to_window_with_margin(px(8.))
             .position(point(bounds.left(), bounds.top()))
             .child(
-                div()
-                    .w(width)
-                    .on_mouse_down_out(on_mouse_down_out)
-                    .child(
-                        v_flex()
-                            .occlude()
-                            .mb_1p5()
-                            .bg(cx.theme().background)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded(popup_radius)
-                            .shadow_md()
-                            .child(
-                                List::new(&list)
-                                    .when_some(options.search_placeholder, |this, placeholder| {
-                                        this.search_placeholder(placeholder)
-                                    })
-                                    .with_size(Size::Medium)
-                                    .max_h(options.max_height.unwrap_or(rems(20.).into()))
-                                    .paddings(Edges::all(px(4.))),
-                            )
-                            .when_some(options.footer, |this, footer| this.child(footer)),
-                    ),
+                div().w(width).on_mouse_down_out(on_mouse_down_out).child(
+                    v_flex()
+                        .occlude()
+                        .mb_1p5()
+                        .bg(cx.theme().background)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded(popup_radius)
+                        .shadow_md()
+                        .child(
+                            List::new(&list)
+                                .when_some(options.search_placeholder, |this, placeholder| {
+                                    this.search_placeholder(placeholder)
+                                })
+                                .with_size(Size::Medium)
+                                .max_h(options.max_height.unwrap_or(rems(20.).into()))
+                                .paddings(Edges::all(px(4.))),
+                        )
+                        .when_some(options.footer, |this, footer| this.child(footer)),
+                ),
             ),
     )
     .with_priority(1)

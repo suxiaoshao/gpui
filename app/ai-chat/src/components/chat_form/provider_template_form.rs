@@ -60,10 +60,7 @@ impl ProviderTemplateFormState {
                 let value_state = match item.input_type() {
                     InputType::Boolean { .. } => {
                         let options = vec!["true".to_string(), "false".to_string()];
-                        let selected = value
-                            .as_bool()
-                            .unwrap_or_default()
-                            .to_string();
+                        let selected = value.as_bool().unwrap_or_default().to_string();
                         let selected_index = options
                             .iter()
                             .position(|option| *option == selected)
@@ -256,11 +253,12 @@ impl ProviderTemplateFormState {
         for row in &self.template_rows {
             match &row.value_state {
                 ProviderTemplateFieldValueState::Input(input) => {
-                    let subscription = cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            cx.emit(ProviderTemplateFormEvent::Changed);
-                        }
-                    });
+                    let subscription =
+                        cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                cx.emit(ProviderTemplateFormEvent::Changed);
+                            }
+                        });
                     self._subscriptions.push(subscription);
                 }
                 ProviderTemplateFieldValueState::Select(select) => {

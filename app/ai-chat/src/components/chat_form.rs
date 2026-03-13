@@ -9,7 +9,9 @@ use crate::{
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::{AiChatError, AiChatResult},
     i18n::I18n,
-    llm::{ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider},
+    llm::{
+        ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider,
+    },
     workspace_state::ConversationDraft,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -371,7 +373,11 @@ impl ChatForm {
         });
         self.selected_template = draft
             .selected_template_id
-            .and_then(|template_id| self.templates.iter().find(|template| template.id == template_id))
+            .and_then(|template_id| {
+                self.templates
+                    .iter()
+                    .find(|template| template.id == template_id)
+            })
             .cloned();
         self.try_restore_pending_draft(window, cx);
         cx.emit(ChatFormEvent::StateChanged);
@@ -526,11 +532,13 @@ impl ChatForm {
         let initial_ix =
             PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
         let state = cx.entity().downgrade();
-        let on_confirm = Rc::new(move |template: TemplateOption, window: &mut Window, cx: &mut App| {
-            let _ = state.update(cx, |form, cx| {
-                form.choose_template(template.into_template(), window, cx);
-            });
-        });
+        let on_confirm = Rc::new(
+            move |template: TemplateOption, window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |form, cx| {
+                    form.choose_template(template.into_template(), window, cx);
+                });
+            },
+        );
         let state = cx.entity().downgrade();
         let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
             let _ = state.update(cx, |form, cx| {
