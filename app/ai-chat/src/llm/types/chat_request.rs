@@ -18,6 +18,8 @@ pub struct HostedTool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReasoningConfig {
     pub effort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

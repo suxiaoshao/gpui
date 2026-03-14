@@ -101,6 +101,8 @@ pub(crate) use openai::{OpenAIProvider, OpenAISettings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FetchUpdate {
+    ThinkingStarted,
+    ReasoningSummaryDelta(String),
     TextDelta(String),
     Complete(Content),
 }

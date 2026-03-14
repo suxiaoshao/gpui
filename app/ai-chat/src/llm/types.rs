@@ -9,6 +9,10 @@ pub use message::Message;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum OpenAIResponseStreamEvent {
+    #[serde(rename = "response.output_item.added")]
+    ResponseOutputItemAdded { item: OpenAIOutputItemEvent },
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ResponseReasoningSummaryTextDelta { delta: String },
     #[serde(rename = "response.output_text.delta")]
     ResponseOutputTextDelta { delta: String },
     #[serde(rename = "response.completed")]
@@ -29,4 +33,10 @@ pub struct OpenAIResponse {
 #[derive(Debug, Deserialize)]
 pub struct OpenAIResponseError {
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIOutputItemEvent {
+    #[serde(rename = "type")]
+    pub item_type: String,
 }

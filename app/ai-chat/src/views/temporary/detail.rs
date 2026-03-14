@@ -22,6 +22,7 @@ use futures::pin_mut;
 use gpui::*;
 use gpui_component::{
     Root, WindowExt,
+    description_list::DescriptionItem,
     notification::{Notification, NotificationType},
 };
 use smol::stream::StreamExt;
@@ -63,6 +64,10 @@ impl MessageViewExt for TemporaryMessage {
         &self.content
     }
 
+    fn send_content(&self) -> &serde_json::Value {
+        self.send_content.as_ref()
+    }
+
     fn status(&self) -> &Status {
         &self.status
     }
@@ -73,6 +78,39 @@ impl MessageViewExt for TemporaryMessage {
 
     fn id(&self) -> Self::Id {
         self.id
+    }
+
+    fn description_items(&self, cx: &App) -> Vec<DescriptionItem> {
+        let i18n = cx.global::<I18n>();
+        vec![
+            DescriptionItem::new(i18n.t("field-id")).value(self.id.to_string()),
+            DescriptionItem::new(i18n.t("field-provider")).value(self.provider.clone()),
+            DescriptionItem::new(i18n.t("field-role")).value(self.role.to_string()),
+            DescriptionItem::new(i18n.t("field-status")).value(self.status.to_string()),
+            DescriptionItem::new(i18n.t("field-created-time")).value(
+                self.created_time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| self.created_time.to_string()),
+            ),
+            DescriptionItem::new(i18n.t("field-updated-time")).value(
+                self.updated_time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| self.updated_time.to_string()),
+            ),
+            DescriptionItem::new(i18n.t("field-start-time")).value(
+                self.start_time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| self.start_time.to_string()),
+            ),
+            DescriptionItem::new(i18n.t("field-end-time")).value(
+                self.end_time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| self.end_time.to_string()),
+            ),
+            DescriptionItem::new(i18n.t("field-error"))
+                .value(self.error.clone().unwrap_or_else(|| "-".to_string()))
+                .span(3),
+        ]
     }
 
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -197,7 +235,19 @@ impl MessagePreviewExt for TemporaryMessage {
 impl TemporaryMessage {
     fn add_content(&mut self, content: &str) {
         let now = OffsetDateTime::now_utc();
+        if matches!(self.status, Status::Thinking) {
+            self.status = Status::Loading;
+        }
         self.content += content;
+        self.updated_time = now;
+        self.end_time = now;
+    }
+    fn add_reasoning_summary(&mut self, delta: &str) {
+        let now = OffsetDateTime::now_utc();
+        if !matches!(self.status, Status::Loading | Status::Normal) {
+            self.status = Status::Thinking;
+        }
+        self.content.append_reasoning_summary(delta);
         self.updated_time = now;
         self.end_time = now;
     }
@@ -213,7 +263,7 @@ impl TemporaryMessage {
     }
     fn reset_for_resend(&mut self) {
         let now = OffsetDateTime::now_utc();
-        self.content = Content::Text(String::new());
+        self.content = Content::default();
         self.status = Status::Loading;
         self.error = None;
         self.updated_time = now;
@@ -255,16 +305,18 @@ pub(crate) struct TemporaryMessageRevision {
 
 impl TemporaryMessageRevision {
     fn new(message: &TemporaryMessage) -> Self {
-        let content_len = match &message.content {
-            Content::Text(content) => content.len(),
-            Content::WebSearch { text, citations } => {
-                text.len()
-                    + citations
-                        .iter()
-                        .map(|citation| citation.url.len())
-                        .sum::<usize>()
-            }
-        };
+        let content_len = message.content.text.len()
+            + message
+                .content
+                .reasoning_summary
+                .as_ref()
+                .map_or(0, String::len)
+            + message
+                .content
+                .citations
+                .iter()
+                .map(|citation| citation.url.len())
+                .sum::<usize>();
 
         Self {
             id: message.id,
@@ -487,6 +539,16 @@ impl TemplateDetailView {
             last.end_time = now;
         }
     }
+    fn on_reasoning_summary(&mut self, delta: &str, message_id: usize) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
+            last.add_reasoning_summary(delta);
+        }
+    }
+    fn on_thinking(&mut self, message_id: usize) {
+        if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
+            last.update_status(Status::Thinking);
+        }
+    }
     fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
@@ -509,7 +571,7 @@ impl TemplateDetailView {
                 .messages
                 .iter_mut()
                 .find(|message| message.id == message_id)
-                && matches!(message.status, Status::Loading)
+                && matches!(message.status, Status::Loading | Status::Thinking)
             {
                 message.update_status(Status::Paused);
             }
@@ -592,7 +654,7 @@ impl TemplateDetailView {
         context: &TemporaryFetchContext,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedTemporaryFetch> {
-        let content = Content::Text(context.composer_snapshot.text.clone());
+        let content = Content::new(context.composer_snapshot.text.clone());
         let runner = Self::build_runner(
             state.clone(),
             context.config.clone(),
@@ -621,7 +683,7 @@ impl TemplateDetailView {
                     now: context.now,
                     provider: context.composer_snapshot.provider_name.clone(),
                     role: Role::Assistant,
-                    content: Content::Text(String::new()),
+                    content: Content::default(),
                     send_content: send_content.clone(),
                     status: Status::Loading,
                     error: None,
@@ -675,6 +737,16 @@ impl TemplateDetailView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
+                Ok(FetchUpdate::ThinkingStarted) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_thinking(assistant_message_id);
+                    })?;
+                }
+                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_reasoning_summary(&delta, assistant_message_id);
+                    })?;
+                }
                 Ok(FetchUpdate::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
@@ -719,6 +791,16 @@ impl TemplateDetailView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
+                Ok(FetchUpdate::ThinkingStarted) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_thinking(assistant_message_id);
+                    })?;
+                }
+                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                    state.update_result(cx, |this, _cx| {
+                        this.on_reasoning_summary(&delta, assistant_message_id);
+                    })?;
+                }
                 Ok(FetchUpdate::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
@@ -865,9 +947,9 @@ mod tests {
                 make_message(
                     Role::Assistant,
                     Status::Normal,
-                    Content::Text("a1".to_string()),
+                    Content::new("a1"),
                 ),
-                make_message(Role::User, Status::Error, Content::Text("bad".to_string())),
+                make_message(Role::User, Status::Error, Content::new("bad")),
             ],
             Role::User,
             "latest",

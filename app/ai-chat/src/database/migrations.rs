@@ -36,6 +36,13 @@ pub(super) fn v1_to_v3(
     )
 }
 
+pub(super) fn v1_to_v4(
+    v1_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    v1_to_v3(v1_conn, target_conn)
+}
+
 pub(super) fn v2_to_v3(
     v2_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
@@ -60,6 +67,27 @@ pub(super) fn v2_to_v3(
         },
         target_conn,
     )
+}
+
+pub(super) fn v2_to_v4(
+    v2_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    v2_to_v3(v2_conn, target_conn)
+}
+
+pub(super) fn v3_to_v4(
+    v3_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    target_conn.immediate_transaction(|target_conn| {
+        target_conn.batch_execute(CREATE_TABLE_SQL)?;
+        SqlFolder::migration_save(SqlFolder::all(v3_conn)?, target_conn)?;
+        SqlConversationTemplate::migration_save(SqlConversationTemplate::all(v3_conn)?, target_conn)?;
+        SqlConversation::migration_save(SqlConversation::get_all(v3_conn)?, target_conn)?;
+        SqlMessage::migration_save(build_v3_migrated_messages(v3::SqlMessageV3::all(v3_conn)?)?, target_conn)?;
+        Ok(())
+    })
 }
 
 fn migrate_legacy_store(data: LegacyData, target_conn: &mut SqliteConnection) -> AiChatResult<()> {
@@ -105,6 +133,25 @@ struct LegacyData {
 enum LegacyMessageSource {
     V1(Vec<LegacyMessageV1>),
     V2(Vec<LegacyMessageV2>),
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(tag = "tag", content = "value", rename_all = "camelCase")]
+enum LegacyContent {
+    Text(String),
+    WebSearch {
+        text: String,
+        citations: Vec<crate::database::UrlCitation>,
+    },
+}
+
+impl From<LegacyContent> for Content {
+    fn from(value: LegacyContent) -> Self {
+        match value {
+            LegacyContent::Text(text) => Content::new(text),
+            LegacyContent::WebSearch { text, citations } => Content::with_citations(text, citations),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -200,6 +247,16 @@ fn normalize_legacy_provider_name(name: &str) -> &str {
     }
 }
 
+fn normalize_legacy_content_str(content: &str) -> AiChatResult<Content> {
+    if let Ok(content) = serde_json::from_str::<Content>(content) {
+        return Ok(content);
+    }
+    if let Ok(content) = serde_json::from_str::<LegacyContent>(content) {
+        return Ok(content.into());
+    }
+    Ok(Content::new(content))
+}
+
 fn build_v1_migrated_messages(
     templates: &[LegacyTemplate],
     conversations: &[LegacyConversation],
@@ -252,7 +309,8 @@ fn build_conversation_messages(
     for message in messages {
         let role: Role = message.role.parse()?;
         let status: Status = message.status.parse()?;
-        let send_text = message_send_text(&message.content)?;
+        let content = normalize_legacy_content_str(&message.content)?;
+        let send_text = content.send_content().to_string();
         let send_content = if role == Role::Assistant {
             current_round_payload
                 .clone()
@@ -271,7 +329,7 @@ fn build_conversation_messages(
             conversation_path: message.conversation_path.clone(),
             provider: provider.clone(),
             role: message.role.clone(),
-            content: message.content.clone(),
+            content: serde_json::to_value(content)?,
             send_content,
             status: message.status.clone(),
             created_time: message.created_time,
@@ -316,13 +374,38 @@ fn build_v2_migrated_messages(
                 .get(&template_id)
                 .map(|template| normalize_legacy_provider_name(&template.provider).to_string())
                 .unwrap_or_else(|| "OpenAI".to_string());
+            let content = normalize_legacy_content_str(&message.content)?;
             Ok(SqlMessage {
                 id: message.id,
                 conversation_id: message.conversation_id,
                 conversation_path: message.conversation_path,
                 provider,
                 role: message.role,
-                content: message.content,
+                content: serde_json::to_value(content)?,
+                send_content: message.send_content,
+                status: message.status,
+                created_time: message.created_time,
+                updated_time: message.updated_time,
+                start_time: message.start_time,
+                end_time: message.end_time,
+                error: message.error,
+            })
+        })
+        .collect()
+}
+
+fn build_v3_migrated_messages(messages: Vec<v3::SqlMessageV3>) -> AiChatResult<Vec<SqlMessage>> {
+    messages
+        .into_iter()
+        .map(|message| {
+            let content = normalize_legacy_content_str(&message.content)?;
+            Ok(SqlMessage {
+                id: message.id,
+                conversation_id: message.conversation_id,
+                conversation_path: message.conversation_path,
+                provider: message.provider,
+                role: message.role,
+                content: serde_json::to_value(content)?,
                 send_content: message.send_content,
                 status: message.status,
                 created_time: message.created_time,
@@ -365,13 +448,6 @@ fn build_request_payload(
     request_template["stream"] = serde_json::Value::Bool(template.provider == "OpenAI Stream");
     provider_by_name(normalize_legacy_provider_name(&template.provider))?
         .request_body(&request_template, request_messages)
-}
-
-fn message_send_text(content: &str) -> AiChatResult<String> {
-    Ok(match serde_json::from_str::<Content>(content) {
-        Ok(content) => content.send_content().to_string(),
-        Err(_) => content.to_string(),
-    })
 }
 
 pub(super) mod v1 {
@@ -569,6 +645,53 @@ pub(super) mod v2 {
     }
 }
 
+pub(super) mod v3 {
+    use crate::errors::AiChatResult;
+    use diesel::prelude::*;
+    use time::OffsetDateTime;
+
+    diesel::table! {
+        messages (id) {
+            id -> Integer,
+            conversation_id -> Integer,
+            conversation_path -> Text,
+            provider -> Text,
+            role -> Text,
+            content -> Text,
+            send_content -> Json,
+            status -> Text,
+            created_time -> TimestamptzSqlite,
+            updated_time -> TimestamptzSqlite,
+            start_time -> TimestamptzSqlite,
+            end_time -> TimestamptzSqlite,
+            error -> Nullable<Text>,
+        }
+    }
+
+    #[derive(Debug, Queryable)]
+    pub(crate) struct SqlMessageV3 {
+        pub id: i32,
+        pub conversation_id: i32,
+        pub conversation_path: String,
+        pub provider: String,
+        pub role: String,
+        pub content: String,
+        pub send_content: serde_json::Value,
+        pub status: String,
+        pub created_time: OffsetDateTime,
+        pub updated_time: OffsetDateTime,
+        pub start_time: OffsetDateTime,
+        pub end_time: OffsetDateTime,
+        pub error: Option<String>,
+    }
+
+    impl SqlMessageV3 {
+        pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+            messages::table.load::<Self>(conn).map_err(|e| e.into())
+        }
+    }
+}
+
 impl TryFrom<v1::SqlConversationTemplateV1> for LegacyTemplate {
     type Error = crate::errors::AiChatError;
 
@@ -659,7 +782,7 @@ impl From<v2::SqlMessageV2> for LegacyMessageV2 {
 
 #[cfg(test)]
 mod tests {
-    use super::{v1_to_v3, v2_to_v3};
+    use super::{v1_to_v3, v2_to_v3, v3_to_v4};
     use crate::database::model::{SqlConversation, SqlConversationTemplate, SqlMessage};
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query,
@@ -733,6 +856,8 @@ create table messages
 
     const V2_CREATE_TABLE_SQL: &str =
         include_str!("../../migrations/2025-12-23-141452-0000_create_tables/up.sql");
+    const V3_CREATE_TABLE_SQL: &str =
+        include_str!("../../migrations/2026-03-08-000000_create_tables_v3/up.sql");
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -844,6 +969,45 @@ create table messages
         drop(v3_conn);
         let _ = fs::remove_file(v2_path);
         let _ = fs::remove_file(v3_path);
+        Ok(())
+    }
+
+    #[test]
+    fn v3_migration_converts_legacy_content_enum_to_json_struct() -> anyhow::Result<()> {
+        let v3_path = temp_db_path("v3-source");
+        let v4_path = temp_db_path("v4-target");
+        let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
+        let mut v4_conn = SqliteConnection::establish(v4_path.to_str().expect("v4 path"))?;
+
+        v3_conn.batch_execute(V3_CREATE_TABLE_SQL)?;
+        sql_query(
+            "insert into conversation_templates (id, name, icon, description, prompts, created_time, updated_time)
+             values (1, 'base', '🤖', null, '[]', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+        )
+        .execute(&mut v3_conn)?;
+        sql_query(
+            "insert into conversations (id, folder_id, path, title, icon, created_time, updated_time, info)
+             values (1, null, '/默认', '默认', '🤖', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+        )
+        .execute(&mut v3_conn)?;
+        sql_query(
+            "insert into messages (id, conversation_id, conversation_path, provider, role, content, send_content, status, created_time, updated_time, start_time, end_time, error)
+             values (1, 1, '/默认', 'OpenAI', 'assistant', '{\"tag\":\"webSearch\",\"value\":{\"text\":\"hello\",\"citations\":[{\"title\":\"Example\",\"url\":\"https://example.com\"}]}}', '{\"model\":\"gpt-4o\"}', 'normal', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+        )
+        .execute(&mut v3_conn)?;
+
+        v3_to_v4(&mut v3_conn, &mut v4_conn)?;
+
+        let messages = SqlMessage::all(&mut v4_conn)?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content["text"], "hello");
+        assert!(messages[0].content.get("reasoningSummary").is_none());
+        assert_eq!(messages[0].content["citations"][0]["url"], "https://example.com");
+
+        drop(v3_conn);
+        drop(v4_conn);
+        let _ = fs::remove_file(v3_path);
+        let _ = fs::remove_file(v4_path);
         Ok(())
     }
 }

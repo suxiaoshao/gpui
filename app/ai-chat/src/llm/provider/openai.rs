@@ -156,6 +156,8 @@ struct OutputItem {
     #[serde(rename = "type")]
     item_type: Option<String>,
     content: Option<Vec<OutputContent>>,
+    #[serde(default)]
+    summary: Vec<ReasoningSummaryPart>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +179,13 @@ struct OutputAnnotation {
     end_index: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReasoningSummaryPart {
+    #[serde(rename = "type")]
+    part_type: String,
+    text: Option<String>,
+}
+
 impl OutputAnnotation {
     fn into_citation(self) -> Option<UrlCitation> {
         if self.annotation_type != "url_citation" {
@@ -193,9 +202,22 @@ impl OutputAnnotation {
 
 impl ResponsesCreateResponse {
     fn into_content(self) -> Content {
-        let mut text = String::new();
+        let mut content = Content::default();
         let mut citations = Vec::new();
         for item in self.output {
+            if item.item_type.as_deref() == Some("reasoning") {
+                let summary = item
+                    .summary
+                    .into_iter()
+                    .filter(|part| part.part_type == "summary_text")
+                    .filter_map(|part| part.text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if !summary.trim().is_empty() {
+                    content.reasoning_summary = Some(summary);
+                }
+                continue;
+            }
             if item.item_type.as_deref() == Some("web_search_call") {
                 continue;
             }
@@ -204,7 +226,7 @@ impl ResponsesCreateResponse {
                     continue;
                 }
                 if let Some(part_text) = part.text {
-                    text.push_str(&part_text);
+                    content.text.push_str(&part_text);
                 }
                 citations.extend(
                     part.annotations
@@ -213,11 +235,8 @@ impl ResponsesCreateResponse {
                 );
             }
         }
-        if citations.is_empty() {
-            Content::Text(text)
-        } else {
-            Content::WebSearch { text, citations }
-        }
+        content.citations = citations;
+        content
     }
 }
 
@@ -239,6 +258,7 @@ struct ReasoningProfile {
 }
 
 const REASONING_EFFORT_KEY: &str = "reasoning.effort";
+const REASONING_SUMMARY_DETAILED: &str = "detailed";
 const REASONING_NONE: &str = "none";
 const REASONING_MINIMAL: &str = "minimal";
 const REASONING_LOW: &str = "low";
@@ -352,6 +372,15 @@ fn classify_model(id: &str) -> Option<ProviderModelCapability> {
 fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
     match event {
+        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item }
+            if item.item_type == "reasoning" =>
+        {
+            Ok(Some(FetchUpdate::ThinkingStarted))
+        }
+        OpenAIResponseStreamEvent::ResponseOutputItemAdded { .. } => Ok(None),
+        OpenAIResponseStreamEvent::ResponseReasoningSummaryTextDelta { delta } => {
+            Ok(Some(FetchUpdate::ReasoningSummaryDelta(delta)))
+        }
         OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => {
             Ok(Some(FetchUpdate::TextDelta(delta)))
         }
@@ -432,14 +461,20 @@ impl OpenAIProvider {
         })
     }
 
-    fn sanitize_reasoning(model: &str, reasoning: Option<ReasoningConfig>) -> Option<ReasoningConfig> {
+    fn sanitize_reasoning(
+        model: &str,
+        reasoning: Option<ReasoningConfig>,
+    ) -> Option<ReasoningConfig> {
         let profile = Self::reasoning_profile(model)?;
-        let reasoning = reasoning?;
+        let mut reasoning = reasoning?;
         profile
             .options
             .iter()
             .any(|option| *option == reasoning.effort)
-            .then_some(reasoning)
+            .then(|| {
+                reasoning.summary = Some(REASONING_SUMMARY_DETAILED.to_string());
+                reasoning
+            })
     }
 
     fn reasoning_effort_from_template(template: &serde_json::Value) -> Option<&str> {
@@ -801,6 +836,7 @@ impl Provider for OpenAIProvider {
             "reasoning".to_string(),
             serde_json::to_value(ReasoningConfig {
                 effort: value.to_string(),
+                summary: Some(REASONING_SUMMARY_DETAILED.to_string()),
             })?,
         );
         Ok(())
@@ -812,7 +848,8 @@ mod tests {
     use super::{
         OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
         REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM, REASONING_NONE,
-        REASONING_XHIGH, ResponsesCreateResponse, classify_model, normalize_base_url,
+        REASONING_SUMMARY_DETAILED, REASONING_XHIGH, ResponsesCreateResponse, classify_model,
+        normalize_base_url,
         parse_response_stream_event,
     };
     use crate::{
@@ -1015,6 +1052,7 @@ mod tests {
             serde_json::from_value::<OpenAIRequestTemplate>(template)?.reasoning,
             Some(ReasoningConfig {
                 effort: REASONING_XHIGH.to_string(),
+                summary: Some(REASONING_SUMMARY_DETAILED.to_string()),
             })
         );
         Ok(())
@@ -1043,6 +1081,7 @@ mod tests {
             vec![],
         )?;
         assert_eq!(request_body["reasoning"]["effort"], "xhigh");
+        assert_eq!(request_body["reasoning"]["summary"], REASONING_SUMMARY_DETAILED);
         Ok(())
     }
 
@@ -1088,8 +1127,9 @@ mod tests {
         .expect("response");
         assert_eq!(
             response.into_content(),
-            Content::WebSearch {
+            Content {
                 text: "hello".to_string(),
+                reasoning_summary: None,
                 citations: vec![crate::database::UrlCitation {
                     title: Some("Example".to_string()),
                     url: "https://example.com".to_string(),
@@ -1107,14 +1147,52 @@ mod tests {
         )?;
         assert_eq!(
             update,
-            Some(FetchUpdate::Complete(Content::WebSearch {
+            Some(FetchUpdate::Complete(Content {
                 text: "done".to_string(),
+                reasoning_summary: None,
                 citations: vec![crate::database::UrlCitation {
                     title: Some("Example".to_string()),
                     url: "https://example.com".to_string(),
                     start_index: Some(0),
                     end_index: Some(4),
                 }]
+            }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reasoning_output_item_added_starts_thinking() -> anyhow::Result<()> {
+        let update = parse_response_stream_event(
+            r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[]}}"#,
+        )?;
+        assert_eq!(update, Some(FetchUpdate::ThinkingStarted));
+        Ok(())
+    }
+
+    #[test]
+    fn reasoning_summary_text_delta_yields_update() -> anyhow::Result<()> {
+        let update = parse_response_stream_event(
+            r#"{"type":"response.reasoning_summary_text.delta","delta":"thinking"}"#,
+        )?;
+        assert_eq!(
+            update,
+            Some(FetchUpdate::ReasoningSummaryDelta("thinking".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn response_completed_event_extracts_reasoning_summary() -> anyhow::Result<()> {
+        let update = parse_response_stream_event(
+            r#"{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"summarized"}]},{"type":"message","content":[{"type":"output_text","text":"done","annotations":[]}]}]}}"#,
+        )?;
+        assert_eq!(
+            update,
+            Some(FetchUpdate::Complete(Content {
+                text: "done".to_string(),
+                reasoning_summary: Some("summarized".to_string()),
+                citations: vec![],
             }))
         );
         Ok(())

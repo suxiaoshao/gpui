@@ -28,8 +28,9 @@ pub use types::{Mode, Role, Status};
 const DATABASE_FILE_V1: &str = "history.sqlite3";
 const DATABASE_FILE_V2: &str = "history_v2.sqlite3";
 const DATABASE_FILE_V3: &str = "history_v3.sqlite3";
+const DATABASE_FILE_V4: &str = "history_v4.sqlite3";
 const CREATE_TABLE_SQL: &str =
-    include_str!("../migrations/2026-03-08-000000_create_tables_v3/up.sql");
+    include_str!("../migrations/2026-03-15-000000_create_tables_v4/up.sql");
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 
@@ -70,9 +71,13 @@ enum StoreVersion {
     },
     V2 {
         conn: DbConn,
-        v2_path: std::path::PathBuf,
+        source_path: std::path::PathBuf,
     },
-    V3(DbConn),
+    V3 {
+        conn: DbConn,
+        source_path: std::path::PathBuf,
+    },
+    V4(DbConn),
 }
 
 impl StoreVersion {
@@ -80,49 +85,70 @@ impl StoreVersion {
         let v1_path = data_dir.join(DATABASE_FILE_V1);
         let v2_path = data_dir.join(DATABASE_FILE_V2);
         let v3_path = data_dir.join(DATABASE_FILE_V3);
-        match (v1_path.exists(), v2_path.exists(), v3_path.exists()) {
-            (_, _, true) => Ok(Self::V3(get_dbconn(&v3_path)?)),
-            (_, true, false) => Ok(Self::V2 {
-                conn: get_dbconn(&v3_path)?,
-                v2_path,
+        let v4_path = data_dir.join(DATABASE_FILE_V4);
+        match (
+            v1_path.exists(),
+            v2_path.exists(),
+            v3_path.exists(),
+            v4_path.exists(),
+        ) {
+            (_, _, _, true) => Ok(Self::V4(get_dbconn(&v4_path)?)),
+            (_, _, true, false) => Ok(Self::V3 {
+                conn: get_dbconn(&v4_path)?,
+                source_path: v3_path,
             }),
-            (true, false, false) => Ok(Self::V1 {
-                conn: get_dbconn(&v3_path)?,
+            (_, true, false, false) => Ok(Self::V2 {
+                conn: get_dbconn(&v4_path)?,
+                source_path: v2_path,
+            }),
+            (true, false, false, false) => Ok(Self::V1 {
+                conn: get_dbconn(&v4_path)?,
                 v1_db: SqliteConnection::establish(v1_path.to_str().ok_or(AiChatError::DbPath)?)?,
             }),
-            _ => Ok(Self::None(get_dbconn(&v3_path)?)),
+            _ => Ok(Self::None(get_dbconn(&v4_path)?)),
         }
     }
 
     fn migration(self) -> AiChatResult<DbConn> {
         match self {
             Self::None(conn) => {
-                event!(Level::INFO, "initialize database v3");
+                event!(Level::INFO, "initialize database v4");
                 let mut db = conn.get()?;
                 init_tables(&mut db)?;
                 Ok(conn)
             }
             Self::V1 { conn, mut v1_db } => {
-                event!(Level::INFO, "migrate database from v1 to v3");
-                let v3_db = &mut conn.get()?;
-                if let Err(err) = migrations::v1_to_v3(&mut v1_db, v3_db) {
-                    event!(Level::ERROR, "database migration v1 -> v3 failed: {}", err);
-                    init_tables(v3_db)?;
+                event!(Level::INFO, "migrate database from v1 to v4");
+                let v4_db = &mut conn.get()?;
+                if let Err(err) = migrations::v1_to_v4(&mut v1_db, v4_db) {
+                    event!(Level::ERROR, "database migration v1 -> v4 failed: {}", err);
+                    init_tables(v4_db)?;
                 }
                 Ok(conn)
             }
-            Self::V2 { conn, v2_path } => {
-                event!(Level::INFO, "migrate database from v2 to v3");
+            Self::V2 { conn, source_path } => {
+                event!(Level::INFO, "migrate database from v2 to v4");
                 let mut v2_db =
-                    SqliteConnection::establish(v2_path.to_str().ok_or(AiChatError::DbPath)?)?;
-                let v3_db = &mut conn.get()?;
-                if let Err(err) = migrations::v2_to_v3(&mut v2_db, v3_db) {
-                    event!(Level::ERROR, "database migration v2 -> v3 failed: {}", err);
-                    init_tables(v3_db)?;
+                    SqliteConnection::establish(source_path.to_str().ok_or(AiChatError::DbPath)?)?;
+                let v4_db = &mut conn.get()?;
+                if let Err(err) = migrations::v2_to_v4(&mut v2_db, v4_db) {
+                    event!(Level::ERROR, "database migration v2 -> v4 failed: {}", err);
+                    init_tables(v4_db)?;
                 }
                 Ok(conn)
             }
-            Self::V3(conn) => Ok(conn),
+            Self::V3 { conn, source_path } => {
+                event!(Level::INFO, "migrate database from v3 to v4");
+                let mut v3_db =
+                    SqliteConnection::establish(source_path.to_str().ok_or(AiChatError::DbPath)?)?;
+                let v4_db = &mut conn.get()?;
+                if let Err(err) = migrations::v3_to_v4(&mut v3_db, v4_db) {
+                    event!(Level::ERROR, "database migration v3 -> v4 failed: {}", err);
+                    init_tables(v4_db)?;
+                }
+                Ok(conn)
+            }
+            Self::V4(conn) => Ok(conn),
         }
     }
 }

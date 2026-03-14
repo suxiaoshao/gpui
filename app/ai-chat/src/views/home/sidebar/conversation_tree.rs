@@ -526,7 +526,7 @@ mod tests {
             conversation_path: format!("/conversation-{conversation_id}"),
             provider: "OpenAI".to_string(),
             role: Role::User,
-            content: Content::Text(format!("message-{id}")),
+            content: Content::new(format!("message-{id}")),
             send_content: serde_json::json!({ "message_id": id }),
             status: Status::Normal,
             error: None,

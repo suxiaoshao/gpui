@@ -8,7 +8,7 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::ops::AddAssign;
+use std::{collections::HashSet, ops::AddAssign};
 use time::OffsetDateTime;
 
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
@@ -21,77 +21,77 @@ pub struct UrlCitation {
     pub end_index: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "tag", content = "value", rename_all = "camelCase")]
-pub enum Content {
-    Text(String),
-    WebSearch {
-        text: String,
-        citations: Vec<UrlCitation>,
-    },
+#[derive(Debug, Default, Serialize, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Content {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<UrlCitation>,
 }
 
 impl AddAssign<String> for Content {
     fn add_assign(&mut self, rhs: String) {
-        match self {
-            Content::Text(text) => {
-                *text += &rhs;
-            }
-            Content::WebSearch { text, .. } => {
-                *text += &rhs;
-            }
-        }
+        self.text += &rhs;
     }
 }
 
 impl AddAssign<&str> for Content {
     fn add_assign(&mut self, rhs: &str) {
-        match self {
-            Content::Text(text) => {
-                *text += rhs;
-            }
-            Content::WebSearch { text, .. } => {
-                *text += rhs;
-            }
-        }
+        self.text += rhs;
     }
 }
 
 impl Content {
-    pub(crate) fn display_text(&self) -> &str {
-        match self {
-            Content::Text(content) => content,
-            Content::WebSearch { text, .. } => text,
+    pub(crate) fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            reasoning_summary: None,
+            citations: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_citations(
+        text: impl Into<String>,
+        citations: Vec<UrlCitation>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            reasoning_summary: None,
+            citations,
         }
     }
 
     pub(crate) fn send_content(&self) -> &str {
-        match self {
-            Content::Text(content) => content,
-            Content::WebSearch { text, .. } => text,
-        }
+        &self.text
     }
 
     pub(crate) fn display_markdown(&self, sources_label: &str) -> String {
-        match self {
-            Content::WebSearch { text, citations } => {
-                let mut markdown = text.clone();
-                let sources = format_sources_markdown(citations, sources_label);
-                if !sources.is_empty() {
-                    if !markdown.is_empty() {
-                        markdown.push_str("\n\n");
-                    }
-                    markdown.push_str(&sources);
-                }
-                markdown
+        let mut markdown = self.text.clone();
+        let sources = format_sources_markdown(&self.citations, sources_label);
+        if !sources.is_empty() {
+            if !markdown.is_empty() {
+                markdown.push_str("\n\n");
             }
-            _ => self.display_text().to_string(),
+            markdown.push_str(&sources);
+        }
+        markdown
+    }
+
+    pub(crate) fn append_reasoning_summary(&mut self, delta: &str) {
+        let summary = self.reasoning_summary.get_or_insert_with(String::new);
+        summary.push_str(delta);
+        if summary.trim().is_empty() {
+            self.reasoning_summary = None;
         }
     }
+
 }
 
 fn format_sources_markdown(citations: &[UrlCitation], sources_label: &str) -> String {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut lines = Vec::new();
     for citation in citations {
         if !seen.insert(citation.url.as_str()) {
@@ -120,45 +120,37 @@ mod content_tests {
 
     #[test]
     fn add_assign_appends_text_content() {
-        let mut content = Content::Text("hello".to_string());
+        let mut content = Content::new("hello");
         content += " world";
-        assert_eq!(content, Content::Text("hello world".to_string()));
+        assert_eq!(content, Content::new("hello world"));
     }
 
     #[test]
-    fn add_assign_appends_web_search_text() {
-        let mut content = Content::WebSearch {
-            text: "hello".to_string(),
-            citations: vec![],
-        };
+    fn add_assign_appends_text_when_citations_exist() {
+        let mut content = Content::with_citations("hello", vec![]);
         content += " world";
-        assert_eq!(
-            content,
-            Content::WebSearch {
-                text: "hello world".to_string(),
-                citations: vec![],
-            }
-        );
+        assert_eq!(content.text, "hello world");
     }
 
     #[test]
-    fn send_content_uses_web_search_body() {
-        let content = Content::WebSearch {
-            text: "body".to_string(),
-            citations: vec![UrlCitation {
+    fn send_content_uses_text_body() {
+        let content = Content::with_citations(
+            "body",
+            vec![UrlCitation {
                 title: Some("Example".to_string()),
                 url: "https://example.com".to_string(),
                 start_index: Some(0),
                 end_index: Some(4),
             }],
-        };
+        );
         assert_eq!(content.send_content(), "body");
     }
 
     #[test]
     fn display_markdown_renders_deduped_sources() {
-        let content = Content::WebSearch {
+        let content = Content {
             text: "answer".to_string(),
+            reasoning_summary: None,
             citations: vec![
                 UrlCitation {
                     title: Some("Example".to_string()),
@@ -178,6 +170,14 @@ mod content_tests {
             content.display_markdown("Sources"),
             "answer\n\nSources\n- [Example](https://example.com)"
         );
+    }
+
+    #[test]
+    fn append_reasoning_summary_creates_and_appends_text() {
+        let mut content = Content::default();
+        content.append_reasoning_summary("thinking");
+        content.append_reasoning_summary(" more");
+        assert_eq!(content.reasoning_summary.as_deref(), Some("thinking more"));
     }
 }
 
@@ -231,7 +231,7 @@ impl TryFrom<SqlMessage> for Message {
             conversation_path: value.conversation_path,
             provider: value.provider,
             role: value.role.parse()?,
-            content: serde_json::from_str(&value.content)?,
+            content: serde_json::from_value(value.content)?,
             send_content: value.send_content,
             status: value.status.parse()?,
             created_time: value.created_time,
@@ -297,7 +297,7 @@ impl Message {
             let time = OffsetDateTime::now_utc();
             let SqlConversation { path, .. } = SqlConversation::find(conversation_id, conn)?;
             let role = role.to_string();
-            let content = serde_json::to_string(content)?;
+            let content = serde_json::to_value(content)?;
             let status = status.to_string();
 
             let new_message = SqlNewMessage {
@@ -363,17 +363,12 @@ impl Message {
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();
-        SqlMessage::update_content(id, serde_json::to_string(content)?, time, conn)?;
+        SqlMessage::update_content(id, serde_json::to_value(content)?, time, conn)?;
         Ok(())
     }
     pub fn reset_for_resend(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();
-        SqlMessage::reset_for_resend(
-            id,
-            serde_json::to_string(&Content::Text(String::new()))?,
-            time,
-            conn,
-        )?;
+        SqlMessage::reset_for_resend(id, serde_json::to_value(Content::default())?, time, conn)?;
         Ok(())
     }
 }
