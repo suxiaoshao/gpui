@@ -1,23 +1,20 @@
 mod mode_select;
 mod model_select;
 mod picker;
-mod provider_chat_form;
-mod provider_template_form;
+mod reasoning_effort_select;
 mod template_picker;
 
 use crate::{
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
-    errors::{AiChatError, AiChatResult},
+    errors::AiChatResult,
     i18n::I18n,
-    llm::{
-        ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider,
-    },
+    llm::provider_by_name,
     workspace_state::ConversationDraft,
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, IconName, Sizable,
-    button::{Button, ButtonVariants},
+    button::Button,
     h_flex,
     input::{Input, InputEvent, InputState, Position},
     list::ListState,
@@ -27,8 +24,7 @@ use gpui_component::{
 use mode_select::{ModeSelect, ModeSelectEvent};
 use model_select::{ModelSelect, ModelSelectEvent};
 use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
-use provider_chat_form::ProviderChatFormView;
-use provider_template_form::{ProviderTemplateFormEvent, ProviderTemplateFormState};
+use reasoning_effort_select::{ReasoningEffortSelect, ReasoningEffortSelectEvent};
 use std::rc::Rc;
 use template_picker::{TemplateOption, template_sections};
 
@@ -56,9 +52,10 @@ pub(crate) struct ChatForm {
     input_state: Entity<InputState>,
     mode_select: Entity<ModeSelect>,
     model_select: Entity<ModelSelect>,
+    reasoning_effort_select: Entity<ReasoningEffortSelect>,
     templates: Vec<ConversationTemplate>,
     selected_template: Option<ConversationTemplate>,
-    provider_chat_form: Option<Entity<ProviderChatFormView>>,
+    request_template: Option<serde_json::Value>,
     template_picker: Option<Entity<ListState<PickerListDelegate<TemplateOption>>>>,
     template_picker_bounds: Bounds<Pixels>,
     running: bool,
@@ -67,15 +64,22 @@ pub(crate) struct ChatForm {
     suppress_template_trigger_once: bool,
     last_input_text: String,
     pending_restore_draft: Option<ConversationDraft>,
-    provider_form_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input_state = cx.new(|cx| InputState::new(window, cx).multi_line(true).auto_grow(3, 8));
+        let input_state = cx.new(|cx| {
+            let input = InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 8)
+                .placeholder(cx.global::<I18n>().t("field-chat-input-placeholder"));
+            input.focus(window, cx);
+            input
+        });
         let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
         let model_select = cx.new(|cx| ModelSelect::new(window, cx));
+        let reasoning_effort_select = cx.new(|cx| ReasoningEffortSelect::new(window, cx));
         let templates = cx
             .global::<Db>()
             .get()
@@ -87,9 +91,10 @@ impl ChatForm {
             input_state,
             mode_select,
             model_select,
+            reasoning_effort_select,
             templates,
             selected_template: None,
-            provider_chat_form: None,
+            request_template: None,
             template_picker: None,
             template_picker_bounds: Bounds::default(),
             running: false,
@@ -98,12 +103,12 @@ impl ChatForm {
             suppress_template_trigger_once: false,
             last_input_text: String::new(),
             pending_restore_draft: None,
-            provider_form_subscription: None,
             _subscriptions: Vec::new(),
         };
         this.bind_input_events(window, cx);
         this.bind_model_select_events(window, cx);
         this.bind_mode_select_events(window, cx);
+        this.bind_reasoning_effort_events(window, cx);
         this
     }
 
@@ -135,18 +140,34 @@ impl ChatForm {
                 ModelSelectEvent::Change(Some(model)) => {
                     let provider = match provider_by_name(&model.provider_name) {
                         Ok(provider) => provider,
-                        Err(_) => return,
+                        Err(_) => {
+                            this.request_template = None;
+                            cx.emit(ChatFormEvent::StateChanged);
+                            cx.notify();
+                            return;
+                        }
                     };
                     let template = match provider.default_template_for_model(model) {
                         Ok(template) => template,
-                        Err(_) => return,
+                        Err(_) => {
+                            this.request_template = None;
+                            this.reasoning_effort_select
+                                .update(cx, |select, cx| select.clear(window, cx));
+                            cx.emit(ChatFormEvent::StateChanged);
+                            cx.notify();
+                            return;
+                        }
                     };
-                    this.rebuild_provider_chat_form(model, template, window, cx);
+                    this.request_template = Some(template);
+                    this.sync_ext_settings(model, window, cx);
                     this.try_restore_pending_draft(window, cx);
                     cx.emit(ChatFormEvent::StateChanged);
+                    cx.notify();
                 }
                 ModelSelectEvent::Change(None) => {
-                    this.provider_chat_form = None;
+                    this.request_template = None;
+                    this.reasoning_effort_select
+                        .update(cx, |select, cx| select.clear(window, cx));
                     cx.emit(ChatFormEvent::StateChanged);
                     cx.notify();
                 }
@@ -171,44 +192,92 @@ impl ChatForm {
         self._subscriptions.push(subscription);
     }
 
-    fn rebuild_provider_chat_form(
+    fn bind_reasoning_effort_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let subscription = cx.subscribe_in(
+            &self.reasoning_effort_select,
+            window,
+            |this, _select, event: &ReasoningEffortSelectEvent, _window, cx| {
+                let ReasoningEffortSelectEvent::Change(value) = event;
+                let Some(model) = this.model_select.read(cx).selected_model() else {
+                    return;
+                };
+                let Ok(provider) = provider_by_name(&model.provider_name) else {
+                    return;
+                };
+                let Some(template) = this.request_template.as_mut() else {
+                    return;
+                };
+                if provider
+                    .apply_ext_setting(&model, template, "reasoning.effort", value)
+                    .is_err()
+                {
+                    return;
+                }
+                this.sync_ext_settings(&model, _window, cx);
+                cx.emit(ChatFormEvent::StateChanged);
+                cx.notify();
+            },
+        );
+        self._subscriptions.push(subscription);
+    }
+
+    fn sync_ext_settings(
         &mut self,
-        model: &ProviderModel,
-        template: serde_json::Value,
+        model: &crate::llm::ProviderModel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let template_items = match template_inputs_by_provider(&model.provider_name) {
-            Ok(items) => items,
+        let Some(template) = self.request_template.clone() else {
+            self.reasoning_effort_select
+                .update(cx, |select, cx| select.clear(window, cx));
+            return;
+        };
+        let Ok(provider) = provider_by_name(&model.provider_name) else {
+            self.reasoning_effort_select
+                .update(cx, |select, cx| select.clear(window, cx));
+            return;
+        };
+        let settings = match provider.ext_settings(model, &template) {
+            Ok(settings) => settings,
             Err(_) => {
-                self.provider_chat_form = None;
-                cx.notify();
+                self.reasoning_effort_select
+                    .update(cx, |select, cx| select.clear(window, cx));
                 return;
             }
         };
-        let layout = match chat_form_layout_by_provider(&model.provider_name) {
-            Ok(layout) => layout,
-            Err(_) => {
-                self.provider_chat_form = None;
-                cx.notify();
-                return;
-            }
+        if let Some(setting) = settings
+            .into_iter()
+            .find(|setting| setting.key == "reasoning.effort")
+        {
+            self.reasoning_effort_select.update(cx, |select, cx| {
+                select.configure(setting.options, setting.value, window, cx);
+            });
+        } else {
+            self.reasoning_effort_select
+                .update(cx, |select, cx| select.clear(window, cx));
+        }
+    }
+
+    fn apply_saved_ext_settings(
+        &mut self,
+        provider: &'static dyn crate::llm::Provider,
+        model: &crate::llm::ProviderModel,
+        template: &mut serde_json::Value,
+        saved_template: &serde_json::Value,
+    ) {
+        let Some(effort) = Self::string_value_at_path(saved_template, &["reasoning", "effort"])
+        else {
+            return;
         };
-        let form =
-            cx.new(|cx| ProviderTemplateFormState::new(template_items, &template, window, cx));
-        self.provider_form_subscription = Some(cx.subscribe_in(
-            &form,
-            window,
-            |_this, _, event: &ProviderTemplateFormEvent, _window, cx| {
-                if matches!(event, ProviderTemplateFormEvent::Changed) {
-                    cx.emit(ChatFormEvent::StateChanged);
-                }
-            },
-        ));
-        let base_template = template.clone();
-        self.provider_chat_form =
-            Some(cx.new(move |_cx| ProviderChatFormView::new(form, base_template, layout)));
-        cx.notify();
+        let _ = provider.apply_ext_setting(model, template, "reasoning.effort", effort);
+    }
+
+    fn string_value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+        let mut current = value;
+        for segment in path {
+            current = current.get(*segment)?;
+        }
+        current.as_str()
     }
 
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -294,6 +363,11 @@ impl ChatForm {
         cx.emit(ChatFormEvent::StateChanged);
     }
 
+    pub(crate) fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input_state
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
     pub(crate) fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         self.running = running;
         cx.notify();
@@ -303,13 +377,9 @@ impl ChatForm {
         let Some(selected_model) = self.model_select.read(cx).selected_model() else {
             return Ok(None);
         };
-        let Some(provider_chat_form) = &self.provider_chat_form else {
+        let Some(request_template) = self.request_template.clone() else {
             return Ok(None);
         };
-        let request_template = provider_chat_form
-            .read(cx)
-            .effective_template(cx)
-            .map_err(AiChatError::StreamError)?;
         let mode = self.mode_select.read(cx).selected_value();
         Ok(Some(ChatFormSnapshot {
             text: self.input_state.read(cx).value().to_string(),
@@ -337,9 +407,8 @@ impl ChatForm {
             return None;
         }
         let request_template = self
-            .provider_chat_form
-            .as_ref()
-            .and_then(|provider_chat_form| provider_chat_form.read(cx).effective_template(cx).ok())
+            .request_template
+            .clone()
             .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
         Some(ConversationDraft {
             text,
@@ -405,24 +474,23 @@ impl ChatForm {
             Ok(template) => template,
             Err(_) => return,
         };
-        self.rebuild_provider_chat_form(&model, base_template, window, cx);
-        if let Some(form) = self
-            .provider_chat_form
-            .clone()
-            .map(|view| view.read(cx).form().clone())
-        {
-            form.update(cx, |state, cx| {
-                state.apply_template(&draft.request_template, window, cx);
-            });
-        }
+        let mut base_template = base_template;
+        self.apply_saved_ext_settings(
+            provider,
+            &model,
+            &mut base_template,
+            &draft.request_template,
+        );
+        self.request_template = Some(base_template);
+        self.sync_ext_settings(&model, window, cx);
         self.pending_restore_draft = None;
     }
 
     fn can_send(&self, cx: &App) -> bool {
         !self.running
-            && !self.input_state.read(cx).value().is_empty()
+            && !self.input_state.read(cx).value().trim().is_empty()
             && self.model_select.read(cx).selected_model().is_some()
-            && self.provider_chat_form.is_some()
+            && self.request_template.is_some()
     }
 }
 
@@ -430,20 +498,24 @@ impl Render for ChatForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_tooltip = cx.global::<I18n>().t("tooltip-send-message");
         let pause_tooltip = cx.global::<I18n>().t("tooltip-pause-message");
-        let settings_tooltip = cx.global::<I18n>().t("tooltip-chat-form-settings");
         let mut root = v_flex();
         root.style().align_items = Some(AlignItems::Stretch);
 
         root.w_full()
             .gap_2()
-            .bg(cx.theme().input)
-            .rounded(cx.theme().radius)
-            .p_1()
+            .occlude()
+            .bg(cx.theme().group_box)
+            .rounded(px(18.))
+            .border_1()
+            .border_color(cx.theme().border.opacity(0.04))
+            .shadow_2xl()
+            .p_2()
             .relative()
             .child(
                 div()
+                    .flex()
                     .w_full()
-                    .child(Input::new(&self.input_state).w_full().appearance(false)),
+                    .child(Input::new(&self.input_state).flex_1().appearance(false)),
             )
             .when_some(self.selected_template.clone(), |this, template| {
                 let tag = Tag::primary()
@@ -467,50 +539,32 @@ impl Render for ChatForm {
                             .items_center()
                             .gap_1()
                             .child(self.model_select.clone())
+                            .child(self.reasoning_effort_select.clone())
                             .child(self.mode_select.clone()),
                     )
                     .child(div().flex_1())
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .when_some(
-                                self.provider_chat_form.clone(),
-                                |this, provider_chat_form| this.child(provider_chat_form),
-                            )
-                            .when(self.provider_chat_form.is_none(), |this| {
-                                this.child(
-                                    Button::new("provider-chat-form-settings-disabled")
-                                        .icon(IconName::Settings)
-                                        .ghost()
-                                        .small()
-                                        .disabled(true)
-                                        .tooltip(settings_tooltip.clone()),
-                                )
-                            })
-                            .child(if self.running {
-                                Button::new("pause")
-                                    .icon(IconName::Close)
-                                    .small()
-                                    .tooltip(pause_tooltip)
-                                    .on_click(cx.listener(|_form, _event, _window, cx| {
-                                        cx.emit(ChatFormEvent::PauseRequested);
-                                    }))
-                                    .into_any_element()
-                            } else {
-                                Button::new("send")
-                                    .icon(IconName::ArrowUp)
-                                    .small()
-                                    .disabled(!self.can_send(cx))
-                                    .tooltip(send_tooltip)
-                                    .on_click(cx.listener(|form, _event, _window, cx| {
-                                        if form.can_send(cx) {
-                                            cx.emit(ChatFormEvent::SendRequested);
-                                        }
-                                    }))
-                                    .into_any_element()
-                            }),
-                    ),
+                    .child(h_flex().items_center().gap_1().child(if self.running {
+                        Button::new("pause")
+                            .icon(IconName::Close)
+                            .small()
+                            .tooltip(pause_tooltip)
+                            .on_click(cx.listener(|_form, _event, _window, cx| {
+                                cx.emit(ChatFormEvent::PauseRequested);
+                            }))
+                            .into_any_element()
+                    } else {
+                        Button::new("send")
+                            .icon(IconName::ArrowUp)
+                            .small()
+                            .disabled(!self.can_send(cx))
+                            .tooltip(send_tooltip)
+                            .on_click(cx.listener(|form, _event, _window, cx| {
+                                if form.can_send(cx) {
+                                    cx.emit(ChatFormEvent::SendRequested);
+                                }
+                            }))
+                            .into_any_element()
+                    })),
             )
             .when(self.template_picker_open, |this| {
                 this.child(self.render_template_picker(window, cx))

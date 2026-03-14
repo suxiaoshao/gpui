@@ -12,7 +12,7 @@ pub struct SqlNewMessage<'a> {
     pub(in super::super) conversation_path: &'a str,
     pub(in super::super) provider: &'a str,
     pub(in super::super) role: &'a str,
-    pub(in super::super) content: &'a str,
+    pub(in super::super) content: &'a serde_json::Value,
     pub(in super::super) send_content: &'a serde_json::Value,
     pub(in super::super) status: &'a str,
     pub(in super::super) created_time: OffsetDateTime,
@@ -45,7 +45,7 @@ pub struct SqlMessage {
     pub(in super::super) conversation_path: String,
     pub provider: String,
     pub role: String,
-    pub content: String,
+    pub content: serde_json::Value,
     pub send_content: serde_json::Value,
     pub status: String,
     pub created_time: OffsetDateTime,
@@ -174,7 +174,7 @@ impl SqlMessage {
     }
     pub fn update_content(
         id: i32,
-        content: String,
+        content: serde_json::Value,
         time: OffsetDateTime,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {
@@ -188,7 +188,7 @@ impl SqlMessage {
     }
     pub fn reset_for_resend(
         id: i32,
-        content: String,
+        content: serde_json::Value,
         time: OffsetDateTime,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {

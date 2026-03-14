@@ -285,7 +285,6 @@ impl ModelSelect {
 
 impl Render for ModelSelect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_selected = self.selected_model.is_some();
         let is_open = self.model_picker_open;
         let title: SharedString = self
             .selected_model
@@ -314,7 +313,7 @@ impl Render for ModelSelect {
                         }
                     },
                 )
-                .selected(is_selected)
+                .selected(false)
                 .open(is_open),
             )
             .when(self.model_picker_open, |this| {

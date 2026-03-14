@@ -9,9 +9,12 @@ use gpui_component::{
     avatar::Avatar,
     badge::Badge,
     button::{Button, ButtonVariants},
+    description_list::DescriptionItem,
     divider::Divider,
     h_flex,
+    Icon,
     notification::{Notification, NotificationType},
+    popover::Popover,
     spinner::Spinner,
     text::TextView,
     v_flex,
@@ -49,9 +52,13 @@ pub trait MessageViewExt: 'static {
 
     fn role(&self) -> &Role;
     fn content(&self) -> &Content;
+    fn send_content(&self) -> &serde_json::Value;
     fn status(&self) -> &Status;
     fn error(&self) -> Option<&str>;
     fn id(&self) -> Self::Id;
+    fn description_items(&self, _cx: &App) -> Vec<DescriptionItem> {
+        Vec::new()
+    }
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn pause_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn delete_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
@@ -61,6 +68,7 @@ pub trait MessageViewExt: 'static {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MessageAccessoryMode {
+    Thinking,
     Loading,
     Actions,
 }
@@ -75,10 +83,10 @@ enum MessageAction {
 
 impl From<&Status> for MessageAccessoryMode {
     fn from(value: &Status) -> Self {
-        if matches!(value, Status::Loading) {
-            MessageAccessoryMode::Loading
-        } else {
-            MessageAccessoryMode::Actions
+        match value {
+            Status::Thinking => MessageAccessoryMode::Thinking,
+            Status::Loading => MessageAccessoryMode::Loading,
+            _ => MessageAccessoryMode::Actions,
         }
     }
 }
@@ -95,6 +103,7 @@ fn status_badge_color(status: &Status, cx: &App) -> Hsla {
         Status::Normal => cx.theme().success,
         Status::Hidden => cx.theme().muted_foreground.opacity(0.6),
         Status::Loading => cx.theme().blue,
+        Status::Thinking => cx.theme().blue.opacity(0.7),
         Status::Paused => cx.theme().warning,
         Status::Error => cx.theme().danger,
     }
@@ -127,6 +136,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             pause_tooltip,
             error_title,
             sources_label,
+            reasoning_summary_label,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -141,6 +151,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                 i18n.t("tooltip-pause-message"),
                 i18n.t("alert-error-title"),
                 i18n.t("field-sources"),
+                i18n.t("button-reasoning-summary"),
             )
         };
         let accessory_mode = MessageAccessoryMode::from(data.status());
@@ -161,6 +172,14 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     .with_size(px(32.)),
             );
         let copy_text = data.content().display_markdown(&sources_label);
+        let reasoning_summary = data
+            .content()
+            .reasoning_summary
+            .clone()
+            .filter(|summary| !summary.trim().is_empty());
+        let popover_bg = cx.theme().background;
+        let popover_border = cx.theme().border;
+        let reasoning_button_fg = cx.theme().muted_foreground;
         let id = data.id();
         let button_id = id.to_string();
         let text_id = data.id();
@@ -251,11 +270,63 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                         v_flex()
                             .flex_1()
                             .overflow_x_hidden()
+                            .when_some(reasoning_summary, |this, summary| {
+                                let popover_button_id = button_id.clone();
+                                this.child(
+                                    h_flex().px_4().pt_4().child(
+                                        Popover::new(SharedString::from(format!(
+                                            "reasoning-summary-popover-{}",
+                                            popover_button_id
+                                        )))
+                                        .anchor(Corner::TopLeft)
+                                        .appearance(false)
+                                        .trigger(
+                                            Button::new(SharedString::from(format!(
+                                                "reasoning-summary-{}",
+                                                popover_button_id
+                                            )))
+                                            .label(reasoning_summary_label.clone())
+                                            .ghost()
+                                            .small()
+                                            .text_color(reasoning_button_fg)
+                                            .child(
+                                                div().ml_1().child(
+                                                    Icon::new(IconName::ChevronRight)
+                                                        .with_size(px(12.)),
+                                                ),
+                                            ),
+                                        )
+                                        .content(move |_, window, cx| {
+                                            div()
+                                                .w(px(320.))
+                                                .occlude()
+                                                .bg(popover_bg)
+                                                .border_1()
+                                                .border_color(popover_border)
+                                                .rounded(px(8.))
+                                                .shadow_md()
+                                                .p_2()
+                                                .child(
+                                                    TextView::markdown(
+                                                        SharedString::from(format!(
+                                                            "reasoning-summary-content-{}",
+                                                            popover_button_id
+                                                        )),
+                                                        &summary,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                    .selectable(true),
+                                                )
+                                        }),
+                                    ),
+                                )
+                            })
                             .child(
                                 TextView::markdown(text_id, &copy_text, window, cx)
                                     .selectable(true)
                                     .px_4()
-                                    .pt_4(),
+                                    .pt_2(),
                             )
                             .when_some(message_error, |this, error| {
                                 this.child(
@@ -272,6 +343,13 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                             }),
                     )
                     .map(|this| match accessory_mode {
+                        MessageAccessoryMode::Thinking => this.child(
+                            div()
+                                .absolute()
+                                .right_2()
+                                .top_2()
+                                .child(Spinner::new()),
+                        ),
                         MessageAccessoryMode::Loading => this.child(
                             div()
                                 .absolute()
@@ -341,6 +419,10 @@ mod tests {
         assert_eq!(
             MessageAccessoryMode::from(&Status::Loading),
             MessageAccessoryMode::Loading
+        );
+        assert_eq!(
+            MessageAccessoryMode::from(&Status::Thinking),
+            MessageAccessoryMode::Thinking
         );
         assert_eq!(
             MessageAccessoryMode::from(&Status::Normal),

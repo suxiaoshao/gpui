@@ -40,16 +40,18 @@ pub(crate) struct MessageRevision {
 
 impl MessageRevision {
     fn new(message: &Message) -> Self {
-        let content_len = match &message.content {
-            Content::Text(content) => content.len(),
-            Content::WebSearch { text, citations } => {
-                text.len()
-                    + citations
-                        .iter()
-                        .map(|citation| citation.url.len())
-                        .sum::<usize>()
-            }
-        };
+        let content_len = message.content.text.len()
+            + message
+                .content
+                .reasoning_summary
+                .as_ref()
+                .map_or(0, String::len)
+            + message
+                .content
+                .citations
+                .iter()
+                .map(|citation| citation.url.len())
+                .sum::<usize>();
 
         Self {
             id: message.id,
@@ -233,7 +235,7 @@ impl ConversationPanelView {
                     let Some(mut message) = data.message(conversation_id, message_id) else {
                         continue;
                     };
-                    if !matches!(message.status, Status::Loading) {
+                    if !matches!(message.status, Status::Loading | Status::Thinking) {
                         continue;
                     }
                     let now = OffsetDateTime::now_utc();
@@ -392,6 +394,24 @@ impl ConversationPanelView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
+                Ok(FetchUpdate::ThinkingStarted) => {
+                    Self::set_assistant_message_status_by_id(
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        Status::Thinking,
+                        cx,
+                    )?;
+                }
+                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                    Self::append_assistant_reasoning_summary_by_id(
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        delta,
+                        cx,
+                    )?;
+                }
                 Ok(FetchUpdate::TextDelta(delta)) => {
                     Self::append_assistant_message_by_id(
                         &context.chat_data,
@@ -455,7 +475,7 @@ impl ConversationPanelView {
         request_text: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedFetch> {
-        let user_content = Content::Text(request_text);
+        let user_content = Content::new(request_text);
         let runner = Self::build_runner(
             context,
             Role::User,
@@ -482,7 +502,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         &context.composer_snapshot.provider_name,
                         Role::Assistant,
-                        &Content::Text(String::new()),
+                        &Content::default(),
                         send_content,
                         Status::Loading,
                     ),
@@ -561,6 +581,22 @@ impl ConversationPanelView {
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
+                Ok(FetchUpdate::ThinkingStarted) => {
+                    Self::set_assistant_message_status(
+                        context,
+                        assistant_message_id,
+                        Status::Thinking,
+                        cx,
+                    )?;
+                }
+                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                    Self::append_assistant_reasoning_summary(
+                        context,
+                        assistant_message_id,
+                        delta,
+                        cx,
+                    )?;
+                }
                 Ok(FetchUpdate::TextDelta(delta)) => {
                     Self::append_assistant_message(context, assistant_message_id, delta, cx)?;
                 }
@@ -614,6 +650,21 @@ impl ConversationPanelView {
         )
     }
 
+    fn append_assistant_reasoning_summary(
+        context: &FetchContext,
+        assistant_message_id: i32,
+        delta: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        Self::append_assistant_reasoning_summary_by_id(
+            &context.chat_data,
+            context.conversation_id,
+            assistant_message_id,
+            delta,
+            cx,
+        )
+    }
+
     fn replace_assistant_message_content(
         context: &FetchContext,
         assistant_message_id: i32,
@@ -625,6 +676,21 @@ impl ConversationPanelView {
             context.conversation_id,
             assistant_message_id,
             content,
+            cx,
+        )
+    }
+
+    fn set_assistant_message_status(
+        context: &FetchContext,
+        assistant_message_id: i32,
+        status: Status,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        Self::set_assistant_message_status_by_id(
+            &context.chat_data,
+            context.conversation_id,
+            assistant_message_id,
+            status,
             cx,
         )
     }
@@ -643,7 +709,60 @@ impl ConversationPanelView {
             assistant_message_id,
             cx,
             move |message| {
+                if matches!(message.status, Status::Thinking) {
+                    message.status = Status::Loading;
+                }
                 message.content += content.as_str();
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        Ok(())
+    }
+
+    fn append_assistant_reasoning_summary_by_id(
+        chat_data: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        assistant_message_id: i32,
+        delta: String,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let now = OffsetDateTime::now_utc();
+        let _ = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                if !matches!(message.status, Status::Loading | Status::Normal) {
+                    message.status = Status::Thinking;
+                }
+                message.content.append_reasoning_summary(&delta);
+                message.updated_time = now;
+                message.end_time = now;
+            },
+        )?;
+        Ok(())
+    }
+
+    fn set_assistant_message_status_by_id(
+        chat_data: &Entity<AiChatResult<ChatDataInner>>,
+        conversation_id: i32,
+        assistant_message_id: i32,
+        status: Status,
+        cx: &mut AsyncWindowContext,
+    ) -> AiChatResult<()> {
+        let now = OffsetDateTime::now_utc();
+        let _ = Self::update_chat_message_by_id(
+            chat_data,
+            conversation_id,
+            assistant_message_id,
+            cx,
+            move |message| {
+                if message.status == status {
+                    return;
+                }
+                message.status = status;
                 message.updated_time = now;
                 message.end_time = now;
             },
@@ -934,19 +1053,19 @@ mod tests {
                     1,
                     Role::User,
                     Status::Normal,
-                    Content::Text("u1".to_string()),
+                    Content::new("u1"),
                 ),
                 make_message(
                     2,
                     Role::Assistant,
                     Status::Normal,
-                    Content::Text("a1".to_string()),
+                    Content::new("a1"),
                 ),
                 make_message(
                     3,
                     Role::User,
                     Status::Error,
-                    Content::Text("bad".to_string()),
+                    Content::new("bad"),
                 ),
             ],
             Role::User,
@@ -985,7 +1104,7 @@ mod tests {
                 1,
                 Role::Assistant,
                 Status::Normal,
-                Content::Text("a1".to_string()),
+                Content::new("a1"),
             )],
             Role::User,
             "latest",
@@ -1022,19 +1141,19 @@ mod tests {
                     1,
                     Role::User,
                     Status::Normal,
-                    Content::Text("u1".to_string()),
+                    Content::new("u1"),
                 ),
                 make_message(
                     2,
                     Role::Assistant,
                     Status::Normal,
-                    Content::Text("a1".to_string()),
+                    Content::new("a1"),
                 ),
                 make_message(
                     3,
                     Role::Assistant,
                     Status::Error,
-                    Content::Text("bad".to_string()),
+                    Content::new("bad"),
                 ),
             ],
             Role::User,
@@ -1058,13 +1177,7 @@ mod tests {
     fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         let mut template = serde_json::json!({
             "model": "gpt-4o",
-            "stream": false,
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "n": 1,
-            "max_completion_tokens": null,
-            "presence_penalty": 0.0,
-            "frequency_penalty": 0.0
+            "stream": false
         });
         template["model"] = serde_json::json!("override-model");
         let request_body = build_request_body(

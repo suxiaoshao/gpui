@@ -43,7 +43,7 @@ diesel::table! {
         conversation_path -> Text,
         provider -> Text,
         role -> Text,
-        content -> Text,
+        content -> Json,
         send_content -> Json,
         status -> Text,
         created_time -> TimestamptzSqlite,

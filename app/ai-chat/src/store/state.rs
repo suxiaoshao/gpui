@@ -362,7 +362,7 @@ mod tests {
             conversation_path: format!("/conversation/{conversation_id}"),
             provider: "OpenAI".to_string(),
             role: Role::User,
-            content: Content::Text(format!("message {id}")),
+            content: Content::new(format!("message {id}")),
             send_content: serde_json::json!({}),
             status: Status::Normal,
             created_time: now(),
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(before, 2);
 
         let mut updated = message(11, 2);
-        updated.content = Content::Text("updated".to_string());
+        updated.content = Content::new("updated");
         data.replace_message(2, updated.clone());
 
         let found = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
@@ -522,12 +522,12 @@ mod tests {
         assert_eq!(found.id, 11);
 
         let updated = data.update_message(2, 11, |message| {
-            message.content = Content::Text("updated".to_string());
+            message.content = Content::new("updated");
         });
         assert!(updated);
         assert_eq!(
             data.message(2, 11).expect("message should exist").content,
-            Content::Text("updated".to_string())
+            Content::new("updated")
         );
         assert!(!data.update_message(2, 99, |_| {}));
     }

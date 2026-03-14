@@ -140,7 +140,7 @@ impl RenderOnce for ConversationTabView {
                     .deref()
                     .clone()
                     .update(cx, move |workspace, cx| {
-                        workspace.activate_tab(self.id, cx);
+                        workspace.activate_tab(self.id, _window, cx);
                     });
             })
             .on_drag(
