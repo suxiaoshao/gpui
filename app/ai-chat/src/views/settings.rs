@@ -42,11 +42,7 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    fn new(
-        open_target: SettingsOpenTarget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(open_target: SettingsOpenTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
         let hotkey_input = cx.new(|cx| {
@@ -169,8 +165,12 @@ impl Render for SettingsView {
                 )),
         );
         let (settings_id, pages) = match self.open_target {
-            SettingsOpenTarget::General => ("my-settings-general", vec![general_page, provider_page]),
-            SettingsOpenTarget::Provider => ("my-settings-provider", vec![provider_page, general_page]),
+            SettingsOpenTarget::General => {
+                ("my-settings-general", vec![general_page, provider_page])
+            }
+            SettingsOpenTarget::Provider => {
+                ("my-settings-provider", vec![provider_page, general_page])
+            }
         };
         v_flex()
             .id("settings")

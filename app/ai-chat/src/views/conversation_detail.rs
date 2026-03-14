@@ -138,6 +138,18 @@ pub(crate) struct ConversationDetailView<T: ConversationDetailViewExt> {
     pub(crate) task: Option<RunningTask<T::MessageId>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MessageListChange {
+    item_count_increased: bool,
+    latest_revision_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreservedScrollOffset {
+    item_ix: usize,
+    offset_in_item: gpui::Pixels,
+}
+
 impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     pub(crate) fn new_with_detail(detail: T, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let alignment = detail.message_list_alignment();
@@ -222,15 +234,17 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         }
     }
 
-    pub(crate) fn sync_message_list(&mut self, next_revisions: Vec<T::Revision>) {
+    fn sync_message_list(&mut self, next_revisions: Vec<T::Revision>) -> MessageListChange {
+        let change = message_list_change(&self.message_revisions, &next_revisions);
+
         if self.message_list.item_count() != self.message_revisions.len() {
             self.message_list.reset(next_revisions.len());
             self.message_revisions = next_revisions;
-            return;
+            return change;
         }
 
         if self.message_revisions == next_revisions {
-            return;
+            return change;
         }
 
         let first_diff = self
@@ -239,30 +253,38 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             .zip(next_revisions.iter())
             .position(|(left, right)| left != right)
             .unwrap_or_else(|| self.message_revisions.len().min(next_revisions.len()));
+        let preserved_scroll_offset = preserved_tail_item_scroll_offset(
+            &self.message_list,
+            self.message_revisions.len(),
+            next_revisions.len(),
+            first_diff,
+        );
 
         self.message_list.splice(
             first_diff..self.message_revisions.len(),
             next_revisions.len().saturating_sub(first_diff),
         );
+        if let Some(scroll_offset) = preserved_scroll_offset {
+            self.message_list.scroll_to(ListOffset {
+                item_ix: scroll_offset.item_ix,
+                offset_in_item: scroll_offset.offset_in_item,
+            });
+        }
         self.message_revisions = next_revisions;
+        change
     }
 
-    fn maybe_reveal_latest_message(
-        &mut self,
-        previous_revisions: &[T::Revision],
-        was_at_end: bool,
-    ) {
-        let next_revisions = &self.message_revisions;
+    fn maybe_reveal_latest_message(&mut self, change: MessageListChange, was_at_end: bool) {
         if should_reveal_latest_message(
             self.detail.auto_scroll_new_messages_when_at_end(),
             was_at_end,
-            previous_revisions,
-            next_revisions,
+            change,
+            self.message_revisions.len(),
         ) {
             scroll_to_message_end(
                 &self.message_list,
                 self.detail.message_list_alignment(),
-                next_revisions.len(),
+                self.message_revisions.len(),
             );
         }
     }
@@ -271,11 +293,10 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
 impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message_revisions = self.detail.message_revisions(cx);
-        let previous_revisions = self.message_revisions.clone();
         let alignment = self.detail.message_list_alignment();
         let was_at_end = list_is_at_end(&self.message_list, alignment);
-        self.sync_message_list(message_revisions);
-        self.maybe_reveal_latest_message(&previous_revisions, was_at_end);
+        let change = self.sync_message_list(message_revisions);
+        self.maybe_reveal_latest_message(change, was_at_end);
 
         let title = self.detail.title(cx);
         let subtitle = self
@@ -425,6 +446,8 @@ fn should_measure_all_message_list(auto_scroll_new_messages: bool) -> bool {
     auto_scroll_new_messages
 }
 
+const SCROLL_END_EPSILON_PX: f32 = 1.;
+
 fn scroll_to_message_end(message_list: &ListState, alignment: ListAlignment, item_count: usize) {
     if item_count == 0 {
         return;
@@ -450,43 +473,82 @@ fn list_is_at_end(message_list: &ListState, alignment: ListAlignment) -> bool {
                 true
             } else {
                 let current_offset = (-message_list.scroll_px_offset_for_scrollbar().y).max(px(0.));
-                current_offset + px(1.) >= max_offset
+                current_offset + px(SCROLL_END_EPSILON_PX) >= max_offset
             }
         }
     }
 }
 
-fn latest_revision_changed<T: PartialEq>(previous_revisions: &[T], next_revisions: &[T]) -> bool {
-    match (previous_revisions.last(), next_revisions.last()) {
+fn latest_revision_changed<T: PartialEq>(
+    previous_revision: Option<&T>,
+    next_revision: Option<&T>,
+) -> bool {
+    match (previous_revision, next_revision) {
         (Some(previous), Some(next)) => previous != next,
         _ => false,
     }
 }
 
-fn should_reveal_latest_message<T: PartialEq>(
-    auto_scroll_new_messages: bool,
-    was_at_end: bool,
+fn preserved_tail_item_scroll_offset(
+    message_list: &ListState,
+    previous_item_count: usize,
+    next_item_count: usize,
+    first_diff: usize,
+) -> Option<PreservedScrollOffset> {
+    if previous_item_count == 0
+        || previous_item_count != next_item_count
+        || first_diff + 1 != previous_item_count
+    {
+        return None;
+    }
+
+    let scroll_top = message_list.logical_scroll_top();
+    if scroll_top.item_ix != first_diff || scroll_top.offset_in_item == px(0.) {
+        return None;
+    }
+
+    Some(PreservedScrollOffset {
+        item_ix: scroll_top.item_ix,
+        offset_in_item: scroll_top.offset_in_item,
+    })
+}
+
+fn message_list_change<T: PartialEq>(
     previous_revisions: &[T],
     next_revisions: &[T],
+) -> MessageListChange {
+    MessageListChange {
+        item_count_increased: next_revisions.len() > previous_revisions.len(),
+        latest_revision_changed: latest_revision_changed(
+            previous_revisions.last(),
+            next_revisions.last(),
+        ),
+    }
+}
+
+fn should_reveal_latest_message(
+    auto_scroll_new_messages: bool,
+    was_at_end: bool,
+    change: MessageListChange,
+    next_item_count: usize,
 ) -> bool {
-    if !auto_scroll_new_messages || next_revisions.is_empty() {
+    if !auto_scroll_new_messages || next_item_count == 0 {
         return false;
     }
 
-    if next_revisions.len() > previous_revisions.len() {
+    if change.item_count_increased {
         return true;
     }
 
-    was_at_end
-        && next_revisions.len() == previous_revisions.len()
-        && latest_revision_changed(previous_revisions, next_revisions)
+    was_at_end && change.latest_revision_changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        RunningTask, latest_revision_changed, list_is_at_end, should_measure_all_message_list,
-        should_reveal_latest_message,
+        MessageListChange, PreservedScrollOffset, RunningTask, latest_revision_changed,
+        list_is_at_end, message_list_change, preserved_tail_item_scroll_offset,
+        should_measure_all_message_list, should_reveal_latest_message,
     };
     use gpui::{ListAlignment, ListState, Task, px};
 
@@ -520,17 +582,97 @@ mod tests {
 
     #[test]
     fn latest_revision_change_only_tracks_last_message() {
-        assert!(latest_revision_changed(&[1, 2], &[1, 3]));
-        assert!(!latest_revision_changed(&[1, 2], &[9, 2]));
-        assert!(!latest_revision_changed::<i32>(&[], &[]));
+        assert!(latest_revision_changed(Some(&2), Some(&3)));
+        assert!(!latest_revision_changed(Some(&2), Some(&2)));
+        assert!(!latest_revision_changed::<i32>(None, None));
+    }
+
+    #[test]
+    fn message_list_change_tracks_new_items_and_tail_updates() {
+        assert_eq!(
+            message_list_change(&[1], &[1, 2]),
+            MessageListChange {
+                item_count_increased: true,
+                latest_revision_changed: true,
+            }
+        );
+        assert_eq!(
+            message_list_change(&[1, 2], &[9, 2]),
+            MessageListChange {
+                item_count_increased: false,
+                latest_revision_changed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_scroll_offset_for_last_item_only_when_viewport_is_inside_it() {
+        let state = ListState::new(2, ListAlignment::Top, px(100.));
+        state.scroll_to(gpui::ListOffset {
+            item_ix: 1,
+            offset_in_item: px(42.),
+        });
+
+        assert_eq!(
+            preserved_tail_item_scroll_offset(&state, 2, 2, 1),
+            Some(PreservedScrollOffset {
+                item_ix: 1,
+                offset_in_item: px(42.),
+            })
+        );
+        assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 2, 0), None);
+        assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 3, 1), None);
+
+        state.scroll_to(gpui::ListOffset {
+            item_ix: 1,
+            offset_in_item: px(0.),
+        });
+        assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 2, 1), None);
     }
 
     #[test]
     fn reveal_latest_message_for_new_message_or_tail_chunk_at_end() {
-        assert!(should_reveal_latest_message(true, false, &[1], &[1, 2]));
-        assert!(should_reveal_latest_message(true, true, &[1, 2], &[1, 3]));
-        assert!(!should_reveal_latest_message(true, false, &[1, 2], &[1, 3]));
-        assert!(!should_reveal_latest_message(true, true, &[1, 2], &[1, 2]));
-        assert!(!should_reveal_latest_message(false, true, &[1], &[1, 2]));
+        assert!(should_reveal_latest_message(
+            true,
+            false,
+            MessageListChange {
+                item_count_increased: true,
+                latest_revision_changed: true,
+            },
+            2,
+        ));
+        assert!(should_reveal_latest_message(
+            true,
+            true,
+            MessageListChange {
+                item_count_increased: false,
+                latest_revision_changed: true,
+            },
+            2,
+        ));
+        assert!(!should_reveal_latest_message(
+            true,
+            false,
+            MessageListChange {
+                item_count_increased: false,
+                latest_revision_changed: true,
+            },
+            2,
+        ));
+        assert!(!should_reveal_latest_message(
+            true,
+            true,
+            MessageListChange::default(),
+            2,
+        ));
+        assert!(!should_reveal_latest_message(
+            false,
+            true,
+            MessageListChange {
+                item_count_increased: true,
+                latest_revision_changed: true,
+            },
+            2,
+        ));
     }
 }

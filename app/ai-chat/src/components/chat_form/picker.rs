@@ -111,11 +111,7 @@ where
                     .items_center()
                     .justify_between()
                     .gap_x_1()
-                    .child(
-                        div()
-                            .w_full()
-                            .child(self.item.render(window, cx)),
-                    ),
+                    .child(div().w_full().child(self.item.render(window, cx))),
             )
     }
 }
@@ -172,13 +168,16 @@ where
         V: ?Sized,
     {
         let selected_value = selected_value?;
-        sections.iter().enumerate().find_map(|(section_ix, section)| {
-            section
-                .items
-                .iter()
-                .position(|item| item.value() == selected_value)
-                .map(|row_ix| IndexPath::default().section(section_ix).row(row_ix))
-        })
+        sections
+            .iter()
+            .enumerate()
+            .find_map(|(section_ix, section)| {
+                section
+                    .items
+                    .iter()
+                    .position(|item| item.value() == selected_value)
+                    .map(|row_ix| IndexPath::default().section(section_ix).row(row_ix))
+            })
     }
 
     fn apply_query(&mut self) {
@@ -233,7 +232,9 @@ where
     }
 
     fn items_count(&self, section: usize, _cx: &App) -> usize {
-        self.sections.get(section).map_or(0, |section| section.items.len())
+        self.sections
+            .get(section)
+            .map_or(0, |section| section.items.len())
     }
 
     fn render_section_header(
@@ -264,7 +265,10 @@ where
             .and_then(|section| section.items.get(ix.row))
             .cloned()
             .map(|item| {
-                PickerListItem::new(format!("picker-item-{}-{}", ix.section, ix.row).into(), item)
+                PickerListItem::new(
+                    format!("picker-item-{}-{}", ix.section, ix.row).into(),
+                    item,
+                )
             })
     }
 
@@ -321,9 +325,24 @@ where
 #[derive(Default)]
 pub(crate) struct PickerPopoverOptions {
     pub(crate) min_width: Option<Pixels>,
+    pub(crate) max_width: Option<Pixels>,
     pub(crate) max_height: Option<Length>,
     pub(crate) search_placeholder: Option<SharedString>,
     pub(crate) footer: Option<AnyElement>,
+}
+
+fn picker_popover_width(bounds: Bounds<Pixels>, options: &PickerPopoverOptions) -> Pixels {
+    let mut width = bounds.size.width + px(2.);
+
+    if let Some(min_width) = options.min_width {
+        width = width.max(min_width);
+    }
+
+    if let Some(max_width) = options.max_width {
+        width = width.min(max_width);
+    }
+
+    width
 }
 
 pub(crate) fn render_picker_popover<D, F>(
@@ -338,11 +357,7 @@ where
     F: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 {
     let popup_radius = cx.theme().radius.min(px(8.));
-    let width = options
-        .min_width
-        .map_or(bounds.size.width + px(2.), |min_width| {
-            min_width.max(bounds.size.width + px(2.))
-        });
+    let width = picker_popover_width(bounds, &options);
 
     deferred(
         anchored()
@@ -350,29 +365,26 @@ where
             .snap_to_window_with_margin(px(8.))
             .position(point(bounds.left(), bounds.top()))
             .child(
-                div()
-                    .w(width)
-                    .on_mouse_down_out(on_mouse_down_out)
-                    .child(
-                        v_flex()
-                            .occlude()
-                            .mb_1p5()
-                            .bg(cx.theme().background)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded(popup_radius)
-                            .shadow_md()
-                            .child(
-                                List::new(&list)
-                                    .when_some(options.search_placeholder, |this, placeholder| {
-                                        this.search_placeholder(placeholder)
-                                    })
-                                    .with_size(Size::Medium)
-                                    .max_h(options.max_height.unwrap_or(rems(20.).into()))
-                                    .paddings(Edges::all(px(4.))),
-                            )
-                            .when_some(options.footer, |this, footer| this.child(footer)),
-                    ),
+                div().w(width).on_mouse_down_out(on_mouse_down_out).child(
+                    v_flex()
+                        .occlude()
+                        .mb_1p5()
+                        .bg(cx.theme().background)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded(popup_radius)
+                        .shadow_md()
+                        .child(
+                            List::new(&list)
+                                .when_some(options.search_placeholder, |this, placeholder| {
+                                    this.search_placeholder(placeholder)
+                                })
+                                .with_size(Size::Medium)
+                                .max_h(options.max_height.unwrap_or(rems(20.).into()))
+                                .paddings(Edges::all(px(4.))),
+                        )
+                        .when_some(options.footer, |this, footer| this.child(footer)),
+                ),
             ),
     )
     .with_priority(1)
@@ -467,8 +479,8 @@ impl RenderOnce for PickerTrigger {
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerListDelegate, PickerSection};
-    use gpui::{App, IntoElement, SharedString, Window};
+    use super::{PickerListDelegate, PickerPopoverOptions, PickerSection, picker_popover_width};
+    use gpui::{App, Bounds, IntoElement, SharedString, Window, point, px};
     use gpui_component::{IndexPath, select::SelectItem};
     use std::rc::Rc;
 
@@ -566,5 +578,27 @@ mod tests {
 
         assert_eq!(delegate.sections[0].items.len(), 1);
         assert_eq!(delegate.sections[0].items[0].value(), &2);
+    }
+
+    #[test]
+    fn picker_popover_width_respects_max_width() {
+        let bounds = Bounds::from_corners(point(px(0.), px(0.)), point(px(520.), px(40.)));
+        let options = PickerPopoverOptions {
+            max_width: Some(px(320.)),
+            ..Default::default()
+        };
+
+        assert_eq!(picker_popover_width(bounds, &options), px(320.));
+    }
+
+    #[test]
+    fn picker_popover_width_respects_min_width() {
+        let bounds = Bounds::from_corners(point(px(0.), px(0.)), point(px(120.), px(40.)));
+        let options = PickerPopoverOptions {
+            min_width: Some(px(240.)),
+            ..Default::default()
+        };
+
+        assert_eq!(picker_popover_width(bounds, &options), px(240.));
     }
 }

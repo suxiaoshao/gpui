@@ -1,7 +1,4 @@
-use crate::{
-    views::home::sidebar::DragConversationTreeItem,
-    workspace_state::WorkspaceStore,
-};
+use crate::{views::home::sidebar::DragConversationTreeItem, workspace_state::WorkspaceStore};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use std::ops::Deref;
@@ -79,12 +76,12 @@ impl RenderOnce for ConversationTabView {
                     .group_hover("tab", |style| style.opacity(1.))
                     .on_click(move |_state, _window, cx| {
                         cx.stop_propagation();
-                        cx.global::<WorkspaceStore>()
-                            .deref()
-                            .clone()
-                            .update(cx, |workspace, cx| {
+                        cx.global::<WorkspaceStore>().deref().clone().update(
+                            cx,
+                            |workspace, cx| {
                                 workspace.remove_tab(self.id, cx);
-                            });
+                            },
+                        );
                     }),
             )
             .child(Label::new(icon.clone()).text_xs().line_height(rems(0.75)))

@@ -9,7 +9,9 @@ use crate::{
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::{AiChatError, AiChatResult},
     i18n::I18n,
-    llm::{ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider},
+    llm::{
+        ProviderModel, chat_form_layout_by_provider, provider_by_name, template_inputs_by_provider,
+    },
     workspace_state::ConversationDraft,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -371,7 +373,11 @@ impl ChatForm {
         });
         self.selected_template = draft
             .selected_template_id
-            .and_then(|template_id| self.templates.iter().find(|template| template.id == template_id))
+            .and_then(|template_id| {
+                self.templates
+                    .iter()
+                    .find(|template| template.id == template_id)
+            })
             .cloned();
         self.try_restore_pending_draft(window, cx);
         cx.emit(ChatFormEvent::StateChanged);
@@ -391,7 +397,15 @@ impl ChatForm {
         }) else {
             return;
         };
-        self.rebuild_provider_chat_form(&model, draft.request_template.clone(), window, cx);
+        let provider = match provider_by_name(&model.provider_name) {
+            Ok(provider) => provider,
+            Err(_) => return,
+        };
+        let base_template = match provider.default_template_for_model(&model) {
+            Ok(template) => template,
+            Err(_) => return,
+        };
+        self.rebuild_provider_chat_form(&model, base_template, window, cx);
         if let Some(form) = self
             .provider_chat_form
             .clone()
@@ -425,26 +439,11 @@ impl Render for ChatForm {
             .bg(cx.theme().input)
             .rounded(cx.theme().radius)
             .p_1()
+            .relative()
             .child(
-                h_flex()
-                    .relative()
+                div()
                     .w_full()
-                    .child(Input::new(&self.input_state).flex_1().appearance(false))
-                    .child(
-                        canvas(
-                            {
-                                let state = cx.entity();
-                                move |bounds, _, cx| {
-                                    state.update(cx, |form, _| {
-                                        form.template_picker_bounds = bounds;
-                                    })
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
-                    ),
+                    .child(Input::new(&self.input_state).w_full().appearance(false)),
             )
             .when_some(self.selected_template.clone(), |this, template| {
                 let tag = Tag::primary()
@@ -516,6 +515,21 @@ impl Render for ChatForm {
             .when(self.template_picker_open, |this| {
                 this.child(self.render_template_picker(window, cx))
             })
+            .child(
+                canvas(
+                    {
+                        let state = cx.entity();
+                        move |bounds, _, cx| {
+                            state.update(cx, |form, _| {
+                                form.template_picker_bounds = bounds;
+                            })
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
@@ -526,11 +540,13 @@ impl ChatForm {
         let initial_ix =
             PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
         let state = cx.entity().downgrade();
-        let on_confirm = Rc::new(move |template: TemplateOption, window: &mut Window, cx: &mut App| {
-            let _ = state.update(cx, |form, cx| {
-                form.choose_template(template.into_template(), window, cx);
-            });
-        });
+        let on_confirm = Rc::new(
+            move |template: TemplateOption, window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |form, cx| {
+                    form.choose_template(template.into_template(), window, cx);
+                });
+            },
+        );
         let state = cx.entity().downgrade();
         let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
             let _ = state.update(cx, |form, cx| {
@@ -580,6 +596,7 @@ impl ChatForm {
             self.template_picker_bounds,
             template_picker,
             PickerPopoverOptions {
+                max_width: Some(px(320.)),
                 search_placeholder: Some(cx.global::<I18n>().t("field-search-template").into()),
                 ..Default::default()
             },

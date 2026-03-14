@@ -258,7 +258,11 @@ impl TemporaryMessageRevision {
         let content_len = match &message.content {
             Content::Text(content) => content.len(),
             Content::WebSearch { text, citations } => {
-                text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
+                text.len()
+                    + citations
+                        .iter()
+                        .map(|citation| citation.url.len())
+                        .sum::<usize>()
             }
         };
 
@@ -334,11 +338,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
                 return;
             }
         };
-        let span = span!(
-            Level::INFO,
-            "Fetch",
-            send_content = snapshot.text.clone()
-        );
+        let span = span!(Level::INFO, "Fetch", send_content = snapshot.text.clone());
         if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let task = cx.spawn_in(window, async move |this, cx| {
@@ -743,7 +743,6 @@ impl TemplateDetailView {
         })?;
         Ok(())
     }
-
 }
 
 struct PreparedTemporaryFetch {

@@ -8,6 +8,7 @@ use gpui_component::{
     form::field,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     select::{Select, SelectState},
+    switch::Switch,
     v_flex,
 };
 
@@ -33,7 +34,8 @@ struct NumberFieldOptions {
 
 enum ProviderTemplateFieldValueState {
     Input(Entity<InputState>),
-    Select(Entity<SelectState<Vec<String>>>),
+    EnumSelect(Entity<SelectState<Vec<String>>>),
+    Boolean(bool),
 }
 
 pub(crate) struct ProviderTemplateFormState {
@@ -58,26 +60,9 @@ impl ProviderTemplateFormState {
                     .or_else(|| Self::default_value(item.input_type()))
                     .unwrap_or(serde_json::Value::Null);
                 let value_state = match item.input_type() {
-                    InputType::Boolean { .. } => {
-                        let options = vec!["true".to_string(), "false".to_string()];
-                        let selected = value
-                            .as_bool()
-                            .unwrap_or_default()
-                            .to_string();
-                        let selected_index = options
-                            .iter()
-                            .position(|option| *option == selected)
-                            .unwrap_or(0);
-                        let select_state = cx.new(|cx| {
-                            SelectState::new(
-                                options,
-                                Some(IndexPath::default().row(selected_index)),
-                                window,
-                                cx,
-                            )
-                        });
-                        ProviderTemplateFieldValueState::Select(select_state)
-                    }
+                    InputType::Boolean { .. } => ProviderTemplateFieldValueState::Boolean(
+                        Self::boolean_value(item.input_type(), &value),
+                    ),
                     InputType::Select(options) => {
                         let mut options = options.clone();
                         let selected = value
@@ -102,7 +87,7 @@ impl ProviderTemplateFormState {
                                 cx,
                             )
                         });
-                        ProviderTemplateFieldValueState::Select(select_state)
+                        ProviderTemplateFieldValueState::EnumSelect(select_state)
                     }
                     _ => {
                         let input_state = cx.new(|cx| InputState::new(window, cx));
@@ -140,23 +125,24 @@ impl ProviderTemplateFormState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        for row in &self.template_rows {
-            let value = template
-                .get(row.item.id())
-                .cloned()
-                .or_else(|| Self::default_value(row.item.input_type()))
-                .unwrap_or(serde_json::Value::Null);
-            match &row.value_state {
+        for row in &mut self.template_rows {
+            let Some(value) = Self::template_patch_value(template, row.item.id()) else {
+                continue;
+            };
+            match &mut row.value_state {
                 ProviderTemplateFieldValueState::Input(input) => {
                     input.update(cx, |state, cx| {
                         state.set_value(Self::value_as_string(&value), window, cx);
                     });
                 }
-                ProviderTemplateFieldValueState::Select(select) => {
+                ProviderTemplateFieldValueState::EnumSelect(select) => {
                     let selected = value.as_str().map(ToString::to_string).unwrap_or_default();
                     select.update(cx, |state, cx| {
                         state.set_selected_value(&selected, window, cx);
                     });
+                }
+                ProviderTemplateFieldValueState::Boolean(current) => {
+                    *current = Self::boolean_value(row.item.input_type(), &value);
                 }
             }
         }
@@ -167,17 +153,28 @@ impl ProviderTemplateFormState {
 
 // Renders individual template controls in inline and popover layouts.
 impl ProviderTemplateFormState {
-    pub(crate) fn render_inline_field(&self, id: &str) -> Option<AnyElement> {
+    pub(crate) fn render_inline_field(
+        &self,
+        id: &str,
+        form: WeakEntity<Self>,
+    ) -> Option<AnyElement> {
         let row = self.find_row(id)?;
+        if matches!(row.value_state, ProviderTemplateFieldValueState::Boolean(_)) {
+            return Some(Self::render_input_control(row, true, form));
+        }
         Some(
             div()
                 .w(Self::inline_width(row.item.input_type()))
-                .child(Self::render_input_control(row, true))
+                .child(Self::render_input_control(row, true, form))
                 .into_any_element(),
         )
     }
 
-    pub(crate) fn render_popover_field(&self, id: &str) -> Option<AnyElement> {
+    pub(crate) fn render_popover_field(
+        &self,
+        id: &str,
+        form: WeakEntity<Self>,
+    ) -> Option<AnyElement> {
         let row = self.find_row(id)?;
         let label = Self::localized_item_name(row.item.id(), row.item.name());
         Some(
@@ -185,7 +182,7 @@ impl ProviderTemplateFormState {
                 .required(Self::is_required(row.item.input_type()))
                 .label(label)
                 .description(row.item.description())
-                .child(Self::render_input_control(row, false))
+                .child(Self::render_input_control(row, false, form))
                 .into_any_element(),
         )
     }
@@ -256,19 +253,21 @@ impl ProviderTemplateFormState {
         for row in &self.template_rows {
             match &row.value_state {
                 ProviderTemplateFieldValueState::Input(input) => {
-                    let subscription = cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            cx.emit(ProviderTemplateFormEvent::Changed);
-                        }
-                    });
+                    let subscription =
+                        cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                cx.emit(ProviderTemplateFormEvent::Changed);
+                            }
+                        });
                     self._subscriptions.push(subscription);
                 }
-                ProviderTemplateFieldValueState::Select(select) => {
+                ProviderTemplateFieldValueState::EnumSelect(select) => {
                     let subscription = cx.observe_in(select, window, |_, _, _, cx| {
                         cx.emit(ProviderTemplateFormEvent::Changed);
                     });
                     self._subscriptions.push(subscription);
                 }
+                ProviderTemplateFieldValueState::Boolean(_) => {}
             }
         }
     }
@@ -277,37 +276,74 @@ impl ProviderTemplateFormState {
         self.template_rows.iter().find(|row| row.item.id() == id)
     }
 
+    fn find_row_mut(&mut self, id: &str) -> Option<&mut ProviderTemplateFieldRow> {
+        self.template_rows
+            .iter_mut()
+            .find(|row| row.item.id() == id)
+    }
+
     fn collect_value_map(
         &self,
         cx: &App,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let mut map = serde_json::Map::new();
         for row in &self.template_rows {
-            let raw = match &row.value_state {
-                ProviderTemplateFieldValueState::Input(input) => input.read(cx).value().to_string(),
-                ProviderTemplateFieldValueState::Select(select) => select
-                    .read(cx)
-                    .selected_value()
-                    .cloned()
-                    .unwrap_or_default(),
-            };
             let item_name = Self::localized_item_name(row.item.id(), row.item.name());
-            let value = Self::parse_value_by_type(row.item.input_type(), &raw).map_err(|err| {
-                format!(
-                    "{} '{}': {err}",
-                    t_static("template-error-field-prefix"),
-                    item_name
-                )
-            })?;
+            let value = match &row.value_state {
+                ProviderTemplateFieldValueState::Input(input) => {
+                    let raw = input.read(cx).value().to_string();
+                    Self::parse_value_by_type(row.item.input_type(), &raw).map_err(|err| {
+                        format!(
+                            "{} '{}': {err}",
+                            t_static("template-error-field-prefix"),
+                            item_name
+                        )
+                    })?
+                }
+                ProviderTemplateFieldValueState::EnumSelect(select) => {
+                    let raw = select
+                        .read(cx)
+                        .selected_value()
+                        .cloned()
+                        .unwrap_or_default();
+                    Self::parse_value_by_type(row.item.input_type(), &raw).map_err(|err| {
+                        format!(
+                            "{} '{}': {err}",
+                            t_static("template-error-field-prefix"),
+                            item_name
+                        )
+                    })?
+                }
+                ProviderTemplateFieldValueState::Boolean(value) => serde_json::Value::Bool(*value),
+            };
             map.insert(row.item.id().to_string(), value);
         }
         Ok(map)
+    }
+
+    fn set_boolean_value(&mut self, id: &str, checked: bool, cx: &mut Context<Self>) {
+        let Some(row) = self.find_row_mut(id) else {
+            return;
+        };
+        let ProviderTemplateFieldValueState::Boolean(current) = &mut row.value_state else {
+            return;
+        };
+        if *current == checked {
+            return;
+        }
+        *current = checked;
+        cx.emit(ProviderTemplateFormEvent::Changed);
+        cx.notify();
     }
 }
 
 // Maps field definitions to reusable GPUI controls and layout hints.
 impl ProviderTemplateFormState {
-    fn render_input_control(row: &ProviderTemplateFieldRow, compact: bool) -> AnyElement {
+    fn render_input_control(
+        row: &ProviderTemplateFieldRow,
+        compact: bool,
+        form: WeakEntity<Self>,
+    ) -> AnyElement {
         match &row.value_state {
             ProviderTemplateFieldValueState::Input(input) => {
                 if Self::number_options(row.item.input_type()).is_some() {
@@ -326,12 +362,29 @@ impl ProviderTemplateFormState {
                     }
                 }
             }
-            ProviderTemplateFieldValueState::Select(select) => {
+            ProviderTemplateFieldValueState::EnumSelect(select) => {
                 let select = Select::new(select);
                 if compact {
                     select.into_any_element()
                 } else {
                     select.w_full().into_any_element()
+                }
+            }
+            ProviderTemplateFieldValueState::Boolean(value) => {
+                let field_id = row.item.id();
+                let label = Self::localized_item_name(field_id, row.item.name());
+                let switch =
+                    Switch::new(field_id)
+                        .checked(*value)
+                        .on_click(move |checked, _window, cx| {
+                            let _ = form.update(cx, |state, cx| {
+                                state.set_boolean_value(field_id, *checked, cx);
+                            });
+                        });
+                if compact {
+                    switch.label(label).into_any_element()
+                } else {
+                    switch.into_any_element()
                 }
             }
         }
@@ -340,7 +393,6 @@ impl ProviderTemplateFormState {
     fn inline_width(input_type: &InputType) -> Pixels {
         match input_type {
             InputType::Select(_) => px(150.),
-            InputType::Boolean { .. } => px(120.),
             _ if Self::number_options(input_type).is_some() => px(110.),
             _ => px(140.),
         }
@@ -361,6 +413,13 @@ impl ProviderTemplateFormState {
         serde_json::Value::Object(map)
     }
 
+    fn template_patch_value(
+        template: &serde_json::Value,
+        field_id: &str,
+    ) -> Option<serde_json::Value> {
+        template.as_object()?.get(field_id).cloned()
+    }
+
     fn default_value(input_type: &InputType) -> Option<serde_json::Value> {
         match input_type {
             InputType::Float { default, .. } => {
@@ -374,6 +433,13 @@ impl ProviderTemplateFormState {
             InputType::Optional(_) => Some(serde_json::Value::Null),
             _ => None,
         }
+    }
+
+    fn boolean_value(input_type: &InputType, value: &serde_json::Value) -> bool {
+        value.as_bool().unwrap_or_else(|| match input_type {
+            InputType::Boolean { default } => default.unwrap_or(false),
+            _ => false,
+        })
     }
 
     fn value_as_string(value: &serde_json::Value) -> String {
@@ -478,6 +544,7 @@ impl ProviderTemplateFormState {
 impl Render for ProviderTemplateFormState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let template_prefix = cx.global::<I18n>().t("field-template-prefix");
+        let form = cx.entity().downgrade();
         let template_fields = self
             .template_rows
             .iter()
@@ -488,7 +555,7 @@ impl Render for ProviderTemplateFormState {
                         "{template_prefix} / {}",
                         Self::localized_item_name(row.item.id(), row.item.name())
                     ))
-                    .child(Self::render_input_control(row, false))
+                    .child(Self::render_input_control(row, false, form.clone()))
                     .into_any_element()
             })
             .collect::<Vec<_>>();
@@ -499,6 +566,7 @@ impl Render for ProviderTemplateFormState {
 #[cfg(test)]
 mod tests {
     use super::ProviderTemplateFormState;
+    use crate::llm::InputType;
 
     #[test]
     fn merged_template_preserves_unknown_keys() {
@@ -544,5 +612,38 @@ mod tests {
         )
         .expect_err("invalid float");
         assert_eq!(err, crate::i18n::t_static("template-error-float"));
+    }
+
+    #[test]
+    fn boolean_value_prefers_json_bool_and_falls_back_to_default() {
+        assert!(ProviderTemplateFormState::boolean_value(
+            &InputType::Boolean {
+                default: Some(false)
+            },
+            &serde_json::json!(true),
+        ));
+        assert!(ProviderTemplateFormState::boolean_value(
+            &InputType::Boolean {
+                default: Some(true)
+            },
+            &serde_json::json!(null),
+        ));
+    }
+
+    #[test]
+    fn template_patch_value_only_reads_explicit_patch_fields() {
+        let template = serde_json::json!({
+            "web_search": true,
+            "temperature": 0.5,
+        });
+
+        assert_eq!(
+            ProviderTemplateFormState::template_patch_value(&template, "web_search"),
+            Some(serde_json::json!(true))
+        );
+        assert_eq!(
+            ProviderTemplateFormState::template_patch_value(&template, "model"),
+            None
+        );
     }
 }

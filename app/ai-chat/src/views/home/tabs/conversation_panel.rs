@@ -43,7 +43,11 @@ impl MessageRevision {
         let content_len = match &message.content {
             Content::Text(content) => content.len(),
             Content::WebSearch { text, citations } => {
-                text.len() + citations.iter().map(|citation| citation.url.len()).sum::<usize>()
+                text.len()
+                    + citations
+                        .iter()
+                        .map(|citation| citation.url.len())
+                        .sum::<usize>()
             }
         };
 
@@ -77,8 +81,9 @@ impl ConversationPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.restore_draft(draft, window, cx));
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.restore_draft(draft, window, cx)
+        });
     }
 }
 
@@ -144,11 +149,7 @@ impl ConversationDetailViewExt for ConversationPanelState {
                 return;
             }
         };
-        let span = span!(
-            Level::INFO,
-            "Fetch",
-            send_content = snapshot.text.clone()
-        );
+        let span = span!(Level::INFO, "Fetch", send_content = snapshot.text.clone());
         if view.can_start_task() {
             let config = cx.global::<AiChatConfig>().clone();
             let conversation_id = view.detail.conversation_id;
@@ -196,7 +197,7 @@ impl ConversationDetailViewExt for ConversationPanelState {
             .deref()
             .clone()
             .update(cx, |workspace, cx| {
-                workspace.update_conversation_draft(view.detail.conversation_id, draft, cx);
+                workspace.sync_conversation_chat_form_state(view.detail.conversation_id, draft, cx);
             });
     }
 
@@ -793,7 +794,6 @@ impl ConversationPanelView {
         })?;
         Ok(())
     }
-
 }
 
 struct FetchContext {

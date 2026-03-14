@@ -12,9 +12,7 @@ pub enum OpenAIResponseStreamEvent {
     #[serde(rename = "response.output_text.delta")]
     ResponseOutputTextDelta { delta: String },
     #[serde(rename = "response.completed")]
-    ResponseCompleted {
-        response: serde_json::Value,
-    },
+    ResponseCompleted { response: serde_json::Value },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "response.failed")]
