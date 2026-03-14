@@ -711,19 +711,28 @@ impl WorkspaceState {
         {
             return;
         }
-        let next_preset = draft
+        let preset_changed = if let Some(preset) = draft
             .as_ref()
-            .and_then(ConversationDraft::to_latest_model_preset);
+            .and_then(ConversationDraft::to_latest_model_preset)
+        {
+            self.upsert_latest_model_preset(preset)
+        } else {
+            false
+        };
         let draft_changed = self.upsert_persisted_conversation_draft(conversation_id, draft);
-        let preset_changed = self.persisted.latest_model_preset != next_preset;
-
-        if preset_changed {
-            self.persisted.latest_model_preset = next_preset;
-        }
 
         if draft_changed || preset_changed {
             self.schedule_save(cx);
         }
+    }
+
+    fn upsert_latest_model_preset(&mut self, preset: LatestModelPreset) -> bool {
+        if self.persisted.latest_model_preset.as_ref() == Some(&preset) {
+            return false;
+        }
+
+        self.persisted.latest_model_preset = Some(preset);
+        true
     }
 
     fn upsert_persisted_conversation_draft(

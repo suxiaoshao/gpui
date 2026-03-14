@@ -616,24 +616,18 @@ mod tests {
 
     #[test]
     fn boolean_value_prefers_json_bool_and_falls_back_to_default() {
-        assert_eq!(
-            ProviderTemplateFormState::boolean_value(
-                &InputType::Boolean {
-                    default: Some(false)
-                },
-                &serde_json::json!(true),
-            ),
-            true
-        );
-        assert_eq!(
-            ProviderTemplateFormState::boolean_value(
-                &InputType::Boolean {
-                    default: Some(true)
-                },
-                &serde_json::json!(null),
-            ),
-            true
-        );
+        assert!(ProviderTemplateFormState::boolean_value(
+            &InputType::Boolean {
+                default: Some(false)
+            },
+            &serde_json::json!(true),
+        ));
+        assert!(ProviderTemplateFormState::boolean_value(
+            &InputType::Boolean {
+                default: Some(true)
+            },
+            &serde_json::json!(null),
+        ));
     }
 
     #[test]

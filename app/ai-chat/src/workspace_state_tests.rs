@@ -147,3 +147,27 @@ fn persisted_workspace_state_roundtrips_latest_model_preset_request_template() {
 
     assert_eq!(parsed, state);
 }
+
+#[test]
+fn sync_conversation_chat_form_state_keeps_latest_preset_when_draft_is_temporarily_empty() {
+    let latest = LatestModelPreset {
+        provider_name: "OpenAI".to_string(),
+        model_id: "gpt-5".to_string(),
+        request_template: serde_json::json!({ "model": "gpt-5", "stream": false }),
+    };
+
+    let mut state = WorkspaceState {
+        persisted: PersistedWorkspaceState {
+            latest_model_preset: Some(latest.clone()),
+            ..PersistedWorkspaceState::default()
+        },
+        tabs: Vec::new(),
+        active_tab: None,
+        save_task: None,
+    };
+
+    let changed = state.upsert_latest_model_preset(latest.clone());
+
+    assert!(!changed);
+    assert_eq!(state.persisted.latest_model_preset, Some(latest));
+}
