@@ -214,7 +214,7 @@ impl ResponsesCreateResponse {
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 if !summary.trim().is_empty() {
-                    content.reasoning_summary = Some(summary);
+                    append_reasoning_summary_block(&mut content, &summary);
                 }
                 continue;
             }
@@ -240,6 +240,21 @@ impl ResponsesCreateResponse {
     }
 }
 
+fn append_reasoning_summary_block(content: &mut Content, summary: &str) {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return;
+    }
+    if let Some(existing) = content.reasoning_summary.as_mut() {
+        if !existing.trim().is_empty() {
+            existing.push_str("\n\n");
+        }
+        existing.push_str(summary);
+    } else {
+        content.reasoning_summary = Some(summary.to_string());
+    }
+}
+
 fn is_normal_stream_end(error: &EventSourceError) -> bool {
     matches!(error, EventSourceError::StreamEnded)
 }
@@ -258,7 +273,7 @@ struct ReasoningProfile {
 }
 
 const REASONING_EFFORT_KEY: &str = "reasoning.effort";
-const REASONING_SUMMARY_DETAILED: &str = "detailed";
+const REASONING_SUMMARY_AUTO: &str = "auto";
 const REASONING_NONE: &str = "none";
 const REASONING_MINIMAL: &str = "minimal";
 const REASONING_LOW: &str = "low";
@@ -466,15 +481,14 @@ impl OpenAIProvider {
         reasoning: Option<ReasoningConfig>,
     ) -> Option<ReasoningConfig> {
         let profile = Self::reasoning_profile(model)?;
-        let mut reasoning = reasoning?;
-        profile
-            .options
-            .iter()
-            .any(|option| *option == reasoning.effort)
-            .then(|| {
-                reasoning.summary = Some(REASONING_SUMMARY_DETAILED.to_string());
-                reasoning
-            })
+        let mut reasoning = reasoning.unwrap_or_else(|| ReasoningConfig {
+            effort: profile.default_effort.to_string(),
+            summary: None,
+        });
+        profile.options.iter().any(|option| *option == reasoning.effort).then(|| {
+            reasoning.summary = Some(REASONING_SUMMARY_AUTO.to_string());
+            reasoning
+        })
     }
 
     fn reasoning_effort_from_template(template: &serde_json::Value) -> Option<&str> {
@@ -833,12 +847,12 @@ impl Provider for OpenAIProvider {
             return Ok(());
         }
         template_object.insert(
-            "reasoning".to_string(),
-            serde_json::to_value(ReasoningConfig {
-                effort: value.to_string(),
-                summary: Some(REASONING_SUMMARY_DETAILED.to_string()),
-            })?,
-        );
+                "reasoning".to_string(),
+                serde_json::to_value(ReasoningConfig {
+                    effort: value.to_string(),
+                    summary: Some(REASONING_SUMMARY_AUTO.to_string()),
+                })?,
+            );
         Ok(())
     }
 }
@@ -848,7 +862,7 @@ mod tests {
     use super::{
         OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
         REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM, REASONING_NONE,
-        REASONING_SUMMARY_DETAILED, REASONING_XHIGH, ResponsesCreateResponse, classify_model,
+        REASONING_SUMMARY_AUTO, REASONING_XHIGH, ResponsesCreateResponse, classify_model,
         normalize_base_url,
         parse_response_stream_event,
     };
@@ -1052,7 +1066,7 @@ mod tests {
             serde_json::from_value::<OpenAIRequestTemplate>(template)?.reasoning,
             Some(ReasoningConfig {
                 effort: REASONING_XHIGH.to_string(),
-                summary: Some(REASONING_SUMMARY_DETAILED.to_string()),
+                summary: Some(REASONING_SUMMARY_AUTO.to_string()),
             })
         );
         Ok(())
@@ -1081,7 +1095,21 @@ mod tests {
             vec![],
         )?;
         assert_eq!(request_body["reasoning"]["effort"], "xhigh");
-        assert_eq!(request_body["reasoning"]["summary"], REASONING_SUMMARY_DETAILED);
+        assert_eq!(request_body["reasoning"]["summary"], REASONING_SUMMARY_AUTO);
+        Ok(())
+    }
+
+    #[test]
+    fn request_body_includes_default_reasoning_when_supported() -> anyhow::Result<()> {
+        let request_body = OpenAIProvider.request_body(
+            &json!({
+                "model": "gpt-5.4-pro",
+                "stream": false
+            }),
+            vec![],
+        )?;
+        assert_eq!(request_body["reasoning"]["effort"], REASONING_MEDIUM);
+        assert_eq!(request_body["reasoning"]["summary"], REASONING_SUMMARY_AUTO);
         Ok(())
     }
 
@@ -1192,6 +1220,22 @@ mod tests {
             Some(FetchUpdate::Complete(Content {
                 text: "done".to_string(),
                 reasoning_summary: Some("summarized".to_string()),
+                citations: vec![],
+            }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn response_completed_event_accumulates_reasoning_summaries() -> anyhow::Result<()> {
+        let update = parse_response_stream_event(
+            r#"{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"first"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"second"}]},{"type":"message","content":[{"type":"output_text","text":"done","annotations":[]}]}]}}"#,
+        )?;
+        assert_eq!(
+            update,
+            Some(FetchUpdate::Complete(Content {
+                text: "done".to_string(),
+                reasoning_summary: Some("first\n\nsecond".to_string()),
                 citations: vec![],
             }))
         );
