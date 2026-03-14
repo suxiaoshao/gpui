@@ -6,8 +6,7 @@ use crate::database::Mode;
 fn sample_request_template() -> serde_json::Value {
     serde_json::json!({
         "model": "gpt-4o",
-        "stream": true,
-        "temperature": 0.5
+        "stream": true
     })
 }
 

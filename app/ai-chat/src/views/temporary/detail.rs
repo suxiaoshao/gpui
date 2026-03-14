@@ -890,13 +890,7 @@ mod tests {
     fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         let mut template = serde_json::json!({
             "model": "gpt-4o",
-            "stream": false,
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "n": 1,
-            "max_completion_tokens": null,
-            "presence_penalty": 0.0,
-            "frequency_penalty": 0.0
+            "stream": false
         });
         template["model"] = serde_json::json!("override-model");
         let request_body = build_request_body(

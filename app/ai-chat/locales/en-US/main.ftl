@@ -40,7 +40,6 @@ tooltip-view-detail = View Detail
 tooltip-resend-message = Resend Message
 tooltip-send-message = Send Message
 tooltip-pause-message = Pause Generation
-tooltip-chat-form-settings = Provider Settings
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
 temporary-chat-title = Temporary Chat
@@ -71,15 +70,8 @@ field-model = Model
 field-extension = Extension
 field-loading = Loading...
 field-models = Model Select
-field-temperature = Temperature
-field-top-p = Top P
-field-n = N
-field-max-completion-tokens = Max Completion Tokens
-field-presence-penalty = Presence Penalty
-field-frequency-penalty = Frequency Penalty
 field-api-key = Api Key
 field-base-url = Base URL
-field-web-search = Web Search
 field-sources = Sources
 
 dialog-add-folder-title = Add Folder
@@ -126,12 +118,6 @@ delete-message-failed-message = Message view not available.
 
 settings-openai-title = OpenAI
 
-template-error-float = Must be a valid float
-template-error-boolean = Must be true or false
-template-error-integer = Must be a valid integer
-template-error-select = Selected value is not in available options
-template-error-json = Must be a valid JSON value
-template-error-field-prefix = Template field
 template-error-select-role = Please select role for prompt
 template-error-prompt-empty = Prompt cannot be empty:
 

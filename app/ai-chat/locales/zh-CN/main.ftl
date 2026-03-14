@@ -40,7 +40,6 @@ tooltip-view-detail = 查看详情
 tooltip-resend-message = 重新发送消息
 tooltip-send-message = 发送消息
 tooltip-pause-message = 暂停生成
-tooltip-chat-form-settings = Provider 设置
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
 temporary-chat-title = 临时对话
@@ -71,15 +70,8 @@ field-model = 模型
 field-extension = 扩展
 field-loading = 加载中...
 field-models = 模型选择
-field-temperature = Temperature
-field-top-p = Top P
-field-n = N
-field-max-completion-tokens = 最大补全 Token
-field-presence-penalty = Presence Penalty
-field-frequency-penalty = Frequency Penalty
 field-api-key = API Key
 field-base-url = Base URL
-field-web-search = Web Search
 field-sources = Sources
 
 dialog-add-folder-title = 新建文件夹
@@ -126,12 +118,6 @@ delete-message-failed-message = 消息窗口不可用。
 
 settings-openai-title = OpenAI
 
-template-error-float = 必须是合法的小数
-template-error-boolean = 必须是 true 或 false
-template-error-integer = 必须是合法的整数
-template-error-select = 选择值不在可选范围内
-template-error-json = 必须是合法的 JSON
-template-error-field-prefix = 模板字段
 template-error-select-role = 请选择提示词角色
 template-error-prompt-empty = 提示词不能为空：
 

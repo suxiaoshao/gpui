@@ -1,7 +1,4 @@
-use super::{
-    ChatFormGroup, ChatFormLayout, FetchUpdate, InputItem, InputType, Provider, ProviderModel,
-    ProviderModelCapability,
-};
+use super::{FetchUpdate, Provider, ProviderModel, ProviderModelCapability};
 use crate::{
     config::AiChatConfig,
     database::{Content, UrlCitation},
@@ -119,14 +116,8 @@ struct BaseUrlFieldState {
 pub(crate) struct OpenAIRequestTemplate {
     pub(crate) model: String,
     pub(crate) stream: bool,
-    #[serde(default)]
-    pub(crate) web_search: bool,
-    pub(crate) temperature: f64,
-    pub(crate) top_p: f64,
-    pub(crate) n: u32,
-    pub(crate) max_completion_tokens: Option<u32>,
-    pub(crate) presence_penalty: f64,
-    pub(crate) frequency_penalty: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tools: Option<Vec<HostedTool>>,
 }
 
 impl Default for OpenAIRequestTemplate {
@@ -134,13 +125,7 @@ impl Default for OpenAIRequestTemplate {
         Self {
             model: "gpt-4o".to_string(),
             stream: true,
-            web_search: false,
-            temperature: 1.0,
-            top_p: 1.0,
-            n: 1,
-            max_completion_tokens: None,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
+            tools: None,
         }
     }
 }
@@ -339,85 +324,6 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate
     }
 }
 
-fn request_inputs() -> Vec<InputItem> {
-    vec![
-        InputItem::new(
-            "web_search",
-            "Web Search",
-            "Enable OpenAI web search for supported models only.",
-            InputType::Boolean {
-                default: Some(false),
-            },
-        ),
-        InputItem::new(
-            "temperature",
-            "Temperature",
-            "Temperature",
-            InputType::Float {
-                min: Some(0.0),
-                max: Some(2.0),
-                step: Some(0.1),
-                default: Some(1.0),
-            },
-        ),
-        InputItem::new(
-            "top_p",
-            "Top P",
-            "Top P",
-            InputType::Float {
-                min: Some(0.0),
-                max: Some(1.0),
-                step: Some(0.1),
-                default: Some(1.0),
-            },
-        ),
-        InputItem::new(
-            "n",
-            "N",
-            "N",
-            InputType::Integer {
-                max: None,
-                min: Some(1),
-                step: Some(1),
-                default: Some(1),
-            },
-        ),
-        InputItem::new(
-            "max_completion_tokens",
-            "Max Completion Tokens",
-            "Max Completion Tokens",
-            InputType::Optional(Box::new(InputType::Integer {
-                max: None,
-                min: Some(1),
-                step: Some(1),
-                default: None,
-            })),
-        ),
-        InputItem::new(
-            "presence_penalty",
-            "Presence Penalty",
-            "Presence Penalty",
-            InputType::Float {
-                max: Some(2.0),
-                min: Some(-2.0),
-                step: Some(0.1),
-                default: Some(0.0),
-            },
-        ),
-        InputItem::new(
-            "frequency_penalty",
-            "Frequency Penalty",
-            "Frequency Penalty",
-            InputType::Float {
-                max: Some(2.0),
-                min: Some(-2.0),
-                step: Some(0.1),
-                default: Some(0.0),
-            },
-        ),
-    ]
-}
-
 impl OpenAIProvider {
     fn supports_web_search(model: &str) -> bool {
         let model = model.strip_prefix("ft:").unwrap_or(model);
@@ -430,26 +336,36 @@ impl OpenAIProvider {
         model.starts_with("gpt-5")
     }
 
+    fn web_search_tool() -> HostedTool {
+        HostedTool {
+            tool_type: "web_search".to_string(),
+        }
+    }
+
+    fn default_tools(model: &str) -> Option<Vec<HostedTool>> {
+        Self::supports_web_search(model).then(|| vec![Self::web_search_tool()])
+    }
+
+    fn sanitize_tools(model: &str, tools: Vec<HostedTool>) -> Option<Vec<HostedTool>> {
+        let tools = tools
+            .into_iter()
+            .filter(|tool| tool.tool_type != "web_search" || Self::supports_web_search(model))
+            .collect::<Vec<_>>();
+        (!tools.is_empty()).then_some(tools)
+    }
+
     fn get_body(
         template: &OpenAIRequestTemplate,
         history_messages: Vec<Message>,
     ) -> ChatRequest<'_> {
-        let tools =
-            (template.web_search && Self::supports_web_search(&template.model)).then(|| {
-                vec![HostedTool {
-                    tool_type: "web_search",
-                }]
-            });
         ChatRequest {
             input: history_messages,
             model: template.model.as_str(),
             stream: template.stream,
-            temperature: template.temperature,
-            top_p: template.top_p,
-            max_output_tokens: template.max_completion_tokens,
-            presence_penalty: template.presence_penalty,
-            frequency_penalty: template.frequency_penalty,
-            tools,
+            tools: template
+                .tools
+                .clone()
+                .and_then(|tools| Self::sanitize_tools(&template.model, tools)),
         }
     }
 
@@ -488,13 +404,8 @@ impl Provider for OpenAIProvider {
         Ok(serde_json::to_value(OpenAIRequestTemplate {
             model: model.id.clone(),
             stream: model.capability.stream_flag(),
-            web_search: Self::supports_web_search(&model.id),
-            ..OpenAIRequestTemplate::default()
+            tools: Self::default_tools(&model.id),
         })?)
-    }
-
-    fn get_template_inputs(&self) -> Vec<InputItem> {
-        request_inputs()
     }
 
     fn request_body(
@@ -595,25 +506,6 @@ impl Provider for OpenAIProvider {
             Ok(models)
         }
         .boxed()
-    }
-
-    fn chat_form_layout(&self) -> ChatFormLayout {
-        ChatFormLayout {
-            inline_field_ids: Vec::new(),
-            popover_groups: vec![ChatFormGroup::new(
-                None,
-                None,
-                vec![
-                    "web_search",
-                    "temperature",
-                    "top_p",
-                    "n",
-                    "max_completion_tokens",
-                    "presence_penalty",
-                    "frequency_penalty",
-                ],
-            )],
-        }
     }
 
     fn setting_group(&self) -> gpui_component::setting::SettingGroup {
@@ -720,7 +612,7 @@ mod tests {
         OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
         ResponsesCreateResponse, classify_model, normalize_base_url, parse_response_stream_event,
     };
-    use crate::{database::Content, llm::FetchUpdate};
+    use crate::{database::Content, llm::{FetchUpdate, HostedTool}};
     use serde_json::json;
 
     #[test]
@@ -756,25 +648,34 @@ mod tests {
         )?;
         assert_eq!(template.model, "gpt-5");
         assert!(template.stream);
-        assert!(template.web_search);
+        assert_eq!(
+            template.tools,
+            Some(vec![HostedTool {
+                tool_type: "web_search".to_string(),
+            }])
+        );
         Ok(())
     }
 
     #[test]
-    fn unsupported_models_default_web_search_to_false() -> anyhow::Result<()> {
+    fn unsupported_models_default_to_no_tools() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
         let template = serde_json::from_value::<OpenAIRequestTemplate>(
             OpenAIProvider.default_template_for_model(&model)?,
         )?;
-        assert!(!template.web_search);
+        assert_eq!(template.tools, None);
         Ok(())
     }
 
     #[test]
-    fn chat_form_layout_uses_only_popover_fields() {
-        let layout = OpenAIProvider.chat_form_layout();
-        assert!(layout.inline_field_ids.is_empty());
-        assert_eq!(layout.popover_groups.len(), 1);
+    fn default_template_contains_only_runtime_fields() -> anyhow::Result<()> {
+        let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
+        let template = OpenAIProvider.default_template_for_model(&model)?;
+        let object = template.as_object().expect("template object");
+        assert_eq!(object.len(), 2);
+        assert!(object.contains_key("model"));
+        assert!(object.contains_key("stream"));
+        Ok(())
     }
 
     #[test]
@@ -815,13 +716,7 @@ mod tests {
             &json!({
                 "model": "gpt-5",
                 "stream": false,
-                "web_search": true,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "n": 1,
-                "max_completion_tokens": null,
-                "presence_penalty": 0.0,
-                "frequency_penalty": 0.0
+                "tools": [{ "type": "web_search" }]
             }),
             vec![],
         )?;
@@ -835,13 +730,7 @@ mod tests {
             &json!({
                 "model": "gpt-4o",
                 "stream": false,
-                "web_search": true,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "n": 1,
-                "max_completion_tokens": null,
-                "presence_penalty": 0.0,
-                "frequency_penalty": 0.0
+                "tools": [{ "type": "web_search" }]
             }),
             vec![],
         )?;

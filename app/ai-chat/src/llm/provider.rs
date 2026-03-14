@@ -9,108 +9,6 @@ use gpui_component::setting::SettingGroup;
 
 mod openai;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "tag", content = "value", rename_all = "camelCase")]
-pub(crate) enum InputType {
-    Text {
-        max_length: Option<usize>,
-        min_length: Option<usize>,
-    },
-    Float {
-        max: Option<f64>,
-        min: Option<f64>,
-        step: Option<f64>,
-        default: Option<f64>,
-    },
-    Boolean {
-        default: Option<bool>,
-    },
-    Integer {
-        max: Option<i64>,
-        min: Option<i64>,
-        step: Option<i64>,
-        default: Option<i64>,
-    },
-    Select(Vec<String>),
-    Array {
-        #[serde(rename = "inputType")]
-        input_type: Box<InputType>,
-        name: &'static str,
-        description: &'static str,
-    },
-    ArrayObject(Vec<InputItem>),
-    Object(Vec<InputItem>),
-    Optional(Box<InputType>),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct InputItem {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
-    #[serde(rename = "inputType")]
-    input_type: InputType,
-}
-
-impl InputItem {
-    pub(crate) fn new(
-        id: &'static str,
-        name: &'static str,
-        description: &'static str,
-        input_type: InputType,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            description,
-            input_type,
-        }
-    }
-
-    pub(crate) fn id(&self) -> &'static str {
-        self.id
-    }
-
-    pub(crate) fn name(&self) -> &'static str {
-        self.name
-    }
-
-    pub(crate) fn description(&self) -> &'static str {
-        self.description
-    }
-
-    pub(crate) fn input_type(&self) -> &InputType {
-        &self.input_type
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ChatFormLayout {
-    pub(crate) inline_field_ids: Vec<&'static str>,
-    pub(crate) popover_groups: Vec<ChatFormGroup>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ChatFormGroup {
-    pub(crate) title_key: Option<&'static str>,
-    pub(crate) description_key: Option<&'static str>,
-    pub(crate) field_ids: Vec<&'static str>,
-}
-
-impl ChatFormGroup {
-    pub(crate) fn new(
-        title_key: Option<&'static str>,
-        description_key: Option<&'static str>,
-        field_ids: Vec<&'static str>,
-    ) -> Self {
-        Self {
-            title_key,
-            description_key,
-            field_ids,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderModelCapability {
     Streaming,
@@ -148,7 +46,6 @@ pub(crate) trait Provider: Sync {
     fn name(&self) -> &'static str;
     fn is_configured(&self, settings: &serde_json::Value) -> bool;
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value>;
-    fn get_template_inputs(&self) -> Vec<InputItem>;
     fn request_body(
         &self,
         template: &serde_json::Value,
@@ -165,12 +62,6 @@ pub(crate) trait Provider: Sync {
         config: AiChatConfig,
         settings: toml::Value,
     ) -> BoxFuture<'static, AiChatResult<Vec<ProviderModel>>>;
-    fn chat_form_layout(&self) -> ChatFormLayout {
-        ChatFormLayout {
-            inline_field_ids: Vec::new(),
-            popover_groups: Vec::new(),
-        }
-    }
     fn setting_group(&self) -> SettingGroup;
 }
 
@@ -201,14 +92,6 @@ pub(crate) fn provider_by_name(name: &str) -> AiChatResult<&'static dyn Provider
         .copied()
         .find(|provider| provider.name() == name)
         .ok_or_else(|| AiChatError::ProviderNotFound(name.to_string()))
-}
-
-pub(crate) fn template_inputs_by_provider(provider: &str) -> AiChatResult<Vec<InputItem>> {
-    Ok(provider_by_name(provider)?.get_template_inputs())
-}
-
-pub(crate) fn chat_form_layout_by_provider(provider: &str) -> AiChatResult<ChatFormLayout> {
-    Ok(provider_by_name(provider)?.chat_form_layout())
 }
 
 fn provider_settings_json(
