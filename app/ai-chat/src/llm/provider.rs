@@ -42,6 +42,20 @@ impl ProviderModel {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtSettingOption {
+    pub(crate) value: &'static str,
+    pub(crate) label_key: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtSettingItem {
+    pub(crate) key: &'static str,
+    pub(crate) label_key: &'static str,
+    pub(crate) value: String,
+    pub(crate) options: Vec<ExtSettingOption>,
+}
+
 pub(crate) trait Provider: Sync {
     fn name(&self) -> &'static str;
     fn is_configured(&self, settings: &serde_json::Value) -> bool;
@@ -63,6 +77,24 @@ pub(crate) trait Provider: Sync {
         settings: toml::Value,
     ) -> BoxFuture<'static, AiChatResult<Vec<ProviderModel>>>;
     fn setting_group(&self) -> SettingGroup;
+    fn ext_settings(
+        &self,
+        _model: &ProviderModel,
+        _template: &serde_json::Value,
+    ) -> AiChatResult<Vec<ExtSettingItem>> {
+        Ok(Vec::new())
+    }
+    fn apply_ext_setting(
+        &self,
+        _model: &ProviderModel,
+        _template: &mut serde_json::Value,
+        key: &str,
+        _value: &str,
+    ) -> AiChatResult<()> {
+        Err(AiChatError::StreamError(format!(
+            "unsupported provider setting: {key}"
+        )))
+    }
 }
 
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};

@@ -16,16 +16,23 @@ pub(crate) struct TemporaryView {
 
 impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let _subscription = vec![cx.observe_window_activation(window, |_this, window, cx| {
+        let _subscription = vec![cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 TemporaryData::request_hide_with_delay(window, cx);
+                return;
             }
+            this.focus_chat_form(window, cx);
         })];
         let detail = cx.new(|cx| TemplateDetailView::new(window, cx));
         Self {
             _subscription,
             detail,
         }
+    }
+
+    pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail
+            .update(cx, |detail, cx| detail.focus_chat_form(window, cx));
     }
 }
 

@@ -66,7 +66,9 @@ mode-assistant-only = Assistant Only
 field-prompts = Prompts
 field-role = Role
 field-prompt = Prompt
+field-chat-input-placeholder = Ask anything
 field-model = Model
+field-reasoning-effort = Reasoning Effort
 field-extension = Extension
 field-loading = Loading...
 field-models = Model Select
@@ -117,6 +119,13 @@ delete-message-failed-title = Delete Message Failed
 delete-message-failed-message = Message view not available.
 
 settings-openai-title = OpenAI
+
+reasoning-effort-none = None
+reasoning-effort-minimal = Minimal
+reasoning-effort-low = Low
+reasoning-effort-medium = Medium
+reasoning-effort-high = High
+reasoning-effort-xhigh = X-High
 
 template-error-select-role = Please select role for prompt
 template-error-prompt-empty = Prompt cannot be empty:

@@ -566,6 +566,7 @@ impl WorkspaceState {
                 return;
             }
         }
+        self.focus_active_conversation_panel(window, cx);
         self.sync_persisted_tabs();
         self.schedule_save(cx);
         cx.notify();
@@ -605,15 +606,23 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    pub(crate) fn activate_tab(&mut self, tab_key: i32, cx: &mut Context<Self>) {
+    pub(crate) fn activate_tab(&mut self, tab_key: i32, window: &mut Window, cx: &mut Context<Self>) {
         self.active_tab = self
             .tabs
             .iter()
             .find(|tab| tab.kind.key() == tab_key)
             .map(|tab| tab.kind);
+        self.focus_active_conversation_panel(window, cx);
         self.sync_persisted_tabs();
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    fn focus_active_conversation_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.active_conversation_panel() else {
+            return;
+        };
+        panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
     }
 
     pub(crate) fn remove_tab(&mut self, tab_key: i32, cx: &mut Context<Self>) {

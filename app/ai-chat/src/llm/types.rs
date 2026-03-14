@@ -3,7 +3,7 @@ use serde::Deserialize;
 mod chat_request;
 mod message;
 
-pub use chat_request::{ChatRequest, HostedTool};
+pub use chat_request::{ChatRequest, HostedTool, ReasoningConfig};
 pub use message::Message;
 
 #[derive(Debug, Deserialize)]

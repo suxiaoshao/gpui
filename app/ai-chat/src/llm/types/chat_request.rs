@@ -15,6 +15,11 @@ pub struct HostedTool {
     pub tool_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningConfig {
+    pub effort: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatRequest<'a> {
     pub model: &'a str,
@@ -22,4 +27,6 @@ pub struct ChatRequest<'a> {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<HostedTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }

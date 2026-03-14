@@ -66,7 +66,9 @@ mode-assistant-only = 仅助手模式
 field-prompts = 提示词
 field-role = 角色
 field-prompt = 提示词
+field-chat-input-placeholder = 有问题，尽管问
 field-model = 模型
+field-reasoning-effort = 推理强度
 field-extension = 扩展
 field-loading = 加载中...
 field-models = 模型选择
@@ -117,6 +119,13 @@ delete-message-failed-title = 删除消息失败
 delete-message-failed-message = 消息窗口不可用。
 
 settings-openai-title = OpenAI
+
+reasoning-effort-none = 无
+reasoning-effort-minimal = 最小
+reasoning-effort-low = 低
+reasoning-effort-medium = 中
+reasoning-effort-high = 高
+reasoning-effort-xhigh = 极高
 
 template-error-select-role = 请选择提示词角色
 template-error-prompt-empty = 提示词不能为空：

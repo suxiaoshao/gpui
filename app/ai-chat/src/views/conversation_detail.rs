@@ -154,8 +154,9 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     pub(crate) fn new_with_detail(detail: T, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let alignment = detail.message_list_alignment();
         let auto_scroll_new_messages = detail.auto_scroll_new_messages_when_at_end();
+        let should_focus = detail.focus_on_init();
         let focus_handle = cx.focus_handle();
-        if detail.focus_on_init() {
+        if should_focus {
             focus_handle.focus(window);
         }
         let message_list = if should_measure_all_message_list(auto_scroll_new_messages) {
@@ -173,7 +174,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
                 ChatFormEvent::StateChanged => T::on_chat_form_state_changed(this, window, cx),
             },
         )];
-        Self {
+        let mut this = Self {
             detail,
             focus_handle,
             message_list,
@@ -181,7 +182,11 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             chat_form,
             _subscriptions,
             task: None,
+        };
+        if should_focus {
+            this.focus_chat_form(window, cx);
         }
+        this
     }
 
     pub(crate) fn has_running_task(&self) -> bool {
@@ -199,6 +204,15 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     ) {
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.set_running(running, cx));
+    }
+
+    pub(crate) fn focus_chat_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<T>>,
+    ) {
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.focus_input(window, cx));
     }
 
     pub(crate) fn set_running_task(
@@ -336,7 +350,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
         let mut content = v_flex()
             .size_full()
             .overflow_hidden()
-            .pb_2()
+            .pb_4()
             .track_focus(&self.focus_handle)
             .child(
                 h_flex()
@@ -426,7 +440,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                 footer
                     .w_full()
                     .flex_initial()
-                    .px_2()
+                    .px_4()
                     .child(self.chat_form.clone())
             });
 

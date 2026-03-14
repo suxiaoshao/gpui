@@ -212,9 +212,9 @@ pub(crate) struct TemplateListView {
 
 impl TemplateListView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search_placeholder = cx.global::<I18n>().t("field-search-template");
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder.clone()));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-template"))
+        });
         let _search_input_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         search_input.focus_handle(cx).focus(window);
