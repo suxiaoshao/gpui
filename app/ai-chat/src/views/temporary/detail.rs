@@ -944,11 +944,7 @@ mod tests {
             }],
             Mode::Contextual,
             &[
-                make_message(
-                    Role::Assistant,
-                    Status::Normal,
-                    Content::new("a1"),
-                ),
+                make_message(Role::Assistant, Status::Normal, Content::new("a1")),
                 make_message(Role::User, Status::Error, Content::new("bad")),
             ],
             Role::User,

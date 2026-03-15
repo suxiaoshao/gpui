@@ -7,6 +7,7 @@ use crate::{
 use futures::{future::BoxFuture, stream::BoxStream};
 use gpui_component::setting::SettingGroup;
 
+mod ollama;
 mod openai;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub(crate) struct ProviderModel {
     pub(crate) provider_name: String,
     pub(crate) id: String,
     pub(crate) capability: ProviderModelCapability,
+    pub(crate) metadata: serde_json::Value,
 }
 
 impl ProviderModel {
@@ -38,7 +40,13 @@ impl ProviderModel {
             provider_name: provider_name.into(),
             id: id.into(),
             capability,
+            metadata: serde_json::json!({}),
         }
+    }
+
+    pub(crate) fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = metadata;
+        self
     }
 }
 
@@ -52,8 +60,16 @@ pub(crate) struct ExtSettingOption {
 pub(crate) struct ExtSettingItem {
     pub(crate) key: &'static str,
     pub(crate) label_key: &'static str,
-    pub(crate) value: String,
-    pub(crate) options: Vec<ExtSettingOption>,
+    pub(crate) control: ExtSettingControl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExtSettingControl {
+    Select {
+        value: String,
+        options: Vec<ExtSettingOption>,
+    },
+    Boolean(bool),
 }
 
 pub(crate) trait Provider: Sync {
@@ -88,15 +104,16 @@ pub(crate) trait Provider: Sync {
         &self,
         _model: &ProviderModel,
         _template: &mut serde_json::Value,
-        key: &str,
-        _value: &str,
+        setting: &ExtSettingItem,
     ) -> AiChatResult<()> {
         Err(AiChatError::StreamError(format!(
-            "unsupported provider setting: {key}"
+            "unsupported provider setting: {}",
+            setting.key
         )))
     }
 }
 
+pub(crate) use ollama::{OllamaProvider, OllamaSettings};
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +124,7 @@ pub(crate) enum FetchUpdate {
     Complete(Content),
 }
 
-const PROVIDERS: [&dyn Provider; 1] = [&OpenAIProvider];
+const PROVIDERS: [&dyn Provider; 2] = [&OllamaProvider, &OpenAIProvider];
 
 pub(crate) fn provider_names() -> Vec<&'static str> {
     PROVIDERS.iter().map(|provider| provider.name()).collect()

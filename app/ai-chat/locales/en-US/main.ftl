@@ -70,11 +70,13 @@ field-role = Role
 field-prompt = Prompt
 field-chat-input-placeholder = Ask anything
 field-model = Model
+field-thinking = Thinking
 field-reasoning-effort = Reasoning Effort
 field-reasoning-summary = Reasoning Summary
 field-extension = Extension
 field-loading = Loading...
 field-models = Model Select
+field-web-search = Web Search
 field-api-key = Api Key
 field-base-url = Base URL
 field-sources = Sources
@@ -131,6 +133,7 @@ delete-message-failed-title = Delete Message Failed
 delete-message-failed-message = Message view not available.
 
 settings-openai-title = OpenAI
+settings-ollama-title = Ollama
 
 reasoning-effort-none = None
 reasoning-effort-minimal = Minimal
@@ -139,6 +142,7 @@ reasoning-effort-medium = Medium
 reasoning-effort-high = High
 reasoning-effort-xhigh = X-High
 button-reasoning-summary = Thought
+button-reasoning-summary-thinking = Thinking
 
 template-error-select-role = Please select role for prompt
 template-error-prompt-empty = Prompt cannot be empty:

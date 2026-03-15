@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenAI Responses API"
+  short_description: "Responses API request/response reference"
+  default_prompt: "Use $openai-responses-api to check request fields, response objects, and streaming events before writing or reviewing OpenAI Responses API code."

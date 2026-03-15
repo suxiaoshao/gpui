@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ollama API"
+  short_description: "Ollama native API and compatibility reference"
+  default_prompt: "Use $ollama-api to check Ollama native endpoints, request fields, streaming responses, and compatibility gaps before implementing an Ollama provider."

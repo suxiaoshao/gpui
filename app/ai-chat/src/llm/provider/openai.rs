@@ -1,5 +1,5 @@
 use super::{
-    ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
     ProviderModelCapability,
 };
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
     i18n::t_static,
-    llm::{ChatRequest, HostedTool, Message, OpenAIResponseStreamEvent, ReasoningConfig},
+    llm::Message,
 };
 use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
@@ -115,14 +115,73 @@ struct BaseUrlFieldState {
     _subscription: Subscription,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HostedTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReasoningConfig {
+    effort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    input: Vec<Message>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<HostedTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum OpenAIResponseStreamEvent {
+    #[serde(rename = "response.output_item.added")]
+    ResponseOutputItemAdded { item: OpenAIOutputItemEvent },
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ResponseReasoningSummaryTextDelta { delta: String },
+    #[serde(rename = "response.output_text.delta")]
+    ResponseOutputTextDelta { delta: String },
+    #[serde(rename = "response.completed")]
+    ResponseCompleted { response: serde_json::Value },
+    #[serde(rename = "error")]
+    Error { message: String },
+    #[serde(rename = "response.failed")]
+    ResponseFailed { response: OpenAIResponse },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponse {
+    error: OpenAIResponseError,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponseError {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIOutputItemEvent {
+    #[serde(rename = "type")]
+    item_type: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct OpenAIRequestTemplate {
-    pub(crate) model: String,
-    pub(crate) stream: bool,
+    model: String,
+    stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tools: Option<Vec<HostedTool>>,
+    tools: Option<Vec<HostedTool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reasoning: Option<ReasoningConfig>,
+    reasoning: Option<ReasoningConfig>,
 }
 
 impl Default for OpenAIRequestTemplate {
@@ -444,7 +503,10 @@ impl OpenAIProvider {
             });
         }
         let minor = Self::gpt5_minor_version(&parsed)?;
-        let is_pro = parsed.segments.last().is_some_and(|segment| *segment == "pro");
+        let is_pro = parsed
+            .segments
+            .last()
+            .is_some_and(|segment| *segment == "pro");
         if is_pro {
             return Some(if minor >= 2 {
                 ReasoningProfile {
@@ -485,17 +547,18 @@ impl OpenAIProvider {
             effort: profile.default_effort.to_string(),
             summary: None,
         });
-        profile.options.iter().any(|option| *option == reasoning.effort).then(|| {
-            reasoning.summary = Some(REASONING_SUMMARY_AUTO.to_string());
-            reasoning
-        })
+        profile
+            .options
+            .iter()
+            .any(|option| *option == reasoning.effort)
+            .then(|| {
+                reasoning.summary = Some(REASONING_SUMMARY_AUTO.to_string());
+                reasoning
+            })
     }
 
     fn reasoning_effort_from_template(template: &serde_json::Value) -> Option<&str> {
-        template
-            .get("reasoning")?
-            .get("effort")?
-            .as_str()
+        template.get("reasoning")?.get("effort")?.as_str()
     }
 
     fn remove_reasoning(template: &mut serde_json::Value) {
@@ -802,16 +865,18 @@ impl Provider for OpenAIProvider {
         Ok(vec![ExtSettingItem {
             key: REASONING_EFFORT_KEY,
             label_key: "field-reasoning-effort",
-            value,
-            options: profile
-                .options
-                .iter()
-                .copied()
-                .map(|effort| ExtSettingOption {
-                    value: effort,
-                    label_key: Self::reasoning_effort_label_key(effort),
-                })
-                .collect(),
+            control: ExtSettingControl::Select {
+                value,
+                options: profile
+                    .options
+                    .iter()
+                    .copied()
+                    .map(|effort| ExtSettingOption {
+                        value: effort,
+                        label_key: Self::reasoning_effort_label_key(effort),
+                    })
+                    .collect(),
+            },
         }])
     }
 
@@ -819,19 +884,24 @@ impl Provider for OpenAIProvider {
         &self,
         model: &ProviderModel,
         template: &mut serde_json::Value,
-        key: &str,
-        value: &str,
+        setting: &ExtSettingItem,
     ) -> AiChatResult<()> {
-        if key != REASONING_EFFORT_KEY {
+        if setting.key != REASONING_EFFORT_KEY {
             return Err(AiChatError::StreamError(format!(
-                "unsupported OpenAI setting: {key}"
+                "unsupported OpenAI setting: {}",
+                setting.key
             )));
         }
+        let ExtSettingControl::Select { value, .. } = &setting.control else {
+            return Err(AiChatError::StreamError(
+                "reasoning.effort must use select control".to_string(),
+            ));
+        };
         let Some(profile) = Self::reasoning_profile(&model.id) else {
             Self::remove_reasoning(template);
             return Ok(());
         };
-        if !profile.options.contains(&value) {
+        if !profile.options.contains(&value.as_str()) {
             return Err(AiChatError::StreamError(format!(
                 "unsupported reasoning.effort '{value}' for model '{}'",
                 model.id
@@ -847,12 +917,12 @@ impl Provider for OpenAIProvider {
             return Ok(());
         }
         template_object.insert(
-                "reasoning".to_string(),
-                serde_json::to_value(ReasoningConfig {
-                    effort: value.to_string(),
-                    summary: Some(REASONING_SUMMARY_AUTO.to_string()),
-                })?,
-            );
+            "reasoning".to_string(),
+            serde_json::to_value(ReasoningConfig {
+                effort: value.to_string(),
+                summary: Some(REASONING_SUMMARY_AUTO.to_string()),
+            })?,
+        );
         Ok(())
     }
 }
@@ -860,15 +930,15 @@ impl Provider for OpenAIProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel, ProviderModelCapability,
-        REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM, REASONING_NONE,
-        REASONING_SUMMARY_AUTO, REASONING_XHIGH, ResponsesCreateResponse, classify_model,
-        normalize_base_url,
+        ExtSettingControl, HostedTool, OpenAIProvider, OpenAIRequestTemplate, Provider,
+        ProviderModel, ProviderModelCapability, REASONING_EFFORT_KEY, REASONING_HIGH,
+        REASONING_LOW, REASONING_MEDIUM, REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH,
+        ReasoningConfig, ResponsesCreateResponse, classify_model, normalize_base_url,
         parse_response_stream_event,
     };
     use crate::{
         database::Content,
-        llm::{ExtSettingOption, FetchUpdate, HostedTool, ReasoningConfig},
+        llm::{ExtSettingOption, FetchUpdate},
     };
     use serde_json::json;
 
@@ -1009,23 +1079,25 @@ mod tests {
         let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
         assert_eq!(settings.len(), 1);
         assert_eq!(settings[0].key, REASONING_EFFORT_KEY);
-        assert_eq!(settings[0].value, REASONING_MEDIUM);
         assert_eq!(
-            settings[0].options,
-            vec![
-                ExtSettingOption {
-                    value: REASONING_MEDIUM,
-                    label_key: "reasoning-effort-medium",
-                },
-                ExtSettingOption {
-                    value: REASONING_HIGH,
-                    label_key: "reasoning-effort-high",
-                },
-                ExtSettingOption {
-                    value: REASONING_XHIGH,
-                    label_key: "reasoning-effort-xhigh",
-                },
-            ]
+            settings[0].control,
+            ExtSettingControl::Select {
+                value: REASONING_MEDIUM.to_string(),
+                options: vec![
+                    ExtSettingOption {
+                        value: REASONING_MEDIUM,
+                        label_key: "reasoning-effort-medium",
+                    },
+                    ExtSettingOption {
+                        value: REASONING_HIGH,
+                        label_key: "reasoning-effort-high",
+                    },
+                    ExtSettingOption {
+                        value: REASONING_XHIGH,
+                        label_key: "reasoning-effort-xhigh",
+                    },
+                ]
+            }
         );
         Ok(())
     }
@@ -1034,7 +1106,30 @@ mod tests {
     fn ext_settings_use_none_default_for_gpt_5_1() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.1", ProviderModelCapability::Streaming);
         let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
-        assert_eq!(settings[0].value, REASONING_NONE);
+        assert_eq!(
+            settings[0].control,
+            ExtSettingControl::Select {
+                value: REASONING_NONE.to_string(),
+                options: vec![
+                    ExtSettingOption {
+                        value: REASONING_NONE,
+                        label_key: "reasoning-effort-none",
+                    },
+                    ExtSettingOption {
+                        value: REASONING_LOW,
+                        label_key: "reasoning-effort-low",
+                    },
+                    ExtSettingOption {
+                        value: REASONING_MEDIUM,
+                        label_key: "reasoning-effort-medium",
+                    },
+                    ExtSettingOption {
+                        value: REASONING_HIGH,
+                        label_key: "reasoning-effort-high",
+                    },
+                ]
+            }
+        );
         Ok(())
     }
 
@@ -1042,9 +1137,16 @@ mod tests {
     fn ext_settings_use_high_only_for_gpt_5_pro() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5-pro", ProviderModelCapability::Streaming);
         let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
-        assert_eq!(settings[0].value, REASONING_HIGH);
-        assert_eq!(settings[0].options.len(), 1);
-        assert_eq!(settings[0].options[0].value, REASONING_HIGH);
+        assert_eq!(
+            settings[0].control,
+            ExtSettingControl::Select {
+                value: REASONING_HIGH.to_string(),
+                options: vec![ExtSettingOption {
+                    value: REASONING_HIGH,
+                    label_key: "reasoning-effort-high",
+                }]
+            }
+        );
         Ok(())
     }
 
@@ -1052,7 +1154,18 @@ mod tests {
     fn apply_ext_setting_removes_default_reasoning() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
         let mut template = OpenAIProvider.default_template_for_model(&model)?;
-        OpenAIProvider.apply_ext_setting(&model, &mut template, REASONING_EFFORT_KEY, REASONING_MEDIUM)?;
+        OpenAIProvider.apply_ext_setting(
+            &model,
+            &mut template,
+            &super::ExtSettingItem {
+                key: REASONING_EFFORT_KEY,
+                label_key: "field-reasoning-effort",
+                control: ExtSettingControl::Select {
+                    value: REASONING_MEDIUM.to_string(),
+                    options: vec![],
+                },
+            },
+        )?;
         assert!(template.get("reasoning").is_none());
         Ok(())
     }
@@ -1061,7 +1174,18 @@ mod tests {
     fn apply_ext_setting_writes_non_default_reasoning() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
         let mut template = OpenAIProvider.default_template_for_model(&model)?;
-        OpenAIProvider.apply_ext_setting(&model, &mut template, REASONING_EFFORT_KEY, REASONING_XHIGH)?;
+        OpenAIProvider.apply_ext_setting(
+            &model,
+            &mut template,
+            &super::ExtSettingItem {
+                key: REASONING_EFFORT_KEY,
+                label_key: "field-reasoning-effort",
+                control: ExtSettingControl::Select {
+                    value: REASONING_XHIGH.to_string(),
+                    options: vec![],
+                },
+            },
+        )?;
         assert_eq!(
             serde_json::from_value::<OpenAIRequestTemplate>(template)?.reasoning,
             Some(ReasoningConfig {
@@ -1077,11 +1201,23 @@ mod tests {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
         let mut template = json!({});
         let err = OpenAIProvider
-            .apply_ext_setting(&model, &mut template, REASONING_EFFORT_KEY, REASONING_LOW)
+            .apply_ext_setting(
+                &model,
+                &mut template,
+                &super::ExtSettingItem {
+                    key: REASONING_EFFORT_KEY,
+                    label_key: "field-reasoning-effort",
+                    control: ExtSettingControl::Select {
+                        value: REASONING_LOW.to_string(),
+                        options: vec![],
+                    },
+                },
+            )
             .expect_err("unsupported effort");
-        assert!(err
-            .to_string()
-            .contains("unsupported reasoning.effort 'low'"));
+        assert!(
+            err.to_string()
+                .contains("unsupported reasoning.effort 'low'")
+        );
     }
 
     #[test]

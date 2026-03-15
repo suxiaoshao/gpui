@@ -4,7 +4,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, WindowExt,
+    ActiveTheme, Icon, IconName, Sizable, WindowExt,
     alert::Alert,
     avatar::Avatar,
     badge::Badge,
@@ -12,9 +12,9 @@ use gpui_component::{
     description_list::DescriptionItem,
     divider::Divider,
     h_flex,
-    Icon,
     notification::{Notification, NotificationType},
     popover::Popover,
+    scroll::ScrollableElement,
     spinner::Spinner,
     text::TextView,
     v_flex,
@@ -98,6 +98,13 @@ fn visible_error<'a>(status: &Status, error: Option<&'a str>) -> Option<&'a str>
     }
 }
 
+fn reasoning_summary_label(status: &Status, i18n: &I18n) -> SharedString {
+    match status {
+        Status::Thinking => i18n.t("button-reasoning-summary-thinking").into(),
+        _ => i18n.t("button-reasoning-summary").into(),
+    }
+}
+
 fn status_badge_color(status: &Status, cx: &App) -> Hsla {
     match status {
         Status::Normal => cx.theme().success,
@@ -136,7 +143,6 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             pause_tooltip,
             error_title,
             sources_label,
-            reasoning_summary_label,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -151,10 +157,10 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                 i18n.t("tooltip-pause-message"),
                 i18n.t("alert-error-title"),
                 i18n.t("field-sources"),
-                i18n.t("button-reasoning-summary"),
             )
         };
         let accessory_mode = MessageAccessoryMode::from(data.status());
+        let reasoning_summary_label = reasoning_summary_label(data.status(), cx.global::<I18n>());
         let message_error = visible_error(data.status(), data.error()).map(ToOwned::to_owned);
         let can_resend = data.can_resend(cx);
         let avatar = Badge::new()
@@ -269,11 +275,14 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     .child(
                         v_flex()
                             .flex_1()
+                            .pt_4()
+                            .px_4()
+                            .gap_2()
                             .overflow_x_hidden()
                             .when_some(reasoning_summary, |this, summary| {
                                 let popover_button_id = button_id.clone();
                                 this.child(
-                                    h_flex().px_4().pt_4().child(
+                                    h_flex().child(
                                         Popover::new(SharedString::from(format!(
                                             "reasoning-summary-popover-{}",
                                             popover_button_id
@@ -296,41 +305,51 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 ),
                                             ),
                                         )
-                                        .content(move |_, window, cx| {
-                                            div()
-                                                .w(px(320.))
-                                                .occlude()
-                                                .bg(popover_bg)
-                                                .border_1()
-                                                .border_color(popover_border)
-                                                .rounded(px(8.))
-                                                .shadow_md()
-                                                .p_2()
-                                                .child(
-                                                    TextView::markdown(
-                                                        SharedString::from(format!(
-                                                            "reasoning-summary-content-{}",
-                                                            popover_button_id
-                                                        )),
-                                                        &summary,
-                                                        window,
-                                                        cx,
+                                        .content(
+                                            move |_, window, cx| {
+                                                div()
+                                                    .w(px(520.))
+                                                    .occlude()
+                                                    .bg(popover_bg)
+                                                    .border_1()
+                                                    .border_color(popover_border)
+                                                    .rounded(px(8.))
+                                                    .shadow_md()
+                                                    .child(
+                                                        v_flex()
+                                                            .p_2()
+                                                            .h(px(420.))
+                                                            .overflow_hidden()
+                                                            .overflow_y_scrollbar()
+                                                            .child(
+                                                                div().child(
+                                                                    TextView::markdown(
+                                                                        SharedString::from(
+                                                                            format!(
+                                                                                "reasoning-summary-content-{}",
+                                                                                popover_button_id
+                                                                            ),
+                                                                        ),
+                                                                        &summary,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                    .selectable(true),
+                                                                ),
+                                                            ),
                                                     )
-                                                    .selectable(true),
-                                                )
-                                        }),
+                                            },
+                                        ),
                                     ),
                                 )
                             })
                             .child(
                                 TextView::markdown(text_id, &copy_text, window, cx)
-                                    .selectable(true)
-                                    .px_4()
-                                    .pt_2(),
+                                    .selectable(true),
                             )
                             .when_some(message_error, |this, error| {
                                 this.child(
-                                    div().px_4().pb_4().child(
+                                    div().child(
                                         Alert::error(
                                             SharedString::from(format!(
                                                 "message-error-{button_id}"
@@ -343,13 +362,9 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                             }),
                     )
                     .map(|this| match accessory_mode {
-                        MessageAccessoryMode::Thinking => this.child(
-                            div()
-                                .absolute()
-                                .right_2()
-                                .top_2()
-                                .child(Spinner::new()),
-                        ),
+                        MessageAccessoryMode::Thinking => {
+                            this.child(div().absolute().right_2().top_2().child(Spinner::new()))
+                        }
                         MessageAccessoryMode::Loading => this.child(
                             div()
                                 .absolute()

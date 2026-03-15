@@ -9,7 +9,9 @@ use crate::{
     APP_NAME,
     errors::{AiChatError, AiChatResult},
     hotkey::TemporaryData,
-    llm::{OpenAIProvider, OpenAISettings, Provider, provider_names},
+    llm::{
+        OllamaProvider, OllamaSettings, OpenAIProvider, OpenAISettings, Provider, provider_names,
+    },
 };
 use gpui::*;
 use gpui_component::{ThemeConfig, ThemeRegistry};
@@ -94,6 +96,9 @@ pub struct AiChatConfig {
 impl Default for AiChatConfig {
     fn default() -> Self {
         let mut provider_settings = HashMap::new();
+        if let Ok(settings) = Value::try_from(OllamaSettings::default()) {
+            provider_settings.insert(OllamaProvider.name().to_string(), settings);
+        }
         if let Ok(settings) = Value::try_from(OpenAISettings::default()) {
             provider_settings.insert(OpenAIProvider.name().to_string(), settings);
         }
@@ -124,6 +129,16 @@ impl AiChatConfig {
         if let Ok(settings) = Value::try_from(normalized) {
             self.provider_settings
                 .insert(OpenAIProvider.name().to_string(), settings);
+        }
+        let ollama = self
+            .provider_settings
+            .remove(OllamaProvider.name())
+            .and_then(|value| value.try_into::<OllamaSettings>().ok())
+            .map(OllamaSettings::normalized)
+            .unwrap_or_default();
+        if let Ok(settings) = Value::try_from(ollama) {
+            self.provider_settings
+                .insert(OllamaProvider.name().to_string(), settings);
         }
     }
 

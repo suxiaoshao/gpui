@@ -53,10 +53,7 @@ impl Content {
         }
     }
 
-    pub(crate) fn with_citations(
-        text: impl Into<String>,
-        citations: Vec<UrlCitation>,
-    ) -> Self {
+    pub(crate) fn with_citations(text: impl Into<String>, citations: Vec<UrlCitation>) -> Self {
         Self {
             text: text.into(),
             reasoning_summary: None,
@@ -87,7 +84,6 @@ impl Content {
             self.reasoning_summary = None;
         }
     }
-
 }
 
 fn format_sources_markdown(citations: &[UrlCitation], sources_label: &str) -> String {
