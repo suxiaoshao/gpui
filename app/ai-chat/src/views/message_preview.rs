@@ -132,9 +132,7 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
 }
 
 fn format_time(value: OffsetDateTime) -> String {
-    value
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| value.to_string())
+    value.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
 }
 
 fn render_editor(

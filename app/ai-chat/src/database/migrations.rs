@@ -83,9 +83,15 @@ pub(super) fn v3_to_v4(
     target_conn.immediate_transaction(|target_conn| {
         target_conn.batch_execute(CREATE_TABLE_SQL)?;
         SqlFolder::migration_save(SqlFolder::all(v3_conn)?, target_conn)?;
-        SqlConversationTemplate::migration_save(SqlConversationTemplate::all(v3_conn)?, target_conn)?;
+        SqlConversationTemplate::migration_save(
+            SqlConversationTemplate::all(v3_conn)?,
+            target_conn,
+        )?;
         SqlConversation::migration_save(SqlConversation::get_all(v3_conn)?, target_conn)?;
-        SqlMessage::migration_save(build_v3_migrated_messages(v3::SqlMessageV3::all(v3_conn)?)?, target_conn)?;
+        SqlMessage::migration_save(
+            build_v3_migrated_messages(v3::SqlMessageV3::all(v3_conn)?)?,
+            target_conn,
+        )?;
         Ok(())
     })
 }
@@ -149,7 +155,9 @@ impl From<LegacyContent> for Content {
     fn from(value: LegacyContent) -> Self {
         match value {
             LegacyContent::Text(text) => Content::new(text),
-            LegacyContent::WebSearch { text, citations } => Content::with_citations(text, citations),
+            LegacyContent::WebSearch { text, citations } => {
+                Content::with_citations(text, citations)
+            }
         }
     }
 }
@@ -1002,7 +1010,10 @@ create table messages
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content["text"], "hello");
         assert!(messages[0].content.get("reasoningSummary").is_none());
-        assert_eq!(messages[0].content["citations"][0]["url"], "https://example.com");
+        assert_eq!(
+            messages[0].content["citations"][0]["url"],
+            "https://example.com"
+        );
 
         drop(v3_conn);
         drop(v4_conn);

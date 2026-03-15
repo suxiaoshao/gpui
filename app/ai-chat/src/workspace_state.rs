@@ -606,7 +606,12 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    pub(crate) fn activate_tab(&mut self, tab_key: i32, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn activate_tab(
+        &mut self,
+        tab_key: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.active_tab = self
             .tabs
             .iter()

@@ -1,7 +1,7 @@
+mod ext_settings;
 mod mode_select;
 mod model_select;
 mod picker;
-mod reasoning_effort_select;
 mod template_picker;
 
 use crate::{
@@ -11,6 +11,7 @@ use crate::{
     llm::provider_by_name,
     workspace_state::ConversationDraft,
 };
+use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, IconName, Sizable,
@@ -24,7 +25,6 @@ use gpui_component::{
 use mode_select::{ModeSelect, ModeSelectEvent};
 use model_select::{ModelSelect, ModelSelectEvent};
 use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
-use reasoning_effort_select::{ReasoningEffortSelect, ReasoningEffortSelectEvent};
 use std::rc::Rc;
 use template_picker::{TemplateOption, template_sections};
 
@@ -52,7 +52,7 @@ pub(crate) struct ChatForm {
     input_state: Entity<InputState>,
     mode_select: Entity<ModeSelect>,
     model_select: Entity<ModelSelect>,
-    reasoning_effort_select: Entity<ReasoningEffortSelect>,
+    ext_settings: Entity<ExtSettings>,
     templates: Vec<ConversationTemplate>,
     selected_template: Option<ConversationTemplate>,
     request_template: Option<serde_json::Value>,
@@ -79,7 +79,7 @@ impl ChatForm {
         });
         let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
         let model_select = cx.new(|cx| ModelSelect::new(window, cx));
-        let reasoning_effort_select = cx.new(|cx| ReasoningEffortSelect::new(window, cx));
+        let ext_settings = cx.new(|cx| ExtSettings::new(window, cx));
         let templates = cx
             .global::<Db>()
             .get()
@@ -91,7 +91,7 @@ impl ChatForm {
             input_state,
             mode_select,
             model_select,
-            reasoning_effort_select,
+            ext_settings,
             templates,
             selected_template: None,
             request_template: None,
@@ -108,7 +108,7 @@ impl ChatForm {
         this.bind_input_events(window, cx);
         this.bind_model_select_events(window, cx);
         this.bind_mode_select_events(window, cx);
-        this.bind_reasoning_effort_events(window, cx);
+        this.bind_ext_settings_events(window, cx);
         this
     }
 
@@ -151,8 +151,8 @@ impl ChatForm {
                         Ok(template) => template,
                         Err(_) => {
                             this.request_template = None;
-                            this.reasoning_effort_select
-                                .update(cx, |select, cx| select.clear(window, cx));
+                            this.ext_settings
+                                .update(cx, |settings, cx| settings.clear(cx));
                             cx.emit(ChatFormEvent::StateChanged);
                             cx.notify();
                             return;
@@ -166,8 +166,8 @@ impl ChatForm {
                 }
                 ModelSelectEvent::Change(None) => {
                     this.request_template = None;
-                    this.reasoning_effort_select
-                        .update(cx, |select, cx| select.clear(window, cx));
+                    this.ext_settings
+                        .update(cx, |settings, cx| settings.clear(cx));
                     cx.emit(ChatFormEvent::StateChanged);
                     cx.notify();
                 }
@@ -192,12 +192,12 @@ impl ChatForm {
         self._subscriptions.push(subscription);
     }
 
-    fn bind_reasoning_effort_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn bind_ext_settings_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let subscription = cx.subscribe_in(
-            &self.reasoning_effort_select,
+            &self.ext_settings,
             window,
-            |this, _select, event: &ReasoningEffortSelectEvent, _window, cx| {
-                let ReasoningEffortSelectEvent::Change(value) = event;
+            |this, _settings, event: &ExtSettingsEvent, window, cx| {
+                let ExtSettingsEvent::Change(setting) = event;
                 let Some(model) = this.model_select.read(cx).selected_model() else {
                     return;
                 };
@@ -208,12 +208,12 @@ impl ChatForm {
                     return;
                 };
                 if provider
-                    .apply_ext_setting(&model, template, "reasoning.effort", value)
+                    .apply_ext_setting(&model, template, setting)
                     .is_err()
                 {
                     return;
                 }
-                this.sync_ext_settings(&model, _window, cx);
+                this.sync_ext_settings(&model, window, cx);
                 cx.emit(ChatFormEvent::StateChanged);
                 cx.notify();
             },
@@ -228,34 +228,26 @@ impl ChatForm {
         cx: &mut Context<Self>,
     ) {
         let Some(template) = self.request_template.clone() else {
-            self.reasoning_effort_select
-                .update(cx, |select, cx| select.clear(window, cx));
+            self.ext_settings
+                .update(cx, |settings, cx| settings.clear(cx));
             return;
         };
         let Ok(provider) = provider_by_name(&model.provider_name) else {
-            self.reasoning_effort_select
-                .update(cx, |select, cx| select.clear(window, cx));
+            self.ext_settings
+                .update(cx, |settings, cx| settings.clear(cx));
             return;
         };
         let settings = match provider.ext_settings(model, &template) {
             Ok(settings) => settings,
             Err(_) => {
-                self.reasoning_effort_select
-                    .update(cx, |select, cx| select.clear(window, cx));
+                self.ext_settings
+                    .update(cx, |settings, cx| settings.clear(cx));
                 return;
             }
         };
-        if let Some(setting) = settings
-            .into_iter()
-            .find(|setting| setting.key == "reasoning.effort")
-        {
-            self.reasoning_effort_select.update(cx, |select, cx| {
-                select.configure(setting.options, setting.value, window, cx);
-            });
-        } else {
-            self.reasoning_effort_select
-                .update(cx, |select, cx| select.clear(window, cx));
-        }
+        self.ext_settings.update(cx, |ext_settings, cx| {
+            ext_settings.set_items(settings, window, cx)
+        });
     }
 
     fn apply_saved_ext_settings(
@@ -265,19 +257,17 @@ impl ChatForm {
         template: &mut serde_json::Value,
         saved_template: &serde_json::Value,
     ) {
-        let Some(effort) = Self::string_value_at_path(saved_template, &["reasoning", "effort"])
-        else {
+        let Ok(settings) = provider.ext_settings(model, saved_template) else {
             return;
         };
-        let _ = provider.apply_ext_setting(model, template, "reasoning.effort", effort);
-    }
-
-    fn string_value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
-        let mut current = value;
-        for segment in path {
-            current = current.get(*segment)?;
+        for setting in settings {
+            if provider
+                .apply_ext_setting(model, template, &setting)
+                .is_err()
+            {
+                continue;
+            }
         }
-        current.as_str()
     }
 
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -539,7 +529,7 @@ impl Render for ChatForm {
                             .items_center()
                             .gap_1()
                             .child(self.model_select.clone())
-                            .child(self.reasoning_effort_select.clone())
+                            .child(self.ext_settings.clone())
                             .child(self.mode_select.clone()),
                     )
                     .child(div().flex_1())
