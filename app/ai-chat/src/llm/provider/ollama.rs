@@ -568,8 +568,8 @@ impl OllamaProvider {
         previous_reasoning: Option<String>,
     ) -> Content {
         let mut content = Content::new(round_message.content.clone());
-        let mut reasoning_summary = previous_reasoning.unwrap_or_default();
-        reasoning_summary.push_str(&round_message.thinking);
+        let reasoning_summary =
+            previous_reasoning.unwrap_or_else(|| round_message.thinking.clone());
         content.reasoning_summary =
             (!reasoning_summary.trim().is_empty()).then_some(reasoning_summary);
         content.citations = citations;
@@ -896,8 +896,9 @@ impl Provider for OllamaProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtSettingControl, OllamaProvider, OllamaStoredRequest, Provider, ProviderModel,
-        ProviderModelCapability, THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM, WEB_SEARCH_KEY,
+        ExtSettingControl, OllamaChatMessage, OllamaProvider, OllamaStoredRequest, Provider,
+        ProviderModel, ProviderModelCapability, THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM,
+        WEB_SEARCH_KEY,
     };
     use crate::{database::Role, llm::ExtSettingItem};
     use serde_json::json;
@@ -1045,5 +1046,20 @@ mod tests {
         assert_eq!(request.messages[0].content, "system prompt");
         assert!(request.web_search);
         Ok(())
+    }
+
+    #[test]
+    fn merge_content_does_not_duplicate_streamed_reasoning() {
+        let content = OllamaProvider::merge_content(
+            &OllamaChatMessage {
+                content: "final answer".to_string(),
+                thinking: "abc".to_string(),
+                ..Default::default()
+            },
+            Vec::new(),
+            Some("abc".to_string()),
+        );
+        assert_eq!(content.text, "final answer");
+        assert_eq!(content.reasoning_summary.as_deref(), Some("abc"));
     }
 }
