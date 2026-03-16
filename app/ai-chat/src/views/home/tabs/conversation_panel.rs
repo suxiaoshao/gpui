@@ -221,6 +221,16 @@ impl ConversationDetailViewExt for ConversationPanelState {
 }
 
 impl ConversationPanelView {
+    fn pause_message_snapshot(message: &mut Message, now: OffsetDateTime) -> bool {
+        if !matches!(message.status, Status::Loading | Status::Thinking) {
+            return false;
+        }
+        message.status = Status::Paused;
+        message.updated_time = now;
+        message.end_time = now;
+        true
+    }
+
     fn pause_task(&mut self, cx: &mut Context<Self>) -> AiChatResult<()> {
         let Some(task) = self.task.take() else {
             return Ok(());
@@ -235,13 +245,10 @@ impl ConversationPanelView {
                     let Some(mut message) = data.message(conversation_id, message_id) else {
                         continue;
                     };
-                    if !matches!(message.status, Status::Loading | Status::Thinking) {
+                    let now = OffsetDateTime::now_utc();
+                    if !Self::pause_message_snapshot(&mut message, now) {
                         continue;
                     }
-                    let now = OffsetDateTime::now_utc();
-                    message.status = Status::Paused;
-                    message.updated_time = now;
-                    message.end_time = now;
                     data.replace_message(conversation_id, message.clone());
                     paused_messages.push(message);
                 }
@@ -258,16 +265,47 @@ impl ConversationPanelView {
         Ok(())
     }
 
+    fn pause_stale_message(&mut self, message_id: i32, cx: &mut Context<Self>) -> AiChatResult<()> {
+        let conversation_id = self.detail.conversation_id;
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        let paused_message = chat_data.update(cx, move |data, cx| {
+            let Ok(data) = data else {
+                return None;
+            };
+            let mut message = data.message(conversation_id, message_id)?;
+            let now = OffsetDateTime::now_utc();
+            if !Self::pause_message_snapshot(&mut message, now) {
+                return None;
+            }
+            data.replace_message(conversation_id, message.clone());
+            cx.notify();
+            Some(message)
+        });
+        let Some(message) = paused_message else {
+            return Ok(());
+        };
+
+        let conn = &mut cx.global::<Db>().get()?;
+        Self::persist_message_snapshot(&message, conn)?;
+        self.set_chat_form_running(false, cx);
+        cx.notify();
+        Ok(())
+    }
+
     pub(crate) fn pause_message(&mut self, message_id: i32, cx: &mut Context<Self>) {
-        if !self
+        if self
             .task
             .as_ref()
             .is_some_and(|task| task.contains_message(message_id))
         {
+            if let Err(err) = self.pause_task(cx) {
+                event!(Level::ERROR, "pause message failed: {}", err);
+            }
             return;
         }
-        if let Err(err) = self.pause_task(cx) {
-            event!(Level::ERROR, "pause message failed: {}", err);
+
+        if let Err(err) = self.pause_stale_message(message_id, cx) {
+            event!(Level::ERROR, "pause stale message failed: {}", err);
         }
     }
 
@@ -1161,5 +1199,32 @@ mod tests {
         )?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
+    }
+
+    #[test]
+    fn pause_message_snapshot_updates_loading_messages() {
+        let now = OffsetDateTime::now_utc();
+        let mut message = make_message(1, Role::Assistant, Status::Loading, Content::new("a1"));
+
+        assert!(ConversationPanelView::pause_message_snapshot(
+            &mut message,
+            now
+        ));
+        assert_eq!(message.status, Status::Paused);
+        assert_eq!(message.updated_time, now);
+        assert_eq!(message.end_time, now);
+    }
+
+    #[test]
+    fn pause_message_snapshot_ignores_non_running_messages() {
+        let now = OffsetDateTime::now_utc();
+        let mut message = make_message(1, Role::Assistant, Status::Normal, Content::new("a1"));
+        let original = message.clone();
+
+        assert!(!ConversationPanelView::pause_message_snapshot(
+            &mut message,
+            now
+        ));
+        assert_eq!(message, original);
     }
 }

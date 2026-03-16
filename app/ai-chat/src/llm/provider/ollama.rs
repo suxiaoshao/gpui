@@ -14,8 +14,10 @@ use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use reqwest::Client;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::net::IpAddr;
 use toml::Value;
 use tracing::{Level, event};
 
@@ -27,6 +29,7 @@ const THINK_LOW: &str = "low";
 const THINK_MEDIUM: &str = "medium";
 const THINK_HIGH: &str = "high";
 const THINKING_OPTIONS: &[&str] = &[THINK_LOW, THINK_MEDIUM, THINK_HIGH];
+const WEB_SEARCH_TOOLTIP_KEY: &str = "tooltip-ollama-web-search-help";
 
 fn default_base_url() -> String {
     "http://localhost:11434".to_string()
@@ -76,6 +79,18 @@ fn web_fetch_url(base_url: &str) -> String {
         "{}/api/experimental/web_fetch",
         normalize_base_url(base_url)
     )
+}
+
+fn should_bypass_proxy(base_url: &str) -> bool {
+    let Ok(url) = Url::parse(&normalize_base_url(base_url)) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -443,9 +458,12 @@ impl OllamaProvider {
         ]
     }
 
-    fn client(config: &AiChatConfig, _base_url: &str) -> AiChatResult<Client> {
+    fn client(config: &AiChatConfig, base_url: &str) -> AiChatResult<Client> {
         let mut client = reqwest::ClientBuilder::new();
-        if let Some(proxy) = config.get_http_proxy() {
+        if let Some(proxy) = config
+            .get_http_proxy()
+            .filter(|_| !should_bypass_proxy(base_url))
+        {
             client = client.proxy(reqwest::Proxy::all(proxy)?);
         }
         Ok(client.build()?)
@@ -823,6 +841,7 @@ impl Provider for OllamaProvider {
             settings.push(ExtSettingItem {
                 key: THINK_KEY,
                 label_key: "field-thinking",
+                tooltip: None,
                 control: Self::thinking_value_from_template(model, template),
             });
         }
@@ -830,6 +849,7 @@ impl Provider for OllamaProvider {
             settings.push(ExtSettingItem {
                 key: WEB_SEARCH_KEY,
                 label_key: "field-web-search",
+                tooltip: Some(WEB_SEARCH_TOOLTIP_KEY),
                 control: ExtSettingControl::Boolean(Self::web_search_enabled(template)),
             });
         }
@@ -898,7 +918,7 @@ mod tests {
     use super::{
         ExtSettingControl, OllamaChatMessage, OllamaProvider, OllamaStoredRequest, Provider,
         ProviderModel, ProviderModelCapability, THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM,
-        WEB_SEARCH_KEY,
+        WEB_SEARCH_KEY, WEB_SEARCH_TOOLTIP_KEY, should_bypass_proxy,
     };
     use crate::{database::Role, llm::ExtSettingItem};
     use serde_json::json;
@@ -922,6 +942,7 @@ mod tests {
         let settings = OllamaProvider.ext_settings(&model, &json!({}))?;
         assert_eq!(settings.len(), 1);
         assert_eq!(settings[0].key, THINK_KEY);
+        assert_eq!(settings[0].tooltip, None);
         assert_eq!(settings[0].control, ExtSettingControl::Boolean(false));
         Ok(())
     }
@@ -956,6 +977,7 @@ mod tests {
             }
         );
         assert_eq!(settings[1].key, WEB_SEARCH_KEY);
+        assert_eq!(settings[1].tooltip, Some(WEB_SEARCH_TOOLTIP_KEY));
         assert_eq!(settings[1].control, ExtSettingControl::Boolean(true));
         Ok(())
     }
@@ -970,6 +992,7 @@ mod tests {
             &ExtSettingItem {
                 key: THINK_KEY,
                 label_key: "field-thinking",
+                tooltip: None,
                 control: ExtSettingControl::Boolean(true),
             },
         )?;
@@ -981,6 +1004,7 @@ mod tests {
             &ExtSettingItem {
                 key: THINK_KEY,
                 label_key: "field-thinking",
+                tooltip: None,
                 control: ExtSettingControl::Boolean(false),
             },
         )?;
@@ -1003,6 +1027,7 @@ mod tests {
             &ExtSettingItem {
                 key: THINK_KEY,
                 label_key: "field-thinking",
+                tooltip: None,
                 control: ExtSettingControl::Select {
                     value: THINK_HIGH.to_string(),
                     options: vec![],
@@ -1017,6 +1042,7 @@ mod tests {
             &ExtSettingItem {
                 key: THINK_KEY,
                 label_key: "field-thinking",
+                tooltip: None,
                 control: ExtSettingControl::Select {
                     value: THINK_MEDIUM.to_string(),
                     options: vec![],
@@ -1025,6 +1051,21 @@ mod tests {
         )?;
         assert!(template.get("think").is_none());
         Ok(())
+    }
+
+    #[test]
+    fn bypass_proxy_for_loopback_ollama_hosts() {
+        assert!(should_bypass_proxy("http://localhost:11434"));
+        assert!(should_bypass_proxy("http://127.0.0.1:11434"));
+        assert!(should_bypass_proxy("http://[::1]:11434"));
+        assert!(should_bypass_proxy("http://localhost:11434/api/chat"));
+    }
+
+    #[test]
+    fn keep_proxy_for_non_loopback_ollama_hosts() {
+        assert!(!should_bypass_proxy("http://192.168.1.10:11434"));
+        assert!(!should_bypass_proxy("https://ollama.example.com"));
+        assert!(!should_bypass_proxy("not-a-url"));
     }
 
     #[test]

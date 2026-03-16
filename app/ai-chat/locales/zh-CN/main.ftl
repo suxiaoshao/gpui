@@ -42,6 +42,74 @@ tooltip-send-message = 发送消息
 tooltip-pause-message = 暂停生成
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
+tooltip-ollama-web-search-help =
+    Ollama 的 `web_search` 依赖 `web_fetch`。
+
+    Ollama 的 `web_search` / `web_fetch` 走的是 cloud 能力，不是本地搜索插件开关。
+
+    ## 1. 确认 Ollama 版本支持实验路由
+
+    ```bash
+    ollama --version
+    ```
+
+    如果下面这个请求返回 `404`，说明当前版本还不支持该路由，需要先升级 Ollama：
+
+    ```bash
+    curl http://localhost:11434/api/experimental/web_fetch \
+      -H 'Content-Type: application/json' \
+      -d '{"{"}"url":"https://ollama.com"{"}"}'
+    ```
+
+    ## 2. 登录 Ollama Cloud
+
+    ```bash
+    ollama signin
+    ```
+
+    本地 `localhost:11434` 路由走的是本机登录态；只有直连 `https://ollama.com/api/*` 时才需要 API key。
+
+    ## 3. 确认没有禁用 cloud
+
+    ```bash
+    echo "$OLLAMA_NO_CLOUD"
+    cat ~/.ollama/server.json
+    ```
+
+    确保：
+    - `OLLAMA_NO_CLOUD` 不是 `1` / `true`
+    - `~/.ollama/server.json` 里没有 `"disable_ollama_cloud": true`
+
+    ## 4. 重启 Ollama
+
+    修改登录态或 cloud 配置后，重启 Ollama。
+
+    ## 5. 验证状态
+
+    ```bash
+    curl http://localhost:11434/api/status
+    ```
+
+    期望：
+    - `cloud.disabled` 为 `false`
+
+    再验证实验路由：
+
+    ```bash
+    curl http://localhost:11434/api/experimental/web_fetch \
+      -H 'Content-Type: application/json' \
+      -d '{"{"}"url":"https://ollama.com"{"}"}'
+    ```
+
+    结果判断：
+    - `404`：当前 Ollama 版本不支持，先升级
+    - `401`：还没登录，重新执行 `ollama signin`
+    - `403`：cloud 被禁用，检查 `OLLAMA_NO_CLOUD` 和 `server.json`
+    - `200`：可以使用
+
+    官方文档：
+    - [Web search](https://ollama.com/blog/web-search)
+    - [API docs](https://ollama.com/api)
 temporary-chat-title = 临时对话
 temporary-chat-description = 开始一段临时对话，需要时可在聊天表单中选择模板。
 
@@ -110,6 +178,7 @@ notify-delete-template-failed = 删除模板失败
 notify-template-deleted-success = 模板已删除
 notify-load-template-failed = 加载模板失败
 notify-load-templates-failed = 加载模板列表失败
+notify-load-models-partial-failed = 部分模型提供方加载失败
 notify-load-template-schema-failed = 加载模板结构失败
 notify-open-database-failed = 打开数据库失败
 notify-reload-template-failed = 重新加载模板失败

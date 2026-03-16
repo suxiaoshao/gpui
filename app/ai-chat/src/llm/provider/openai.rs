@@ -865,6 +865,7 @@ impl Provider for OpenAIProvider {
         Ok(vec![ExtSettingItem {
             key: REASONING_EFFORT_KEY,
             label_key: "field-reasoning-effort",
+            tooltip: None,
             control: ExtSettingControl::Select {
                 value,
                 options: profile
@@ -1160,6 +1161,7 @@ mod tests {
             &super::ExtSettingItem {
                 key: REASONING_EFFORT_KEY,
                 label_key: "field-reasoning-effort",
+                tooltip: None,
                 control: ExtSettingControl::Select {
                     value: REASONING_MEDIUM.to_string(),
                     options: vec![],
@@ -1180,6 +1182,7 @@ mod tests {
             &super::ExtSettingItem {
                 key: REASONING_EFFORT_KEY,
                 label_key: "field-reasoning-effort",
+                tooltip: None,
                 control: ExtSettingControl::Select {
                     value: REASONING_XHIGH.to_string(),
                     options: vec![],
@@ -1207,6 +1210,7 @@ mod tests {
                 &super::ExtSettingItem {
                     key: REASONING_EFFORT_KEY,
                     label_key: "field-reasoning-effort",
+                    tooltip: None,
                     control: ExtSettingControl::Select {
                         value: REASONING_LOW.to_string(),
                         options: vec![],

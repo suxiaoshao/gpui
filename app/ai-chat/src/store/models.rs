@@ -1,8 +1,14 @@
 use crate::{
     config::AiChatConfig,
-    llm::{ProviderModel, available_models},
+    i18n::I18n,
+    llm::{AvailableModelsBatch, ProviderModel, ProviderModelsFailure, available_models},
 };
 use gpui::*;
+use gpui_component::{
+    WindowExt,
+    notification::{Notification, NotificationType},
+};
+use std::collections::HashSet;
 use std::ops::Deref;
 use tracing::{Level, event};
 
@@ -91,21 +97,34 @@ impl ModelStoreState {
 
         let state = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, cx| {
-            let result = available_models(config).await;
-            let _ = state.update_in(cx, move |this, _, cx| {
+            let batch = available_models(config).await;
+            let _ = state.update_in(cx, move |this, window, cx| {
                 if this.request_version != request_version {
                     return;
                 }
 
                 this.status = ModelStoreStatus::Idle;
-                match result {
-                    Ok(models) => {
-                        this.models = models;
-                        this.loaded_once = true;
-                        this.last_config_fingerprint = Some(fingerprint);
-                    }
-                    Err(err) => {
-                        event!(Level::ERROR, "load available models failed: {}", err);
+                this.models = merge_models(&this.models, &batch);
+                this.loaded_once = true;
+                this.last_config_fingerprint = Some(fingerprint);
+
+                if !batch.failures.is_empty() {
+                    let title = cx.global::<I18n>().t("notify-load-models-partial-failed");
+                    let message = format_failure_message(&batch.failures);
+                    window.push_notification(
+                        Notification::new()
+                            .title(title)
+                            .message(message)
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                    for failure in &batch.failures {
+                        event!(
+                            Level::ERROR,
+                            "load provider models failed: provider={}, error={}",
+                            failure.provider_name,
+                            failure.message
+                        );
                     }
                 }
                 cx.notify();
@@ -132,4 +151,105 @@ impl Global for ModelStore {}
 pub(crate) fn init_global(cx: &mut App) {
     let data = cx.new(|_| ModelStoreState::default());
     cx.set_global(ModelStore { data });
+}
+
+fn merge_models(previous: &[ProviderModel], batch: &AvailableModelsBatch) -> Vec<ProviderModel> {
+    let failed_providers = batch
+        .failures
+        .iter()
+        .map(|failure| failure.provider_name.as_str())
+        .collect::<HashSet<_>>();
+    let mut models = previous
+        .iter()
+        .filter(|model| failed_providers.contains(model.provider_name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for success in &batch.successes {
+        models.extend(success.models.clone());
+    }
+    models.sort_by(|left, right| {
+        left.provider_name
+            .cmp(&right.provider_name)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    models
+}
+
+fn format_failure_message(failures: &[ProviderModelsFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.provider_name, failure.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_failure_message, merge_models};
+    use crate::llm::{
+        AvailableModelsBatch, ProviderModel, ProviderModelCapability, ProviderModelsFailure,
+        ProviderModelsSuccess,
+    };
+
+    fn model(provider: &str, id: &str) -> ProviderModel {
+        ProviderModel::new(provider, id, ProviderModelCapability::Streaming)
+    }
+
+    #[test]
+    fn merge_models_keeps_stale_entries_for_failed_providers() {
+        let previous = vec![
+            model("Ollama", "qwen2"),
+            model("OpenAI", "gpt-4.1"),
+            model("OpenAI", "gpt-5"),
+        ];
+        let batch = AvailableModelsBatch {
+            successes: vec![ProviderModelsSuccess {
+                provider_name: "Ollama".to_string(),
+                models: vec![model("Ollama", "qwen3")],
+            }],
+            failures: vec![ProviderModelsFailure {
+                provider_name: "OpenAI".to_string(),
+                message: "api key missing".to_string(),
+            }],
+        };
+
+        assert_eq!(
+            merge_models(&previous, &batch),
+            vec![
+                model("Ollama", "qwen3"),
+                model("OpenAI", "gpt-4.1"),
+                model("OpenAI", "gpt-5"),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_models_drops_previous_models_for_successful_or_removed_providers() {
+        let previous = vec![model("Ollama", "qwen2"), model("OpenAI", "gpt-4.1")];
+        let batch = AvailableModelsBatch {
+            successes: vec![ProviderModelsSuccess {
+                provider_name: "OpenAI".to_string(),
+                models: vec![],
+            }],
+            failures: vec![],
+        };
+
+        assert!(merge_models(&previous, &batch).is_empty());
+    }
+
+    #[test]
+    fn format_failure_message_lists_each_provider_on_its_own_line() {
+        let message = format_failure_message(&[
+            ProviderModelsFailure {
+                provider_name: "Ollama".to_string(),
+                message: "request failed".to_string(),
+            },
+            ProviderModelsFailure {
+                provider_name: "OpenAI".to_string(),
+                message: "api key missing".to_string(),
+            },
+        ]);
+
+        assert_eq!(message, "Ollama: request failed\nOpenAI: api key missing");
+    }
 }

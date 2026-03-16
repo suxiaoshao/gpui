@@ -4,7 +4,10 @@ use crate::{
     database::Content,
     errors::{AiChatError, AiChatResult},
 };
-use futures::{future::BoxFuture, stream::BoxStream};
+use futures::{
+    future::{BoxFuture, join_all},
+    stream::BoxStream,
+};
 use gpui_component::setting::SettingGroup;
 
 mod ollama;
@@ -60,6 +63,7 @@ pub(crate) struct ExtSettingOption {
 pub(crate) struct ExtSettingItem {
     pub(crate) key: &'static str,
     pub(crate) label_key: &'static str,
+    pub(crate) tooltip: Option<&'static str>,
     pub(crate) control: ExtSettingControl,
 }
 
@@ -124,6 +128,24 @@ pub(crate) enum FetchUpdate {
     Complete(Content),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderModelsSuccess {
+    pub(crate) provider_name: String,
+    pub(crate) models: Vec<ProviderModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderModelsFailure {
+    pub(crate) provider_name: String,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct AvailableModelsBatch {
+    pub(crate) successes: Vec<ProviderModelsSuccess>,
+    pub(crate) failures: Vec<ProviderModelsFailure>,
+}
+
 const PROVIDERS: [&dyn Provider; 2] = [&OllamaProvider, &OpenAIProvider];
 
 pub(crate) fn provider_names() -> Vec<&'static str> {
@@ -147,7 +169,7 @@ pub(crate) fn provider_by_name(name: &str) -> AiChatResult<&'static dyn Provider
 
 fn provider_settings_json(
     config: &AiChatConfig,
-    provider: &'static dyn Provider,
+    provider: &dyn Provider,
 ) -> Option<(toml::Value, serde_json::Value)> {
     let settings = config.get_provider_settings(provider.name())?.clone();
     let settings_json = serde_json::to_value(&settings).ok()?;
@@ -163,21 +185,211 @@ pub(crate) fn provider_is_configured(
         .is_some_and(|(_, settings)| provider.is_configured(&settings)))
 }
 
-pub(crate) async fn available_models(config: AiChatConfig) -> AiChatResult<Vec<ProviderModel>> {
-    let mut models = Vec::new();
-    for provider in PROVIDERS {
-        let Some((settings, settings_json)) = provider_settings_json(&config, provider) else {
-            continue;
-        };
-        if !provider.is_configured(&settings_json) {
-            continue;
-        }
-        models.extend(provider.list_models(config.clone(), settings).await?);
-    }
+fn sort_models(models: &mut [ProviderModel]) {
     models.sort_by(|left, right| {
         left.provider_name
             .cmp(&right.provider_name)
             .then_with(|| left.id.cmp(&right.id))
     });
-    Ok(models)
+}
+
+async fn available_models_from_providers(
+    providers: &[&dyn Provider],
+    config: AiChatConfig,
+) -> AvailableModelsBatch {
+    let tasks = providers
+        .iter()
+        .filter_map(|provider| {
+            let (settings, settings_json) = provider_settings_json(&config, *provider)?;
+            if !provider.is_configured(&settings_json) {
+                return None;
+            }
+            let provider_name = provider.name().to_string();
+            let list_models = provider.list_models(config.clone(), settings);
+            Some(async move {
+                match list_models.await {
+                    Ok(mut models) => {
+                        sort_models(&mut models);
+                        Ok(ProviderModelsSuccess {
+                            provider_name,
+                            models,
+                        })
+                    }
+                    Err(err) => Err(ProviderModelsFailure {
+                        provider_name,
+                        message: err.to_string(),
+                    }),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut batch = AvailableModelsBatch::default();
+    for outcome in join_all(tasks).await {
+        match outcome {
+            Ok(success) => batch.successes.push(success),
+            Err(failure) => batch.failures.push(failure),
+        }
+    }
+    batch
+        .successes
+        .sort_by(|left, right| left.provider_name.cmp(&right.provider_name));
+    batch
+        .failures
+        .sort_by(|left, right| left.provider_name.cmp(&right.provider_name));
+    batch
+}
+
+pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBatch {
+    available_models_from_providers(&PROVIDERS, config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, Provider, ProviderModel,
+        ProviderModelCapability, ProviderModelsFailure, available_models_from_providers,
+    };
+    use crate::{config::AiChatConfig, errors::AiChatError};
+    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
+    use gpui_component::setting::SettingGroup;
+
+    struct MockProvider {
+        name: &'static str,
+        configured: bool,
+        models: Vec<ProviderModel>,
+        error: Option<&'static str>,
+    }
+
+    impl Provider for MockProvider {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn is_configured(&self, _settings: &serde_json::Value) -> bool {
+            self.configured
+        }
+
+        fn default_template_for_model(
+            &self,
+            _model: &ProviderModel,
+        ) -> crate::errors::AiChatResult<serde_json::Value> {
+            unreachable!()
+        }
+
+        fn request_body(
+            &self,
+            _template: &serde_json::Value,
+            _history_messages: Vec<Message>,
+        ) -> crate::errors::AiChatResult<serde_json::Value> {
+            unreachable!()
+        }
+
+        fn fetch_by_request_body<'a>(
+            &self,
+            _config: AiChatConfig,
+            _settings: toml::Value,
+            _request_body: &'a serde_json::Value,
+        ) -> BoxStream<'a, crate::errors::AiChatResult<FetchUpdate>> {
+            futures::stream::empty().boxed()
+        }
+
+        fn list_models(
+            &self,
+            _config: AiChatConfig,
+            _settings: toml::Value,
+        ) -> BoxFuture<'static, crate::errors::AiChatResult<Vec<ProviderModel>>> {
+            let result = match self.error {
+                Some(message) => Err(AiChatError::StreamError(message.to_string())),
+                None => Ok(self.models.clone()),
+            };
+            async move { result }.boxed()
+        }
+
+        fn setting_group(&self) -> SettingGroup {
+            unreachable!()
+        }
+
+        fn ext_settings(
+            &self,
+            _model: &ProviderModel,
+            _template: &serde_json::Value,
+        ) -> crate::errors::AiChatResult<Vec<ExtSettingItem>> {
+            unreachable!()
+        }
+    }
+
+    fn configured_config(names: &[&str]) -> AiChatConfig {
+        let mut config = AiChatConfig::default();
+        for name in names {
+            config.set_provider_settings(name, toml::Value::Table(Default::default()));
+        }
+        config
+    }
+
+    fn model(provider: &str, id: &str) -> ProviderModel {
+        ProviderModel::new(provider, id, ProviderModelCapability::Streaming)
+    }
+
+    #[tokio::test]
+    async fn available_models_collects_partial_failures_without_blocking_successes() {
+        let success = MockProvider {
+            name: "Provider A",
+            configured: true,
+            models: vec![model("Provider A", "b"), model("Provider A", "a")],
+            error: None,
+        };
+        let failure = MockProvider {
+            name: "Provider B",
+            configured: true,
+            models: vec![],
+            error: Some("boom"),
+        };
+
+        let batch = available_models_from_providers(
+            &[&success, &failure],
+            configured_config(&["Provider A", "Provider B"]),
+        )
+        .await;
+
+        assert_eq!(
+            batch,
+            AvailableModelsBatch {
+                successes: vec![super::ProviderModelsSuccess {
+                    provider_name: "Provider A".to_string(),
+                    models: vec![model("Provider A", "a"), model("Provider A", "b")],
+                }],
+                failures: vec![ProviderModelsFailure {
+                    provider_name: "Provider B".to_string(),
+                    message: "stream错误:boom".to_string(),
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn available_models_skips_unconfigured_providers() {
+        let configured = MockProvider {
+            name: "Provider A",
+            configured: true,
+            models: vec![model("Provider A", "a")],
+            error: None,
+        };
+        let unconfigured = MockProvider {
+            name: "Provider B",
+            configured: false,
+            models: vec![model("Provider B", "b")],
+            error: Some("should not run"),
+        };
+
+        let batch = available_models_from_providers(
+            &[&configured, &unconfigured],
+            configured_config(&["Provider A", "Provider B"]),
+        )
+        .await;
+
+        assert_eq!(batch.successes.len(), 1);
+        assert_eq!(batch.successes[0].provider_name, "Provider A");
+        assert!(batch.failures.is_empty());
+    }
 }

@@ -5,13 +5,17 @@ use crate::{
     i18n::I18n,
     llm::{ExtSettingControl, ExtSettingItem, ExtSettingOption},
 };
-use gpui::{prelude::FluentBuilder as _, *};
+use gpui::{StatefulInteractiveElement, prelude::FluentBuilder as _, *};
 use gpui_component::{
     Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     list::ListState,
+    scroll::ScrollableElement,
     select::SelectItem,
+    text::TextView,
+    tooltip::Tooltip,
+    v_flex,
 };
 use std::rc::Rc;
 
@@ -225,6 +229,39 @@ impl ExtSettings {
         cx.emit(ExtSettingsEvent::Change(setting.clone()));
         cx.notify();
     }
+
+    fn setting_tooltip(
+        item: &ExtSettingItem,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyView> {
+        let tooltip_key = item.tooltip?;
+        let markdown = cx.global::<I18n>().t(tooltip_key);
+        Some(
+            Tooltip::element(move |window, cx| {
+                div().w(px(520.)).child(
+                    v_flex()
+                        .p_2()
+                        .h(px(360.))
+                        .overflow_hidden()
+                        .overflow_y_scrollbar()
+                        .child(
+                            div().child(
+                                TextView::markdown(
+                                    SharedString::from(format!("ext-setting-tooltip-{index}")),
+                                    markdown.clone(),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(true),
+                            ),
+                        ),
+                )
+            })
+            .build(window, cx),
+        )
+    }
 }
 
 impl Render for ExtSettings {
@@ -238,19 +275,28 @@ impl Render for ExtSettings {
                     let ExtSettingControl::Boolean(value) = setting.control else {
                         unreachable!("boolean setting state always carries boolean control");
                     };
-                    Button::new(SharedString::from(format!("ext-setting-boolean-{index}")))
-                        .ghost()
-                        .selected(value)
-                        .rounded(px(8.))
-                        .small()
-                        .label(cx.global::<I18n>().t(setting.label_key))
-                        .on_click({
-                            let key = setting.key;
-                            cx.listener(move |settings, _event, _window, cx| {
-                                settings.toggle_boolean(key, cx);
-                            })
-                        })
-                        .into_any_element()
+                    let button =
+                        Button::new(SharedString::from(format!("ext-setting-boolean-{index}")))
+                            .ghost()
+                            .selected(value)
+                            .rounded(px(8.))
+                            .small()
+                            .label(cx.global::<I18n>().t(setting.label_key))
+                            .on_click({
+                                let key = setting.key;
+                                cx.listener(move |settings, _event, _window, cx| {
+                                    settings.toggle_boolean(key, cx);
+                                })
+                            });
+                    let mut container = div()
+                        .id(SharedString::from(format!(
+                            "ext-setting-boolean-wrapper-{index}"
+                        )))
+                        .child(button);
+                    if let Some(tooltip) = Self::setting_tooltip(setting, index, _window, cx) {
+                        container = container.hoverable_tooltip(move |_, _| tooltip.clone());
+                    }
+                    container.into_any_element()
                 }
                 ExtSettingState::Select(setting) => {
                     let selected_value = match &setting.item.control {
@@ -268,6 +314,37 @@ impl Render for ExtSettings {
                     let picker = setting.picker.clone();
                     let bounds = setting.picker_bounds;
                     let key = setting.item.key;
+                    let trigger = PickerTrigger::new(
+                        SharedString::from(format!("ext-setting-select-trigger-{index}")),
+                        selected_label,
+                        {
+                            let key = setting.item.key;
+                            cx.listener(move |settings, _event, window, cx| {
+                                settings.toggle_picker(key, window, cx);
+                            })
+                        },
+                        {
+                            let state = cx.entity();
+                            let key = setting.item.key;
+                            move |next_bounds, cx| {
+                                state.update(cx, |settings, _| {
+                                    if let Some(ExtSettingState::Select(setting)) =
+                                        settings.settings.iter_mut().find(|setting| {
+                                            matches!(
+                                                setting,
+                                                ExtSettingState::Select(setting)
+                                                    if setting.item.key == key
+                                            )
+                                        })
+                                    {
+                                        setting.picker_bounds = next_bounds;
+                                    }
+                                })
+                            }
+                        },
+                    )
+                    .selected(false)
+                    .open(setting.picker_open);
                     let on_mouse_down_out =
                         cx.listener(move |settings, event: &MouseDownEvent, window, cx| {
                             let Some(ExtSettingState::Select(setting)) =
@@ -286,40 +363,16 @@ impl Render for ExtSettings {
                             settings.close_picker(key, window, cx);
                         });
 
-                    div()
-                        .child(
-                            PickerTrigger::new(
-                                SharedString::from(format!("ext-setting-select-trigger-{index}")),
-                                selected_label,
-                                {
-                                    let key = setting.item.key;
-                                    cx.listener(move |settings, _event, window, cx| {
-                                        settings.toggle_picker(key, window, cx);
-                                    })
-                                },
-                                {
-                                    let state = cx.entity();
-                                    let key = setting.item.key;
-                                    move |next_bounds, cx| {
-                                        state.update(cx, |settings, _| {
-                                            if let Some(ExtSettingState::Select(setting)) =
-                                                settings.settings.iter_mut().find(|setting| {
-                                                    matches!(
-                                                        setting,
-                                                        ExtSettingState::Select(setting)
-                                                            if setting.item.key == key
-                                                    )
-                                                })
-                                            {
-                                                setting.picker_bounds = next_bounds;
-                                            }
-                                        })
-                                    }
-                                },
-                            )
-                            .selected(false)
-                            .open(setting.picker_open),
-                        )
+                    let mut container = div()
+                        .id(SharedString::from(format!(
+                            "ext-setting-select-wrapper-{index}"
+                        )))
+                        .child(trigger);
+                    if let Some(tooltip) = Self::setting_tooltip(&setting.item, index, _window, cx)
+                    {
+                        container = container.hoverable_tooltip(move |_, _| tooltip.clone());
+                    }
+                    container
                         .when(setting.picker_open, |this| {
                             this.child(render_picker_popover(
                                 bounds,
