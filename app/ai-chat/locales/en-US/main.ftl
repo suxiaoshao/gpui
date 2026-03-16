@@ -42,6 +42,74 @@ tooltip-send-message = Send Message
 tooltip-pause-message = Pause Generation
 tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
+tooltip-ollama-web-search-help =
+    Ollama `web_search` depends on `web_fetch`.
+
+    Ollama `web_search` / `web_fetch` uses cloud capabilities. It is not a local search-plugin switch.
+
+    ## 1. Confirm your Ollama version supports the experimental routes
+
+    ```bash
+    ollama --version
+    ```
+
+    If the request below returns `404`, your current version does not expose this route yet and you need to upgrade Ollama first:
+
+    ```bash
+    curl http://localhost:11434/api/experimental/web_fetch \
+      -H 'Content-Type: application/json' \
+      -d '{"{"}"url":"https://ollama.com"{"}"}'
+    ```
+
+    ## 2. Sign in to Ollama Cloud
+
+    ```bash
+    ollama signin
+    ```
+
+    Local `localhost:11434` routes use your machine's sign-in state. API keys are only needed when calling `https://ollama.com/api/*` directly.
+
+    ## 3. Confirm cloud is not disabled
+
+    ```bash
+    echo "$OLLAMA_NO_CLOUD"
+    cat ~/.ollama/server.json
+    ```
+
+    Make sure:
+    - `OLLAMA_NO_CLOUD` is not `1` / `true`
+    - `~/.ollama/server.json` does not contain `"disable_ollama_cloud": true`
+
+    ## 4. Restart Ollama
+
+    Restart Ollama after changing sign-in state or cloud configuration.
+
+    ## 5. Verify status
+
+    ```bash
+    curl http://localhost:11434/api/status
+    ```
+
+    Expected:
+    - `cloud.disabled` is `false`
+
+    Then verify the experimental route:
+
+    ```bash
+    curl http://localhost:11434/api/experimental/web_fetch \
+      -H 'Content-Type: application/json' \
+      -d '{"{"}"url":"https://ollama.com"{"}"}'
+    ```
+
+    Result guide:
+    - `404`: your Ollama version does not support the route yet, upgrade first
+    - `401`: not signed in, run `ollama signin` again
+    - `403`: cloud is disabled, check `OLLAMA_NO_CLOUD` and `server.json`
+    - `200`: ready to use
+
+    Official docs:
+    - [Web search](https://ollama.com/blog/web-search)
+    - [API docs](https://ollama.com/api)
 temporary-chat-title = Temporary Chat
 temporary-chat-description = Start a temporary conversation and choose a template from the chat form when needed.
 
@@ -110,6 +178,7 @@ notify-delete-template-failed = Delete template failed
 notify-template-deleted-success = Template deleted successfully
 notify-load-template-failed = Load template failed
 notify-load-templates-failed = Load templates failed
+notify-load-models-partial-failed = Some model providers failed to load
 notify-load-template-schema-failed = Load template schema failed
 notify-open-database-failed = Open database failed
 notify-reload-template-failed = Reload template failed

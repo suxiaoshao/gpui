@@ -469,14 +469,26 @@ impl ConversationDetailViewExt for TemporaryDetailState {
 
 impl TemplateDetailView {
     fn pause_message(&mut self, message_id: usize, cx: &mut Context<Self>) {
-        if !self
+        if self
             .task
             .as_ref()
             .is_some_and(|task| task.contains_message(message_id))
         {
+            self.pause_running_task(cx);
             return;
         }
-        self.pause_running_task(cx);
+
+        if let Some(message) = self
+            .detail
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+            && matches!(message.status, Status::Loading | Status::Thinking)
+        {
+            message.update_status(Status::Paused);
+            self.set_chat_form_running(false, cx);
+            cx.notify();
+        }
     }
 
     fn resend_message(&mut self, message_id: usize, window: &mut Window, cx: &mut Context<Self>) {
