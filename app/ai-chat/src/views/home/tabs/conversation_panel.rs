@@ -272,9 +272,7 @@ impl ConversationPanelView {
             let Ok(data) = data else {
                 return None;
             };
-            let Some(mut message) = data.message(conversation_id, message_id) else {
-                return None;
-            };
+            let mut message = data.message(conversation_id, message_id)?;
             let now = OffsetDateTime::now_utc();
             if !Self::pause_message_snapshot(&mut message, now) {
                 return None;
