@@ -2,11 +2,13 @@ use crate::{config::AiChatConfig, errors::AiChatResult, views::temporary::Tempor
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::*;
 use gpui_component::Root;
+#[cfg(target_os = "macos")]
+pub use platform_ext::app::{NSRunningApplication, Retained};
+#[cfg(target_os = "macos")]
+use platform_ext::app::{record_frontmost_app, restore_frontmost_app};
 use std::{any::TypeId, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
-#[cfg(target_os = "macos")]
-pub use window_ext::{NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app};
 
 pub struct TemporaryData {
     manager: GlobalHotKeyManager,

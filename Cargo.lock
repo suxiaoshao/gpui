@@ -141,6 +141,7 @@ dependencies = [
  "libsqlite3-sys",
  "nom 8.0.0",
  "pinyin",
+ "platform-ext",
  "reqwest 0.12.28",
  "reqwest-eventsource",
  "rust-embed",
@@ -6160,7 +6161,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.11.0",
+ "block2 0.6.2",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -6171,10 +6174,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.11.0",
+ "block2 0.6.2",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
+ "objc2-metal",
 ]
 
 [[package]]
@@ -6980,6 +6986,18 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "platform-ext"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "plist"
@@ -11333,7 +11351,6 @@ dependencies = [
  "gpui",
  "objc2 0.6.4",
  "objc2-app-kit",
- "objc2-foundation",
  "raw-window-handle",
  "thiserror 2.0.18",
  "windows 0.62.2",

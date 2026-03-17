@@ -34,8 +34,11 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets = { workspace = true }
 window-ext = { workspace = true }
+platform-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.102"
+
+# i18n
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
