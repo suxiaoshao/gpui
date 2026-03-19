@@ -63,8 +63,11 @@ fn main() {
     ];
 
     let warnings = windows_bindgen::bindgen(args);
-    fs::write(out_dir.join("windows_ai_warnings.txt"), warnings.to_string())
-        .expect("write windows ai warnings");
+    fs::write(
+        out_dir.join("windows_ai_warnings.txt"),
+        warnings.to_string(),
+    )
+    .expect("write windows ai warnings");
     let generated = fs::read_to_string(&out_file).expect("read generated windows ai bindings");
     let generated = generated.replacen(
         "#![allow(\n    non_snake_case,\n    non_upper_case_globals,\n    non_camel_case_types,\n    dead_code,\n    clippy::all\n)]\n\n",

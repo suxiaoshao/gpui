@@ -1,218 +1,261 @@
 use crate::{
     CaptureError,
-    capture::{DisplayId, ImageFrame, ScreenRect},
+    capture::{ImageFrame, shared::decode_image_file},
 };
-use std::sync::mpsc;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use url::Url;
 use windows::{
-    Foundation::TypedEventHandler,
-    Graphics::{
-        Capture::{
-            Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureAccess,
-            GraphicsCaptureAccessKind, GraphicsCaptureItem, GraphicsCaptureSession,
-        },
-        DirectX::{Direct3D11::IDirect3DDevice, DirectXPixelFormat},
-        Imaging::{BitmapAlphaMode, SoftwareBitmap},
-    },
-    Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus,
-    Win32::{
-        Foundation::{E_ACCESSDENIED, HMODULE, LPARAM, RECT},
-        Graphics::{
-            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL},
-            Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice},
-            Dxgi::{IDXGIAdapter, IDXGIDevice},
-            Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW},
-        },
-        System::WinRT::{
-            Direct3D11::CreateDirect3D11DeviceFromDXGIDevice,
-            Graphics::Capture::IGraphicsCaptureItemInterop,
-        },
-    },
-    core::{BOOL, IInspectable, Interface, Ref},
+    ApplicationModel::DataTransfer::SharedStorageAccessManager, Foundation::Uri, System::Launcher,
+    core::HSTRING,
 };
 
 pub(crate) mod async_support;
 pub(crate) mod image_frame;
 
 use async_support::wait_async_operation;
-use image_frame::{clip_rect_to_image, crop_image_frame, rgba_frame_from_software_bitmap};
 
-pub(super) fn capture_display(display_id: DisplayId) -> Result<ImageFrame, CaptureError> {
-    ensure_capture_support()?;
-    let monitor = monitor_for_display_id(display_id)?;
-    let item = capture_item_for_monitor(monitor)?;
-    let bitmap = capture_software_bitmap(&item)?;
-    rgba_frame_from_software_bitmap(&bitmap).map_err(CaptureError::SystemFailure)
-}
+const CALLBACK_SCHEME: &str = "ai-chat-screenclip";
+const CALLBACK_HOST: &str = "capture-response";
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(300);
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub(super) fn capture_rect(display_id: DisplayId, rect: ScreenRect) -> Result<ImageFrame, CaptureError> {
-    let display = capture_display(display_id)?;
-    let clipped = clip_rect_to_image(display.width, display.height, rect).ok_or(
-        CaptureError::InvalidInput("capture rectangle does not intersect the display"),
-    )?;
-    crop_image_frame(&display, clipped).map_err(CaptureError::SystemFailure)
-}
+pub(super) fn capture_user_selected_area() -> Result<ImageFrame, CaptureError> {
+    let request_id = next_request_id();
+    prepare_request_dir()?;
+    cleanup_request_artifacts(&request_id);
 
-fn ensure_capture_support() -> Result<(), CaptureError> {
-    let is_supported = GraphicsCaptureSession::IsSupported().map_err(map_capture_error)?;
-    if !is_supported {
+    let launch_uri = build_capture_uri(&request_id);
+    let uri = Uri::CreateUri(&HSTRING::from(launch_uri)).map_err(map_capture_error)?;
+    let launched = wait_async_operation(Launcher::LaunchUriAsync(&uri).map_err(map_capture_error)?)
+        .map_err(map_capture_error)?;
+    if !launched {
         return Err(CaptureError::BackendUnavailable(
-            "windows graphics capture is not supported",
+            "failed to launch snipping tool",
         ));
     }
 
-    let status = wait_async_operation(
-        GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Programmatic)
-            .map_err(map_capture_error)?,
+    wait_for_capture_result(&request_id)
+}
+
+pub(super) fn handle_capture_callback_url(url: &str) -> Result<bool, CaptureError> {
+    let Some(callback) = parse_callback_url(url)? else {
+        return Ok(false);
+    };
+
+    prepare_request_dir()?;
+    cleanup_request_artifacts(&callback.request_id);
+
+    match callback.code {
+        200 => write_success_artifact(&callback.request_id, callback.token.as_deref())?,
+        499 => write_cancelled_artifact(&callback.request_id)?,
+        _ => write_error_artifact(
+            &callback.request_id,
+            callback
+                .reason
+                .as_deref()
+                .unwrap_or("snipping tool callback failed"),
+        )?,
+    }
+
+    Ok(true)
+}
+
+struct CaptureCallback {
+    request_id: String,
+    code: u16,
+    token: Option<String>,
+    reason: Option<String>,
+}
+
+fn build_capture_uri(request_id: &str) -> String {
+    let redirect_uri =
+        format!("{CALLBACK_SCHEME}://{CALLBACK_HOST}?client-request-id={request_id}");
+    let redirect_uri =
+        url::form_urlencoded::byte_serialize(redirect_uri.as_bytes()).collect::<String>();
+    format!(
+        "ms-screenclip://capture/image?api-version=1.0&user-agent=ai-chat&rectangle&enabledModes=RectangleSnip&redirect-uri={redirect_uri}"
     )
-    .map_err(map_capture_error)?;
-    match status {
-        AppCapabilityAccessStatus::Allowed
-        | AppCapabilityAccessStatus::UserPromptRequired
-        | AppCapabilityAccessStatus::NotDeclaredByApp => Ok(()),
-        AppCapabilityAccessStatus::DeniedByUser | AppCapabilityAccessStatus::DeniedBySystem => {
-            Err(CaptureError::PermissionDenied)
+}
+
+fn parse_callback_url(url: &str) -> Result<Option<CaptureCallback>, CaptureError> {
+    let url = Url::parse(url)
+        .map_err(|err| CaptureError::SystemFailure(format!("invalid callback url: {err}")))?;
+    if url.scheme() != CALLBACK_SCHEME || url.host_str() != Some(CALLBACK_HOST) {
+        return Ok(None);
+    }
+
+    let query = query_map(&url);
+    let request_id = query
+        .get("client-request-id")
+        .cloned()
+        .ok_or(CaptureError::InvalidInput(
+            "capture callback missing client-request-id",
+        ))?;
+    let code = query
+        .get("code")
+        .ok_or(CaptureError::InvalidInput(
+            "capture callback missing status code",
+        ))?
+        .parse::<u16>()
+        .map_err(|_| {
+            CaptureError::InvalidInput("capture callback contained invalid status code")
+        })?;
+
+    Ok(Some(CaptureCallback {
+        request_id,
+        code,
+        token: query.get("token").cloned(),
+        reason: query.get("reason").cloned(),
+    }))
+}
+
+fn query_map(url: &Url) -> HashMap<String, String> {
+    url.query_pairs()
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.into_owned()))
+        .collect()
+}
+
+fn wait_for_capture_result(request_id: &str) -> Result<ImageFrame, CaptureError> {
+    let deadline = Instant::now() + CAPTURE_TIMEOUT;
+    let image_path = request_image_path(request_id);
+    let cancel_path = request_cancel_path(request_id);
+    let error_path = request_error_path(request_id);
+
+    loop {
+        if image_path.exists() {
+            let result = decode_image_file(&image_path).map_err(CaptureError::SystemFailure);
+            cleanup_request_artifacts(request_id);
+            return result;
         }
-        _ => Err(CaptureError::BackendUnavailable(
-            "windows graphics capture access is unavailable",
-        )),
-    }
-}
-
-fn capture_software_bitmap(item: &GraphicsCaptureItem) -> Result<SoftwareBitmap, CaptureError> {
-    let size = item.Size().map_err(map_capture_error)?;
-    let device = create_direct3d_device()?;
-    let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-        &device,
-        DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        1,
-        size,
-    )
-    .map_err(map_capture_error)?;
-    let session = frame_pool
-        .CreateCaptureSession(item)
-        .map_err(map_capture_error)?;
-    let (tx, rx) = mpsc::channel::<windows_core::Result<Direct3D11CaptureFrame>>();
-    let handler = TypedEventHandler::new(move |sender: Ref<Direct3D11CaptureFramePool>, _| {
-        if let Some(sender) = sender.as_ref() {
-            let _ = tx.send(sender.TryGetNextFrame());
+        if cancel_path.exists() {
+            cleanup_request_artifacts(request_id);
+            return Err(CaptureError::Cancelled);
         }
-        Ok(())
-    });
-    let token = frame_pool
-        .FrameArrived(&handler)
-        .map_err(map_capture_error)?;
+        if error_path.exists() {
+            let message = std::fs::read_to_string(&error_path)
+                .unwrap_or_else(|_| "failed to read snipping tool error message".to_string());
+            cleanup_request_artifacts(request_id);
+            return Err(CaptureError::SystemFailure(message));
+        }
+        if Instant::now() >= deadline {
+            cleanup_request_artifacts(request_id);
+            return Err(CaptureError::SystemFailure(
+                "timed out waiting for snipping tool result".into(),
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
 
-    session.StartCapture().map_err(map_capture_error)?;
-    let frame_result = rx.recv_timeout(Duration::from_secs(5)).map_err(|_| {
-        let _ = frame_pool.RemoveFrameArrived(token);
-        let _ = session.Close();
-        let _ = frame_pool.Close();
-        CaptureError::SystemFailure("timed out waiting for the first capture frame".into())
-    })?;
-
-    let _ = frame_pool.RemoveFrameArrived(token);
-    let _ = session.Close();
-    let _ = frame_pool.Close();
-
-    let frame = frame_result.map_err(map_capture_error)?;
-    let surface = frame.Surface().map_err(map_capture_error)?;
-    let bitmap = wait_async_operation(
-        SoftwareBitmap::CreateCopyWithAlphaFromSurfaceAsync(&surface, BitmapAlphaMode::Ignore)
-            .map_err(map_capture_error)?,
+fn write_success_artifact(request_id: &str, token: Option<&str>) -> Result<(), CaptureError> {
+    let token = token.ok_or(CaptureError::InvalidInput("capture callback missing token"))?;
+    let token = HSTRING::from(token);
+    let storage_file = wait_async_operation(
+        SharedStorageAccessManager::RedeemTokenForFileAsync(&token).map_err(map_capture_error)?,
     )
     .map_err(map_capture_error)?;
-    let _ = frame.Close();
-    Ok(bitmap)
-}
+    let source_path = storage_file.Path().map_err(map_capture_error)?.to_string();
+    let source_path = PathBuf::from(source_path);
 
-fn create_direct3d_device() -> Result<IDirect3DDevice, CaptureError> {
-    let mut device = None;
-    let feature_levels = [D3D_FEATURE_LEVEL(0xb100), D3D_FEATURE_LEVEL(0xb000), D3D_FEATURE_LEVEL(0xa100)];
-    unsafe {
-        D3D11CreateDevice(
-            None::<&IDXGIAdapter>,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            Some(&feature_levels),
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            None,
-        )
-    }
-    .map_err(map_capture_error)?;
-    let device = device.ok_or_else(|| {
-        CaptureError::SystemFailure("d3d11 device creation returned no device".into())
+    let final_path = request_image_path(request_id);
+    let staging_path = final_path.with_extension("tmp");
+    std::fs::copy(&source_path, &staging_path).map_err(|err| {
+        CaptureError::SystemFailure(format!(
+            "failed to copy screenshot artifact from {}: {err}",
+            source_path.display()
+        ))
     })?;
-    let dxgi_device: IDXGIDevice = device.cast().map_err(map_capture_error)?;
-    let inspectable: IInspectable =
-        unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }.map_err(map_capture_error)?;
-    inspectable.cast().map_err(map_capture_error)
+    std::fs::rename(&staging_path, &final_path).map_err(|err| {
+        CaptureError::SystemFailure(format!(
+            "failed to finalize screenshot artifact {}: {err}",
+            final_path.display()
+        ))
+    })?;
+    let _ = SharedStorageAccessManager::RemoveFile(&token);
+    Ok(())
 }
 
-fn capture_item_for_monitor(monitor: HMONITOR) -> Result<GraphicsCaptureItem, CaptureError> {
-    let interop: IGraphicsCaptureItemInterop = windows_core::factory::<
-        GraphicsCaptureItem,
-        IGraphicsCaptureItemInterop,
-    >()
-    .map_err(map_capture_error)?;
-    unsafe { interop.CreateForMonitor(monitor) }.map_err(map_capture_error)
+fn write_cancelled_artifact(request_id: &str) -> Result<(), CaptureError> {
+    std::fs::write(request_cancel_path(request_id), []).map_err(|err| {
+        CaptureError::SystemFailure(format!("failed to write cancel artifact: {err}"))
+    })
 }
 
-fn monitor_for_display_id(display_id: DisplayId) -> Result<HMONITOR, CaptureError> {
-    available_monitors()
-        .into_iter()
-        .nth(display_id.0 as usize)
-        .ok_or(CaptureError::InvalidInput("display id was not found"))
+fn write_error_artifact(request_id: &str, message: &str) -> Result<(), CaptureError> {
+    std::fs::write(request_error_path(request_id), message).map_err(|err| {
+        CaptureError::SystemFailure(format!("failed to write error artifact: {err}"))
+    })
 }
 
-fn available_monitors() -> Vec<HMONITOR> {
-    let mut monitors = Vec::new();
-    unsafe {
-        let _ = EnumDisplayMonitors(
-            None,
-            None,
-            Some(monitor_enum_proc),
-            LPARAM((&mut monitors as *mut Vec<HMONITOR>) as isize),
-        );
-    }
-    monitors
+fn prepare_request_dir() -> Result<(), CaptureError> {
+    std::fs::create_dir_all(request_dir()).map_err(|err| {
+        CaptureError::SystemFailure(format!("failed to create capture request dir: {err}"))
+    })
 }
 
-unsafe extern "system" fn monitor_enum_proc(
-    monitor: HMONITOR,
-    _: HDC,
-    _: *mut RECT,
-    data: LPARAM,
-) -> BOOL {
-    let monitors = data.0 as *mut Vec<HMONITOR>;
-    unsafe {
-        (*monitors).push(monitor);
-    }
-    BOOL(1)
+fn cleanup_request_artifacts(request_id: &str) {
+    let _ = std::fs::remove_file(request_image_path(request_id));
+    let _ = std::fs::remove_file(request_cancel_path(request_id));
+    let _ = std::fs::remove_file(request_error_path(request_id));
 }
 
-#[allow(dead_code)]
-fn monitor_info(monitor: HMONITOR) -> Result<MONITORINFOEXW, CaptureError> {
-    let mut info = MONITORINFOEXW::default();
-    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-    unsafe {
-        GetMonitorInfoW(
-            monitor,
-            &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
-        )
-    }
-    .ok()
-    .map_err(|err| CaptureError::SystemFailure(format!("failed to query monitor info: {err}")))?;
-    Ok(info)
+fn request_dir() -> PathBuf {
+    std::env::temp_dir().join("platform-ext-screenclip")
+}
+
+fn request_image_path(request_id: &str) -> PathBuf {
+    request_artifact_path(request_id, "img")
+}
+
+fn request_cancel_path(request_id: &str) -> PathBuf {
+    request_artifact_path(request_id, "cancelled")
+}
+
+fn request_error_path(request_id: &str) -> PathBuf {
+    request_artifact_path(request_id, "error")
+}
+
+fn request_artifact_path(request_id: &str, extension: &str) -> PathBuf {
+    request_dir().join(format!("{request_id}.{extension}"))
+}
+
+fn next_request_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{nanos}", std::process::id())
 }
 
 fn map_capture_error(err: windows_core::Error) -> CaptureError {
-    if err.code() == E_ACCESSDENIED {
-        CaptureError::PermissionDenied
-    } else {
-        CaptureError::SystemFailure(err.to_string())
+    CaptureError::SystemFailure(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CALLBACK_HOST, CALLBACK_SCHEME, parse_callback_url};
+
+    #[test]
+    fn ignores_non_capture_callback_urls() {
+        let callback = parse_callback_url("https://example.com").expect("should parse");
+        assert!(callback.is_none());
+    }
+
+    #[test]
+    fn parses_capture_callback_url() {
+        let callback = parse_callback_url(&format!(
+            "{CALLBACK_SCHEME}://{CALLBACK_HOST}?client-request-id=req-1&code=200&reason=Success&token=abc"
+        ))
+        .expect("should parse")
+        .expect("should be handled");
+
+        assert_eq!(callback.request_id, "req-1");
+        assert_eq!(callback.code, 200);
+        assert_eq!(callback.token.as_deref(), Some("abc"));
+        assert_eq!(callback.reason.as_deref(), Some("Success"));
     }
 }

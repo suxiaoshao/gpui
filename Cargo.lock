@@ -6991,12 +6991,15 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "platform-ext"
 version = "0.1.0"
 dependencies = [
+ "futures-channel",
+ "image",
  "objc2 0.6.4",
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation",
  "thiserror 2.0.18",
+ "url",
  "windows 0.62.2",
  "windows-bindgen",
  "windows-collections 0.3.2",
@@ -12402,6 +12405,7 @@ dependencies = [
  "plist",
  "serde",
  "tauri-bundler",
+ "tauri-utils",
  "thiserror 2.0.18",
  "toml 1.0.4+spec-1.1.0",
  "toml_edit 0.25.4+spec-1.1.0",

@@ -157,6 +157,10 @@ fn get_logs_dir() -> AiChatResult<PathBuf> {
 }
 
 fn main() -> AiChatResult<()> {
+    if handle_capture_callback_startup()? {
+        return Ok(());
+    }
+
     profiling::init();
 
     // tracing
@@ -209,4 +213,26 @@ fn main() -> AiChatResult<()> {
         event!(Level::INFO, "window opened");
     });
     Ok(())
+}
+
+fn handle_capture_callback_startup() -> AiChatResult<bool> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for argument in std::env::args().skip(1) {
+            let handled =
+                platform_ext::capture::handle_capture_callback_url(&argument).map_err(|err| {
+                    AiChatError::StreamError(format!("failed to handle capture callback: {err}"))
+                })?;
+            if handled {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }

@@ -1,51 +1,10 @@
-use crate::capture::{ImageFrame, ScreenRect};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OcrLanguage {
-    English,
-    SimplifiedChinese,
-    TraditionalChinese,
-    Japanese,
-    Korean,
-}
+use crate::capture::ImageFrame;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct OcrRequest {
-    pub image: ImageFrame,
-    pub languages: Vec<OcrLanguage>,
-    pub include_word_boxes: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct OcrWord {
+pub(crate) struct RecognizedLine {
     pub text: String,
-    pub bounds: ScreenRect,
-    pub confidence: Option<f32>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct OcrLine {
-    pub text: String,
-    pub bounds: ScreenRect,
-    pub words: Vec<OcrWord>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct OcrResult {
-    pub text: String,
-    pub lines: Vec<OcrLine>,
-}
-
-impl OcrResult {
-    #[must_use]
-    pub fn from_lines(lines: Vec<OcrLine>) -> Self {
-        let text = lines
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        Self { text, lines }
-    }
+    pub x: f64,
+    pub y: f64,
 }
 
 pub(crate) fn validate_image_frame(image: &ImageFrame) -> Result<(), crate::OcrError> {
@@ -73,43 +32,48 @@ pub(crate) fn validate_image_frame(image: &ImageFrame) -> Result<(), crate::OcrE
     Ok(())
 }
 
-pub(crate) fn compare_lines(left: &OcrLine, right: &OcrLine) -> std::cmp::Ordering {
-    left.bounds
-        .y
-        .partial_cmp(&right.bounds.y)
+pub(crate) fn compare_lines(left: &RecognizedLine, right: &RecognizedLine) -> std::cmp::Ordering {
+    left.y
+        .partial_cmp(&right.y)
         .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| {
-            left.bounds
-                .x
-                .partial_cmp(&right.bounds.x)
+            left.x
+                .partial_cmp(&right.x)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
 }
 
+pub(crate) fn collapse_lines(mut lines: Vec<RecognizedLine>) -> String {
+    lines.sort_by(compare_lines);
+    lines
+        .into_iter()
+        .filter_map(|line| {
+            let text = line.text.trim().to_string();
+            (!text.is_empty()).then_some(text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OcrLine, OcrResult, OcrWord};
-    use crate::capture::ScreenRect;
+    use super::{RecognizedLine, collapse_lines};
 
     #[test]
     fn flattens_lines_into_text() {
-        let result = OcrResult::from_lines(vec![
-            OcrLine {
+        let text = collapse_lines(vec![
+            RecognizedLine {
                 text: "hello".into(),
-                bounds: ScreenRect::default(),
-                words: vec![OcrWord {
-                    text: "hello".into(),
-                    bounds: ScreenRect::default(),
-                    confidence: Some(0.9),
-                }],
+                x: 0.0,
+                y: 0.0,
             },
-            OcrLine {
+            RecognizedLine {
                 text: "world".into(),
-                bounds: ScreenRect::default(),
-                words: vec![],
+                x: 10.0,
+                y: 8.0,
             },
         ]);
 
-        assert_eq!(result.text, "hello\nworld");
+        assert_eq!(text, "hello\nworld");
     }
 }

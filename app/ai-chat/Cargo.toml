@@ -23,6 +23,7 @@ AI Chat is a GPUI-based desktop application with chat history, templates,
 streaming responses, and web search support.
 """
 category = "DeveloperTool"
+deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
 
 [features]
 dhat-heap = ["dep:dhat"]

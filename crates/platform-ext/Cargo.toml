@@ -5,7 +5,10 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+futures-channel = "0.3.32"
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
 thiserror = "2.0.18"
+url = "2.5.8"
 
 [build-dependencies]
 windows-bindgen = "0.61.1"
@@ -26,6 +29,7 @@ objc2-foundation = "0.3.2"
 
 [target.'cfg(target_os="windows")'.dependencies]
 windows = { version = "0.62.2", features = [
+  "ApplicationModel_DataTransfer",
   "Foundation",
   "Foundation_Collections",
   "Globalization",
@@ -35,7 +39,9 @@ windows = { version = "0.62.2", features = [
   "Graphics_Imaging",
   "Media_Ocr",
   "Security_Authorization_AppCapabilityAccess",
+  "Storage",
   "Storage_Streams",
+  "System",
   "Win32_Foundation",
   "Win32_Graphics_Direct3D",
   "Win32_Graphics_Direct3D11",

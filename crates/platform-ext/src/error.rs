@@ -12,6 +12,8 @@ pub enum PlatformExtError {
 pub enum CaptureError {
     #[error("capture is unsupported on this platform")]
     UnsupportedPlatform,
+    #[error("capture was cancelled")]
+    Cancelled,
     #[error("capture permission was denied")]
     PermissionDenied,
     #[error("capture backend is unavailable: {0}")]

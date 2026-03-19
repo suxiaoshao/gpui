@@ -1,17 +1,17 @@
 use crate::error::OcrError;
 
 mod shared;
-pub use shared::{OcrLanguage, OcrLine, OcrRequest, OcrResult, OcrWord};
-pub(crate) use shared::compare_lines;
+use crate::capture::ImageFrame;
+pub(crate) use shared::{RecognizedLine, collapse_lines};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 use shared::validate_image_frame;
 
-pub fn recognize_text(request: OcrRequest) -> Result<OcrResult, OcrError> {
-    validate_image_frame(&request.image)?;
-    platform::recognize_text(request)
+pub fn recognize_text(image: &ImageFrame) -> Result<String, OcrError> {
+    validate_image_frame(image)?;
+    platform::recognize_text(image)
 }
 
 #[cfg(target_os = "macos")]
@@ -23,12 +23,9 @@ use windows as platform;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod unsupported {
-    use crate::{
-        OcrError,
-        ocr::{OcrRequest, OcrResult},
-    };
+    use crate::{OcrError, capture::ImageFrame};
 
-    pub(super) fn recognize_text(_: OcrRequest) -> Result<OcrResult, OcrError> {
+    pub(super) fn recognize_text(_: &ImageFrame) -> Result<String, OcrError> {
         Err(OcrError::UnsupportedPlatform)
     }
 }
