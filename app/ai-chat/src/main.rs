@@ -223,9 +223,10 @@ fn handle_capture_callback_startup() -> AiChatResult<bool> {
 
     #[cfg(target_os = "windows")]
     {
-        for argument in std::env::args().skip(1) {
+        for argument in std::env::args_os().skip(1) {
+            let argument = argument.to_string_lossy();
             let handled =
-                platform_ext::capture::handle_capture_callback_url(&argument).map_err(|err| {
+                platform_ext::capture::handle_capture_callback_url(argument.as_ref()).map_err(|err| {
                     AiChatError::StreamError(format!("failed to handle capture callback: {err}"))
                 })?;
             if handled {

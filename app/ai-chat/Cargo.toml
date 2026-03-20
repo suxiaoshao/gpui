@@ -7,6 +7,7 @@ build = "build.rs"
 [package.metadata.bundle]
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
+publisher = "CN=Sushao"
 icon = [
   "build-assets/icon/app-icon.ico",
   "build-assets/icon/app-icon.iconset/icon_32x32.png",

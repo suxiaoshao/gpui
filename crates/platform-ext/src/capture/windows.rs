@@ -4,13 +4,14 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 use windows::{
     ApplicationModel::DataTransfer::SharedStorageAccessManager, Foundation::Uri, System::Launcher,
-    core::HSTRING,
+    Win32::Foundation::{APPMODEL_ERROR_NO_PACKAGE, APPMODEL_ERROR_PACKAGE_NOT_AVAILABLE},
+    core::{HRESULT, HSTRING},
 };
 
 pub(crate) mod async_support;
@@ -22,6 +23,8 @@ const CALLBACK_SCHEME: &str = "ai-chat-screenclip";
 const CALLBACK_HOST: &str = "capture-response";
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const PACKAGED_BUILD_REQUIRED_MESSAGE: &str =
+    "windows screen capture requires a packaged build with package identity";
 
 pub(super) fn capture_user_selected_area() -> Result<ImageFrame, CaptureError> {
     let request_id = next_request_id();
@@ -49,21 +52,26 @@ pub(super) fn handle_capture_callback_url(url: &str) -> Result<bool, CaptureErro
     prepare_request_dir()?;
     cleanup_request_artifacts(&callback.request_id);
 
-    match callback.code {
-        200 => write_success_artifact(&callback.request_id, callback.token.as_deref())?,
-        499 => write_cancelled_artifact(&callback.request_id)?,
+    let result = match callback.code {
+        200 => write_success_artifact(&callback.request_id, callback.token.as_deref()),
+        499 => write_cancelled_artifact(&callback.request_id),
         _ => write_error_artifact(
             &callback.request_id,
             callback
                 .reason
                 .as_deref()
                 .unwrap_or("snipping tool callback failed"),
-        )?,
+        ),
+    };
+
+    if let Err(err) = result {
+        write_error_artifact(&callback.request_id, &err.to_string())?;
     }
 
     Ok(true)
 }
 
+#[derive(Debug)]
 struct CaptureCallback {
     request_id: String,
     code: u16,
@@ -154,10 +162,17 @@ fn wait_for_capture_result(request_id: &str) -> Result<ImageFrame, CaptureError>
 fn write_success_artifact(request_id: &str, token: Option<&str>) -> Result<(), CaptureError> {
     let token = token.ok_or(CaptureError::InvalidInput("capture callback missing token"))?;
     let token = HSTRING::from(token);
-    let storage_file = wait_async_operation(
+    let storage_file = match wait_async_operation(
         SharedStorageAccessManager::RedeemTokenForFileAsync(&token).map_err(map_capture_error)?,
     )
-    .map_err(map_capture_error)?;
+    .map_err(map_capture_error)
+    {
+        Ok(file) => file,
+        Err(err) if requires_packaged_build(&err) => {
+            return Err(CaptureError::BackendUnavailable(PACKAGED_BUILD_REQUIRED_MESSAGE));
+        }
+        Err(err) => return Err(err),
+    };
     let source_path = storage_file.Path().map_err(map_capture_error)?.to_string();
     let source_path = PathBuf::from(source_path);
 
@@ -235,9 +250,24 @@ fn map_capture_error(err: windows_core::Error) -> CaptureError {
     CaptureError::SystemFailure(err.to_string())
 }
 
+fn requires_packaged_build(error: &CaptureError) -> bool {
+    let CaptureError::SystemFailure(message) = error else {
+        return false;
+    };
+    let no_package = HRESULT::from_win32(APPMODEL_ERROR_NO_PACKAGE.0);
+    let package_unavailable = HRESULT::from_win32(APPMODEL_ERROR_PACKAGE_NOT_AVAILABLE.0);
+    let no_package_code = format!("{:#010x}", no_package.0 as u32);
+    let package_unavailable_code = format!("{:#010x}", package_unavailable.0 as u32);
+    message.contains(&no_package_code) || message.contains(&package_unavailable_code)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CALLBACK_HOST, CALLBACK_SCHEME, parse_callback_url};
+    use super::{
+        CALLBACK_HOST, CALLBACK_SCHEME, PACKAGED_BUILD_REQUIRED_MESSAGE, parse_callback_url,
+        requires_packaged_build,
+    };
+    use crate::CaptureError;
 
     #[test]
     fn ignores_non_capture_callback_urls() {
@@ -257,5 +287,43 @@ mod tests {
         assert_eq!(callback.code, 200);
         assert_eq!(callback.token.as_deref(), Some("abc"));
         assert_eq!(callback.reason.as_deref(), Some("Success"));
+    }
+
+    #[test]
+    fn rejects_callback_without_request_id() {
+        let error = parse_callback_url(&format!("{CALLBACK_SCHEME}://{CALLBACK_HOST}?code=200"))
+            .expect_err("missing request id should fail");
+
+        assert_eq!(
+            error,
+            CaptureError::InvalidInput("capture callback missing client-request-id")
+        );
+    }
+
+    #[test]
+    fn rejects_callback_without_status_code() {
+        let error = parse_callback_url(&format!(
+            "{CALLBACK_SCHEME}://{CALLBACK_HOST}?client-request-id=req-1"
+        ))
+        .expect_err("missing code should fail");
+
+        assert_eq!(
+            error,
+            CaptureError::InvalidInput("capture callback missing status code")
+        );
+    }
+
+    #[test]
+    fn package_identity_errors_are_detected() {
+        let error = CaptureError::SystemFailure(format!(
+            "operation failed with HRESULT {:#010x}: {}",
+            windows::core::HRESULT::from_win32(
+                windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE.0
+            )
+            .0 as u32,
+            PACKAGED_BUILD_REQUIRED_MESSAGE
+        ));
+
+        assert!(requires_packaged_build(&error));
     }
 }
