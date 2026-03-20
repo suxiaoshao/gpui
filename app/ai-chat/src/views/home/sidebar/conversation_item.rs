@@ -1,8 +1,7 @@
 use super::conversation_tree::{DragConversationTreeItem, SidebarConversationNode};
 use crate::{
     components::delete_confirm::open_delete_confirm_dialog,
-    store::{ChatData, ChatDataEvent},
-    workspace_state::WorkspaceStore,
+    state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{

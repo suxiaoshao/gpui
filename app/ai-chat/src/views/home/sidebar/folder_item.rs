@@ -9,8 +9,7 @@ use crate::{
         add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
         delete_confirm::open_delete_confirm_dialog,
     },
-    store::{ChatData, ChatDataEvent},
-    workspace_state::WorkspaceStore,
+    state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{

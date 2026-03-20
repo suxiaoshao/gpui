@@ -1,8 +1,8 @@
 use crate::{
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
-    config::{AiChatConfig, ThemeMode},
     i18n::I18n,
     llm::provider_setting_groups,
+    state::{AiChatConfig, ThemeMode},
 };
 use gpui::*;
 use gpui_component::{

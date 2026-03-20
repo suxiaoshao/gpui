@@ -1,10 +1,7 @@
 use crate::{
-    config::AiChatConfig,
     i18n::I18n,
-    store,
+    state::{self, AiChatConfig, WorkspaceStore},
     views::home::{sidebar::SidebarView, tabs::TabsView},
-    workspace_state,
-    workspace_state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
@@ -34,8 +31,8 @@ pub(crate) struct HomeView {
 
 impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        store::init(window, cx);
-        workspace_state::init(window, cx);
+        state::store::init(window, cx);
+        state::workspace::init(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
 
@@ -71,7 +68,7 @@ impl Render for HomeView {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let error_title = cx.global::<I18n>().t("alert-error-title");
-        let chat_data = cx.global::<store::ChatData>().read(cx);
+        let chat_data = cx.global::<state::ChatData>().read(cx);
         let sidebar_width = cx.global::<WorkspaceStore>().read(cx).sidebar_width();
         v_flex()
             .size_full()

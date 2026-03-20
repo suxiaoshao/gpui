@@ -1,13 +1,11 @@
 use crate::{
     components::chat_form::ChatFormSnapshot,
-    config::AiChatConfig,
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, FetchUpdate, provider_by_name},
-    store::{ChatData, ChatDataEvent, ChatDataInner},
+    state::{AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore},
     views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
-    workspace_state::{ConversationDraft, WorkspaceStore},
 };
 use async_compat::CompatExt;
 use futures::pin_mut;

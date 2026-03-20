@@ -3,7 +3,7 @@ use crate::{
     database::{ConversationTemplate, Db, Role},
     errors::AiChatResult,
     i18n::I18n,
-    workspace_state::WorkspaceStore,
+    state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::description_list::{DescriptionItem, DescriptionList};

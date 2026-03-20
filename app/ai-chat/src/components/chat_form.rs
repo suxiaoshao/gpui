@@ -9,7 +9,7 @@ use crate::{
     errors::AiChatResult,
     i18n::I18n,
     llm::provider_by_name,
-    workspace_state::ConversationDraft,
+    state::ConversationDraft,
 };
 use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};

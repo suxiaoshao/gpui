@@ -3,7 +3,7 @@ use crate::{
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     i18n::I18n,
-    workspace_state::WorkspaceStore,
+    state::WorkspaceStore,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{

@@ -1,4 +1,4 @@
-use crate::{config::AiChatConfig, errors::AiChatResult, views::temporary::TemporaryView};
+use crate::{errors::AiChatResult, state::AiChatConfig, views::temporary::TemporaryView};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::*;
 use gpui_component::Root;

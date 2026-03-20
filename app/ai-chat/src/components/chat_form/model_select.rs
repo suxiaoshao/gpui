@@ -4,10 +4,9 @@ use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerTrigger, render_picker_popover,
 };
 use crate::{
-    config::AiChatConfig,
     i18n::I18n,
     llm::{ProviderModel, provider_is_configured},
-    store::{ModelStore, ModelStoreSnapshot, ModelStoreStatus},
+    state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
     views::settings::open_provider_settings_window,
 };
 use gpui::{prelude::FluentBuilder as _, *};

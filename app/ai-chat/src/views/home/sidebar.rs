@@ -2,9 +2,8 @@ use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     errors::AiChatResult,
     i18n::I18n,
-    store::{ChatData, ChatDataInner},
+    state::{ChatData, ChatDataInner, WorkspaceState, WorkspaceStore},
     views::settings::OpenSetting,
-    workspace_state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::{
@@ -66,7 +65,7 @@ pub fn init(cx: &mut App) {
 
 pub(crate) struct SidebarView {
     chat_data: WeakEntity<AiChatResult<ChatDataInner>>,
-    workspace: WeakEntity<crate::workspace_state::WorkspaceState>,
+    workspace: WeakEntity<WorkspaceState>,
     focus_handle: FocusHandle,
 }
 

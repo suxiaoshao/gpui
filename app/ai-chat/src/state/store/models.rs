@@ -1,7 +1,7 @@
 use crate::{
-    config::AiChatConfig,
     i18n::I18n,
     llm::{AvailableModelsBatch, ProviderModel, ProviderModelsFailure, available_models},
+    state::AiChatConfig,
 };
 use gpui::*;
 use gpui_component::{

@@ -17,16 +17,14 @@ use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitE
 
 mod assets;
 mod components;
-mod config;
 mod database;
 mod errors;
 mod gpui_ext;
 mod hotkey;
 mod i18n;
 mod llm;
-mod store;
+mod state;
 mod views;
-mod workspace_state;
 
 static APP_NAME: &str = "top.sushao.ai-chat";
 
@@ -109,7 +107,7 @@ mod profiling {
 }
 
 fn quit(_: &Quit, cx: &mut App) {
-    workspace_state::save_now(cx);
+    state::workspace::save_now(cx);
     profiling::flush();
     event!(Level::INFO, "quit by action");
     cx.quit();
@@ -132,8 +130,8 @@ fn init(cx: &mut App) {
     database::init_store(cx);
     components::init(cx);
     views::init(cx);
-    config::init(cx);
-    store::init_global(cx);
+    state::config::init(cx);
+    state::store::init_global(cx);
     hotkey::init(cx);
 }
 

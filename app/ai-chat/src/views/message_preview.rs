@@ -3,8 +3,7 @@ use crate::{
     database::{Content, Conversation, Db, Message, Role},
     errors::{AiChatError, AiChatResult},
     i18n::I18n,
-    store::{ChatData, ChatDataEvent},
-    workspace_state::WorkspaceStore,
+    state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};

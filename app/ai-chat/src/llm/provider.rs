@@ -1,8 +1,8 @@
 use super::Message;
 use crate::{
-    config::AiChatConfig,
     database::Content,
     errors::{AiChatError, AiChatResult},
+    state::AiChatConfig,
 };
 use futures::{
     future::{BoxFuture, join_all},
@@ -250,7 +250,7 @@ mod tests {
         AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, Provider, ProviderModel,
         ProviderModelCapability, ProviderModelsFailure, available_models_from_providers,
     };
-    use crate::{config::AiChatConfig, errors::AiChatError};
+    use crate::{errors::AiChatError, state::AiChatConfig};
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use gpui_component::setting::SettingGroup;
 

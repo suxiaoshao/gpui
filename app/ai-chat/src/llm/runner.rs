@@ -1,8 +1,8 @@
 use super::{Provider, provider_by_name};
 use crate::{
-    config::AiChatConfig,
     errors::{AiChatError, AiChatResult},
     llm::FetchUpdate,
+    state::AiChatConfig,
 };
 use futures::pin_mut;
 

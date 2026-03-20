@@ -3,11 +3,11 @@ use super::{
     ProviderModelCapability,
 };
 use crate::{
-    config::AiChatConfig,
     database::{Content, Role, UrlCitation},
     errors::{AiChatError, AiChatResult},
     i18n::t_static,
     llm::Message,
+    state::AiChatConfig,
 };
 use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};

@@ -1,4 +1,4 @@
-use crate::{views::home::sidebar::DragConversationTreeItem, workspace_state::WorkspaceStore};
+use crate::{state::WorkspaceStore, views::home::sidebar::DragConversationTreeItem};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use std::ops::Deref;
