@@ -8,10 +8,14 @@
 mod conversation_templates;
 mod conversations;
 mod folders;
+mod global_shortcut_bindings;
 mod messages;
 pub use conversation_templates::{
     SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate,
 };
 pub use conversations::{SqlConversation, SqlNewConversation, SqlUpdateConversation};
 pub use folders::{SqlFolder, SqlNewFolder, SqlUpdateFolder};
+pub use global_shortcut_bindings::{
+    SqlGlobalShortcutBinding, SqlNewGlobalShortcutBinding, SqlUpdateGlobalShortcutBinding,
+};
 pub use messages::{SqlMessage, SqlNewMessage};

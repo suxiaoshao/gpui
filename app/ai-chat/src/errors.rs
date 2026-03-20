@@ -20,6 +20,8 @@ pub enum AiChatError {
     InvalidRole(String),
     #[error("无效的消息状态:{}",.0)]
     InvalidMessageStatus(String),
+    #[error("无效的快捷键输入源:{}",.0)]
+    InvalidShortcutInputSource(String),
     #[error("serde_json错误:{}",.0)]
     SerdeJson(#[from] serde_json::Error),
     #[error("eventsource错误:{}",.0)]

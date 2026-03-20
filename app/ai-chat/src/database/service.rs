@@ -8,6 +8,7 @@
 mod conversation_templates;
 mod conversations;
 mod folders;
+mod global_shortcut_bindings;
 mod messages;
 mod utils;
 
@@ -17,4 +18,7 @@ pub use conversation_templates::{
 
 pub use conversations::{Conversation, NewConversation};
 pub use folders::{Folder, NewFolder};
+pub use global_shortcut_bindings::{
+    GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding,
+};
 pub use messages::{Content, Message, NewMessage, UrlCitation};
