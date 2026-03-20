@@ -39,7 +39,6 @@ diesel::table! {
 diesel::table! {
     global_shortcut_bindings (id) {
         id -> Integer,
-        name -> Text,
         hotkey -> Text,
         enabled -> Bool,
         template_id -> Nullable<Integer>,

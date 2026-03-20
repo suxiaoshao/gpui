@@ -57,7 +57,6 @@ create table messages
 create table global_shortcut_bindings
 (
     id               INTEGER primary key autoincrement not null,
-    name             TEXT                              not null,
     hotkey           TEXT                              not null,
     enabled          BOOLEAN                           not null default 1 check ( enabled in (0, 1) ),
     template_id      INTEGER,

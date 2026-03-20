@@ -5,7 +5,6 @@ use time::OffsetDateTime;
 #[derive(Insertable)]
 #[diesel(table_name = global_shortcut_bindings)]
 pub struct SqlNewGlobalShortcutBinding<'a> {
-    pub(in super::super) name: &'a str,
     pub(in super::super) hotkey: &'a str,
     pub(in super::super) enabled: bool,
     pub(in super::super) template_id: Option<i32>,
@@ -31,7 +30,6 @@ impl SqlNewGlobalShortcutBinding<'_> {
 #[diesel(table_name = global_shortcut_bindings)]
 pub struct SqlGlobalShortcutBinding {
     pub(in super::super) id: i32,
-    pub(in super::super) name: String,
     pub(in super::super) hotkey: String,
     pub(in super::super) enabled: bool,
     pub(in super::super) template_id: Option<i32>,
@@ -79,7 +77,6 @@ impl SqlGlobalShortcutBinding {
 #[diesel(table_name = global_shortcut_bindings)]
 pub struct SqlUpdateGlobalShortcutBinding<'a> {
     pub(in super::super) id: i32,
-    pub(in super::super) name: &'a str,
     pub(in super::super) hotkey: &'a str,
     pub(in super::super) enabled: bool,
     pub(in super::super) template_id: Option<i32>,

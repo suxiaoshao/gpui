@@ -16,7 +16,6 @@ use time::OffsetDateTime;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct GlobalShortcutBinding {
     pub id: i32,
-    pub name: String,
     pub hotkey: String,
     pub enabled: bool,
     #[serde(rename = "templateId")]
@@ -50,7 +49,6 @@ impl TryFrom<SqlGlobalShortcutBinding> for GlobalShortcutBinding {
     fn try_from(value: SqlGlobalShortcutBinding) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
-            name: value.name,
             hotkey: value.hotkey,
             enabled: value.enabled,
             template_id: value.template_id,
@@ -68,7 +66,6 @@ impl TryFrom<SqlGlobalShortcutBinding> for GlobalShortcutBinding {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct NewGlobalShortcutBinding {
-    pub name: String,
     pub hotkey: String,
     pub enabled: bool,
     #[serde(rename = "templateId")]
@@ -103,7 +100,6 @@ impl GlobalShortcutBinding {
     ) -> AiChatResult<Self> {
         let now = OffsetDateTime::now_utc();
         let sql_new = SqlNewGlobalShortcutBinding {
-            name: &new_binding.name,
             hotkey: &new_binding.hotkey,
             enabled: new_binding.enabled,
             template_id: new_binding.template_id,
@@ -125,7 +121,6 @@ impl GlobalShortcutBinding {
     ) -> AiChatResult<()> {
         let sql_update = SqlUpdateGlobalShortcutBinding {
             id,
-            name: &update.name,
             hotkey: &update.hotkey,
             enabled: update.enabled,
             template_id: update.template_id,
@@ -147,7 +142,6 @@ impl GlobalShortcutBinding {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct UpdateGlobalShortcutBinding {
-    pub name: String,
     pub hotkey: String,
     pub enabled: bool,
     #[serde(rename = "templateId")]
@@ -195,8 +189,7 @@ mod tests {
 
         let first = GlobalShortcutBinding::insert(
             NewGlobalShortcutBinding {
-                name: "send selection".to_string(),
-                hotkey: "cmd-shift-1".to_string(),
+                hotkey: "super+shift+1".to_string(),
                 enabled: true,
                 template_id: Some(template_id),
                 provider_name: "OpenAI".to_string(),
@@ -209,8 +202,7 @@ mod tests {
         )?;
         let second = GlobalShortcutBinding::insert(
             NewGlobalShortcutBinding {
-                name: "send screenshot".to_string(),
-                hotkey: "cmd-shift-2".to_string(),
+                hotkey: "super+shift+2".to_string(),
                 enabled: false,
                 template_id: None,
                 provider_name: "OpenAI".to_string(),
@@ -235,8 +227,7 @@ mod tests {
 
         let _ = GlobalShortcutBinding::insert(
             NewGlobalShortcutBinding {
-                name: "first".to_string(),
-                hotkey: "cmd-shift-k".to_string(),
+                hotkey: "super+shift+k".to_string(),
                 enabled: true,
                 template_id: None,
                 provider_name: "OpenAI".to_string(),
@@ -250,8 +241,7 @@ mod tests {
 
         let err = GlobalShortcutBinding::insert(
             NewGlobalShortcutBinding {
-                name: "second".to_string(),
-                hotkey: "cmd-shift-k".to_string(),
+                hotkey: "super+shift+k".to_string(),
                 enabled: false,
                 template_id: None,
                 provider_name: "OpenAI".to_string(),
@@ -273,8 +263,7 @@ mod tests {
         let mut conn = setup_conn()?;
         let inserted = GlobalShortcutBinding::insert(
             NewGlobalShortcutBinding {
-                name: "before".to_string(),
-                hotkey: "cmd-shift-u".to_string(),
+                hotkey: "super+shift+u".to_string(),
                 enabled: true,
                 template_id: None,
                 provider_name: "OpenAI".to_string(),
@@ -292,8 +281,7 @@ mod tests {
         GlobalShortcutBinding::update(
             inserted.id,
             UpdateGlobalShortcutBinding {
-                name: "after".to_string(),
-                hotkey: "cmd-shift-y".to_string(),
+                hotkey: "super+shift+y".to_string(),
                 enabled: false,
                 template_id: None,
                 provider_name: "OpenAI".to_string(),
@@ -306,8 +294,7 @@ mod tests {
         )?;
 
         let updated = GlobalShortcutBinding::find(inserted.id, &mut conn)?;
-        assert_eq!(updated.name, "after");
-        assert_eq!(updated.hotkey, "cmd-shift-y");
+        assert_eq!(updated.hotkey, "super+shift+y");
         assert!(!updated.enabled);
         assert_eq!(updated.model_id, "gpt-4.1");
         assert_eq!(updated.mode, Mode::Single);
@@ -324,18 +311,18 @@ mod tests {
 
         let invalid_mode = sql_query(
             "insert into global_shortcut_bindings
-             (name, hotkey, enabled, template_id, provider_name, model_id, mode, request_template, input_source, created_time, updated_time)
+             (hotkey, enabled, template_id, provider_name, model_id, mode, request_template, input_source, created_time, updated_time)
              values
-             ('invalid-mode', 'cmd-1', 1, null, 'OpenAI', 'gpt-4o', 'invalid', '{}', 'selection_or_clipboard', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+             ('cmd-1', 1, null, 'OpenAI', 'gpt-4o', 'invalid', '{}', 'selection_or_clipboard', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
         )
         .execute(&mut conn);
         assert!(invalid_mode.is_err());
 
         let invalid_source = sql_query(
             "insert into global_shortcut_bindings
-             (name, hotkey, enabled, template_id, provider_name, model_id, mode, request_template, input_source, created_time, updated_time)
+             (hotkey, enabled, template_id, provider_name, model_id, mode, request_template, input_source, created_time, updated_time)
              values
-             ('invalid-source', 'cmd-2', 1, null, 'OpenAI', 'gpt-4o', 'contextual', '{}', 'invalid', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+             ('cmd-2', 1, null, 'OpenAI', 'gpt-4o', 'contextual', '{}', 'invalid', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
         )
         .execute(&mut conn);
         assert!(invalid_source.is_err());

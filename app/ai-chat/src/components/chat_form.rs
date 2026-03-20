@@ -8,7 +8,7 @@ use crate::{
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::AiChatResult,
     i18n::I18n,
-    llm::provider_by_name,
+    llm::{apply_ext_setting, build_request_template, preset_ext_settings, provider_by_name},
     state::ConversationDraft,
 };
 use ext_settings::{ExtSettings, ExtSettingsEvent};
@@ -201,16 +201,10 @@ impl ChatForm {
                 let Some(model) = this.model_select.read(cx).selected_model() else {
                     return;
                 };
-                let Ok(provider) = provider_by_name(&model.provider_name) else {
-                    return;
-                };
                 let Some(template) = this.request_template.as_mut() else {
                     return;
                 };
-                if provider
-                    .apply_ext_setting(&model, template, setting)
-                    .is_err()
-                {
+                if apply_ext_setting(&model, template, setting).is_err() {
                     return;
                 }
                 this.sync_ext_settings(&model, window, cx);
@@ -232,12 +226,7 @@ impl ChatForm {
                 .update(cx, |settings, cx| settings.clear(cx));
             return;
         };
-        let Ok(provider) = provider_by_name(&model.provider_name) else {
-            self.ext_settings
-                .update(cx, |settings, cx| settings.clear(cx));
-            return;
-        };
-        let settings = match provider.ext_settings(model, &template) {
+        let settings = match preset_ext_settings(model, &template) {
             Ok(settings) => settings,
             Err(_) => {
                 self.ext_settings
@@ -248,26 +237,6 @@ impl ChatForm {
         self.ext_settings.update(cx, |ext_settings, cx| {
             ext_settings.set_items(settings, window, cx)
         });
-    }
-
-    fn apply_saved_ext_settings(
-        &mut self,
-        provider: &'static dyn crate::llm::Provider,
-        model: &crate::llm::ProviderModel,
-        template: &mut serde_json::Value,
-        saved_template: &serde_json::Value,
-    ) {
-        let Ok(settings) = provider.ext_settings(model, saved_template) else {
-            return;
-        };
-        for setting in settings {
-            if provider
-                .apply_ext_setting(model, template, &setting)
-                .is_err()
-            {
-                continue;
-            }
-        }
     }
 
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -456,21 +425,10 @@ impl ChatForm {
         }) else {
             return;
         };
-        let provider = match provider_by_name(&model.provider_name) {
-            Ok(provider) => provider,
-            Err(_) => return,
-        };
-        let base_template = match provider.default_template_for_model(&model) {
+        let base_template = match build_request_template(&model, Some(&draft.request_template)) {
             Ok(template) => template,
             Err(_) => return,
         };
-        let mut base_template = base_template;
-        self.apply_saved_ext_settings(
-            provider,
-            &model,
-            &mut base_template,
-            &draft.request_template,
-        );
         self.request_template = Some(base_template);
         self.sync_ext_settings(&model, window, cx);
         self.pending_restore_draft = None;

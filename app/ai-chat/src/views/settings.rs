@@ -13,12 +13,18 @@ use gpui_component::{
 use std::any::TypeId;
 use tracing::{Level, event};
 
+pub(super) mod shortcut_settings;
+
+use self::shortcut_settings::ShortcutSettingsPage;
+
 actions!([OpenSetting]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsOpenTarget {
     General,
     Provider,
+    #[allow(dead_code)]
+    Shortcuts,
 }
 
 pub fn init(cx: &mut App) {
@@ -37,6 +43,7 @@ pub fn init(cx: &mut App) {
 pub struct SettingsView {
     focus_handle: FocusHandle,
     hotkey_input: Entity<HotkeyInput>,
+    shortcut_settings: Entity<ShortcutSettingsPage>,
     open_target: SettingsOpenTarget,
     _subscriptions: Vec<Subscription>,
 }
@@ -47,13 +54,15 @@ impl SettingsView {
         focus_handle.focus(window);
         let hotkey_input = cx.new(|cx| {
             let temporary_hotkey = cx.global::<AiChatConfig>().temporary_hotkey.clone();
-            HotkeyInput::new(window, cx)
+            HotkeyInput::new("temporary-hotkey-input", window, cx)
                 .default_value(temporary_hotkey.and_then(|x| string_to_keystroke(&x)))
         });
+        let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
         let _subscriptions = vec![cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes)];
         Self {
             focus_handle,
             hotkey_input,
+            shortcut_settings,
             open_target,
             _subscriptions,
         }
@@ -86,6 +95,7 @@ impl Render for SettingsView {
         let (
             page_general,
             page_provider,
+            page_shortcuts,
             group_basic_options,
             field_theme,
             field_http_proxy,
@@ -95,6 +105,7 @@ impl Render for SettingsView {
             (
                 i18n.t("settings-page-general"),
                 i18n.t("settings-page-provider"),
+                i18n.t("settings-page-shortcuts"),
                 i18n.t("settings-group-basic-options"),
                 i18n.t("field-theme"),
                 i18n.t("field-http-proxy"),
@@ -107,6 +118,12 @@ impl Render for SettingsView {
         let provider_page = provider_setting_groups().into_iter().fold(
             SettingPage::new(page_provider),
             |page: SettingPage, group| page.group(group),
+        );
+        let shortcuts_page = SettingPage::new(page_shortcuts).group(
+            SettingGroup::new().item(SettingItem::render({
+                let page = self.shortcut_settings.clone();
+                move |_options, _window, _cx| page.clone()
+            })),
         );
         let general_page = SettingPage::new(page_general).group(
             SettingGroup::new()
@@ -166,10 +183,22 @@ impl Render for SettingsView {
         );
         let (settings_id, pages) = match self.open_target {
             SettingsOpenTarget::General => {
-                ("my-settings-general", vec![general_page, provider_page])
+                (
+                    "my-settings-general",
+                    vec![general_page, provider_page, shortcuts_page],
+                )
             }
             SettingsOpenTarget::Provider => {
-                ("my-settings-provider", vec![provider_page, general_page])
+                (
+                    "my-settings-provider",
+                    vec![provider_page, general_page, shortcuts_page],
+                )
+            }
+            SettingsOpenTarget::Shortcuts => {
+                (
+                    "my-settings-shortcuts",
+                    vec![shortcuts_page, general_page, provider_page],
+                )
             }
         };
         v_flex()
