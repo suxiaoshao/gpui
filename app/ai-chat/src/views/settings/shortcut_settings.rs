@@ -977,11 +977,11 @@ impl ShortcutSettingsPage {
                 }
             });
 
-            let saved_template = row.saved_binding.as_ref().map(|binding| binding.request_template.clone());
+            let current_template = row.request_template.clone();
             Self::refresh_row_request_template_with_models(
                 row,
                 &available_models,
-                saved_template.as_ref(),
+                Some(&current_template),
                 false,
                 window,
                 cx,
