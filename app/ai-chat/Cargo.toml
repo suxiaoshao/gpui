@@ -7,6 +7,7 @@ build = "build.rs"
 [package.metadata.bundle]
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
+publisher = "CN=Sushao"
 icon = [
   "build-assets/icon/app-icon.ico",
   "build-assets/icon/app-icon.iconset/icon_32x32.png",
@@ -23,6 +24,7 @@ AI Chat is a GPUI-based desktop application with chat history, templates,
 streaming responses, and web search support.
 """
 category = "DeveloperTool"
+deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
 
 [features]
 dhat-heap = ["dep:dhat"]
@@ -34,8 +36,11 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets = { workspace = true }
 window-ext = { workspace = true }
+platform-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.102"
+
+# i18n
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"

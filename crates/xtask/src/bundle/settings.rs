@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri_bundler::{AppCategory, BundleSettings, PackageSettings};
+use tauri_utils::config::DeepLinkProtocol;
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -54,6 +55,8 @@ struct ManifestBundle {
     short_description: Option<String>,
     #[serde(default)]
     long_description: Option<String>,
+    #[serde(default)]
+    deep_link_protocols: Option<Vec<DeepLinkProtocol>>,
 }
 
 pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, BundleSettings)> {
@@ -113,6 +116,7 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
         bundle_settings.short_description = bundle.short_description;
         bundle_settings.long_description = bundle.long_description;
         bundle_settings.homepage = bundle.homepage.or_else(|| homepage.clone());
+        bundle_settings.deep_link_protocols = bundle.deep_link_protocols;
     }
 
     if bundle_settings.homepage.is_none() {
@@ -246,6 +250,7 @@ license-file = "LICENSE"
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
 category = "DeveloperTool"
+deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
 icon = [
   "build-assets/icon/app-icon.ico",
   "build-assets/icon/app-icon.png",
@@ -269,6 +274,14 @@ icon = [
             Some(temp_dir.path.join("LICENSE"))
         );
         assert_eq!(bundle_settings.category, Some(AppCategory::DeveloperTool));
+        assert_eq!(
+            bundle_settings
+                .deep_link_protocols
+                .as_ref()
+                .expect("deep link protocols should be present")[0]
+                .schemes,
+            vec!["ai-chat-screenclip".to_string()]
+        );
         assert_eq!(bundle_settings.windows.icon_path, expected_ico);
 
         Ok(())

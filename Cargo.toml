@@ -4,6 +4,7 @@ members = [
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
+  "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
 ]
@@ -16,6 +17,7 @@ gpui-component = "0.5.1"
 # Optional, for default bundled assets
 gpui-component-assets = "0.5.1"
 window-ext = { path = "./crates/window-ext" }
+platform-ext = { path = "./crates/platform-ext" }
 
 [profile.dev]
 split-debuginfo = "unpacked"
