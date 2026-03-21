@@ -17,6 +17,7 @@ use gpui_component::{
 pub use platform_ext::app::{NSRunningApplication, Retained};
 #[cfg(target_os = "macos")]
 use platform_ext::app::{record_frontmost_app, restore_frontmost_app};
+use platform_ext::{CaptureError, OcrError};
 use std::{any::TypeId, collections::BTreeMap, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
@@ -323,11 +324,25 @@ impl GlobalHotkeyState {
         );
     }
 
-    fn handle_unimplemented_screenshot_shortcut(&self, cx: &mut App) {
+    fn handle_screenshot_capture_failure(&self, err: CaptureError, cx: &mut App) {
+        let Some(message) = screenshot_capture_error_message(&err) else {
+            return;
+        };
+        event!(Level::ERROR, error = ?err, "Screenshot capture failed");
         self.push_notification(
             "notify-shortcut-trigger-screenshot-title",
-            cx.global::<I18n>()
-                .t("notify-shortcut-trigger-screenshot-message"),
+            message,
+            NotificationType::Error,
+            cx,
+        );
+    }
+
+    fn handle_screenshot_ocr_failure(&self, err: OcrError, cx: &mut App) {
+        let message = screenshot_ocr_error_message(&err);
+        event!(Level::ERROR, error = ?err, "Screenshot OCR failed");
+        self.push_notification(
+            "notify-shortcut-trigger-ocr-title",
+            message,
             NotificationType::Error,
             cx,
         );
@@ -419,11 +434,49 @@ impl GlobalHotkeyState {
         });
     }
 
-    fn dispatch_shortcut_trigger(
-        &mut self,
-        binding_id: i32,
-        cx: &mut App,
-    ) {
+    fn trigger_selection_or_clipboard_shortcut(&self, binding: GlobalShortcutBinding, cx: &mut App) {
+        cx.spawn(async move |cx| {
+            let selected_text = smol::unblock(move || get_selected_text().ok()).await;
+            let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                match hotkeys.resolve_clipboard_fallback(selected_text, cx) {
+                    Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
+                    None => hotkeys.handle_empty_shortcut_input(cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn trigger_screenshot_shortcut(&self, binding: GlobalShortcutBinding, cx: &mut App) {
+        cx.spawn(async move |cx| {
+            let capture = platform_ext::capture::capture_user_selected_area().await;
+            match capture {
+                Ok(image) => {
+                    let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image))
+                        .await;
+                    let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                        match recognized {
+                            Ok(text) => match normalized_text(Some(text)) {
+                                Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
+                                None => hotkeys.handle_empty_shortcut_input(cx),
+                            },
+                            Err(err) => {
+                                hotkeys.handle_screenshot_ocr_failure(err, cx);
+                            }
+                        }
+                    });
+                }
+                Err(err) => {
+                    let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                        hotkeys.handle_screenshot_capture_failure(err, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn dispatch_shortcut_trigger(&mut self, binding_id: i32, cx: &mut App) {
         if let Some(window) = Self::find_temporary_window(cx) {
             let mut was_visible = false;
             let _ = window.update(cx, |_root, window, cx| {
@@ -455,22 +508,10 @@ impl GlobalHotkeyState {
 
         match binding.input_source {
             crate::database::ShortcutInputSource::Screenshot => {
-                self.handle_unimplemented_screenshot_shortcut(cx);
+                self.trigger_screenshot_shortcut(binding, cx);
             }
             crate::database::ShortcutInputSource::SelectionOrClipboard => {
-                cx.spawn({
-                    let binding = binding.clone();
-                    async move |cx| {
-                        let selected_text = smol::unblock(move || get_selected_text().ok()).await;
-                        let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
-                            match hotkeys.resolve_clipboard_fallback(selected_text, cx) {
-                                Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
-                                None => hotkeys.handle_empty_shortcut_input(cx),
-                            }
-                        });
-                    }
-                })
-                .detach();
+                self.trigger_selection_or_clipboard_shortcut(binding, cx);
             }
         }
     }
@@ -656,9 +697,23 @@ fn normalized_text(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+fn screenshot_capture_error_message(error: &CaptureError) -> Option<String> {
+    match error {
+        CaptureError::Cancelled => None,
+        _ => Some(error.to_string()),
+    }
+}
+
+fn screenshot_ocr_error_message(error: &OcrError) -> String {
+    error.to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalized_text;
+    use super::{
+        normalized_text, screenshot_capture_error_message, screenshot_ocr_error_message,
+    };
+    use platform_ext::{CaptureError, OcrError};
 
     #[test]
     fn normalized_text_rejects_empty_and_whitespace_only_values() {
@@ -668,6 +723,35 @@ mod tests {
         assert_eq!(
             normalized_text(Some("  selected text  ".to_string())),
             Some("selected text".to_string())
+        );
+    }
+
+    #[test]
+    fn screenshot_capture_cancellation_is_silent() {
+        assert_eq!(screenshot_capture_error_message(&CaptureError::Cancelled), None);
+    }
+
+    #[test]
+    fn screenshot_capture_failures_map_to_error_messages() {
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::PermissionDenied),
+            Some("capture permission was denied".to_string())
+        );
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::BackendUnavailable("missing backend")),
+            Some("capture backend is unavailable: missing backend".to_string())
+        );
+    }
+
+    #[test]
+    fn screenshot_ocr_failures_map_to_error_messages() {
+        assert_eq!(
+            screenshot_ocr_error_message(&OcrError::BackendUnavailable("missing ocr")),
+            "ocr backend is unavailable: missing ocr".to_string()
+        );
+        assert_eq!(
+            screenshot_ocr_error_message(&OcrError::SystemFailure("vision failed".to_string())),
+            "ocr failed: vision failed".to_string()
         );
     }
 }

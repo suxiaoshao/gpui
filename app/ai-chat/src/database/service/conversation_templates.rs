@@ -16,6 +16,7 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
+use pinyin::ToPinyin;
 use time::OffsetDateTime;
 
 use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
@@ -54,12 +55,29 @@ impl SelectItem for ConversationTemplate {
         self.name.clone().into()
     }
 
+    fn matches(&self, query: &str) -> bool {
+        self.matches_search_query(query)
+    }
+
     fn value(&self) -> &Self::Value {
         &self.id
     }
 }
 
 impl ConversationTemplate {
+    pub fn matches_search_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+
+        field_matches_query(&self.name, &query)
+            || self
+                .description
+                .as_deref()
+                .is_some_and(|description| field_matches_query(description, &query))
+    }
+
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Self> {
         let SqlConversationTemplate {
             id,
@@ -138,6 +156,40 @@ impl ConversationTemplate {
     }
 }
 
+fn field_matches_query(value: &str, query: &str) -> bool {
+    let value_lower = value.to_lowercase();
+    if value_lower.contains(query) {
+        return true;
+    }
+
+    let (plain, initials) = pinyin_search_keys(value);
+    plain.contains(query) || initials.contains(query)
+}
+
+fn pinyin_search_keys(value: &str) -> (String, String) {
+    let mut plain = String::new();
+    let mut initials = String::new();
+
+    for ch in value.chars() {
+        if let Some(pinyin) = ch.to_pinyin() {
+            let syllable = pinyin.plain();
+            plain.push_str(syllable);
+            if let Some(initial) = syllable.chars().next() {
+                initials.push(initial);
+            }
+            continue;
+        }
+
+        if ch.is_ascii_alphanumeric() {
+            let lower = ch.to_ascii_lowercase();
+            plain.push(lower);
+            initials.push(lower);
+        }
+    }
+
+    (plain, initials)
+}
+
 #[derive(serde::Deserialize)]
 pub struct NewConversationTemplate {
     pub name: String,
@@ -168,5 +220,43 @@ impl NewConversationTemplate {
             let SqlConversationTemplate { id, .. } = sql_new.insert(conn)?;
             Ok(id)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConversationTemplate;
+    use crate::database::{ConversationTemplatePrompt, Role};
+    use time::OffsetDateTime;
+
+    fn template(name: &str, description: Option<&str>) -> ConversationTemplate {
+        ConversationTemplate {
+            id: 1,
+            name: name.to_string(),
+            icon: "🤖".to_string(),
+            description: description.map(ToString::to_string),
+            prompts: vec![ConversationTemplatePrompt {
+                prompt: "hello".to_string(),
+                role: Role::User,
+            }],
+            created_time: OffsetDateTime::UNIX_EPOCH,
+            updated_time: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn matches_search_query_supports_name_pinyin() {
+        let template = template("命名助手", Some("生成更好的名字"));
+
+        assert!(template.matches_search_query("mingming"));
+        assert!(template.matches_search_query("mmzs"));
+    }
+
+    #[test]
+    fn matches_search_query_supports_description_pinyin() {
+        let template = template("总结", Some("生成更好的名字"));
+
+        assert!(template.matches_search_query("shengcheng"));
+        assert!(template.matches_search_query("ghdmz"));
     }
 }

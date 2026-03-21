@@ -3,6 +3,7 @@ use crate::{
     llm::{AvailableModelsBatch, ProviderModel, ProviderModelsFailure, available_models},
     state::AiChatConfig,
 };
+use async_compat::CompatExt;
 use gpui::*;
 use gpui_component::{
     WindowExt,
@@ -97,7 +98,7 @@ impl ModelStoreState {
 
         let state = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, cx| {
-            let batch = available_models(config).await;
+            let batch = available_models(config).compat().await;
             let _ = state.update_in(cx, move |this, window, cx| {
                 if this.request_version != request_version {
                     return;

@@ -38,6 +38,7 @@ const ROW_MIN_HEIGHT: f32 = 36.;
 struct TemplateChoice {
     id: Option<i32>,
     label: SharedString,
+    template: Option<ConversationTemplate>,
 }
 
 impl TemplateChoice {
@@ -45,6 +46,7 @@ impl TemplateChoice {
         Self {
             id: None,
             label: cx.global::<I18n>().t("field-none").into(),
+            template: None,
         }
     }
 
@@ -52,6 +54,7 @@ impl TemplateChoice {
         Self {
             id: Some(template.id),
             label: SharedString::from(format!("{} {}", template.icon, template.name)),
+            template: Some(template.clone()),
         }
     }
 }
@@ -61,6 +64,13 @@ impl SelectItem for TemplateChoice {
 
     fn title(&self) -> SharedString {
         self.label.clone()
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        self.template.as_ref().map_or_else(
+            || self.label.to_lowercase().contains(&query.to_lowercase()),
+            |template| template.matches_search_query(query),
+        )
     }
 
     fn value(&self) -> &Self::Value {
@@ -110,19 +120,27 @@ impl SelectItem for ModelChoice {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ModeChoice {
     value: Mode,
+    label: SharedString,
 }
 
 impl ModeChoice {
-    fn label(self, cx: &App) -> SharedString {
-        let key = match self.value {
-            Mode::Contextual => "mode-contextual",
-            Mode::Single => "mode-single",
-            Mode::AssistantOnly => "mode-assistant-only",
+    fn new(value: Mode, cx: &App) -> Self {
+        let label = {
+            let key = match value {
+                Mode::Contextual => "mode-contextual",
+                Mode::Single => "mode-single",
+                Mode::AssistantOnly => "mode-assistant-only",
+            };
+            cx.global::<I18n>().t(key).into()
         };
-        cx.global::<I18n>().t(key).into()
+        Self { value, label }
+    }
+
+    fn label(&self) -> SharedString {
+        self.label.clone()
     }
 }
 
@@ -133,8 +151,13 @@ impl SelectItem for ModeChoice {
         self.value.to_string().into()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(div().child(self.label()).into_any_element())
+    }
+
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div().child(self.label(cx))
+        let _ = cx;
+        div().child(self.label())
     }
 
     fn value(&self) -> &Self::Value {
@@ -142,18 +165,28 @@ impl SelectItem for ModeChoice {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct InputSourceChoice {
     value: ShortcutInputSource,
+    label: SharedString,
 }
 
 impl InputSourceChoice {
-    fn label(self, cx: &App) -> SharedString {
-        let key = match self.value {
-            ShortcutInputSource::SelectionOrClipboard => "send-content-selection-or-clipboard",
-            ShortcutInputSource::Screenshot => "send-content-screenshot",
+    fn new(value: ShortcutInputSource, cx: &App) -> Self {
+        let label = {
+            let key = match value {
+                ShortcutInputSource::SelectionOrClipboard => {
+                    "send-content-selection-or-clipboard"
+                }
+                ShortcutInputSource::Screenshot => "send-content-screenshot",
+            };
+            cx.global::<I18n>().t(key).into()
         };
-        cx.global::<I18n>().t(key).into()
+        Self { value, label }
+    }
+
+    fn label(&self) -> SharedString {
+        self.label.clone()
     }
 }
 
@@ -164,8 +197,13 @@ impl SelectItem for InputSourceChoice {
         self.value.to_string().into()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(div().child(self.label()).into_any_element())
+    }
+
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div().child(self.label(cx))
+        let _ = cx;
+        div().child(self.label())
     }
 
     fn value(&self) -> &Self::Value {
@@ -176,7 +214,7 @@ impl SelectItem for InputSourceChoice {
 #[derive(Clone)]
 struct ExtSettingChoice {
     value: String,
-    label_key: &'static str,
+    label: SharedString,
 }
 
 impl SelectItem for ExtSettingChoice {
@@ -186,8 +224,13 @@ impl SelectItem for ExtSettingChoice {
         self.value.clone().into()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(div().child(self.label.clone()).into_any_element())
+    }
+
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div().child(cx.global::<I18n>().t(self.label_key))
+        let _ = cx;
+        div().child(self.label.clone())
     }
 
     fn value(&self) -> &Self::Value {
@@ -490,6 +533,7 @@ impl ShortcutSettingsPage {
                 window,
                 cx,
             )
+            .searchable(true)
         });
 
         let available_models = self.available_models(cx);
@@ -511,15 +555,9 @@ impl ShortcutSettingsPage {
         let mode_select = cx.new(|cx| {
             SelectState::new(
                 vec![
-                    ModeChoice {
-                        value: Mode::Contextual,
-                    },
-                    ModeChoice {
-                        value: Mode::Single,
-                    },
-                    ModeChoice {
-                        value: Mode::AssistantOnly,
-                    },
+                    ModeChoice::new(Mode::Contextual, cx),
+                    ModeChoice::new(Mode::Single, cx),
+                    ModeChoice::new(Mode::AssistantOnly, cx),
                 ],
                 Some(self.mode_selected_index(mode)),
                 window,
@@ -530,12 +568,8 @@ impl ShortcutSettingsPage {
         let input_source_select = cx.new(|cx| {
             SelectState::new(
                 vec![
-                    InputSourceChoice {
-                        value: ShortcutInputSource::SelectionOrClipboard,
-                    },
-                    InputSourceChoice {
-                        value: ShortcutInputSource::Screenshot,
-                    },
+                    InputSourceChoice::new(ShortcutInputSource::SelectionOrClipboard, cx),
+                    InputSourceChoice::new(ShortcutInputSource::Screenshot, cx),
                 ],
                 Some(self.input_source_selected_index(input_source)),
                 window,
@@ -816,7 +850,7 @@ impl ShortcutSettingsPage {
                         .iter()
                         .map(|option| ExtSettingChoice {
                             value: option.value.to_string(),
-                            label_key: option.label_key,
+                            label: cx.global::<I18n>().t(option.label_key).into(),
                         })
                         .collect::<Vec<_>>();
                     let selected_index = items
