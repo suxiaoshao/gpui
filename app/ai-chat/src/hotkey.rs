@@ -13,11 +13,13 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     WindowExt as NotificationWindowExt,
 };
+#[cfg(target_os = "macos")]
+pub use platform_ext::app::{NSRunningApplication, Retained};
+#[cfg(target_os = "macos")]
+use platform_ext::app::{record_frontmost_app, restore_frontmost_app};
 use std::{any::TypeId, collections::BTreeMap, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
-#[cfg(target_os = "macos")]
-pub use window_ext::{NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegisteredHotkeyAction {
