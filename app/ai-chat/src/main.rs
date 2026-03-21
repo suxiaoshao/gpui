@@ -225,8 +225,11 @@ fn handle_capture_callback_startup() -> AiChatResult<bool> {
     {
         for argument in std::env::args_os().skip(1) {
             let argument = argument.to_string_lossy();
-            let handled =
-                platform_ext::capture::handle_capture_callback_url(argument.as_ref()).map_err(|err| {
+            if !is_capture_callback_argument(&argument) {
+                continue;
+            }
+            let handled = platform_ext::capture::handle_capture_callback_url(argument.as_ref())
+                .map_err(|err| {
                     AiChatError::StreamError(format!("failed to handle capture callback: {err}"))
                 })?;
             if handled {
@@ -235,5 +238,29 @@ fn handle_capture_callback_startup() -> AiChatResult<bool> {
         }
 
         Ok(false)
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_capture_callback_argument(argument: &str) -> bool {
+    argument
+        .split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ai-chat-screenclip"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_capture_callback_argument;
+
+    #[test]
+    fn detects_capture_callback_arguments_by_scheme() {
+        assert!(is_capture_callback_argument(
+            "ai-chat-screenclip://capture-response?client-request-id=req-1"
+        ));
+        assert!(is_capture_callback_argument(
+            "AI-CHAT-SCREENCLIP://capture-response?client-request-id=req-1"
+        ));
+        assert!(!is_capture_callback_argument("https://example.com"));
+        assert!(!is_capture_callback_argument("not-a-url"));
     }
 }

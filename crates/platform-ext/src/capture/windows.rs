@@ -9,7 +9,9 @@ use std::{
 };
 use url::Url;
 use windows::{
-    ApplicationModel::DataTransfer::SharedStorageAccessManager, Foundation::Uri, System::Launcher,
+    ApplicationModel::DataTransfer::SharedStorageAccessManager,
+    Foundation::Uri,
+    System::Launcher,
     Win32::Foundation::{APPMODEL_ERROR_NO_PACKAGE, APPMODEL_ERROR_PACKAGE_NOT_AVAILABLE},
     core::{HRESULT, HSTRING},
 };
@@ -103,6 +105,11 @@ fn parse_callback_url(url: &str) -> Result<Option<CaptureCallback>, CaptureError
         .ok_or(CaptureError::InvalidInput(
             "capture callback missing client-request-id",
         ))?;
+    if !is_valid_request_id(&request_id) {
+        return Err(CaptureError::InvalidInput(
+            "capture callback contained invalid client-request-id",
+        ));
+    }
     let code = query
         .get("code")
         .ok_or(CaptureError::InvalidInput(
@@ -169,7 +176,9 @@ fn write_success_artifact(request_id: &str, token: Option<&str>) -> Result<(), C
     {
         Ok(file) => file,
         Err(err) if requires_packaged_build(&err) => {
-            return Err(CaptureError::BackendUnavailable(PACKAGED_BUILD_REQUIRED_MESSAGE));
+            return Err(CaptureError::BackendUnavailable(
+                PACKAGED_BUILD_REQUIRED_MESSAGE,
+            ));
         }
         Err(err) => return Err(err),
     };
@@ -235,6 +244,7 @@ fn request_error_path(request_id: &str) -> PathBuf {
 }
 
 fn request_artifact_path(request_id: &str, extension: &str) -> PathBuf {
+    debug_assert!(is_valid_request_id(request_id));
     request_dir().join(format!("{request_id}.{extension}"))
 }
 
@@ -261,11 +271,18 @@ fn requires_packaged_build(error: &CaptureError) -> bool {
     message.contains(&no_package_code) || message.contains(&package_unavailable_code)
 }
 
+fn is_valid_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CALLBACK_HOST, CALLBACK_SCHEME, PACKAGED_BUILD_REQUIRED_MESSAGE, parse_callback_url,
-        requires_packaged_build,
+        CALLBACK_HOST, CALLBACK_SCHEME, PACKAGED_BUILD_REQUIRED_MESSAGE, is_valid_request_id,
+        parse_callback_url, requires_packaged_build,
     };
     use crate::CaptureError;
 
@@ -325,5 +342,23 @@ mod tests {
         ));
 
         assert!(requires_packaged_build(&error));
+    }
+
+    #[test]
+    fn rejects_callback_with_unsafe_request_id() {
+        let error = parse_callback_url(&format!(
+            "{CALLBACK_SCHEME}://{CALLBACK_HOST}?client-request-id=..%5Cevil&code=200"
+        ))
+        .expect_err("should reject unsafe request id");
+
+        assert!(matches!(error, CaptureError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn validates_generated_request_id_shape() {
+        assert!(is_valid_request_id("123-456"));
+        assert!(!is_valid_request_id("../456"));
+        assert!(!is_valid_request_id("..\\456"));
+        assert!(!is_valid_request_id(""));
     }
 }
