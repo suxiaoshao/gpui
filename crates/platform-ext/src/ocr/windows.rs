@@ -6,8 +6,12 @@ use crate::{
 use windows::{
     Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
     Media::Ocr::OcrEngine,
+    Win32::Foundation::{
+        CLASS_E_CLASSNOTAVAILABLE, ERROR_MOD_NOT_FOUND, ERROR_PROC_NOT_FOUND, REGDB_E_CLASSNOTREG,
+    },
     core::Interface,
 };
+use windows_core::HRESULT;
 
 use crate::capture::windows::{
     async_support::{wait_async_operation, wait_async_operation_with_progress},
@@ -159,16 +163,33 @@ fn resolve_backend_result(
 }
 
 fn ai_failure(error: windows_core::Error) -> BackendError {
-    BackendError::Failure(error.to_string())
+    if is_ai_backend_unavailable_hresult(error.code()) {
+        BackendError::Unavailable(AI_BACKEND_UNAVAILABLE)
+    } else {
+        BackendError::Failure(error.to_string())
+    }
 }
 
 fn legacy_failure(error: windows_core::Error) -> BackendError {
     BackendError::Failure(error.to_string())
 }
 
+fn is_ai_backend_unavailable_hresult(code: HRESULT) -> bool {
+    code == REGDB_E_CLASSNOTREG
+        || code == CLASS_E_CLASSNOTAVAILABLE
+        || code == HRESULT::from_win32(ERROR_MOD_NOT_FOUND.0)
+        || code == HRESULT::from_win32(ERROR_PROC_NOT_FOUND.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{quad_min_x, quad_min_y};
+    use super::{
+        BackendError, ai_failure, is_ai_backend_unavailable_hresult, quad_min_x, quad_min_y,
+    };
+    use windows::Win32::Foundation::{
+        CLASS_E_CLASSNOTAVAILABLE, ERROR_MOD_NOT_FOUND, ERROR_PROC_NOT_FOUND, REGDB_E_CLASSNOTREG,
+    };
+    use windows_core::{Error, HRESULT};
 
     #[test]
     fn ai_bounding_box_maps_to_minimum_origin() {
@@ -181,5 +202,32 @@ mod tests {
 
         assert_eq!(quad_min_x(&bounds), 11.0);
         assert_eq!(quad_min_y(&bounds), 16.0);
+    }
+
+    #[test]
+    fn detects_availability_related_ai_hresults() {
+        assert!(is_ai_backend_unavailable_hresult(REGDB_E_CLASSNOTREG));
+        assert!(is_ai_backend_unavailable_hresult(CLASS_E_CLASSNOTAVAILABLE));
+        assert!(is_ai_backend_unavailable_hresult(HRESULT::from_win32(
+            ERROR_MOD_NOT_FOUND.0
+        )));
+        assert!(is_ai_backend_unavailable_hresult(HRESULT::from_win32(
+            ERROR_PROC_NOT_FOUND.0
+        )));
+        assert!(!is_ai_backend_unavailable_hresult(HRESULT(
+            0x80004005_u32 as _
+        )));
+    }
+
+    #[test]
+    fn maps_availability_errors_to_backend_unavailable() {
+        let error = ai_failure(Error::from(REGDB_E_CLASSNOTREG));
+        assert!(matches!(error, BackendError::Unavailable(_)));
+
+        let error = ai_failure(Error::from(HRESULT::from_win32(ERROR_MOD_NOT_FOUND.0)));
+        assert!(matches!(error, BackendError::Unavailable(_)));
+
+        let error = ai_failure(Error::from(HRESULT(0x80004005_u32 as _)));
+        assert!(matches!(error, BackendError::Failure(_)));
     }
 }
