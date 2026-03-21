@@ -260,7 +260,8 @@ impl AiChatConfig {
             )
         {
             event!(Level::ERROR, "Failed to update temporary hotkey: {}", err);
-        };
+            return;
+        }
         self.temporary_hotkey = hotkey;
         match self.save() {
             Ok(_) => {}

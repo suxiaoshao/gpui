@@ -184,39 +184,68 @@ impl GlobalHotkeyState {
         action: RegisteredHotkeyAction,
     ) -> AiChatResult<()> {
         let hotkey = Self::parse_hotkey(hotkey)?;
+        if self.hotkey_actions.get(&hotkey.id()).copied() == Some(action) {
+            return Ok(());
+        }
         self.backend.register(hotkey)?;
         self.hotkey_actions.insert(hotkey.id(), action);
         Ok(())
     }
 
-    fn unregister_action(&mut self, hotkey: &str) -> AiChatResult<()> {
+    fn unregister_action(
+        &mut self,
+        hotkey: &str,
+        expected_action: RegisteredHotkeyAction,
+    ) -> AiChatResult<()> {
         let hotkey = Self::parse_hotkey(hotkey)?;
+        if self.hotkey_actions.get(&hotkey.id()).copied() != Some(expected_action) {
+            return Ok(());
+        }
         self.backend.unregister(hotkey)?;
         self.hotkey_actions.remove(&hotkey.id());
         Ok(())
     }
 
     fn upsert_binding_runtime(&mut self, binding: &GlobalShortcutBinding) -> AiChatResult<()> {
-        if let Some(old_binding) = self.shortcut_bindings.insert(binding.id, binding.clone())
-            && old_binding.enabled
+        let action = RegisteredHotkeyAction::ShortcutBinding {
+            binding_id: binding.id,
+        };
+        let previous = self.shortcut_bindings.get(&binding.id).cloned();
+        let should_unregister_previous = previous.as_ref().is_some_and(|old_binding| {
+            old_binding.enabled && (old_binding.hotkey != binding.hotkey || !binding.enabled)
+        });
+
+        if let Some(old_binding) = previous.as_ref()
+            && should_unregister_previous
         {
-            self.unregister_action(&old_binding.hotkey)?;
+            self.unregister_action(&old_binding.hotkey, action)?;
         }
-        if binding.enabled {
-            self.register_action(
-                &binding.hotkey,
-                RegisteredHotkeyAction::ShortcutBinding {
-                    binding_id: binding.id,
-                },
-            )?;
+
+        if binding.enabled
+            && let Err(err) = self.register_action(&binding.hotkey, action)
+        {
+            if let Some(old_binding) = previous.as_ref()
+                && should_unregister_previous
+                && old_binding.enabled
+            {
+                let _ = self.register_action(&old_binding.hotkey, action);
+            }
+            return Err(err);
         }
+
+        self.shortcut_bindings.insert(binding.id, binding.clone());
         Ok(())
     }
 
     fn remove_binding_runtime(&mut self, binding: &GlobalShortcutBinding) -> AiChatResult<()> {
         self.shortcut_bindings.remove(&binding.id);
         if binding.enabled {
-            self.unregister_action(&binding.hotkey)?;
+            self.unregister_action(
+                &binding.hotkey,
+                RegisteredHotkeyAction::ShortcutBinding {
+                    binding_id: binding.id,
+                },
+            )?;
         }
         Ok(())
     }
@@ -465,14 +494,15 @@ impl GlobalHotkeyState {
     ) -> AiChatResult<()> {
         let hotkeys = cx.global_mut::<GlobalHotkeyState>();
         if let Some(old_hotkey) = old_hotkey {
-            hotkeys.unregister_action(old_hotkey)?;
+            hotkeys.unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryWindow)?;
         }
         if let Some(new_hotkey) = new_hotkey
             && let Err(err) =
                 hotkeys.register_action(new_hotkey, RegisteredHotkeyAction::TemporaryWindow)
         {
             if let Some(old_hotkey) = old_hotkey {
-                let _ = hotkeys.register_action(old_hotkey, RegisteredHotkeyAction::TemporaryWindow);
+                let _ =
+                    hotkeys.register_action(old_hotkey, RegisteredHotkeyAction::TemporaryWindow);
             }
             return Err(err);
         }
@@ -504,11 +534,11 @@ impl GlobalHotkeyState {
                     &mut conn,
                 )?;
                 let updated = GlobalShortcutBinding::find(id, &mut conn)?;
-                if let Err(err) =
-                    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
-                        hotkeys.upsert_binding_runtime(&updated)
-                    })
-                {
+                let mut runtime_result = Ok(());
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+                    runtime_result = hotkeys.upsert_binding_runtime(&updated);
+                });
+                if let Err(err) = runtime_result {
                     let _ = GlobalShortcutBinding::update(
                         id,
                         UpdateGlobalShortcutBinding {
@@ -532,11 +562,11 @@ impl GlobalHotkeyState {
             }
             None => {
                 let created = GlobalShortcutBinding::insert(binding, &mut conn)?;
-                if let Err(err) =
-                    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
-                        hotkeys.upsert_binding_runtime(&created)
-                    })
-                {
+                let mut runtime_result = Ok(());
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+                    runtime_result = hotkeys.upsert_binding_runtime(&created);
+                });
+                if let Err(err) = runtime_result {
                     let _ = GlobalShortcutBinding::delete(created.id, &mut conn);
                     return Err(err);
                 }
@@ -548,9 +578,11 @@ impl GlobalHotkeyState {
     pub fn delete_global_shortcut_binding(id: i32, cx: &mut App) -> AiChatResult<()> {
         let mut conn = cx.global::<Db>().get()?;
         let previous = GlobalShortcutBinding::find(id, &mut conn)?;
+        let mut runtime_result = Ok(());
         cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
-            hotkeys.remove_binding_runtime(&previous)
-        })?;
+            runtime_result = hotkeys.remove_binding_runtime(&previous);
+        });
+        runtime_result?;
         if let Err(err) = GlobalShortcutBinding::delete(id, &mut conn) {
             let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
                 hotkeys.upsert_binding_runtime(&previous)

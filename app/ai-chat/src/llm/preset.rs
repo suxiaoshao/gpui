@@ -11,8 +11,17 @@ pub(crate) fn build_request_template(
     let mut template = provider.default_template_for_model(model)?;
 
     if let Some(saved_template) = saved_template {
-        for setting in provider.ext_settings(model, saved_template)? {
-            provider.apply_ext_setting(model, &mut template, &setting)?;
+        let settings = match provider.ext_settings(model, saved_template) {
+            Ok(settings) => settings,
+            Err(_) => return Ok(template),
+        };
+        for setting in settings {
+            if provider
+                .apply_ext_setting(model, &mut template, &setting)
+                .is_err()
+            {
+                continue;
+            }
         }
     }
 
@@ -67,6 +76,19 @@ mod tests {
 
         assert_eq!(template["think"], "high");
         assert_eq!(template["web_search"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn build_request_template_skips_invalid_saved_ext_settings() -> anyhow::Result<()> {
+        let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+        let template = build_request_template(&model, Some(&json!({
+            "model": "gpt-5.2-pro",
+            "reasoning": { "effort": "invalid" }
+        })))?;
+
+        assert_eq!(template["model"], "gpt-5.2-pro");
+        assert_ne!(template["reasoning"]["effort"], "invalid");
         Ok(())
     }
 }
