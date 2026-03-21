@@ -5,8 +5,9 @@ use crate::{
     },
     database::{
         ConversationTemplate, Db, GlobalShortcutBinding, Mode, NewGlobalShortcutBinding,
-        ShortcutInputSource, UpdateGlobalShortcutBinding,
+        ShortcutInputSource,
     },
+    hotkey::GlobalHotkeyState,
     i18n::I18n,
     llm::{
         ExtSettingControl, ExtSettingItem, ProviderModel, apply_ext_setting, build_request_template,
@@ -1319,40 +1320,20 @@ impl ShortcutSettingsPage {
             }
         };
 
-        let result = || -> anyhow::Result<GlobalShortcutBinding> {
-            let mut conn = cx.global::<Db>().get()?;
-            if let Some(binding_id) = payload.binding_id {
-                GlobalShortcutBinding::update(
-                    binding_id,
-                    UpdateGlobalShortcutBinding {
-                        hotkey: payload.hotkey.clone(),
-                        enabled: payload.enabled,
-                        template_id: payload.template_id,
-                        provider_name: payload.provider_name.clone(),
-                        model_id: payload.model_id.clone(),
-                        mode: payload.mode,
-                        request_template: payload.request_template.clone(),
-                        input_source: payload.input_source,
-                    },
-                    &mut conn,
-                )?;
-                Ok(GlobalShortcutBinding::find(binding_id, &mut conn)?)
-            } else {
-                Ok(GlobalShortcutBinding::insert(
-                    NewGlobalShortcutBinding {
-                        hotkey: payload.hotkey.clone(),
-                        enabled: payload.enabled,
-                        template_id: payload.template_id,
-                        provider_name: payload.provider_name.clone(),
-                        model_id: payload.model_id.clone(),
-                        mode: payload.mode,
-                        request_template: payload.request_template.clone(),
-                        input_source: payload.input_source,
-                    },
-                    &mut conn,
-                )?)
-            }
-        }();
+        let result = GlobalHotkeyState::save_global_shortcut_binding(
+            payload.binding_id,
+            NewGlobalShortcutBinding {
+                hotkey: payload.hotkey.clone(),
+                enabled: payload.enabled,
+                template_id: payload.template_id,
+                provider_name: payload.provider_name.clone(),
+                model_id: payload.model_id.clone(),
+                mode: payload.mode,
+                request_template: payload.request_template.clone(),
+                input_source: payload.input_source,
+            },
+            cx,
+        );
 
         let saved = match result {
             Ok(saved) => saved,
@@ -1420,11 +1401,7 @@ impl ShortcutSettingsPage {
             return;
         };
 
-        let result = || -> anyhow::Result<()> {
-            let mut conn = cx.global::<Db>().get()?;
-            GlobalShortcutBinding::delete(binding_id, &mut conn)?;
-            Ok(())
-        }();
+        let result = GlobalHotkeyState::delete_global_shortcut_binding(binding_id, cx);
 
         match result {
             Ok(()) => {

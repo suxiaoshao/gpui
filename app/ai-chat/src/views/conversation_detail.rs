@@ -4,6 +4,7 @@ use crate::{
         message::MessageView,
     },
     i18n::I18n,
+    state::ConversationDraft,
 };
 use gpui::actions;
 use gpui::{
@@ -213,6 +214,24 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     ) {
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.focus_input(window, cx));
+    }
+
+    pub(crate) fn restore_chat_form_draft(
+        &mut self,
+        draft: ConversationDraft,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<T>>,
+    ) {
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.restore_draft(draft, window, cx));
+    }
+
+    pub(crate) fn send_chat_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<ConversationDetailView<T>>,
+    ) {
+        T::on_send_requested(self, window, cx);
     }
 
     pub(crate) fn set_running_task(

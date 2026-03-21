@@ -6,7 +6,7 @@ use crate::{
     database::{Content, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     gpui_ext::WeakEntityResultExt,
-    hotkey::TemporaryData,
+    hotkey::GlobalHotkeyState,
     i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     state::{AddConversationMessage, AiChatConfig},
@@ -422,7 +422,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
-        TemporaryData::request_hide_with_delay(window, cx);
+        GlobalHotkeyState::request_hide_with_delay(window, cx);
     }
 
     fn supports_clear(&self) -> bool {
