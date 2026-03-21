@@ -8,7 +8,7 @@
 use crate::{
     APP_NAME,
     errors::{AiChatError, AiChatResult},
-    hotkey::TemporaryData,
+    hotkey::GlobalHotkeyState,
     llm::{
         OllamaProvider, OllamaSettings, OpenAIProvider, OpenAISettings, Provider, provider_names,
     },
@@ -253,10 +253,15 @@ impl AiChatConfig {
     }
     pub(crate) fn set_temporary_hotkey(&mut self, hotkey: Option<String>, cx: &mut App) {
         if let Err(err) =
-            TemporaryData::update_hotkey(self.temporary_hotkey.as_deref(), hotkey.as_deref(), cx)
+            GlobalHotkeyState::update_temporary_hotkey(
+                self.temporary_hotkey.as_deref(),
+                hotkey.as_deref(),
+                cx,
+            )
         {
             event!(Level::ERROR, "Failed to update temporary hotkey: {}", err);
-        };
+            return;
+        }
         self.temporary_hotkey = hotkey;
         match self.save() {
             Ok(_) => {}

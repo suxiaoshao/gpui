@@ -1,4 +1,4 @@
-use crate::{hotkey::TemporaryData, views::temporary::detail::TemplateDetailView};
+use crate::{hotkey::GlobalHotkeyState, views::temporary::detail::TemplateDetailView};
 use gpui::*;
 use tracing::{Level, event};
 
@@ -18,7 +18,7 @@ impl TemporaryView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _subscription = vec![cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
-                TemporaryData::request_hide_with_delay(window, cx);
+                GlobalHotkeyState::request_hide_with_delay(window, cx);
                 return;
             }
             this.focus_chat_form(window, cx);

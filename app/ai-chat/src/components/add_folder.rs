@@ -10,7 +10,7 @@ use tracing::{Level, event};
 
 use crate::{
     i18n::I18n,
-    store::{ChatData, ChatDataEvent},
+    state::{ChatData, ChatDataEvent},
 };
 
 pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {

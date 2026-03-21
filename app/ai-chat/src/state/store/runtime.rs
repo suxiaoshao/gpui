@@ -3,8 +3,8 @@ use crate::{
     database::{Conversation, Db, Folder, Message, NewConversation, NewFolder, NewMessage},
     errors::AiChatResult,
     i18n::I18n,
+    state::WorkspaceStore,
     views::home::HomeView,
-    workspace_state::WorkspaceStore,
 };
 use gpui::*;
 use gpui_component::{

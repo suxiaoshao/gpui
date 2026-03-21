@@ -2,7 +2,7 @@ use super::{conversation_item::ConversationTreeItem, folder_item::FolderTreeItem
 use crate::{
     components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
     database::{Conversation, Folder},
-    store::{ChatData, ChatDataEvent, ChatDataInner},
+    state::{ChatData, ChatDataEvent, ChatDataInner},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{

@@ -1,6 +1,6 @@
 use crate::{
+    state::{WorkspaceState, WorkspaceStore},
     views::home::sidebar::DragConversationTreeItem,
-    workspace_state::{WorkspaceState, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, h_flex, v_flex};

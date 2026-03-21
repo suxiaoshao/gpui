@@ -7,7 +7,9 @@
  */
 mod mode;
 mod role;
+mod shortcut_input_source;
 mod status;
 pub use mode::Mode;
 pub use role::Role;
+pub use shortcut_input_source::ShortcutInputSource;
 pub use status::Status;

@@ -1,6 +1,4 @@
-use super::{
-    ConversationDraft, LatestModelPreset, PersistedTab, PersistedWorkspaceState, WorkspaceState,
-};
+use super::{ConversationDraft, PersistedWorkspaceState, WorkspaceState, persistence::*};
 use crate::database::Mode;
 
 fn sample_request_template() -> serde_json::Value {

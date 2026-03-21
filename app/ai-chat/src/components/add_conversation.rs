@@ -1,6 +1,6 @@
 use crate::{
     i18n::I18n,
-    store::{AddConversationMessage, ChatData, ChatDataEvent},
+    state::{AddConversationMessage, ChatData, ChatDataEvent},
 };
 use gpui::*;
 use gpui_component::{

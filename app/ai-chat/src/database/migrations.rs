@@ -36,7 +36,7 @@ pub(super) fn v1_to_v3(
     )
 }
 
-pub(super) fn v1_to_v4(
+pub(super) fn v1_to_v5(
     v1_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -69,14 +69,14 @@ pub(super) fn v2_to_v3(
     )
 }
 
-pub(super) fn v2_to_v4(
+pub(super) fn v2_to_v5(
     v2_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
     v2_to_v3(v2_conn, target_conn)
 }
 
-pub(super) fn v3_to_v4(
+pub(super) fn v3_to_v5(
     v3_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -92,6 +92,23 @@ pub(super) fn v3_to_v4(
             build_v3_migrated_messages(v3::SqlMessageV3::all(v3_conn)?)?,
             target_conn,
         )?;
+        Ok(())
+    })
+}
+
+pub(super) fn v4_to_v5(
+    v4_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    target_conn.immediate_transaction(|target_conn| {
+        target_conn.batch_execute(CREATE_TABLE_SQL)?;
+        SqlFolder::migration_save(SqlFolder::all(v4_conn)?, target_conn)?;
+        SqlConversationTemplate::migration_save(
+            SqlConversationTemplate::all(v4_conn)?,
+            target_conn,
+        )?;
+        SqlConversation::migration_save(SqlConversation::get_all(v4_conn)?, target_conn)?;
+        SqlMessage::migration_save(SqlMessage::all(v4_conn)?, target_conn)?;
         Ok(())
     })
 }
@@ -790,8 +807,10 @@ impl From<v2::SqlMessageV2> for LegacyMessageV2 {
 
 #[cfg(test)]
 mod tests {
-    use super::{v1_to_v3, v2_to_v3, v3_to_v4};
-    use crate::database::model::{SqlConversation, SqlConversationTemplate, SqlMessage};
+    use super::{v1_to_v5, v2_to_v5, v3_to_v5, v4_to_v5};
+    use crate::database::model::{
+        SqlConversation, SqlConversationTemplate, SqlGlobalShortcutBinding, SqlMessage,
+    };
     use diesel::{
         Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query,
     };
@@ -866,6 +885,8 @@ create table messages
         include_str!("../../migrations/2025-12-23-141452-0000_create_tables/up.sql");
     const V3_CREATE_TABLE_SQL: &str =
         include_str!("../../migrations/2026-03-08-000000_create_tables_v3/up.sql");
+    const V4_CREATE_TABLE_SQL: &str =
+        include_str!("../../migrations/2026-03-15-000000_create_tables_v4/up.sql");
 
     static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -923,26 +944,27 @@ create table messages
     #[test]
     fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()> {
         let v1_path = temp_db_path("v1");
-        let v3_path = temp_db_path("v3");
+        let v5_path = temp_db_path("v5");
         let mut v1_conn = SqliteConnection::establish(v1_path.to_str().expect("v1 path"))?;
-        let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
+        let mut v5_conn = SqliteConnection::establish(v5_path.to_str().expect("v5 path"))?;
 
         v1_conn.batch_execute(V1_CREATE_TABLE_SQL)?;
         insert_seed_data(&mut v1_conn, false)?;
 
-        v1_to_v3(&mut v1_conn, &mut v3_conn)?;
+        v1_to_v5(&mut v1_conn, &mut v5_conn)?;
 
-        let templates = SqlConversationTemplate::all(&mut v3_conn)?;
+        let templates = SqlConversationTemplate::all(&mut v5_conn)?;
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].prompts, serde_json::json!([]));
 
-        let conversations = SqlConversation::get_all(&mut v3_conn)?;
+        let conversations = SqlConversation::get_all(&mut v5_conn)?;
         assert_eq!(conversations.len(), 1);
 
-        let messages = SqlMessage::all(&mut v3_conn)?;
+        let messages = SqlMessage::all(&mut v5_conn)?;
         assert_eq!(messages.len(), 2);
         assert!(messages.iter().all(|message| message.error.is_none()));
         assert!(messages.iter().all(|message| message.provider == "OpenAI"));
+        assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
         let first_send_content = &messages[0].send_content;
         let second_send_content = &messages[1].send_content;
         assert_eq!(first_send_content["model"], "gpt-4o");
@@ -950,42 +972,43 @@ create table messages
         assert_eq!(second_send_content, first_send_content);
 
         drop(v1_conn);
-        drop(v3_conn);
+        drop(v5_conn);
         let _ = fs::remove_file(v1_path);
-        let _ = fs::remove_file(v3_path);
+        let _ = fs::remove_file(v5_path);
         Ok(())
     }
 
     #[test]
     fn v2_migration_keeps_send_content_and_adds_provider() -> anyhow::Result<()> {
         let v2_path = temp_db_path("v2");
-        let v3_path = temp_db_path("v3");
+        let v5_path = temp_db_path("v5");
         let mut v2_conn = SqliteConnection::establish(v2_path.to_str().expect("v2 path"))?;
-        let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
+        let mut v5_conn = SqliteConnection::establish(v5_path.to_str().expect("v5 path"))?;
 
         v2_conn.batch_execute(V2_CREATE_TABLE_SQL)?;
         insert_seed_data(&mut v2_conn, true)?;
 
-        v2_to_v3(&mut v2_conn, &mut v3_conn)?;
+        v2_to_v5(&mut v2_conn, &mut v5_conn)?;
 
-        let messages = SqlMessage::all(&mut v3_conn)?;
+        let messages = SqlMessage::all(&mut v5_conn)?;
         assert_eq!(messages.len(), 2);
         assert!(messages.iter().all(|message| message.provider == "OpenAI"));
         assert_eq!(messages[0].send_content["model"], "gpt-4o");
+        assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
 
         drop(v2_conn);
-        drop(v3_conn);
+        drop(v5_conn);
         let _ = fs::remove_file(v2_path);
-        let _ = fs::remove_file(v3_path);
+        let _ = fs::remove_file(v5_path);
         Ok(())
     }
 
     #[test]
-    fn v3_migration_converts_legacy_content_enum_to_json_struct() -> anyhow::Result<()> {
+    fn v3_migration_converts_legacy_content_enum_to_json_struct_in_v5() -> anyhow::Result<()> {
         let v3_path = temp_db_path("v3-source");
-        let v4_path = temp_db_path("v4-target");
+        let v5_path = temp_db_path("v5-target");
         let mut v3_conn = SqliteConnection::establish(v3_path.to_str().expect("v3 path"))?;
-        let mut v4_conn = SqliteConnection::establish(v4_path.to_str().expect("v4 path"))?;
+        let mut v5_conn = SqliteConnection::establish(v5_path.to_str().expect("v5 path"))?;
 
         v3_conn.batch_execute(V3_CREATE_TABLE_SQL)?;
         sql_query(
@@ -1004,9 +1027,9 @@ create table messages
         )
         .execute(&mut v3_conn)?;
 
-        v3_to_v4(&mut v3_conn, &mut v4_conn)?;
+        v3_to_v5(&mut v3_conn, &mut v5_conn)?;
 
-        let messages = SqlMessage::all(&mut v4_conn)?;
+        let messages = SqlMessage::all(&mut v5_conn)?;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content["text"], "hello");
         assert!(messages[0].content.get("reasoningSummary").is_none());
@@ -1014,11 +1037,55 @@ create table messages
             messages[0].content["citations"][0]["url"],
             "https://example.com"
         );
+        assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
 
         drop(v3_conn);
-        drop(v4_conn);
+        drop(v5_conn);
         let _ = fs::remove_file(v3_path);
+        let _ = fs::remove_file(v5_path);
+        Ok(())
+    }
+
+    #[test]
+    fn v4_migration_creates_empty_global_shortcut_table() -> anyhow::Result<()> {
+        let v4_path = temp_db_path("v4-source");
+        let v5_path = temp_db_path("v5-target");
+        let mut v4_conn = SqliteConnection::establish(v4_path.to_str().expect("v4 path"))?;
+        let mut v5_conn = SqliteConnection::establish(v5_path.to_str().expect("v5 path"))?;
+
+        v4_conn.batch_execute(V4_CREATE_TABLE_SQL)?;
+        sql_query(
+            "insert into folders (id, name, path, parent_id, created_time, updated_time)
+             values (1, '默认', '/默认', null, '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+        )
+        .execute(&mut v4_conn)?;
+        sql_query(
+            "insert into conversation_templates (id, name, icon, description, prompts, created_time, updated_time)
+             values (1, 'base', '🤖', null, '[]', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+        )
+        .execute(&mut v4_conn)?;
+        sql_query(
+            "insert into conversations (id, folder_id, path, title, icon, created_time, updated_time, info)
+             values (1, 1, '/默认/会话', '默认', '🤖', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+        )
+        .execute(&mut v4_conn)?;
+        sql_query(
+            "insert into messages (id, conversation_id, conversation_path, provider, role, content, send_content, status, created_time, updated_time, start_time, end_time, error)
+             values (1, 1, '/默认/会话', 'OpenAI', 'user', '{\"text\":\"hello\"}', '{\"model\":\"gpt-4o\"}', 'normal', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+        )
+        .execute(&mut v4_conn)?;
+
+        v4_to_v5(&mut v4_conn, &mut v5_conn)?;
+
+        assert_eq!(SqlConversationTemplate::all(&mut v5_conn)?.len(), 1);
+        assert_eq!(SqlConversation::get_all(&mut v5_conn)?.len(), 1);
+        assert_eq!(SqlMessage::all(&mut v5_conn)?.len(), 1);
+        assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
+
+        drop(v4_conn);
+        drop(v5_conn);
         let _ = fs::remove_file(v4_path);
+        let _ = fs::remove_file(v5_path);
         Ok(())
     }
 }
