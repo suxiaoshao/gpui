@@ -1,4 +1,4 @@
-use crate::capture::ImageFrame;
+use crate::ocr::ImageFrame;
 use windows::{
     Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
     Storage::Streams::Buffer,

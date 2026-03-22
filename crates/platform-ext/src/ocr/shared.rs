@@ -1,4 +1,4 @@
-use crate::capture::ImageFrame;
+use crate::ocr::ImageFrame;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RecognizedLine {

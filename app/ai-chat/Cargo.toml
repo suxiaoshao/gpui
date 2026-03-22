@@ -24,7 +24,6 @@ AI Chat is a GPUI-based desktop application with chat history, templates,
 streaming responses, and web search support.
 """
 category = "DeveloperTool"
-deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
 
 [features]
 dhat-heap = ["dep:dhat"]
@@ -56,6 +55,7 @@ diesel = { version = "2.3.7", features = [
   "returning_clauses_for_sqlite_3_35",
   "serde_json",
 ] }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
 time = { version = "0.3.47", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -93,6 +93,10 @@ global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+image = { version = "0.25.10", default-features = false }
+xcap = "0.9.1"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

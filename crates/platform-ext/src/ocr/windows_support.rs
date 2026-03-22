@@ -1,9 +1,12 @@
 use std::sync::mpsc;
+
 use windows_core::RuntimeType;
 use windows_future::{
     AsyncOperationCompletedHandler, AsyncOperationWithProgressCompletedHandler, AsyncStatus,
     IAsyncOperation, IAsyncOperationWithProgress,
 };
+
+pub(crate) mod image_frame;
 
 pub(crate) fn wait_async_operation<T>(operation: IAsyncOperation<T>) -> windows_core::Result<T>
 where

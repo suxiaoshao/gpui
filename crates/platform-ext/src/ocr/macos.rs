@@ -1,7 +1,7 @@
 use crate::{
     OcrError,
-    capture::ImageFrame,
     ocr::{RecognizedLine, collapse_lines},
+    ocr::ImageFrame,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
