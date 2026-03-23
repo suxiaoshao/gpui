@@ -94,7 +94,7 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
                     scale_factor = window.scale_factor(),
                     "Screenshot overlay window opened"
                 );
-                cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), cx))
+                cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), window, cx))
             },
         );
 
@@ -161,15 +161,19 @@ pub(crate) struct ScreenshotOverlayView {
     drag_origin: Option<Point<Pixels>>,
     drag_current: Option<Point<Pixels>>,
     selection_started: bool,
+    focus_handle: FocusHandle,
 }
 
 impl ScreenshotOverlayView {
-    fn new(display: CaptureDisplay, _cx: &mut Context<Self>) -> Self {
+    fn new(display: CaptureDisplay, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window);
         Self {
             display,
             drag_origin: None,
             drag_current: None,
             selection_started: false,
+            focus_handle,
         }
     }
 
@@ -251,7 +255,8 @@ impl ScreenshotOverlayView {
             cancel_overlay(window, cx);
             return;
         }
-        let Some(rect) = selection_rect(self.drag_origin, self.drag_current) else {
+        let Some(rect) = selection_rect(self.drag_origin, self.drag_current, window.scale_factor())
+        else {
             event!(
                 Level::INFO,
                 display_id = self.display.id_hint,
@@ -332,7 +337,7 @@ impl Render for ScreenshotOverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
             .id("screenshot-overlay-root")
-            .focusable()
+            .track_focus(&self.focus_handle)
             .relative()
             .size_full()
             .bg(gpui::black().opacity(0.35))
@@ -380,15 +385,30 @@ fn drag_distance(origin: Point<Pixels>, current: Point<Pixels>) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Convert a GPUI logical pixel coordinate to the unit xcap expects for monitor
+/// matching and capture_region coordinates.
+///
+/// - macOS: xcap uses `CGDisplayBounds` which returns logical pixels (points),
+///   so no conversion is needed.
+/// - Windows (and others): xcap uses `dmPelsWidth`/`dmPelsHeight` which are
+///   physical pixels, so we multiply by the DPI scale factor.
+fn logical_to_capture_coord(logical: f32, scale_factor: f32) -> u32 {
+    #[cfg(target_os = "macos")]
+    let _ = scale_factor;
+    #[cfg(target_os = "macos")]
+    return logical.round() as u32;
+
+    #[cfg(not(target_os = "macos"))]
+    return (logical * scale_factor).round() as u32;
+}
+
 fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay {
     let size = window.bounds().size;
     let scale_factor = window.scale_factor();
-    // xcap uses CGDisplayBounds which returns logical pixels (points), not physical pixels.
-    // Store logical dimensions here so monitor matching in resolve_monitor() works correctly.
     CaptureDisplay {
         id_hint: display.id_hint,
-        width_px: f32::from(size.width).round() as u32,
-        height_px: f32::from(size.height).round() as u32,
+        width_px: logical_to_capture_coord(f32::from(size.width), scale_factor),
+        height_px: logical_to_capture_coord(f32::from(size.height), scale_factor),
         scale_factor,
         is_primary: display.is_primary,
     }
@@ -397,19 +417,18 @@ fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay
 fn selection_rect(
     origin: Option<Point<Pixels>>,
     current: Option<Point<Pixels>>,
+    scale_factor: f32,
 ) -> Option<CaptureRect> {
     let bounds = selection_bounds(origin, current)?;
-    // GPUI mouse positions are in logical pixels (points). xcap's capture_region also uses
-    // logical pixels via CGDisplayBounds, so no scale_factor conversion is needed.
-    let width_px = f32::from(bounds.size.width).round() as u32;
-    let height_px = f32::from(bounds.size.height).round() as u32;
+    let width_px = logical_to_capture_coord(f32::from(bounds.size.width), scale_factor);
+    let height_px = logical_to_capture_coord(f32::from(bounds.size.height), scale_factor);
     if width_px == 0 || height_px == 0 {
         return None;
     }
 
     Some(CaptureRect {
-        x_px: f32::from(bounds.origin.x).round() as u32,
-        y_px: f32::from(bounds.origin.y).round() as u32,
+        x_px: logical_to_capture_coord(f32::from(bounds.origin.x), scale_factor),
+        y_px: logical_to_capture_coord(f32::from(bounds.origin.y), scale_factor),
         width_px,
         height_px,
     })
@@ -440,9 +459,11 @@ mod tests {
         let rect = selection_rect(
             Some(point(px(200.0), px(160.0))),
             Some(point(px(20.0), px(40.0))),
+            1.0,
         )
         .expect("drag selection should produce a rect");
 
+        // scale_factor = 1.0 on non-macOS (physical == logical), macOS ignores it
         assert_eq!(rect.x_px, 20);
         assert_eq!(rect.y_px, 40);
         assert_eq!(rect.width_px, 180);
