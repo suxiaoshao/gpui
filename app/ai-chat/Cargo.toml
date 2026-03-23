@@ -24,7 +24,6 @@ AI Chat is a GPUI-based desktop application with chat history, templates,
 streaming responses, and web search support.
 """
 category = "DeveloperTool"
-deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
 
 [features]
 dhat-heap = ["dep:dhat"]
@@ -49,7 +48,7 @@ sys-locale = "0.3.2"
 thiserror = "2.0.18"
 
 # database
-diesel = { version = "2.3.6", features = [
+diesel = { version = "2.3.7", features = [
   "sqlite",
   "r2d2",
   "time",
@@ -66,10 +65,10 @@ nom = "8.0.0"
 
 # log
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 # http request
-reqwest = { version = "0.12.25", features = ["json"] }
+reqwest = { version = "0.13.2", features = ["json", "stream"] }
 tokio = { version = "1.50.0", features = [
   "rt",
   "rt-multi-thread",
@@ -78,7 +77,7 @@ tokio = { version = "1.50.0", features = [
   "io-util",
   "macros",
 ] }
-reqwest-eventsource = "0.6.0"
+eventsource-stream = "0.2.3"
 futures = "0.3.32"
 async-stream = "0.3.6"
 async-compat = "0.2.5"
@@ -87,13 +86,17 @@ smol = "2.0.2"
 get-selected-text = "0.1.6"
 
 # config
-toml = "1.0.4"
+toml = "1.0.7"
 
 # hotkey
 global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+image = { version = "0.25.10", default-features = false }
+xcap = "0.9.1"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

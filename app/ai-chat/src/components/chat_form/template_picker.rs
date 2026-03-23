@@ -54,13 +54,7 @@ impl SelectItem for TemplateOption {
     }
 
     fn matches(&self, query: &str) -> bool {
-        let query = query.to_lowercase();
-        self.template.name.to_lowercase().contains(&query)
-            || self
-                .template
-                .description
-                .as_ref()
-                .is_some_and(|description| description.to_lowercase().contains(&query))
+        self.template.matches_search_query(query)
     }
 }
 

@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -eu
+
+sysroot=$(rustc --print sysroot)
+host=$(rustc -vV | sed -n 's/^host: //p')
+
+exec "$sysroot/lib/rustlib/$host/bin/rust-lld" -flavor darwin "$@"

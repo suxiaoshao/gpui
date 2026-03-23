@@ -24,10 +24,6 @@ pub enum AiChatError {
     InvalidShortcutInputSource(String),
     #[error("serde_json错误:{}",.0)]
     SerdeJson(#[from] serde_json::Error),
-    #[error("eventsource错误:{}",.0)]
-    EventSource(#[from] reqwest_eventsource::CannotCloneRequestError),
-    #[error("eventsource错误:{}",.0)]
-    EventSourceStream(Box<reqwest_eventsource::Error>),
     #[error("api key未设置")]
     ApiKeyNotSet,
     #[error("请求头构造错误:{}",.0)]
@@ -59,9 +55,3 @@ pub enum AiChatError {
 }
 
 pub type AiChatResult<T> = Result<T, AiChatError>;
-
-impl From<reqwest_eventsource::Error> for AiChatError {
-    fn from(value: reqwest_eventsource::Error) -> Self {
-        Self::EventSourceStream(Box::new(value))
-    }
-}

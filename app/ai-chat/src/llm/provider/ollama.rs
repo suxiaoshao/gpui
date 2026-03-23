@@ -9,7 +9,6 @@ use crate::{
     llm::Message,
     state::AiChatConfig,
 };
-use async_compat::CompatExt;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
@@ -496,10 +495,9 @@ impl OllamaProvider {
                         "max_results": max_results,
                     }))
                     .send()
-                    .compat()
                     .await?;
                 let response = response.error_for_status()?;
-                let result = response.json::<WebSearchResponse>().compat().await?;
+                let result = response.json::<WebSearchResponse>().await?;
                 let citations = result
                     .results
                     .iter()
@@ -534,10 +532,9 @@ impl OllamaProvider {
                     .post(web_fetch_url(base_url))
                     .json(&json!({ "url": url }))
                     .send()
-                    .compat()
                     .await?;
                 let response = response.error_for_status()?;
-                let result = response.json::<WebFetchResponse>().compat().await?;
+                let result = response.json::<WebFetchResponse>().await?;
                 let citations = vec![UrlCitation {
                     title: (!result.title.trim().is_empty()).then(|| result.title.clone()),
                     url: url.to_string(),
@@ -661,12 +658,11 @@ impl Provider for OllamaProvider {
                     .post(chat_url(&settings.base_url))
                     .json(&chat_request)
                     .send()
-                    .compat()
                     .await?;
                 let response = response.error_for_status()?;
 
                 let round = if !chat_request.stream {
-                    let response = response.json::<OllamaChatResponse>().compat().await?;
+                    let response = response.json::<OllamaChatResponse>().await?;
                     RoundResult {
                         message: response.message,
                     }
@@ -767,11 +763,9 @@ impl Provider for OllamaProvider {
             let response = client
                 .get(tags_url(&settings.base_url))
                 .send()
-                .compat()
                 .await?
                 .error_for_status()?
                 .json::<OllamaTagsResponse>()
-                .compat()
                 .await?;
             let mut models = Vec::new();
             for model in response.models {
@@ -779,11 +773,9 @@ impl Provider for OllamaProvider {
                     .post(show_url(&settings.base_url))
                     .json(&json!({ "model": model.model }))
                     .send()
-                    .compat()
                     .await?
                     .error_for_status()?
                     .json::<OllamaShowResponse>()
-                    .compat()
                     .await?;
                 if !show
                     .capabilities

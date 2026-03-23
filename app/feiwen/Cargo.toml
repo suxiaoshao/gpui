@@ -20,18 +20,18 @@ reqwest = {version = "0.13.2",features=["query"]}
 async-compat = "0.2.5"
 
 # html
-scraper = "0.25.0"
+scraper = "0.26.0"
 nom = "8.0.0"
 regex = "1.12.3"
 url = "2.5.8"
 
 # database
-diesel = { version = "2.3.6", features = ["sqlite", "r2d2"] }
+diesel = { version = "2.3.7", features = ["sqlite", "r2d2"] }
 dirs-next = "2.0.0"
 
 # log
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["local-time"] }
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"

@@ -9,7 +9,7 @@ use crate::{
     llm::Message,
     state::AiChatConfig,
 };
-use async_compat::CompatExt;
+use eventsource_stream::Eventsource;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::{
@@ -26,7 +26,6 @@ use nom::{
     multi::separated_list1,
 };
 use reqwest::Client;
-use reqwest_eventsource::{Error as EventSourceError, Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 use tracing::{Level, event};
@@ -312,10 +311,6 @@ fn append_reasoning_summary_block(content: &mut Content, summary: &str) {
     } else {
         content.reasoning_summary = Some(summary.to_string());
     }
-}
-
-fn is_normal_stream_end(error: &EventSourceError) -> bool {
-    matches!(error, EventSourceError::StreamEnded)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -680,28 +675,25 @@ impl Provider for OpenAIProvider {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             if stream {
-                let mut es = client
+                let response = client
                     .post(responses_url(&settings.base_url))
                     .json(&request_body)
-                    .eventsource()?;
+                    .send()
+                    .await?;
+                let response = response.error_for_status()?;
+                let mut es = response.bytes_stream().eventsource();
                 while let Some(event) = es.next().await {
                     match event {
-                        Ok(Event::Open) => {}
-                        Ok(Event::Message(message)) => {
+                        Ok(message) => {
                             let message = message.data;
                             if message == "[DONE]" {
-                                es.close();
                                 break;
                             } else if let Some(content) = parse_response_stream_event(&message)? {
                                 yield content;
                             }
                         }
                         Err(err) => {
-                            es.close();
-                            if is_normal_stream_end(&err) {
-                                break;
-                            }
-                            Err::<(), AiChatError>(err.into())?;
+                            Err::<(), AiChatError>(AiChatError::StreamError(err.to_string()))?;
                         }
                     }
                 }
@@ -710,11 +702,9 @@ impl Provider for OpenAIProvider {
                     .post(responses_url(&settings.base_url))
                     .json(&request_body)
                     .send()
-                    .compat()
                     .await?;
                 let response = response
                     .json::<ResponsesCreateResponse>()
-                    .compat()
                     .await?;
                 yield FetchUpdate::Complete(response.into_content());
             }
@@ -734,10 +724,8 @@ impl Provider for OpenAIProvider {
             let response = client
                 .get(models_url(&settings.base_url))
                 .send()
-                .compat()
                 .await?
                 .json::<ModelListResponse>()
-                .compat()
                 .await?;
             let mut models = response
                 .data
