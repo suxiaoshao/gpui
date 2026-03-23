@@ -1,7 +1,7 @@
 use crate::{
     OcrError,
-    ocr::{RecognizedLine, collapse_lines},
     ocr::ImageFrame,
+    ocr::{RecognizedLine, collapse_lines},
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
@@ -60,6 +60,11 @@ impl VNRecognizeTextRequest {
         #[unsafe(method(setUsesLanguageCorrection:))]
         fn setUsesLanguageCorrection(&self, enabled: bool);
 
+        /// Available since macOS 13. Automatically detects the language in the
+        /// image rather than restricting recognition to `recognitionLanguages`.
+        #[unsafe(method(setAutomaticallyDetectsLanguage:))]
+        fn setAutomaticallyDetectsLanguage(&self, enabled: bool);
+
         #[unsafe(method(results))]
         fn results(&self) -> Option<Retained<NSArray<VNRecognizedTextObservation>>>;
     );
@@ -106,6 +111,18 @@ pub(super) fn recognize_text(image: &ImageFrame) -> Result<String, OcrError> {
     let image = cg_image_from_frame(image)?;
     let request = new_recognize_text_request()?;
     request.setUsesLanguageCorrection(true);
+    // Automatically detect the language in the image (macOS 13+).
+    // Without this the default recognitionLanguages is ["en-US"], so only
+    // English text is recognised. Guard with respondsToSelector so the call
+    // is a safe no-op on macOS 12 and below.
+    unsafe {
+        use objc2::sel;
+        let sel = sel!(setAutomaticallyDetectsLanguage:);
+        let responds: bool = objc2::msg_send![&*request, respondsToSelector: sel];
+        if responds {
+            request.setAutomaticallyDetectsLanguage(true);
+        }
+    }
 
     let options = VisionOptions::new();
     let handler = unsafe {
