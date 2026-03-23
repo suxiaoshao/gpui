@@ -125,11 +125,20 @@ impl GlobalHotkeyState {
     }
 
     /// Clears the recorded front app when a screenshot flow ends without showing
-    /// the temporary window (cancelled, capture failure, OCR failure, empty input).
+    /// the temporary window (capture failure, OCR failure, empty input).
     /// Without this, the stale value would prevent the next temporary-window open
     /// from recording the correct front app and restore focus to the wrong app.
     #[cfg(target_os = "macos")]
     pub(crate) fn clear_front_app_for_screenshot(&mut self) {
+        self.front_app = None;
+    }
+
+    /// Restores focus to the previously recorded front app and clears the record.
+    /// Called on explicit cancel (Escape / right-click) so the user is taken back
+    /// to whatever they were doing before pressing the screenshot shortcut.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn restore_and_clear_front_app_for_screenshot(&mut self) {
+        restore_frontmost_app(&self.front_app);
         self.front_app = None;
     }
 

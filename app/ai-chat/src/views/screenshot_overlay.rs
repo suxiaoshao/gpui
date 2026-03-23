@@ -332,6 +332,7 @@ impl Render for ScreenshotOverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
             .id("screenshot-overlay-root")
+            .focusable()
             .relative()
             .size_full()
             .bg(gpui::black().opacity(0.35))
@@ -368,7 +369,7 @@ fn cancel_overlay(window: &mut Window, cx: &mut Context<ScreenshotOverlayView>) 
     });
     #[cfg(target_os = "macos")]
     cx.update_global::<GlobalHotkeyState, _>(|state, _cx| {
-        state.clear_front_app_for_screenshot();
+        state.restore_and_clear_front_app_for_screenshot();
     });
     window.remove_window();
 }
