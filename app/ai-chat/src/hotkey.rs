@@ -10,9 +10,8 @@ use get_selected_text::get_selected_text;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::*;
 use gpui_component::{
-    Root,
+    Root, WindowExt as NotificationWindowExt,
     notification::{Notification, NotificationType},
-    WindowExt as NotificationWindowExt,
 };
 #[cfg(target_os = "macos")]
 pub use platform_ext::app::{NSRunningApplication, Retained};
@@ -115,12 +114,21 @@ impl GlobalHotkeyState {
         }
     }
 
+    /// Records the frontmost app before the screenshot overlay opens, so that
+    /// `hide_temporary_window` can restore it when the user dismisses the result.
+    /// Does nothing if a front app is already recorded (avoids double-recording).
+    #[cfg(target_os = "macos")]
+    pub(crate) fn record_front_app_for_screenshot(&mut self) {
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
+        }
+    }
+
     fn show_temporary_window(&mut self, window: &mut Window) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
-        {
-            let prev_app = record_frontmost_app();
-            self.front_app = prev_app;
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
         }
         if let Err(err) = window.show() {
             window.activate_window();
@@ -131,9 +139,8 @@ impl GlobalHotkeyState {
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         #[cfg(target_os = "macos")]
-        {
-            let front_app = record_frontmost_app();
-            self.front_app = front_app;
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
         }
         match cx.open_window(
             WindowOptions {
@@ -169,7 +176,8 @@ impl GlobalHotkeyState {
     }
 
     fn ensure_temporary_window_visible(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
-        let window = Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
+        let window =
+            Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
         let _ = window.update(cx, |_, window, _cx| {
             self.show_temporary_window(window);
         });
@@ -331,7 +339,11 @@ impl GlobalHotkeyState {
 
         let mut conn = cx.global::<Db>().get()?;
         let bindings = GlobalShortcutBinding::all(&mut conn)?;
-        event!(Level::INFO, count = bindings.len(), "Loading initial global shortcut bindings");
+        event!(
+            Level::INFO,
+            count = bindings.len(),
+            "Loading initial global shortcut bindings"
+        );
         for binding in bindings {
             self.upsert_binding_runtime(&binding)?;
         }
@@ -384,7 +396,11 @@ impl GlobalHotkeyState {
         let window = cx
             .active_window()
             .and_then(|window| window.downcast::<Root>())
-            .or_else(|| cx.windows().iter().find_map(|window| window.downcast::<Root>()));
+            .or_else(|| {
+                cx.windows()
+                    .iter()
+                    .find_map(|window| window.downcast::<Root>())
+            });
         let Some(window) = window else {
             event!(
                 Level::ERROR,
@@ -448,10 +464,7 @@ impl GlobalHotkeyState {
     }
 
     fn handle_unavailable_model(&self, binding: &GlobalShortcutBinding, cx: &mut App) {
-        let message = format!(
-            "{} / {}",
-            binding.provider_name, binding.model_id
-        );
+        let message = format!("{} / {}", binding.provider_name, binding.model_id);
         event!(
             Level::ERROR,
             binding_id = binding.id,
@@ -467,10 +480,18 @@ impl GlobalHotkeyState {
         );
     }
 
-    fn resolve_clipboard_fallback(&self, selected_text: Option<String>, cx: &App) -> Option<String> {
+    fn resolve_clipboard_fallback(
+        &self,
+        selected_text: Option<String>,
+        cx: &App,
+    ) -> Option<String> {
         let selected_text = normalized_text(selected_text);
         if selected_text.is_some() {
-            event!(Level::INFO, source = "selected_text", "Resolved shortcut input");
+            event!(
+                Level::INFO,
+                source = "selected_text",
+                "Resolved shortcut input"
+            );
             return selected_text;
         }
 
@@ -481,7 +502,10 @@ impl GlobalHotkeyState {
         if clipboard_text.is_some() {
             event!(Level::INFO, source = "clipboard", "Resolved shortcut input");
         } else {
-            event!(Level::INFO, "No selected text or clipboard text available for shortcut");
+            event!(
+                Level::INFO,
+                "No selected text or clipboard text available for shortcut"
+            );
         }
         clipboard_text
     }
@@ -538,7 +562,11 @@ impl GlobalHotkeyState {
         });
     }
 
-    fn trigger_selection_or_clipboard_shortcut(&self, binding: GlobalShortcutBinding, cx: &mut App) {
+    fn trigger_selection_or_clipboard_shortcut(
+        &self,
+        binding: GlobalShortcutBinding,
+        cx: &mut App,
+    ) {
         cx.spawn(async move |cx| {
             event!(
                 Level::INFO,
@@ -557,13 +585,9 @@ impl GlobalHotkeyState {
         .detach();
     }
 
-    fn trigger_screenshot_shortcut(&self, binding: GlobalShortcutBinding, cx: &mut App) {
-        event!(
-            Level::INFO,
-            binding_id = binding.id,
-            hotkey = %binding.hotkey,
-            "Triggering screenshot shortcut"
-        );
+    fn trigger_screenshot_shortcut(&mut self, binding: GlobalShortcutBinding, cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        self.record_front_app_for_screenshot();
         if let Err(err) = screenshot_overlay::open(binding, cx) {
             self.handle_screenshot_capture_failure(err, cx);
         }
@@ -588,7 +612,11 @@ impl GlobalHotkeyState {
             return;
         };
         if !binding.enabled {
-            event!(Level::INFO, binding_id = binding.id, "Shortcut binding is disabled");
+            event!(
+                Level::INFO,
+                binding_id = binding.id,
+                "Shortcut binding is disabled"
+            );
             return;
         }
 
@@ -635,7 +663,11 @@ impl GlobalHotkeyState {
 
     fn handle_pressed_hotkey(&mut self, hotkey_id: u32, cx: &mut App) {
         let Some(action) = self.action_for_id(hotkey_id) else {
-            event!(Level::INFO, hotkey_id, "Ignoring hotkey press with no registered action");
+            event!(
+                Level::INFO,
+                hotkey_id,
+                "Ignoring hotkey press with no registered action"
+            );
             return;
         };
         event!(Level::INFO, hotkey_id, action = ?action, "Handling pressed hotkey");
@@ -771,7 +803,11 @@ impl GlobalHotkeyState {
     }
 
     pub fn delete_global_shortcut_binding(id: i32, cx: &mut App) -> AiChatResult<()> {
-        event!(Level::INFO, binding_id = id, "Deleting global shortcut binding");
+        event!(
+            Level::INFO,
+            binding_id = id,
+            "Deleting global shortcut binding"
+        );
         let mut conn = cx.global::<Db>().get()?;
         let previous = GlobalShortcutBinding::find(id, &mut conn)?;
         let mut runtime_result = Ok(());
@@ -805,32 +841,22 @@ impl GlobalHotkeyState {
     ) {
         cx.spawn(async move |cx| {
             let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image)).await;
-            let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
-                match recognized {
-                    Ok(text) => {
-                        event!(
-                            Level::INFO,
-                            binding_id = binding.id,
-                            recognized_chars = text.chars().count(),
-                            recognized_is_empty = text.trim().is_empty(),
-                            "Screenshot OCR completed"
-                        );
-                        match normalized_text(Some(text)) {
-                            Some(text) => {
-                                event!(
-                                    Level::INFO,
-                                    binding_id = binding.id,
-                                    input_chars = text.chars().count(),
-                                    "Submitting OCR shortcut input"
-                                );
-                                hotkeys.trigger_shortcut_with_input(binding, text, cx)
-                            }
-                            None => hotkeys.handle_empty_shortcut_input(cx),
-                        }
+            let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
+                Ok(text) => {
+                    event!(
+                        Level::INFO,
+                        binding_id = binding.id,
+                        recognized_chars = text.chars().count(),
+                        recognized_is_empty = text.trim().is_empty(),
+                        "Screenshot OCR completed"
+                    );
+                    match normalized_text(Some(text)) {
+                        Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
+                        None => hotkeys.handle_empty_shortcut_input(cx),
                     }
-                    Err(err) => {
-                        hotkeys.handle_screenshot_ocr_failure(err, cx);
-                    }
+                }
+                Err(err) => {
+                    hotkeys.handle_screenshot_ocr_failure(err, cx);
                 }
             });
         })
@@ -912,9 +938,7 @@ fn screenshot_ocr_error_message(error: &OcrError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalized_text, screenshot_capture_error_message, screenshot_ocr_error_message,
-    };
+    use super::{normalized_text, screenshot_capture_error_message, screenshot_ocr_error_message};
     use crate::capture::CaptureError;
     use platform_ext::OcrError;
 
@@ -931,7 +955,10 @@ mod tests {
 
     #[test]
     fn screenshot_capture_cancellation_is_silent() {
-        assert_eq!(screenshot_capture_error_message(&CaptureError::Cancelled), None);
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::Cancelled),
+            None
+        );
     }
 
     #[test]

@@ -32,7 +32,9 @@
 
 ## 3. UI 与 GPUI 规则
 
+- 涉及落地页、官网页、品牌页、视觉稿、高表现力界面或需要明显视觉设计判断的 UI 任务时，默认遵从 `frontend-skill` 的设计原则；重点吸收其关于构图、层级、留白、图像叙事、文案克制与动效节制的要求，不要产出模板化 SaaS 卡片拼盘。
 - 编写 UI 时优先使用 `gpui-component` 现成组件；组件库没有合适组件时再自行实现。
+- 在本仓库中落实 `frontend-skill` 时，要映射到 GPUI 语境：`GPUI` 的布局与样式 API 可类比 `tailwindcss` 的组合思路，`gpui-component` 的组件复用方式可类比 `shadcn/ui`，但必须以仓库现有的 GPUI / `gpui-component` 模式实现，不能照搬 Web DOM、CSS 或 React 组件习惯。
 - 组件列表与示例优先参考：`https://longbridge.github.io/gpui-component/docs/components/`
 - 具体 API 以 `https://docs.rs/gpui-component/latest/gpui_component/` 为准，不要凭记忆猜接口。
 - 视图组件实现 `Render` 或项目现有模式。
@@ -40,6 +42,7 @@
 - Action 使用 `actions!()` 定义并在上下文中注册；键位绑定使用 `KeyBinding::new(...)` 并集中注册。
 - 异步任务优先使用 GPUI 提供的 `spawn` / `background_executor` 模式，并保持 UI 更新与后台任务隔离。
 - 全局状态通过 `Global`、`cx.global::<T>()`、`cx.update_global(...)` 访问和更新。
+- 常规产品界面同样避免无意义卡片堆砌、过度装饰渐变和多重强调色；优先用版式、对齐、间距、字号、对比度和少量有目的的动效建立层级。
 
 ## 4. 提权与 GitHub 规则
 

@@ -57,7 +57,12 @@ pub(crate) fn capture_region(
     {
         let monitor = resolve_monitor(display)?;
         let image = monitor
-            .capture_region(rect.x_px as _, rect.y_px as _, rect.width_px, rect.height_px)
+            .capture_region(
+                rect.x_px as _,
+                rect.y_px as _,
+                rect.width_px,
+                rect.height_px,
+            )
             .map_err(|err| map_capture_error(err.to_string()))?;
         image_frame_from_captured_image(image, display.scale_factor)
     }
@@ -74,11 +79,15 @@ fn validate_capture_rect(display: &CaptureDisplay, rect: CaptureRect) -> Result<
     let max_x = rect
         .x_px
         .checked_add(rect.width_px)
-        .ok_or(CaptureError::InvalidInput("capture rect overflows display width"))?;
+        .ok_or(CaptureError::InvalidInput(
+            "capture rect overflows display width",
+        ))?;
     let max_y = rect
         .y_px
         .checked_add(rect.height_px)
-        .ok_or(CaptureError::InvalidInput("capture rect overflows display height"))?;
+        .ok_or(CaptureError::InvalidInput(
+            "capture rect overflows display height",
+        ))?;
     if max_x > display.width_px || max_y > display.height_px {
         return Err(CaptureError::InvalidInput(
             "capture rect exceeds display bounds",
@@ -91,7 +100,9 @@ fn validate_capture_rect(display: &CaptureDisplay, rect: CaptureRect) -> Result<
 fn resolve_monitor(display: &CaptureDisplay) -> Result<Monitor, CaptureError> {
     let mut monitors = Monitor::all().map_err(|err| map_capture_error(err.to_string()))?;
     if monitors.is_empty() {
-        return Err(CaptureError::BackendUnavailable("no displays are available"));
+        return Err(CaptureError::BackendUnavailable(
+            "no displays are available",
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -128,7 +139,7 @@ fn unique_monitor_match(monitors: &[Monitor], display: &CaptureDisplay) -> Optio
         .filter_map(|(index, monitor)| monitor_matches_display(monitor, display).then_some(index))
         .collect::<Vec<_>>();
 
-    (matching.len() == 1).then_some(matching[0])
+    (matching.len() == 1).then(|| matching[0])
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -246,20 +257,25 @@ mod tests {
             },
         )
         .expect_err("capture rect should exceed display bounds");
-        assert_eq!(err, CaptureError::InvalidInput("capture rect exceeds display bounds"));
+        assert_eq!(
+            err,
+            CaptureError::InvalidInput("capture rect exceeds display bounds")
+        );
     }
 
     #[test]
     fn capture_rect_allows_regions_inside_display_bounds() {
-        assert!(validate_capture_rect(
-            &display(),
-            CaptureRect {
-                x_px: 100,
-                y_px: 120,
-                width_px: 300,
-                height_px: 220,
-            },
-        )
-        .is_ok());
+        assert!(
+            validate_capture_rect(
+                &display(),
+                CaptureRect {
+                    x_px: 100,
+                    y_px: 120,
+                    width_px: 300,
+                    height_px: 220,
+                },
+            )
+            .is_ok()
+        );
     }
 }

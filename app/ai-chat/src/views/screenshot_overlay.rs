@@ -4,6 +4,7 @@ use crate::{
     hotkey::GlobalHotkeyState,
 };
 use gpui::*;
+
 use std::cmp::{max, min};
 use std::time::Duration;
 use tracing::{Level, event};
@@ -102,10 +103,7 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
     }
 
     cx.set_global(ScreenshotOverlayState {
-        session: Some(ScreenshotOverlaySession {
-            binding,
-            handles,
-        }),
+        session: Some(ScreenshotOverlaySession { binding, handles }),
     });
     Ok(())
 }
@@ -154,8 +152,6 @@ pub(crate) struct ScreenshotOverlayView {
 
 impl ScreenshotOverlayView {
     fn new(display: CaptureDisplay, _cx: &mut Context<Self>) -> Self {
-        let display_id = display.id_hint;
-        event!(Level::INFO, display_id, "Initialized screenshot overlay view");
         Self {
             display,
             drag_origin: None,
@@ -179,14 +175,6 @@ impl ScreenshotOverlayView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        event!(
-            Level::INFO,
-            display_id = self.display.id_hint,
-            button = ?event.button,
-            x = f32::from(event.position.x),
-            y = f32::from(event.position.y),
-            "Screenshot overlay mouse down"
-        );
         if event.button == MouseButton::Right {
             cancel_overlay(window, cx);
             return;
@@ -195,10 +183,7 @@ impl ScreenshotOverlayView {
             return;
         }
 
-        let Some(handle) = window
-            .window_handle()
-            .downcast::<ScreenshotOverlayView>()
-        else {
+        let Some(handle) = window.window_handle().downcast::<ScreenshotOverlayView>() else {
             cancel_overlay(window, cx);
             return;
         };
@@ -225,21 +210,9 @@ impl ScreenshotOverlayView {
         let Some(origin) = self.drag_origin else {
             return;
         };
-        event!(
-            Level::INFO,
-            display_id = self.display.id_hint,
-            x = f32::from(event.position.x),
-            y = f32::from(event.position.y),
-            "Screenshot overlay mouse move"
-        );
         self.drag_current = Some(event.position);
         if !self.selection_started && drag_distance(origin, event.position) > DRAG_THRESHOLD {
             self.selection_started = true;
-            event!(
-                Level::INFO,
-                display_id = self.display.id_hint,
-                "Screenshot selection drag threshold reached"
-            );
         }
         cx.notify();
     }
@@ -253,15 +226,6 @@ impl ScreenshotOverlayView {
         if event.button != MouseButton::Left || self.drag_origin.is_none() {
             return;
         }
-        event!(
-            Level::INFO,
-            display_id = self.display.id_hint,
-            x = f32::from(event.position.x),
-            y = f32::from(event.position.y),
-            selection_started = self.selection_started,
-            "Screenshot overlay mouse up"
-        );
-
         let selection_started = self.selection_started;
         self.selection_started = false;
         self.drag_current = Some(event.position);
@@ -274,8 +238,7 @@ impl ScreenshotOverlayView {
             cancel_overlay(window, cx);
             return;
         }
-        let Some(rect) = selection_rect(self.drag_origin, self.drag_current, window.scale_factor())
-        else {
+        let Some(rect) = selection_rect(self.drag_origin, self.drag_current) else {
             event!(
                 Level::INFO,
                 display_id = self.display.id_hint,
@@ -302,28 +265,30 @@ impl ScreenshotOverlayView {
             .as_ref()
             .map(|session| session.binding.clone());
 
-        cx.update_global::<ScreenshotOverlayState, _>(|state, cx| {
-            if let Some(session) = state.session.take() {
-                session.close_all(cx);
-            }
+        // Take the session out of global state. Do NOT call close_all here because that
+        // tries to close the current window via handle.update, which is a GPUI reentrancy
+        // error (we are already inside this window's event handler). The error is silently
+        // swallowed by `let _ =` inside close_all, so the window would never actually close.
+        // Other overlay windows were already closed by retain_active_window in mouse_down,
+        // so taking the session is sufficient to clean up global state.
+        cx.update_global::<ScreenshotOverlayState, _>(|state, _cx| {
+            state.session.take();
         });
-        let display_id = display.id_hint;
-        event!(Level::INFO, display_id, "Screenshot overlay windows closed before capture");
-
         let Some(binding) = binding else {
             return;
         };
 
-        window.spawn(cx, async move |cx| {
+        // Remove the current overlay window directly — this is the only safe way to do it
+        // from within the window's own event handler.
+        window.remove_window();
+
+        // Use cx.spawn (App context) rather than window.spawn (window context) because the
+        // overlay window has just been closed and its context will be invalid by the time the
+        // async task runs after CAPTURE_START_DELAY.
+        cx.spawn(async move |_this, cx| {
             Timer::after(CAPTURE_START_DELAY).await;
             let display_id = display.id_hint;
             let captured_display = display.clone();
-            event!(
-                Level::INFO,
-                display_id,
-                delay_ms = CAPTURE_START_DELAY.as_millis() as u64,
-                "Starting screenshot capture after overlay close delay"
-            );
             let captured = smol::unblock(move || capture_region(&captured_display, rect)).await;
             match captured {
                 Ok(image) => {
@@ -335,12 +300,12 @@ impl ScreenshotOverlayView {
                         bytes_len = image.bytes_rgba8.len(),
                         "Screenshot selection capture completed"
                     );
-                    let _ = cx.update_global::<GlobalHotkeyState, _>(|_hotkeys, _window, cx| {
+                    let _ = cx.update_global::<GlobalHotkeyState, _>(|_hotkeys, cx| {
                         GlobalHotkeyState::process_captured_screenshot(binding.clone(), image, cx);
                     });
                 }
                 Err(err) => {
-                    let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _window, cx| {
+                    let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
                         hotkeys.handle_screenshot_capture_failure(err, cx);
                     });
                 }
@@ -352,14 +317,6 @@ impl ScreenshotOverlayView {
 
 impl Render for ScreenshotOverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        event!(
-            Level::INFO,
-            display_id = self.display.id_hint,
-            selection_started = self.selection_started,
-            has_origin = self.drag_origin.is_some(),
-            has_current = self.drag_current.is_some(),
-            "Rendering screenshot overlay"
-        );
         let mut root = div()
             .id("screenshot-overlay-root")
             .relative()
@@ -408,10 +365,12 @@ fn drag_distance(origin: Point<Pixels>, current: Point<Pixels>) -> f32 {
 fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay {
     let size = window.bounds().size;
     let scale_factor = window.scale_factor();
+    // xcap uses CGDisplayBounds which returns logical pixels (points), not physical pixels.
+    // Store logical dimensions here so monitor matching in resolve_monitor() works correctly.
     CaptureDisplay {
         id_hint: display.id_hint,
-        width_px: (f32::from(size.width) * scale_factor).round() as u32,
-        height_px: (f32::from(size.height) * scale_factor).round() as u32,
+        width_px: f32::from(size.width).round() as u32,
+        height_px: f32::from(size.height).round() as u32,
         scale_factor,
         is_primary: display.is_primary,
     }
@@ -420,18 +379,19 @@ fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay
 fn selection_rect(
     origin: Option<Point<Pixels>>,
     current: Option<Point<Pixels>>,
-    scale_factor: f32,
 ) -> Option<CaptureRect> {
     let bounds = selection_bounds(origin, current)?;
-    let width_px = (f32::from(bounds.size.width) * scale_factor).round() as u32;
-    let height_px = (f32::from(bounds.size.height) * scale_factor).round() as u32;
+    // GPUI mouse positions are in logical pixels (points). xcap's capture_region also uses
+    // logical pixels via CGDisplayBounds, so no scale_factor conversion is needed.
+    let width_px = f32::from(bounds.size.width).round() as u32;
+    let height_px = f32::from(bounds.size.height).round() as u32;
     if width_px == 0 || height_px == 0 {
         return None;
     }
 
     Some(CaptureRect {
-        x_px: (f32::from(bounds.origin.x) * scale_factor).round() as u32,
-        y_px: (f32::from(bounds.origin.y) * scale_factor).round() as u32,
+        x_px: f32::from(bounds.origin.x).round() as u32,
+        y_px: f32::from(bounds.origin.y).round() as u32,
         width_px,
         height_px,
     })
@@ -462,14 +422,13 @@ mod tests {
         let rect = selection_rect(
             Some(point(px(200.0), px(160.0))),
             Some(point(px(20.0), px(40.0))),
-            2.0,
         )
         .expect("drag selection should produce a rect");
 
-        assert_eq!(rect.x_px, 40);
-        assert_eq!(rect.y_px, 80);
-        assert_eq!(rect.width_px, 360);
-        assert_eq!(rect.height_px, 240);
+        assert_eq!(rect.x_px, 20);
+        assert_eq!(rect.y_px, 40);
+        assert_eq!(rect.width_px, 180);
+        assert_eq!(rect.height_px, 120);
     }
 
     #[test]
