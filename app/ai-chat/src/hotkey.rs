@@ -124,6 +124,15 @@ impl GlobalHotkeyState {
         }
     }
 
+    /// Clears the recorded front app when a screenshot flow ends without showing
+    /// the temporary window (cancelled, capture failure, OCR failure, empty input).
+    /// Without this, the stale value would prevent the next temporary-window open
+    /// from recording the correct front app and restore focus to the wrong app.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn clear_front_app_for_screenshot(&mut self) {
+        self.front_app = None;
+    }
+
     fn show_temporary_window(&mut self, window: &mut Window) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
@@ -428,7 +437,9 @@ impl GlobalHotkeyState {
         );
     }
 
-    pub(crate) fn handle_screenshot_capture_failure(&self, err: CaptureError, cx: &mut App) {
+    pub(crate) fn handle_screenshot_capture_failure(&mut self, err: CaptureError, cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        self.clear_front_app_for_screenshot();
         let Some(message) = screenshot_capture_error_message(&err) else {
             event!(Level::INFO, error = ?err, "Screenshot capture cancelled");
             return;
@@ -442,7 +453,9 @@ impl GlobalHotkeyState {
         );
     }
 
-    pub(crate) fn handle_screenshot_ocr_failure(&self, err: OcrError, cx: &mut App) {
+    pub(crate) fn handle_screenshot_ocr_failure(&mut self, err: OcrError, cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        self.clear_front_app_for_screenshot();
         let message = screenshot_ocr_error_message(&err);
         event!(Level::ERROR, error = ?err, "Screenshot OCR failed");
         self.push_notification(
@@ -453,7 +466,9 @@ impl GlobalHotkeyState {
         );
     }
 
-    pub(crate) fn handle_empty_shortcut_input(&self, cx: &mut App) {
+    pub(crate) fn handle_empty_shortcut_input(&mut self, cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        self.clear_front_app_for_screenshot();
         self.push_notification(
             "notify-shortcut-trigger-empty-input-title",
             cx.global::<I18n>()

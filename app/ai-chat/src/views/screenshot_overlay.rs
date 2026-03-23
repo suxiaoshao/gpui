@@ -58,48 +58,61 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
             "Creating screenshot overlay window"
         );
 
-        let handle = cx
-            .open_window(
-                WindowOptions {
-                    display_id: Some(display_id),
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    kind: WindowKind::Floating,
-                    titlebar: Some(TitlebarOptions {
-                        title: None,
-                        appears_transparent: true,
-                        traffic_light_position: Some(point(px(-100.), px(-100.))),
-                    }),
-                    window_background: WindowBackgroundAppearance::Transparent,
-                    focus: true,
-                    show: true,
-                    is_movable: false,
-                    is_resizable: false,
-                    window_min_size: None,
-                    window_decorations: None,
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    if let Err(err) = window.set_floating() {
-                        event!(
-                            Level::ERROR,
-                            display_id = display_info.id_hint,
-                            error = ?err,
-                            "Failed to set screenshot overlay window floating"
-                        );
-                    }
-                    window.activate_window();
-                    let display_id = display_info.id_hint;
+        let handle = cx.open_window(
+            WindowOptions {
+                display_id: Some(display_id),
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                kind: WindowKind::Floating,
+                titlebar: Some(TitlebarOptions {
+                    title: None,
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(-100.), px(-100.))),
+                }),
+                window_background: WindowBackgroundAppearance::Transparent,
+                focus: true,
+                show: true,
+                is_movable: false,
+                is_resizable: false,
+                window_min_size: None,
+                window_decorations: None,
+                ..Default::default()
+            },
+            move |window, cx| {
+                if let Err(err) = window.set_floating() {
                     event!(
-                        Level::INFO,
-                        display_id,
-                        scale_factor = window.scale_factor(),
-                        "Screenshot overlay window opened"
+                        Level::ERROR,
+                        display_id = display_info.id_hint,
+                        error = ?err,
+                        "Failed to set screenshot overlay window floating"
                     );
-                    cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), cx))
-                },
-            )
-            .map_err(|err| CaptureError::SystemFailure(err.to_string()))?;
-        handles.push(handle);
+                }
+                window.activate_window();
+                let display_id = display_info.id_hint;
+                event!(
+                    Level::INFO,
+                    display_id,
+                    scale_factor = window.scale_factor(),
+                    "Screenshot overlay window opened"
+                );
+                cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), cx))
+            },
+        );
+
+        match handle {
+            Ok(handle) => handles.push(handle),
+            Err(err) => {
+                // Roll back any overlay windows already opened on previous displays so
+                // they don't get stranded on screen with no session to clean them up.
+                for h in handles {
+                    let _ = h.update(cx, |_, window, _cx| window.remove_window());
+                }
+                #[cfg(target_os = "macos")]
+                cx.update_global::<GlobalHotkeyState, _>(|state, _cx| {
+                    state.clear_front_app_for_screenshot();
+                });
+                return Err(CaptureError::SystemFailure(err.to_string()));
+            }
+        }
     }
 
     cx.set_global(ScreenshotOverlayState {
@@ -352,6 +365,10 @@ fn cancel_overlay(window: &mut Window, cx: &mut Context<ScreenshotOverlayView>) 
         if let Some(session) = state.session.take() {
             session.close_all(cx);
         }
+    });
+    #[cfg(target_os = "macos")]
+    cx.update_global::<GlobalHotkeyState, _>(|state, _cx| {
+        state.clear_front_app_for_screenshot();
     });
     window.remove_window();
 }
