@@ -24,6 +24,8 @@ section-information = Information
 alert-error-title = Error
 message-status-paused = Paused
 
+button-add = Add
+button-add-prompt = Add Prompt
 dialog-edit-folder-title = Edit Folder
 dialog-edit-conversation-title = Edit Conversation
 notify-update-folder-failed = Update Folder Failed

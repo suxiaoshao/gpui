@@ -10,6 +10,7 @@ use self::{
 pub(crate) use self::persistence::ConversationDraft;
 
 use crate::{
+    database::Conversation,
     state::{ChatData, ChatDataInner},
     views::home::{ConversationPanelView, ConversationTabView},
 };
@@ -229,6 +230,28 @@ impl WorkspaceState {
         self.sync_persisted_tabs();
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    pub(crate) fn sync_conversation_metadata(
+        &mut self,
+        conversation: &Conversation,
+        cx: &mut Context<Self>,
+    ) {
+        let mut updated = false;
+        for tab in &mut self.tabs {
+            if tab.kind != tabs::TabKind::Conversation(conversation.id) {
+                continue;
+            }
+            tab.icon = conversation.icon.clone().into();
+            tab.name = conversation.title.clone().into();
+            if let tabs::TabPanel::Conversation(panel) = &tab.panel {
+                panel.update(cx, |panel, cx| panel.sync_metadata(conversation, cx));
+            }
+            updated = true;
+        }
+        if updated {
+            cx.notify();
+        }
     }
 
     pub(crate) fn remove_template_detail_tab(&mut self, template_id: i32, cx: &mut Context<Self>) {

@@ -427,8 +427,11 @@ impl ChatData {
         let conversation = Conversation::update(id, title, icon, info, conn)?;
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
-                data.update_conversation(id, conversation);
+                data.update_conversation(id, conversation.clone());
             }
+        });
+        cx.global::<WorkspaceStore>().deref().clone().update(cx, |workspace, cx| {
+            workspace.sync_conversation_metadata(&conversation, cx);
         });
         Ok(())
     }

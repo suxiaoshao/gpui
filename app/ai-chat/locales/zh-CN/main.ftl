@@ -24,6 +24,8 @@ section-information = 信息
 alert-error-title = 错误
 message-status-paused = 已暂停
 
+button-add = 添加
+button-add-prompt = 添加提示词
 dialog-edit-folder-title = 编辑文件夹
 dialog-edit-conversation-title = 编辑会话
 notify-update-folder-failed = 更新文件夹失败
