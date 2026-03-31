@@ -1,6 +1,6 @@
 use crate::{
     components::{
-        add_conversation::add_conversation_dialog_with_messages, chat_form::ChatFormSnapshot,
+        add_conversation::open_add_conversation_dialog, chat_form::ChatFormSnapshot,
         message::MessageViewExt,
     },
     database::{Content, Mode, Role, Status},
@@ -462,7 +462,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
                 error: message.error,
             })
             .collect::<Vec<_>>();
-        add_conversation_dialog_with_messages(None, Some(initial_messages), window, cx);
+        open_add_conversation_dialog(None, Some(initial_messages), window, cx);
     }
 }
 

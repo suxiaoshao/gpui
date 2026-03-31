@@ -1,32 +1,66 @@
 use gpui::*;
 use gpui_component::{
-    WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
     input::{Input, InputState},
+    WindowExt,
 };
 use std::ops::Deref;
-use tracing::{Level, event};
+use tracing::{event, Level};
 
 use crate::{
     i18n::I18n,
     state::{ChatData, ChatDataEvent},
 };
 
-pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {
-    let span = tracing::info_span!("add_folder action");
+#[derive(Clone, Copy)]
+enum FolderDialogMode {
+    Add { parent_id: Option<i32> },
+    Edit { folder_id: i32 },
+}
+
+fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App) {
+    let span = tracing::info_span!("folder_dialog action");
     let _enter = span.enter();
-    event!(Level::INFO, "add_folder action");
+
+    let is_edit = matches!(mode, FolderDialogMode::Edit { .. });
     let (name_label, dialog_title, cancel_label, submit_label) = {
         let i18n = cx.global::<I18n>();
-        (
-            i18n.t("field-name"),
-            i18n.t("dialog-add-folder-title"),
-            i18n.t("button-cancel"),
-            i18n.t("button-submit"),
-        )
+        if is_edit {
+            (
+                i18n.t("field-name"),
+                i18n.t("dialog-edit-folder-title"),
+                i18n.t("button-cancel"),
+                i18n.t("button-submit"),
+            )
+        } else {
+            (
+                i18n.t("field-name"),
+                i18n.t("dialog-add-folder-title"),
+                i18n.t("button-cancel"),
+                i18n.t("button-submit"),
+            )
+        }
     };
+
     let folder_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
+
+    if let FolderDialogMode::Edit { folder_id } = &mode {
+        let chat_data = cx.global::<ChatData>();
+        let Ok(chat_data) = chat_data.read(cx).as_ref() else {
+            event!(Level::ERROR, "Failed to read chat data for folder edit dialog");
+            return;
+        };
+        let Some(folder) = chat_data.folder(*folder_id) else {
+            event!(Level::ERROR, "Folder {folder_id} not found in chat data");
+            return;
+        };
+        let name = folder.name.clone();
+        folder_input.update(cx, |input, _cx| {
+            input.set_value(name.clone(), window, _cx);
+        });
+    }
+
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title(dialog_title.clone())
@@ -42,6 +76,7 @@ pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut A
                 let folder_input = folder_input.clone();
                 let cancel_label = cancel_label.clone();
                 let submit_label = submit_label.clone();
+                let mode = mode;
                 move |_this, _state, _window, _cx| {
                     vec![
                         Button::new("cancel").label(cancel_label.clone()).on_click(
@@ -54,12 +89,26 @@ pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut A
                             .label(submit_label.clone())
                             .on_click({
                                 let folder_input = folder_input.clone();
+                                let mode = mode;
                                 move |_, window, cx| {
                                     let name = folder_input.read(cx).value();
                                     if !name.is_empty() {
                                         let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, |_this, cx| {
-                                            cx.emit(ChatDataEvent::AddFolder { name, parent_id });
+                                        chat_data.update(cx, move |_this, cx| {
+                                            match mode {
+                                                FolderDialogMode::Edit { folder_id } => {
+                                                    cx.emit(ChatDataEvent::UpdateFolder {
+                                                        id: folder_id,
+                                                        name,
+                                                    });
+                                                }
+                                                FolderDialogMode::Add { parent_id } => {
+                                                    cx.emit(ChatDataEvent::AddFolder {
+                                                        name,
+                                                        parent_id,
+                                                    });
+                                                }
+                                            }
                                         });
                                     }
                                     window.close_dialog(cx);
@@ -69,4 +118,12 @@ pub fn add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut A
                 }
             })
     });
+}
+
+pub fn open_add_folder_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {
+    open_folder_dialog(FolderDialogMode::Add { parent_id }, window, cx);
+}
+
+pub fn open_edit_folder_dialog(folder_id: i32, window: &mut Window, cx: &mut App) {
+    open_folder_dialog(FolderDialogMode::Edit { folder_id }, window, cx);
 }

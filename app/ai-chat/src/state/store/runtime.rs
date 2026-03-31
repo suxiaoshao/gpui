@@ -8,11 +8,11 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    WindowExt,
     notification::{Notification, NotificationType},
+    WindowExt,
 };
 use std::ops::Deref;
-use tracing::{Level, event};
+use tracing::{event, Level};
 
 #[derive(Debug)]
 pub enum ChatDataEvent {
@@ -26,6 +26,16 @@ pub enum ChatDataEvent {
     AddFolder {
         name: SharedString,
         parent_id: Option<i32>,
+    },
+    UpdateFolder {
+        id: i32,
+        name: SharedString,
+    },
+    UpdateConversation {
+        id: i32,
+        title: SharedString,
+        icon: SharedString,
+        info: Option<SharedString>,
     },
     MoveConversation {
         conversation_id: i32,
@@ -82,6 +92,8 @@ impl ChatData {
         let (
             add_conversation_failed,
             add_folder_failed,
+            update_folder_failed,
+            update_conversation_failed,
             delete_message_failed,
             delete_conversation_failed,
             delete_folder_failed,
@@ -92,6 +104,8 @@ impl ChatData {
             (
                 i18n.t("notify-add-conversation-failed").into(),
                 i18n.t("notify-add-folder-failed").into(),
+                i18n.t("notify-update-folder-failed").into(),
+                i18n.t("notify-update-conversation-failed").into(),
                 i18n.t("notify-delete-message-failed").into(),
                 i18n.t("notify-delete-conversation-failed").into(),
                 i18n.t("notify-delete-folder-failed").into(),
@@ -128,6 +142,32 @@ impl ChatData {
                 window,
                 add_folder_failed,
                 "add folder",
+                cx,
+            ),
+            ChatDataEvent::UpdateFolder { id, name } => Self::handle_event_result(
+                Self::update_folder(state, *id, name, cx),
+                window,
+                update_folder_failed,
+                "update folder",
+                cx,
+            ),
+            ChatDataEvent::UpdateConversation {
+                id,
+                title,
+                icon,
+                info,
+            } => Self::handle_event_result(
+                Self::update_conversation(
+                    state,
+                    *id,
+                    title,
+                    icon,
+                    info.as_ref().map(|x| x.as_str()),
+                    cx,
+                ),
+                window,
+                update_conversation_failed,
+                "update conversation",
                 cx,
             ),
             ChatDataEvent::MoveConversation {
@@ -354,6 +394,40 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.clear_conversation_messages(conversation_id);
+            }
+        });
+        Ok(())
+    }
+
+    fn update_folder(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        id: i32,
+        name: &str,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        let folder = Folder::update_name(id, name, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.update_folder(id, folder);
+            }
+        });
+        Ok(())
+    }
+
+    fn update_conversation(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        id: i32,
+        title: &str,
+        icon: &str,
+        info: Option<&str>,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        let conversation = Conversation::update(id, title, icon, info, conn)?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.update_conversation(id, conversation);
             }
         });
         Ok(())

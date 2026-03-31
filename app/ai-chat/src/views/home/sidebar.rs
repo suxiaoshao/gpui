@@ -1,5 +1,7 @@
 use crate::{
-    components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
+    components::{
+        add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
+    },
     errors::AiChatResult,
     i18n::I18n,
     state::{ChatData, ChatDataInner, WorkspaceState, WorkspaceStore},
@@ -7,13 +9,12 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    Collapsible, IconName, Side,
     menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
-    v_flex,
+    v_flex, Collapsible, IconName, Side,
 };
 use std::ops::Deref;
-use tracing::{Level, event};
+use tracing::{event, Level};
 
 mod conversation_item;
 mod conversation_tree;
@@ -82,10 +83,10 @@ impl SidebarView {
     }
 
     fn add_conversation(&mut self, _: &Add, window: &mut Window, cx: &mut Context<Self>) {
-        add_conversation_dialog(None, window, cx);
+        open_add_conversation_dialog(None, None, window, cx);
     }
     fn add_folder(&mut self, _: &AddShift, window: &mut Window, cx: &mut Context<Self>) {
-        add_folder_dialog(None, window, cx);
+        open_add_folder_dialog(None, window, cx);
     }
 }
 

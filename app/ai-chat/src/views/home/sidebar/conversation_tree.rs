@@ -1,15 +1,17 @@
 use super::{conversation_item::ConversationTreeItem, folder_item::FolderTreeItem};
 use crate::{
-    components::{add_conversation::add_conversation_dialog, add_folder::add_folder_dialog},
+    components::{
+        add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
+    },
     database::{Conversation, Folder},
     state::{ChatData, ChatDataEvent, ChatDataInner},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Collapsible, Icon, IconName, Side, h_flex,
+    h_flex,
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-    v_flex,
+    v_flex, ActiveTheme, Collapsible, Icon, IconName, Side,
 };
 use serde::Deserialize;
 use std::{collections::BTreeSet, ops::Deref};
@@ -483,12 +485,12 @@ fn root_context_menu(
         .item(
             PopupMenuItem::new("Add Conversation")
                 .icon(IconName::Plus)
-                .on_click(|_, window, cx| add_conversation_dialog(None, window, cx)),
+                .on_click(|_, window, cx| open_add_conversation_dialog(None, None, window, cx)),
         )
         .item(
             PopupMenuItem::new("Add Folder")
                 .icon(IconName::Plus)
-                .on_click(|_, window, cx| add_folder_dialog(None, window, cx)),
+                .on_click(|_, window, cx| open_add_folder_dialog(None, window, cx)),
         )
 }
 
@@ -507,9 +509,9 @@ pub(super) fn reset_drop_target(window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
         folder_block_drop_target, folder_drop_state, project_conversations, project_folders,
         root_drop_state, target_for_conversation_group, target_for_folder, target_for_root,
+        ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
     };
     use crate::database::{Content, Conversation, Folder, Message, Role, Status};
     use gpui::SharedString;

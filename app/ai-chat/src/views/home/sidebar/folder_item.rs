@@ -1,23 +1,24 @@
 use super::conversation_item::ConversationTreeItem;
 use super::conversation_tree::{
-    ActiveDropTarget, DragConversationTreeItem, DropState, SidebarFolderNode,
     folder_block_drop_target, folder_drop_state, reset_drop_target, set_drop_target,
-    target_for_conversation_group, target_for_folder,
+    target_for_conversation_group, target_for_folder, ActiveDropTarget, DragConversationTreeItem,
+    DropState, SidebarFolderNode,
 };
 use crate::{
     components::{
-        add_conversation::add_conversation_dialog, add_folder::add_folder_dialog,
+        add_conversation::open_add_conversation_dialog,
+        add_folder::{open_add_folder_dialog, open_edit_folder_dialog},
         delete_confirm::open_delete_confirm_dialog,
     },
+    i18n::I18n,
     state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
-    v_flex,
+    v_flex, ActiveTheme, Icon, IconName, Sizable,
 };
 use std::collections::BTreeSet;
 use std::ops::Deref;
@@ -266,19 +267,29 @@ pub(super) fn folder_popup_menu(
     menu: PopupMenu,
     folder: &SidebarFolderNode,
     _window: &mut Window,
-    _cx: &mut Context<PopupMenu>,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let id = folder.id;
     let name = folder.name.clone();
+    let i18n = cx.global::<I18n>();
     menu.item(
+        PopupMenuItem::new(i18n.t("button-edit")).on_click(move |_, window, cx| {
+            open_edit_folder_dialog(id, window, cx);
+        }),
+    )
+    .item(
         PopupMenuItem::new("Add Conversation")
             .icon(IconName::Plus)
-            .on_click(move |_, window, cx| add_conversation_dialog(Some(id), window, cx)),
+            .on_click(move |_, window, cx| {
+                open_add_conversation_dialog(Some(id), None, window, cx);
+            }),
     )
     .item(
         PopupMenuItem::new("Add Folder")
             .icon(IconName::Plus)
-            .on_click(move |_, window, cx| add_folder_dialog(Some(id), window, cx)),
+            .on_click(move |_, window, cx| {
+                open_add_folder_dialog(Some(id), window, cx);
+            }),
     )
     .item(PopupMenuItem::separator())
     .item(

@@ -1,15 +1,18 @@
 use super::conversation_tree::{DragConversationTreeItem, SidebarConversationNode};
 use crate::{
-    components::delete_confirm::open_delete_confirm_dialog,
+    components::{
+        add_conversation::open_edit_conversation_dialog, delete_confirm::open_delete_confirm_dialog,
+    },
+    i18n::I18n,
     state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
+    ActiveTheme, IconName, Sizable,
 };
 use std::ops::Deref;
 
@@ -128,11 +131,17 @@ pub(super) fn conversation_popup_menu(
     menu: PopupMenu,
     conversation: &SidebarConversationNode,
     _window: &mut Window,
-    _cx: &mut Context<PopupMenu>,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let id = conversation.id;
     let title = conversation.title.clone();
+    let i18n = cx.global::<I18n>();
     menu.item(
+        PopupMenuItem::new(i18n.t("button-edit")).on_click(move |_, window, cx| {
+            open_edit_conversation_dialog(id, window, cx);
+        }),
+    )
+    .item(
         PopupMenuItem::new("Delete")
             .icon(IconName::Delete)
             .on_click(move |_, window, cx| {

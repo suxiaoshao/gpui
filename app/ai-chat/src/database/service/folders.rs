@@ -122,6 +122,67 @@ impl Folder {
         Ok(())
     }
 
+    pub fn update_name(
+        id: i32,
+        name: &str,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<Self> {
+        conn.immediate_transaction::<_, AiChatError, _>(|conn| {
+            let folder = SqlFolder::find(id, conn)?;
+            if folder.name == name {
+                return Self::from_sql_folder(folder, conn);
+            }
+
+            let new_path = if let Some(parent_id) = folder.parent_id {
+                let parent = SqlFolder::find(parent_id, conn)?;
+                format!("{}/{}", parent.path, name)
+            } else {
+                format!("/{name}")
+            };
+
+            if SqlFolder::path_exists(&new_path, conn)? {
+                return Err(AiChatError::FolderPathExists(new_path));
+            }
+            if SqlConversation::path_exists(&new_path, conn)? {
+                return Err(AiChatError::ConversationPathExists(new_path));
+            }
+
+            let old_path = folder.path.clone();
+            let time = OffsetDateTime::now_utc();
+
+            SqlUpdateFolder {
+                id,
+                name,
+                path: new_path.clone(),
+                parent_id: folder.parent_id,
+                updated_time: time,
+            }
+            .update(conn)?;
+
+            for child in SqlFolder::find_by_path_pre(&old_path, conn)? {
+                SqlUpdateFolder::from_new_path(&child, &old_path, &new_path, time).update(conn)?;
+            }
+
+            for conversation in SqlConversation::find_by_path_pre(&old_path, conn)? {
+                SqlUpdateConversation::from_new_path(&conversation, &old_path, &new_path, time)
+                    .update(conn)?;
+            }
+
+            for message in SqlMessage::find_by_path_pre(&old_path, conn)? {
+                SqlMessage::update_path(
+                    message.id,
+                    message.conversation_path,
+                    &old_path,
+                    &new_path,
+                    time,
+                    conn,
+                )?;
+            }
+
+            Self::from_sql_folder(SqlFolder::find(id, conn)?, conn)
+        })
+    }
+
     pub fn move_to_parent(
         id: i32,
         new_parent_id: Option<i32>,
