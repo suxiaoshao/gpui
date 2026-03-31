@@ -3,10 +3,10 @@ use time::OffsetDateTime;
 
 use crate::{
     database::{
-        Message,
         model::{
             SqlConversation, SqlFolder, SqlMessage, SqlNewConversation, SqlUpdateConversation,
         },
+        Message,
     },
     errors::{AiChatError, AiChatResult},
 };
@@ -51,6 +51,7 @@ impl Conversation {
         let sql_conversation = SqlConversation::find(id, conn)?;
         Self::from_sql_conversation(sql_conversation, conn)
     }
+
     pub fn insert(
         NewConversation {
             title,
@@ -135,6 +136,63 @@ impl Conversation {
             Ok::<(), AiChatError>(())
         })?;
         Ok(())
+    }
+
+    pub fn update(
+        id: i32,
+        title: &str,
+        icon: &str,
+        info: Option<&str>,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<Self> {
+        conn.immediate_transaction::<_, AiChatError, _>(|conn| {
+            let conversation = SqlConversation::find(id, conn)?;
+
+            // Calculate new path
+            let new_path = if let Some(folder_id) = conversation.folder_id {
+                let folder = SqlFolder::find(folder_id, conn)?;
+                format!("{}/{}", folder.path, title)
+            } else {
+                format!("/{title}")
+            };
+
+            // Check for path conflicts (only if title changed)
+            if conversation.title != title && SqlConversation::path_exists(&new_path, conn)? {
+                return Err(AiChatError::ConversationPathExists(new_path));
+            }
+            if SqlFolder::path_exists(&new_path, conn)? {
+                return Err(AiChatError::FolderPathExists(new_path));
+            }
+
+            let time = OffsetDateTime::now_utc();
+            let path_changed = new_path != conversation.path;
+
+            SqlUpdateConversation {
+                id,
+                folder_id: conversation.folder_id,
+                path: new_path.clone(),
+                title,
+                icon,
+                updated_time: time,
+                info,
+            }
+            .update(conn)?;
+
+            if path_changed {
+                for message in SqlMessage::query_by_conversation_id(id, conn)? {
+                    SqlMessage::update_path(
+                        message.id,
+                        message.conversation_path,
+                        &conversation.path,
+                        &new_path,
+                        time,
+                        conn,
+                    )?;
+                }
+            }
+
+            Self::from_sql_conversation(SqlConversation::find(id, conn)?, conn)
+        })
     }
 
     pub fn move_to_folder(

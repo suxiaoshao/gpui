@@ -85,6 +85,17 @@ impl ConversationPanelView {
             chat_form.restore_draft(draft, window, cx)
         });
     }
+
+    pub(crate) fn sync_metadata(
+        &mut self,
+        conversation: &Conversation,
+        cx: &mut Context<Self>,
+    ) {
+        self.detail.conversation_icon = conversation.icon.clone().into();
+        self.detail.conversation_title = conversation.title.clone().into();
+        self.detail.conversation_info = conversation.info.clone().map(Into::into);
+        cx.notify();
+    }
 }
 
 impl ConversationDetailViewExt for ConversationPanelState {

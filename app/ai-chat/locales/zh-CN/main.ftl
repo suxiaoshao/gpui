@@ -26,8 +26,13 @@ message-status-paused = 已暂停
 
 button-add = 添加
 button-add-prompt = 添加提示词
-button-cancel = 取消
+dialog-edit-folder-title = 编辑文件夹
+dialog-edit-conversation-title = 编辑会话
+notify-update-folder-failed = 更新文件夹失败
+notify-update-conversation-failed = 更新会话失败
+
 button-configure = 配置
+button-cancel = 取消
 button-create = 创建
 button-delete = 删除
 button-edit = 编辑

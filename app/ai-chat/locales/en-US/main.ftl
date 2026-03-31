@@ -26,8 +26,13 @@ message-status-paused = Paused
 
 button-add = Add
 button-add-prompt = Add Prompt
-button-cancel = Cancel
+dialog-edit-folder-title = Edit Folder
+dialog-edit-conversation-title = Edit Conversation
+notify-update-folder-failed = Update Folder Failed
+notify-update-conversation-failed = Update Conversation Failed
+
 button-configure = Config
+button-cancel = Cancel
 button-create = Create
 button-delete = Delete
 button-edit = Edit

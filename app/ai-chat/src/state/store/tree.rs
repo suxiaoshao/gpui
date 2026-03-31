@@ -146,10 +146,35 @@ impl ChatDataInner {
         }
         self.add_folder(updated);
     }
+
+    pub(crate) fn update_folder(&mut self, id: i32, updated: Folder) {
+        if Self::take_folder(&mut self.folders, id).is_none() {
+            return;
+        }
+        self.add_folder(updated);
+    }
+
+    pub(crate) fn update_conversation(&mut self, id: i32, updated: Conversation) {
+        if Self::take_conversation(&mut self.folders, &mut self.conversations, id).is_none() {
+            return;
+        }
+        self.add_conversation(updated);
+    }
 }
 
 // Resolves conversations and manages tab ordering and activation.
 impl ChatDataInner {
+    fn find_folder(folders: &[Folder], id: i32) -> Option<&Folder> {
+        for folder in folders {
+            if folder.id == id {
+                return Some(folder);
+            }
+            if let Some(folder) = Self::find_folder(&folder.folders, id) {
+                return Some(folder);
+            }
+        }
+        None
+    }
     fn get_conversation<'a>(
         folders: &'a [Folder],
         conversations: &'a [Conversation],
@@ -194,6 +219,10 @@ impl ChatDataInner {
     }
     pub(crate) fn conversation(&self, conversation_id: i32) -> Option<&Conversation> {
         Self::get_conversation(&self.folders, &self.conversations, conversation_id)
+    }
+
+    pub(crate) fn folder(&self, folder_id: i32) -> Option<&Folder> {
+        Self::find_folder(&self.folders, folder_id)
     }
 
     pub(crate) fn folder_ids(&self) -> BTreeSet<i32> {
@@ -648,6 +677,57 @@ mod tests {
         assert_eq!(data.folders.len(), 1);
         let root = ChatDataInner::get_folder(&mut data.folders, 1).unwrap();
         assert_eq!(root.parent_id, None);
+    }
+
+    #[test]
+    fn update_folder_replaces_nested_folder_in_place() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.folders.push(folder(2, Some(1)));
+        data.folders.push(root);
+
+        let mut updated = folder(2, Some(1));
+        updated.name = "Renamed Folder".to_string();
+        updated.path = "/folder/1/renamed-folder".to_string();
+
+        data.update_folder(2, updated);
+
+        let folder = ChatDataInner::get_folder(&mut data.folders, 2).unwrap();
+        assert_eq!(folder.name, "Renamed Folder");
+        assert_eq!(folder.path, "/folder/1/renamed-folder");
+    }
+
+    #[test]
+    fn update_conversation_replaces_nested_conversation_in_place() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.conversations.push(conversation(2, Some(1)));
+        data.folders.push(root);
+
+        let mut updated = conversation(2, Some(1));
+        updated.title = "Renamed Conversation".to_string();
+        updated.path = "/folder/1/renamed-conversation".to_string();
+        updated.info = Some("updated info".to_string());
+
+        data.update_conversation(2, updated);
+
+        let conversation = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
+            .unwrap();
+        assert_eq!(conversation.title, "Renamed Conversation");
+        assert_eq!(conversation.path, "/folder/1/renamed-conversation");
+        assert_eq!(conversation.info.as_deref(), Some("updated info"));
+    }
+
+    #[test]
+    fn folder_lookup_recurses_through_nested_tree() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        let child = folder(2, Some(1));
+        root.folders.push(child);
+        data.folders.push(root);
+
+        let folder = data.folder(2).expect("folder should exist");
+        assert_eq!(folder.id, 2);
     }
 
     #[test]

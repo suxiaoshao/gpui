@@ -4,44 +4,88 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
     input::{Input, InputState},
+    WindowExt,
 };
 use std::ops::Deref;
-use tracing::{Level, event};
+use tracing::{event, Level};
 
-pub fn add_conversation_dialog(parent_id: Option<i32>, window: &mut Window, cx: &mut App) {
-    add_conversation_dialog_with_messages(parent_id, None, window, cx);
+#[derive(Clone)]
+enum ConversationDialogMode {
+    Add {
+        parent_id: Option<i32>,
+        initial_messages: Option<Vec<AddConversationMessage>>,
+    },
+    Edit {
+        conversation_id: i32,
+    },
 }
 
-pub fn add_conversation_dialog_with_messages(
-    parent_id: Option<i32>,
-    initial_messages: Option<Vec<AddConversationMessage>>,
+fn open_conversation_dialog(
+    mode: ConversationDialogMode,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let span = tracing::info_span!("add_conversation action");
+    let span = tracing::info_span!("conversation_dialog action");
     let _enter = span.enter();
-    event!(Level::INFO, "add_conversation action");
 
+    let is_edit = matches!(mode, ConversationDialogMode::Edit { .. });
     let (dialog_title, name_label, icon_label, info_label, cancel_label, submit_label) = {
         let i18n = cx.global::<I18n>();
-        (
-            i18n.t("dialog-add-conversation-title"),
-            i18n.t("field-name"),
-            i18n.t("field-icon"),
-            i18n.t("field-info"),
-            i18n.t("button-cancel"),
-            i18n.t("button-submit"),
-        )
+        if is_edit {
+            (
+                i18n.t("dialog-edit-conversation-title"),
+                i18n.t("field-name"),
+                i18n.t("field-icon"),
+                i18n.t("field-info"),
+                i18n.t("button-cancel"),
+                i18n.t("button-submit"),
+            )
+        } else {
+            (
+                i18n.t("dialog-add-conversation-title"),
+                i18n.t("field-name"),
+                i18n.t("field-icon"),
+                i18n.t("field-info"),
+                i18n.t("button-cancel"),
+                i18n.t("button-submit"),
+            )
+        }
     };
 
     let name_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
     let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder(icon_label.clone()));
     let info_input = cx.new(|cx| InputState::new(window, cx).placeholder(info_label.clone()));
-    window.open_dialog(cx, move |dialog, _, _| {
+
+    if let ConversationDialogMode::Edit { conversation_id } = &mode {
+        let chat_data = cx.global::<ChatData>();
+        let Ok(chat_data) = chat_data.read(cx).as_ref() else {
+            event!(Level::ERROR, "Failed to read chat data for conversation edit dialog");
+            return;
+        };
+        let Some(conversation) = chat_data.conversation(*conversation_id) else {
+            event!(Level::ERROR, "Conversation {conversation_id} not found in chat data");
+            return;
+        };
+        let title = conversation.title.clone();
+        let icon = conversation.icon.clone();
+        let info = conversation.info.clone();
+        name_input.update(cx, |input, _cx| {
+            input.set_value(title.clone(), window, _cx);
+        });
+        icon_input.update(cx, |input, _cx| {
+            input.set_value(icon.clone(), window, _cx);
+        });
+        if let Some(info) = info {
+            info_input.update(cx, |input, _cx| {
+                input.set_value(info, window, _cx);
+            });
+        }
+    }
+
+    window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title(dialog_title.clone())
             .child(
@@ -70,7 +114,7 @@ pub fn add_conversation_dialog_with_messages(
                 let info_input = info_input.clone();
                 let cancel_label = cancel_label.clone();
                 let submit_label = submit_label.clone();
-                let initial_messages = initial_messages.clone();
+                let mode = mode.clone();
                 move |_this, _state, _window, _cx| {
                     vec![
                         Button::new("cancel").label(cancel_label.clone()).on_click(
@@ -85,26 +129,36 @@ pub fn add_conversation_dialog_with_messages(
                                 let name_input = name_input.clone();
                                 let icon_input = icon_input.clone();
                                 let info_input = info_input.clone();
-                                let initial_messages = initial_messages.clone();
+                                let mode = mode.clone();
                                 move |_, window, cx| {
                                     let name = name_input.read(cx).value();
                                     let icon = icon_input.read(cx).value();
                                     let info = info_input.read(cx).value();
                                     if !name.is_empty() {
                                         let chat_data = cx.global::<ChatData>().deref().clone();
-                                        let initial_messages = initial_messages.clone();
+                                        let mode = mode.clone();
                                         chat_data.update(cx, move |_this, cx| {
-                                            cx.emit(ChatDataEvent::AddConversation {
-                                                name,
-                                                icon,
-                                                info: if info.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(info)
-                                                },
-                                                parent_id,
-                                                initial_messages: initial_messages.clone(),
-                                            });
+                                            let info = if info.is_empty() { None } else { Some(info) };
+                                            match mode {
+                                                ConversationDialogMode::Add {
+                                                    parent_id,
+                                                    initial_messages,
+                                                } => cx.emit(ChatDataEvent::AddConversation {
+                                                    name,
+                                                    icon,
+                                                    info,
+                                                    parent_id,
+                                                    initial_messages,
+                                                }),
+                                                ConversationDialogMode::Edit {
+                                                    conversation_id,
+                                                } => cx.emit(ChatDataEvent::UpdateConversation {
+                                                    id: conversation_id,
+                                                    title: name,
+                                                    icon,
+                                                    info,
+                                                }),
+                                            }
                                         });
                                     }
                                     window.close_dialog(cx);
@@ -114,4 +168,28 @@ pub fn add_conversation_dialog_with_messages(
                 }
             })
     });
+}
+
+pub fn open_add_conversation_dialog(
+    parent_id: Option<i32>,
+    initial_messages: Option<Vec<AddConversationMessage>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_conversation_dialog(
+        ConversationDialogMode::Add {
+            parent_id,
+            initial_messages,
+        },
+        window,
+        cx,
+    );
+}
+
+pub fn open_edit_conversation_dialog(conversation_id: i32, window: &mut Window, cx: &mut App) {
+    open_conversation_dialog(
+        ConversationDialogMode::Edit { conversation_id },
+        window,
+        cx,
+    );
 }
