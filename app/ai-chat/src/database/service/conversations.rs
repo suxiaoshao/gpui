@@ -165,8 +165,8 @@ impl Conversation {
             }
 
             let time = OffsetDateTime::now_utc();
+            let path_changed = new_path != conversation.path;
 
-            // Update conversation basic info
             SqlUpdateConversation {
                 id,
                 folder_id: conversation.folder_id,
@@ -178,16 +178,17 @@ impl Conversation {
             }
             .update(conn)?;
 
-            // Update all messages' conversation_path
-            for message in SqlMessage::query_by_conversation_id(id, conn)? {
-                SqlMessage::update_path(
-                    message.id,
-                    message.conversation_path,
-                    &conversation.path,
-                    &new_path,
-                    time,
-                    conn,
-                )?;
+            if path_changed {
+                for message in SqlMessage::query_by_conversation_id(id, conn)? {
+                    SqlMessage::update_path(
+                        message.id,
+                        message.conversation_path,
+                        &conversation.path,
+                        &new_path,
+                        time,
+                        conn,
+                    )?;
+                }
             }
 
             Self::from_sql_conversation(SqlConversation::find(id, conn)?, conn)
