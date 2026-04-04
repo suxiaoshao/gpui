@@ -107,7 +107,7 @@ pub fn current_mouse_display_id() -> Option<u32> {
 
     monitors
         .iter()
-        .position(|candidate| candidate.0 == monitor.0)
+        .position(|candidate: &HMONITOR| candidate.0 == monitor.0)
         .map(|index| index as u32)
 }
 

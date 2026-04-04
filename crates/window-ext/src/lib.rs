@@ -10,7 +10,7 @@ use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
 use thiserror::Error;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{BOOL, HWND, LPARAM, RECT},
+    Foundation::{HWND, LPARAM, RECT},
     Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
     UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
     UI::WindowsAndMessaging::{
@@ -18,6 +18,8 @@ use windows::Win32::{
         ShowWindow, USER_DEFAULT_SCREEN_DPI,
     },
 };
+#[cfg(target_os = "windows")]
+use windows::core::BOOL;
 
 #[derive(Error, Debug)]
 pub enum WindowExtError {
@@ -207,19 +209,10 @@ impl WindowExt for Window {
                         self.scale_factor(),
                         display_id.and_then(scale_factor_for_display),
                     );
-                    let (x, y, width, height) =
-                        logical_bounds_to_device_rect(bounds, scale_factor);
+                    let (x, y, width, height) = logical_bounds_to_device_rect(bounds, scale_factor);
                     unsafe {
-                        SetWindowPos(
-                            hwnd,
-                            None,
-                            x,
-                            y,
-                            width,
-                            height,
-                            SWP_NOZORDER,
-                        )
-                        .map_err(|_| WindowExtError::FailedSetBounds)?;
+                        SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER)
+                            .map_err(|_| WindowExtError::FailedSetBounds)?;
                     }
                 }
             }
