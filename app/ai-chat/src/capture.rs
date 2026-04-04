@@ -27,9 +27,9 @@ impl CaptureRect {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Error, PartialEq)]
 pub(crate) enum CaptureError {
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[error("capture is unsupported on this platform")]
     UnsupportedPlatform,
     #[error("capture was cancelled")]

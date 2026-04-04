@@ -2,7 +2,6 @@ use std::{fmt::Display, str::FromStr};
 
 use crate::errors::AiChatError;
 
-#[allow(dead_code)]
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum ShortcutInputSource {
     #[serde(rename = "selection_or_clipboard")]

@@ -10,7 +10,7 @@ image = "0.25.10"
 plist = "1.8.0"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-toml = "1.0.7"
+toml = "1.1.2"
 tauri-bundler = "2.8.1"
 tauri-utils = "2.8.3"
 tracing = "0.1.44"

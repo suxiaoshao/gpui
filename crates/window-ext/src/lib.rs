@@ -10,10 +10,12 @@ use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
 use thiserror::Error;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{BOOL, HWND, LPARAM, RECT},
+    Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
+    UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
     UI::WindowsAndMessaging::{
         HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
-        ShowWindow,
+        ShowWindow, USER_DEFAULT_SCREEN_DPI,
     },
 };
 
@@ -201,8 +203,12 @@ impl WindowExt for Window {
                 #[cfg(target_os = "windows")]
                 {
                     let hwnd = HWND(handle.hwnd.get() as _);
+                    let scale_factor = resolve_target_scale_factor(
+                        self.scale_factor(),
+                        display_id.and_then(scale_factor_for_display),
+                    );
                     let (x, y, width, height) =
-                        logical_bounds_to_device_rect(bounds, self.scale_factor());
+                        logical_bounds_to_device_rect(bounds, scale_factor);
                     unsafe {
                         SetWindowPos(
                             hwnd,
@@ -223,8 +229,11 @@ impl WindowExt for Window {
     }
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn logical_bounds_to_device_rect(bounds: Bounds<Pixels>, scale_factor: f32) -> (i32, i32, i32, i32) {
+#[cfg(any(target_os = "windows", test))]
+fn logical_bounds_to_device_rect(
+    bounds: Bounds<Pixels>,
+    scale_factor: f32,
+) -> (i32, i32, i32, i32) {
     let bounds = bounds.to_device_pixels(scale_factor);
     (
         bounds.origin.x.0,
@@ -234,20 +243,55 @@ fn logical_bounds_to_device_rect(bounds: Bounds<Pixels>, scale_factor: f32) -> (
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::logical_bounds_to_device_rect;
-    use gpui::{bounds, point, px, size};
+#[cfg(any(target_os = "windows", test))]
+fn resolve_target_scale_factor(
+    fallback_scale_factor: f32,
+    target_scale_factor: Option<f32>,
+) -> f32 {
+    target_scale_factor.unwrap_or(fallback_scale_factor)
+}
 
-    #[test]
-    fn logical_bounds_to_device_rect_scales_coordinates_and_size() {
-        let result = logical_bounds_to_device_rect(
-            bounds(point(px(10.0), px(20.0)), size(px(300.0), px(200.0))),
-            1.5,
+#[cfg(target_os = "windows")]
+fn scale_factor_for_display(display_id: DisplayId) -> Option<f32> {
+    available_monitors()
+        .into_iter()
+        .nth(u32::from(display_id) as usize)
+        .and_then(|monitor| get_scale_factor_for_monitor(monitor).ok())
+}
+
+#[cfg(target_os = "windows")]
+fn available_monitors() -> Vec<HMONITOR> {
+    let mut monitors = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(&mut monitors as *mut _ as _),
         );
-
-        assert_eq!(result, (15, 30, 450, 300));
     }
+    monitors
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn monitor_enum_proc(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let monitors = data.0 as *mut Vec<HMONITOR>;
+    unsafe { (*monitors).push(monitor) };
+    BOOL(1)
+}
+
+#[cfg(target_os = "windows")]
+fn get_scale_factor_for_monitor(monitor: HMONITOR) -> windows::core::Result<f32> {
+    let mut dpi_x = 0;
+    let mut dpi_y = 0;
+    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }?;
+    debug_assert_eq!(dpi_x, dpi_y);
+    Ok(dpi_x as f32 / USER_DEFAULT_SCREEN_DPI as f32)
 }
 
 fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
@@ -290,4 +334,26 @@ fn resolve_screen_frame(
         .screen()
         .ok_or(WindowExtError::FailedToGetNSWindow)?;
     Ok(screen.frame())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{logical_bounds_to_device_rect, resolve_target_scale_factor};
+    use gpui::{bounds, point, px, size};
+
+    #[test]
+    fn logical_bounds_to_device_rect_scales_coordinates_and_size() {
+        let result = logical_bounds_to_device_rect(
+            bounds(point(px(10.0), px(20.0)), size(px(300.0), px(200.0))),
+            1.5,
+        );
+
+        assert_eq!(result, (15, 30, 450, 300));
+    }
+
+    #[test]
+    fn resolve_target_scale_factor_prefers_target_display_scale() {
+        assert_eq!(resolve_target_scale_factor(1.0, Some(1.5)), 1.5);
+        assert_eq!(resolve_target_scale_factor(1.0, None), 1.0);
+    }
 }

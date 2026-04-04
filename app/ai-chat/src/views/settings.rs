@@ -23,8 +23,6 @@ actions!([OpenSetting]);
 enum SettingsOpenTarget {
     General,
     Provider,
-    #[allow(dead_code)]
-    Shortcuts,
 }
 
 pub fn init(cx: &mut App) {
@@ -192,12 +190,6 @@ impl Render for SettingsView {
                 (
                     "my-settings-provider",
                     vec![provider_page, general_page, shortcuts_page],
-                )
-            }
-            SettingsOpenTarget::Shortcuts => {
-                (
-                    "my-settings-shortcuts",
-                    vec![shortcuts_page, general_page, provider_page],
                 )
             }
         };
