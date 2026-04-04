@@ -11642,6 +11642,7 @@ dependencies = [
  "gpui",
  "objc2 0.6.4",
  "objc2-app-kit",
+ "objc2-foundation",
  "raw-window-handle",
  "thiserror 2.0.18",
  "windows 0.62.2",

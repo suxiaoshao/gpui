@@ -1,9 +1,9 @@
 #![allow(deprecated)]
-use gpui::Window;
+use gpui::{Bounds, DisplayId, Pixels, Window};
 #[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Id};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSScreen, NSView, NSWindow};
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
@@ -12,7 +12,8 @@ use thiserror::Error;
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-        HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow,
+        HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        ShowWindow,
     },
 };
 
@@ -28,6 +29,8 @@ pub enum WindowExtError {
     FailedToGetNSApplication,
     #[error("Failed to set topmost")]
     FailedSetTopMost,
+    #[error("Failed to set window bounds")]
+    FailedSetBounds,
 }
 
 pub trait WindowExt {
@@ -35,6 +38,11 @@ pub trait WindowExt {
     fn show(&self) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
     fn is_visible(&self) -> Result<bool, WindowExtError>;
+    fn move_and_resize(
+        &self,
+        bounds: Bounds<Pixels>,
+        display_id: Option<DisplayId>,
+    ) -> Result<(), WindowExtError>;
 }
 
 impl WindowExt for Window {
@@ -159,6 +167,58 @@ impl WindowExt for Window {
         };
         Ok(true)
     }
+
+    fn move_and_resize(
+        &self,
+        bounds: Bounds<Pixels>,
+        display_id: Option<DisplayId>,
+    ) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        match raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    let screen_frame = resolve_screen_frame(&ns_window, display_id)?;
+                    let frame = objc2_foundation::NSRect::new(
+                        objc2_foundation::NSPoint::new(
+                            screen_frame.origin.x + f64::from(f32::from(bounds.origin.x)),
+                            screen_frame.origin.y + screen_frame.size.height
+                                - f64::from(f32::from(bounds.origin.y))
+                                - f64::from(f32::from(bounds.size.height)),
+                        ),
+                        objc2_foundation::NSSize::new(
+                            f64::from(f32::from(bounds.size.width)),
+                            f64::from(f32::from(bounds.size.height)),
+                        ),
+                    );
+                    ns_window.setFrame_display(frame, true);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            None,
+                            f32::from(bounds.origin.x).round() as i32,
+                            f32::from(bounds.origin.y).round() as i32,
+                            f32::from(bounds.size.width).round() as i32,
+                            f32::from(bounds.size.height).round() as i32,
+                            SWP_NOZORDER,
+                        )
+                        .map_err(|_| WindowExtError::FailedSetBounds)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
@@ -180,4 +240,25 @@ fn get_ns_window(
         .ok_or(WindowExtError::FailedToGetNSWindow)?;
 
     Ok(ns_window)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_screen_frame(
+    ns_window: &NSWindow,
+    display_id: Option<DisplayId>,
+) -> Result<objc2_foundation::NSRect, WindowExtError> {
+    if let Some(display_id) = display_id {
+        let mtm = MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?;
+        let screens = NSScreen::screens(mtm);
+        for screen in &screens {
+            if screen.CGDirectDisplayID() == u32::from(display_id) {
+                return Ok(screen.frame());
+            }
+        }
+    }
+
+    let screen = ns_window
+        .screen()
+        .ok_or(WindowExtError::FailedToGetNSWindow)?;
+    Ok(screen.frame())
 }

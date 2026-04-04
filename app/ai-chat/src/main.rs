@@ -24,6 +24,7 @@ mod gpui_ext;
 mod hotkey;
 mod i18n;
 mod llm;
+mod screen;
 mod state;
 mod views;
 
