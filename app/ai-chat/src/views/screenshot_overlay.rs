@@ -167,20 +167,10 @@ pub(crate) struct ScreenshotOverlayView {
 
 fn offset_capture_rect(
     rect: CaptureRect,
-    window_origin: Point<Pixels>,
-    scale_factor: f32,
+    _window_origin: Point<Pixels>,
+    _scale_factor: f32,
     display: &CaptureDisplay,
 ) -> Option<CaptureRect> {
-    let origin_x = logical_to_capture_coord(f32::from(window_origin.x), scale_factor);
-    let origin_y = logical_to_capture_coord(f32::from(window_origin.y), scale_factor);
-    let x_px = rect.x_px.checked_add(origin_x)?;
-    let y_px = rect.y_px.checked_add(origin_y)?;
-    let rect = CaptureRect {
-        x_px,
-        y_px,
-        width_px: rect.width_px,
-        height_px: rect.height_px,
-    };
     (rect.x_px + rect.width_px <= display.width_px && rect.y_px + rect.height_px <= display.height_px)
         .then_some(rect)
 }
@@ -488,7 +478,10 @@ fn selection_bounds(
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAG_THRESHOLD, drag_distance, selection_bounds, selection_rect, selection_rect_in_overlay_coords};
+    use super::{
+        DRAG_THRESHOLD, drag_distance, logical_to_capture_coord, selection_bounds, selection_rect,
+        selection_rect_in_overlay_coords,
+    };
     use crate::capture::{CaptureDisplay, CaptureRect};
     use gpui::{point, px};
 
@@ -533,10 +526,10 @@ mod tests {
         assert_eq!(
             rect,
             CaptureRect {
-                x_px: 20,
-                y_px: 52,
-                width_px: 180,
-                height_px: 120,
+                x_px: logical_to_capture_coord(20.0, 2.0),
+                y_px: logical_to_capture_coord(40.0, 2.0),
+                width_px: logical_to_capture_coord(180.0, 2.0),
+                height_px: logical_to_capture_coord(120.0, 2.0),
             }
         );
     }

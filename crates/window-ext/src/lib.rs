@@ -201,14 +201,16 @@ impl WindowExt for Window {
                 #[cfg(target_os = "windows")]
                 {
                     let hwnd = HWND(handle.hwnd.get() as _);
+                    let (x, y, width, height) =
+                        logical_bounds_to_device_rect(bounds, self.scale_factor());
                     unsafe {
                         SetWindowPos(
                             hwnd,
                             None,
-                            f32::from(bounds.origin.x).round() as i32,
-                            f32::from(bounds.origin.y).round() as i32,
-                            f32::from(bounds.size.width).round() as i32,
-                            f32::from(bounds.size.height).round() as i32,
+                            x,
+                            y,
+                            width,
+                            height,
                             SWP_NOZORDER,
                         )
                         .map_err(|_| WindowExtError::FailedSetBounds)?;
@@ -218,6 +220,33 @@ impl WindowExt for Window {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn logical_bounds_to_device_rect(bounds: Bounds<Pixels>, scale_factor: f32) -> (i32, i32, i32, i32) {
+    let bounds = bounds.to_device_pixels(scale_factor);
+    (
+        bounds.origin.x.0,
+        bounds.origin.y.0,
+        bounds.size.width.0,
+        bounds.size.height.0,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logical_bounds_to_device_rect;
+    use gpui::{bounds, point, px, size};
+
+    #[test]
+    fn logical_bounds_to_device_rect_scales_coordinates_and_size() {
+        let result = logical_bounds_to_device_rect(
+            bounds(point(px(10.0), px(20.0)), size(px(300.0), px(200.0))),
+            1.5,
+        );
+
+        assert_eq!(result, (15, 30, 450, 300));
     }
 }
 
