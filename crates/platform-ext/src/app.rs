@@ -12,10 +12,12 @@ use objc2_app_kit::{NSApplication, NSEvent, NSImage, NSScreen};
 use objc2_foundation::NSData;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{BOOL, LPARAM, POINT},
-    Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR, RECT},
-    UI::WindowsAndMessaging::{GetCursorPos, MONITOR_DEFAULTTONULL, MonitorFromPoint},
+    Foundation::{LPARAM, POINT, RECT},
+    Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR, MONITOR_DEFAULTTONULL, MonitorFromPoint},
+    UI::WindowsAndMessaging::GetCursorPos,
 };
+#[cfg(target_os = "windows")]
+use windows::core::BOOL;
 
 #[cfg(target_os = "macos")]
 pub fn record_frontmost_app() -> Option<Retained<NSRunningApplication>> {

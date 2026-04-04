@@ -352,6 +352,16 @@ mod tests {
     }
 
     #[test]
+    fn logical_bounds_to_device_rect_keeps_offset_display_origin_absolute() {
+        let result = logical_bounds_to_device_rect(
+            bounds(point(px(1280.0), px(120.0)), size(px(800.0), px(600.0))),
+            1.5,
+        );
+
+        assert_eq!(result, (1920, 180, 1200, 900));
+    }
+
+    #[test]
     fn resolve_target_scale_factor_prefers_target_display_scale() {
         assert_eq!(resolve_target_scale_factor(1.0, Some(1.5)), 1.5);
         assert_eq!(resolve_target_scale_factor(1.0, None), 1.0);
