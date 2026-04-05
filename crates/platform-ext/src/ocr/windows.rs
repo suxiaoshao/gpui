@@ -1,7 +1,7 @@
 use crate::{
     OcrError,
-    ocr::{RecognizedLine, collapse_lines},
     ocr::ImageFrame,
+    ocr::{RecognizedLine, collapse_lines},
 };
 use windows::{
     Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
@@ -14,8 +14,7 @@ use windows::{
 use windows_core::HRESULT;
 
 use crate::ocr::windows_support::{
-    image_frame::software_bitmap_from_image_frame,
-    wait_async_operation,
+    image_frame::software_bitmap_from_image_frame, wait_async_operation,
     wait_async_operation_with_progress,
 };
 use tracing::{Level, event};
@@ -54,7 +53,11 @@ pub(super) fn recognize_text(image: &ImageFrame) -> Result<String, OcrError> {
 }
 
 fn recognize_text_ai(bitmap: &SoftwareBitmap) -> Result<String, BackendError> {
-    event!(Level::INFO, backend = "windows_ai_text_recognizer", "Trying OCR backend");
+    event!(
+        Level::INFO,
+        backend = "windows_ai_text_recognizer",
+        "Trying OCR backend"
+    );
     ensure_ai_ready()?;
     let recognizer =
         wait_async_operation(ai_bindings::TextRecognizer::CreateAsync().map_err(ai_failure)?)
@@ -111,7 +114,11 @@ fn ensure_ai_ready() -> Result<(), BackendError> {
 }
 
 fn recognize_text_legacy(bitmap: &SoftwareBitmap) -> Result<String, BackendError> {
-    event!(Level::INFO, backend = "windows_media_ocr", "Trying OCR fallback backend");
+    event!(
+        Level::INFO,
+        backend = "windows_media_ocr",
+        "Trying OCR fallback backend"
+    );
     let bitmap =
         SoftwareBitmap::ConvertWithAlpha(bitmap, BitmapPixelFormat::Bgra8, BitmapAlphaMode::Ignore)
             .map_err(legacy_failure)?;
@@ -176,12 +183,20 @@ fn resolve_backend_result(
 ) -> Result<String, OcrError> {
     match primary {
         Ok(result) => {
-            event!(Level::INFO, backend = "windows_ai_text_recognizer", "OCR primary backend succeeded");
+            event!(
+                Level::INFO,
+                backend = "windows_ai_text_recognizer",
+                "OCR primary backend succeeded"
+            );
             Ok(result)
         }
         Err(BackendError::Unavailable(_)) => match fallback() {
             Ok(result) => {
-                event!(Level::INFO, backend = "windows_media_ocr", "OCR fallback backend succeeded");
+                event!(
+                    Level::INFO,
+                    backend = "windows_media_ocr",
+                    "OCR fallback backend succeeded"
+                );
                 Ok(result)
             }
             Err(BackendError::Unavailable(reason)) => {

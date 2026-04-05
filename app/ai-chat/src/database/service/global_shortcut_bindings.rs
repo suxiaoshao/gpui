@@ -12,7 +12,6 @@ use diesel::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct GlobalShortcutBinding {
     pub id: i32,
@@ -63,7 +62,6 @@ impl TryFrom<SqlGlobalShortcutBinding> for GlobalShortcutBinding {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct NewGlobalShortcutBinding {
     pub hotkey: String,
@@ -81,7 +79,6 @@ pub struct NewGlobalShortcutBinding {
     pub input_source: ShortcutInputSource,
 }
 
-#[allow(dead_code)]
 impl GlobalShortcutBinding {
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Self> {
         SqlGlobalShortcutBinding::find(id, conn)?.try_into()
@@ -139,7 +136,6 @@ impl GlobalShortcutBinding {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct UpdateGlobalShortcutBinding {
     pub hotkey: String,
@@ -162,8 +158,7 @@ mod tests {
     use super::{GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding};
     use crate::{
         database::{
-            CREATE_TABLE_SQL, Mode, ShortcutInputSource,
-            model::SqlNewConversationTemplate,
+            CREATE_TABLE_SQL, Mode, ShortcutInputSource, model::SqlNewConversationTemplate,
         },
         errors::AiChatError,
     };

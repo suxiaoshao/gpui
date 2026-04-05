@@ -711,8 +711,8 @@ mod tests {
 
         data.update_conversation(2, updated);
 
-        let conversation = ChatDataInner::get_conversation(&data.folders, &data.conversations, 2)
-            .unwrap();
+        let conversation =
+            ChatDataInner::get_conversation(&data.folders, &data.conversations, 2).unwrap();
         assert_eq!(conversation.title, "Renamed Conversation");
         assert_eq!(conversation.path, "/folder/1/renamed-conversation");
         assert_eq!(conversation.info.as_deref(), Some("updated info"));

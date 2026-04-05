@@ -52,10 +52,13 @@ mod tests {
     #[test]
     fn build_request_template_replays_openai_reasoning_settings() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
-        let template = build_request_template(&model, Some(&json!({
-            "model": "gpt-5.2-pro",
-            "reasoning": { "effort": "xhigh" }
-        })))?;
+        let template = build_request_template(
+            &model,
+            Some(&json!({
+                "model": "gpt-5.2-pro",
+                "reasoning": { "effort": "xhigh" }
+            })),
+        )?;
 
         assert_eq!(template["reasoning"]["effort"], "xhigh");
         Ok(())
@@ -63,16 +66,19 @@ mod tests {
 
     #[test]
     fn build_request_template_replays_ollama_ext_settings() -> anyhow::Result<()> {
-        let model =
-            ProviderModel::new("Ollama", "gpt-oss", ProviderModelCapability::Streaming).with_metadata(json!({
+        let model = ProviderModel::new("Ollama", "gpt-oss", ProviderModelCapability::Streaming)
+            .with_metadata(json!({
                 "capabilities": ["completion", "thinking", "tools"],
                 "family": "gptoss",
                 "families": ["gptoss"]
             }));
-        let template = build_request_template(&model, Some(&json!({
-            "think": "high",
-            "web_search": true
-        })))?;
+        let template = build_request_template(
+            &model,
+            Some(&json!({
+                "think": "high",
+                "web_search": true
+            })),
+        )?;
 
         assert_eq!(template["think"], "high");
         assert_eq!(template["web_search"], true);
@@ -82,10 +88,13 @@ mod tests {
     #[test]
     fn build_request_template_skips_invalid_saved_ext_settings() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
-        let template = build_request_template(&model, Some(&json!({
-            "model": "gpt-5.2-pro",
-            "reasoning": { "effort": "invalid" }
-        })))?;
+        let template = build_request_template(
+            &model,
+            Some(&json!({
+                "model": "gpt-5.2-pro",
+                "reasoning": { "effort": "invalid" }
+            })),
+        )?;
 
         assert_eq!(template["model"], "gpt-5.2-pro");
         assert_ne!(template["reasoning"]["effort"], "invalid");

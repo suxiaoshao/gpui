@@ -2,9 +2,9 @@ use crate::{
     capture::{CaptureDisplay, CaptureError, CaptureRect, capture_region},
     database::GlobalShortcutBinding,
     hotkey::GlobalHotkeyState,
+    screen::target_display,
 };
 use gpui::*;
-
 use std::cmp::{max, min};
 use std::time::Duration;
 use tracing::{Level, event};
@@ -33,85 +33,87 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
 
     let primary_id = cx.primary_display().map(|display| u32::from(display.id()));
     let mut handles = Vec::new();
+    let Some(display) = target_display(cx) else {
+        return Err(CaptureError::BackendUnavailable(
+            "no displays are available",
+        ));
+    };
     event!(
         Level::INFO,
         binding_id = binding.id,
         displays = cx.displays().len(),
         "Opening screenshot overlay session"
     );
-    for display in cx.displays() {
-        let bounds = Bounds::new(point(px(0.), px(0.)), display.bounds().size);
-        let display_id = display.id();
-        let display_info = CaptureDisplay {
-            id_hint: u32::from(display_id),
-            width_px: 0,
-            height_px: 0,
-            scale_factor: 0.0,
-            is_primary: primary_id == Some(u32::from(display_id)),
-        };
-        event!(
-            Level::INFO,
-            display_id = display_info.id_hint,
-            is_primary = display_info.is_primary,
-            width = f32::from(bounds.size.width),
-            height = f32::from(bounds.size.height),
-            "Creating screenshot overlay window"
-        );
+    let bounds = Bounds::new(point(px(0.), px(0.)), display.bounds().size);
+    let display_id = display.id();
+    let display_info = CaptureDisplay {
+        id_hint: u32::from(display_id),
+        origin: display.bounds().origin,
+        width_px: 0,
+        height_px: 0,
+        scale_factor: 0.0,
+        is_primary: primary_id == Some(u32::from(display_id)),
+    };
+    event!(
+        Level::INFO,
+        display_id = display_info.id_hint,
+        is_primary = display_info.is_primary,
+        width = f32::from(bounds.size.width),
+        height = f32::from(bounds.size.height),
+        "Creating screenshot overlay window"
+    );
 
-        let handle = cx.open_window(
-            WindowOptions {
-                display_id: Some(display_id),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                kind: WindowKind::Floating,
-                titlebar: Some(TitlebarOptions {
-                    title: None,
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(-100.), px(-100.))),
-                }),
-                window_background: WindowBackgroundAppearance::Transparent,
-                focus: true,
-                show: true,
-                is_movable: false,
-                is_resizable: false,
-                window_min_size: None,
-                window_decorations: None,
-                ..Default::default()
-            },
-            move |window, cx| {
-                if let Err(err) = window.set_floating() {
-                    event!(
-                        Level::ERROR,
-                        display_id = display_info.id_hint,
-                        error = ?err,
-                        "Failed to set screenshot overlay window floating"
-                    );
-                }
-                window.activate_window();
-                let display_id = display_info.id_hint;
+    let handle = cx.open_window(
+        WindowOptions {
+            display_id: Some(display_id),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            kind: WindowKind::Floating,
+            titlebar: Some(TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(-100.), px(-100.))),
+            }),
+            window_background: WindowBackgroundAppearance::Transparent,
+            focus: true,
+            show: true,
+            is_movable: false,
+            is_resizable: false,
+            window_min_size: None,
+            window_decorations: None,
+            ..Default::default()
+        },
+        move |window, cx| {
+            if let Err(err) = window.set_floating() {
                 event!(
-                    Level::INFO,
-                    display_id,
-                    scale_factor = window.scale_factor(),
-                    "Screenshot overlay window opened"
+                    Level::ERROR,
+                    display_id = display_info.id_hint,
+                    error = ?err,
+                    "Failed to set screenshot overlay window floating"
                 );
-                cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), window, cx))
-            },
-        );
-
-        match handle {
-            Ok(handle) => handles.push(handle),
-            Err(err) => {
-                // Roll back any overlay windows already opened on previous displays so
-                // they don't get stranded on screen with no session to clean them up.
-                for h in handles {
-                    let _ = h.update(cx, |_, window, _cx| window.remove_window());
-                }
-                #[cfg(target_os = "macos")]
-                cx.update_global::<GlobalHotkeyState, _>(|state, _cx| {
-                    state.clear_front_app_for_screenshot();
-                });
-                return Err(CaptureError::SystemFailure(err.to_string()));
             }
+            window.activate_window();
+            let display_id = display_info.id_hint;
+            event!(
+                Level::INFO,
+                display_id,
+                scale_factor = window.scale_factor(),
+                "Screenshot overlay window opened"
+            );
+            cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), window, cx))
+        },
+    );
+
+    match handle {
+        Ok(handle) => handles.push(handle),
+        Err(err) => {
+            for h in handles {
+                let _ = h.update(cx, |_, window, _cx| window.remove_window());
+            }
+            #[cfg(target_os = "macos")]
+            cx.update_global::<GlobalHotkeyState, _>(|state, _cx| {
+                state.clear_front_app_for_screenshot();
+            });
+            return Err(CaptureError::SystemFailure(err.to_string()));
         }
     }
 
@@ -162,6 +164,34 @@ pub(crate) struct ScreenshotOverlayView {
     drag_current: Option<Point<Pixels>>,
     selection_started: bool,
     focus_handle: FocusHandle,
+}
+
+fn offset_capture_rect(
+    rect: CaptureRect,
+    window_origin: Point<Pixels>,
+    scale_factor: f32,
+    display: &CaptureDisplay,
+) -> Option<CaptureRect> {
+    let offset_x = logical_to_capture_delta(
+        f32::from(window_origin.x) - f32::from(display.origin.x),
+        scale_factor,
+    );
+    let offset_y = logical_to_capture_delta(
+        f32::from(window_origin.y) - f32::from(display.origin.y),
+        scale_factor,
+    );
+    let x_px = rect.x_px.checked_add_signed(offset_x)?;
+    let y_px = rect.y_px.checked_add_signed(offset_y)?;
+    let rect = CaptureRect {
+        x_px,
+        y_px,
+        width_px: rect.width_px,
+        height_px: rect.height_px,
+    };
+
+    (rect.x_px + rect.width_px <= display.width_px
+        && rect.y_px + rect.height_px <= display.height_px)
+        .then_some(rect)
 }
 
 impl ScreenshotOverlayView {
@@ -255,8 +285,13 @@ impl ScreenshotOverlayView {
             cancel_overlay(window, cx);
             return;
         }
-        let Some(rect) = selection_rect(self.drag_origin, self.drag_current, window.scale_factor())
-        else {
+        let Some(rect) = selection_rect(
+            self.drag_origin,
+            self.drag_current,
+            window.scale_factor(),
+            window.bounds().origin,
+            &self.display,
+        ) else {
             event!(
                 Level::INFO,
                 display_id = self.display.id_hint,
@@ -402,11 +437,22 @@ fn logical_to_capture_coord(logical: f32, scale_factor: f32) -> u32 {
     return (logical * scale_factor).round() as u32;
 }
 
+fn logical_to_capture_delta(logical: f32, scale_factor: f32) -> i32 {
+    #[cfg(target_os = "macos")]
+    let _ = scale_factor;
+    #[cfg(target_os = "macos")]
+    return logical.round() as i32;
+
+    #[cfg(not(target_os = "macos"))]
+    return (logical * scale_factor).round() as i32;
+}
+
 fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay {
     let size = window.bounds().size;
     let scale_factor = window.scale_factor();
     CaptureDisplay {
         id_hint: display.id_hint,
+        origin: display.origin,
         width_px: logical_to_capture_coord(f32::from(size.width), scale_factor),
         height_px: logical_to_capture_coord(f32::from(size.height), scale_factor),
         scale_factor,
@@ -414,7 +460,7 @@ fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay
     }
 }
 
-fn selection_rect(
+fn selection_rect_in_overlay_coords(
     origin: Option<Point<Pixels>>,
     current: Option<Point<Pixels>>,
     scale_factor: f32,
@@ -434,6 +480,17 @@ fn selection_rect(
     })
 }
 
+fn selection_rect(
+    origin: Option<Point<Pixels>>,
+    current: Option<Point<Pixels>>,
+    scale_factor: f32,
+    window_origin: Point<Pixels>,
+    display: &CaptureDisplay,
+) -> Option<CaptureRect> {
+    let rect = selection_rect_in_overlay_coords(origin, current, scale_factor)?;
+    offset_capture_rect(rect, window_origin, scale_factor, display)
+}
+
 fn selection_bounds(
     origin: Option<Point<Pixels>>,
     current: Option<Point<Pixels>>,
@@ -451,8 +508,23 @@ fn selection_bounds(
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAG_THRESHOLD, drag_distance, selection_bounds, selection_rect};
+    use super::{
+        DRAG_THRESHOLD, drag_distance, logical_to_capture_coord, logical_to_capture_delta,
+        selection_bounds, selection_rect, selection_rect_in_overlay_coords,
+    };
+    use crate::capture::{CaptureDisplay, CaptureRect};
     use gpui::{point, px};
+
+    fn display(origin_x: f32, origin_y: f32, height_px: u32) -> CaptureDisplay {
+        CaptureDisplay {
+            id_hint: 1,
+            origin: point(px(origin_x), px(origin_y)),
+            width_px: 1920,
+            height_px,
+            scale_factor: 1.0,
+            is_primary: true,
+        }
+    }
 
     #[test]
     fn selection_rect_normalizes_drag_direction() {
@@ -460,14 +532,38 @@ mod tests {
             Some(point(px(200.0), px(160.0))),
             Some(point(px(20.0), px(40.0))),
             1.0,
+            point(px(0.0), px(0.0)),
+            &display(0.0, 0.0, 1080),
         )
         .expect("drag selection should produce a rect");
 
-        // scale_factor = 1.0 on non-macOS (physical == logical), macOS ignores it
         assert_eq!(rect.x_px, 20);
         assert_eq!(rect.y_px, 40);
         assert_eq!(rect.width_px, 180);
         assert_eq!(rect.height_px, 120);
+    }
+
+    #[test]
+    fn selection_rect_offsets_by_window_origin_relative_to_display_origin() {
+        let rect = selection_rect(
+            Some(point(px(20.0), px(40.0))),
+            Some(point(px(200.0), px(160.0))),
+            2.0,
+            point(px(1440.0), px(12.0)),
+            &display(1440.0, 0.0, 1080),
+        )
+        .expect("drag selection should produce a rect");
+
+        assert_eq!(
+            rect,
+            CaptureRect {
+                x_px: logical_to_capture_coord(20.0, 2.0),
+                y_px: logical_to_capture_coord(40.0, 2.0)
+                    + logical_to_capture_delta(12.0, 2.0) as u32,
+                width_px: logical_to_capture_coord(180.0, 2.0),
+                height_px: logical_to_capture_coord(120.0, 2.0),
+            }
+        );
     }
 
     #[test]
@@ -479,5 +575,25 @@ mod tests {
     fn drag_distance_stays_below_threshold_for_clicks() {
         let distance = drag_distance(point(px(10.0), px(10.0)), point(px(11.0), px(11.0)));
         assert!(distance < DRAG_THRESHOLD);
+    }
+
+    #[test]
+    fn selection_rect_overlay_coords_keep_top_left_origin() {
+        let rect = selection_rect_in_overlay_coords(
+            Some(point(px(200.0), px(160.0))),
+            Some(point(px(20.0), px(40.0))),
+            1.0,
+        )
+        .expect("overlay rect should exist");
+
+        assert_eq!(
+            rect,
+            CaptureRect {
+                x_px: 20,
+                y_px: 40,
+                width_px: 180,
+                height_px: 120,
+            }
+        );
     }
 }

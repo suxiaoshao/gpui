@@ -222,8 +222,9 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         window: &mut Window,
         cx: &mut Context<ConversationDetailView<T>>,
     ) {
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.restore_draft(draft, window, cx));
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.restore_draft(draft, window, cx)
+        });
     }
 
     pub(crate) fn send_chat_form(

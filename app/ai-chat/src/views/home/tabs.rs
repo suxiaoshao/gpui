@@ -36,6 +36,7 @@ impl Render for TabsView {
         let workspace = self.workspace.upgrade().map(|x| x.read(cx));
         v_flex()
             .flex_1()
+            .w_full()
             .overflow_hidden()
             .map(|this| match workspace {
                 Some(workspace) => this
@@ -89,7 +90,9 @@ impl Render for TabsView {
                                     }),
                             ),
                     )
-                    .when_some(workspace.panel(), |this, panel| this.child(panel)),
+                    .when_some(workspace.panel(), |this, panel| {
+                        this.child(div().flex_1().w_full().overflow_hidden().child(panel))
+                    }),
                 None => this,
             })
     }

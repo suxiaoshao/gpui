@@ -3,6 +3,7 @@ use crate::{
     database::{Db, GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding},
     errors::AiChatResult,
     i18n::I18n,
+    screen::{TEMPORARY_WINDOW_SIZE, recentered_bounds_for_display, target_display_id},
     state::{AiChatConfig, ConversationDraft, ModelStore},
     views::{screenshot_overlay, temporary::TemporaryView},
 };
@@ -142,11 +143,21 @@ impl GlobalHotkeyState {
         self.front_app = None;
     }
 
-    fn show_temporary_window(&mut self, window: &mut Window) {
+    fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
         if self.front_app.is_none() {
             self.front_app = record_frontmost_app();
+        }
+        let target_display_id = target_display_id(cx);
+        let target_bounds = recentered_bounds_for_display(
+            target_display_id,
+            window.bounds().size,
+            TEMPORARY_WINDOW_SIZE,
+            cx,
+        );
+        if let Err(err) = window.move_and_resize(target_bounds, target_display_id) {
+            event!(Level::ERROR, error = ?err, "Failed to reposition temporary window");
         }
         if let Err(err) = window.show() {
             window.activate_window();
@@ -160,6 +171,7 @@ impl GlobalHotkeyState {
         if self.front_app.is_none() {
             self.front_app = record_frontmost_app();
         }
+        let target_display_id = target_display_id(cx);
         match cx.open_window(
             WindowOptions {
                 kind: WindowKind::Floating,
@@ -168,9 +180,10 @@ impl GlobalHotkeyState {
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(-100.), px(-100.))),
                 }),
+                display_id: target_display_id,
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    cx.primary_display().map(|display| display.id()),
-                    size(px(800.), px(600.)),
+                    target_display_id,
+                    TEMPORARY_WINDOW_SIZE,
                     cx,
                 ))),
                 is_resizable: false,
@@ -196,8 +209,8 @@ impl GlobalHotkeyState {
     fn ensure_temporary_window_visible(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         let window =
             Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
-        let _ = window.update(cx, |_, window, _cx| {
-            self.show_temporary_window(window);
+        let _ = window.update(cx, |_, window, cx| {
+            self.show_temporary_window_on_mouse_display(window, cx);
         });
         Some(window)
     }
@@ -382,7 +395,7 @@ impl GlobalHotkeyState {
                     if window.is_visible().unwrap_or(false) {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
-                        self.show_temporary_window(window);
+                        self.show_temporary_window_on_mouse_display(window, cx);
                     }
                 }) {
                     event!(Level::ERROR, "Failed to update temporary window: {:?}", err);

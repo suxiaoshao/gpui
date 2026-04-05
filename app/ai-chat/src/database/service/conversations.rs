@@ -3,10 +3,10 @@ use time::OffsetDateTime;
 
 use crate::{
     database::{
+        Message,
         model::{
             SqlConversation, SqlFolder, SqlMessage, SqlNewConversation, SqlUpdateConversation,
         },
-        Message,
     },
     errors::{AiChatError, AiChatResult},
 };

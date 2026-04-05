@@ -1,12 +1,12 @@
 use gpui::*;
 use gpui_component::{
+    WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
     input::{Input, InputState},
-    WindowExt,
 };
 use std::ops::Deref;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::{
     i18n::I18n,
@@ -48,7 +48,10 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
     if let FolderDialogMode::Edit { folder_id } = &mode {
         let chat_data = cx.global::<ChatData>();
         let Ok(chat_data) = chat_data.read(cx).as_ref() else {
-            event!(Level::ERROR, "Failed to read chat data for folder edit dialog");
+            event!(
+                Level::ERROR,
+                "Failed to read chat data for folder edit dialog"
+            );
             return;
         };
         let Some(folder) = chat_data.folder(*folder_id) else {
@@ -94,20 +97,18 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
                                     let name = folder_input.read(cx).value();
                                     if !name.is_empty() {
                                         let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, move |_this, cx| {
-                                            match mode {
-                                                FolderDialogMode::Edit { folder_id } => {
-                                                    cx.emit(ChatDataEvent::UpdateFolder {
-                                                        id: folder_id,
-                                                        name,
-                                                    });
-                                                }
-                                                FolderDialogMode::Add { parent_id } => {
-                                                    cx.emit(ChatDataEvent::AddFolder {
-                                                        name,
-                                                        parent_id,
-                                                    });
-                                                }
+                                        chat_data.update(cx, move |_this, cx| match mode {
+                                            FolderDialogMode::Edit { folder_id } => {
+                                                cx.emit(ChatDataEvent::UpdateFolder {
+                                                    id: folder_id,
+                                                    name,
+                                                });
+                                            }
+                                            FolderDialogMode::Add { parent_id } => {
+                                                cx.emit(ChatDataEvent::AddFolder {
+                                                    name,
+                                                    parent_id,
+                                                });
                                             }
                                         });
                                     }

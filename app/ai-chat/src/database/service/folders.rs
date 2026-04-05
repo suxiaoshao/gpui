@@ -122,11 +122,7 @@ impl Folder {
         Ok(())
     }
 
-    pub fn update_name(
-        id: i32,
-        name: &str,
-        conn: &mut SqliteConnection,
-    ) -> AiChatResult<Self> {
+    pub fn update_name(id: i32, name: &str, conn: &mut SqliteConnection) -> AiChatResult<Self> {
         conn.immediate_transaction::<_, AiChatError, _>(|conn| {
             let folder = SqlFolder::find(id, conn)?;
             if folder.name == name {

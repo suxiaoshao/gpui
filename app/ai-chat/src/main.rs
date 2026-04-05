@@ -16,14 +16,15 @@ use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod assets;
-mod components;
 mod capture;
+mod components;
 mod database;
 mod errors;
 mod gpui_ext;
 mod hotkey;
 mod i18n;
 mod llm;
+mod screen;
 mod state;
 mod views;
 

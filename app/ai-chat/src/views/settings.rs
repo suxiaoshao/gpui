@@ -23,8 +23,6 @@ actions!([OpenSetting]);
 enum SettingsOpenTarget {
     General,
     Provider,
-    #[allow(dead_code)]
-    Shortcuts,
 }
 
 pub fn init(cx: &mut App) {
@@ -119,12 +117,12 @@ impl Render for SettingsView {
             SettingPage::new(page_provider),
             |page: SettingPage, group| page.group(group),
         );
-        let shortcuts_page = SettingPage::new(page_shortcuts).group(
-            SettingGroup::new().item(SettingItem::render({
+        let shortcuts_page = SettingPage::new(page_shortcuts).group(SettingGroup::new().item(
+            SettingItem::render({
                 let page = self.shortcut_settings.clone();
                 move |_options, _window, _cx| page.clone()
-            })),
-        );
+            }),
+        ));
         let general_page = SettingPage::new(page_general).group(
             SettingGroup::new()
                 .title(group_basic_options)
@@ -182,24 +180,14 @@ impl Render for SettingsView {
                 )),
         );
         let (settings_id, pages) = match self.open_target {
-            SettingsOpenTarget::General => {
-                (
-                    "my-settings-general",
-                    vec![general_page, provider_page, shortcuts_page],
-                )
-            }
-            SettingsOpenTarget::Provider => {
-                (
-                    "my-settings-provider",
-                    vec![provider_page, general_page, shortcuts_page],
-                )
-            }
-            SettingsOpenTarget::Shortcuts => {
-                (
-                    "my-settings-shortcuts",
-                    vec![shortcuts_page, general_page, provider_page],
-                )
-            }
+            SettingsOpenTarget::General => (
+                "my-settings-general",
+                vec![general_page, provider_page, shortcuts_page],
+            ),
+            SettingsOpenTarget::Provider => (
+                "my-settings-provider",
+                vec![provider_page, general_page, shortcuts_page],
+            ),
         };
         v_flex()
             .id("settings")
