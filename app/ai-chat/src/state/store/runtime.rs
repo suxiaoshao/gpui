@@ -8,11 +8,11 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    notification::{Notification, NotificationType},
     WindowExt,
+    notification::{Notification, NotificationType},
 };
 use std::ops::Deref;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 #[derive(Debug)]
 pub enum ChatDataEvent {
@@ -430,9 +430,12 @@ impl ChatData {
                 data.update_conversation(id, conversation.clone());
             }
         });
-        cx.global::<WorkspaceStore>().deref().clone().update(cx, |workspace, cx| {
-            workspace.sync_conversation_metadata(&conversation, cx);
-        });
+        cx.global::<WorkspaceStore>()
+            .deref()
+            .clone()
+            .update(cx, |workspace, cx| {
+                workspace.sync_conversation_metadata(&conversation, cx);
+            });
         Ok(())
     }
 }

@@ -180,7 +180,11 @@ impl WorkspaceState {
         }
     }
 
-    pub(super) fn template_detail_tab(template_id: i32, window: &mut Window, cx: &mut App) -> AppTab {
+    pub(super) fn template_detail_tab(
+        template_id: i32,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AppTab {
         let (icon, name) = cx
             .global::<Db>()
             .get()

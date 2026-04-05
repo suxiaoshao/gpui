@@ -8,10 +8,10 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    h_flex,
+    ActiveTheme, Collapsible, Icon, IconName, Side, h_flex,
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-    v_flex, ActiveTheme, Collapsible, Icon, IconName, Side,
+    v_flex,
 };
 use serde::Deserialize;
 use std::{collections::BTreeSet, ops::Deref};
@@ -509,9 +509,9 @@ pub(super) fn reset_drop_target(window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
+        ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
         folder_block_drop_target, folder_drop_state, project_conversations, project_folders,
         root_drop_state, target_for_conversation_group, target_for_folder, target_for_root,
-        ActiveDropTarget, DragConversationTreeItem, DragConversationTreeKind, DropState,
     };
     use crate::database::{Content, Conversation, Folder, Message, Role, Status};
     use gpui::SharedString;

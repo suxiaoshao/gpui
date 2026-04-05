@@ -1,8 +1,8 @@
 use super::conversation_item::ConversationTreeItem;
 use super::conversation_tree::{
+    ActiveDropTarget, DragConversationTreeItem, DropState, SidebarFolderNode,
     folder_block_drop_target, folder_drop_state, reset_drop_target, set_drop_target,
-    target_for_conversation_group, target_for_folder, ActiveDropTarget, DragConversationTreeItem,
-    DropState, SidebarFolderNode,
+    target_for_conversation_group, target_for_folder,
 };
 use crate::{
     components::{
@@ -15,10 +15,11 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
+    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
-    v_flex, ActiveTheme, Icon, IconName, Sizable,
+    v_flex,
 };
 use std::collections::BTreeSet;
 use std::ops::Deref;

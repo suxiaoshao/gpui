@@ -9,12 +9,13 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
+    Collapsible, IconName, Side,
     menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
-    v_flex, Collapsible, IconName, Side,
+    v_flex,
 };
 use std::ops::Deref;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 mod conversation_item;
 mod conversation_tree;

@@ -10,8 +10,8 @@ use crate::{
     hotkey::GlobalHotkeyState,
     i18n::I18n,
     llm::{
-        ExtSettingControl, ExtSettingItem, ProviderModel, apply_ext_setting, build_request_template,
-        preset_ext_settings,
+        ExtSettingControl, ExtSettingItem, ProviderModel, apply_ext_setting,
+        build_request_template, preset_ext_settings,
     },
     state::ModelStore,
 };
@@ -175,9 +175,7 @@ impl InputSourceChoice {
     fn new(value: ShortcutInputSource, cx: &App) -> Self {
         let label = {
             let key = match value {
-                ShortcutInputSource::SelectionOrClipboard => {
-                    "send-content-selection-or-clipboard"
-                }
+                ShortcutInputSource::SelectionOrClipboard => "send-content-selection-or-clipboard",
                 ShortcutInputSource::Screenshot => "send-content-screenshot",
             };
             cx.global::<I18n>().t(key).into()
@@ -386,12 +384,16 @@ impl ShortcutSettingsPage {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let page = cx.entity().downgrade();
         let table = cx.new(|cx| {
-            TableState::new(ShortcutBindingsTableDelegate::new(page.clone(), cx), window, cx)
-                .row_selectable(false)
-                .col_selectable(false)
-                .sortable(false)
-                .col_movable(false)
-                .col_resizable(true)
+            TableState::new(
+                ShortcutBindingsTableDelegate::new(page.clone(), cx),
+                window,
+                cx,
+            )
+            .row_selectable(false)
+            .col_selectable(false)
+            .sortable(false)
+            .col_movable(false)
+            .col_resizable(true)
         });
 
         let model_store = cx.global::<ModelStore>().deref().clone();
@@ -505,12 +507,19 @@ impl ShortcutSettingsPage {
             });
 
         let hotkey = binding.as_ref().map(|binding| binding.hotkey.clone());
-        let enabled = binding.as_ref().map(|binding| binding.enabled).unwrap_or(true);
+        let enabled = binding
+            .as_ref()
+            .map(|binding| binding.enabled)
+            .unwrap_or(true);
         let template_id = binding.as_ref().and_then(|binding| binding.template_id);
         let provider_name = binding
             .as_ref()
             .map(|binding| binding.provider_name.clone())
-            .or_else(|| self.available_models(cx).first().map(|model| model.provider_name.clone()))
+            .or_else(|| {
+                self.available_models(cx)
+                    .first()
+                    .map(|model| model.provider_name.clone())
+            })
             .unwrap_or_default();
         let mode = binding
             .as_ref()
@@ -523,7 +532,11 @@ impl ShortcutSettingsPage {
         let model_id = binding
             .as_ref()
             .map(|binding| binding.model_id.clone())
-            .or_else(|| self.available_models(cx).first().map(|model| model.id.clone()))
+            .or_else(|| {
+                self.available_models(cx)
+                    .first()
+                    .map(|model| model.id.clone())
+            })
             .unwrap_or_default();
 
         let template_select = cx.new(|cx| {
@@ -537,11 +550,8 @@ impl ShortcutSettingsPage {
         });
 
         let available_models = self.available_models(cx);
-        let model_choices = Self::model_choices_from(
-            &available_models,
-            Some((&provider_name, &model_id)),
-            cx,
-        );
+        let model_choices =
+            Self::model_choices_from(&available_models, Some((&provider_name, &model_id)), cx);
         let model_selected = self.model_selected_index(
             &model_choices,
             &ModelChoice::key(&provider_name, &model_id),
@@ -721,9 +731,9 @@ impl ShortcutSettingsPage {
         };
         let row = &mut self.rows[index];
         if let Some((provider_name, model_id)) = Self::split_model_choice_key(&model_value)
-            && let Some(model) = available_models.iter().find(|model| {
-                model.provider_name == provider_name && model.id == model_id
-            })
+            && let Some(model) = available_models
+                .iter()
+                .find(|model| model.provider_name == provider_name && model.id == model_id)
         {
             row.provider_name = model.provider_name.clone();
         }
@@ -823,11 +833,12 @@ impl ShortcutSettingsPage {
         };
 
         row.model_resolved = true;
-        row.request_template = build_request_template(&model, saved_template).unwrap_or_else(|_| {
-            saved_template
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}))
-        });
+        row.request_template =
+            build_request_template(&model, saved_template).unwrap_or_else(|_| {
+                saved_template
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}))
+            });
         Self::refresh_row_ext_settings(row, &model, window, cx);
     }
 
@@ -894,8 +905,10 @@ impl ShortcutSettingsPage {
                             });
                         },
                     ));
-                    row.ext_settings
-                        .push(RowExtSettingState::Select { item: setting, state });
+                    row.ext_settings.push(RowExtSettingState::Select {
+                        item: setting,
+                        state,
+                    });
                 }
                 ExtSettingControl::Boolean(_) => {
                     row.ext_settings
@@ -1099,9 +1112,13 @@ impl ShortcutSettingsPage {
                             .text_color(cx.theme().muted_foreground),
                     )
                     .child(
-                        Checkbox::new((ElementId::from(("shortcut-ext-setting", row.key)), item.key))
-                            .checked(value)
-                            .on_click(cx.listener(move |this, checked, window, cx| {
+                        Checkbox::new((
+                            ElementId::from(("shortcut-ext-setting", row.key)),
+                            item.key,
+                        ))
+                        .checked(value)
+                        .on_click(cx.listener(
+                            move |this, checked, window, cx| {
                                 this.handle_boolean_ext_setting(
                                     row_key,
                                     setting_key,
@@ -1109,7 +1126,8 @@ impl ShortcutSettingsPage {
                                     window,
                                     cx,
                                 );
-                            })),
+                            },
+                        )),
                     )
                     .into_any_element()
             }
@@ -1236,7 +1254,8 @@ impl ShortcutSettingsPage {
                         .on_click({
                             let row_key = row.key;
                             cx.listener(move |this, checked, _window, cx| {
-                                let Some(row) = this.rows.iter_mut().find(|row| row.key == row_key) else {
+                                let Some(row) = this.rows.iter_mut().find(|row| row.key == row_key)
+                                else {
                                     return;
                                 };
                                 row.enabled = *checked;
@@ -1256,10 +1275,11 @@ impl ShortcutSettingsPage {
                         Button::new(("shortcut-save", row.key))
                             .small()
                             .primary()
-                            .label(
-                                cx.global::<I18n>()
-                                    .t(if is_new { "button-create" } else { "button-save" }),
-                            )
+                            .label(cx.global::<I18n>().t(if is_new {
+                                "button-create"
+                            } else {
+                                "button-save"
+                            }))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.save_row(row_key, window, cx);
                             })),
@@ -1268,10 +1288,11 @@ impl ShortcutSettingsPage {
                         Button::new(("shortcut-reset", row.key))
                             .small()
                             .danger()
-                            .label(
-                                cx.global::<I18n>()
-                                    .t(if is_new { "button-cancel" } else { "button-reset" }),
-                            )
+                            .label(cx.global::<I18n>().t(if is_new {
+                                "button-cancel"
+                            } else {
+                                "button-reset"
+                            }))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.reset_row(row_key, window, cx);
                             })),
@@ -1301,13 +1322,18 @@ impl ShortcutSettingsPage {
             .ok_or_else(|| SharedString::from("missing row"))?;
 
         if row.invalid_hotkey.is_some() {
-            return Err(cx.global::<I18n>().t("notify-invalid-shortcut-hotkey").into());
+            return Err(cx
+                .global::<I18n>()
+                .t("notify-invalid-shortcut-hotkey")
+                .into());
         }
         let hotkey = row
             .hotkey
             .clone()
             .filter(|hotkey| !hotkey.trim().is_empty())
-            .ok_or_else(|| SharedString::from(cx.global::<I18n>().t("notify-invalid-shortcut-hotkey")))?;
+            .ok_or_else(|| {
+                SharedString::from(cx.global::<I18n>().t("notify-invalid-shortcut-hotkey"))
+            })?;
 
         let model_value = row
             .model_select
@@ -1458,15 +1484,12 @@ impl Render for ShortcutSettingsPage {
             .gap_3()
             .child(self.render_toolbar(cx))
             .child(
-                div()
-                    .w_full()
-                    .h(px(560.))
-                    .child(
-                        Table::new(&self.table)
-                            .small()
-                            .stripe(true)
-                            .scrollbar_visible(true, true),
-                    ),
+                div().w_full().h(px(560.)).child(
+                    Table::new(&self.table)
+                        .small()
+                        .stripe(true)
+                        .scrollbar_visible(true, true),
+                ),
             )
     }
 }

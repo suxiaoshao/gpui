@@ -57,7 +57,9 @@ pub(crate) fn recentered_bounds_for_display(
 ) -> Bounds<Pixels> {
     let size = display_id
         .and_then(|display_id| cx.find_display(display_id))
-        .map(|display| preserve_or_fallback_size(current_size, display.bounds().size, fallback_size))
+        .map(|display| {
+            preserve_or_fallback_size(current_size, display.bounds().size, fallback_size)
+        })
         .unwrap_or(fallback_size);
 
     centered_bounds_for_display(display_id, size, cx)

@@ -4,13 +4,13 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
+    WindowExt,
     button::{Button, ButtonVariants},
     form::{field, v_form},
     input::{Input, InputState},
-    WindowExt,
 };
 use std::ops::Deref;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 #[derive(Clone)]
 enum ConversationDialogMode {
@@ -23,11 +23,7 @@ enum ConversationDialogMode {
     },
 }
 
-fn open_conversation_dialog(
-    mode: ConversationDialogMode,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, cx: &mut App) {
     let span = tracing::info_span!("conversation_dialog action");
     let _enter = span.enter();
 
@@ -62,11 +58,17 @@ fn open_conversation_dialog(
     if let ConversationDialogMode::Edit { conversation_id } = &mode {
         let chat_data = cx.global::<ChatData>();
         let Ok(chat_data) = chat_data.read(cx).as_ref() else {
-            event!(Level::ERROR, "Failed to read chat data for conversation edit dialog");
+            event!(
+                Level::ERROR,
+                "Failed to read chat data for conversation edit dialog"
+            );
             return;
         };
         let Some(conversation) = chat_data.conversation(*conversation_id) else {
-            event!(Level::ERROR, "Conversation {conversation_id} not found in chat data");
+            event!(
+                Level::ERROR,
+                "Conversation {conversation_id} not found in chat data"
+            );
             return;
         };
         let title = conversation.title.clone();
@@ -138,7 +140,8 @@ fn open_conversation_dialog(
                                         let chat_data = cx.global::<ChatData>().deref().clone();
                                         let mode = mode.clone();
                                         chat_data.update(cx, move |_this, cx| {
-                                            let info = if info.is_empty() { None } else { Some(info) };
+                                            let info =
+                                                if info.is_empty() { None } else { Some(info) };
                                             match mode {
                                                 ConversationDialogMode::Add {
                                                     parent_id,
@@ -187,9 +190,5 @@ pub fn open_add_conversation_dialog(
 }
 
 pub fn open_edit_conversation_dialog(conversation_id: i32, window: &mut Window, cx: &mut App) {
-    open_conversation_dialog(
-        ConversationDialogMode::Edit { conversation_id },
-        window,
-        cx,
-    );
+    open_conversation_dialog(ConversationDialogMode::Edit { conversation_id }, window, cx);
 }

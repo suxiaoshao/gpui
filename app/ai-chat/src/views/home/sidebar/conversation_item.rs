@@ -8,11 +8,11 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
+    ActiveTheme, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
-    ActiveTheme, IconName, Sizable,
 };
 use std::ops::Deref;
 

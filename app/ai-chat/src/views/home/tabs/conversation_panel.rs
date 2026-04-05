@@ -4,7 +4,9 @@ use crate::{
     errors::{AiChatError, AiChatResult},
     gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, FetchUpdate, provider_by_name},
-    state::{AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore},
+    state::{
+        AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
+    },
     views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
 };
 use async_compat::CompatExt;
@@ -86,11 +88,7 @@ impl ConversationPanelView {
         });
     }
 
-    pub(crate) fn sync_metadata(
-        &mut self,
-        conversation: &Conversation,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn sync_metadata(&mut self, conversation: &Conversation, cx: &mut Context<Self>) {
         self.detail.conversation_icon = conversation.icon.clone().into();
         self.detail.conversation_title = conversation.title.clone().into();
         self.detail.conversation_info = conversation.info.clone().map(Into::into);

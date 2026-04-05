@@ -158,8 +158,7 @@ mod tests {
     use super::{GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding};
     use crate::{
         database::{
-            CREATE_TABLE_SQL, Mode, ShortcutInputSource,
-            model::SqlNewConversationTemplate,
+            CREATE_TABLE_SQL, Mode, ShortcutInputSource, model::SqlNewConversationTemplate,
         },
         errors::AiChatError,
     };

@@ -3,11 +3,11 @@ mod tabs;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::persistence::ConversationDraft;
 use self::{
     persistence::PersistedWorkspaceState,
     tabs::{AppTab, TabKind, TabPanel},
 };
-pub(crate) use self::persistence::ConversationDraft;
 
 use crate::{
     database::Conversation,

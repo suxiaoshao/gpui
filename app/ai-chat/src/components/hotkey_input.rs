@@ -1,6 +1,6 @@
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, IconName, Size, Sizable, StyledExt,
+    ActiveTheme, IconName, Sizable, Size, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
 };

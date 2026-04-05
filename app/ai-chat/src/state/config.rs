@@ -252,13 +252,11 @@ impl AiChatConfig {
         }
     }
     pub(crate) fn set_temporary_hotkey(&mut self, hotkey: Option<String>, cx: &mut App) {
-        if let Err(err) =
-            GlobalHotkeyState::update_temporary_hotkey(
-                self.temporary_hotkey.as_deref(),
-                hotkey.as_deref(),
-                cx,
-            )
-        {
+        if let Err(err) = GlobalHotkeyState::update_temporary_hotkey(
+            self.temporary_hotkey.as_deref(),
+            hotkey.as_deref(),
+            cx,
+        ) {
             event!(Level::ERROR, "Failed to update temporary hotkey: {}", err);
             return;
         }

@@ -143,11 +143,7 @@ impl GlobalHotkeyState {
         self.front_app = None;
     }
 
-    fn show_temporary_window_on_mouse_display(
-        &mut self,
-        window: &mut Window,
-        cx: &App,
-    ) {
+    fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
         if self.front_app.is_none() {

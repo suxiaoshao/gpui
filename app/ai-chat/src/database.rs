@@ -24,9 +24,7 @@ pub use service::{
     NewConversation, NewConversationTemplate, NewFolder, NewMessage, UrlCitation,
 };
 #[allow(unused_imports)]
-pub use service::{
-    GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding,
-};
+pub use service::{GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding};
 pub use types::{Mode, Role, ShortcutInputSource, Status};
 
 const DATABASE_FILE_V1: &str = "history.sqlite3";
