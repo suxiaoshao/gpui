@@ -1,3 +1,4 @@
+use gpui::{Pixels, Point};
 use platform_ext::ocr::ImageFrame;
 use thiserror::Error;
 
@@ -7,6 +8,7 @@ use xcap::Monitor;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CaptureDisplay {
     pub id_hint: u32,
+    pub origin: Point<Pixels>,
     pub width_px: u32,
     pub height_px: u32,
     pub scale_factor: f32,
@@ -238,6 +240,7 @@ mod tests {
     fn display() -> CaptureDisplay {
         CaptureDisplay {
             id_hint: 1,
+            origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
             width_px: 1920,
             height_px: 1080,
             scale_factor: 1.0,

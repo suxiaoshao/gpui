@@ -48,6 +48,7 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
     let display_id = display.id();
     let display_info = CaptureDisplay {
         id_hint: u32::from(display_id),
+        origin: display.bounds().origin,
         width_px: 0,
         height_px: 0,
         scale_factor: 0.0,
@@ -167,11 +168,29 @@ pub(crate) struct ScreenshotOverlayView {
 
 fn offset_capture_rect(
     rect: CaptureRect,
-    _window_origin: Point<Pixels>,
-    _scale_factor: f32,
+    window_origin: Point<Pixels>,
+    scale_factor: f32,
     display: &CaptureDisplay,
 ) -> Option<CaptureRect> {
-    (rect.x_px + rect.width_px <= display.width_px && rect.y_px + rect.height_px <= display.height_px)
+    let offset_x = logical_to_capture_delta(
+        f32::from(window_origin.x) - f32::from(display.origin.x),
+        scale_factor,
+    );
+    let offset_y = logical_to_capture_delta(
+        f32::from(window_origin.y) - f32::from(display.origin.y),
+        scale_factor,
+    );
+    let x_px = rect.x_px.checked_add_signed(offset_x)?;
+    let y_px = rect.y_px.checked_add_signed(offset_y)?;
+    let rect = CaptureRect {
+        x_px,
+        y_px,
+        width_px: rect.width_px,
+        height_px: rect.height_px,
+    };
+
+    (rect.x_px + rect.width_px <= display.width_px
+        && rect.y_px + rect.height_px <= display.height_px)
         .then_some(rect)
 }
 
@@ -418,11 +437,22 @@ fn logical_to_capture_coord(logical: f32, scale_factor: f32) -> u32 {
     return (logical * scale_factor).round() as u32;
 }
 
+fn logical_to_capture_delta(logical: f32, scale_factor: f32) -> i32 {
+    #[cfg(target_os = "macos")]
+    let _ = scale_factor;
+    #[cfg(target_os = "macos")]
+    return logical.round() as i32;
+
+    #[cfg(not(target_os = "macos"))]
+    return (logical * scale_factor).round() as i32;
+}
+
 fn resolved_display(window: &Window, display: &CaptureDisplay) -> CaptureDisplay {
     let size = window.bounds().size;
     let scale_factor = window.scale_factor();
     CaptureDisplay {
         id_hint: display.id_hint,
+        origin: display.origin,
         width_px: logical_to_capture_coord(f32::from(size.width), scale_factor),
         height_px: logical_to_capture_coord(f32::from(size.height), scale_factor),
         scale_factor,
@@ -479,15 +509,16 @@ fn selection_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAG_THRESHOLD, drag_distance, logical_to_capture_coord, selection_bounds, selection_rect,
-        selection_rect_in_overlay_coords,
+        DRAG_THRESHOLD, drag_distance, logical_to_capture_coord, logical_to_capture_delta,
+        selection_bounds, selection_rect, selection_rect_in_overlay_coords,
     };
     use crate::capture::{CaptureDisplay, CaptureRect};
     use gpui::{point, px};
 
-    fn display(height_px: u32) -> CaptureDisplay {
+    fn display(origin_x: f32, origin_y: f32, height_px: u32) -> CaptureDisplay {
         CaptureDisplay {
             id_hint: 1,
+            origin: point(px(origin_x), px(origin_y)),
             width_px: 1920,
             height_px,
             scale_factor: 1.0,
@@ -502,7 +533,7 @@ mod tests {
             Some(point(px(20.0), px(40.0))),
             1.0,
             point(px(0.0), px(0.0)),
-            &display(1080),
+            &display(0.0, 0.0, 1080),
         )
         .expect("drag selection should produce a rect");
 
@@ -513,13 +544,13 @@ mod tests {
     }
 
     #[test]
-    fn selection_rect_offsets_by_window_origin() {
+    fn selection_rect_offsets_by_window_origin_relative_to_display_origin() {
         let rect = selection_rect(
             Some(point(px(20.0), px(40.0))),
             Some(point(px(200.0), px(160.0))),
             2.0,
-            point(px(0.0), px(12.0)),
-            &display(1080),
+            point(px(1440.0), px(12.0)),
+            &display(1440.0, 0.0, 1080),
         )
         .expect("drag selection should produce a rect");
 
@@ -527,7 +558,8 @@ mod tests {
             rect,
             CaptureRect {
                 x_px: logical_to_capture_coord(20.0, 2.0),
-                y_px: logical_to_capture_coord(40.0, 2.0),
+                y_px: logical_to_capture_coord(40.0, 2.0)
+                    + logical_to_capture_delta(12.0, 2.0) as u32,
                 width_px: logical_to_capture_coord(180.0, 2.0),
                 height_px: logical_to_capture_coord(120.0, 2.0),
             }
