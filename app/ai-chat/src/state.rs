@@ -1,9 +1,9 @@
 pub(crate) mod config;
-pub(crate) mod store;
+pub(crate) mod chat;
 pub(crate) mod workspace;
 
 pub(crate) use config::{AiChatConfig, ThemeMode};
-pub(crate) use store::{
+pub(crate) use chat::{
     AddConversationMessage, ChatData, ChatDataEvent, ChatDataInner, ModelStore, ModelStoreSnapshot,
     ModelStoreStatus,
 };

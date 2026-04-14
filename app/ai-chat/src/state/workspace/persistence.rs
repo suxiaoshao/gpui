@@ -1,6 +1,6 @@
 use super::{TabKind, WorkspaceState};
 use crate::{
-    APP_NAME,
+    app::APP_NAME,
     database::Mode,
     errors::{AiChatError, AiChatResult},
 };

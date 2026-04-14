@@ -1,8 +1,10 @@
 use crate::{
-    capture::{CaptureDisplay, CaptureError, CaptureRect, capture_region},
+    platform::{
+        capture::{CaptureDisplay, CaptureError, CaptureRect, capture_region},
+        display::target_display,
+    },
     database::GlobalShortcutBinding,
     hotkey::GlobalHotkeyState,
-    screen::target_display,
 };
 use gpui::*;
 use std::cmp::{max, min};
@@ -512,7 +514,7 @@ mod tests {
         DRAG_THRESHOLD, drag_distance, logical_to_capture_coord, logical_to_capture_delta,
         selection_bounds, selection_rect, selection_rect_in_overlay_coords,
     };
-    use crate::capture::{CaptureDisplay, CaptureRect};
+    use crate::platform::capture::{CaptureDisplay, CaptureRect};
     use gpui::{point, px};
 
     fn display(origin_x: f32, origin_y: f32, height_px: u32) -> CaptureDisplay {

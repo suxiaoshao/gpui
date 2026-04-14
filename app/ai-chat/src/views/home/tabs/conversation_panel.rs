@@ -2,12 +2,12 @@ use crate::{
     components::chat_form::ChatFormSnapshot,
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
-    gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
+    platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     state::{
         AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
     },
-    views::conversation_detail::{ConversationDetailView, ConversationDetailViewExt},
+    views::conversation::detail::{ConversationDetailView, ConversationDetailViewExt},
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
