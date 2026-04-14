@@ -13,6 +13,7 @@ use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use reqwest::Client;
+use reqwest::StatusCode;
 use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -98,6 +99,47 @@ where
     T: Deserialize<'de>,
 {
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn format_ollama_error_message(operation: &str, status: StatusCode, body: &str) -> String {
+    #[derive(Deserialize)]
+    struct OllamaErrorResponse {
+        #[serde(default)]
+        error: String,
+    }
+
+    let status_text = status
+        .canonical_reason()
+        .map(|reason| format!("{} {}", status.as_u16(), reason))
+        .unwrap_or_else(|| status.as_u16().to_string());
+    let detail = serde_json::from_str::<OllamaErrorResponse>(body)
+        .ok()
+        .map(|response| response.error)
+        .filter(|error| !error.trim().is_empty())
+        .or_else(|| {
+            let trimmed = body.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
+
+    match detail {
+        Some(detail) => format!("Ollama {operation} failed ({status_text}): {detail}"),
+        None => format!("Ollama {operation} failed ({status_text})"),
+    }
+}
+
+async fn error_for_status_with_ollama_message(
+    response: reqwest::Response,
+    operation: &str,
+) -> AiChatResult<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = response.text().await.unwrap_or_default();
+    Err(AiChatError::StreamError(format_ollama_error_message(
+        operation, status, &body,
+    )))
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -504,7 +546,8 @@ impl OllamaProvider {
                     }))
                     .send()
                     .await?;
-                let response = response.error_for_status()?;
+                let response =
+                    error_for_status_with_ollama_message(response, "web_search request").await?;
                 let result = response.json::<WebSearchResponse>().await?;
                 let citations = result
                     .results
@@ -541,7 +584,8 @@ impl OllamaProvider {
                     .json(&json!({ "url": url }))
                     .send()
                     .await?;
-                let response = response.error_for_status()?;
+                let response =
+                    error_for_status_with_ollama_message(response, "web_fetch request").await?;
                 let result = response.json::<WebFetchResponse>().await?;
                 let citations = vec![UrlCitation {
                     title: (!result.title.trim().is_empty()).then(|| result.title.clone()),
@@ -667,7 +711,7 @@ impl Provider for OllamaProvider {
                     .json(&chat_request)
                     .send()
                     .await?;
-                let response = response.error_for_status()?;
+                let response = error_for_status_with_ollama_message(response, "chat request").await?;
 
                 let round = if !chat_request.stream {
                     let response = response.json::<OllamaChatResponse>().await?;
@@ -768,11 +812,9 @@ impl Provider for OllamaProvider {
             let settings: OllamaSettings = settings.try_into()?;
             let settings = settings.normalized();
             let client = Self::client(&config, &settings.base_url)?;
-            let response = client
-                .get(tags_url(&settings.base_url))
-                .send()
+            let response = client.get(tags_url(&settings.base_url)).send().await?;
+            let response = error_for_status_with_ollama_message(response, "tags request")
                 .await?
-                .error_for_status()?
                 .json::<OllamaTagsResponse>()
                 .await?;
             let mut models = Vec::new();
@@ -781,8 +823,9 @@ impl Provider for OllamaProvider {
                     .post(show_url(&settings.base_url))
                     .json(&json!({ "model": model.model }))
                     .send()
+                    .await?;
+                let show = error_for_status_with_ollama_message(show, "show request")
                     .await?
-                    .error_for_status()?
                     .json::<OllamaShowResponse>()
                     .await
                     .map_err(|err| {
@@ -1123,5 +1166,31 @@ mod tests {
         assert!(response.details.families.is_empty());
         assert!(response.capabilities.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn format_ollama_error_message_uses_json_error_field() {
+        let message = super::format_ollama_error_message(
+            "chat request",
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":"mlx runner failed"}"#,
+        );
+        assert_eq!(
+            message,
+            "Ollama chat request failed (500 Internal Server Error): mlx runner failed"
+        );
+    }
+
+    #[test]
+    fn format_ollama_error_message_falls_back_to_plain_text_body() {
+        let message = super::format_ollama_error_message(
+            "show request",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "upstream gateway failure",
+        );
+        assert_eq!(
+            message,
+            "Ollama show request failed (502 Bad Gateway): upstream gateway failure"
+        );
     }
 }
