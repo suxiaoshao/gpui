@@ -6,7 +6,7 @@
  * @FilePath: /tauri/packages/ChatGPT/src-tauri/src/plugins/config/config_data.rs
  */
 use crate::{
-    APP_NAME,
+    app::APP_NAME,
     errors::{AiChatError, AiChatResult},
     hotkey::GlobalHotkeyState,
     llm::{

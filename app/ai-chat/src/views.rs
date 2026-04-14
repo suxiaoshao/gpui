@@ -1,15 +1,14 @@
 use gpui::App;
 
-pub(crate) mod conversation_detail;
+pub(crate) mod conversation;
 pub(crate) mod home;
-pub(crate) mod message_preview;
-pub(crate) mod screenshot_overlay;
+pub(crate) mod screenshot;
 pub(crate) mod settings;
 pub(crate) mod temporary;
 
 pub fn init(cx: &mut App) {
     home::init(cx);
-    screenshot_overlay::init(cx);
+    screenshot::init(cx);
     temporary::init(cx);
     settings::init(cx);
 }

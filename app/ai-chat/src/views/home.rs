@@ -31,7 +31,7 @@ pub(crate) struct HomeView {
 
 impl HomeView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        state::store::init(window, cx);
+        state::chat::init(window, cx);
         state::workspace::init(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);

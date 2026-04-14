@@ -5,14 +5,16 @@ use crate::{
     },
     database::{Content, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
-    gpui_ext::WeakEntityResultExt,
+    platform::gpui_ext::WeakEntityResultExt,
     hotkey::GlobalHotkeyState,
     i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     state::{AddConversationMessage, AiChatConfig},
     views::{
-        conversation_detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
-        message_preview::{MessagePreviewExt, open_message_preview_window},
+        conversation::{
+            detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
+            preview::{MessagePreviewExt, open_message_preview_window},
+        },
         temporary::TemporaryView,
     },
 };
