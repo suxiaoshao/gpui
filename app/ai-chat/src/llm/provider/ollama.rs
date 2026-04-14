@@ -14,7 +14,7 @@ use gpui::*;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use reqwest::Client;
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use std::net::IpAddr;
 use toml::Value;
@@ -90,6 +90,14 @@ fn should_bypass_proxy(base_url: &str) -> bool {
     let host = host.trim_matches(['[', ']']);
     host.eq_ignore_ascii_case("localhost")
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn deserialize_null_default_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -242,7 +250,7 @@ struct OllamaTagModel {
 struct OllamaShowResponse {
     #[serde(default)]
     details: OllamaModelDetails,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default_vec")]
     capabilities: Vec<String>,
 }
 
@@ -250,7 +258,7 @@ struct OllamaShowResponse {
 struct OllamaModelDetails {
     #[serde(default)]
     family: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default_vec")]
     families: Vec<String>,
 }
 
@@ -776,7 +784,13 @@ impl Provider for OllamaProvider {
                     .await?
                     .error_for_status()?
                     .json::<OllamaShowResponse>()
-                    .await?;
+                    .await
+                    .map_err(|err| {
+                        AiChatError::StreamError(format!(
+                            "decode Ollama show response failed for model {}: {}",
+                            model.name, err
+                        ))
+                    })?;
                 if !show
                     .capabilities
                     .iter()
@@ -1094,5 +1108,20 @@ mod tests {
         );
         assert_eq!(content.text, "final answer");
         assert_eq!(content.reasoning_summary.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn show_response_treats_null_slices_as_empty_vectors() -> anyhow::Result<()> {
+        let response = serde_json::from_value::<super::OllamaShowResponse>(json!({
+            "details": {
+                "family": "qwen3_5",
+                "families": null
+            },
+            "capabilities": null
+        }))?;
+        assert_eq!(response.details.family, "qwen3_5");
+        assert!(response.details.families.is_empty());
+        assert!(response.capabilities.is_empty());
+        Ok(())
     }
 }

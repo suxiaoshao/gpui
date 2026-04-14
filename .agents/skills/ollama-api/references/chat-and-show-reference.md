@@ -262,6 +262,11 @@ Implementation note:
 | `parameter_size` | `string` |
 | `quantization_level` | `string` |
 
+Implementation note:
+
+- `api/types.go` models `families` as `[]string`, but actual JSON may still serialize it as `null` when the Go slice is nil.
+- Provider implementations should treat `null` the same as an empty array.
+
 ### `tensors` item shape
 
 | Field | Type |
