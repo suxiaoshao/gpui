@@ -1,6 +1,48 @@
 use super::*;
+use crate::app::{find_window_by_view, with_root_view};
 
-impl GlobalHotkeyState {
+pub(crate) struct TemporaryWindowState {
+    delay_close: Option<Task<()>>,
+    #[cfg(target_os = "macos")]
+    front_app: Option<Retained<NSRunningApplication>>,
+}
+
+impl Global for TemporaryWindowState {}
+
+pub(crate) fn init_temporary_window_state(cx: &mut App) {
+    if cx.has_global::<TemporaryWindowState>() {
+        return;
+    }
+
+    cx.set_global(TemporaryWindowState {
+        delay_close: None,
+        #[cfg(target_os = "macos")]
+        front_app: None,
+    });
+}
+
+fn with_temporary_window_state<R>(
+    cx: &mut App,
+    callback: impl FnOnce(&mut TemporaryWindowState, &mut App) -> R,
+) -> Option<R> {
+    if !cx.has_global::<TemporaryWindowState>() {
+        event!(
+            Level::ERROR,
+            "Failed to access temporary window state: TemporaryWindowState is not initialized"
+        );
+        return None;
+    }
+
+    Some(cx.update_global::<TemporaryWindowState, _>(callback))
+}
+
+fn focus_temporary_window_chat_form(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
+    let _ = with_root_view::<TemporaryView, _>(root, cx, |view, cx| {
+        view.update(cx, |view, cx| view.focus_chat_form(window, cx));
+    });
+}
+
+impl TemporaryWindowState {
     pub fn delay_close(window: &mut Window, cx: &mut App) -> Task<()> {
         window.spawn(cx, async |cx| {
             Timer::after(Duration::from_secs(600)).await;
@@ -13,14 +55,7 @@ impl GlobalHotkeyState {
     }
 
     pub(super) fn find_temporary_window(cx: &App) -> Option<WindowHandle<Root>> {
-        cx.windows().iter().find_map(|window| {
-            window.downcast::<Root>().filter(|root| {
-                root.read(cx)
-                    .ok()
-                    .map(|root| root.view().entity_type() == TypeId::of::<TemporaryView>())
-                    .unwrap_or(false)
-            })
-        })
+        find_window_by_view::<TemporaryView>(cx)
     }
 
     pub(super) fn delay_or_hide_temporary_window(&mut self, window: &mut Window, cx: &mut App) {
@@ -30,15 +65,7 @@ impl GlobalHotkeyState {
     }
 
     pub fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
-        if !cx.has_global::<GlobalHotkeyState>() {
-            event!(
-                Level::ERROR,
-                "Failed to hide temporary window with delay: GlobalHotkeyState is not initialized"
-            );
-            return;
-        }
-
-        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+        let _ = with_temporary_window_state(cx, |hotkeys, cx| {
             hotkeys.delay_or_hide_temporary_window(window, cx);
         });
     }
@@ -52,24 +79,6 @@ impl GlobalHotkeyState {
             restore_frontmost_app(&self.front_app);
             self.front_app = None;
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn record_front_app_for_screenshot(&mut self) {
-        if self.front_app.is_none() {
-            self.front_app = record_frontmost_app();
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn clear_front_app_for_screenshot(&mut self) {
-        self.front_app = None;
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn restore_and_clear_front_app_for_screenshot(&mut self) {
-        restore_frontmost_app(&self.front_app);
-        self.front_app = None;
     }
 
     fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
@@ -141,8 +150,9 @@ impl GlobalHotkeyState {
     ) -> Option<WindowHandle<Root>> {
         let window =
             Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
-        let _ = window.update(cx, |_, window, cx| {
+        let _ = window.update(cx, |root, window, cx| {
             self.show_temporary_window_on_mouse_display(window, cx);
+            focus_temporary_window_chat_form(root, window, cx);
         });
         Some(window)
     }
@@ -165,4 +175,64 @@ impl GlobalHotkeyState {
             }
         }
     }
+}
+
+impl GlobalHotkeyState {
+    pub(super) fn find_temporary_window(cx: &App) -> Option<WindowHandle<Root>> {
+        TemporaryWindowState::find_temporary_window(cx)
+    }
+
+    pub(super) fn delay_or_hide_temporary_window(&mut self, window: &mut Window, cx: &mut App) {
+        let _ = with_temporary_window_state(cx, |state, cx| {
+            state.delay_or_hide_temporary_window(window, cx);
+        });
+    }
+
+    pub(crate) fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
+        TemporaryWindowState::request_hide_with_delay(window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn record_front_app_for_screenshot(&mut self) {
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn clear_front_app_for_screenshot(&mut self) {
+        self.front_app = None;
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn restore_and_clear_front_app_for_screenshot(&mut self) {
+        restore_frontmost_app(&self.front_app);
+        self.front_app = None;
+    }
+
+    pub(super) fn ensure_temporary_window_visible(
+        &mut self,
+        cx: &mut App,
+    ) -> Option<WindowHandle<Root>> {
+        with_temporary_window_state(cx, |state, cx| state.ensure_temporary_window_visible(cx))
+            .flatten()
+    }
+
+    pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {
+        let _ = with_temporary_window_state(cx, |state, cx| {
+            state.toggle_temporary_window(cx);
+        });
+    }
+}
+
+pub(crate) fn open_temporary_window(cx: &mut App) {
+    let _ = with_temporary_window_state(cx, |state, cx| {
+        state.ensure_temporary_window_visible(cx);
+    });
+}
+
+pub(crate) fn toggle_temporary_window(cx: &mut App) {
+    let _ = with_temporary_window_state(cx, |state, cx| {
+        state.toggle_temporary_window(cx);
+    });
 }

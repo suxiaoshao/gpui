@@ -1,6 +1,14 @@
 app-title = AI Chat
 settings-title = Settings
 message-preview-title = Message Preview: { $id }
+tray-open-main = Open AI Chat
+tray-open-temporary = Open Temporary Conversation
+tray-version = Version (v{ $version })
+tray-about = About AI Chat
+tray-quit = Quit AI Chat
+tray-tooltip = AI Chat
+tray-about-comments = A desktop AI chat app built with GPUI.
+tray-about-website-label = Project Repository
 
 settings-page-general = General
 settings-page-provider = Provider

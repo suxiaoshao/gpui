@@ -57,6 +57,13 @@ impl HomeView {
             ],
         }
     }
+
+    pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = cx.global::<WorkspaceStore>().read(cx).active_conversation_panel() else {
+            return;
+        };
+        panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
+    }
 }
 
 impl Render for HomeView {

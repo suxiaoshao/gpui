@@ -1,6 +1,6 @@
 use crate::errors::{AiChatError, AiChatResult};
 use crate::views::home::HomeView;
-use crate::{assets, components, database, hotkey, i18n, state, views};
+use crate::{assets, components, database, hotkey, i18n, state, tray, views};
 use gpui::*;
 use gpui_component::input;
 use gpui_component::{Root, TitleBar};
@@ -8,6 +8,7 @@ use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use window_ext::WindowExt;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat";
 
@@ -89,11 +90,15 @@ mod profiling {
     pub(super) fn schedule_auto_quit(_: &mut App) {}
 }
 
-fn quit(_: &Quit, cx: &mut App) {
+pub(crate) fn quit_app(cx: &mut App) {
     state::workspace::save_now(cx);
     profiling::flush();
     event!(Level::INFO, "quit by action");
     cx.quit();
+}
+
+fn quit(_: &Quit, cx: &mut App) {
+    quit_app(cx);
 }
 
 fn init(cx: &mut App) {
@@ -116,6 +121,104 @@ fn init(cx: &mut App) {
     state::config::init(cx);
     state::chat::init_global(cx);
     hotkey::init(cx);
+}
+
+fn register_main_window_close_behavior(window: &mut Window, cx: &mut App) {
+    window.on_window_should_close(cx, |window, _cx| {
+        if should_hide_main_window_on_close() {
+            if let Err(err) = window.hide() {
+                event!(Level::ERROR, error = ?err, "hide main window on close failed");
+                return true;
+            }
+            return false;
+        }
+
+        true
+    });
+}
+
+const fn should_hide_main_window_on_close() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+fn create_main_root(window: &mut Window, cx: &mut App) -> Entity<Root> {
+    register_main_window_close_behavior(window, cx);
+    let view = cx.new(|cx| HomeView::new(window, cx));
+    cx.new(|cx| Root::new(view, window, cx))
+}
+
+pub(crate) fn find_window_by_view<V: 'static>(cx: &App) -> Option<WindowHandle<Root>> {
+    cx.windows().iter().find_map(|window| {
+        let root = window.downcast::<Root>()?;
+        let root_view = root.read(cx).ok()?.view().clone();
+        root_view.downcast::<V>().ok().map(|_| root)
+    })
+}
+
+pub(crate) fn with_root_view<V: 'static, R>(
+    root: &mut Root,
+    cx: &mut Context<Root>,
+    callback: impl FnOnce(Entity<V>, &mut Context<Root>) -> R,
+) -> Option<R> {
+    let view = root.view().clone().downcast::<V>().ok()?;
+    Some(callback(view, cx))
+}
+
+fn focus_main_window_chat_form(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
+    let _ = with_root_view::<HomeView, _>(root, cx, |home, cx| {
+        home.update(cx, |home, cx| home.focus_chat_form(window, cx));
+    });
+}
+
+fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
+    if let Err(err) = window.show() {
+        event!(Level::ERROR, error = ?err, "show main window failed");
+    }
+    window.activate_window();
+    focus_main_window_chat_form(root, window, cx);
+}
+
+pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, anyhow::Error> {
+    let title = cx.global::<I18n>().t("app-title");
+    cx.open_window(
+        WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some(title.into()),
+                ..TitleBar::title_bar_options()
+            }),
+            window_background: WindowBackgroundAppearance::Opaque,
+            ..Default::default()
+        },
+        create_main_root,
+    )
+}
+
+pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
+    find_window_by_view::<HomeView>(cx)
+}
+
+pub(crate) fn show_or_create_main_window(cx: &mut App) {
+    if let Some(window) = find_main_window(cx) {
+        if let Err(err) = window.update(cx, |root, window, cx| {
+            reveal_main_window(root, window, cx);
+        }) {
+            event!(Level::ERROR, error = ?err, "update main window failed");
+        }
+        return;
+    }
+
+    match open_main_window(cx) {
+        Ok(window) => {
+            if let Err(err) = window.update(cx, |root, window, cx| {
+                reveal_main_window(root, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "activate new main window failed");
+            }
+        }
+        Err(err) => {
+            event!(Level::ERROR, error = ?err, "open main window failed");
+        }
+    }
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {
@@ -170,29 +273,27 @@ pub(crate) fn run() -> AiChatResult<()> {
     let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
     let app = Application::new().with_assets(assets::Assets::default());
+    app.on_reopen(show_or_create_main_window);
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {
         init(cx);
         profiling::schedule_auto_quit(cx);
-        let title = cx.global::<I18n>().t("app-title");
-        if let Err(err) = cx.open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..TitleBar::title_bar_options()
-                }),
-                window_background: WindowBackgroundAppearance::Opaque,
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(|cx| HomeView::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
-        ) {
-            event!(Level::ERROR, "open main window: {}", err)
-        };
-        event!(Level::INFO, "window opened");
+        show_or_create_main_window(cx);
+        tray::init(cx);
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_hide_main_window_on_close;
+
+    #[::core::prelude::v1::test]
+    fn main_window_close_behavior_matches_platform_support() {
+        assert_eq!(
+            should_hide_main_window_on_close(),
+            cfg!(any(target_os = "macos", target_os = "windows"))
+        );
+    }
 }

@@ -26,11 +26,14 @@ pub use platform_ext::app::{NSRunningApplication, Retained};
 #[cfg(target_os = "macos")]
 use platform_ext::app::{record_frontmost_app, restore_frontmost_app};
 use platform_ext::{OcrError, ocr::ImageFrame};
-use std::{any::TypeId, collections::BTreeMap, str::FromStr, time::Duration};
+use std::{collections::BTreeMap, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
 
 use self::backend::SystemHotkeyBackend;
+pub(crate) use self::temporary_window::{
+    init_temporary_window_state, open_temporary_window, toggle_temporary_window,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegisteredHotkeyAction {
@@ -51,7 +54,6 @@ pub struct GlobalHotkeyState {
     _task: Task<()>,
     #[cfg(target_os = "macos")]
     front_app: Option<Retained<NSRunningApplication>>,
-    pub delay_close: Option<Task<()>>,
 }
 
 impl Global for GlobalHotkeyState {}
@@ -60,6 +62,7 @@ pub fn init(cx: &mut App) {
     let span = tracing::info_span!("hotkey::init");
     let _enter = span.enter();
     event!(Level::INFO, "hotkey init");
+    init_temporary_window_state(cx);
     match inner_init(cx) {
         Ok(_) => {}
         Err(err) => {
@@ -105,7 +108,6 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
         _task: task,
         #[cfg(target_os = "macos")]
         front_app: None,
-        delay_close: None,
     };
     hotkeys.load_initial_shortcuts(cx)?;
     cx.set_global(hotkeys);

@@ -1,6 +1,14 @@
 app-title = AI 对话
 settings-title = 设置
 message-preview-title = 消息预览：{ $id }
+tray-open-main = 打开 AI 对话
+tray-open-temporary = 打开临时对话
+tray-version = 版本（v{ $version }）
+tray-about = 关于 AI 对话
+tray-quit = 退出 AI 对话
+tray-tooltip = AI 对话
+tray-about-comments = 基于 GPUI 构建的桌面 AI 对话应用。
+tray-about-website-label = 项目仓库
 
 settings-page-general = 通用
 settings-page-provider = 提供方
