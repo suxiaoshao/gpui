@@ -31,6 +31,9 @@ use tracing::{Level, event};
 use window_ext::WindowExt;
 
 use self::backend::SystemHotkeyBackend;
+pub(crate) use self::temporary_window::{
+    init_temporary_window_state, open_temporary_window, toggle_temporary_window,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegisteredHotkeyAction {
@@ -51,7 +54,6 @@ pub struct GlobalHotkeyState {
     _task: Task<()>,
     #[cfg(target_os = "macos")]
     front_app: Option<Retained<NSRunningApplication>>,
-    pub delay_close: Option<Task<()>>,
 }
 
 impl Global for GlobalHotkeyState {}
@@ -60,40 +62,13 @@ pub fn init(cx: &mut App) {
     let span = tracing::info_span!("hotkey::init");
     let _enter = span.enter();
     event!(Level::INFO, "hotkey init");
+    init_temporary_window_state(cx);
     match inner_init(cx) {
         Ok(_) => {}
         Err(err) => {
             event!(Level::ERROR, error = ?err, "Failed to initialize hotkeys");
         }
     };
-}
-
-pub(crate) fn open_temporary_window(cx: &mut App) {
-    if !cx.has_global::<GlobalHotkeyState>() {
-        event!(
-            Level::ERROR,
-            "Failed to open temporary window: GlobalHotkeyState is not initialized"
-        );
-        return;
-    }
-
-    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
-        let _ = hotkeys.ensure_temporary_window_visible(cx);
-    });
-}
-
-pub(crate) fn toggle_temporary_window(cx: &mut App) {
-    if !cx.has_global::<GlobalHotkeyState>() {
-        event!(
-            Level::ERROR,
-            "Failed to toggle temporary window: GlobalHotkeyState is not initialized"
-        );
-        return;
-    }
-
-    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
-        hotkeys.toggle_temporary_window(cx);
-    });
 }
 
 fn inner_init(cx: &mut App) -> AiChatResult<()> {
@@ -133,7 +108,6 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
         _task: task,
         #[cfg(target_os = "macos")]
         front_app: None,
-        delay_close: None,
     };
     hotkeys.load_initial_shortcuts(cx)?;
     cx.set_global(hotkeys);

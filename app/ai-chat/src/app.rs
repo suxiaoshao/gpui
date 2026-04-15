@@ -125,12 +125,20 @@ fn init(cx: &mut App) {
 
 fn register_main_window_close_behavior(window: &mut Window, cx: &mut App) {
     window.on_window_should_close(cx, |window, _cx| {
-        if let Err(err) = window.hide() {
-            event!(Level::ERROR, error = ?err, "hide main window on close failed");
-            return true;
+        if should_hide_main_window_on_close() {
+            if let Err(err) = window.hide() {
+                event!(Level::ERROR, error = ?err, "hide main window on close failed");
+                return true;
+            }
+            return false;
         }
-        false
+
+        true
     });
+}
+
+const fn should_hide_main_window_on_close() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
 }
 
 fn create_main_root(window: &mut Window, cx: &mut App) -> Entity<Root> {
@@ -275,4 +283,17 @@ pub(crate) fn run() -> AiChatResult<()> {
         tray::init(cx);
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_hide_main_window_on_close;
+
+    #[::core::prelude::v1::test]
+    fn main_window_close_behavior_matches_platform_support() {
+        assert_eq!(
+            should_hide_main_window_on_close(),
+            cfg!(any(target_os = "macos", target_os = "windows"))
+        );
+    }
 }
