@@ -15,6 +15,7 @@ mod i18n;
 mod llm;
 mod platform;
 mod state;
+mod tray;
 mod views;
 
 fn main() -> AiChatResult<()> {

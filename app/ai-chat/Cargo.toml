@@ -1,6 +1,11 @@
 [package]
 name = "ai-chat"
 version = "0.1.0"
+description = "A desktop AI chat app built with GPUI."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
 build = "build.rs"
 
@@ -38,6 +43,8 @@ window-ext = { workspace = true }
 platform-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.102"
+tray-icon = { version = "0.21.3", default-features = false, features = ["common-controls-v6"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 # i18n
 fluent-bundle = "0.16.0"
@@ -94,8 +101,10 @@ global-hotkey = { version = "0.7.0", features = ["serde", "tracing"] }
 [dev-dependencies]
 anyhow = "1.0.102"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-image = { version = "0.25.10", default-features = false }
 xcap = "0.9.4"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]

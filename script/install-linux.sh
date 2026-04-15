@@ -9,6 +9,7 @@ sudo apt-get install -y \
   gcc \
   g++ \
   libfontconfig1-dev \
+  libgtk-3-dev \
   libssl-dev \
   libwayland-dev \
   libwebkit2gtk-4.1-dev \
@@ -19,3 +20,7 @@ sudo apt-get install -y \
   pkg-config \
   vulkan-validationlayers \
   libvulkan1
+
+if ! sudo apt-get install -y libayatana-appindicator3-dev; then
+  sudo apt-get install -y libappindicator3-dev
+fi

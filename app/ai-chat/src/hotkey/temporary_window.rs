@@ -1,6 +1,17 @@
 use super::*;
+use crate::app::{find_window_by_view, with_root_view};
 
 impl GlobalHotkeyState {
+    fn focus_temporary_window_chat_form(
+        root: &mut Root,
+        window: &mut Window,
+        cx: &mut Context<Root>,
+    ) {
+        let _ = with_root_view::<TemporaryView, _>(root, cx, |view, cx| {
+            view.update(cx, |view, cx| view.focus_chat_form(window, cx));
+        });
+    }
+
     pub fn delay_close(window: &mut Window, cx: &mut App) -> Task<()> {
         window.spawn(cx, async |cx| {
             Timer::after(Duration::from_secs(600)).await;
@@ -13,14 +24,7 @@ impl GlobalHotkeyState {
     }
 
     pub(super) fn find_temporary_window(cx: &App) -> Option<WindowHandle<Root>> {
-        cx.windows().iter().find_map(|window| {
-            window.downcast::<Root>().filter(|root| {
-                root.read(cx)
-                    .ok()
-                    .map(|root| root.view().entity_type() == TypeId::of::<TemporaryView>())
-                    .unwrap_or(false)
-            })
-        })
+        find_window_by_view::<TemporaryView>(cx)
     }
 
     pub(super) fn delay_or_hide_temporary_window(&mut self, window: &mut Window, cx: &mut App) {
@@ -141,8 +145,9 @@ impl GlobalHotkeyState {
     ) -> Option<WindowHandle<Root>> {
         let window =
             Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
-        let _ = window.update(cx, |_, window, cx| {
+        let _ = window.update(cx, |root, window, cx| {
             self.show_temporary_window_on_mouse_display(window, cx);
+            Self::focus_temporary_window_chat_form(root, window, cx);
         });
         Some(window)
     }

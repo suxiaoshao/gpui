@@ -26,7 +26,7 @@ pub use platform_ext::app::{NSRunningApplication, Retained};
 #[cfg(target_os = "macos")]
 use platform_ext::app::{record_frontmost_app, restore_frontmost_app};
 use platform_ext::{OcrError, ocr::ImageFrame};
-use std::{any::TypeId, collections::BTreeMap, str::FromStr, time::Duration};
+use std::{collections::BTreeMap, str::FromStr, time::Duration};
 use tracing::{Level, event};
 use window_ext::WindowExt;
 
@@ -66,6 +66,34 @@ pub fn init(cx: &mut App) {
             event!(Level::ERROR, error = ?err, "Failed to initialize hotkeys");
         }
     };
+}
+
+pub(crate) fn open_temporary_window(cx: &mut App) {
+    if !cx.has_global::<GlobalHotkeyState>() {
+        event!(
+            Level::ERROR,
+            "Failed to open temporary window: GlobalHotkeyState is not initialized"
+        );
+        return;
+    }
+
+    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+        let _ = hotkeys.ensure_temporary_window_visible(cx);
+    });
+}
+
+pub(crate) fn toggle_temporary_window(cx: &mut App) {
+    if !cx.has_global::<GlobalHotkeyState>() {
+        event!(
+            Level::ERROR,
+            "Failed to toggle temporary window: GlobalHotkeyState is not initialized"
+        );
+        return;
+    }
+
+    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+        hotkeys.toggle_temporary_window(cx);
+    });
 }
 
 fn inner_init(cx: &mut App) -> AiChatResult<()> {
