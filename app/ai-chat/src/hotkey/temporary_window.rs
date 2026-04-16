@@ -137,9 +137,9 @@ impl TemporaryWindowState {
             restore_target.restore_if_override();
             return false;
         }
-        window.activate_window();
         #[cfg(target_os = "macos")]
         self.prepare_front_app_for_visible_session(restore_target);
+        window.activate_window();
         true
     }
 
