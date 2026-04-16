@@ -81,7 +81,7 @@ fn main() -> HttpClientResult<()> {
     let span = tracing::info_span!("init");
     let _enter = span.enter();
 
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(|cx: &mut App| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");

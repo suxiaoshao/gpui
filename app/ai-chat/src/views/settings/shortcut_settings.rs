@@ -27,7 +27,7 @@ use gpui_component::{
     select::{
         SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState,
     },
-    table::{Column, Table, TableDelegate, TableState},
+    table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use std::{collections::BTreeMap, ops::Deref};
@@ -321,8 +321,8 @@ impl TableDelegate for ShortcutBindingsTableDelegate {
             .unwrap_or_default()
     }
 
-    fn column(&self, col_ix: usize, _: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     fn render_tr(
@@ -1485,7 +1485,7 @@ impl Render for ShortcutSettingsPage {
             .child(self.render_toolbar(cx))
             .child(
                 div().w_full().h(px(560.)).child(
-                    Table::new(&self.table)
+                    DataTable::new(&self.table)
                         .small()
                         .stripe(true)
                         .scrollbar_visible(true, true),

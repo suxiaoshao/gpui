@@ -194,7 +194,7 @@ impl GlobalHotkeyState {
                 "Triggering selection or clipboard shortcut"
             );
             let selected_text = smol::unblock(move || get_selected_text().ok()).await;
-            let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
                 match hotkeys.resolve_clipboard_fallback(selected_text, cx) {
                     Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
                     None => hotkeys.handle_empty_shortcut_input(cx),
@@ -287,7 +287,7 @@ impl GlobalHotkeyState {
     ) {
         cx.spawn(async move |cx| {
             let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image)).await;
-            let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
                 Ok(text) => {
                     event!(
                         Level::INFO,

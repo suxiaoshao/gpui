@@ -45,7 +45,7 @@ fn focus_temporary_window_chat_form(root: &mut Root, window: &mut Window, cx: &m
 impl TemporaryWindowState {
     pub fn delay_close(window: &mut Window, cx: &mut App) -> Task<()> {
         window.spawn(cx, async |cx| {
-            Timer::after(Duration::from_secs(600)).await;
+            smol::Timer::after(Duration::from_secs(600)).await;
             if let Err(err) = cx.window_handle().update(cx, |_, window, _cx| {
                 window.remove_window();
             }) {
@@ -62,6 +62,13 @@ impl TemporaryWindowState {
         let task = Self::delay_close(window, cx);
         self.delay_close = Some(task);
         self.hide_temporary_window(window);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn record_front_app(&mut self) {
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
+        }
     }
 
     pub fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
@@ -84,9 +91,7 @@ impl TemporaryWindowState {
     fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
-        if self.front_app.is_none() {
-            self.front_app = record_frontmost_app();
-        }
+        self.record_front_app();
         let target_display_id = target_display_id(cx);
         let target_bounds = recentered_bounds_for_display(
             target_display_id,
@@ -106,9 +111,7 @@ impl TemporaryWindowState {
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         #[cfg(target_os = "macos")]
-        if self.front_app.is_none() {
-            self.front_app = record_frontmost_app();
-        }
+        self.record_front_app();
         let target_display_id = target_display_id(cx);
         match cx.open_window(
             WindowOptions {
@@ -228,6 +231,13 @@ impl GlobalHotkeyState {
 pub(crate) fn open_temporary_window(cx: &mut App) {
     let _ = with_temporary_window_state(cx, |state, cx| {
         state.ensure_temporary_window_visible(cx);
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn record_front_app_for_temporary_window(cx: &mut App) {
+    let _ = with_temporary_window_state(cx, |state, _cx| {
+        state.record_front_app();
     });
 }
 

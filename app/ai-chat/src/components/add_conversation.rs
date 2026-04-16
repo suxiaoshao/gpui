@@ -6,6 +6,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     form::{field, v_form},
     input::{Input, InputState},
 };
@@ -110,66 +111,57 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                             .child(Input::new(&info_input)),
                     ),
             )
-            .footer({
-                let name_input = name_input.clone();
-                let icon_input = icon_input.clone();
-                let info_input = info_input.clone();
-                let cancel_label = cancel_label.clone();
-                let submit_label = submit_label.clone();
-                let mode = mode.clone();
-                move |_this, _state, _window, _cx| {
-                    vec![
-                        Button::new("cancel").label(cancel_label.clone()).on_click(
-                            |_, window, cx| {
-                                window.close_dialog(cx);
-                            },
-                        ),
-                        Button::new("ok")
-                            .primary()
-                            .label(submit_label.clone())
-                            .on_click({
-                                let name_input = name_input.clone();
-                                let icon_input = icon_input.clone();
-                                let info_input = info_input.clone();
-                                let mode = mode.clone();
-                                move |_, window, cx| {
-                                    let name = name_input.read(cx).value();
-                                    let icon = icon_input.read(cx).value();
-                                    let info = info_input.read(cx).value();
-                                    if !name.is_empty() {
-                                        let chat_data = cx.global::<ChatData>().deref().clone();
-                                        let mode = mode.clone();
-                                        chat_data.update(cx, move |_this, cx| {
-                                            let info =
-                                                if info.is_empty() { None } else { Some(info) };
-                                            match mode {
-                                                ConversationDialogMode::Add {
-                                                    parent_id,
-                                                    initial_messages,
-                                                } => cx.emit(ChatDataEvent::AddConversation {
-                                                    name,
-                                                    icon,
-                                                    info,
-                                                    parent_id,
-                                                    initial_messages,
-                                                }),
-                                                ConversationDialogMode::Edit {
-                                                    conversation_id,
-                                                } => cx.emit(ChatDataEvent::UpdateConversation {
-                                                    id: conversation_id,
-                                                    title: name,
-                                                    icon,
-                                                    info,
-                                                }),
-                                            }
-                                        });
+            .footer(
+                DialogFooter::new()
+                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogAction::new().child(
+                            Button::new("ok")
+                                .primary()
+                                .label(submit_label.clone())
+                                .on_click({
+                                    let name_input = name_input.clone();
+                                    let icon_input = icon_input.clone();
+                                    let info_input = info_input.clone();
+                                    let mode = mode.clone();
+                                    move |_, window, cx| {
+                                        let name = name_input.read(cx).value();
+                                        let icon = icon_input.read(cx).value();
+                                        let info = info_input.read(cx).value();
+                                        if !name.is_empty() {
+                                            let chat_data = cx.global::<ChatData>().deref().clone();
+                                            let mode = mode.clone();
+                                            chat_data.update(cx, move |_this, cx| {
+                                                let info =
+                                                    if info.is_empty() { None } else { Some(info) };
+                                                match mode {
+                                                    ConversationDialogMode::Add {
+                                                        parent_id,
+                                                        initial_messages,
+                                                    } => cx.emit(ChatDataEvent::AddConversation {
+                                                        name,
+                                                        icon,
+                                                        info,
+                                                        parent_id,
+                                                        initial_messages,
+                                                    }),
+                                                    ConversationDialogMode::Edit {
+                                                        conversation_id,
+                                                    } => cx.emit(ChatDataEvent::UpdateConversation {
+                                                        id: conversation_id,
+                                                        title: name,
+                                                        icon,
+                                                        info,
+                                                    }),
+                                                }
+                                            });
+                                        }
+                                        window.close_dialog(cx);
                                     }
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ]
-                }
-            })
+                                }),
+                        ),
+                    ),
+            )
     });
 }
 

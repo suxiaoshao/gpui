@@ -239,7 +239,7 @@ impl ExtSettings {
         let tooltip_key = item.tooltip?;
         let markdown = cx.global::<I18n>().t(tooltip_key);
         Some(
-            Tooltip::element(move |window, cx| {
+            Tooltip::element(move |_window, _cx| {
                 div().w(px(520.)).child(
                     v_flex()
                         .p_2()
@@ -251,8 +251,6 @@ impl ExtSettings {
                                 TextView::markdown(
                                     SharedString::from(format!("ext-setting-tooltip-{index}")),
                                     markdown.clone(),
-                                    window,
-                                    cx,
                                 )
                                 .selectable(true),
                             ),

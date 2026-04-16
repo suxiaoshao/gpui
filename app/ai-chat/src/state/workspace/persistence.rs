@@ -213,7 +213,7 @@ impl WorkspaceState {
     pub(super) fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.persisted.clone();
         self.save_task = Some(cx.spawn(async move |_, _cx| {
-            Timer::after(SAVE_DEBOUNCE).await;
+            smol::Timer::after(SAVE_DEBOUNCE).await;
             if let Err(err) = Self::write_persisted(&snapshot) {
                 event!(Level::ERROR, "save state.toml failed: {}", err);
             }

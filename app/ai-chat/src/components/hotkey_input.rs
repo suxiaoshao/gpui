@@ -289,7 +289,7 @@ impl Render for HotkeyInput {
                                 .icon(IconName::Close)
                                 .on_click(cx.listener(|_this, _event, window, cx| {
                                     cx.emit(HotkeyEvent::Cancel);
-                                    window.focus_next();
+                                    window.focus_next(cx);
                                 })),
                         )
                         .child(
@@ -299,7 +299,7 @@ impl Render for HotkeyInput {
                                 .icon(IconName::Check)
                                 .on_click(cx.listener(|this, _event, window, cx| {
                                     this.on_blur(window, cx);
-                                    window.focus_next();
+                                    window.focus_next(cx);
                                 })),
                         ),
                 )

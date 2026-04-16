@@ -8,6 +8,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
+    dialog::{DialogClose, DialogFooter},
     divider::Divider,
     form::{field, v_form},
     h_flex,
@@ -315,15 +316,13 @@ fn open_template_dialog(
                             .child(fields.prompt_form_input.clone()),
                     ),
             )
-            .footer({
-                let labels = labels.clone();
-                let fields = fields.clone();
-                let on_saved = on_saved.clone();
-                move |_dialog, _state, _window, _cx| {
-                    vec![
-                        Button::new("cancel")
-                            .label(labels.cancel_label.clone())
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        DialogClose::new()
+                            .child(Button::new("cancel").label(labels.cancel_label.clone())),
+                    )
+                    .child(
                         Button::new("submit")
                             .primary()
                             .label(labels.submit_label.clone())
@@ -355,9 +354,8 @@ fn open_template_dialog(
                                     );
                                 }
                             }),
-                    ]
-                }
-            })
+                    ),
+            )
     });
 }
 

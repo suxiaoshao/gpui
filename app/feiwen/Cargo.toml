@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 # ui
 gpui.workspace = true
+gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 fluent-bundle = "0.16.0"

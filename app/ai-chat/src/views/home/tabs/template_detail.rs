@@ -11,6 +11,7 @@ use gpui_component::{
     ActiveTheme, Sizable, WindowExt,
     avatar::Avatar,
     button::{Button, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     divider::Divider,
     h_flex,
     label::Label,
@@ -143,31 +144,29 @@ impl TemplateDetailView {
                 dialog
                     .title(delete_title.clone())
                     .child(Label::new(delete_message.clone()))
-                    .footer({
-                        let cancel_label = cancel_label.clone();
-                        let delete_label = delete_label.clone();
-                        move |_dialog, _state, _window, _cx| {
-                            vec![
-                                Button::new("cancel").label(cancel_label.clone()).on_click(
-                                    |_, window, cx| {
-                                        window.close_dialog(cx);
-                                    },
+                    .footer(
+                        DialogFooter::new()
+                            .child(
+                                DialogClose::new()
+                                    .child(Button::new("cancel").label(cancel_label.clone())),
+                            )
+                            .child(
+                                DialogAction::new().child(
+                                    Button::new("confirm-delete")
+                                        .danger()
+                                        .label(delete_label.clone())
+                                        .on_click({
+                                            let this = this.clone();
+                                            move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                let _ = this.update(cx, |view, cx| {
+                                                    view.delete_template(window, cx);
+                                                });
+                                            }
+                                        }),
                                 ),
-                                Button::new("confirm-delete")
-                                    .danger()
-                                    .label(delete_label.clone())
-                                    .on_click({
-                                        let this = this.clone();
-                                        move |_, window, cx| {
-                                            window.close_dialog(cx);
-                                            let _ = this.update(cx, |view, cx| {
-                                                view.delete_template(window, cx);
-                                            });
-                                        }
-                                    }),
-                            ]
-                        }
-                    })
+                            ),
+                    )
             }
         });
     }
@@ -277,8 +276,8 @@ fn render_prompt_message(
     template_id: i32,
     index: usize,
     prompt: &crate::database::ConversationTemplatePrompt,
-    window: &mut Window,
-    cx: &mut App,
+    _window: &mut Window,
+    _cx: &mut App,
 ) -> AnyElement {
     let text_id: SharedString = format!("template-prompt-{template_id}-{index}").into();
     v_flex()
@@ -293,7 +292,7 @@ fn render_prompt_message(
                         .with_size(px(32.)),
                 )
                 .child(
-                    TextView::markdown(text_id, &prompt.prompt, window, cx)
+                    TextView::markdown(text_id, &prompt.prompt)
                         .selectable(true)
                         .flex_1()
                         .overflow_x_hidden(),

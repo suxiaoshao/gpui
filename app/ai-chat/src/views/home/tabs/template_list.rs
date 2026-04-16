@@ -217,7 +217,7 @@ impl TemplateListView {
         });
         let _search_input_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        search_input.focus_handle(cx).focus(window);
+        search_input.focus_handle(cx).focus(window, cx);
 
         Self {
             templates: Self::build_list("", window, cx),

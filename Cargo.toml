@@ -12,12 +12,17 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
-gpui-component-assets = "0.5.1"
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
+
+[patch.crates-io]
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-macros = { git = "https://github.com/zed-industries/zed", package = "gpui_macros" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

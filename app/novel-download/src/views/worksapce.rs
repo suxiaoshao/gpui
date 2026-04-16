@@ -288,7 +288,7 @@ impl Render for WorkspaceView {
                                 this.input.update(cx, |this, cx| {
                                     this.set_value("", window, cx);
                                 });
-                                this.focus_handle.focus(window);
+                                this.focus_handle.focus(window, cx);
                             });
                         }))
                         .loading(loading)

@@ -37,6 +37,7 @@ dhat-heap = ["dep:dhat"]
 dhat = { version = "0.3.3", optional = true }
 # ui
 gpui.workspace = true
+gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets = { workspace = true }
 window-ext = { workspace = true }
