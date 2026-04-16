@@ -200,6 +200,15 @@ impl ScreenshotOverlayView {
     fn new(display: CaptureDisplay, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        if let Err(err) = window.set_crosshair_cursor_rect() {
+            let display_id = display.id_hint;
+            event!(
+                Level::ERROR,
+                display_id,
+                error = ?err,
+                "Failed to set screenshot overlay cursor rect"
+            );
+        }
         Self {
             display,
             drag_origin: None,
@@ -333,6 +342,15 @@ impl ScreenshotOverlayView {
             return;
         };
 
+        if let Err(err) = window.clear_cursor_rects() {
+            event!(
+                Level::ERROR,
+                display_id = self.display.id_hint,
+                error = ?err,
+                "Failed to clear screenshot overlay cursor rect"
+            );
+        }
+
         // Remove the current overlay window directly — this is the only safe way to do it
         // from within the window's own event handler.
         window.remove_window();
@@ -404,6 +422,13 @@ impl Render for ScreenshotOverlayView {
 }
 
 fn cancel_overlay(window: &mut Window, cx: &mut Context<ScreenshotOverlayView>) {
+    if let Err(err) = window.clear_cursor_rects() {
+        event!(
+            Level::ERROR,
+            error = ?err,
+            "Failed to clear screenshot overlay cursor rect"
+        );
+    }
     cx.update_global::<ScreenshotOverlayState, _>(|state, cx| {
         if let Some(session) = state.session.take() {
             session.close_all(cx);
