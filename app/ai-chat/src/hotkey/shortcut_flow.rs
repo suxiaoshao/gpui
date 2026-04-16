@@ -139,15 +139,15 @@ impl GlobalHotkeyState {
         text: String,
         cx: &mut App,
     ) {
-        self.trigger_shortcut_with_input_before_showing_window(binding, text, cx, |_, _| {});
+        self.trigger_shortcut_with_input_after_showing_window(binding, text, cx, |_, _| {});
     }
 
-    fn trigger_shortcut_with_input_before_showing_window(
+    fn trigger_shortcut_with_input_after_showing_window(
         &mut self,
         binding: GlobalShortcutBinding,
         text: String,
         cx: &mut App,
-        before_showing_window: impl FnOnce(&mut Self, &mut App),
+        after_showing_window: impl FnOnce(&mut Self, &mut App),
     ) {
         let models = cx.global::<ModelStore>().read(cx).snapshot().models;
         let model_available = models.iter().any(|model| {
@@ -158,10 +158,10 @@ impl GlobalHotkeyState {
             return;
         }
 
-        before_showing_window(self, cx);
         let Some(window) = self.ensure_temporary_window_visible(cx) else {
             return;
         };
+        after_showing_window(self, cx);
         let draft = ConversationDraft {
             text,
             provider_name: binding.provider_name.clone(),
@@ -308,7 +308,7 @@ impl GlobalHotkeyState {
                         "Screenshot OCR completed"
                     );
                     match normalized_text(Some(text)) {
-                        Some(text) => hotkeys.trigger_shortcut_with_input_before_showing_window(
+                        Some(text) => hotkeys.trigger_shortcut_with_input_after_showing_window(
                             binding,
                             text,
                             cx,
