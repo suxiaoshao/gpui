@@ -8,7 +8,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    dialog::{DialogClose, DialogFooter},
     divider::Divider,
     form::{field, v_form},
     h_flex,
@@ -323,39 +323,37 @@ fn open_template_dialog(
                             .child(Button::new("cancel").label(labels.cancel_label.clone())),
                     )
                     .child(
-                        DialogAction::new().child(
-                            Button::new("submit")
-                                .primary()
-                                .label(labels.submit_label.clone())
-                                .on_click({
-                                    let labels = labels.clone();
-                                    let fields = fields.clone();
-                                    let on_saved = on_saved.clone();
-                                    move |_, window, cx| {
-                                        let submission = match collect_submission(&fields, &labels, cx)
-                                        {
-                                            Ok(submission) => submission,
-                                            Err(err) => {
-                                                window.push_notification(
-                                                    Notification::new()
-                                                        .title(labels.failure_title.clone())
-                                                        .message(err)
-                                                        .with_type(NotificationType::Error),
-                                                    cx,
-                                                );
-                                                return;
-                                            }
-                                        };
-                                        save_template(
-                                            params.template_id,
-                                            submission,
-                                            on_saved.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                }),
-                        ),
+                        Button::new("submit")
+                            .primary()
+                            .label(labels.submit_label.clone())
+                            .on_click({
+                                let labels = labels.clone();
+                                let fields = fields.clone();
+                                let on_saved = on_saved.clone();
+                                move |_, window, cx| {
+                                    let submission = match collect_submission(&fields, &labels, cx)
+                                    {
+                                        Ok(submission) => submission,
+                                        Err(err) => {
+                                            window.push_notification(
+                                                Notification::new()
+                                                    .title(labels.failure_title.clone())
+                                                    .message(err)
+                                                    .with_type(NotificationType::Error),
+                                                cx,
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    save_template(
+                                        params.template_id,
+                                        submission,
+                                        on_saved.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
                     ),
             )
     });
