@@ -3,7 +3,7 @@ use gpui::{Bounds, DisplayId, Pixels, Window};
 #[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Id};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSScreen, NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSCursor, NSScreen, NSView, NSWindow};
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
@@ -14,7 +14,8 @@ use windows::Win32::{
     Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
     UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
     UI::WindowsAndMessaging::{
-        SW_HIDE, SW_SHOW, SWP_NOZORDER, SetWindowPos, ShowWindow, USER_DEFAULT_SCREEN_DPI,
+        HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        ShowWindow, USER_DEFAULT_SCREEN_DPI,
     },
 };
 #[cfg(target_os = "windows")]
@@ -30,6 +31,8 @@ pub enum WindowExtError {
     FailedToGetNSWindow,
     #[error("Failed to get NSApplication")]
     FailedToGetNSApplication,
+    #[error("Failed to set topmost")]
+    FailedSetTopMost,
     #[error("Failed to set window bounds")]
     FailedSetBounds,
 }
@@ -37,6 +40,9 @@ pub enum WindowExtError {
 pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
+    fn set_floating(&self) -> Result<(), WindowExtError>;
+    fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError>;
+    fn clear_cursor_rects(&self) -> Result<(), WindowExtError>;
     fn is_visible(&self) -> Result<bool, WindowExtError>;
     fn move_and_resize(
         &self,
@@ -101,6 +107,74 @@ impl WindowExt for Window {
         }
         Ok(())
     }
+
+    fn set_floating(&self) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        match raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.setLevel(5 as _);
+                    let ns_app = NSApplication::sharedApplication(
+                        MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
+                    );
+                    ns_app.activate();
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOMOVE,
+                        )
+                        .map_err(|_| WindowExtError::FailedSetTopMost)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        if let RawWindowHandle::AppKit(handle) = raw_window {
+            #[cfg(target_os = "macos")]
+            {
+                let ns_view = get_ns_view(handle)?;
+                let cursor = NSCursor::crosshairCursor();
+                ns_view.discardCursorRects();
+                ns_view.addCursorRect_cursor(ns_view.bounds(), &cursor);
+                cursor.set();
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_cursor_rects(&self) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        if let RawWindowHandle::AppKit(handle) = raw_window {
+            #[cfg(target_os = "macos")]
+            {
+                let ns_view = get_ns_view(handle)?;
+                ns_view.discardCursorRects();
+                NSCursor::arrowCursor().set();
+            }
+        }
+        Ok(())
+    }
+
     fn is_visible(&self) -> Result<bool, WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
