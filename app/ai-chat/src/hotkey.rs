@@ -32,7 +32,8 @@ use window_ext::WindowExt;
 
 use self::backend::SystemHotkeyBackend;
 pub(crate) use self::temporary_window::{
-    init_temporary_window_state, open_temporary_window, toggle_temporary_window,
+    init_temporary_window_state, open_temporary_window,
+    record_front_app_for_temporary_window, toggle_temporary_window,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

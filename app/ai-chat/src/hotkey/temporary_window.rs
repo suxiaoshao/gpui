@@ -221,13 +221,6 @@ impl GlobalHotkeyState {
             .flatten()
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn record_front_app_for_temporary_window(&mut self, cx: &mut App) {
-        let _ = with_temporary_window_state(cx, |state, _cx| {
-            state.record_front_app();
-        });
-    }
-
     pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {
         let _ = with_temporary_window_state(cx, |state, cx| {
             state.toggle_temporary_window(cx);
@@ -238,6 +231,13 @@ impl GlobalHotkeyState {
 pub(crate) fn open_temporary_window(cx: &mut App) {
     let _ = with_temporary_window_state(cx, |state, cx| {
         state.ensure_temporary_window_visible(cx);
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn record_front_app_for_temporary_window(cx: &mut App) {
+    let _ = with_temporary_window_state(cx, |state, _cx| {
+        state.record_front_app();
     });
 }
 
