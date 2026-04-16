@@ -139,29 +139,36 @@ impl GlobalHotkeyState {
         text: String,
         cx: &mut App,
     ) {
-        self.trigger_shortcut_with_input_after_showing_window(binding, text, cx, |_, _| {});
+        self.trigger_shortcut_with_input_with_restore_target(
+            binding,
+            text,
+            cx,
+            super::temporary_window::FocusRestoreTarget::ExistingOrRecordCurrent,
+        );
     }
 
-    fn trigger_shortcut_with_input_after_showing_window(
+    fn trigger_shortcut_with_input_with_restore_target(
         &mut self,
         binding: GlobalShortcutBinding,
         text: String,
         cx: &mut App,
-        after_showing_window: impl FnOnce(&mut Self, &mut App),
+        restore_target: super::temporary_window::FocusRestoreTarget,
     ) {
         let models = cx.global::<ModelStore>().read(cx).snapshot().models;
         let model_available = models.iter().any(|model| {
             model.provider_name == binding.provider_name && model.id == binding.model_id
         });
         if !model_available {
+            restore_target.restore_if_override();
             self.handle_unavailable_model(&binding, cx);
             return;
         }
 
-        let Some(window) = self.ensure_temporary_window_visible(cx) else {
+        let Some(window) =
+            self.ensure_temporary_window_visible_with_restore_target(cx, restore_target)
+        else {
             return;
         };
-        after_showing_window(self, cx);
         let draft = ConversationDraft {
             text,
             provider_name: binding.provider_name.clone(),
@@ -308,15 +315,24 @@ impl GlobalHotkeyState {
                         "Screenshot OCR completed"
                     );
                     match normalized_text(Some(text)) {
-                        Some(text) => hotkeys.trigger_shortcut_with_input_after_showing_window(
-                            binding,
-                            text,
-                            cx,
-                            |hotkeys, cx| {
-                                #[cfg(target_os = "macos")]
-                                hotkeys.transfer_front_app_from_screenshot_to_temporary_window(cx);
-                            },
-                        ),
+                        Some(text) => {
+                            #[cfg(target_os = "macos")]
+                            {
+                                let front_app = hotkeys.take_front_app_for_screenshot();
+                                hotkeys.trigger_shortcut_with_input_with_restore_target(
+                                    binding,
+                                    text,
+                                    cx,
+                                    super::temporary_window::FocusRestoreTarget::Override(
+                                        front_app,
+                                    ),
+                                );
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                hotkeys.trigger_shortcut_with_input(binding, text, cx);
+                            }
+                        }
                         None => hotkeys.handle_empty_shortcut_input(cx),
                     }
                 }

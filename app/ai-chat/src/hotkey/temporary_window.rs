@@ -9,6 +9,21 @@ pub(crate) struct TemporaryWindowState {
 
 impl Global for TemporaryWindowState {}
 
+pub(super) enum FocusRestoreTarget {
+    ExistingOrRecordCurrent,
+    #[cfg(target_os = "macos")]
+    Override(Option<Retained<NSRunningApplication>>),
+}
+
+impl FocusRestoreTarget {
+    pub(super) fn restore_if_override(self) {
+        #[cfg(target_os = "macos")]
+        if let Self::Override(front_app) = self {
+            restore_frontmost_app(&front_app);
+        }
+    }
+}
+
 pub(crate) fn init_temporary_window_state(cx: &mut App) {
     if cx.has_global::<TemporaryWindowState>() {
         return;
@@ -72,9 +87,12 @@ impl TemporaryWindowState {
     }
 
     #[cfg(target_os = "macos")]
-    fn adopt_front_app(&mut self, front_app: Option<Retained<NSRunningApplication>>) {
-        if self.front_app.is_none() {
-            self.front_app = front_app;
+    fn prepare_front_app_for_visible_session(&mut self, restore_target: FocusRestoreTarget) {
+        match restore_target {
+            FocusRestoreTarget::ExistingOrRecordCurrent => self.record_front_app(),
+            FocusRestoreTarget::Override(front_app) => {
+                self.front_app = front_app;
+            }
         }
     }
 
@@ -95,10 +113,15 @@ impl TemporaryWindowState {
         }
     }
 
-    fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
+    fn show_temporary_window_on_mouse_display(
+        &mut self,
+        window: &mut Window,
+        cx: &App,
+        restore_target: FocusRestoreTarget,
+    ) -> bool {
         self.delay_close = None;
-        #[cfg(target_os = "macos")]
-        self.record_front_app();
+        #[cfg(not(target_os = "macos"))]
+        let _ = &restore_target;
         let target_display_id = target_display_id(cx);
         let target_bounds = recentered_bounds_for_display(
             target_display_id,
@@ -111,13 +134,16 @@ impl TemporaryWindowState {
         }
         if let Err(err) = window.show_without_activation() {
             event!(Level::ERROR, error = ?err, "Failed to show temporary window");
+            restore_target.restore_if_override();
+            return false;
         }
         window.activate_window();
+        #[cfg(target_os = "macos")]
+        self.prepare_front_app_for_visible_session(restore_target);
+        true
     }
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
-        #[cfg(target_os = "macos")]
-        self.record_front_app();
         let target_display_id = target_display_id(cx);
         match cx.open_window(
             WindowOptions {
@@ -153,13 +179,40 @@ impl TemporaryWindowState {
         &mut self,
         cx: &mut App,
     ) -> Option<WindowHandle<Root>> {
+        self.ensure_temporary_window_visible_with_restore_target(
+            cx,
+            FocusRestoreTarget::ExistingOrRecordCurrent,
+        )
+    }
+
+    pub(super) fn ensure_temporary_window_visible_with_restore_target(
+        &mut self,
+        cx: &mut App,
+        restore_target: FocusRestoreTarget,
+    ) -> Option<WindowHandle<Root>> {
         let window =
             Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
-        let _ = window.update(cx, |root, window, cx| {
-            self.show_temporary_window_on_mouse_display(window, cx);
+        let mut restore_target = Some(restore_target);
+        match window.update(cx, |root, window, cx| {
+            let restore_target = restore_target
+                .take()
+                .expect("restore target should be consumed by temporary window update");
+            if !self.show_temporary_window_on_mouse_display(window, cx, restore_target) {
+                return false;
+            }
             focus_temporary_window_chat_form(root, window, cx);
-        });
-        Some(window)
+            true
+        }) {
+            Ok(true) => Some(window),
+            Ok(false) => None,
+            Err(err) => {
+                if let Some(restore_target) = restore_target.take() {
+                    restore_target.restore_if_override();
+                }
+                event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
+                None
+            }
+        }
     }
 
     pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {
@@ -169,7 +222,11 @@ impl TemporaryWindowState {
                     if window.is_visible().unwrap_or(false) {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
-                        self.show_temporary_window_on_mouse_display(window, cx);
+                        self.show_temporary_window_on_mouse_display(
+                            window,
+                            cx,
+                            FocusRestoreTarget::ExistingOrRecordCurrent,
+                        );
                     }
                 }) {
                     event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
@@ -216,23 +273,21 @@ impl GlobalHotkeyState {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn transfer_front_app_from_screenshot_to_temporary_window(&mut self, cx: &mut App) {
-        let front_app = self.front_app.take();
-        if front_app.is_none() {
-            return;
-        }
-
-        let _ = with_temporary_window_state(cx, |state, _cx| {
-            state.adopt_front_app(front_app);
-        });
+    pub(crate) fn take_front_app_for_screenshot(
+        &mut self,
+    ) -> Option<Retained<NSRunningApplication>> {
+        self.front_app.take()
     }
 
-    pub(super) fn ensure_temporary_window_visible(
+    pub(super) fn ensure_temporary_window_visible_with_restore_target(
         &mut self,
         cx: &mut App,
+        restore_target: FocusRestoreTarget,
     ) -> Option<WindowHandle<Root>> {
-        with_temporary_window_state(cx, |state, cx| state.ensure_temporary_window_visible(cx))
-            .flatten()
+        with_temporary_window_state(cx, |state, cx| {
+            state.ensure_temporary_window_visible_with_restore_target(cx, restore_target)
+        })
+        .flatten()
     }
 
     pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {
