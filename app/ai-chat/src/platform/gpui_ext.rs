@@ -1,5 +1,7 @@
 use crate::errors::{AiChatError, AiChatResult};
-use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, Global, VisualContext, WeakEntity, Window};
+use gpui::{
+    App, AppContext, AsyncWindowContext, Context, Entity, Global, VisualContext, WeakEntity, Window,
+};
 
 pub(crate) trait EntityResultExt<T> {
     fn update_result<C, R>(

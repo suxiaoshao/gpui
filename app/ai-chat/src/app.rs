@@ -1,6 +1,6 @@
 use crate::errors::{AiChatError, AiChatResult};
 use crate::views::home::HomeView;
-use crate::{assets, components, database, hotkey, i18n, state, tray, views};
+use crate::{app_menus, assets, components, database, hotkey, i18n, state, tray, views};
 use gpui::*;
 use gpui_component::input;
 use gpui_component::{Root, TitleBar};
@@ -11,8 +11,6 @@ use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitE
 use window_ext::WindowExt;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat";
-
-actions!(ai_chat, [Quit]);
 
 #[cfg(feature = "dhat-heap")]
 mod profiling {
@@ -91,24 +89,21 @@ pub(crate) fn quit_app(cx: &mut App) {
     cx.quit();
 }
 
-fn quit(_: &Quit, cx: &mut App) {
-    quit_app(cx);
-}
-
 fn init(cx: &mut App) {
     gpui_component::init(cx);
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new(
-            "shift-enter",
-            input::Enter { secondary: true },
-            Some("Input"),
-        ),
-    ]);
-    cx.activate(true);
-    cx.on_action(quit);
+    cx.bind_keys([KeyBinding::new(
+        "shift-enter",
+        input::Enter { secondary: true },
+        Some("Input"),
+    )]);
 
     i18n::init_i18n(cx);
+    app_menus::init(cx);
+    cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+    #[cfg(target_os = "macos")]
+    app_menus::ensure_localized_window_menu_registered();
+    cx.activate(true);
+
     database::init_store(cx);
     components::init(cx);
     views::init(cx);
@@ -213,6 +208,22 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
             event!(Level::ERROR, error = ?err, "open main window failed");
         }
     }
+}
+
+pub(crate) fn open_temporary_window(cx: &mut App) {
+    prepare_temporary_window_action(cx);
+    cx.defer(hotkey::open_temporary_window);
+}
+
+pub(crate) fn toggle_temporary_window(cx: &mut App) {
+    prepare_temporary_window_action(cx);
+    cx.defer(hotkey::toggle_temporary_window);
+}
+
+fn prepare_temporary_window_action(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    hotkey::record_front_app_for_temporary_window(cx);
+    cx.activate(true);
 }
 
 fn get_logs_dir() -> AiChatResult<PathBuf> {

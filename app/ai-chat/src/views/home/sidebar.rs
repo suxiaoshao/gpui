@@ -49,7 +49,12 @@ impl Collapsible for SidebarSection {
 }
 
 impl SidebarItem for SidebarSection {
-    fn render(self, _id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(
+        self,
+        _id: impl Into<ElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
         match self {
             Self::Tree(group) => group.render("sidebar-tree", window, cx).into_any_element(),
             Self::Menu(group) => group.render("sidebar-menu", window, cx).into_any_element(),

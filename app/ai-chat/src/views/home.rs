@@ -1,4 +1,5 @@
 use crate::{
+    app_menus,
     i18n::I18n,
     state::{self, AiChatConfig, WorkspaceStore},
     views::home::{sidebar::SidebarView, tabs::TabsView},
@@ -59,10 +60,22 @@ impl HomeView {
     }
 
     pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = cx.global::<WorkspaceStore>().read(cx).active_conversation_panel() else {
+        let Some(panel) = cx
+            .global::<WorkspaceStore>()
+            .read(cx)
+            .active_conversation_panel()
+        else {
             return;
         };
         panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
+    }
+
+    fn minimize(&mut self, _: &app_menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
+        window.minimize_window();
+    }
+
+    fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
+        window.zoom_window();
     }
 }
 
@@ -80,6 +93,8 @@ impl Render for HomeView {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom))
             .child(div().child(TitleBar::new()).flex_initial())
             .map(|this| match chat_data {
                 Ok(_) => this.child(

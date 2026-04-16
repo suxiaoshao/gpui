@@ -113,7 +113,9 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
             )
             .footer(
                 DialogFooter::new()
-                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())),
+                    )
                     .child(
                         DialogAction::new().child(
                             Button::new("ok")
@@ -147,12 +149,14 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                                                     }),
                                                     ConversationDialogMode::Edit {
                                                         conversation_id,
-                                                    } => cx.emit(ChatDataEvent::UpdateConversation {
-                                                        id: conversation_id,
-                                                        title: name,
-                                                        icon,
-                                                        info,
-                                                    }),
+                                                    } => {
+                                                        cx.emit(ChatDataEvent::UpdateConversation {
+                                                            id: conversation_id,
+                                                            title: name,
+                                                            icon,
+                                                            info,
+                                                        })
+                                                    }
                                                 }
                                             });
                                         }

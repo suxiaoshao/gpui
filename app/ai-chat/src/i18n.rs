@@ -37,6 +37,20 @@ impl I18n {
         Self { locale, bundles }
     }
 
+    #[cfg(test)]
+    pub(crate) fn english_for_test() -> Self {
+        Self::new(Locale::EnUs)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_locale_tag(locale: &str) -> Self {
+        let locale = match normalize_locale(locale).filter(|id| id.language.as_str() == "zh") {
+            Some(_) => Locale::ZhCn,
+            None => Locale::EnUs,
+        };
+        Self::new(locale)
+    }
+
     pub(crate) fn t(&self, key: &str) -> String {
         self.translate(key, None)
     }
@@ -108,6 +122,7 @@ fn normalize_locale(value: &str) -> Option<LanguageIdentifier> {
 fn build_bundle(lang: &str, source: &str) -> FluentBundle<FluentResource> {
     let langid: LanguageIdentifier = lang.parse().expect("valid language id");
     let mut bundle = FluentBundle::new(vec![langid]);
+    bundle.set_use_isolating(false);
     let resource = FluentResource::try_new(source.to_string()).expect("valid fluent resource");
     bundle
         .add_resource(resource)

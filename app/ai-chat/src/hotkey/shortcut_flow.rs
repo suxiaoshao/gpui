@@ -107,7 +107,11 @@ impl GlobalHotkeyState {
         );
     }
 
-    fn resolve_clipboard_fallback(&self, selected_text: Option<String>, cx: &App) -> Option<String> {
+    fn resolve_clipboard_fallback(
+        &self,
+        selected_text: Option<String>,
+        cx: &App,
+    ) -> Option<String> {
         let selected_text = normalized_text(selected_text);
         if selected_text.is_some() {
             event!(
@@ -203,7 +207,11 @@ impl GlobalHotkeyState {
         });
     }
 
-    fn trigger_selection_or_clipboard_shortcut(&self, binding: GlobalShortcutBinding, cx: &mut App) {
+    fn trigger_selection_or_clipboard_shortcut(
+        &self,
+        binding: GlobalShortcutBinding,
+        cx: &mut App,
+    ) {
         cx.spawn(async move |cx| {
             event!(
                 Level::INFO,

@@ -146,3 +146,27 @@ pub fn set_application_icon_from_bytes(icon_bytes: &[u8]) -> Result<(), Platform
 pub fn set_application_icon_from_bytes(_: &[u8]) -> Result<(), PlatformExtError> {
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+pub fn set_windows_menu_from_main_menu_index(index: usize) -> Result<(), PlatformExtError> {
+    let ns_app = NSApplication::sharedApplication(
+        MainThreadMarker::new().ok_or(PlatformExtError::MainThreadUnavailable)?,
+    );
+    let main_menu = ns_app
+        .mainMenu()
+        .ok_or(PlatformExtError::MainMenuUnavailable)?;
+    let item = main_menu
+        .itemAtIndex(index as isize)
+        .ok_or(PlatformExtError::MenuItemUnavailable(index))?;
+    let submenu = item
+        .submenu()
+        .ok_or(PlatformExtError::MenuItemHasNoSubmenu(index))?;
+
+    ns_app.setWindowsMenu(Some(&submenu));
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_windows_menu_from_main_menu_index(_: usize) -> Result<(), PlatformExtError> {
+    Ok(())
+}

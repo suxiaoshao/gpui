@@ -2,8 +2,8 @@ use crate::{
     components::chat_form::ChatFormSnapshot,
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
-    platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     llm::{FetchRunner, FetchUpdate, provider_by_name},
+    platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
         AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
     },

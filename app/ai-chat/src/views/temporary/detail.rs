@@ -5,10 +5,10 @@ use crate::{
     },
     database::{Content, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
-    platform::gpui_ext::WeakEntityResultExt,
     hotkey::GlobalHotkeyState,
     i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
+    platform::gpui_ext::WeakEntityResultExt,
     state::{AddConversationMessage, AiChatConfig},
     views::{
         conversation::{
