@@ -1,6 +1,0 @@
-#!/bin/sh
-
-set -eu
-
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec clang "-fuse-ld=$script_dir/ld64.lld" "$@"

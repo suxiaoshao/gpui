@@ -199,7 +199,7 @@ fn offset_capture_rect(
 impl ScreenshotOverlayView {
     fn new(display: CaptureDisplay, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
         Self {
             display,
             drag_origin: None,
@@ -341,7 +341,7 @@ impl ScreenshotOverlayView {
         // overlay window has just been closed and its context will be invalid by the time the
         // async task runs after CAPTURE_START_DELAY.
         cx.spawn(async move |_this, cx| {
-            Timer::after(CAPTURE_START_DELAY).await;
+            smol::Timer::after(CAPTURE_START_DELAY).await;
             let display_id = display.id_hint;
             let captured_display = display.clone();
             let captured = smol::unblock(move || capture_region(&captured_display, rect)).await;
@@ -355,12 +355,12 @@ impl ScreenshotOverlayView {
                         bytes_len = image.bytes_rgba8.len(),
                         "Screenshot selection capture completed"
                     );
-                    let _ = cx.update_global::<GlobalHotkeyState, _>(|_hotkeys, cx| {
+                    cx.update_global::<GlobalHotkeyState, _>(|_hotkeys, cx| {
                         GlobalHotkeyState::process_captured_screenshot(binding.clone(), image, cx);
                     });
                 }
                 Err(err) => {
-                    let _ = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
                         hotkeys.handle_screenshot_capture_failure(err, cx);
                     });
                 }

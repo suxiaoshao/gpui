@@ -1,9 +1,5 @@
 use crate::errors::{AiChatError, AiChatResult};
-use anyhow::Result as AnyResult;
-use gpui::{
-    App, AppContext, AsyncWindowContext, Context, Entity, Flatten, Global, VisualContext,
-    WeakEntity, Window,
-};
+use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, Global, VisualContext, WeakEntity, Window};
 
 pub(crate) trait EntityResultExt<T> {
     fn update_result<C, R>(
@@ -12,8 +8,7 @@ pub(crate) trait EntityResultExt<T> {
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> AiChatResult<R>
     where
-        C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>;
+        C: AppContext;
 }
 
 pub(crate) trait WeakEntityResultExt<T> {
@@ -23,8 +18,7 @@ pub(crate) trait WeakEntityResultExt<T> {
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> AiChatResult<R>
     where
-        C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>;
+        C: AppContext;
 
     fn update_in_result<C, R>(
         &self,
@@ -32,13 +26,11 @@ pub(crate) trait WeakEntityResultExt<T> {
         update: impl FnOnce(&mut T, &mut Window, &mut Context<T>) -> R,
     ) -> AiChatResult<R>
     where
-        C: VisualContext,
-        AnyResult<C::Result<R>>: Flatten<R>;
+        C: VisualContext;
 
     fn read_with_result<C, R>(&self, cx: &C, read: impl FnOnce(&T, &App) -> R) -> AiChatResult<R>
     where
-        C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>;
+        C: AppContext;
 }
 
 pub(crate) trait AsyncWindowContextResultExt {
@@ -58,9 +50,8 @@ impl<T: 'static> EntityResultExt<T> for Entity<T> {
     ) -> AiChatResult<R>
     where
         C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>,
     {
-        Flatten::flatten(Ok(self.update(cx, update))).map_err(|_| AiChatError::GpuiError)
+        Ok(self.update(cx, update))
     }
 }
 
@@ -72,7 +63,6 @@ impl<T: 'static> WeakEntityResultExt<T> for WeakEntity<T> {
     ) -> AiChatResult<R>
     where
         C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>,
     {
         self.update(cx, update).map_err(|_| AiChatError::GpuiError)
     }
@@ -84,7 +74,6 @@ impl<T: 'static> WeakEntityResultExt<T> for WeakEntity<T> {
     ) -> AiChatResult<R>
     where
         C: VisualContext,
-        AnyResult<C::Result<R>>: Flatten<R>,
     {
         self.update_in(cx, update)
             .map_err(|_| AiChatError::GpuiError)
@@ -93,7 +82,6 @@ impl<T: 'static> WeakEntityResultExt<T> for WeakEntity<T> {
     fn read_with_result<C, R>(&self, cx: &C, read: impl FnOnce(&T, &App) -> R) -> AiChatResult<R>
     where
         C: AppContext,
-        AnyResult<C::Result<R>>: Flatten<R>,
     {
         self.read_with(cx, read).map_err(|_| AiChatError::GpuiError)
     }

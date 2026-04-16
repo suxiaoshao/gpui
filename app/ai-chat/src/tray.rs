@@ -168,15 +168,11 @@ fn handle_menu_event(event: MenuEvent, cx: &mut AsyncApp) {
         return;
     };
 
-    let result = cx.update(|cx| match action {
+    cx.update(|cx| match action {
         TrayMenuAction::OpenMain => show_or_create_main_window(cx),
-        TrayMenuAction::OpenTemporary => hotkey::open_temporary_window(cx),
+        TrayMenuAction::OpenTemporary => open_temporary_window_from_tray(cx),
         TrayMenuAction::Quit => quit_app(cx),
     });
-
-    if let Err(err) = result {
-        event!(Level::ERROR, error = ?err, "Failed to handle tray menu action");
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -194,16 +190,19 @@ fn handle_tray_event(event: TrayIconEvent, cx: &mut AsyncApp) {
         return;
     }
 
-    if button == MouseButton::Left
-        && button_state == MouseButtonState::Up
-        && let Err(err) = cx.update(hotkey::toggle_temporary_window)
-    {
-        event!(
-            Level::ERROR,
-            error = ?err,
-            "Failed to toggle temporary window from tray"
-        );
+    if button == MouseButton::Left && button_state == MouseButtonState::Up {
+        cx.update(toggle_temporary_window_from_tray);
     }
+}
+
+fn open_temporary_window_from_tray(cx: &mut App) {
+    cx.activate(true);
+    cx.defer(hotkey::open_temporary_window);
+}
+
+fn toggle_temporary_window_from_tray(cx: &mut App) {
+    cx.activate(true);
+    cx.defer(hotkey::toggle_temporary_window);
 }
 
 #[cfg(not(target_os = "linux"))]

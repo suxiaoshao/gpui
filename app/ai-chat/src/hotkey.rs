@@ -90,11 +90,9 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
     let task = cx.spawn(async move |cx| {
         while let Ok(event) = rx.recv().await {
             event!(Level::INFO, "hotkey event received: {:?}", event);
-            if let Err(err) = cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
                 hotkeys.handle_pressed_hotkey(event.id(), cx);
-            }) {
-                event!(Level::ERROR, "handle hotkey event failed: {}", err);
-            }
+            });
         }
     });
 

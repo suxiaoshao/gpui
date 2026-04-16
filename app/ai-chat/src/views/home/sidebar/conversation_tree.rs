@@ -11,6 +11,7 @@ use gpui_component::{
     ActiveTheme, Collapsible, Icon, IconName, Side, h_flex,
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
+    sidebar::SidebarItem,
     v_flex,
 };
 use serde::Deserialize;
@@ -101,7 +102,7 @@ fn project_conversations(conversations: &[Conversation]) -> Vec<SidebarConversat
     conversations.iter().map(Into::into).collect()
 }
 
-#[derive(IntoElement)]
+#[derive(Clone)]
 pub(super) struct ConversationTree {
     collapsed: bool,
     folders: Vec<SidebarFolderNode>,
@@ -151,8 +152,8 @@ impl Collapsible for ConversationTree {
     }
 }
 
-impl RenderOnce for ConversationTree {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+impl SidebarItem for ConversationTree {
+    fn render(self, _id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let collapsed = self.collapsed;
         let active_conversation_id = self.active_conversation_id;
         let open_folder_ids = self.open_folder_ids;

@@ -158,7 +158,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         let should_focus = detail.focus_on_init();
         let focus_handle = cx.focus_handle();
         if should_focus {
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
         }
         let message_list = if should_measure_all_message_list(auto_scroll_new_messages) {
             ListState::new(0, alignment, px(1000.)).measure_all()
@@ -502,7 +502,7 @@ fn list_is_at_end(message_list: &ListState, alignment: ListAlignment) -> bool {
             scroll_top.item_ix >= message_list.item_count() && scroll_top.offset_in_item == px(0.)
         }
         ListAlignment::Top => {
-            let max_offset = message_list.max_offset_for_scrollbar().height;
+            let max_offset = message_list.max_offset_for_scrollbar().y;
             if max_offset == px(0.) {
                 true
             } else {

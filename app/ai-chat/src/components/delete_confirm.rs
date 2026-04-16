@@ -2,6 +2,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     label::Label,
 };
 use std::rc::Rc;
@@ -29,29 +30,23 @@ pub fn open_delete_confirm_dialog(
         dialog
             .title(title.clone())
             .child(Label::new(message.clone()))
-            .footer({
-                let on_confirm = on_confirm.clone();
-                let cancel_label = cancel_label.clone();
-                let delete_label = delete_label.clone();
-                move |_dialog, _state, _window, _cx| {
-                    vec![
-                        Button::new("cancel").label(cancel_label.clone()).on_click(
-                            |_, window, cx| {
-                                window.close_dialog(cx);
-                            },
+            .footer(
+                DialogFooter::new()
+                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogAction::new().child(
+                            Button::new("confirm-delete")
+                                .danger()
+                                .label(delete_label.clone())
+                                .on_click({
+                                    let on_confirm = on_confirm.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        on_confirm(window, cx);
+                                    }
+                                }),
                         ),
-                        Button::new("confirm-delete")
-                            .danger()
-                            .label(delete_label.clone())
-                            .on_click({
-                                let on_confirm = on_confirm.clone();
-                                move |_, window, cx| {
-                                    window.close_dialog(cx);
-                                    on_confirm(window, cx);
-                                }
-                            }),
-                    ]
-                }
-            })
+                    ),
+            )
     });
 }

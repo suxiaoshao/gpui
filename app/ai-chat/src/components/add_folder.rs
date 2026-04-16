@@ -2,6 +2,7 @@ use gpui::*;
 use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
+    dialog::{DialogAction, DialogClose, DialogFooter},
     form::{field, v_form},
     input::{Input, InputState},
 };
@@ -75,49 +76,42 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
                         .child(Input::new(&folder_input)),
                 ),
             )
-            .footer({
-                let folder_input = folder_input.clone();
-                let cancel_label = cancel_label.clone();
-                let submit_label = submit_label.clone();
-                let mode = mode;
-                move |_this, _state, _window, _cx| {
-                    vec![
-                        Button::new("cancel").label(cancel_label.clone()).on_click(
-                            |_, window, cx| {
-                                window.close_dialog(cx);
-                            },
-                        ),
-                        Button::new("ok")
-                            .primary()
-                            .label(submit_label.clone())
-                            .on_click({
-                                let folder_input = folder_input.clone();
-                                let mode = mode;
-                                move |_, window, cx| {
-                                    let name = folder_input.read(cx).value();
-                                    if !name.is_empty() {
-                                        let chat_data = cx.global::<ChatData>().deref().clone();
-                                        chat_data.update(cx, move |_this, cx| match mode {
-                                            FolderDialogMode::Edit { folder_id } => {
-                                                cx.emit(ChatDataEvent::UpdateFolder {
-                                                    id: folder_id,
-                                                    name,
-                                                });
-                                            }
-                                            FolderDialogMode::Add { parent_id } => {
-                                                cx.emit(ChatDataEvent::AddFolder {
-                                                    name,
-                                                    parent_id,
-                                                });
-                                            }
-                                        });
+            .footer(
+                DialogFooter::new()
+                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogAction::new().child(
+                            Button::new("ok")
+                                .primary()
+                                .label(submit_label.clone())
+                                .on_click({
+                                    let folder_input = folder_input.clone();
+                                    let mode = mode;
+                                    move |_, window, cx| {
+                                        let name = folder_input.read(cx).value();
+                                        if !name.is_empty() {
+                                            let chat_data = cx.global::<ChatData>().deref().clone();
+                                            chat_data.update(cx, move |_this, cx| match mode {
+                                                FolderDialogMode::Edit { folder_id } => {
+                                                    cx.emit(ChatDataEvent::UpdateFolder {
+                                                        id: folder_id,
+                                                        name,
+                                                    });
+                                                }
+                                                FolderDialogMode::Add { parent_id } => {
+                                                    cx.emit(ChatDataEvent::AddFolder {
+                                                        name,
+                                                        parent_id,
+                                                    });
+                                                }
+                                            });
+                                        }
+                                        window.close_dialog(cx);
                                     }
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ]
-                }
-            })
+                                }),
+                        ),
+                    ),
+            )
     });
 }
 

@@ -129,7 +129,7 @@ fn message_actions(can_resend: bool) -> Vec<MessageAction> {
 }
 
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = self.0;
         let (
             copy_success_title,
@@ -306,7 +306,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                             ),
                                         )
                                         .content(
-                                            move |_, window, cx| {
+                                            move |_, _window, _cx| {
                                                 div()
                                                     .w(px(520.))
                                                     .occlude()
@@ -331,8 +331,6 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                                             ),
                                                                         ),
                                                                         &summary,
-                                                                        window,
-                                                                        cx,
                                                                     )
                                                                     .selectable(true),
                                                                 ),
@@ -344,7 +342,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                 )
                             })
                             .child(
-                                TextView::markdown(text_id, &copy_text, window, cx)
+                                TextView::markdown(text_id, &copy_text)
                                     .selectable(true),
                             )
                             .when_some(message_error, |this, error| {

@@ -45,7 +45,7 @@ fn focus_temporary_window_chat_form(root: &mut Root, window: &mut Window, cx: &m
 impl TemporaryWindowState {
     pub fn delay_close(window: &mut Window, cx: &mut App) -> Task<()> {
         window.spawn(cx, async |cx| {
-            Timer::after(Duration::from_secs(600)).await;
+            smol::Timer::after(Duration::from_secs(600)).await;
             if let Err(err) = cx.window_handle().update(cx, |_, window, _cx| {
                 window.remove_window();
             }) {

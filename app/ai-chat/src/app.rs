@@ -60,20 +60,14 @@ mod profiling {
         };
 
         cx.spawn(async move |cx| {
-            Timer::after(delay).await;
+            smol::Timer::after(delay).await;
             event!(
                 Level::INFO,
                 seconds = delay.as_secs(),
                 "profiling auto quit triggered"
             );
             flush();
-            if let Err(err) = cx.update(|cx| cx.quit()) {
-                event!(
-                    Level::ERROR,
-                    error = ?err,
-                    "failed to quit after profiling delay"
-                );
-            }
+            cx.update(|cx| cx.quit());
         })
         .detach();
     }
@@ -272,7 +266,7 @@ pub(crate) fn run() -> AiChatResult<()> {
 
     let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
-    let app = Application::new().with_assets(assets::Assets::default());
+    let app = gpui_platform::application().with_assets(assets::Assets::default());
     app.on_reopen(show_or_create_main_window);
     event!(Level::INFO, "app created");
 

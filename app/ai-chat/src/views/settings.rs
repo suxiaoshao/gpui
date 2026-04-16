@@ -49,7 +49,7 @@ pub struct SettingsView {
 impl SettingsView {
     fn new(open_target: SettingsOpenTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
         let hotkey_input = cx.new(|cx| {
             let temporary_hotkey = cx.global::<AiChatConfig>().temporary_hotkey.clone();
             HotkeyInput::new("temporary-hotkey-input", window, cx)

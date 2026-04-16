@@ -11,7 +11,7 @@ use gpui::*;
 use gpui_component::{
     Collapsible, IconName, Side,
     menu::ContextMenuExt,
-    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarItem, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
 use std::ops::Deref;
@@ -26,7 +26,7 @@ actions!(sidebar_view, [Add, AddShift]);
 
 const CONTEXT: &str = "sidebar_view";
 
-#[derive(IntoElement)]
+#[derive(Clone)]
 enum SidebarSection {
     Tree(SidebarGroup<conversation_tree::ConversationTree>),
     Menu(SidebarGroup<SidebarMenu>),
@@ -48,11 +48,11 @@ impl Collapsible for SidebarSection {
     }
 }
 
-impl RenderOnce for SidebarSection {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+impl SidebarItem for SidebarSection {
+    fn render(self, _id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self {
-            Self::Tree(group) => group.into_any_element(),
-            Self::Menu(group) => group.into_any_element(),
+            Self::Tree(group) => group.render("sidebar-tree", window, cx).into_any_element(),
+            Self::Menu(group) => group.render("sidebar-menu", window, cx).into_any_element(),
         }
     }
 }
@@ -126,7 +126,8 @@ impl Render for SidebarView {
             .on_action(cx.listener(Self::add_folder))
             .size_full()
             .child(
-                Sidebar::new(Side::Left)
+                Sidebar::new("sidebar")
+                    .side(Side::Left)
                     .w_full()
                     .header(SidebarHeader::new().child(app_title))
                     .child(SidebarSection::Tree(
