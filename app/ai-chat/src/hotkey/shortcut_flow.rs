@@ -139,6 +139,16 @@ impl GlobalHotkeyState {
         text: String,
         cx: &mut App,
     ) {
+        self.trigger_shortcut_with_input_before_showing_window(binding, text, cx, |_, _| {});
+    }
+
+    fn trigger_shortcut_with_input_before_showing_window(
+        &mut self,
+        binding: GlobalShortcutBinding,
+        text: String,
+        cx: &mut App,
+        before_showing_window: impl FnOnce(&mut Self, &mut App),
+    ) {
         let models = cx.global::<ModelStore>().read(cx).snapshot().models;
         let model_available = models.iter().any(|model| {
             model.provider_name == binding.provider_name && model.id == binding.model_id
@@ -148,6 +158,7 @@ impl GlobalHotkeyState {
             return;
         }
 
+        before_showing_window(self, cx);
         let Some(window) = self.ensure_temporary_window_visible(cx) else {
             return;
         };
@@ -297,11 +308,15 @@ impl GlobalHotkeyState {
                         "Screenshot OCR completed"
                     );
                     match normalized_text(Some(text)) {
-                        Some(text) => {
-                            #[cfg(target_os = "macos")]
-                            hotkeys.transfer_front_app_from_screenshot_to_temporary_window(cx);
-                            hotkeys.trigger_shortcut_with_input(binding, text, cx);
-                        }
+                        Some(text) => hotkeys.trigger_shortcut_with_input_before_showing_window(
+                            binding,
+                            text,
+                            cx,
+                            |hotkeys, cx| {
+                                #[cfg(target_os = "macos")]
+                                hotkeys.transfer_front_app_from_screenshot_to_temporary_window(cx);
+                            },
+                        ),
                         None => hotkeys.handle_empty_shortcut_input(cx),
                     }
                 }

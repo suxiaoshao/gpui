@@ -109,6 +109,9 @@ impl TemporaryWindowState {
         if let Err(err) = window.move_and_resize(target_bounds, target_display_id) {
             event!(Level::ERROR, error = ?err, "Failed to reposition temporary window");
         }
+        if let Err(err) = window.show_without_activation() {
+            event!(Level::ERROR, error = ?err, "Failed to show temporary window");
+        }
         window.activate_window();
     }
 

@@ -40,6 +40,7 @@ pub enum WindowExtError {
 pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
+    fn show_without_activation(&self) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
     fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError>;
     fn clear_cursor_rects(&self) -> Result<(), WindowExtError>;
@@ -91,6 +92,32 @@ impl WindowExt for Window {
                         MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
                     );
                     ns_app.activate();
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn show_without_activation(&self) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        match raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.orderFront(None);
                 }
             }
             #[allow(unused_variables)]
