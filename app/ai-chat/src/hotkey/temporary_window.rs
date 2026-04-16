@@ -71,6 +71,13 @@ impl TemporaryWindowState {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn adopt_front_app(&mut self, front_app: Option<Retained<NSRunningApplication>>) {
+        if self.front_app.is_none() {
+            self.front_app = front_app;
+        }
+    }
+
     pub fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
         let _ = with_temporary_window_state(cx, |hotkeys, cx| {
             hotkeys.delay_or_hide_temporary_window(window, cx);
@@ -211,6 +218,18 @@ impl GlobalHotkeyState {
     pub(crate) fn restore_and_clear_front_app_for_screenshot(&mut self) {
         restore_frontmost_app(&self.front_app);
         self.front_app = None;
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn transfer_front_app_from_screenshot_to_temporary_window(&mut self, cx: &mut App) {
+        let front_app = self.front_app.take();
+        if front_app.is_none() {
+            return;
+        }
+
+        let _ = with_temporary_window_state(cx, |state, _cx| {
+            state.adopt_front_app(front_app);
+        });
     }
 
     pub(super) fn ensure_temporary_window_visible(

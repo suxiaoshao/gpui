@@ -297,7 +297,11 @@ impl GlobalHotkeyState {
                         "Screenshot OCR completed"
                     );
                     match normalized_text(Some(text)) {
-                        Some(text) => hotkeys.trigger_shortcut_with_input(binding, text, cx),
+                        Some(text) => {
+                            #[cfg(target_os = "macos")]
+                            hotkeys.transfer_front_app_from_screenshot_to_temporary_window(cx);
+                            hotkeys.trigger_shortcut_with_input(binding, text, cx);
+                        }
                         None => hotkeys.handle_empty_shortcut_input(cx),
                     }
                 }
