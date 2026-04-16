@@ -64,6 +64,13 @@ impl TemporaryWindowState {
         self.hide_temporary_window(window);
     }
 
+    #[cfg(target_os = "macos")]
+    fn record_front_app(&mut self) {
+        if self.front_app.is_none() {
+            self.front_app = record_frontmost_app();
+        }
+    }
+
     pub fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
         let _ = with_temporary_window_state(cx, |hotkeys, cx| {
             hotkeys.delay_or_hide_temporary_window(window, cx);
@@ -84,9 +91,7 @@ impl TemporaryWindowState {
     fn show_temporary_window_on_mouse_display(&mut self, window: &mut Window, cx: &App) {
         self.delay_close = None;
         #[cfg(target_os = "macos")]
-        if self.front_app.is_none() {
-            self.front_app = record_frontmost_app();
-        }
+        self.record_front_app();
         let target_display_id = target_display_id(cx);
         let target_bounds = recentered_bounds_for_display(
             target_display_id,
@@ -106,9 +111,7 @@ impl TemporaryWindowState {
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         #[cfg(target_os = "macos")]
-        if self.front_app.is_none() {
-            self.front_app = record_frontmost_app();
-        }
+        self.record_front_app();
         let target_display_id = target_display_id(cx);
         match cx.open_window(
             WindowOptions {
@@ -216,6 +219,13 @@ impl GlobalHotkeyState {
     ) -> Option<WindowHandle<Root>> {
         with_temporary_window_state(cx, |state, cx| state.ensure_temporary_window_visible(cx))
             .flatten()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn record_front_app_for_temporary_window(&mut self, cx: &mut App) {
+        let _ = with_temporary_window_state(cx, |state, _cx| {
+            state.record_front_app();
+        });
     }
 
     pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {

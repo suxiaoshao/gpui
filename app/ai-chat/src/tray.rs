@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context as _, anyhow};
 use fluent_bundle::FluentArgs;
-use gpui::{App, AsyncApp, Global, Task};
+use gpui::{App, AsyncApp, BorrowAppContext, Global, Task};
 use tracing::{Level, event};
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId,
@@ -196,11 +196,19 @@ fn handle_tray_event(event: TrayIconEvent, cx: &mut AsyncApp) {
 }
 
 fn open_temporary_window_from_tray(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.update_global::<hotkey::GlobalHotkeyState, _>(|hotkeys, cx| {
+        hotkeys.record_front_app_for_temporary_window(cx);
+    });
     cx.activate(true);
     cx.defer(hotkey::open_temporary_window);
 }
 
 fn toggle_temporary_window_from_tray(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.update_global::<hotkey::GlobalHotkeyState, _>(|hotkeys, cx| {
+        hotkeys.record_front_app_for_temporary_window(cx);
+    });
     cx.activate(true);
     cx.defer(hotkey::toggle_temporary_window);
 }
