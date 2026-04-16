@@ -1,5 +1,6 @@
 use gpui::App;
 
+pub(crate) mod about;
 pub(crate) mod conversation;
 pub(crate) mod home;
 pub(crate) mod screenshot;

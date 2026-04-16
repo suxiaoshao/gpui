@@ -1,7 +1,7 @@
 use crate::{
-    app::{quit_app, show_or_create_main_window},
-    hotkey,
+    app::{open_temporary_window, quit_app, show_or_create_main_window, toggle_temporary_window},
     i18n::I18n,
+    views::about::open_about_window,
 };
 use anyhow::{Context as _, anyhow};
 use fluent_bundle::FluentArgs;
@@ -9,22 +9,22 @@ use gpui::{App, AsyncApp, Global, Task};
 use tracing::{Level, event};
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId,
-    menu::{AboutMetadata, Icon as MenuIcon, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 
 const TRAY_ICON_ID: &str = "ai-chat-main-tray";
 const MENU_OPEN_MAIN: &str = "tray-open-main";
 const MENU_OPEN_TEMPORARY: &str = "tray-open-temporary";
+const MENU_ABOUT: &str = "tray-about";
 const MENU_QUIT: &str = "tray-quit";
 
 const TRAY_TEMPLATE_ICON_BYTES: &[u8] = include_bytes!("../assets/png/tray-template.png");
-const ABOUT_ICON_BYTES: &[u8] =
-    include_bytes!("../build-assets/icon/app-icon.iconset/icon_128x128.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayMenuAction {
     OpenMain,
     OpenTemporary,
+    About,
     Quit,
 }
 
@@ -60,42 +60,6 @@ impl TrayStrings {
     }
 }
 
-#[derive(Clone)]
-struct AboutInfo {
-    name: String,
-    comments: String,
-    website_label: String,
-}
-
-impl AboutInfo {
-    fn new(i18n: &I18n) -> Self {
-        Self {
-            name: i18n.t("app-title"),
-            comments: i18n.t("tray-about-comments"),
-            website_label: i18n.t("tray-about-website-label"),
-        }
-    }
-
-    fn metadata(&self) -> anyhow::Result<AboutMetadata> {
-        Ok(AboutMetadata {
-            name: Some(self.name.clone()),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            short_version: Some(format!(
-                "{}.{}",
-                env!("CARGO_PKG_VERSION_MAJOR"),
-                env!("CARGO_PKG_VERSION_MINOR")
-            )),
-            authors: parse_authors(env!("CARGO_PKG_AUTHORS")),
-            comments: Some(self.comments.clone()),
-            license: non_empty_env("CARGO_PKG_LICENSE"),
-            website: non_empty_env("CARGO_PKG_HOMEPAGE"),
-            website_label: Some(self.website_label.clone()),
-            icon: Some(load_menu_icon(ABOUT_ICON_BYTES)?),
-            ..Default::default()
-        })
-    }
-}
-
 pub(crate) struct TrayState {
     _event_task: Task<()>,
     #[cfg(not(target_os = "linux"))]
@@ -111,7 +75,6 @@ pub(crate) fn init(cx: &mut App) {
 
     let i18n = cx.global::<I18n>();
     let strings = TrayStrings::new(i18n);
-    let about = AboutInfo::new(i18n);
     let (tx, rx) = smol::channel::unbounded();
 
     MenuEvent::set_event_handler(Some({
@@ -141,7 +104,7 @@ pub(crate) fn init(cx: &mut App) {
 
     #[cfg(target_os = "linux")]
     {
-        spawn_linux_tray(strings, about);
+        spawn_linux_tray(strings);
         cx.set_global(TrayState {
             _event_task: event_task,
         });
@@ -149,7 +112,7 @@ pub(crate) fn init(cx: &mut App) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        match build_tray_icon(&strings, &about) {
+        match build_tray_icon(&strings) {
             Ok(tray_icon) => {
                 cx.set_global(TrayState {
                     _event_task: event_task,
@@ -170,7 +133,8 @@ fn handle_menu_event(event: MenuEvent, cx: &mut AsyncApp) {
 
     cx.update(|cx| match action {
         TrayMenuAction::OpenMain => show_or_create_main_window(cx),
-        TrayMenuAction::OpenTemporary => open_temporary_window_from_tray(cx),
+        TrayMenuAction::OpenTemporary => open_temporary_window(cx),
+        TrayMenuAction::About => open_about_window(cx),
         TrayMenuAction::Quit => quit_app(cx),
     });
 }
@@ -191,27 +155,13 @@ fn handle_tray_event(event: TrayIconEvent, cx: &mut AsyncApp) {
     }
 
     if button == MouseButton::Left && button_state == MouseButtonState::Up {
-        cx.update(toggle_temporary_window_from_tray);
+        cx.update(toggle_temporary_window);
     }
 }
 
-fn open_temporary_window_from_tray(cx: &mut App) {
-    #[cfg(target_os = "macos")]
-    hotkey::record_front_app_for_temporary_window(cx);
-    cx.activate(true);
-    cx.defer(hotkey::open_temporary_window);
-}
-
-fn toggle_temporary_window_from_tray(cx: &mut App) {
-    #[cfg(target_os = "macos")]
-    hotkey::record_front_app_for_temporary_window(cx);
-    cx.activate(true);
-    cx.defer(hotkey::toggle_temporary_window);
-}
-
 #[cfg(not(target_os = "linux"))]
-fn build_tray_icon(strings: &TrayStrings, about: &AboutInfo) -> anyhow::Result<TrayIcon> {
-    let menu = build_menu(strings, about)?;
+fn build_tray_icon(strings: &TrayStrings) -> anyhow::Result<TrayIcon> {
+    let menu = build_menu(strings)?;
     let mut builder = TrayIconBuilder::new()
         .with_id(TRAY_ICON_ID)
         .with_menu(Box::new(menu))
@@ -230,7 +180,7 @@ fn build_tray_icon(strings: &TrayStrings, about: &AboutInfo) -> anyhow::Result<T
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_linux_tray(strings: TrayStrings, about: AboutInfo) {
+fn spawn_linux_tray(strings: TrayStrings) {
     let _ = std::thread::Builder::new()
         .name("ai-chat-tray".into())
         .spawn(move || {
@@ -241,7 +191,7 @@ fn spawn_linux_tray(strings: TrayStrings, about: AboutInfo) {
                 return;
             }
 
-            let menu = match build_menu(&strings, &about) {
+            let menu = match build_menu(&strings) {
                 Ok(menu) => menu,
                 Err(err) => {
                     event!(Level::ERROR, error = ?err, "Failed to build tray menu");
@@ -272,12 +222,12 @@ fn spawn_linux_tray(strings: TrayStrings, about: AboutInfo) {
         });
 }
 
-fn build_menu(strings: &TrayStrings, about: &AboutInfo) -> anyhow::Result<Menu> {
+fn build_menu(strings: &TrayStrings) -> anyhow::Result<Menu> {
     let open_main = MenuItem::with_id(MENU_OPEN_MAIN, &strings.open_main, true, None);
     let open_temporary =
         MenuItem::with_id(MENU_OPEN_TEMPORARY, &strings.open_temporary, true, None);
     let version = MenuItem::new(&strings.version, false, None);
-    let about = PredefinedMenuItem::about(Some(strings.about.as_str()), Some(about.metadata()?));
+    let about = MenuItem::with_id(MENU_ABOUT, &strings.about, true, None);
     let quit = MenuItem::with_id(MENU_QUIT, &strings.quit, true, None);
 
     Menu::with_items(&[
@@ -299,37 +249,14 @@ fn load_tray_icon() -> anyhow::Result<Icon> {
     Icon::from_rgba(image.into_raw(), width, height).context("create tray icon failed")
 }
 
-fn load_menu_icon(bytes: &[u8]) -> anyhow::Result<MenuIcon> {
-    let image = image::load_from_memory(bytes)
-        .context("decode about icon png failed")?
-        .into_rgba8();
-    let (width, height) = image.dimensions();
-    MenuIcon::from_rgba(image.into_raw(), width, height).context("create about icon failed")
-}
-
 fn tray_menu_action(menu_id: &str) -> Option<TrayMenuAction> {
     match menu_id {
         MENU_OPEN_MAIN => Some(TrayMenuAction::OpenMain),
         MENU_OPEN_TEMPORARY => Some(TrayMenuAction::OpenTemporary),
+        MENU_ABOUT => Some(TrayMenuAction::About),
         MENU_QUIT => Some(TrayMenuAction::Quit),
         _ => None,
     }
-}
-
-fn parse_authors(value: &str) -> Option<Vec<String>> {
-    let authors = value
-        .split(':')
-        .map(str::trim)
-        .filter(|author| !author.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    (!authors.is_empty()).then_some(authors)
-}
-
-fn non_empty_env(name: &str) -> Option<String> {
-    let value = std::env::var(name).ok()?;
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -346,16 +273,8 @@ mod tests {
             tray_menu_action(MENU_OPEN_TEMPORARY),
             Some(TrayMenuAction::OpenTemporary)
         );
+        assert_eq!(tray_menu_action(MENU_ABOUT), Some(TrayMenuAction::About));
         assert_eq!(tray_menu_action(MENU_QUIT), Some(TrayMenuAction::Quit));
         assert_eq!(tray_menu_action("unknown"), None);
-    }
-
-    #[::core::prelude::v1::test]
-    fn parse_authors_skips_empty_segments() {
-        assert_eq!(
-            parse_authors("alice:bob::"),
-            Some(vec!["alice".into(), "bob".into()])
-        );
-        assert_eq!(parse_authors("::"), None);
     }
 }

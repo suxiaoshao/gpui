@@ -78,7 +78,9 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
             )
             .footer(
                 DialogFooter::new()
-                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())),
+                    )
                     .child(
                         DialogAction::new().child(
                             Button::new("ok")

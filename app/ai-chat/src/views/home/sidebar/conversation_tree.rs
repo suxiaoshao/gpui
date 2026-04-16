@@ -153,7 +153,12 @@ impl Collapsible for ConversationTree {
 }
 
 impl SidebarItem for ConversationTree {
-    fn render(self, _id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(
+        self,
+        _id: impl Into<ElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
         let collapsed = self.collapsed;
         let active_conversation_id = self.active_conversation_id;
         let open_folder_ids = self.open_folder_ids;

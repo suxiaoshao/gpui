@@ -31,11 +31,11 @@ use tracing::{Level, event};
 use window_ext::WindowExt;
 
 use self::backend::SystemHotkeyBackend;
+#[cfg(target_os = "macos")]
+pub(crate) use self::temporary_window::record_front_app_for_temporary_window;
 pub(crate) use self::temporary_window::{
     init_temporary_window_state, open_temporary_window, toggle_temporary_window,
 };
-#[cfg(target_os = "macos")]
-pub(crate) use self::temporary_window::record_front_app_for_temporary_window;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegisteredHotkeyAction {

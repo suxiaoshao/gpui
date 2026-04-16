@@ -9,7 +9,30 @@ use std::borrow::Cow;
 #[include = "png/*.png"]
 struct AssetsInner;
 
+#[derive(RustEmbed)]
+#[folder = "."]
+#[include = "build-assets/icon/app-icon.ico"]
+struct BuildAssetsInner;
+
 impl AssetSource for AssetsInner {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        Self::get(path)
+            .map(|f| Some(f.data))
+            .ok_or_else(|| anyhow!("could not find asset at path \"{path}\""))
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|p| p.starts_with(path).then(|| p.into()))
+            .collect())
+    }
+}
+
+impl AssetSource for BuildAssetsInner {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if path.is_empty() {
             return Ok(None);
@@ -29,6 +52,7 @@ impl AssetSource for AssetsInner {
 
 pub struct Assets {
     assets: AssetsInner,
+    build_assets: BuildAssetsInner,
     components_assets: gpui_component_assets::Assets,
 }
 
@@ -36,6 +60,7 @@ impl Default for Assets {
     fn default() -> Self {
         Self {
             assets: AssetsInner,
+            build_assets: BuildAssetsInner,
             components_assets: gpui_component_assets::Assets,
         }
     }
@@ -45,12 +70,14 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         self.assets
             .load(path)
+            .or_else(|_| self.build_assets.load(path))
             .or_else(|_| self.components_assets.load(path))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         self.assets
             .list(path)
+            .or_else(|_| self.build_assets.list(path))
             .or_else(|_| self.components_assets.list(path))
     }
 }

@@ -32,7 +32,9 @@ pub fn open_delete_confirm_dialog(
             .child(Label::new(message.clone()))
             .footer(
                 DialogFooter::new()
-                    .child(DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())))
+                    .child(
+                        DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())),
+                    )
                     .child(
                         DialogAction::new().child(
                             Button::new("confirm-delete")

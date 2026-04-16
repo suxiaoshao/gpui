@@ -1,4 +1,5 @@
 use crate::{
+    app_menus,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     i18n::I18n,
     llm::provider_setting_groups,
@@ -85,6 +86,14 @@ impl SettingsView {
                 });
             }
         });
+    }
+
+    fn minimize(&mut self, _: &app_menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
+        window.minimize_window();
+    }
+
+    fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
+        window.zoom_window();
     }
 }
 
@@ -198,6 +207,8 @@ impl Render for SettingsView {
             .on_action(cx.listener(|_this, _: &OpenSetting, window, _cx| {
                 window.remove_window();
             }))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom))
             .child(
                 Settings::new(settings_id)
                     .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
@@ -208,6 +219,10 @@ impl Render for SettingsView {
 
 pub fn open_settings_window(_: &OpenSetting, cx: &mut App) {
     open_settings_window_to(SettingsOpenTarget::General, true, cx);
+}
+
+pub(crate) fn open_settings_window_from_menu(cx: &mut App) {
+    open_settings_window_to(SettingsOpenTarget::General, false, cx);
 }
 
 pub(crate) fn open_provider_settings_window(cx: &mut App) {

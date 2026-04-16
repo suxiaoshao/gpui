@@ -5,8 +5,15 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn};
 
+use crate::bundle::settings::macos_bundle_localizations;
 use crate::cmd::{command_exists, run_cmd_os};
 use crate::error::{Result, XtaskError};
+use tauri_bundler::{BundleSettings, PlistKind};
+
+pub fn prepare_bundle_settings(bundle_settings: &mut BundleSettings) -> Result<()> {
+    bundle_settings.macos.info_plist = Some(PlistKind::Plist(bundle_info_plist_overrides().into()));
+    Ok(())
+}
 
 pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
     for bundle_subdir in ["macos", "osx"] {
@@ -165,9 +172,29 @@ fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn bundle_info_plist_overrides() -> plist::Dictionary {
+    let mut dict = plist::Dictionary::new();
+    dict.insert(
+        "CFBundleDevelopmentRegion".to_string(),
+        plist::Value::String("en-US".to_string()),
+    );
+    dict.insert(
+        "CFBundleLocalizations".to_string(),
+        plist::Value::Array(
+            macos_bundle_localizations()
+                .iter()
+                .map(|localization| {
+                    plist::Value::String(localization.bundle_locale_tag.to_string())
+                })
+                .collect(),
+        ),
+    );
+    dict
+}
+
 #[cfg(test)]
 mod tests {
-    use super::first_app_bundle;
+    use super::{bundle_info_plist_overrides, first_app_bundle};
     use crate::error::Result;
     use std::fs;
     use std::path::PathBuf;
@@ -223,5 +250,22 @@ mod tests {
 
         assert_eq!(app_path, Some(osx_app));
         Ok(())
+    }
+
+    #[test]
+    fn plist_overrides_include_bundle_localizations() {
+        let dict = bundle_info_plist_overrides();
+
+        assert_eq!(
+            dict.get("CFBundleDevelopmentRegion"),
+            Some(&plist::Value::String("en-US".to_string()))
+        );
+        assert_eq!(
+            dict.get("CFBundleLocalizations"),
+            Some(&plist::Value::Array(vec![
+                plist::Value::String("en-US".to_string()),
+                plist::Value::String("zh-Hans".to_string()),
+            ]))
+        );
     }
 }
