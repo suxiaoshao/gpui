@@ -109,10 +109,6 @@ impl TemporaryWindowState {
         if let Err(err) = window.move_and_resize(target_bounds, target_display_id) {
             event!(Level::ERROR, error = ?err, "Failed to reposition temporary window");
         }
-        if let Err(err) = window.show() {
-            window.activate_window();
-            event!(Level::ERROR, "Failed to show temporary window: {:?}", err);
-        };
         window.activate_window();
     }
 
@@ -122,7 +118,7 @@ impl TemporaryWindowState {
         let target_display_id = target_display_id(cx);
         match cx.open_window(
             WindowOptions {
-                kind: WindowKind::Floating,
+                kind: WindowKind::PopUp,
                 titlebar: Some(TitlebarOptions {
                     title: None,
                     appears_transparent: true,
@@ -138,10 +134,6 @@ impl TemporaryWindowState {
                 ..Default::default()
             },
             |window, cx| {
-                window.activate_window();
-                if let Err(err) = window.set_floating() {
-                    event!(Level::ERROR, error = ?err, "Failed to set floating");
-                }
                 let view = cx.new(|cx| TemporaryView::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
