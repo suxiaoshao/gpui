@@ -1,10 +1,10 @@
 use crate::{
+    database::GlobalShortcutBinding,
+    hotkey::GlobalHotkeyState,
     platform::{
         capture::{CaptureDisplay, CaptureError, CaptureRect, capture_region},
         display::target_display,
     },
-    database::GlobalShortcutBinding,
-    hotkey::GlobalHotkeyState,
 };
 use gpui::*;
 use std::cmp::{max, min};
@@ -166,6 +166,7 @@ pub(crate) struct ScreenshotOverlayView {
     drag_current: Option<Point<Pixels>>,
     selection_started: bool,
     focus_handle: FocusHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 fn offset_capture_rect(
@@ -200,12 +201,35 @@ impl ScreenshotOverlayView {
     fn new(display: CaptureDisplay, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let subscriptions = vec![cx.observe_window_activation(window, |this, window, _cx| {
+            if !window.is_window_active() {
+                return;
+            }
+            if let Err(err) = window.set_crosshair_cursor_rect() {
+                event!(
+                    Level::ERROR,
+                    display_id = this.display.id_hint,
+                    error = ?err,
+                    "Failed to set screenshot overlay cursor rect"
+                );
+            }
+        })];
+        if let Err(err) = window.set_crosshair_cursor_rect() {
+            let display_id = display.id_hint;
+            event!(
+                Level::ERROR,
+                display_id,
+                error = ?err,
+                "Failed to set screenshot overlay cursor rect"
+            );
+        }
         Self {
             display,
             drag_origin: None,
             drag_current: None,
             selection_started: false,
             focus_handle,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -333,6 +357,15 @@ impl ScreenshotOverlayView {
             return;
         };
 
+        if let Err(err) = window.clear_cursor_rects() {
+            event!(
+                Level::ERROR,
+                display_id = self.display.id_hint,
+                error = ?err,
+                "Failed to clear screenshot overlay cursor rect"
+            );
+        }
+
         // Remove the current overlay window directly — this is the only safe way to do it
         // from within the window's own event handler.
         window.remove_window();
@@ -404,6 +437,13 @@ impl Render for ScreenshotOverlayView {
 }
 
 fn cancel_overlay(window: &mut Window, cx: &mut Context<ScreenshotOverlayView>) {
+    if let Err(err) = window.clear_cursor_rects() {
+        event!(
+            Level::ERROR,
+            error = ?err,
+            "Failed to clear screenshot overlay cursor rect"
+        );
+    }
     cx.update_global::<ScreenshotOverlayState, _>(|state, cx| {
         if let Some(session) = state.session.take() {
             session.close_all(cx);

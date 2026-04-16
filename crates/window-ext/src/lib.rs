@@ -3,7 +3,7 @@ use gpui::{Bounds, DisplayId, Pixels, Window};
 #[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Id};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSScreen, NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSCursor, NSScreen, NSView, NSWindow};
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
@@ -40,7 +40,10 @@ pub enum WindowExtError {
 pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
+    fn show_without_activation(&self) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
+    fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError>;
+    fn clear_cursor_rects(&self) -> Result<(), WindowExtError>;
     fn is_visible(&self) -> Result<bool, WindowExtError>;
     fn move_and_resize(
         &self,
@@ -105,6 +108,33 @@ impl WindowExt for Window {
         }
         Ok(())
     }
+
+    fn show_without_activation(&self) -> Result<(), WindowExtError> {
+        let raw_window = get_raw_window(self)?;
+        match raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.orderFront(None);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn set_floating(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
@@ -139,7 +169,35 @@ impl WindowExt for Window {
                     }
                 }
             }
-            _ => (),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError> {
+        #[cfg(target_os = "macos")]
+        {
+            let raw_window = get_raw_window(self)?;
+            if let RawWindowHandle::AppKit(handle) = raw_window {
+                let ns_view = get_ns_view(handle)?;
+                let cursor = NSCursor::crosshairCursor();
+                ns_view.discardCursorRects();
+                ns_view.addCursorRect_cursor(ns_view.bounds(), &cursor);
+                cursor.set();
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_cursor_rects(&self) -> Result<(), WindowExtError> {
+        #[cfg(target_os = "macos")]
+        {
+            let raw_window = get_raw_window(self)?;
+            if let RawWindowHandle::AppKit(handle) = raw_window {
+                let ns_view = get_ns_view(handle)?;
+                ns_view.discardCursorRects();
+                NSCursor::arrowCursor().set();
+            }
         }
         Ok(())
     }
@@ -298,14 +356,20 @@ fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
 fn get_ns_window(
     window: AppKitWindowHandle,
 ) -> Result<objc2::rc::Retained<NSWindow>, WindowExtError> {
-    let ns_view = window.ns_view.as_ptr();
-    let ns_view: Id<NSView> =
-        unsafe { Id::retain(ns_view.cast()) }.ok_or(WindowExtError::FailedToGetNSView)?;
+    let ns_view = get_ns_view(window)?;
     let ns_window = ns_view
         .window()
         .ok_or(WindowExtError::FailedToGetNSWindow)?;
 
     Ok(ns_window)
+}
+
+#[cfg(target_os = "macos")]
+fn get_ns_view(window: AppKitWindowHandle) -> Result<objc2::rc::Retained<NSView>, WindowExtError> {
+    let ns_view = window.ns_view.as_ptr();
+    let ns_view: Id<NSView> =
+        unsafe { Id::retain(ns_view.cast()) }.ok_or(WindowExtError::FailedToGetNSView)?;
+    Ok(ns_view)
 }
 
 #[cfg(target_os = "macos")]

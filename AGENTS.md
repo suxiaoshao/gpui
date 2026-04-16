@@ -46,10 +46,11 @@
 
 ## 4. 提权与 GitHub 规则
 
-- 任何需要联网、安装依赖、修改 `Cargo.lock`、执行 `cargo add` / `cargo install`、运行 `gh` 写操作，或其他超出沙盒权限的命令，都必须先申请权限。
-- 如果命令因网络、权限或沙盒限制失败，应直接对原命令申请权限，不要改用绕过限制的替代方案。
+- 任何需要联网、安装依赖、修改 `Cargo.lock`、执行 `cargo add` / `cargo install`、运行 `gh`、或其他超出沙盒权限的命令，都必须先申请权限。不要先在沙盒内试跑 `gh` 或联网命令。
+- `gh` 的认证、查询和写操作都必须提权运行，包括 `gh auth status`、`gh pr view`、`gh pr create`、`gh pr ready`、`gh workflow run` 等。沙盒内 `gh` 失败、token 无效或无法访问 keyring，不代表真实环境不可用，禁止据此切换到其他方案。
+- 如果命令因网络、权限或沙盒限制失败，应直接对原命令申请权限重跑，不要改用绕过限制的替代方案。
 - 删除文件、覆盖生成产物、批量改写文件或改写 lockfile 前，也要先说明并申请权限。
-- GitHub 相关操作优先使用 `gh`，不要手写推测性结果。
+- GitHub 相关操作必须优先使用提权后的 `gh`，不要手写推测性结果。只有在提权后的 `gh` 明确不可用时，才允许使用 GitHub App / MCP 作为降级方案，并必须在汇报中说明原因。
 - 编写 issue、PR、release note、评论前，先检查 `.github/` 下的模板和 workflow。
 - issue 默认使用：
   - `.github/ISSUE_TEMPLATE/bug_report.yml`
@@ -57,6 +58,7 @@
   - `.github/ISSUE_TEMPLATE/tech_request.yml`
 - PR 默认使用 `.github/pull_request_template.md`。
 - 编写 PR 内容时，必须基于“当前分支相对远程最新 `main`”的整体差异进行总结，不要只根据最后一次提交或本次会话中的改动来写。
+- 用户要求“提交 PR / 开 PR / 提 PR”时，默认创建可直接 review 的普通 PR；只有用户明确说“draft PR / 草稿 PR”时才创建 draft。
 - issue / PR 标题和描述要明确对应应用或 crate，例如 `ai-chat`、`feiwen`、`http-client`、`novel-download`、`window-ext`、`xtask`。
 
 ## 5. 验证与 CI
