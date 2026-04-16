@@ -175,10 +175,10 @@ impl WindowExt for Window {
     }
 
     fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError> {
-        let raw_window = get_raw_window(self)?;
-        if let RawWindowHandle::AppKit(handle) = raw_window {
-            #[cfg(target_os = "macos")]
-            {
+        #[cfg(target_os = "macos")]
+        {
+            let raw_window = get_raw_window(self)?;
+            if let RawWindowHandle::AppKit(handle) = raw_window {
                 let ns_view = get_ns_view(handle)?;
                 let cursor = NSCursor::crosshairCursor();
                 ns_view.discardCursorRects();
@@ -190,10 +190,10 @@ impl WindowExt for Window {
     }
 
     fn clear_cursor_rects(&self) -> Result<(), WindowExtError> {
-        let raw_window = get_raw_window(self)?;
-        if let RawWindowHandle::AppKit(handle) = raw_window {
-            #[cfg(target_os = "macos")]
-            {
+        #[cfg(target_os = "macos")]
+        {
+            let raw_window = get_raw_window(self)?;
+            if let RawWindowHandle::AppKit(handle) = raw_window {
                 let ns_view = get_ns_view(handle)?;
                 ns_view.discardCursorRects();
                 NSCursor::arrowCursor().set();
