@@ -14,11 +14,16 @@ use window_ext::WindowExt;
 
 actions!(screenshot_overlay, [CancelScreenshotSelection]);
 
+const CONTEXT: &str = "screenshot_overlay";
 const DRAG_THRESHOLD: f32 = 2.0;
 const CAPTURE_START_DELAY: Duration = Duration::from_millis(30);
 
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", CancelScreenshotSelection, None)]);
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        CancelScreenshotSelection,
+        Some(CONTEXT),
+    )]);
 }
 
 pub(crate) fn is_active(cx: &App) -> bool {
@@ -407,6 +412,7 @@ impl Render for ScreenshotOverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
             .id("screenshot-overlay-root")
+            .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .relative()
             .size_full()

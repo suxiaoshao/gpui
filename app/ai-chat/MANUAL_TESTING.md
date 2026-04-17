@@ -14,10 +14,20 @@ This checklist covers the ChatGPT workflow migration in issue #60. Theme changes
 
 1. Open search from the sidebar action.
 2. Open search with `Cmd+F` on macOS or `Ctrl+F` on Windows/Linux.
-3. Search by literal title, description, folder name, pinyin, and pinyin initials.
-4. Use Up/Down and Enter to select a result.
-5. Confirm the selected conversation opens as the active tab.
-6. Search for a missing term and confirm the empty state is shown.
+3. Press Escape to close search, then open it again with the same keyboard shortcut.
+4. Open Settings, About, Temporary Conversation, or Message Preview and confirm `Cmd+F`/`Ctrl+F` does not open Home search there.
+5. Search by literal title, description, folder name, pinyin, and pinyin initials.
+6. Use Up/Down and Enter to select a result.
+7. Confirm the selected conversation opens as the active tab.
+8. Search for a missing term and confirm the empty state is shown.
+
+## Home Shortcuts
+
+1. Focus different Home regions: sidebar, conversation tab, and an empty area.
+2. Press `Cmd+N` on macOS or `Ctrl+N` on Windows/Linux and confirm the add conversation dialog opens.
+3. Press `Cmd+Shift+N` on macOS or `Ctrl+Shift+N` on Windows/Linux and confirm the add folder dialog opens.
+4. Open the template list and press `Cmd+N` or `Ctrl+N`; confirm the add template dialog opens instead of the add conversation dialog.
+5. Open Settings, About, Temporary Conversation, or Message Preview and confirm the Home new conversation/folder shortcuts do not fire there.
 
 ## Conversation Export
 
@@ -54,6 +64,12 @@ This checklist covers the ChatGPT workflow migration in issue #60. Theme changes
 5. Reopen the global-hotkey temporary popup and confirm it is independent from the detached window.
 6. In the detached window, test send, pause, resend, clear, message preview, and save conversation.
 7. Close the detached window and confirm the global-hotkey popup still works.
+
+## Screenshot Overlay
+
+1. Trigger a screenshot shortcut that opens the selection overlay.
+2. Press Escape and confirm the overlay closes without creating a shortcut request.
+3. Press Escape in a normal Home, Settings, or Temporary window and confirm it does not dispatch screenshot cancel behavior.
 
 ## Regression
 

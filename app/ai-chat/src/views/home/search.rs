@@ -12,6 +12,8 @@ use gpui_component::{
 };
 use std::{ops::Deref, rc::Rc};
 
+use super::HOME_CONTEXT;
+
 actions!(conversation_search, [OpenConversationSearch]);
 
 const CONTEXT: &str = "conversation_search_view";
@@ -25,15 +27,19 @@ pub fn init(cx: &mut App) {
             "ctrl-f"
         },
         OpenConversationSearch,
-        None,
+        Some(HOME_CONTEXT),
     )]);
 }
 
 pub(crate) fn open_conversation_search_dialog(window: &mut Window, cx: &mut App) {
     let title = cx.global::<I18n>().t("dialog-search-conversation-title");
     let view = cx.new(|cx| ConversationSearchView::new(window, cx));
+    let view_to_focus = view.clone();
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog.title(title.clone()).child(view.clone())
+    });
+    window.defer(cx, move |window, cx| {
+        view_to_focus.update(cx, |view, cx| view.focus_search_input(window, cx));
     });
 }
 
@@ -215,7 +221,6 @@ impl ConversationSearchView {
         });
         let _search_input_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        search_input.focus_handle(cx).focus(window, cx);
         let results = Self::build_list("", window, cx);
 
         Self {
@@ -223,6 +228,11 @@ impl ConversationSearchView {
             results,
             _search_input_subscription,
         }
+    }
+
+    fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |search_input, cx| search_input.focus(window, cx));
     }
 
     fn build_list(
