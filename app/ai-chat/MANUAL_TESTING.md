@@ -56,15 +56,13 @@ This checklist covers the ChatGPT workflow migration in issue #60. Theme changes
 4. Change Language to System and restart the app; confirm the setting is preserved.
 5. Click Open next to Config File and confirm the system opens `config.toml`.
 
-## Temporary Conversation Windows
+## Temporary Conversation Window
 
 1. Open the temporary conversation with the configured global hotkey.
-2. Send or type temporary content.
-3. Click the detach button.
-4. Confirm a normal temporary conversation window opens and does not hide when it loses focus.
-5. Reopen the global-hotkey temporary popup and confirm it is independent from the detached window.
-6. In the detached window, test send, pause, resend, clear, message preview, and save conversation.
-7. Close the detached window and confirm the global-hotkey popup still works.
+2. Confirm the same temporary popup is reused when the hotkey is triggered again.
+3. Confirm no detach button or separate normal temporary window is available.
+4. Test send, pause, resend, clear, message preview, and save conversation in the temporary popup.
+5. Let the popup lose focus and confirm it follows the existing hide behavior.
 
 ## Screenshot Overlay
 

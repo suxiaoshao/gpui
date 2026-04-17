@@ -306,7 +306,7 @@ impl MessageViewExt for Message {
         });
     }
 
-    fn can_resend(&self, _window: &Window, cx: &App) -> bool {
+    fn can_resend(&self, cx: &App) -> bool {
         if self.role != Role::Assistant {
             return false;
         }

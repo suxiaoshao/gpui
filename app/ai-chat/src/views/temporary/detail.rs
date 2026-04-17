@@ -15,15 +15,14 @@ use crate::{
             detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
             preview::{MessagePreviewExt, open_message_preview_window},
         },
-        temporary::{DetachedTemporaryView, TemporaryView, open_detached_temporary_window},
+        temporary::TemporaryView,
     },
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::*;
 use gpui_component::{
-    Disableable, IconName, Root, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    Root, WindowExt,
     description_list::DescriptionItem,
     notification::{Notification, NotificationType},
 };
@@ -166,11 +165,19 @@ impl MessageViewExt for TemporaryMessage {
         }
     }
 
-    fn can_resend(&self, window: &Window, cx: &App) -> bool {
+    fn can_resend(&self, cx: &App) -> bool {
         if self.role != Role::Assistant {
             return false;
         }
-        find_temporary_detail(window, cx).is_some_and(|detail| !detail.read(cx).has_running_task())
+        cx.windows()
+            .iter()
+            .find_map(|window| {
+                let root = window.downcast::<Root>()?;
+                let view = root.read(cx).ok()?.view().clone();
+                let temporary_view = view.downcast::<TemporaryView>().ok()?;
+                Some(temporary_view.read(cx).detail.clone())
+            })
+            .is_some_and(|detail| !detail.read(cx).has_running_task())
     }
 
     fn resend_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -254,9 +261,6 @@ fn find_temporary_detail(window: &Window, cx: &App) -> Option<Entity<TemplateDet
     if let Ok(temporary_view) = view.clone().downcast::<TemporaryView>() {
         return Some(temporary_view.read(cx).detail.clone());
     }
-    if let Ok(detached_view) = view.downcast::<DetachedTemporaryView>() {
-        return Some(detached_view.read(cx).detail.clone());
-    }
     None
 }
 
@@ -264,16 +268,9 @@ fn find_temporary_detail(window: &Window, cx: &App) -> Option<Entity<TemplateDet
 pub(crate) struct TemporaryDetailState {
     messages: Vec<TemporaryMessage>,
     autoincrement_id: usize,
-    detachable: bool,
 }
 
 impl TemporaryDetailState {
-    fn detached_copy(&self) -> Self {
-        let mut detached = self.clone();
-        detached.detachable = false;
-        detached
-    }
-
     fn clear_messages(&mut self) {
         self.messages.clear();
         self.autoincrement_id = 0;
@@ -330,7 +327,6 @@ impl TemplateDetailView {
             TemporaryDetailState {
                 messages: Vec::new(),
                 autoincrement_id: 0,
-                detachable: true,
             },
             window,
             cx,
@@ -369,30 +365,6 @@ impl ConversationDetailViewExt for TemporaryDetailState {
 
     fn element_prefix(&self) -> SharedString {
         "temporary-detail".into()
-    }
-
-    fn header_actions(
-        view: &mut ConversationDetailView<Self>,
-        _window: &mut Window,
-        _cx: &mut Context<ConversationDetailView<Self>>,
-    ) -> Vec<AnyElement> {
-        if !view.detail.detachable {
-            return Vec::new();
-        }
-
-        let tooltip = _cx.global::<I18n>().t("tooltip-detach-temporary");
-        vec![
-            Button::new("temporary-detail-detach")
-                .icon(IconName::WindowMaximize)
-                .ghost()
-                .small()
-                .disabled(view.has_running_task())
-                .tooltip(tooltip)
-                .on_click(|_, _window, cx| {
-                    detach_temporary_conversation(cx);
-                })
-                .into_any_element(),
-        ]
     }
 
     fn message_revisions(&self, _cx: &App) -> Vec<Self::Revision> {
@@ -492,51 +464,6 @@ impl ConversationDetailViewExt for TemporaryDetailState {
             })
             .collect::<Vec<_>>();
         open_add_conversation_dialog(None, Some(initial_messages), window, cx);
-    }
-}
-
-fn detach_temporary_conversation(cx: &mut App) {
-    let detached_state = cx
-        .windows()
-        .iter()
-        .find_map(|window| {
-            let root = window.downcast::<Root>()?;
-            let temporary_view = root
-                .read(cx)
-                .ok()?
-                .view()
-                .clone()
-                .downcast::<TemporaryView>()
-                .ok()?;
-            Some(temporary_view)
-        })
-        .and_then(|temporary_view| {
-            temporary_view.update(cx, |view, cx| {
-                let source_detail = view.detail.clone();
-                let detached_state = source_detail.update(cx, |detail, _cx| {
-                    if !detail.detail.detachable || detail.has_running_task() {
-                        return None;
-                    }
-                    Some(detail.detail.detached_copy())
-                });
-                detached_state.map(|state| (source_detail, state))
-            })
-        });
-
-    if let Some((source_detail, detached_state)) = detached_state {
-        match open_detached_temporary_window(detached_state, cx) {
-            Ok(_) => {
-                source_detail.update(cx, |detail, cx| {
-                    detail.detail.clear_messages();
-                    cx.notify();
-                });
-            }
-            Err(err) => event!(
-                Level::ERROR,
-                error = ?err,
-                "Failed to open detached temporary window"
-            ),
-        }
     }
 }
 
@@ -1072,20 +999,12 @@ mod tests {
     }
 
     #[test]
-    fn detached_copy_does_not_clear_source_messages() {
+    fn clear_messages_resets_temporary_state() {
         let message = make_message(Role::Assistant, Status::Normal, Content::new("hello"));
         let mut source = TemporaryDetailState {
             messages: vec![message],
             autoincrement_id: 1,
-            detachable: true,
         };
-
-        let detached = source.detached_copy();
-
-        assert_eq!(source.messages.len(), 1);
-        assert_eq!(source.autoincrement_id, 1);
-        assert!(!detached.detachable);
-        assert_eq!(detached.messages.len(), 1);
 
         source.clear_messages();
 

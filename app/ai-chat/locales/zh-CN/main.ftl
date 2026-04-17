@@ -83,7 +83,6 @@ tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
 tooltip-copy-conversation = 复制为新会话
 tooltip-export-conversation = 导出会话
-tooltip-detach-temporary = 分离临时会话
 tooltip-ollama-web-search-help =
     Ollama 的 `web_search` 依赖 `web_fetch`。
 

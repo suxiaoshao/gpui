@@ -83,7 +83,6 @@ tooltip-clear-conversation = Clear Conversation
 tooltip-save-conversation = Save Conversation
 tooltip-copy-conversation = Copy to New Conversation
 tooltip-export-conversation = Export Conversation
-tooltip-detach-temporary = Detach Temporary Conversation
 tooltip-ollama-web-search-help =
     Ollama `web_search` depends on `web_fetch`.
 
