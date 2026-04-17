@@ -33,7 +33,7 @@ settings-group-basic-options = Basic Options
 settings-group-shortcuts = Global Shortcut Bindings
 language-system = System
 language-english = English
-language-chinese = Simplified Chinese
+language-chinese = 简体中文
 
 sidebar-app-title = AI Chat
 sidebar-conversation-tree = Conversation Tree
