@@ -73,9 +73,12 @@ impl Render for DetachedTemporaryView {
     }
 }
 
-pub(crate) fn open_detached_temporary_window(state: TemporaryDetailState, cx: &mut App) {
+pub(crate) fn open_detached_temporary_window(
+    state: TemporaryDetailState,
+    cx: &mut App,
+) -> anyhow::Result<WindowHandle<Root>> {
     let title = cx.global::<I18n>().t("temporary-chat-title");
-    match cx.open_window(
+    let handle = cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
@@ -92,16 +95,15 @@ pub(crate) fn open_detached_temporary_window(state: TemporaryDetailState, cx: &m
             let view = cx.new(|cx| DetachedTemporaryView::new_with_state(state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         },
-    ) {
-        Ok(handle) => {
-            if let Err(err) = handle.update(cx, |root, window, cx| {
-                if let Ok(view) = root.view().clone().downcast::<DetachedTemporaryView>() {
-                    view.update(cx, |view, cx| view.focus_chat_form(window, cx));
-                }
-            }) {
-                event!(Level::ERROR, error = ?err, "Failed to focus detached temporary window");
-            }
+    )?;
+
+    if let Err(err) = handle.update(cx, |root, window, cx| {
+        if let Ok(view) = root.view().clone().downcast::<DetachedTemporaryView>() {
+            view.update(cx, |view, cx| view.focus_chat_form(window, cx));
         }
-        Err(err) => event!(Level::ERROR, error = ?err, "Failed to open detached temporary window"),
+    }) {
+        event!(Level::ERROR, error = ?err, "Failed to focus detached temporary window");
     }
+
+    Ok(handle)
 }

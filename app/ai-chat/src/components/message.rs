@@ -62,7 +62,7 @@ pub trait MessageViewExt: 'static {
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn pause_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn delete_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
-    fn can_resend(&self, _cx: &App) -> bool;
+    fn can_resend(&self, _window: &Window, _cx: &App) -> bool;
     fn resend_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
 }
 
@@ -129,7 +129,7 @@ fn message_actions(can_resend: bool) -> Vec<MessageAction> {
 }
 
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = self.0;
         let (
             copy_success_title,
@@ -162,7 +162,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
         let accessory_mode = MessageAccessoryMode::from(data.status());
         let reasoning_summary_label = reasoning_summary_label(data.status(), cx.global::<I18n>());
         let message_error = visible_error(data.status(), data.error()).map(ToOwned::to_owned);
-        let can_resend = data.can_resend(cx);
+        let can_resend = data.can_resend(window, cx);
         let avatar = Badge::new()
             .dot()
             .count(1)

@@ -166,27 +166,11 @@ impl MessageViewExt for TemporaryMessage {
         }
     }
 
-    fn can_resend(&self, cx: &App) -> bool {
+    fn can_resend(&self, window: &Window, cx: &App) -> bool {
         if self.role != Role::Assistant {
             return false;
         }
-        cx.windows().iter().any(|window| {
-            window
-                .downcast::<Root>()
-                .and_then(|root| root.read(cx).ok().map(|root| root.view().clone()))
-                .and_then(|view| {
-                    view.clone()
-                        .downcast::<TemporaryView>()
-                        .ok()
-                        .map(|view| view.read(cx).detail.clone())
-                        .or_else(|| {
-                            view.downcast::<DetachedTemporaryView>()
-                                .ok()
-                                .map(|view| view.read(cx).detail.clone())
-                        })
-                })
-                .is_some_and(|detail| !detail.read(cx).has_running_task())
-        })
+        find_temporary_detail(window, cx).is_some_and(|detail| !detail.read(cx).has_running_task())
     }
 
     fn resend_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -263,7 +247,7 @@ impl TemporaryMessage {
     }
 }
 
-fn find_temporary_detail(window: &mut Window, cx: &App) -> Option<Entity<TemplateDetailView>> {
+fn find_temporary_detail(window: &Window, cx: &App) -> Option<Entity<TemplateDetailView>> {
     let root = window.root::<Root>()??;
     let root = root.read(cx);
     let view = root.view().downgrade().upgrade()?;
@@ -281,6 +265,19 @@ pub(crate) struct TemporaryDetailState {
     messages: Vec<TemporaryMessage>,
     autoincrement_id: usize,
     detachable: bool,
+}
+
+impl TemporaryDetailState {
+    fn detached_copy(&self) -> Self {
+        let mut detached = self.clone();
+        detached.detachable = false;
+        detached
+    }
+
+    fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.autoincrement_id = 0;
+    }
 }
 
 struct NewTemporaryMessage {
@@ -467,8 +464,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         _window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
-        view.detail.messages.clear();
-        view.detail.autoincrement_id = 0;
+        view.detail.clear_messages();
         cx.notify();
     }
 
@@ -516,22 +512,31 @@ fn detach_temporary_conversation(cx: &mut App) {
         })
         .and_then(|temporary_view| {
             temporary_view.update(cx, |view, cx| {
-                view.detail.update(cx, |detail, cx| {
+                let source_detail = view.detail.clone();
+                let detached_state = source_detail.update(cx, |detail, _cx| {
                     if !detail.detail.detachable || detail.has_running_task() {
                         return None;
                     }
-                    let mut detached = detail.detail.clone();
-                    detached.detachable = false;
-                    detail.detail.messages.clear();
-                    detail.detail.autoincrement_id = 0;
-                    cx.notify();
-                    Some(detached)
-                })
+                    Some(detail.detail.detached_copy())
+                });
+                detached_state.map(|state| (source_detail, state))
             })
         });
 
-    if let Some(detached_state) = detached_state {
-        open_detached_temporary_window(detached_state, cx);
+    if let Some((source_detail, detached_state)) = detached_state {
+        match open_detached_temporary_window(detached_state, cx) {
+            Ok(_) => {
+                source_detail.update(cx, |detail, cx| {
+                    detail.detail.clear_messages();
+                    cx.notify();
+                });
+            }
+            Err(err) => event!(
+                Level::ERROR,
+                error = ?err,
+                "Failed to open detached temporary window"
+            ),
+        }
     }
 }
 
@@ -993,7 +998,9 @@ fn build_request_body(
 
 #[cfg(test)]
 mod tests {
-    use super::{TemporaryMessage, build_history_messages, build_request_body};
+    use super::{
+        TemporaryDetailState, TemporaryMessage, build_history_messages, build_request_body,
+    };
     use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
     use std::rc::Rc;
     use time::OffsetDateTime;
@@ -1062,5 +1069,27 @@ mod tests {
         )?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
+    }
+
+    #[test]
+    fn detached_copy_does_not_clear_source_messages() {
+        let message = make_message(Role::Assistant, Status::Normal, Content::new("hello"));
+        let mut source = TemporaryDetailState {
+            messages: vec![message],
+            autoincrement_id: 1,
+            detachable: true,
+        };
+
+        let detached = source.detached_copy();
+
+        assert_eq!(source.messages.len(), 1);
+        assert_eq!(source.autoincrement_id, 1);
+        assert!(!detached.detachable);
+        assert_eq!(detached.messages.len(), 1);
+
+        source.clear_messages();
+
+        assert!(source.messages.is_empty());
+        assert_eq!(source.autoincrement_id, 0);
     }
 }
