@@ -17,6 +17,8 @@ use gpui_component::{
 use std::ops::Deref;
 use tracing::{Level, event};
 
+use super::search::OpenConversationSearch;
+
 mod conversation_item;
 mod conversation_tree;
 mod folder_item;
@@ -107,6 +109,7 @@ impl Render for SidebarView {
             conversation_tree_title,
             actions_title,
             settings_label,
+            search_label,
             template_list_label,
             add_conversation_label,
             add_folder_label,
@@ -118,6 +121,7 @@ impl Render for SidebarView {
                 i18n.t("sidebar-conversation-tree"),
                 i18n.t("sidebar-actions"),
                 i18n.t("sidebar-settings"),
+                i18n.t("sidebar-search-conversation"),
                 i18n.t("sidebar-template-list"),
                 i18n.t("sidebar-add-conversation"),
                 i18n.t("sidebar-add-folder"),
@@ -173,6 +177,16 @@ impl Render for SidebarView {
                                         .icon(IconName::Settings)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
                                             window.dispatch_action(OpenSetting.boxed_clone(), cx);
+                                        })),
+                                )
+                                .child(
+                                    SidebarMenuItem::new(search_label)
+                                        .icon(IconName::Search)
+                                        .on_click(cx.listener(|_this, _event, window, cx| {
+                                            window.dispatch_action(
+                                                OpenConversationSearch.boxed_clone(),
+                                                cx,
+                                            );
                                         })),
                                 )
                                 .child(

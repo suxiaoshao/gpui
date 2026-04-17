@@ -1,7 +1,12 @@
 use crate::{
-    components::chat_form::ChatFormSnapshot,
+    components::{
+        add_conversation::{InitialConversationFields, open_add_conversation_dialog_with_fields},
+        chat_form::ChatFormSnapshot,
+    },
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
+    export::{ExportType, export_conversation_to_path, suggested_export_file_name},
+    i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
@@ -15,8 +20,14 @@ use gpui::{
     AsyncWindowContext, Context, Entity, IntoElement, ListAlignment, SharedString, WeakEntity,
     Window,
 };
+use gpui_component::{
+    Disableable, IconName, Sizable, WindowExt,
+    button::{Button, ButtonVariants},
+    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    notification::{Notification, NotificationType},
+};
 use smol::stream::StreamExt;
-use std::ops::Deref;
+use std::{ops::Deref, path::PathBuf};
 use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
@@ -113,6 +124,45 @@ impl ConversationDetailViewExt for ConversationPanelState {
 
     fn header_leading(&self, _cx: &gpui::App) -> Option<gpui::AnyElement> {
         Some(gpui_component::label::Label::new(&self.conversation_icon).into_any_element())
+    }
+
+    fn header_actions(
+        view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        cx: &mut Context<ConversationDetailView<Self>>,
+    ) -> Vec<gpui::AnyElement> {
+        let conversation_id = view.detail.conversation_id;
+        let element_prefix = view.detail.element_prefix();
+        let (copy_tooltip, export_tooltip) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("tooltip-copy-conversation"),
+                i18n.t("tooltip-export-conversation"),
+            )
+        };
+
+        vec![
+            Button::new(SharedString::from(format!("{element_prefix}-copy")))
+                .icon(IconName::Copy)
+                .ghost()
+                .small()
+                .disabled(view.has_running_task())
+                .tooltip(copy_tooltip)
+                .on_click(move |_, window, cx| {
+                    open_copy_conversation_dialog(conversation_id, window, cx);
+                })
+                .into_any_element(),
+            Button::new(SharedString::from(format!("{element_prefix}-export")))
+                .icon(IconName::File)
+                .ghost()
+                .small()
+                .disabled(view.has_running_task())
+                .tooltip(export_tooltip)
+                .dropdown_menu(move |menu, window, cx| {
+                    conversation_export_menu(menu, conversation_id, window, cx)
+                })
+                .into_any_element(),
+        ]
     }
 
     fn element_prefix(&self) -> SharedString {
@@ -225,6 +275,167 @@ impl ConversationDetailViewExt for ConversationPanelState {
             cx.emit(ChatDataEvent::ClearConversationMessages(conversation_id));
         });
     }
+}
+
+pub(crate) fn open_copy_conversation_dialog(
+    conversation_id: i32,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let conversation = cx
+        .global::<ChatData>()
+        .read(cx)
+        .as_ref()
+        .ok()
+        .and_then(|data| data.conversation(conversation_id))
+        .cloned();
+    let Some(conversation) = conversation else {
+        return;
+    };
+
+    open_add_conversation_dialog_with_fields(
+        conversation.folder_id,
+        InitialConversationFields {
+            name: Some(conversation.title),
+            icon: Some(conversation.icon),
+            info: conversation.info,
+        },
+        None,
+        window,
+        cx,
+    );
+}
+
+pub(crate) fn conversation_export_menu(
+    menu: PopupMenu,
+    conversation_id: i32,
+    _window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let i18n = cx.global::<I18n>();
+    menu.item(
+        PopupMenuItem::new(format!("{} JSON", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Json, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} CSV", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Csv, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} TXT", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Txt, window, cx);
+            }),
+    )
+}
+
+pub(crate) fn open_export_conversation_prompt(
+    conversation_id: i32,
+    export_type: ExportType,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let conversation = cx
+        .global::<ChatData>()
+        .read(cx)
+        .as_ref()
+        .ok()
+        .and_then(|data| data.conversation(conversation_id))
+        .cloned();
+    let Some(conversation) = conversation else {
+        return;
+    };
+
+    let suggested_name = suggested_export_file_name(&conversation, export_type);
+    let directory = export_default_directory();
+    let path_prompt = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+    let (success_title, failed_title, sources_label) = {
+        let i18n = cx.global::<I18n>();
+        (
+            i18n.t("notify-export-conversation-success"),
+            i18n.t("notify-export-conversation-failed"),
+            i18n.t("field-sources"),
+        )
+    };
+
+    window
+        .spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+                Err(err) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+
+            match export_conversation_to_path(
+                &conversation,
+                export_type,
+                &selected_path,
+                &sources_label,
+            ) {
+                Ok(path) => push_export_notification(
+                    cx,
+                    success_title.into(),
+                    path.display().to_string(),
+                    NotificationType::Success,
+                ),
+                Err(err) => push_export_notification(
+                    cx,
+                    failed_title.into(),
+                    err.to_string(),
+                    NotificationType::Error,
+                ),
+            }
+        })
+        .detach();
+}
+
+fn push_export_notification(
+    cx: &mut gpui::AsyncWindowContext,
+    title: SharedString,
+    message: String,
+    notification_type: NotificationType,
+) {
+    if let Err(err) = cx.window_handle().update(cx, |_, window, cx| {
+        window.push_notification(
+            Notification::new()
+                .title(title)
+                .message(message)
+                .with_type(notification_type),
+            cx,
+        );
+    }) {
+        event!(Level::ERROR, "push export notification failed: {}", err);
+    }
+}
+
+fn export_default_directory() -> PathBuf {
+    dirs_next::document_dir()
+        .or_else(dirs_next::home_dir)
+        .unwrap_or_default()
 }
 
 impl ConversationPanelView {

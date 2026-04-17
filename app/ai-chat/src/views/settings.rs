@@ -1,13 +1,15 @@
 use crate::{
     app_menus,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
-    i18n::I18n,
+    i18n::{self, I18n},
     llm::provider_setting_groups,
-    state::{AiChatConfig, ThemeMode},
+    state::{AiChatConfig, Language, ThemeMode},
 };
 use gpui::*;
 use gpui_component::{
-    Root,
+    Root, WindowExt,
+    button::{Button, ButtonVariants},
+    notification::{Notification, NotificationType},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -105,8 +107,12 @@ impl Render for SettingsView {
             page_shortcuts,
             group_basic_options,
             field_theme,
+            field_language,
             field_http_proxy,
             field_temporary_hotkey,
+            field_config_file,
+            button_open,
+            open_config_failed,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -115,8 +121,12 @@ impl Render for SettingsView {
                 i18n.t("settings-page-shortcuts"),
                 i18n.t("settings-group-basic-options"),
                 i18n.t("field-theme"),
+                i18n.t("field-language"),
                 i18n.t("field-http-proxy"),
                 i18n.t("field-temporary-conversation-hotkey"),
+                i18n.t("field-config-file"),
+                i18n.t("button-open"),
+                i18n.t("notify-open-config-file-failed"),
             )
         };
         let dialog_layer = Root::render_dialog_layer(window, cx);
@@ -163,6 +173,33 @@ impl Render for SettingsView {
                     ),
                 ))
                 .item(SettingItem::new(
+                    field_language,
+                    SettingField::dropdown(
+                        Language::options()
+                            .into_iter()
+                            .map(|language| {
+                                (
+                                    language.to_string().into(),
+                                    cx.global::<I18n>().t(language.label_key()).into(),
+                                )
+                            })
+                            .collect(),
+                        |cx: &App| {
+                            let config = cx.global::<AiChatConfig>();
+                            config.language().to_string().into()
+                        },
+                        |val: SharedString, cx: &mut App| {
+                            {
+                                let config = cx.global_mut::<AiChatConfig>();
+                                config.set_language(Language::from_str(&val));
+                            }
+                            i18n::refresh_i18n(cx);
+                            cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+                            cx.refresh_windows();
+                        },
+                    ),
+                ))
+                .item(SettingItem::new(
                     field_http_proxy,
                     SettingField::input(
                         |cx: &App| {
@@ -186,6 +223,27 @@ impl Render for SettingsView {
                 .item(SettingItem::new(
                     field_temporary_hotkey,
                     SettingField::render(move |_options, _window, _cx| hotkey_input.clone()),
+                ))
+                .item(SettingItem::new(
+                    field_config_file,
+                    SettingField::render(move |_options, _window, _cx| {
+                        Button::new("open-config-file")
+                            .label(button_open.clone())
+                            .ghost()
+                            .on_click({
+                                let open_config_failed = open_config_failed.clone();
+                                move |_, window, cx| match AiChatConfig::path() {
+                                    Ok(path) => cx.open_with_system(&path),
+                                    Err(err) => window.push_notification(
+                                        Notification::new()
+                                            .title(open_config_failed.clone())
+                                            .message(err.to_string())
+                                            .with_type(NotificationType::Error),
+                                        cx,
+                                    ),
+                                }
+                            })
+                    }),
                 )),
         );
         let (settings_id, pages) = match self.open_target {

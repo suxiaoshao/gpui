@@ -16,10 +16,9 @@ use crate::{
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
-use pinyin::ToPinyin;
 use time::OffsetDateTime;
 
-use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
+use super::utils::{deserialize_offset_date_time, field_matches_query, serialize_offset_date_time};
 
 #[derive(serde::Serialize, Clone, serde::Deserialize)]
 pub struct ConversationTemplatePrompt {
@@ -154,40 +153,6 @@ impl ConversationTemplate {
             Ok(())
         })
     }
-}
-
-fn field_matches_query(value: &str, query: &str) -> bool {
-    let value_lower = value.to_lowercase();
-    if value_lower.contains(query) {
-        return true;
-    }
-
-    let (plain, initials) = pinyin_search_keys(value);
-    plain.contains(query) || initials.contains(query)
-}
-
-fn pinyin_search_keys(value: &str) -> (String, String) {
-    let mut plain = String::new();
-    let mut initials = String::new();
-
-    for ch in value.chars() {
-        if let Some(pinyin) = ch.to_pinyin() {
-            let syllable = pinyin.plain();
-            plain.push_str(syllable);
-            if let Some(initial) = syllable.chars().next() {
-                initials.push(initial);
-            }
-            continue;
-        }
-
-        if ch.is_ascii_alphanumeric() {
-            let lower = ch.to_ascii_lowercase();
-            plain.push(lower);
-            initials.push(lower);
-        }
-    }
-
-    (plain, initials)
 }
 
 #[derive(serde::Deserialize)]

@@ -1,5 +1,5 @@
 use crate::{
-    database::{Content, Conversation, Db, Folder, Message, Role, Status},
+    database::{Content, Conversation, Db, Folder, Message, Role, Status, field_matches_query},
     errors::AiChatResult,
 };
 use gpui::*;
@@ -8,6 +8,25 @@ use std::collections::BTreeSet;
 pub struct ChatDataInner {
     pub(crate) conversations: Vec<Conversation>,
     pub(crate) folders: Vec<Folder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSearchResult {
+    pub id: i32,
+    pub title: String,
+    pub icon: String,
+    pub info: Option<String>,
+    pub folder_path: Vec<String>,
+}
+
+impl ConversationSearchResult {
+    pub(crate) fn path_label(&self, root_label: &str) -> String {
+        if self.folder_path.is_empty() {
+            root_label.to_string()
+        } else {
+            self.folder_path.join(" / ")
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +56,72 @@ impl ChatDataInner {
     pub(crate) fn first_conversation(&self) -> Option<&Conversation> {
         self.conversations.first()
     }
+
+    pub(crate) fn search_conversations(&self, query: &str) -> Vec<ConversationSearchResult> {
+        let query = query.trim().to_lowercase();
+        let mut results = Vec::new();
+        Self::collect_conversation_results(&self.conversations, &[], query.as_str(), &mut results);
+        Self::collect_folder_conversation_results(&self.folders, &[], query.as_str(), &mut results);
+        results
+    }
+
+    fn collect_folder_conversation_results(
+        folders: &[Folder],
+        parent_path: &[String],
+        query: &str,
+        results: &mut Vec<ConversationSearchResult>,
+    ) {
+        for folder in folders {
+            let mut folder_path = parent_path.to_vec();
+            folder_path.push(folder.name.clone());
+            Self::collect_conversation_results(&folder.conversations, &folder_path, query, results);
+            Self::collect_folder_conversation_results(
+                &folder.folders,
+                &folder_path,
+                query,
+                results,
+            );
+        }
+    }
+
+    fn collect_conversation_results(
+        conversations: &[Conversation],
+        folder_path: &[String],
+        query: &str,
+        results: &mut Vec<ConversationSearchResult>,
+    ) {
+        for conversation in conversations {
+            if conversation_matches_query(conversation, folder_path, query) {
+                results.push(ConversationSearchResult {
+                    id: conversation.id,
+                    title: conversation.title.clone(),
+                    icon: conversation.icon.clone(),
+                    info: conversation.info.clone(),
+                    folder_path: folder_path.to_vec(),
+                });
+            }
+        }
+    }
+}
+
+fn conversation_matches_query(
+    conversation: &Conversation,
+    folder_path: &[String],
+    query: &str,
+) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    field_matches_query(&conversation.title, query)
+        || conversation
+            .info
+            .as_deref()
+            .is_some_and(|info| field_matches_query(info, query))
+        || folder_path
+            .iter()
+            .any(|folder_name| field_matches_query(folder_name, query))
+        || field_matches_query(&conversation.path, query)
 }
 
 // Traverses the folder tree and mutates folder or conversation placement.
@@ -728,6 +813,38 @@ mod tests {
 
         let folder = data.folder(2).expect("folder should exist");
         assert_eq!(folder.id, 2);
+    }
+
+    #[test]
+    fn search_conversations_matches_root_title_info_and_pinyin() {
+        let mut data = empty_chat_data();
+        let mut naming = conversation(1, None);
+        naming.title = "命名助手".to_string();
+        naming.info = Some("生成更好的名字".to_string());
+        data.conversations.push(naming);
+        data.conversations.push(conversation(2, None));
+
+        assert_eq!(data.search_conversations("命名")[0].id, 1);
+        assert_eq!(data.search_conversations("mmzs")[0].id, 1);
+        assert_eq!(data.search_conversations("shengcheng")[0].id, 1);
+    }
+
+    #[test]
+    fn search_conversations_recurses_into_nested_folders() {
+        let mut data = empty_chat_data();
+        let mut root = folder(1, None);
+        root.name = "工作".to_string();
+        let mut child = folder(2, Some(1));
+        child.name = "归档".to_string();
+        child.conversations.push(conversation(3, Some(2)));
+        root.folders.push(child);
+        data.folders.push(root);
+
+        let results = data.search_conversations("gd");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, 3);
+        assert_eq!(results[0].path_label("Root"), "工作 / 归档".to_string());
     }
 
     #[test]

@@ -97,6 +97,7 @@ fn init(cx: &mut App) {
         Some("Input"),
     )]);
 
+    state::config::init(cx);
     i18n::init_i18n(cx);
     app_menus::init(cx);
     cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
@@ -107,7 +108,6 @@ fn init(cx: &mut App) {
     database::init_store(cx);
     components::init(cx);
     views::init(cx);
-    state::config::init(cx);
     state::chat::init_global(cx);
     hotkey::init(cx);
 }

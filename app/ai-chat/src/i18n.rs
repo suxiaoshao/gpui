@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::state::{AiChatConfig, Language};
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use gpui::{App, Global};
 use unic_langid::LanguageIdentifier;
@@ -21,7 +22,11 @@ pub(crate) struct I18n {
 impl Global for I18n {}
 
 pub(crate) fn init_i18n(cx: &mut App) {
-    cx.set_global(I18n::new(detect_locale()));
+    cx.set_global(I18n::from_config(cx));
+}
+
+pub(crate) fn refresh_i18n(cx: &mut App) {
+    cx.set_global(I18n::from_config(cx));
 }
 
 pub(crate) fn t_static(key: &str) -> String {
@@ -35,6 +40,14 @@ impl I18n {
         bundles.insert(Locale::ZhCn, build_bundle("zh-CN", ZH_CN));
 
         Self { locale, bundles }
+    }
+
+    fn from_config(cx: &App) -> Self {
+        let language = cx
+            .try_global::<AiChatConfig>()
+            .map(AiChatConfig::language)
+            .unwrap_or_default();
+        Self::new(locale_for_language(language))
     }
 
     #[cfg(test)]
@@ -83,6 +96,14 @@ impl I18n {
         self.bundles
             .get(&self.locale)
             .or_else(|| self.bundles.get(&Locale::EnUs))
+    }
+}
+
+fn locale_for_language(language: Language) -> Locale {
+    match language {
+        Language::English => Locale::EnUs,
+        Language::Chinese => Locale::ZhCn,
+        Language::System => detect_locale(),
     }
 }
 

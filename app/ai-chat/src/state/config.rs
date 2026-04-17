@@ -70,13 +70,46 @@ impl Default for ThemeOption {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum Language {
+pub(crate) enum Language {
     #[serde(rename = "en")]
     English,
     #[serde(rename = "zh")]
     Chinese,
     #[default]
     System,
+}
+
+impl Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::English => write!(f, "en"),
+            Self::Chinese => write!(f, "zh"),
+            Self::System => write!(f, "system"),
+        }
+    }
+}
+
+impl Language {
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "en" => Self::English,
+            "zh" => Self::Chinese,
+            "system" => Self::System,
+            _ => Self::System,
+        }
+    }
+
+    pub(crate) fn options() -> [Self; 3] {
+        [Self::System, Self::English, Self::Chinese]
+    }
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::System => "language-system",
+            Self::English => "language-english",
+            Self::Chinese => "language-chinese",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -232,6 +265,18 @@ impl AiChatConfig {
     }
     pub(crate) fn theme_mode(&self) -> ThemeMode {
         self.theme.theme
+    }
+    pub(crate) fn language(&self) -> Language {
+        self.language
+    }
+    pub(crate) fn set_language(&mut self, language: Language) {
+        self.language = language;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save language: {}", err);
+            }
+        }
     }
     pub(crate) fn set_theme_mode(&mut self, mode: ThemeMode) {
         self.theme.theme = mode;

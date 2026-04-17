@@ -14,12 +14,17 @@ use gpui_component::{
 use std::ops::Deref;
 pub(crate) use tabs::{
     ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
+    open_copy_conversation_dialog, open_export_conversation_prompt,
 };
 
+mod search;
 mod sidebar;
 mod tabs;
 
+use search::{OpenConversationSearch, open_conversation_search_dialog};
+
 pub fn init(cx: &mut App) {
+    search::init(cx);
     sidebar::init(cx);
     tabs::init(cx);
 }
@@ -77,6 +82,15 @@ impl HomeView {
     fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
+
+    fn open_conversation_search(
+        &mut self,
+        _: &OpenConversationSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_conversation_search_dialog(window, cx);
+    }
 }
 
 impl Render for HomeView {
@@ -95,6 +109,7 @@ impl Render for HomeView {
             .overflow_hidden()
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
+            .on_action(cx.listener(Self::open_conversation_search))
             .child(div().child(TitleBar::new()).flex_initial())
             .map(|this| match chat_data {
                 Ok(_) => this.child(
