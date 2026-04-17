@@ -15,11 +15,12 @@ This checklist covers the ChatGPT workflow migration in issue #60. Theme changes
 1. Open search from the sidebar action.
 2. Open search with `Cmd+F` on macOS or `Ctrl+F` on Windows/Linux.
 3. Press Escape to close search, then open it again with the same keyboard shortcut.
-4. Open Settings, About, Temporary Conversation, or Message Preview and confirm `Cmd+F`/`Ctrl+F` does not open Home search there.
-5. Search by literal title, description, folder name, pinyin, and pinyin initials.
-6. Use Up/Down and Enter to select a result.
-7. Confirm the selected conversation opens as the active tab.
-8. Search for a missing term and confirm the empty state is shown.
+4. Confirm the search dialog has no title or close button, and the input and selected rows span the dialog width.
+5. Open Settings, About, Temporary Conversation, or Message Preview and confirm `Cmd+F`/`Ctrl+F` does not open Home search there.
+6. Search by literal title, description, folder name, pinyin, and pinyin initials.
+7. Use Up/Down and Enter to select a result.
+8. Confirm the selected conversation opens as the active tab.
+9. Search for a missing term and confirm the empty state is shown.
 
 ## Home Shortcuts
 

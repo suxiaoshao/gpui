@@ -32,11 +32,14 @@ pub fn init(cx: &mut App) {
 }
 
 pub(crate) fn open_conversation_search_dialog(window: &mut Window, cx: &mut App) {
-    let title = cx.global::<I18n>().t("dialog-search-conversation-title");
     let view = cx.new(|cx| ConversationSearchView::new(window, cx));
     let view_to_focus = view.clone();
     window.open_dialog(cx, move |dialog, _window, _cx| {
-        dialog.title(title.clone()).child(view.clone())
+        dialog
+            .w(px(560.))
+            .p_0()
+            .close_button(false)
+            .child(view.clone())
     });
     window.defer(cx, move |window, cx| {
         view_to_focus.update(cx, |view, cx| view.focus_search_input(window, cx));
@@ -83,7 +86,6 @@ impl RenderOnce for ConversationSearchItem {
             .items_center()
             .px_3()
             .py_2()
-            .rounded(cx.theme().radius)
             .when(!self.is_selected, |this| {
                 this.hover(|this| this.bg(cx.theme().accent.alpha(0.7)))
             })
@@ -349,17 +351,30 @@ impl Render for ConversationSearchView {
         let count = self.results.read(cx).delegate().items.len();
         v_flex()
             .key_context(CONTEXT)
-            .w(px(560.))
+            .w_full()
             .h(px(480.))
-            .gap_3()
+            .overflow_hidden()
             .on_action(cx.listener(Self::on_search_move_up))
             .on_action(cx.listener(Self::on_search_move_down))
             .on_action(cx.listener(Self::on_search_enter))
             .child(
-                Input::new(&self.search_input)
+                div()
                     .w_full()
-                    .prefix(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
-                    .cleanable(true),
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Input::new(&self.search_input)
+                            .w_full()
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .prefix(
+                                Icon::new(IconName::Search).text_color(cx.theme().muted_foreground),
+                            )
+                            .cleanable(true),
+                    ),
             )
             .map(|this| {
                 if count == 0 {
