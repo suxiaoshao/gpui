@@ -11,6 +11,7 @@ mod assets;
 mod components;
 mod database;
 mod errors;
+mod export;
 mod hotkey;
 mod i18n;
 mod llm;

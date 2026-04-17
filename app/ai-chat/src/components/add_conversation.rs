@@ -13,10 +13,18 @@ use gpui_component::{
 use std::ops::Deref;
 use tracing::{Level, event};
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InitialConversationFields {
+    pub(crate) name: Option<String>,
+    pub(crate) icon: Option<String>,
+    pub(crate) info: Option<String>,
+}
+
 #[derive(Clone)]
 enum ConversationDialogMode {
     Add {
         parent_id: Option<i32>,
+        initial_fields: InitialConversationFields,
         initial_messages: Option<Vec<AddConversationMessage>>,
     },
     Edit {
@@ -56,35 +64,54 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
     let icon_input = cx.new(|cx| InputState::new(window, cx).placeholder(icon_label.clone()));
     let info_input = cx.new(|cx| InputState::new(window, cx).placeholder(info_label.clone()));
 
-    if let ConversationDialogMode::Edit { conversation_id } = &mode {
-        let chat_data = cx.global::<ChatData>();
-        let Ok(chat_data) = chat_data.read(cx).as_ref() else {
-            event!(
-                Level::ERROR,
-                "Failed to read chat data for conversation edit dialog"
-            );
-            return;
-        };
-        let Some(conversation) = chat_data.conversation(*conversation_id) else {
-            event!(
-                Level::ERROR,
-                "Conversation {conversation_id} not found in chat data"
-            );
-            return;
-        };
-        let title = conversation.title.clone();
-        let icon = conversation.icon.clone();
-        let info = conversation.info.clone();
-        name_input.update(cx, |input, _cx| {
-            input.set_value(title.clone(), window, _cx);
-        });
-        icon_input.update(cx, |input, _cx| {
-            input.set_value(icon.clone(), window, _cx);
-        });
-        if let Some(info) = info {
-            info_input.update(cx, |input, _cx| {
-                input.set_value(info, window, _cx);
+    match &mode {
+        ConversationDialogMode::Add { initial_fields, .. } => {
+            if let Some(name) = initial_fields.name.clone() {
+                name_input.update(cx, |input, cx| {
+                    input.set_value(name, window, cx);
+                });
+            }
+            if let Some(icon) = initial_fields.icon.clone() {
+                icon_input.update(cx, |input, cx| {
+                    input.set_value(icon, window, cx);
+                });
+            }
+            if let Some(info) = initial_fields.info.clone() {
+                info_input.update(cx, |input, cx| {
+                    input.set_value(info, window, cx);
+                });
+            }
+        }
+        ConversationDialogMode::Edit { conversation_id } => {
+            let chat_data = cx.global::<ChatData>();
+            let Ok(chat_data) = chat_data.read(cx).as_ref() else {
+                event!(
+                    Level::ERROR,
+                    "Failed to read chat data for conversation edit dialog"
+                );
+                return;
+            };
+            let Some(conversation) = chat_data.conversation(*conversation_id) else {
+                event!(
+                    Level::ERROR,
+                    "Conversation {conversation_id} not found in chat data"
+                );
+                return;
+            };
+            let title = conversation.title.clone();
+            let icon = conversation.icon.clone();
+            let info = conversation.info.clone();
+            name_input.update(cx, |input, cx| {
+                input.set_value(title.clone(), window, cx);
             });
+            icon_input.update(cx, |input, cx| {
+                input.set_value(icon.clone(), window, cx);
+            });
+            if let Some(info) = info {
+                info_input.update(cx, |input, cx| {
+                    input.set_value(info, window, cx);
+                });
+            }
         }
     }
 
@@ -139,6 +166,7 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                                                 match mode {
                                                     ConversationDialogMode::Add {
                                                         parent_id,
+                                                        initial_fields: _,
                                                         initial_messages,
                                                     } => cx.emit(ChatDataEvent::AddConversation {
                                                         name,
@@ -178,6 +206,25 @@ pub fn open_add_conversation_dialog(
     open_conversation_dialog(
         ConversationDialogMode::Add {
             parent_id,
+            initial_fields: InitialConversationFields::default(),
+            initial_messages,
+        },
+        window,
+        cx,
+    );
+}
+
+pub fn open_add_conversation_dialog_with_fields(
+    parent_id: Option<i32>,
+    initial_fields: InitialConversationFields,
+    initial_messages: Option<Vec<AddConversationMessage>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_conversation_dialog(
+        ConversationDialogMode::Add {
+            parent_id,
+            initial_fields,
             initial_messages,
         },
         window,

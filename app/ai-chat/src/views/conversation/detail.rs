@@ -36,6 +36,13 @@ pub(crate) trait ConversationDetailViewExt: Sized + 'static {
     fn header_leading(&self, _cx: &App) -> Option<AnyElement> {
         None
     }
+    fn header_actions(
+        _view: &mut ConversationDetailView<Self>,
+        _window: &mut Window,
+        _cx: &mut Context<ConversationDetailView<Self>>,
+    ) -> Vec<AnyElement> {
+        Vec::new()
+    }
     fn key_context(&self) -> Option<&'static str> {
         None
     }
@@ -325,7 +332,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
 }
 
 impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message_revisions = self.detail.message_revisions(cx);
         let alignment = self.detail.message_list_alignment();
         let was_at_end = list_is_at_end(&self.message_list, alignment);
@@ -340,6 +347,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
         let header_leading = self.detail.header_leading(cx);
         let supports_clear = self.detail.supports_clear();
         let supports_save = self.detail.supports_save();
+        let header_actions = T::header_actions(self, window, cx);
         let element_prefix = self.detail.element_prefix();
         let clear_tooltip = cx.global::<I18n>().t("tooltip-clear-conversation");
         let save_tooltip = cx.global::<I18n>().t("tooltip-save-conversation");
@@ -387,7 +395,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                     .justify_between()
                     .child(header_body)
                     .map(|this| {
-                        if !(supports_clear || supports_save) {
+                        if !(supports_clear || supports_save || !header_actions.is_empty()) {
                             return this;
                         }
 
@@ -411,7 +419,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                             };
 
                             if supports_save {
-                                this.child(
+                                let this = this.child(
                                     Button::new(SharedString::from(format!(
                                         "{element_prefix}-save"
                                     )))
@@ -423,9 +431,10 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         T::save(view, window, cx);
                                     })),
-                                )
+                                );
+                                this.children(header_actions)
                             } else {
-                                this
+                                this.children(header_actions)
                             }
                         }))
                     }),

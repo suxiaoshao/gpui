@@ -3,8 +3,10 @@ use crate::{
     components::{
         add_conversation::open_edit_conversation_dialog, delete_confirm::open_delete_confirm_dialog,
     },
+    export::ExportType,
     i18n::I18n,
     state::{ChatData, ChatDataEvent, WorkspaceStore},
+    views::home::{open_copy_conversation_dialog, open_export_conversation_prompt},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -137,6 +139,34 @@ pub(super) fn conversation_popup_menu(
     let title = conversation.title.clone();
     let i18n = cx.global::<I18n>();
     menu.item(
+        PopupMenuItem::new(i18n.t("button-copy-to-new-conversation"))
+            .icon(IconName::Copy)
+            .on_click(move |_, window, cx| {
+                open_copy_conversation_dialog(id, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} JSON", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(id, ExportType::Json, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} CSV", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(id, ExportType::Csv, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} TXT", i18n.t("button-export")))
+            .icon(IconName::File)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(id, ExportType::Txt, window, cx);
+            }),
+    )
+    .item(
         PopupMenuItem::new(i18n.t("button-edit")).on_click(move |_, window, cx| {
             open_edit_conversation_dialog(id, window, cx);
         }),

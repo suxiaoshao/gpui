@@ -2,7 +2,7 @@ use crate::{hotkey::GlobalHotkeyState, views::temporary::detail::TemplateDetailV
 use gpui::*;
 use tracing::{Level, event};
 
-mod detail;
+pub(crate) mod detail;
 
 pub fn init(cx: &mut App) {
     event!(Level::INFO, "Initializing temporary view");

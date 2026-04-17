@@ -27,7 +27,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
 };
 use smol::stream::StreamExt;
-use std::{any::TypeId, rc::Rc};
+use std::rc::Rc;
 use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
@@ -115,9 +115,7 @@ impl MessageViewExt for TemporaryMessage {
     }
 
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
-        let message = find_temporary_view(window, cx).and_then(|temporary_view| {
-            let temporary_view = temporary_view.read(cx);
-            let template_detail = temporary_view.detail.clone();
+        let message = find_temporary_detail(window, cx).and_then(|template_detail| {
             let template_detail = template_detail.read(cx);
             template_detail
                 .detail
@@ -133,25 +131,21 @@ impl MessageViewExt for TemporaryMessage {
     }
 
     fn pause_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let temporary_view = find_temporary_view(window, cx);
-        if let Some(temporary_view) = temporary_view {
-            temporary_view.update(cx, |this, cx| {
-                this.detail.update(cx, |this, cx| {
-                    this.pause_message(message_id, cx);
-                });
+        let template_detail = find_temporary_detail(window, cx);
+        if let Some(template_detail) = template_detail {
+            template_detail.update(cx, |this, cx| {
+                this.pause_message(message_id, cx);
             });
         }
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let temporary_view = find_temporary_view(window, cx);
-        if let Some(temporary_view) = temporary_view {
-            temporary_view.update(cx, |this, cx| {
-                this.detail.update(cx, |this, _cx| {
-                    this.detail
-                        .messages
-                        .retain(|message| message.id != message_id);
-                });
+        let template_detail = find_temporary_detail(window, cx);
+        if let Some(template_detail) = template_detail {
+            template_detail.update(cx, |this, _cx| {
+                this.detail
+                    .messages
+                    .retain(|message| message.id != message_id);
             });
         } else {
             let (title, message) = {
@@ -176,32 +170,21 @@ impl MessageViewExt for TemporaryMessage {
             return false;
         }
         cx.windows()
-            .into_iter()
+            .iter()
             .find_map(|window| {
-                window.downcast::<Root>().filter(|root| {
-                    root.read(cx)
-                        .ok()
-                        .map(|root| root.view().entity_type() == TypeId::of::<TemporaryView>())
-                        .unwrap_or(false)
-                })
+                let root = window.downcast::<Root>()?;
+                let view = root.read(cx).ok()?.view().clone();
+                let temporary_view = view.downcast::<TemporaryView>().ok()?;
+                Some(temporary_view.read(cx).detail.clone())
             })
-            .and_then(|root| {
-                root.read(cx)
-                    .ok()
-                    .and_then(|root| root.view().clone().downcast::<TemporaryView>().ok())
-            })
-            .is_some_and(|temporary_view| {
-                !temporary_view.read(cx).detail.read(cx).has_running_task()
-            })
+            .is_some_and(|detail| !detail.read(cx).has_running_task())
     }
 
     fn resend_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let temporary_view = find_temporary_view(window, cx);
-        if let Some(temporary_view) = temporary_view {
-            temporary_view.update(cx, |this, cx| {
-                this.detail.update(cx, |this, cx| {
-                    this.resend_message(message_id, window, cx);
-                });
+        let template_detail = find_temporary_detail(window, cx);
+        if let Some(template_detail) = template_detail {
+            template_detail.update(cx, |this, cx| {
+                this.resend_message(message_id, window, cx);
             });
         }
     }
@@ -214,19 +197,17 @@ impl MessagePreviewExt for TemporaryMessage {
         window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()> {
-        let temporary_view = find_temporary_view(window, cx);
-        if let Some(temporary_view) = temporary_view {
-            temporary_view.update(cx, |this, cx| {
-                this.detail.update(cx, |this, _cx| {
-                    if let Some(message) = this
-                        .detail
-                        .messages
-                        .iter_mut()
-                        .find(|message| message.id == self.id)
-                    {
-                        message.content = content;
-                    }
-                });
+        let template_detail = find_temporary_detail(window, cx);
+        if let Some(template_detail) = template_detail {
+            template_detail.update(cx, |this, _cx| {
+                if let Some(message) = this
+                    .detail
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == self.id)
+                {
+                    message.content = content;
+                }
             });
         }
         Ok(())
@@ -273,16 +254,27 @@ impl TemporaryMessage {
     }
 }
 
-fn find_temporary_view(window: &mut Window, cx: &App) -> Option<Entity<TemporaryView>> {
+fn find_temporary_detail(window: &Window, cx: &App) -> Option<Entity<TemplateDetailView>> {
     let root = window.root::<Root>()??;
     let root = root.read(cx);
     let view = root.view().downgrade().upgrade()?;
-    view.downcast::<TemporaryView>().ok()
+    if let Ok(temporary_view) = view.clone().downcast::<TemporaryView>() {
+        return Some(temporary_view.read(cx).detail.clone());
+    }
+    None
 }
 
+#[derive(Clone)]
 pub(crate) struct TemporaryDetailState {
     messages: Vec<TemporaryMessage>,
     autoincrement_id: usize,
+}
+
+impl TemporaryDetailState {
+    fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.autoincrement_id = 0;
+    }
 }
 
 struct NewTemporaryMessage {
@@ -331,7 +323,7 @@ impl TemporaryMessageRevision {
 
 impl TemplateDetailView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        ConversationDetailView::new_with_detail(
+        Self::new_with_state(
             TemporaryDetailState {
                 messages: Vec::new(),
                 autoincrement_id: 0,
@@ -339,6 +331,14 @@ impl TemplateDetailView {
             window,
             cx,
         )
+    }
+
+    pub(crate) fn new_with_state(
+        state: TemporaryDetailState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        ConversationDetailView::new_with_detail(state, window, cx)
     }
 }
 
@@ -436,8 +436,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         _window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
-        view.detail.messages.clear();
-        view.detail.autoincrement_id = 0;
+        view.detail.clear_messages();
         cx.notify();
     }
 
@@ -926,7 +925,9 @@ fn build_request_body(
 
 #[cfg(test)]
 mod tests {
-    use super::{TemporaryMessage, build_history_messages, build_request_body};
+    use super::{
+        TemporaryDetailState, TemporaryMessage, build_history_messages, build_request_body,
+    };
     use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
     use std::rc::Rc;
     use time::OffsetDateTime;
@@ -995,5 +996,19 @@ mod tests {
         )?;
         assert_eq!(request_body["model"], serde_json::json!("override-model"));
         Ok(())
+    }
+
+    #[test]
+    fn clear_messages_resets_temporary_state() {
+        let message = make_message(Role::Assistant, Status::Normal, Content::new("hello"));
+        let mut source = TemporaryDetailState {
+            messages: vec![message],
+            autoincrement_id: 1,
+        };
+
+        source.clear_messages();
+
+        assert!(source.messages.is_empty());
+        assert_eq!(source.autoincrement_id, 0);
     }
 }

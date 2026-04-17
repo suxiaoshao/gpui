@@ -4,4 +4,4 @@ mod tree;
 
 pub(crate) use models::{ModelStore, ModelStoreSnapshot, ModelStoreStatus, init_global};
 pub(crate) use runtime::{ChatData, ChatDataEvent, init};
-pub(crate) use tree::{AddConversationMessage, ChatDataInner};
+pub(crate) use tree::{AddConversationMessage, ChatDataInner, ConversationSearchResult};

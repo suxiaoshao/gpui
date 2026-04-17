@@ -1,7 +1,4 @@
 use crate::{
-    components::{
-        add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
-    },
     errors::AiChatResult,
     i18n::I18n,
     state::{ChatData, ChatDataInner, WorkspaceState, WorkspaceStore},
@@ -17,12 +14,12 @@ use gpui_component::{
 use std::ops::Deref;
 use tracing::{Level, event};
 
+use super::{AddConversation, AddFolder, search::OpenConversationSearch};
+
 mod conversation_item;
 mod conversation_tree;
 mod folder_item;
 pub(crate) use conversation_tree::DragConversationTreeItem;
-
-actions!(sidebar_view, [Add, AddShift]);
 
 const CONTEXT: &str = "sidebar_view";
 
@@ -62,12 +59,8 @@ impl SidebarItem for SidebarSection {
     }
 }
 
-pub fn init(cx: &mut App) {
+pub fn init(_cx: &mut App) {
     event!(Level::INFO, "init sidebar_view");
-    cx.bind_keys([
-        KeyBinding::new("secondary-n", Add, None),
-        KeyBinding::new("secondary-shift-n", AddShift, None),
-    ])
 }
 
 pub(crate) struct SidebarView {
@@ -87,13 +80,6 @@ impl SidebarView {
             focus_handle,
         }
     }
-
-    fn add_conversation(&mut self, _: &Add, window: &mut Window, cx: &mut Context<Self>) {
-        open_add_conversation_dialog(None, None, window, cx);
-    }
-    fn add_folder(&mut self, _: &AddShift, window: &mut Window, cx: &mut Context<Self>) {
-        open_add_folder_dialog(None, window, cx);
-    }
 }
 
 impl Render for SidebarView {
@@ -107,6 +93,7 @@ impl Render for SidebarView {
             conversation_tree_title,
             actions_title,
             settings_label,
+            search_label,
             template_list_label,
             add_conversation_label,
             add_folder_label,
@@ -118,6 +105,7 @@ impl Render for SidebarView {
                 i18n.t("sidebar-conversation-tree"),
                 i18n.t("sidebar-actions"),
                 i18n.t("sidebar-settings"),
+                i18n.t("sidebar-search-conversation"),
                 i18n.t("sidebar-template-list"),
                 i18n.t("sidebar-add-conversation"),
                 i18n.t("sidebar-add-folder"),
@@ -127,8 +115,6 @@ impl Render for SidebarView {
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::add_conversation))
-            .on_action(cx.listener(Self::add_folder))
             .size_full()
             .child(
                 Sidebar::new("sidebar")
@@ -176,6 +162,16 @@ impl Render for SidebarView {
                                         })),
                                 )
                                 .child(
+                                    SidebarMenuItem::new(search_label)
+                                        .icon(IconName::Search)
+                                        .on_click(cx.listener(|_this, _event, window, cx| {
+                                            window.dispatch_action(
+                                                OpenConversationSearch.boxed_clone(),
+                                                cx,
+                                            );
+                                        })),
+                                )
+                                .child(
                                     SidebarMenuItem::new(template_list_label)
                                         .icon(IconName::Bot)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
@@ -191,14 +187,15 @@ impl Render for SidebarView {
                                     SidebarMenuItem::new(add_conversation_label.clone())
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
-                                            window.dispatch_action(Add.boxed_clone(), cx);
+                                            window
+                                                .dispatch_action(AddConversation.boxed_clone(), cx);
                                         })),
                                 )
                                 .child(
                                     SidebarMenuItem::new(add_folder_label.clone())
                                         .icon(IconName::Plus)
                                         .on_click(cx.listener(|_this, _evnet, window, cx| {
-                                            window.dispatch_action(AddShift.boxed_clone(), cx);
+                                            window.dispatch_action(AddFolder.boxed_clone(), cx);
                                         })),
                                 ),
                         ),
@@ -209,8 +206,12 @@ impl Render for SidebarView {
                 let add_folder_label = add_folder_label.clone();
                 this.check_side(Side::Left)
                     .external_link_icon(false)
-                    .menu_with_icon(add_conversation_label, IconName::Plus, Box::new(Add))
-                    .menu_with_icon(add_folder_label, IconName::Plus, Box::new(AddShift))
+                    .menu_with_icon(
+                        add_conversation_label,
+                        IconName::Plus,
+                        Box::new(AddConversation),
+                    )
+                    .menu_with_icon(add_folder_label, IconName::Plus, Box::new(AddFolder))
             })
     }
 }
