@@ -368,6 +368,7 @@ impl Render for ConversationSearchView {
                         Input::new(&self.search_input)
                             .w_full()
                             .appearance(false)
+                            .p_0()
                             .bordered(false)
                             .focus_bordered(false)
                             .prefix(
