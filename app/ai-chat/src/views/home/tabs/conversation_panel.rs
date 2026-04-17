@@ -390,6 +390,35 @@ pub(crate) fn open_export_conversation_prompt(
                 }
             };
 
+            let conversation = match cx.read_global::<ChatData, _>(|chat_data, _window, cx| {
+                chat_data
+                    .read(cx)
+                    .as_ref()
+                    .ok()
+                    .and_then(|data| data.conversation(conversation_id))
+                    .cloned()
+            }) {
+                Ok(Some(conversation)) => conversation,
+                Ok(None) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: conversation not found", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+                Err(err) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+
             match export_conversation_to_path(
                 &conversation,
                 export_type,

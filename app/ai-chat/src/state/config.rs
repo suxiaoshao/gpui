@@ -76,6 +76,7 @@ pub(crate) enum Language {
     #[serde(rename = "zh")]
     Chinese,
     #[default]
+    #[serde(other)]
     System,
 }
 
@@ -318,4 +319,34 @@ impl AiChatConfig {
 pub fn init(cx: &mut App) {
     let config = AiChatConfig::get().unwrap_or_default();
     cx.set_global(config);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AiChatConfig, Language};
+
+    #[test]
+    fn unknown_language_deserializes_to_system_without_dropping_settings() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r#"
+language = "ja"
+httpProxy = "http://127.0.0.1:8080"
+
+[providerSettings.OpenAI]
+apiKey = "sk-test"
+"#,
+        )?;
+
+        assert_eq!(config.language(), Language::System);
+        assert_eq!(config.get_http_proxy(), Some("http://127.0.0.1:8080"));
+        assert_eq!(
+            config
+                .get_provider_settings("OpenAI")
+                .and_then(|settings| settings.get("apiKey"))
+                .and_then(toml::Value::as_str),
+            Some("sk-test")
+        );
+
+        Ok(())
+    }
 }

@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use crate::state::{AiChatConfig, Language};
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
@@ -7,11 +10,30 @@ use unic_langid::LanguageIdentifier;
 
 const EN_US: &str = include_str!("../locales/en-US/main.ftl");
 const ZH_CN: &str = include_str!("../locales/zh-CN/main.ftl");
+const LOCALE_UNSET: u8 = u8::MAX;
+static CURRENT_STATIC_LOCALE: AtomicU8 = AtomicU8::new(LOCALE_UNSET);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 enum Locale {
     EnUs,
     ZhCn,
+}
+
+impl Locale {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::EnUs),
+            1 => Some(Self::ZhCn),
+            _ => None,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::EnUs => 0,
+            Self::ZhCn => 1,
+        }
+    }
 }
 
 pub(crate) struct I18n {
@@ -22,15 +44,19 @@ pub(crate) struct I18n {
 impl Global for I18n {}
 
 pub(crate) fn init_i18n(cx: &mut App) {
-    cx.set_global(I18n::from_config(cx));
+    let i18n = I18n::from_config(cx);
+    set_static_locale(i18n.locale);
+    cx.set_global(i18n);
 }
 
 pub(crate) fn refresh_i18n(cx: &mut App) {
-    cx.set_global(I18n::from_config(cx));
+    let i18n = I18n::from_config(cx);
+    set_static_locale(i18n.locale);
+    cx.set_global(i18n);
 }
 
 pub(crate) fn t_static(key: &str) -> String {
-    I18n::new(detect_locale()).t(key)
+    I18n::new(static_locale()).t(key)
 }
 
 impl I18n {
@@ -107,6 +133,14 @@ fn locale_for_language(language: Language) -> Locale {
     }
 }
 
+fn set_static_locale(locale: Locale) {
+    CURRENT_STATIC_LOCALE.store(locale.as_u8(), Ordering::Relaxed);
+}
+
+fn static_locale() -> Locale {
+    Locale::from_u8(CURRENT_STATIC_LOCALE.load(Ordering::Relaxed)).unwrap_or_else(detect_locale)
+}
+
 fn detect_locale() -> Locale {
     let locale = sys_locale::get_locale()
         .or_else(|| read_env_locale("LC_ALL"))
@@ -149,4 +183,22 @@ fn build_bundle(lang: &str, source: &str) -> FluentBundle<FluentResource> {
         .add_resource(resource)
         .expect("resource can be added");
     bundle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{I18n, locale_for_language};
+    use crate::state::Language;
+
+    #[test]
+    fn explicit_language_selects_expected_locale() {
+        assert_eq!(
+            I18n::new(locale_for_language(Language::Chinese)).t("language-system"),
+            "跟随系统"
+        );
+        assert_eq!(
+            I18n::new(locale_for_language(Language::English)).t("language-system"),
+            "System"
+        );
+    }
 }
