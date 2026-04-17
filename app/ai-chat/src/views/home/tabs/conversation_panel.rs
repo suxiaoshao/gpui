@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::{
         add_conversation::{InitialConversationFields, open_add_conversation_dialog_with_fields},
         chat_form::ChatFormSnapshot,
@@ -21,7 +22,7 @@ use gpui::{
     Window,
 };
 use gpui_component::{
-    Disableable, IconName, Sizable, WindowExt,
+    Disableable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     notification::{Notification, NotificationType},
@@ -153,7 +154,7 @@ impl ConversationDetailViewExt for ConversationPanelState {
                 })
                 .into_any_element(),
             Button::new(SharedString::from(format!("{element_prefix}-export")))
-                .icon(IconName::File)
+                .icon(IconName::Share)
                 .ghost()
                 .small()
                 .disabled(view.has_running_task())
@@ -315,21 +316,21 @@ pub(crate) fn conversation_export_menu(
     let i18n = cx.global::<I18n>();
     menu.item(
         PopupMenuItem::new(format!("{} JSON", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(conversation_id, ExportType::Json, window, cx);
             }),
     )
     .item(
         PopupMenuItem::new(format!("{} CSV", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(conversation_id, ExportType::Csv, window, cx);
             }),
     )
     .item(
         PopupMenuItem::new(format!("{} TXT", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(conversation_id, ExportType::Txt, window, cx);
             }),

@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::template_edit_dialog::open_add_template_dialog,
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
@@ -7,7 +8,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable,
+    ActiveTheme, Icon, IndexPath, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
@@ -390,6 +391,7 @@ impl Render for TemplateListView {
             let i18n = cx.global::<I18n>();
             (i18n.t("button-add"), i18n.t("notify-load-templates-failed"))
         };
+        let reload_label = cx.global::<I18n>().t("button-reload");
         v_flex()
             .key_context(CONTEXT)
             .size_full()
@@ -414,8 +416,18 @@ impl Render for TemplateListView {
                             .cleanable(true),
                     )
                     .child(
+                        Button::new("template-reload")
+                            .icon(IconName::RefreshCcw)
+                            .ghost()
+                            .tooltip(reload_label)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.reload_templates(window, cx);
+                            })),
+                    )
+                    .child(
                         Button::new("template-add")
                             .primary()
+                            .icon(IconName::Plus)
                             .label(add_label)
                             .on_click(cx.listener(|_view, _, window, cx| {
                                 window.dispatch_action(Add.boxed_clone(), cx);

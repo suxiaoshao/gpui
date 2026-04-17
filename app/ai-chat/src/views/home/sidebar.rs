@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     errors::AiChatResult,
     i18n::I18n,
     state::{ChatData, ChatDataInner, WorkspaceState, WorkspaceStore},
@@ -6,7 +7,7 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    Collapsible, IconName, Side,
+    Collapsible, Side,
     menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarItem, SidebarMenu, SidebarMenuItem},
     v_flex,
@@ -173,7 +174,7 @@ impl Render for SidebarView {
                                 )
                                 .child(
                                     SidebarMenuItem::new(template_list_label)
-                                        .icon(IconName::Bot)
+                                        .icon(IconName::LayoutTemplate)
                                         .on_click(cx.listener(|_this, _event, window, cx| {
                                             cx.global::<WorkspaceStore>().deref().clone().update(
                                                 cx,

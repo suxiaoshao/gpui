@@ -1,10 +1,11 @@
 use crate::{
+    assets::IconName,
     database::{Content, Role, Status},
     i18n::I18n,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Icon, Sizable, WindowExt,
     alert::Alert,
     avatar::Avatar,
     badge::Badge,
@@ -194,7 +195,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
             .map(|action| match action {
                 MessageAction::Resend => {
                     Button::new(SharedString::from(format!("resend-{button_id}")))
-                        .icon(IconName::Redo2)
+                        .icon(IconName::RefreshCcw)
                         .ghost()
                         .small()
                         .on_click(move |_, window, cx| {
@@ -243,7 +244,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     .into_any_element(),
                 MessageAction::Delete => {
                     Button::new(SharedString::from(format!("delete-{button_id}")))
-                        .icon(IconName::Delete)
+                        .icon(IconName::Trash)
                         .ghost()
                         .small()
                         .on_click(move |_, window, cx| {
@@ -397,7 +398,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                                 "pause-{}",
                                                 button_id
                                             )))
-                                            .icon(IconName::Close)
+                                            .icon(IconName::X)
                                             .ghost()
                                             .small()
                                             .tooltip(pause_tooltip.clone())

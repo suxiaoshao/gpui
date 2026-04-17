@@ -1,10 +1,11 @@
 use crate::{
+    assets::IconName,
     i18n::I18n,
     state::{ChatData, ConversationSearchResult, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, WindowExt, h_flex,
+    ActiveTheme, Icon, IndexPath, Selectable, Sizable, WindowExt, h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
     label::Label,
     list::{List, ListDelegate, ListState},

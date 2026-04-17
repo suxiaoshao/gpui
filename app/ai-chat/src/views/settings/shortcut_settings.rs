@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::{
         delete_confirm::open_delete_confirm_dialog,
         hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
@@ -17,7 +18,7 @@ use crate::{
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IconName, IndexPath, Sizable, WindowExt,
+    ActiveTheme, IndexPath, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -1275,6 +1276,11 @@ impl ShortcutSettingsPage {
                         Button::new(("shortcut-save", row.key))
                             .small()
                             .primary()
+                            .icon(if is_new {
+                                IconName::Upload
+                            } else {
+                                IconName::Save
+                            })
                             .label(cx.global::<I18n>().t(if is_new {
                                 "button-create"
                             } else {
@@ -1288,6 +1294,11 @@ impl ShortcutSettingsPage {
                         Button::new(("shortcut-reset", row.key))
                             .small()
                             .danger()
+                            .icon(if is_new {
+                                IconName::X
+                            } else {
+                                IconName::RefreshCcw
+                            })
                             .label(cx.global::<I18n>().t(if is_new {
                                 "button-cancel"
                             } else {
@@ -1302,7 +1313,7 @@ impl ShortcutSettingsPage {
                             Button::new(("shortcut-delete", row.key))
                                 .small()
                                 .danger()
-                                .icon(IconName::Delete)
+                                .icon(IconName::Trash)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_delete_row(row_key, window, cx);
                                 })),

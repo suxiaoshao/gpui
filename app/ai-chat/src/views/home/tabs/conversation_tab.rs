@@ -1,6 +1,8 @@
-use crate::{state::WorkspaceStore, views::home::sidebar::DragConversationTreeItem};
+use crate::{
+    assets::IconName, state::WorkspaceStore, views::home::sidebar::DragConversationTreeItem,
+};
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
+use gpui_component::{ActiveTheme, Icon, h_flex, label::Label};
 use std::ops::Deref;
 
 #[derive(Clone)]
@@ -65,7 +67,7 @@ impl RenderOnce for ConversationTabView {
             .child(
                 div()
                     .id(self.id)
-                    .child(Icon::new(IconName::Close).size_3())
+                    .child(Icon::new(IconName::X).size_3())
                     .absolute()
                     .top(px(6.))
                     .right_1()

@@ -1,5 +1,6 @@
 use super::conversation_tree::{DragConversationTreeItem, SidebarConversationNode};
 use crate::{
+    assets::IconName,
     components::{
         add_conversation::open_edit_conversation_dialog, delete_confirm::open_delete_confirm_dialog,
     },
@@ -10,7 +11,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable,
+    ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -147,33 +148,35 @@ pub(super) fn conversation_popup_menu(
     )
     .item(
         PopupMenuItem::new(format!("{} JSON", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(id, ExportType::Json, window, cx);
             }),
     )
     .item(
         PopupMenuItem::new(format!("{} CSV", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(id, ExportType::Csv, window, cx);
             }),
     )
     .item(
         PopupMenuItem::new(format!("{} TXT", i18n.t("button-export")))
-            .icon(IconName::File)
+            .icon(IconName::Share)
             .on_click(move |_, window, cx| {
                 open_export_conversation_prompt(id, ExportType::Txt, window, cx);
             }),
     )
     .item(
-        PopupMenuItem::new(i18n.t("button-edit")).on_click(move |_, window, cx| {
-            open_edit_conversation_dialog(id, window, cx);
-        }),
+        PopupMenuItem::new(i18n.t("button-edit"))
+            .icon(IconName::Edit)
+            .on_click(move |_, window, cx| {
+                open_edit_conversation_dialog(id, window, cx);
+            }),
     )
     .item(
         PopupMenuItem::new("Delete")
-            .icon(IconName::Delete)
+            .icon(IconName::Trash)
             .on_click(move |_, window, cx| {
                 let chat_data = cx.global::<ChatData>().deref().clone();
                 open_delete_confirm_dialog(

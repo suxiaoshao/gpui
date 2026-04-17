@@ -5,6 +5,7 @@ use super::conversation_tree::{
     target_for_conversation_group, target_for_folder,
 };
 use crate::{
+    assets::IconName,
     components::{
         add_conversation::open_add_conversation_dialog,
         add_folder::{open_add_folder_dialog, open_edit_folder_dialog},
@@ -15,7 +16,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
@@ -124,7 +125,14 @@ impl RenderOnce for FolderTreeItem {
                                 );
                             }),
                     )
-                    .child(Icon::new(IconName::Folder).size_4())
+                    .child(
+                        Icon::new(if is_open {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::FolderClosed
+                        })
+                        .size_4(),
+                    )
                     .when(!self.collapsed, |this| {
                         this.child(
                             h_flex()
@@ -274,9 +282,11 @@ pub(super) fn folder_popup_menu(
     let name = folder.name.clone();
     let i18n = cx.global::<I18n>();
     menu.item(
-        PopupMenuItem::new(i18n.t("button-edit")).on_click(move |_, window, cx| {
-            open_edit_folder_dialog(id, window, cx);
-        }),
+        PopupMenuItem::new(i18n.t("button-edit"))
+            .icon(IconName::Edit)
+            .on_click(move |_, window, cx| {
+                open_edit_folder_dialog(id, window, cx);
+            }),
     )
     .item(
         PopupMenuItem::new("Add Conversation")
@@ -295,7 +305,7 @@ pub(super) fn folder_popup_menu(
     .item(PopupMenuItem::separator())
     .item(
         PopupMenuItem::new("Delete")
-            .icon(IconName::Delete)
+            .icon(IconName::Trash)
             .on_click(move |_, window, cx| {
                 let chat_data = cx.global::<ChatData>().deref().clone();
                 open_delete_confirm_dialog(

@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::template_edit_dialog::open_template_edit_dialog,
     database::{ConversationTemplate, Db, Role},
     errors::AiChatResult,
@@ -47,6 +48,11 @@ impl TemplateDetailView {
 
 // Opens template editing flows and applies local updates.
 impl TemplateDetailView {
+    fn reload_template(&mut self, cx: &mut Context<Self>) {
+        self.template = Self::get_template(self.template_id, cx);
+        cx.notify();
+    }
+
     fn open_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let load_template_failed = cx.global::<I18n>().t("notify-load-template-failed");
         let template = match &self.template {
@@ -183,6 +189,7 @@ impl Render for TemplateDetailView {
                 i18n.t("notify-load-template-failed"),
             )
         };
+        let reload_label = cx.global::<I18n>().t("button-reload");
         v_flex()
             .size_full()
             .child(
@@ -195,8 +202,18 @@ impl Render for TemplateDetailView {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
+                        Button::new("template-refresh")
+                            .icon(IconName::RefreshCcw)
+                            .ghost()
+                            .tooltip(reload_label)
+                            .on_click(cx.listener(|view, _, _window, cx| {
+                                view.reload_template(cx);
+                            })),
+                    )
+                    .child(
                         Button::new("template-edit")
                             .primary()
+                            .icon(IconName::Edit)
                             .label(edit_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_edit_dialog(window, cx);
@@ -205,6 +222,7 @@ impl Render for TemplateDetailView {
                     .child(
                         Button::new("template-delete")
                             .danger()
+                            .icon(IconName::Trash)
                             .label(delete_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_delete_dialog(window, cx);

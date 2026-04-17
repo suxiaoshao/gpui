@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::message::MessageViewExt,
     database::{Content, Conversation, Db, Message, Role},
     errors::{AiChatError, AiChatResult},
@@ -8,7 +9,7 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    IconName, Root, WindowExt,
+    Root, WindowExt,
     button::{Button, Toggle, ToggleGroup, ToggleVariants},
     description_list::{DescriptionItem, DescriptionList},
     input::{Input, InputState},
@@ -378,8 +379,18 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             .child(
                 ToggleGroup::new("message-preview-mode")
                     .outline()
-                    .child(Toggle::new("preview").label("Preview").checked(self.preview_type.preview_checked()))
-                    .child(Toggle::new("edit").label("Edit").checked(self.preview_type.edit_checked()))
+                    .child(
+                        Toggle::new("preview")
+                            .icon(IconName::Eye)
+                            .label("Preview")
+                            .checked(self.preview_type.preview_checked()),
+                    )
+                    .child(
+                        Toggle::new("edit")
+                            .icon(IconName::Edit)
+                            .label("Edit")
+                            .checked(self.preview_type.edit_checked()),
+                    )
                     .on_click(cx.listener(|view, checkeds: &Vec<bool>, _, _cx| {
                         match (checkeds.first(), checkeds.get(1), &view.preview_type) {
                             (Some(true), _, PreviewType::Edit)
@@ -397,7 +408,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             .when(matches!(self.preview_type, PreviewType::Edit), |this| {
                 this.child(
                     Button::new("message-preview-submit")
-                        .icon(IconName::ArrowUp)
+                        .icon(IconName::Upload)
                         .on_click({
                             let update_success_title = update_success_title.clone();
                             let update_failed_title = update_failed_title.clone();

@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     i18n::I18n,
     state::{AddConversationMessage, ChatData, ChatDataEvent},
 };
@@ -58,6 +59,11 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                 i18n.t("button-submit"),
             )
         }
+    };
+    let submit_icon = if is_edit {
+        IconName::Save
+    } else {
+        IconName::Upload
     };
 
     let name_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
@@ -147,6 +153,7 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                         DialogAction::new().child(
                             Button::new("ok")
                                 .primary()
+                                .icon(submit_icon)
                                 .label(submit_label.clone())
                                 .on_click({
                                     let name_input = name_input.clone();

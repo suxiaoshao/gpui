@@ -5,6 +5,7 @@ mod picker;
 mod template_picker;
 
 use crate::{
+    assets::IconName,
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::AiChatResult,
     i18n::I18n,
@@ -14,7 +15,7 @@ use crate::{
 use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState, Position},
@@ -493,7 +494,7 @@ impl Render for ChatForm {
                     .child(div().flex_1())
                     .child(h_flex().items_center().gap_1().child(if self.running {
                         Button::new("pause")
-                            .icon(IconName::Close)
+                            .icon(IconName::X)
                             .small()
                             .tooltip(pause_tooltip)
                             .on_click(cx.listener(|_form, _event, _window, cx| {
@@ -502,7 +503,7 @@ impl Render for ChatForm {
                             .into_any_element()
                     } else {
                         Button::new("send")
-                            .icon(IconName::ArrowUp)
+                            .icon(IconName::Send)
                             .small()
                             .disabled(!self.can_send(cx))
                             .tooltip(send_tooltip)
