@@ -4,6 +4,7 @@ use crate::{
     i18n::{self, I18n},
     llm::provider_setting_groups,
     state::{AiChatConfig, Language, ThemeMode},
+    tray,
 };
 use gpui::*;
 use gpui_component::{
@@ -195,6 +196,7 @@ impl Render for SettingsView {
                             }
                             i18n::refresh_i18n(cx);
                             cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+                            tray::refresh(cx);
                             cx.refresh_windows();
                         },
                     ),

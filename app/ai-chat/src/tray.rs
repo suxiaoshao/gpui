@@ -62,8 +62,10 @@ impl TrayStrings {
 
 pub(crate) struct TrayState {
     _event_task: Task<()>,
+    #[cfg(target_os = "linux")]
+    tray_update: smol::channel::Sender<TrayStrings>,
     #[cfg(not(target_os = "linux"))]
-    _tray_icon: TrayIcon,
+    tray_icon: TrayIcon,
 }
 
 impl Global for TrayState {}
@@ -104,9 +106,11 @@ pub(crate) fn init(cx: &mut App) {
 
     #[cfg(target_os = "linux")]
     {
-        spawn_linux_tray(strings);
+        let (tray_update, tray_updates) = smol::channel::unbounded();
+        spawn_linux_tray(strings, tray_updates);
         cx.set_global(TrayState {
             _event_task: event_task,
+            tray_update,
         });
     }
 
@@ -116,13 +120,34 @@ pub(crate) fn init(cx: &mut App) {
             Ok(tray_icon) => {
                 cx.set_global(TrayState {
                     _event_task: event_task,
-                    _tray_icon: tray_icon,
+                    tray_icon,
                 });
             }
             Err(err) => {
                 event!(Level::ERROR, error = ?err, "Failed to initialize tray");
             }
         }
+    }
+}
+
+pub(crate) fn refresh(cx: &mut App) {
+    if !cx.has_global::<TrayState>() {
+        return;
+    }
+
+    let strings = TrayStrings::new(cx.global::<I18n>());
+
+    #[cfg(target_os = "linux")]
+    {
+        let tray_update = cx.global::<TrayState>().tray_update.clone();
+        if let Err(err) = tray_update.try_send(strings) {
+            event!(Level::ERROR, error = ?err, "Failed to refresh tray");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        update_tray_icon(&cx.global::<TrayState>().tray_icon, &strings);
     }
 }
 
@@ -180,7 +205,7 @@ fn build_tray_icon(strings: &TrayStrings) -> anyhow::Result<TrayIcon> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_linux_tray(strings: TrayStrings) {
+fn spawn_linux_tray(strings: TrayStrings, tray_updates: smol::channel::Receiver<TrayStrings>) {
     let _ = std::thread::Builder::new()
         .name("ai-chat-tray".into())
         .spawn(move || {
@@ -214,12 +239,30 @@ fn spawn_linux_tray(strings: TrayStrings) {
                 .build();
 
             match tray_icon {
-                Ok(_tray_icon) => gtk::main(),
+                Ok(tray_icon) => {
+                    gtk::glib::MainContext::default().spawn_local(async move {
+                        while let Ok(strings) = tray_updates.recv().await {
+                            update_tray_icon(&tray_icon, &strings);
+                        }
+                    });
+                    gtk::main();
+                }
                 Err(err) => {
                     event!(Level::ERROR, error = ?err, "Failed to build tray");
                 }
             }
         });
+}
+
+fn update_tray_icon(tray_icon: &TrayIcon, strings: &TrayStrings) {
+    match build_menu(strings) {
+        Ok(menu) => tray_icon.set_menu(Some(Box::new(menu))),
+        Err(err) => event!(Level::ERROR, error = ?err, "Failed to refresh tray menu"),
+    }
+
+    if let Err(err) = tray_icon.set_tooltip(Some(strings.tooltip.clone())) {
+        event!(Level::ERROR, error = ?err, "Failed to refresh tray tooltip");
+    }
 }
 
 fn build_menu(strings: &TrayStrings) -> anyhow::Result<Menu> {
@@ -276,5 +319,16 @@ mod tests {
         assert_eq!(tray_menu_action(MENU_ABOUT), Some(TrayMenuAction::About));
         assert_eq!(tray_menu_action(MENU_QUIT), Some(TrayMenuAction::Quit));
         assert_eq!(tray_menu_action("unknown"), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn tray_strings_follow_i18n_locale() {
+        let strings = TrayStrings::new(&I18n::for_locale_tag("zh-CN"));
+
+        assert_eq!(strings.open_main, "打开 AI 对话");
+        assert_eq!(strings.open_temporary, "打开临时对话");
+        assert_eq!(strings.about, "关于 AI 对话");
+        assert_eq!(strings.quit, "退出 AI 对话");
+        assert_eq!(strings.tooltip, "AI 对话");
     }
 }
