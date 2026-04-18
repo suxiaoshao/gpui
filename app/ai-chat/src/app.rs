@@ -97,6 +97,7 @@ fn init(cx: &mut App) {
         Some("Input"),
     )]);
 
+    state::theme::init(cx);
     state::config::init(cx);
     i18n::init_i18n(cx);
     app_menus::init(cx);

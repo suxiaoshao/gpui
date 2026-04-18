@@ -12,10 +12,11 @@ use crate::{
     llm::{
         OllamaProvider, OllamaSettings, OpenAIProvider, OpenAISettings, Provider, provider_names,
     },
+    state::theme as app_theme,
 };
 use gpui::*;
-use gpui_component::{ThemeConfig, ThemeRegistry};
-use serde::{Deserialize, Serialize};
+use gpui_component::{ThemeConfig, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, fmt::Display, io::ErrorKind, path::PathBuf, rc::Rc};
 use toml::Value;
 use tracing::{Level, event};
@@ -42,29 +43,108 @@ impl Display for ThemeMode {
     }
 }
 
-impl ThemeMode {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "dark" => ThemeMode::Dark,
-            "light" => ThemeMode::Light,
-            "system" => ThemeMode::System,
-            _ => ThemeMode::System,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ThemeOption {
+    #[serde(default = "Default::default")]
     theme: ThemeMode,
-    color: String,
+    #[serde(rename = "lightTheme")]
+    light_theme: String,
+    #[serde(rename = "darkTheme")]
+    dark_theme: String,
+    #[serde(rename = "customThemeColors")]
+    custom_theme_colors: Vec<String>,
 }
 
 impl Default for ThemeOption {
     fn default() -> Self {
         Self {
             theme: Default::default(),
-            color: "#3271ae".to_string(),
+            light_theme: app_theme::DEFAULT_LIGHT_THEME_ID.to_string(),
+            dark_theme: app_theme::DEFAULT_DARK_THEME_ID.to_string(),
+            custom_theme_colors: vec![app_theme::DEFAULT_CUSTOM_THEME_COLOR.to_string()],
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeOption {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct RawThemeOption {
+            theme: ThemeMode,
+            #[serde(rename = "lightTheme")]
+            light_theme: Option<String>,
+            #[serde(rename = "darkTheme")]
+            dark_theme: Option<String>,
+            #[serde(rename = "customThemeColors")]
+            custom_theme_colors: Option<Vec<String>>,
+            #[serde(rename = "customColor", alias = "color")]
+            custom_color: Option<String>,
+        }
+
+        impl Default for RawThemeOption {
+            fn default() -> Self {
+                Self {
+                    theme: ThemeMode::System,
+                    light_theme: None,
+                    dark_theme: None,
+                    custom_theme_colors: None,
+                    custom_color: None,
+                }
+            }
+        }
+
+        let raw = RawThemeOption::deserialize(deserializer)?;
+        let custom_theme_colors_missing = raw.custom_theme_colors.is_none();
+        let mut custom_theme_colors =
+            normalize_custom_theme_colors(raw.custom_theme_colors.unwrap_or_default().into_iter());
+        if let Some(color) = raw.custom_color
+            && let Some(color) = app_theme::normalize_hex_color(&color)
+        {
+            append_custom_theme_color(&mut custom_theme_colors, color);
+        }
+
+        let light_theme = raw
+            .light_theme
+            .map(|theme| app_theme::normalize_theme_id(&theme))
+            .unwrap_or_else(|| app_theme::DEFAULT_LIGHT_THEME_ID.to_string());
+        let dark_theme = raw
+            .dark_theme
+            .map(|theme| app_theme::normalize_theme_id(&theme))
+            .unwrap_or_else(|| app_theme::DEFAULT_DARK_THEME_ID.to_string());
+        for theme_id in [&light_theme, &dark_theme] {
+            if let Some(color) = app_theme::material_you_color_from_id(theme_id) {
+                append_custom_theme_color(&mut custom_theme_colors, color);
+            }
+        }
+        if custom_theme_colors.is_empty() && custom_theme_colors_missing {
+            custom_theme_colors.push(app_theme::DEFAULT_CUSTOM_THEME_COLOR.to_string());
+        }
+
+        Ok(Self {
+            theme: raw.theme,
+            light_theme,
+            dark_theme,
+            custom_theme_colors,
+        })
+    }
+}
+
+fn normalize_custom_theme_colors(colors: impl Iterator<Item = String>) -> Vec<String> {
+    colors
+        .filter_map(|color| app_theme::normalize_hex_color(&color))
+        .fold(Vec::new(), |mut colors, color| {
+            append_custom_theme_color(&mut colors, color);
+            colors
+        })
+}
+
+fn append_custom_theme_color(colors: &mut Vec<String>, color: String) {
+    if !colors.contains(&color) {
+        colors.push(color);
     }
 }
 
@@ -251,21 +331,46 @@ impl AiChatConfig {
         theme_registry: &ThemeRegistry,
         window: &mut Window,
     ) -> Rc<ThemeConfig> {
-        let appearance = window.appearance();
-        let theme = match (appearance, self.theme.theme) {
-            (_, ThemeMode::Light)
-            | (WindowAppearance::Light | WindowAppearance::VibrantLight, ThemeMode::System) => {
-                theme_registry.default_light_theme()
-            }
-            (_, ThemeMode::Dark)
-            | (WindowAppearance::Dark | WindowAppearance::VibrantDark, ThemeMode::System) => {
-                theme_registry.default_dark_theme()
-            }
-        };
-        Rc::clone(theme)
+        let mode = self.resolved_component_theme_mode(window.appearance());
+        app_theme::resolve_theme_config(
+            theme_registry,
+            mode,
+            self.theme_id_for_component_mode(mode),
+            &self.theme.custom_theme_colors,
+        )
     }
     pub(crate) fn theme_mode(&self) -> ThemeMode {
         self.theme.theme
+    }
+    pub(crate) fn resolved_component_theme_mode(
+        &self,
+        appearance: WindowAppearance,
+    ) -> ComponentThemeMode {
+        match (appearance, self.theme.theme) {
+            (_, ThemeMode::Light)
+            | (WindowAppearance::Light | WindowAppearance::VibrantLight, ThemeMode::System) => {
+                ComponentThemeMode::Light
+            }
+            (_, ThemeMode::Dark)
+            | (WindowAppearance::Dark | WindowAppearance::VibrantDark, ThemeMode::System) => {
+                ComponentThemeMode::Dark
+            }
+        }
+    }
+    pub(crate) fn theme_id_for_component_mode(&self, mode: ComponentThemeMode) -> &str {
+        match mode {
+            ComponentThemeMode::Light => &self.theme.light_theme,
+            ComponentThemeMode::Dark => &self.theme.dark_theme,
+        }
+    }
+    pub(crate) fn light_theme_id(&self) -> &str {
+        &self.theme.light_theme
+    }
+    pub(crate) fn dark_theme_id(&self) -> &str {
+        &self.theme.dark_theme
+    }
+    pub(crate) fn custom_theme_colors(&self) -> &[String] {
+        &self.theme.custom_theme_colors
     }
     pub(crate) fn language(&self) -> Language {
         self.language
@@ -286,6 +391,86 @@ impl AiChatConfig {
             Err(err) => {
                 event!(Level::ERROR, "Failed to save theme mode: {}", err);
             }
+        }
+    }
+    pub(crate) fn set_light_theme_id(&mut self, theme_id: impl Into<String>) {
+        let theme_id = app_theme::normalize_theme_id(&theme_id.into());
+        self.add_custom_color_from_theme_id(&theme_id);
+        self.theme.light_theme = theme_id;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save light theme: {}", err);
+            }
+        }
+    }
+    pub(crate) fn set_dark_theme_id(&mut self, theme_id: impl Into<String>) {
+        let theme_id = app_theme::normalize_theme_id(&theme_id.into());
+        self.add_custom_color_from_theme_id(&theme_id);
+        self.theme.dark_theme = theme_id;
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save dark theme: {}", err);
+            }
+        }
+    }
+    pub(crate) fn add_custom_theme_color(&mut self, color: &str) -> Option<String> {
+        let color = app_theme::normalize_hex_color(color)?;
+        if !self.theme.custom_theme_colors.contains(&color) {
+            self.theme.custom_theme_colors.push(color.clone());
+        }
+        match self.save() {
+            Ok(_) => {}
+            Err(err) => {
+                event!(Level::ERROR, "Failed to save custom theme color: {}", err);
+            }
+        }
+        app_theme::material_you_theme_id(&color)
+    }
+    pub(crate) fn delete_custom_theme_color(&mut self, theme_id_or_color: &str) -> bool {
+        let changed = self.remove_custom_theme_color(theme_id_or_color);
+        if changed {
+            match self.save() {
+                Ok(_) => {}
+                Err(err) => {
+                    event!(Level::ERROR, "Failed to save custom theme colors: {}", err);
+                }
+            }
+        }
+        changed
+    }
+    fn remove_custom_theme_color(&mut self, theme_id_or_color: &str) -> bool {
+        let Some(color) = app_theme::material_you_color_from_id(theme_id_or_color)
+            .or_else(|| app_theme::normalize_hex_color(theme_id_or_color))
+        else {
+            return false;
+        };
+        let before_len = self.theme.custom_theme_colors.len();
+        self.theme
+            .custom_theme_colors
+            .retain(|existing| existing != &color);
+        if self.theme.custom_theme_colors.len() == before_len {
+            return false;
+        }
+
+        let Some(theme_id) = app_theme::material_you_theme_id(&color) else {
+            return false;
+        };
+        if self.theme.light_theme == theme_id {
+            self.theme.light_theme = app_theme::DEFAULT_LIGHT_THEME_ID.to_string();
+        }
+        if self.theme.dark_theme == theme_id {
+            self.theme.dark_theme = app_theme::DEFAULT_DARK_THEME_ID.to_string();
+        }
+        true
+    }
+    fn add_custom_color_from_theme_id(&mut self, theme_id: &str) {
+        let Some(color) = app_theme::material_you_color_from_id(theme_id) else {
+            return;
+        };
+        if !self.theme.custom_theme_colors.contains(&color) {
+            self.theme.custom_theme_colors.push(color);
         }
     }
     pub(crate) fn set_http_proxy(&mut self, proxy: Option<String>) {
@@ -323,7 +508,10 @@ pub fn init(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{AiChatConfig, Language};
+    use super::{AiChatConfig, Language, ThemeMode};
+    use crate::state::theme;
+    use gpui::WindowAppearance;
+    use gpui_component::ThemeMode as ComponentThemeMode;
 
     #[test]
     fn unknown_language_deserializes_to_system_without_dropping_settings() -> anyhow::Result<()> {
@@ -348,5 +536,202 @@ apiKey = "sk-test"
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn legacy_theme_color_deserializes_to_custom_theme_color() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "dark"
+color = "#123456"
+"##,
+        )?;
+
+        assert_eq!(config.theme_mode(), ThemeMode::Dark);
+        assert_eq!(config.custom_theme_colors(), &["#123456".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
+    fn missing_theme_names_default_to_gpui_component_defaults() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+theme = "system"
+"#,
+        )?;
+
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+        assert_eq!(
+            config.custom_theme_colors(),
+            &[theme::DEFAULT_CUSTOM_THEME_COLOR.to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_empty_custom_theme_colors_stays_empty() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+customThemeColors = []
+"#,
+        )?;
+
+        assert!(config.custom_theme_colors().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn theme_selection_serializes_to_toml() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "Ayu Light"
+darkTheme = "material-you:#123456"
+customThemeColors = ["#123456"]
+"##,
+        )?;
+
+        let toml = toml::to_string(&config)?;
+
+        assert!(toml.contains("lightTheme = \"preset:Ayu Light\""));
+        assert!(toml.contains("darkTheme = \"material-you:#123456\""));
+        assert!(toml.contains("\"#123456\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn selected_material_themes_deserialize_into_custom_theme_colors() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#aabbcc"
+darkTheme = "material-you:#00aa00"
+"##,
+        )?;
+
+        assert_eq!(config.light_theme_id(), "material-you:#AABBCC");
+        assert_eq!(config.dark_theme_id(), "material-you:#00AA00");
+        assert_eq!(
+            config.custom_theme_colors(),
+            &["#AABBCC".to_string(), "#00AA00".to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_custom_theme_color_removes_unselected_material_theme() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "preset:Default Light"
+darkTheme = "preset:Default Dark"
+customThemeColors = ["#111111", "#222222"]
+"##,
+        )?;
+
+        assert!(config.remove_custom_theme_color("#111111"));
+        assert!(!config.remove_custom_theme_color("#111111"));
+        assert_eq!(config.custom_theme_colors(), &["#222222".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_custom_theme_color_resets_selected_material_themes() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#123456"
+darkTheme = "material-you:#123456"
+customThemeColors = ["#123456", "#654321"]
+"##,
+        )?;
+
+        assert!(config.remove_custom_theme_color("material-you:#123456"));
+        assert_eq!(config.custom_theme_colors(), &["#654321".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_custom_theme_color_resets_canonicalized_material_theme_ids() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#aabbcc"
+darkTheme = "material-you:aabbcc"
+customThemeColors = ["#aabbcc", "#654321"]
+"##,
+        )?;
+
+        assert_eq!(config.light_theme_id(), "material-you:#AABBCC");
+        assert_eq!(config.dark_theme_id(), "material-you:#AABBCC");
+
+        assert!(config.remove_custom_theme_color("material-you:#aabbcc"));
+        assert_eq!(config.custom_theme_colors(), &["#654321".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
+    fn configured_mode_resolves_current_component_mode() {
+        let light_config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+theme = "light"
+"#,
+        )
+        .expect("valid light config");
+        let dark_config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+theme = "dark"
+"#,
+        )
+        .expect("valid dark config");
+        let system_config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+theme = "system"
+"#,
+        )
+        .expect("valid system config");
+
+        assert_eq!(
+            light_config.resolved_component_theme_mode(WindowAppearance::Dark),
+            ComponentThemeMode::Light
+        );
+
+        assert_eq!(
+            dark_config.resolved_component_theme_mode(WindowAppearance::Light),
+            ComponentThemeMode::Dark
+        );
+
+        assert_eq!(
+            system_config.resolved_component_theme_mode(WindowAppearance::VibrantDark),
+            ComponentThemeMode::Dark
+        );
     }
 }

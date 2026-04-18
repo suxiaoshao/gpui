@@ -1,5 +1,6 @@
 pub(crate) mod chat;
 pub(crate) mod config;
+pub(crate) mod theme;
 pub(crate) mod workspace;
 
 pub(crate) use chat::{

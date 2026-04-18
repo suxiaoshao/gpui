@@ -313,6 +313,13 @@ impl WorkspaceState {
         self.active_tab.map(TabKind::key)
     }
 
+    pub(crate) fn active_tab_title(&self) -> Option<SharedString> {
+        self.tabs
+            .iter()
+            .find(|tab| Some(tab.kind) == self.active_tab)
+            .map(|tab| tab.name.clone())
+    }
+
     pub(crate) fn panel(&self) -> Option<AnyElement> {
         self.tabs.iter().find_map(|tab| {
             if Some(tab.kind) == self.active_tab {
