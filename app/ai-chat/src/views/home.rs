@@ -55,6 +55,12 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
+        {
+            let theme_registry = ThemeRegistry::global(cx);
+            let config = cx.global::<AiChatConfig>();
+            let config = config.gpui_theme(theme_registry, window);
+            Theme::global_mut(cx).apply_config(&config);
+        }
 
         Self {
             sidebar,

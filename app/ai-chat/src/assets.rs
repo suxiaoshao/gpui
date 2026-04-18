@@ -85,6 +85,7 @@ define_icon_assets!(
 #[folder = "assets"]
 #[include = "jpg/*.jpg"]
 #[include = "png/*.png"]
+#[include = "themes/**/*.json"]
 struct AssetsInner;
 
 #[derive(RustEmbed)]
@@ -152,6 +153,19 @@ pub struct Assets {
     build_assets: BuildAssetsInner,
     lucide_assets: LucideAssets,
     components_assets: gpui_component_assets::Assets,
+}
+
+pub(crate) fn bundled_theme_sets() -> Vec<String> {
+    AssetsInner::iter()
+        .filter(|path| path.starts_with("themes/gpui-component/") && path.ends_with(".json"))
+        .filter_map(|path| {
+            AssetsInner::get(path.as_ref()).and_then(|file| {
+                std::str::from_utf8(file.data.as_ref())
+                    .ok()
+                    .map(ToOwned::to_owned)
+            })
+        })
+        .collect()
 }
 
 impl Default for Assets {

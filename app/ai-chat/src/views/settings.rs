@@ -4,7 +4,7 @@ use crate::{
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     i18n::{self, I18n},
     llm::provider_setting_groups,
-    state::{AiChatConfig, Language, ThemeMode},
+    state::{AiChatConfig, Language},
     tray,
 };
 use gpui::*;
@@ -18,8 +18,10 @@ use gpui_component::{
 use std::any::TypeId;
 use tracing::{Level, event};
 
+pub(super) mod appearance_settings;
 pub(super) mod shortcut_settings;
 
+use self::appearance_settings::AppearanceSettingsPage;
 use self::shortcut_settings::ShortcutSettingsPage;
 
 actions!([OpenSetting]);
@@ -46,6 +48,7 @@ pub fn init(cx: &mut App) {
 pub struct SettingsView {
     focus_handle: FocusHandle,
     hotkey_input: Entity<HotkeyInput>,
+    appearance_settings: Entity<AppearanceSettingsPage>,
     shortcut_settings: Entity<ShortcutSettingsPage>,
     open_target: SettingsOpenTarget,
     _subscriptions: Vec<Subscription>,
@@ -60,11 +63,13 @@ impl SettingsView {
             HotkeyInput::new("temporary-hotkey-input", window, cx)
                 .default_value(temporary_hotkey.and_then(|x| string_to_keystroke(&x)))
         });
+        let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
         let _subscriptions = vec![cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes)];
         Self {
             focus_handle,
             hotkey_input,
+            appearance_settings,
             shortcut_settings,
             open_target,
             _subscriptions,
@@ -105,10 +110,10 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
             page_general,
+            page_appearance,
             page_provider,
             page_shortcuts,
             group_basic_options,
-            field_theme,
             field_language,
             field_http_proxy,
             field_temporary_hotkey,
@@ -119,10 +124,10 @@ impl Render for SettingsView {
             let i18n = cx.global::<I18n>();
             (
                 i18n.t("settings-page-general"),
+                i18n.t("settings-page-appearance"),
                 i18n.t("settings-page-provider"),
                 i18n.t("settings-page-shortcuts"),
                 i18n.t("settings-group-basic-options"),
-                i18n.t("field-theme"),
                 i18n.t("field-language"),
                 i18n.t("field-http-proxy"),
                 i18n.t("field-temporary-conversation-hotkey"),
@@ -144,36 +149,15 @@ impl Render for SettingsView {
                 move |_options, _window, _cx| page.clone()
             }),
         ));
+        let appearance_page = SettingPage::new(page_appearance).group(SettingGroup::new().item(
+            SettingItem::render({
+                let page = self.appearance_settings.clone();
+                move |_options, _window, _cx| page.clone()
+            }),
+        ));
         let general_page = SettingPage::new(page_general).group(
             SettingGroup::new()
                 .title(group_basic_options)
-                .item(SettingItem::new(
-                    field_theme,
-                    SettingField::dropdown(
-                        vec![
-                            (
-                                ThemeMode::Light.to_string().into(),
-                                ThemeMode::Light.to_string().into(),
-                            ),
-                            (
-                                ThemeMode::Dark.to_string().into(),
-                                ThemeMode::Dark.to_string().into(),
-                            ),
-                            (
-                                ThemeMode::System.to_string().into(),
-                                ThemeMode::System.to_string().into(),
-                            ),
-                        ],
-                        |cx: &App| {
-                            let config = cx.global::<AiChatConfig>();
-                            config.theme_mode().to_string().into()
-                        },
-                        |val: SharedString, cx: &mut App| {
-                            let config = cx.global_mut::<AiChatConfig>();
-                            config.set_theme_mode(ThemeMode::from_str(&val));
-                        },
-                    ),
-                ))
                 .item(SettingItem::new(
                     field_language,
                     SettingField::dropdown(
@@ -253,11 +237,11 @@ impl Render for SettingsView {
         let (settings_id, pages) = match self.open_target {
             SettingsOpenTarget::General => (
                 "my-settings-general",
-                vec![general_page, provider_page, shortcuts_page],
+                vec![general_page, appearance_page, provider_page, shortcuts_page],
             ),
             SettingsOpenTarget::Provider => (
                 "my-settings-provider",
-                vec![provider_page, general_page, shortcuts_page],
+                vec![provider_page, general_page, appearance_page, shortcuts_page],
             ),
         };
         v_flex()
