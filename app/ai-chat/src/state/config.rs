@@ -103,9 +103,22 @@ impl<'de> Deserialize<'de> for ThemeOption {
             normalize_custom_theme_colors(raw.custom_theme_colors.unwrap_or_default().into_iter());
         if let Some(color) = raw.custom_color
             && let Some(color) = app_theme::normalize_hex_color(&color)
-            && !custom_theme_colors.contains(&color)
         {
-            custom_theme_colors.push(color);
+            append_custom_theme_color(&mut custom_theme_colors, color);
+        }
+
+        let light_theme = raw
+            .light_theme
+            .map(|theme| app_theme::normalize_theme_id(&theme))
+            .unwrap_or_else(|| app_theme::DEFAULT_LIGHT_THEME_ID.to_string());
+        let dark_theme = raw
+            .dark_theme
+            .map(|theme| app_theme::normalize_theme_id(&theme))
+            .unwrap_or_else(|| app_theme::DEFAULT_DARK_THEME_ID.to_string());
+        for theme_id in [&light_theme, &dark_theme] {
+            if let Some(color) = app_theme::material_you_color_from_id(theme_id) {
+                append_custom_theme_color(&mut custom_theme_colors, color);
+            }
         }
         if custom_theme_colors.is_empty() && custom_theme_colors_missing {
             custom_theme_colors.push(app_theme::DEFAULT_CUSTOM_THEME_COLOR.to_string());
@@ -113,14 +126,8 @@ impl<'de> Deserialize<'de> for ThemeOption {
 
         Ok(Self {
             theme: raw.theme,
-            light_theme: raw
-                .light_theme
-                .map(|theme| app_theme::normalize_theme_id(&theme))
-                .unwrap_or_else(|| app_theme::DEFAULT_LIGHT_THEME_ID.to_string()),
-            dark_theme: raw
-                .dark_theme
-                .map(|theme| app_theme::normalize_theme_id(&theme))
-                .unwrap_or_else(|| app_theme::DEFAULT_DARK_THEME_ID.to_string()),
+            light_theme,
+            dark_theme,
             custom_theme_colors,
         })
     }
@@ -130,11 +137,15 @@ fn normalize_custom_theme_colors(colors: impl Iterator<Item = String>) -> Vec<St
     colors
         .filter_map(|color| app_theme::normalize_hex_color(&color))
         .fold(Vec::new(), |mut colors, color| {
-            if !colors.contains(&color) {
-                colors.push(color);
-            }
+            append_custom_theme_color(&mut colors, color);
             colors
         })
+}
+
+fn append_custom_theme_color(colors: &mut Vec<String>, color: String) {
+    if !colors.contains(&color) {
+        colors.push(color);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -595,6 +606,27 @@ customThemeColors = ["#123456"]
         assert!(toml.contains("lightTheme = \"preset:Ayu Light\""));
         assert!(toml.contains("darkTheme = \"material-you:#123456\""));
         assert!(toml.contains("\"#123456\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn selected_material_themes_deserialize_into_custom_theme_colors() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#aabbcc"
+darkTheme = "material-you:#00aa00"
+"##,
+        )?;
+
+        assert_eq!(config.light_theme_id(), "material-you:#AABBCC");
+        assert_eq!(config.dark_theme_id(), "material-you:#00AA00");
+        assert_eq!(
+            config.custom_theme_colors(),
+            &["#AABBCC".to_string(), "#00AA00".to_string()]
+        );
 
         Ok(())
     }
