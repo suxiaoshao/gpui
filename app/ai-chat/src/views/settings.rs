@@ -9,8 +9,10 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    Root, WindowExt,
+    Root, StyledExt, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
+    h_flex,
+    label::Label,
     notification::{Notification, NotificationType},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
@@ -136,6 +138,7 @@ impl Render for SettingsView {
                 i18n.t("notify-open-config-file-failed"),
             )
         };
+        let settings_title = cx.global::<I18n>().t("settings-title");
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let hotkey_input = self.hotkey_input.clone();
@@ -248,18 +251,26 @@ impl Render for SettingsView {
             .id("settings")
             .track_focus(&self.focus_handle)
             .size_full()
-            .children(dialog_layer)
-            .children(notification_layer)
+            .overflow_hidden()
             .on_action(cx.listener(|_this, _: &OpenSetting, window, _cx| {
                 window.remove_window();
             }))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
             .child(
-                Settings::new(settings_id)
-                    .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
-                    .pages(pages),
+                div()
+                    .child(TitleBar::new().child(settings_title_bar_title(settings_title)))
+                    .flex_initial(),
             )
+            .child(
+                div().flex_1().overflow_hidden().child(
+                    Settings::new(settings_id)
+                        .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
+                        .pages(pages),
+                ),
+            )
+            .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 
@@ -319,10 +330,7 @@ fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
     let title = cx.global::<I18n>().t("settings-title");
     match cx.open_window(
         WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(title.into()),
-                ..Default::default()
-            }),
+            titlebar: Some(settings_titlebar_options(title)),
             window_background: WindowBackgroundAppearance::Blurred,
             ..Default::default()
         },
@@ -336,4 +344,43 @@ fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
             event!(Level::ERROR, "open settings window: {}", err);
         }
     };
+}
+
+fn settings_title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .overflow_hidden()
+        .pr_2()
+        .child(Label::new(title).text_sm().font_medium().truncate())
+}
+
+fn settings_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.into()),
+        ..TitleBar::title_bar_options()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::settings_titlebar_options;
+    use gpui_component::TitleBar;
+
+    #[test]
+    fn settings_window_uses_component_titlebar_options() {
+        let titlebar = settings_titlebar_options("Settings");
+        let expected = TitleBar::title_bar_options();
+
+        assert_eq!(
+            titlebar.title.as_ref().map(|title| title.as_ref()),
+            Some("Settings")
+        );
+        assert_eq!(titlebar.appears_transparent, expected.appears_transparent);
+        assert_eq!(
+            titlebar.traffic_light_position,
+            expected.traffic_light_position
+        );
+    }
 }

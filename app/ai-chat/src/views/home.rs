@@ -9,8 +9,10 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    Root, Theme, ThemeRegistry, TitleBar,
+    Root, StyledExt, Theme, ThemeRegistry, TitleBar,
     alert::Alert,
+    h_flex,
+    label::Label,
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -55,6 +57,7 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
+        let workspace = cx.global::<WorkspaceStore>().deref().clone();
         {
             let theme_registry = ThemeRegistry::global(cx);
             let config = cx.global::<AiChatConfig>();
@@ -67,6 +70,9 @@ impl HomeView {
             tabs,
             focus_handle,
             _subscriptions: vec![
+                cx.observe(&workspace, |_state, _workspace, cx| {
+                    cx.notify();
+                }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
                     let theme_registry = ThemeRegistry::global(cx);
                     let config = cx.global::<AiChatConfig>();
@@ -136,8 +142,16 @@ impl Render for HomeView {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
         let error_title = cx.global::<I18n>().t("alert-error-title");
+        let app_title = cx.global::<I18n>().t("app-title");
         let chat_data = cx.global::<state::ChatData>().read(cx);
-        let sidebar_width = cx.global::<WorkspaceStore>().read(cx).sidebar_width();
+        let (sidebar_width, active_tab_title) = {
+            let workspace = cx.global::<WorkspaceStore>().read(cx);
+            (workspace.sidebar_width(), workspace.active_tab_title())
+        };
+        let titlebar_title = home_titlebar_title(active_tab_title, &app_title);
+        let window_title = home_window_title(&titlebar_title, &app_title);
+        window.set_window_title(&window_title);
+
         v_flex()
             .key_context(HOME_CONTEXT)
             .track_focus(&self.focus_handle)
@@ -148,7 +162,11 @@ impl Render for HomeView {
             .on_action(cx.listener(Self::open_conversation_search))
             .on_action(cx.listener(Self::add_conversation))
             .on_action(cx.listener(Self::add_folder))
-            .child(div().child(TitleBar::new()).flex_initial())
+            .child(
+                div()
+                    .child(TitleBar::new().child(title_bar_title(titlebar_title)))
+                    .flex_initial(),
+            )
             .map(|this| match chat_data {
                 Ok(_) => this.child(
                     div()
@@ -180,5 +198,54 @@ impl Render for HomeView {
             })
             .children(dialog_layer)
             .children(notification_layer)
+    }
+}
+
+fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .overflow_hidden()
+        .pr_2()
+        .child(Label::new(title).text_sm().font_medium().truncate())
+}
+
+fn home_titlebar_title(active_tab_title: Option<SharedString>, app_title: &str) -> SharedString {
+    active_tab_title.unwrap_or_else(|| SharedString::from(app_title.to_string()))
+}
+
+fn home_window_title(titlebar_title: &SharedString, app_title: &str) -> String {
+    if titlebar_title.as_ref() == app_title {
+        app_title.to_string()
+    } else {
+        format!("{titlebar_title} - {app_title}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{home_titlebar_title, home_window_title};
+
+    #[test]
+    fn home_titlebar_title_uses_active_tab() {
+        assert_eq!(
+            home_titlebar_title(Some("Conversation A".into()), "AI Chat").as_ref(),
+            "Conversation A"
+        );
+    }
+
+    #[test]
+    fn home_titlebar_title_falls_back_to_app_title() {
+        assert_eq!(home_titlebar_title(None, "AI Chat").as_ref(), "AI Chat");
+    }
+
+    #[test]
+    fn home_window_title_includes_active_tab_when_present() {
+        assert_eq!(
+            home_window_title(&"Conversation A".into(), "AI Chat"),
+            "Conversation A - AI Chat"
+        );
+        assert_eq!(home_window_title(&"AI Chat".into(), "AI Chat"), "AI Chat");
     }
 }
