@@ -10,6 +10,7 @@ use std::ops::Deref;
 use tracing::{Level, event};
 
 use crate::{
+    assets::IconName,
     i18n::I18n,
     state::{ChatData, ChatDataEvent},
 };
@@ -42,6 +43,11 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
                 i18n.t("button-submit"),
             )
         }
+    };
+    let submit_icon = if is_edit {
+        IconName::Save
+    } else {
+        IconName::Upload
     };
 
     let folder_input = cx.new(|cx| InputState::new(window, cx).placeholder(name_label.clone()));
@@ -85,6 +91,7 @@ fn open_folder_dialog(mode: FolderDialogMode, window: &mut Window, cx: &mut App)
                         DialogAction::new().child(
                             Button::new("ok")
                                 .primary()
+                                .icon(submit_icon)
                                 .label(submit_label.clone())
                                 .on_click({
                                     let folder_input = folder_input.clone();

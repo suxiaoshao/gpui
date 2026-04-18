@@ -1,5 +1,6 @@
 use super::{conversation_item::ConversationTreeItem, folder_item::FolderTreeItem};
 use crate::{
+    assets::IconName,
     components::{
         add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
     },
@@ -8,7 +9,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Collapsible, Icon, IconName, Side, h_flex,
+    ActiveTheme, Collapsible, Icon, Side, h_flex,
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     sidebar::SidebarItem,
@@ -470,9 +471,9 @@ impl Render for DragConversationTreeItem {
             .text_color(cx.theme().tab_foreground)
             .opacity(0.85)
             .child(match &self.kind {
-                DragConversationTreeKind::Folder { .. } => {
-                    Icon::new(IconName::Folder).size_3().into_any_element()
-                }
+                DragConversationTreeKind::Folder { .. } => Icon::new(IconName::FolderClosed)
+                    .size_3()
+                    .into_any_element(),
                 DragConversationTreeKind::Conversation { .. } => Label::new(&icon)
                     .text_xs()
                     .line_height(rems(0.75))

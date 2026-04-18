@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::{
         delete_confirm::open_delete_confirm_dialog,
         hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
@@ -17,7 +18,7 @@ use crate::{
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IconName, IndexPath, Sizable, WindowExt,
+    ActiveTheme, Disableable, IndexPath, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -1050,9 +1051,9 @@ impl ShortcutSettingsPage {
             )
             .child(
                 Button::new("shortcut-add")
-                    .primary()
+                    .ghost()
                     .icon(IconName::Plus)
-                    .label(cx.global::<I18n>().t("button-add"))
+                    .tooltip(cx.global::<I18n>().t("button-add"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         let row = this.build_row(None, window, cx);
                         this.rows.insert(0, row);
@@ -1149,7 +1150,8 @@ impl ShortcutSettingsPage {
     ) -> AnyElement {
         let page = cx.entity().clone();
         let row_key = row.key;
-        let trigger_label = if row.model_resolved && !row.ext_settings.is_empty() {
+        let has_ext_settings = row.model_resolved && !row.ext_settings.is_empty();
+        let trigger_tooltip = if has_ext_settings {
             cx.global::<I18n>().t("button-edit")
         } else {
             cx.global::<I18n>().t("field-none")
@@ -1160,9 +1162,11 @@ impl ShortcutSettingsPage {
             .appearance(false)
             .trigger(
                 Button::new(("shortcut-preset-trigger", row.key))
-                    .primary()
+                    .ghost()
                     .small()
-                    .label(trigger_label),
+                    .icon(IconName::Edit)
+                    .tooltip(trigger_tooltip)
+                    .disabled(!has_ext_settings),
             )
             .content(move |_, window, cx| {
                 page.update(cx, |page, cx| {
@@ -1267,6 +1271,22 @@ impl ShortcutSettingsPage {
             7 => {
                 let row_key = row.key;
                 let is_new = row.binding_id.is_none();
+                let (save_tooltip, reset_tooltip, delete_tooltip) = {
+                    let i18n = cx.global::<I18n>();
+                    (
+                        i18n.t(if is_new {
+                            "button-create"
+                        } else {
+                            "button-save"
+                        }),
+                        i18n.t(if is_new {
+                            "button-cancel"
+                        } else {
+                            "button-reset"
+                        }),
+                        i18n.t("button-delete"),
+                    )
+                };
                 h_flex()
                     .h_full()
                     .items_center()
@@ -1274,12 +1294,13 @@ impl ShortcutSettingsPage {
                     .child(
                         Button::new(("shortcut-save", row.key))
                             .small()
-                            .primary()
-                            .label(cx.global::<I18n>().t(if is_new {
-                                "button-create"
+                            .ghost()
+                            .icon(if is_new {
+                                IconName::Upload
                             } else {
-                                "button-save"
-                            }))
+                                IconName::Save
+                            })
+                            .tooltip(save_tooltip)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.save_row(row_key, window, cx);
                             })),
@@ -1287,12 +1308,13 @@ impl ShortcutSettingsPage {
                     .child(
                         Button::new(("shortcut-reset", row.key))
                             .small()
-                            .danger()
-                            .label(cx.global::<I18n>().t(if is_new {
-                                "button-cancel"
+                            .ghost()
+                            .icon(if is_new {
+                                IconName::X
                             } else {
-                                "button-reset"
-                            }))
+                                IconName::RefreshCcw
+                            })
+                            .tooltip(reset_tooltip)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.reset_row(row_key, window, cx);
                             })),
@@ -1302,7 +1324,8 @@ impl ShortcutSettingsPage {
                             Button::new(("shortcut-delete", row.key))
                                 .small()
                                 .danger()
-                                .icon(IconName::Delete)
+                                .icon(IconName::Trash)
+                                .tooltip(delete_tooltip)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_delete_row(row_key, window, cx);
                                 })),

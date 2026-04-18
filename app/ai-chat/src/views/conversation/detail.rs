@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     components::{
         chat_form::{ChatForm, ChatFormEvent},
         message::MessageView,
@@ -13,7 +14,7 @@ use gpui::{
     Subscription, Task, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
     divider::Divider,
     h_flex,
@@ -405,7 +406,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                                     Button::new(SharedString::from(format!(
                                         "{element_prefix}-clear"
                                     )))
-                                    .icon(IconName::Delete)
+                                    .icon(IconName::BrushCleaning)
                                     .ghost()
                                     .small()
                                     .disabled(self.has_running_task())
@@ -423,7 +424,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                                     Button::new(SharedString::from(format!(
                                         "{element_prefix}-save"
                                     )))
-                                    .icon(IconName::Inbox)
+                                    .icon(IconName::Save)
                                     .ghost()
                                     .small()
                                     .disabled(self.has_running_task())

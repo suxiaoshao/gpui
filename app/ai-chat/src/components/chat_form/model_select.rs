@@ -4,6 +4,7 @@ use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerTrigger, render_picker_popover,
 };
 use crate::{
+    assets::IconName,
     i18n::I18n,
     llm::{ProviderModel, provider_is_configured},
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
@@ -11,7 +12,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     list::ListState,
@@ -245,6 +246,7 @@ impl ModelSelect {
                         .border_color(cx.theme().border)
                         .child(
                             Button::new("model-picker-configure")
+                                .icon(IconName::Plug)
                                 .label(configure_label)
                                 .small()
                                 .flex_1()
@@ -256,7 +258,7 @@ impl ModelSelect {
                         )
                         .child(
                             Button::new("model-picker-reload")
-                                .icon(IconName::Redo2)
+                                .icon(IconName::RefreshCcw)
                                 .ghost()
                                 .small()
                                 .tooltip(reload_tooltip)

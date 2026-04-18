@@ -1,4 +1,5 @@
 use crate::{
+    assets::IconName,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role,
     },
@@ -6,7 +7,7 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    WindowExt,
+    Sizable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogClose, DialogFooter},
     divider::Divider,
@@ -173,7 +174,10 @@ impl Render for PromptListForm {
                             .child(Label::new(format!("{prompt_label} {}", index + 1)))
                             .child(
                                 Button::new(("prompt-delete", index))
-                                    .label(delete_label.clone())
+                                    .icon(IconName::X)
+                                    .ghost()
+                                    .small()
+                                    .tooltip(delete_label.clone())
                                     .on_click(move |_, _window, cx| {
                                         let _ = this.update(cx, |form, cx| {
                                             form.remove_prompt_row(index, cx)
@@ -204,11 +208,14 @@ impl Render for PromptListForm {
                     .items_center()
                     .justify_between()
                     .child(Label::new(prompts_label))
-                    .child(Button::new("prompt-add").label(add_prompt_label).on_click(
-                        move |_, window, cx| {
-                            let _ = this.update(cx, |form, cx| form.add_prompt_row(window, cx));
-                        },
-                    )),
+                    .child(
+                        Button::new("prompt-add")
+                            .icon(IconName::Plus)
+                            .label(add_prompt_label)
+                            .on_click(move |_, window, cx| {
+                                let _ = this.update(cx, |form, cx| form.add_prompt_row(window, cx));
+                            }),
+                    ),
             )
             .child(v_flex().gap_3().children(prompt_fields))
     }
@@ -287,6 +294,11 @@ fn open_template_dialog(
         params.failure_title_key,
         cx,
     );
+    let submit_icon = if params.template_id.is_some() {
+        IconName::Save
+    } else {
+        IconName::Upload
+    };
     let fields = dialog_fields(&template, window, cx);
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
@@ -325,6 +337,7 @@ fn open_template_dialog(
                     .child(
                         Button::new("submit")
                             .primary()
+                            .icon(submit_icon)
                             .label(labels.submit_label.clone())
                             .on_click({
                                 let labels = labels.clone();

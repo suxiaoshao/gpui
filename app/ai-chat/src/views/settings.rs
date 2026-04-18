@@ -1,5 +1,6 @@
 use crate::{
     app_menus,
+    assets::IconName,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     i18n::{self, I18n},
     llm::provider_setting_groups,
@@ -230,6 +231,7 @@ impl Render for SettingsView {
                     field_config_file,
                     SettingField::render(move |_options, _window, _cx| {
                         Button::new("open-config-file")
+                            .icon(IconName::FilePen)
                             .label(button_open.clone())
                             .ghost()
                             .on_click({

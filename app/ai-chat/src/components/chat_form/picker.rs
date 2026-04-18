@@ -1,6 +1,7 @@
+use crate::assets::IconName;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, Size, StyledExt as _,
+    ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, Size, StyledExt as _,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,

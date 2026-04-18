@@ -1,6 +1,7 @@
+use crate::assets::IconName;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, IconName, Sizable, Size, StyledExt,
+    ActiveTheme, Sizable, Size, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
 };
@@ -286,7 +287,7 @@ impl Render for HotkeyInput {
                             Button::new((self.id.clone(), "cancel"))
                                 .xsmall()
                                 .ghost()
-                                .icon(IconName::Close)
+                                .icon(IconName::X)
                                 .on_click(cx.listener(|_this, _event, window, cx| {
                                     cx.emit(HotkeyEvent::Cancel);
                                     window.focus_next(cx);
