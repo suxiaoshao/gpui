@@ -55,8 +55,13 @@ pub(crate) fn material_you_theme_id(color: &str) -> Option<String> {
 }
 
 pub(crate) fn normalize_theme_id(id: &str) -> String {
-    if id.starts_with(PRESET_PREFIX) || id.starts_with(MATERIAL_YOU_PREFIX) {
+    if id.starts_with(PRESET_PREFIX) {
         return id.to_string();
+    }
+    if id.starts_with(MATERIAL_YOU_PREFIX) {
+        return material_you_color_from_id(id)
+            .and_then(|color| material_you_theme_id(&color))
+            .unwrap_or_else(|| id.to_string());
     }
     preset_theme_id(id)
 }
@@ -452,6 +457,18 @@ mod tests {
         assert_eq!(
             material_you_theme_id("3271ae"),
             Some("material-you:#3271AE".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_theme_id_canonicalizes_material_you_color() {
+        assert_eq!(
+            normalize_theme_id("material-you:#aabbcc"),
+            "material-you:#AABBCC"
+        );
+        assert_eq!(
+            normalize_theme_id("material-you:aabbcc"),
+            "material-you:#AABBCC"
         );
     }
 

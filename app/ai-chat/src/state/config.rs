@@ -641,6 +641,29 @@ customThemeColors = ["#123456", "#654321"]
     }
 
     #[test]
+    fn remove_custom_theme_color_resets_canonicalized_material_theme_ids() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#aabbcc"
+darkTheme = "material-you:aabbcc"
+customThemeColors = ["#aabbcc", "#654321"]
+"##,
+        )?;
+
+        assert_eq!(config.light_theme_id(), "material-you:#AABBCC");
+        assert_eq!(config.dark_theme_id(), "material-you:#AABBCC");
+
+        assert!(config.remove_custom_theme_color("material-you:#aabbcc"));
+        assert_eq!(config.custom_theme_colors(), &["#654321".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
     fn configured_mode_resolves_current_component_mode() {
         let light_config: AiChatConfig = toml::from_str(
             r#"
