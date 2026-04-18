@@ -212,9 +212,9 @@ impl Render for TemplateDetailView {
                     )
                     .child(
                         Button::new("template-edit")
-                            .primary()
+                            .ghost()
                             .icon(IconName::Edit)
-                            .label(edit_label)
+                            .tooltip(edit_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_edit_dialog(window, cx);
                             })),
@@ -223,7 +223,7 @@ impl Render for TemplateDetailView {
                         Button::new("template-delete")
                             .danger()
                             .icon(IconName::Trash)
-                            .label(delete_label)
+                            .tooltip(delete_label)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.open_delete_dialog(window, cx);
                             })),

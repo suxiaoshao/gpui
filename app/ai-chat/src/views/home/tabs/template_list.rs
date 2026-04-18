@@ -426,9 +426,9 @@ impl Render for TemplateListView {
                     )
                     .child(
                         Button::new("template-add")
-                            .primary()
+                            .ghost()
                             .icon(IconName::Plus)
-                            .label(add_label)
+                            .tooltip(add_label)
                             .on_click(cx.listener(|_view, _, window, cx| {
                                 window.dispatch_action(Add.boxed_clone(), cx);
                             })),
