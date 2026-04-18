@@ -80,7 +80,7 @@ impl<'de> Deserialize<'de> for ThemeOption {
             #[serde(rename = "darkTheme")]
             dark_theme: Option<String>,
             #[serde(rename = "customThemeColors")]
-            custom_theme_colors: Vec<String>,
+            custom_theme_colors: Option<Vec<String>>,
             #[serde(rename = "customColor", alias = "color")]
             custom_color: Option<String>,
         }
@@ -91,22 +91,23 @@ impl<'de> Deserialize<'de> for ThemeOption {
                     theme: ThemeMode::System,
                     light_theme: None,
                     dark_theme: None,
-                    custom_theme_colors: Vec::new(),
+                    custom_theme_colors: None,
                     custom_color: None,
                 }
             }
         }
 
         let raw = RawThemeOption::deserialize(deserializer)?;
+        let custom_theme_colors_missing = raw.custom_theme_colors.is_none();
         let mut custom_theme_colors =
-            normalize_custom_theme_colors(raw.custom_theme_colors.into_iter());
+            normalize_custom_theme_colors(raw.custom_theme_colors.unwrap_or_default().into_iter());
         if let Some(color) = raw.custom_color
             && let Some(color) = app_theme::normalize_hex_color(&color)
             && !custom_theme_colors.contains(&color)
         {
             custom_theme_colors.push(color);
         }
-        if custom_theme_colors.is_empty() {
+        if custom_theme_colors.is_empty() && custom_theme_colors_missing {
             custom_theme_colors.push(app_theme::DEFAULT_CUSTOM_THEME_COLOR.to_string());
         }
 
@@ -416,6 +417,43 @@ impl AiChatConfig {
         }
         app_theme::material_you_theme_id(&color)
     }
+    pub(crate) fn delete_custom_theme_color(&mut self, theme_id_or_color: &str) -> bool {
+        let changed = self.remove_custom_theme_color(theme_id_or_color);
+        if changed {
+            match self.save() {
+                Ok(_) => {}
+                Err(err) => {
+                    event!(Level::ERROR, "Failed to save custom theme colors: {}", err);
+                }
+            }
+        }
+        changed
+    }
+    fn remove_custom_theme_color(&mut self, theme_id_or_color: &str) -> bool {
+        let Some(color) = app_theme::material_you_color_from_id(theme_id_or_color)
+            .or_else(|| app_theme::normalize_hex_color(theme_id_or_color))
+        else {
+            return false;
+        };
+        let before_len = self.theme.custom_theme_colors.len();
+        self.theme
+            .custom_theme_colors
+            .retain(|existing| existing != &color);
+        if self.theme.custom_theme_colors.len() == before_len {
+            return false;
+        }
+
+        let Some(theme_id) = app_theme::material_you_theme_id(&color) else {
+            return false;
+        };
+        if self.theme.light_theme == theme_id {
+            self.theme.light_theme = app_theme::DEFAULT_LIGHT_THEME_ID.to_string();
+        }
+        if self.theme.dark_theme == theme_id {
+            self.theme.dark_theme = app_theme::DEFAULT_DARK_THEME_ID.to_string();
+        }
+        true
+    }
     fn add_custom_color_from_theme_id(&mut self, theme_id: &str) {
         let Some(color) = app_theme::material_you_color_from_id(theme_id) else {
             return;
@@ -527,6 +565,20 @@ theme = "system"
     }
 
     #[test]
+    fn explicit_empty_custom_theme_colors_stays_empty() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r#"
+[theme]
+customThemeColors = []
+"#,
+        )?;
+
+        assert!(config.custom_theme_colors().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
     fn theme_selection_serializes_to_toml() -> anyhow::Result<()> {
         let config: AiChatConfig = toml::from_str(
             r##"
@@ -543,6 +595,47 @@ customThemeColors = ["#123456"]
         assert!(toml.contains("lightTheme = \"preset:Ayu Light\""));
         assert!(toml.contains("darkTheme = \"material-you:#123456\""));
         assert!(toml.contains("\"#123456\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_custom_theme_color_removes_unselected_material_theme() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "preset:Default Light"
+darkTheme = "preset:Default Dark"
+customThemeColors = ["#111111", "#222222"]
+"##,
+        )?;
+
+        assert!(config.remove_custom_theme_color("#111111"));
+        assert!(!config.remove_custom_theme_color("#111111"));
+        assert_eq!(config.custom_theme_colors(), &["#222222".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_custom_theme_color_resets_selected_material_themes() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:#123456"
+darkTheme = "material-you:#123456"
+customThemeColors = ["#123456", "#654321"]
+"##,
+        )?;
+
+        assert!(config.remove_custom_theme_color("material-you:#123456"));
+        assert_eq!(config.custom_theme_colors(), &["#654321".to_string()]);
+        assert_eq!(config.light_theme_id(), theme::DEFAULT_LIGHT_THEME_ID);
+        assert_eq!(config.dark_theme_id(), theme::DEFAULT_DARK_THEME_ID);
 
         Ok(())
     }

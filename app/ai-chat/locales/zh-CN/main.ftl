@@ -37,6 +37,8 @@ settings-custom-theme-color = 自定义主题色
 settings-custom-theme-color-description = 选择一个颜色生成 Material You 主题，并加入主题池。
 settings-light-themes = 亮色主题
 settings-dark-themes = 暗色主题
+theme-selected = 已选择
+theme-selected-prefix = 已选择：
 appearance-mode-system = 跟随系统
 appearance-mode-light = 亮色
 appearance-mode-dark = 暗色
@@ -82,6 +84,7 @@ button-reset = 重置
 button-save = 保存对话
 button-submit = 提交
 button-add-material-theme = 添加 Material You 主题
+button-delete-material-theme = 删除 Material You 主题
 
 tooltip-copy = 复制
 tooltip-delete = 删除

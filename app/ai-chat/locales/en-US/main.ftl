@@ -37,6 +37,8 @@ settings-custom-theme-color = Custom Theme Color
 settings-custom-theme-color-description = Pick a color to generate a Material You theme and add it to the theme pool.
 settings-light-themes = Light Themes
 settings-dark-themes = Dark Themes
+theme-selected = Selected
+theme-selected-prefix = Selected:
 appearance-mode-system = System
 appearance-mode-light = Light
 appearance-mode-dark = Dark
@@ -82,6 +84,7 @@ button-reset = Reset
 button-save = Save Conversation
 button-submit = Submit
 button-add-material-theme = Add Material You Theme
+button-delete-material-theme = Delete Material You Theme
 
 tooltip-copy = Copy
 tooltip-delete = Delete
