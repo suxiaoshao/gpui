@@ -17,7 +17,6 @@ use gpui_component::{
     h_flex,
     label::Label,
     notification::{Notification, NotificationType},
-    scroll::ScrollableElement,
     text::TextView,
     v_flex,
 };
@@ -192,8 +191,10 @@ impl Render for TemplateDetailView {
         let reload_label = cx.global::<I18n>().t("button-reload");
         v_flex()
             .size_full()
+            .overflow_hidden()
             .child(
                 h_flex()
+                    .flex_initial()
                     .items_center()
                     .justify_end()
                     .gap_2()
@@ -232,7 +233,8 @@ impl Render for TemplateDetailView {
             .child(match &self.template {
                 Ok(template) => render_template_detail(template, window, cx),
                 Err(err) => v_flex()
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
                     .items_center()
                     .justify_center()
                     .child(Label::new(format!("{load_template_failed}: {err}")).text_sm())
@@ -257,11 +259,13 @@ fn render_template_detail(
             .span(3),
     ];
 
-    div()
+    v_flex()
         .id(template.id)
         .flex_1()
+        .min_h_0()
         .gap_3()
         .px_4()
+        .py_3()
         .child(Label::new(i18n.t("section-information")).text_lg())
         .child(
             div().child(
@@ -272,21 +276,13 @@ fn render_template_detail(
             ),
         )
         .child(Label::new(i18n.t("field-prompts")).text_lg())
-        .child(
-            div().id("template-prompts").children(
-                template
-                    .prompts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, prompt)| {
-                        render_prompt_message(template.id, index, prompt, window, cx)
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .child(div().h_4())
-        .overflow_hidden()
-        .overflow_y_scrollbar()
+        .child(v_flex().id("template-prompts").children(
+            template.prompts.iter().enumerate().map(|(index, prompt)| {
+                render_prompt_message(template.id, index, prompt, window, cx)
+            }),
+        ))
+        .overflow_x_hidden()
+        .overflow_y_scroll()
         .into_any_element()
 }
 
