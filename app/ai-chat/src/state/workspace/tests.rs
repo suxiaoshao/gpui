@@ -1,4 +1,7 @@
-use super::{ConversationDraft, PersistedWorkspaceState, WorkspaceState, persistence::*};
+use super::{
+    ConversationDraft, PersistedWorkspaceState, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
+    SIDEBAR_MIN_WIDTH, WorkspaceState, persistence::*,
+};
 use crate::database::Mode;
 
 fn sample_request_template() -> serde_json::Value {
@@ -126,6 +129,41 @@ sidebar_width = 300.0
     .unwrap();
 
     assert_eq!(state.latest_model_preset, None);
+}
+
+#[test]
+fn sidebar_width_clamps_persisted_values() {
+    let below_min = WorkspaceState {
+        persisted: PersistedWorkspaceState {
+            sidebar_width: f32::from(SIDEBAR_MIN_WIDTH) - 1.,
+            ..PersistedWorkspaceState::default()
+        },
+        tabs: Vec::new(),
+        active_tab: None,
+        save_task: None,
+    };
+    let above_max = WorkspaceState {
+        persisted: PersistedWorkspaceState {
+            sidebar_width: f32::from(SIDEBAR_MAX_WIDTH) + 1.,
+            ..PersistedWorkspaceState::default()
+        },
+        tabs: Vec::new(),
+        active_tab: None,
+        save_task: None,
+    };
+    let normal = WorkspaceState {
+        persisted: PersistedWorkspaceState {
+            sidebar_width: f32::from(SIDEBAR_DEFAULT_WIDTH),
+            ..PersistedWorkspaceState::default()
+        },
+        tabs: Vec::new(),
+        active_tab: None,
+        save_task: None,
+    };
+
+    assert_eq!(below_min.sidebar_width(), SIDEBAR_MIN_WIDTH);
+    assert_eq!(above_max.sidebar_width(), SIDEBAR_MAX_WIDTH);
+    assert_eq!(normal.sidebar_width(), SIDEBAR_DEFAULT_WIDTH);
 }
 
 #[test]

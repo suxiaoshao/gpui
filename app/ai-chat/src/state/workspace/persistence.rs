@@ -1,4 +1,4 @@
-use super::{TabKind, WorkspaceState};
+use super::{SIDEBAR_DEFAULT_WIDTH, TabKind, WorkspaceState};
 use crate::{
     app::APP_NAME,
     database::Mode,
@@ -11,7 +11,6 @@ use tracing::{Level, event};
 
 const STATE_FILE_NAME: &str = "state.toml";
 const STATE_VERSION: u32 = 1;
-const DEFAULT_SIDEBAR_WIDTH: f32 = 300.;
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,7 +114,7 @@ impl Default for PersistedWorkspaceState {
     fn default() -> Self {
         Self {
             version: STATE_VERSION,
-            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_width: default_sidebar_width(),
             open_folder_ids: Default::default(),
             tabs: Vec::new(),
             active_tab: None,
@@ -286,7 +285,7 @@ fn default_state_version() -> u32 {
 }
 
 fn default_sidebar_width() -> f32 {
-    DEFAULT_SIDEBAR_WIDTH
+    f32::from(SIDEBAR_DEFAULT_WIDTH)
 }
 
 fn serialize_request_template<S>(
