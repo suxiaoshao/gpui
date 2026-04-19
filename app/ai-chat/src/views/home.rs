@@ -186,6 +186,10 @@ impl Render for HomeView {
                                 .child(
                                     resizable_panel()
                                         .size(sidebar_width)
+                                        .size_range(
+                                            state::workspace::SIDEBAR_MIN_WIDTH
+                                                ..state::workspace::SIDEBAR_MAX_WIDTH,
+                                        )
                                         .child(self.sidebar.clone()),
                                 )
                                 .child(self.tabs.clone().into_any_element()),

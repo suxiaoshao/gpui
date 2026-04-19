@@ -18,6 +18,10 @@ use gpui::*;
 use std::{collections::BTreeSet, ops::Deref};
 use tracing::{Level, event};
 
+pub(crate) const SIDEBAR_MIN_WIDTH: Pixels = px(180.);
+pub(crate) const SIDEBAR_DEFAULT_WIDTH: Pixels = px(300.);
+pub(crate) const SIDEBAR_MAX_WIDTH: Pixels = px(420.);
+
 pub(crate) struct WorkspaceState {
     persisted: PersistedWorkspaceState,
     tabs: Vec<AppTab>,
@@ -39,11 +43,11 @@ impl WorkspaceState {
     }
 
     pub(crate) fn sidebar_width(&self) -> Pixels {
-        px(self.persisted.sidebar_width.max(100.))
+        clamp_sidebar_width(px(self.persisted.sidebar_width))
     }
 
     pub(crate) fn set_sidebar_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
-        self.persisted.sidebar_width = f32::from(width.max(px(100.)));
+        self.persisted.sidebar_width = f32::from(clamp_sidebar_width(width));
         self.schedule_save(cx);
         cx.notify();
     }
@@ -345,6 +349,10 @@ impl WorkspaceState {
     pub(crate) fn open_folder_ids(&self) -> BTreeSet<i32> {
         self.persisted.open_folder_ids.clone()
     }
+}
+
+fn clamp_sidebar_width(width: Pixels) -> Pixels {
+    width.max(SIDEBAR_MIN_WIDTH).min(SIDEBAR_MAX_WIDTH)
 }
 
 pub(crate) struct WorkspaceStore {

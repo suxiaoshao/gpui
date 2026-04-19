@@ -121,6 +121,8 @@ impl Render for SidebarView {
                 Sidebar::new("sidebar")
                     .side(Side::Left)
                     .w_full()
+                    .collapsible(false)
+                    .collapsed(false)
                     .header(SidebarHeader::new().child(app_title))
                     .child(SidebarSection::Tree(
                         SidebarGroup::new(conversation_tree_title).child(
