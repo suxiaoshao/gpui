@@ -208,6 +208,10 @@ fn persisted_window_bounds_resolve_only_when_visible_on_current_display() {
         None
     );
     assert_eq!(
+        resolve_persisted_window_bounds(Some(window_bounds(-1100., 20., 1200., 800.)), &displays),
+        None
+    );
+    assert_eq!(
         resolve_persisted_window_bounds(
             Some(PersistedWindowBounds {
                 display_id: Some(99),

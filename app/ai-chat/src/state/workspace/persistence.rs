@@ -69,18 +69,16 @@ pub(super) enum PersistedTab {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+const MIN_RESTORED_WINDOW_VISIBLE_WIDTH: f32 = 160.;
+const MIN_RESTORED_WINDOW_VISIBLE_HEIGHT: f32 = 120.;
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum PersistedWindowMode {
+    #[default]
     Windowed,
     Maximized,
     Fullscreen,
-}
-
-impl Default for PersistedWindowMode {
-    fn default() -> Self {
-        Self::Windowed
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -154,6 +152,28 @@ pub(super) struct ResolvedWindowBounds {
     pub(super) display_id: u32,
 }
 
+fn has_meaningful_visible_area(
+    window_bounds: Bounds<Pixels>,
+    display_bounds: Bounds<Pixels>,
+) -> bool {
+    let window_left = f32::from(window_bounds.origin.x);
+    let window_top = f32::from(window_bounds.origin.y);
+    let window_right = window_left + f32::from(window_bounds.size.width);
+    let window_bottom = window_top + f32::from(window_bounds.size.height);
+    let display_left = f32::from(display_bounds.origin.x);
+    let display_top = f32::from(display_bounds.origin.y);
+    let display_right = display_left + f32::from(display_bounds.size.width);
+    let display_bottom = display_top + f32::from(display_bounds.size.height);
+
+    let visible_width = window_right.min(display_right) - window_left.max(display_left);
+    let visible_height = window_bottom.min(display_bottom) - window_top.max(display_top);
+    let required_width = f32::from(window_bounds.size.width).min(MIN_RESTORED_WINDOW_VISIBLE_WIDTH);
+    let required_height =
+        f32::from(window_bounds.size.height).min(MIN_RESTORED_WINDOW_VISIBLE_HEIGHT);
+
+    visible_width >= required_width && visible_height >= required_height
+}
+
 pub(super) fn resolve_persisted_window_bounds(
     persisted: Option<PersistedWindowBounds>,
     displays: &[WindowDisplaySnapshot],
@@ -168,10 +188,10 @@ pub(super) fn resolve_persisted_window_bounds(
         Some(display_id) => displays.iter().find(|display| display.id == display_id)?,
         None => displays
             .iter()
-            .find(|display| bounds.intersects(&display.bounds))?,
+            .find(|display| has_meaningful_visible_area(bounds, display.bounds))?,
     };
 
-    if !bounds.intersects(&display.bounds) {
+    if !has_meaningful_visible_area(bounds, display.bounds) {
         return None;
     }
 
