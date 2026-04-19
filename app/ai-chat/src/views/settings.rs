@@ -4,7 +4,7 @@ use crate::{
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     i18n::{self, I18n},
     llm::provider_setting_groups,
-    state::{AiChatConfig, Language},
+    state::{AiChatConfig, Language, WindowPlacementKind, WorkspaceStore},
     tray,
 };
 use gpui::*;
@@ -17,7 +17,7 @@ use gpui_component::{
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
-use std::any::TypeId;
+use std::{any::TypeId, ops::Deref};
 use tracing::{Level, event};
 
 pub(super) mod appearance_settings;
@@ -33,6 +33,8 @@ enum SettingsOpenTarget {
     General,
     Provider,
 }
+
+const SETTINGS_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(960.), px(720.));
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(
@@ -67,7 +69,28 @@ impl SettingsView {
         });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
-        let _subscriptions = vec![cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes)];
+        let _subscriptions = vec![
+            cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes),
+            cx.observe_window_bounds(window, |_settings, window, cx| {
+                if !cx.has_global::<WorkspaceStore>() {
+                    return;
+                }
+
+                let window_bounds = window.window_bounds();
+                let display_id = window.display(cx).map(|display| display.id());
+                cx.global::<WorkspaceStore>()
+                    .deref()
+                    .clone()
+                    .update(cx, |workspace, cx| {
+                        workspace.set_window_bounds(
+                            WindowPlacementKind::Settings,
+                            window_bounds,
+                            display_id,
+                            cx,
+                        );
+                    });
+            }),
+        ];
         Self {
             focus_handle,
             hotkey_input,
@@ -328,8 +351,15 @@ fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, c
 
 fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
     let title = cx.global::<I18n>().t("settings-title");
+    let placement = crate::state::workspace::restored_window_placement(
+        WindowPlacementKind::Settings,
+        SETTINGS_WINDOW_FALLBACK_SIZE,
+        cx,
+    );
     match cx.open_window(
         WindowOptions {
+            window_bounds: Some(placement.window_bounds),
+            display_id: placement.display_id,
             titlebar: Some(settings_titlebar_options(title)),
             window_background: WindowBackgroundAppearance::Blurred,
             ..Default::default()

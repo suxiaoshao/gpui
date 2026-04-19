@@ -8,4 +8,6 @@ pub(crate) use chat::{
     ModelStore, ModelStoreSnapshot, ModelStoreStatus,
 };
 pub(crate) use config::{AiChatConfig, Language, ThemeMode};
-pub(crate) use workspace::{ConversationDraft, WorkspaceState, WorkspaceStore};
+pub(crate) use workspace::{
+    ConversationDraft, WindowPlacementKind, WorkspaceState, WorkspaceStore,
+};

@@ -5,7 +5,10 @@ mod tests;
 
 pub(crate) use self::persistence::ConversationDraft;
 use self::{
-    persistence::PersistedWorkspaceState,
+    persistence::{
+        PersistedWindowBounds, PersistedWorkspaceState, WindowDisplaySnapshot,
+        fallback_display_id_for_persisted_window, resolve_persisted_window_bounds,
+    },
     tabs::{AppTab, TabKind, TabPanel},
 };
 
@@ -21,6 +24,18 @@ use tracing::{Level, event};
 pub(crate) const SIDEBAR_MIN_WIDTH: Pixels = px(180.);
 pub(crate) const SIDEBAR_DEFAULT_WIDTH: Pixels = px(300.);
 pub(crate) const SIDEBAR_MAX_WIDTH: Pixels = px(420.);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowPlacementKind {
+    Main,
+    Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WindowPlacement {
+    pub(crate) window_bounds: WindowBounds,
+    pub(crate) display_id: Option<DisplayId>,
+}
 
 pub(crate) struct WorkspaceState {
     persisted: PersistedWorkspaceState,
@@ -50,6 +65,38 @@ impl WorkspaceState {
         self.persisted.sidebar_width = f32::from(clamp_sidebar_width(width));
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    pub(crate) fn set_window_bounds(
+        &mut self,
+        kind: WindowPlacementKind,
+        window_bounds: WindowBounds,
+        display_id: Option<DisplayId>,
+        cx: &mut Context<Self>,
+    ) {
+        let next = PersistedWindowBounds::from_window_bounds(window_bounds, display_id);
+        if self.update_persisted_window_bounds(kind, next) {
+            self.schedule_save(cx);
+        }
+    }
+
+    fn update_persisted_window_bounds(
+        &mut self,
+        kind: WindowPlacementKind,
+        next: PersistedWindowBounds,
+    ) -> bool {
+        let next = Some(next);
+        let current = match kind {
+            WindowPlacementKind::Main => &mut self.persisted.main_window_bounds,
+            WindowPlacementKind::Settings => &mut self.persisted.settings_window_bounds,
+        };
+
+        if *current == next {
+            return false;
+        }
+
+        *current = next;
+        true
     }
 
     pub(crate) fn toggle_folder_open(&mut self, folder_id: i32, cx: &mut Context<Self>) {
@@ -368,6 +415,72 @@ impl Deref for WorkspaceStore {
 }
 
 impl Global for WorkspaceStore {}
+
+pub(crate) fn restored_window_placement(
+    kind: WindowPlacementKind,
+    fallback_size: Size<Pixels>,
+    cx: &App,
+) -> WindowPlacement {
+    let persisted = if cx.has_global::<WorkspaceStore>() {
+        cx.global::<WorkspaceStore>().read(cx).persisted.clone()
+    } else {
+        WorkspaceState::load_persisted().unwrap_or_default()
+    };
+    restored_window_placement_from_state(&persisted, kind, fallback_size, cx)
+}
+
+fn restored_window_placement_from_state(
+    persisted: &PersistedWorkspaceState,
+    kind: WindowPlacementKind,
+    fallback_size: Size<Pixels>,
+    cx: &App,
+) -> WindowPlacement {
+    let displays = window_display_snapshots(cx);
+    let persisted_bounds = persisted_window_bounds(persisted, kind);
+
+    if let Some(resolved) = resolve_persisted_window_bounds(persisted_bounds, &displays) {
+        return WindowPlacement {
+            window_bounds: resolved.window_bounds,
+            display_id: display_id_from_raw(cx, resolved.display_id),
+        };
+    }
+
+    let display_id = fallback_display_id_for_persisted_window(persisted_bounds, &displays)
+        .and_then(|display_id| display_id_from_raw(cx, display_id));
+    WindowPlacement {
+        window_bounds: WindowBounds::Windowed(Bounds::centered(display_id, fallback_size, cx)),
+        display_id,
+    }
+}
+
+fn persisted_window_bounds(
+    persisted: &PersistedWorkspaceState,
+    kind: WindowPlacementKind,
+) -> Option<PersistedWindowBounds> {
+    match kind {
+        WindowPlacementKind::Main => persisted.main_window_bounds,
+        WindowPlacementKind::Settings => persisted.settings_window_bounds,
+    }
+}
+
+fn window_display_snapshots(cx: &App) -> Vec<WindowDisplaySnapshot> {
+    let primary_id = cx.primary_display().map(|display| u32::from(display.id()));
+    cx.displays()
+        .into_iter()
+        .map(|display| WindowDisplaySnapshot {
+            id: u32::from(display.id()),
+            bounds: display.bounds(),
+            is_primary: primary_id == Some(u32::from(display.id())),
+        })
+        .collect()
+}
+
+fn display_id_from_raw(cx: &App, raw_id: u32) -> Option<DisplayId> {
+    cx.displays()
+        .into_iter()
+        .find(|display| u32::from(display.id()) == raw_id)
+        .map(|display| display.id())
+}
 
 pub(crate) fn init(window: &mut Window, cx: &mut Context<crate::views::home::HomeView>) {
     let data = cx.new(|cx| WorkspaceState::new(window, cx));
