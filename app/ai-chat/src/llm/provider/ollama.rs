@@ -389,6 +389,11 @@ impl OllamaProvider {
             .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"))
     }
 
+    fn default_think_for_model(model: &ProviderModel) -> Option<OllamaThinkValue> {
+        (Self::supports_thinking(model) && !Self::uses_thinking_levels(model))
+            .then_some(OllamaThinkValue::Boolean(false))
+    }
+
     fn thinking_value_from_template(
         model: &ProviderModel,
         template: &serde_json::Value,
@@ -660,7 +665,7 @@ impl Provider for OllamaProvider {
         Ok(serde_json::to_value(OllamaRequestTemplate {
             model: model.id.clone(),
             stream: model.capability.stream_flag(),
-            think: None,
+            think: Self::default_think_for_model(model),
             web_search: false,
         })?)
     }
@@ -1028,6 +1033,47 @@ mod tests {
         assert_eq!(settings[1].key, WEB_SEARCH_KEY);
         assert_eq!(settings[1].tooltip, Some(WEB_SEARCH_TOOLTIP_KEY));
         assert_eq!(settings[1].control, ExtSettingControl::Boolean(true));
+        Ok(())
+    }
+
+    #[test]
+    fn default_template_disables_standard_thinking_models() -> anyhow::Result<()> {
+        let model = model_with_metadata("qwen3", &["completion", "thinking"], "qwen3", &["qwen3"]);
+        let template = OllamaProvider.default_template_for_model(&model)?;
+        assert_eq!(template["think"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn default_template_omits_think_for_non_thinking_models() -> anyhow::Result<()> {
+        let model = model_with_metadata("llama3.2", &["completion"], "llama", &["llama"]);
+        let template = OllamaProvider.default_template_for_model(&model)?;
+        assert!(template.get("think").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn default_template_keeps_gptoss_level_thinking_default() -> anyhow::Result<()> {
+        let model = model_with_metadata(
+            "gpt-oss:20b",
+            &["completion", "thinking"],
+            "gptoss",
+            &["gptoss"],
+        );
+        let template = OllamaProvider.default_template_for_model(&model)?;
+        assert!(template.get("think").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn request_body_preserves_default_false_think() -> anyhow::Result<()> {
+        let model = model_with_metadata("qwen3", &["completion", "thinking"], "qwen3", &["qwen3"]);
+        let template = OllamaProvider.default_template_for_model(&model)?;
+        let request = OllamaProvider.request_body(
+            &template,
+            vec![crate::llm::Message::new(Role::User, "hello".to_string())],
+        )?;
+        assert_eq!(request["think"], false);
         Ok(())
     }
 

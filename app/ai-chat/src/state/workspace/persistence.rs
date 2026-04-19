@@ -1,4 +1,4 @@
-use super::{TabKind, WorkspaceState};
+use super::{SIDEBAR_DEFAULT_WIDTH, TabKind, WorkspaceState};
 use crate::{
     app::APP_NAME,
     database::Mode,
@@ -11,7 +11,6 @@ use tracing::{Level, event};
 
 const STATE_FILE_NAME: &str = "state.toml";
 const STATE_VERSION: u32 = 1;
-const DEFAULT_SIDEBAR_WIDTH: f32 = 300.;
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +69,159 @@ pub(super) enum PersistedTab {
     },
 }
 
+const MIN_RESTORED_WINDOW_VISIBLE_WIDTH: f32 = 160.;
+const MIN_RESTORED_WINDOW_VISIBLE_HEIGHT: f32 = 120.;
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PersistedWindowMode {
+    #[default]
+    Windowed,
+    Maximized,
+    Fullscreen,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub(super) struct PersistedWindowBounds {
+    #[serde(default)]
+    pub(super) mode: PersistedWindowMode,
+    #[serde(default)]
+    pub(super) x: f32,
+    #[serde(default)]
+    pub(super) y: f32,
+    #[serde(default)]
+    pub(super) width: f32,
+    #[serde(default)]
+    pub(super) height: f32,
+    #[serde(default)]
+    pub(super) display_id: Option<u32>,
+}
+
+impl PersistedWindowBounds {
+    pub(super) fn from_window_bounds(
+        window_bounds: WindowBounds,
+        display_id: Option<DisplayId>,
+    ) -> Self {
+        let (mode, bounds) = match window_bounds {
+            WindowBounds::Windowed(bounds) => (PersistedWindowMode::Windowed, bounds),
+            WindowBounds::Maximized(bounds) => (PersistedWindowMode::Maximized, bounds),
+            WindowBounds::Fullscreen(bounds) => (PersistedWindowMode::Fullscreen, bounds),
+        };
+
+        Self {
+            mode,
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            width: f32::from(bounds.size.width),
+            height: f32::from(bounds.size.height),
+            display_id: display_id.map(u32::from),
+        }
+    }
+
+    pub(super) fn window_bounds(self) -> WindowBounds {
+        let bounds = self.bounds();
+        match self.mode {
+            PersistedWindowMode::Windowed => WindowBounds::Windowed(bounds),
+            PersistedWindowMode::Maximized => WindowBounds::Maximized(bounds),
+            PersistedWindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+        }
+    }
+
+    pub(super) fn bounds(self) -> Bounds<Pixels> {
+        Bounds::new(
+            point(px(self.x), px(self.y)),
+            size(px(self.width), px(self.height)),
+        )
+    }
+
+    fn has_valid_size(self) -> bool {
+        self.width > 0. && self.height > 0.
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct WindowDisplaySnapshot {
+    pub(super) id: u32,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) is_primary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ResolvedWindowBounds {
+    pub(super) window_bounds: WindowBounds,
+    pub(super) display_id: u32,
+}
+
+fn has_meaningful_visible_area(
+    window_bounds: Bounds<Pixels>,
+    display_bounds: Bounds<Pixels>,
+) -> bool {
+    let window_left = f32::from(window_bounds.origin.x);
+    let window_top = f32::from(window_bounds.origin.y);
+    let window_right = window_left + f32::from(window_bounds.size.width);
+    let window_bottom = window_top + f32::from(window_bounds.size.height);
+    let display_left = f32::from(display_bounds.origin.x);
+    let display_top = f32::from(display_bounds.origin.y);
+    let display_right = display_left + f32::from(display_bounds.size.width);
+    let display_bottom = display_top + f32::from(display_bounds.size.height);
+
+    let visible_width = window_right.min(display_right) - window_left.max(display_left);
+    let visible_height = window_bottom.min(display_bottom) - window_top.max(display_top);
+    let required_width = f32::from(window_bounds.size.width).min(MIN_RESTORED_WINDOW_VISIBLE_WIDTH);
+    let required_height =
+        f32::from(window_bounds.size.height).min(MIN_RESTORED_WINDOW_VISIBLE_HEIGHT);
+
+    visible_width >= required_width && visible_height >= required_height
+}
+
+pub(super) fn resolve_persisted_window_bounds(
+    persisted: Option<PersistedWindowBounds>,
+    displays: &[WindowDisplaySnapshot],
+) -> Option<ResolvedWindowBounds> {
+    let persisted = persisted?;
+    if !persisted.has_valid_size() {
+        return None;
+    }
+
+    let bounds = persisted.bounds();
+    let display = match persisted.display_id {
+        Some(display_id) => displays.iter().find(|display| display.id == display_id)?,
+        None => displays
+            .iter()
+            .find(|display| has_meaningful_visible_area(bounds, display.bounds))?,
+    };
+
+    if !has_meaningful_visible_area(bounds, display.bounds) {
+        return None;
+    }
+
+    Some(ResolvedWindowBounds {
+        window_bounds: persisted.window_bounds(),
+        display_id: display.id,
+    })
+}
+
+pub(super) fn fallback_display_id_for_persisted_window(
+    persisted: Option<PersistedWindowBounds>,
+    displays: &[WindowDisplaySnapshot],
+) -> Option<u32> {
+    persisted
+        .and_then(|persisted| persisted.display_id)
+        .and_then(|display_id| {
+            displays
+                .iter()
+                .any(|display| display.id == display_id)
+                .then_some(display_id)
+        })
+        .or_else(|| {
+            displays
+                .iter()
+                .find(|display| display.is_primary)
+                .map(|display| display.id)
+        })
+        .or_else(|| displays.first().map(|display| display.id))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct PersistedWorkspaceState {
     #[serde(default = "default_state_version")]
@@ -84,6 +236,10 @@ pub(super) struct PersistedWorkspaceState {
     pub(super) active_tab: Option<PersistedTabKey>,
     #[serde(default)]
     pub(super) latest_model_preset: Option<LatestModelPreset>,
+    #[serde(default)]
+    pub(super) main_window_bounds: Option<PersistedWindowBounds>,
+    #[serde(default)]
+    pub(super) settings_window_bounds: Option<PersistedWindowBounds>,
 }
 
 impl ConversationDraft {
@@ -115,11 +271,13 @@ impl Default for PersistedWorkspaceState {
     fn default() -> Self {
         Self {
             version: STATE_VERSION,
-            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_width: default_sidebar_width(),
             open_folder_ids: Default::default(),
             tabs: Vec::new(),
             active_tab: None,
             latest_model_preset: None,
+            main_window_bounds: None,
+            settings_window_bounds: None,
         }
     }
 }
@@ -286,7 +444,7 @@ fn default_state_version() -> u32 {
 }
 
 fn default_sidebar_width() -> f32 {
-    DEFAULT_SIDEBAR_WIDTH
+    f32::from(SIDEBAR_DEFAULT_WIDTH)
 }
 
 fn serialize_request_template<S>(

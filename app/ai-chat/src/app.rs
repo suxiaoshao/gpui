@@ -11,6 +11,7 @@ use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitE
 use window_ext::WindowExt;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat";
+const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 #[cfg(feature = "dhat-heap")]
 mod profiling {
@@ -170,8 +171,15 @@ fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Roo
 
 pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, anyhow::Error> {
     let title = cx.global::<I18n>().t("app-title");
+    let placement = state::workspace::restored_window_placement(
+        state::workspace::WindowPlacementKind::Main,
+        MAIN_WINDOW_FALLBACK_SIZE,
+        cx,
+    );
     cx.open_window(
         WindowOptions {
+            window_bounds: Some(placement.window_bounds),
+            display_id: placement.display_id,
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 ..TitleBar::title_bar_options()

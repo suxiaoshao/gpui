@@ -8,7 +8,6 @@ use crate::{
 use gpui::*;
 use gpui_component::{
     Collapsible, Side,
-    menu::ContextMenuExt,
     sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarItem, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
@@ -98,7 +97,6 @@ impl Render for SidebarView {
             template_list_label,
             add_conversation_label,
             add_folder_label,
-            root_label,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -110,9 +108,9 @@ impl Render for SidebarView {
                 i18n.t("sidebar-template-list"),
                 i18n.t("sidebar-add-conversation"),
                 i18n.t("sidebar-add-folder"),
-                i18n.t("sidebar-root"),
             )
         };
+        let root_label = cx.global::<I18n>().t("sidebar-root");
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
@@ -121,6 +119,8 @@ impl Render for SidebarView {
                 Sidebar::new("sidebar")
                     .side(Side::Left)
                     .w_full()
+                    .collapsible(false)
+                    .collapsed(false)
                     .header(SidebarHeader::new().child(app_title))
                     .child(SidebarSection::Tree(
                         SidebarGroup::new(conversation_tree_title).child(
@@ -202,17 +202,5 @@ impl Render for SidebarView {
                         ),
                     )),
             )
-            .context_menu(move |this, _window, _cx| {
-                let add_conversation_label = add_conversation_label.clone();
-                let add_folder_label = add_folder_label.clone();
-                this.check_side(Side::Left)
-                    .external_link_icon(false)
-                    .menu_with_icon(
-                        add_conversation_label,
-                        IconName::Plus,
-                        Box::new(AddConversation),
-                    )
-                    .menu_with_icon(add_folder_label, IconName::Plus, Box::new(AddFolder))
-            })
     }
 }

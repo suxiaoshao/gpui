@@ -4,7 +4,7 @@ use crate::{
         add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
     },
     i18n::I18n,
-    state::{self, AiChatConfig, WorkspaceStore},
+    state::{self, AiChatConfig, WindowPlacementKind, WorkspaceStore},
     views::home::{sidebar::SidebarView, tabs::TabsView},
 };
 use gpui::{prelude::FluentBuilder, *};
@@ -72,6 +72,21 @@ impl HomeView {
             _subscriptions: vec![
                 cx.observe(&workspace, |_state, _workspace, cx| {
                     cx.notify();
+                }),
+                cx.observe_window_bounds(window, |_state, window, cx| {
+                    let window_bounds = window.window_bounds();
+                    let display_id = window.display(cx).map(|display| display.id());
+                    cx.global::<WorkspaceStore>()
+                        .deref()
+                        .clone()
+                        .update(cx, |workspace, cx| {
+                            workspace.set_window_bounds(
+                                WindowPlacementKind::Main,
+                                window_bounds,
+                                display_id,
+                                cx,
+                            );
+                        });
                 }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
                     let theme_registry = ThemeRegistry::global(cx);
@@ -186,6 +201,10 @@ impl Render for HomeView {
                                 .child(
                                     resizable_panel()
                                         .size(sidebar_width)
+                                        .size_range(
+                                            state::workspace::SIDEBAR_MIN_WIDTH
+                                                ..state::workspace::SIDEBAR_MAX_WIDTH,
+                                        )
                                         .child(self.sidebar.clone()),
                                 )
                                 .child(self.tabs.clone().into_any_element()),
