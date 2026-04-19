@@ -33,6 +33,7 @@ pub(crate) struct ModelSelect {
     selected_model: Option<ProviderModel>,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
     model_picker_bounds: Bounds<Pixels>,
+    model_picker_loading: bool,
     model_picker_open: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -74,12 +75,13 @@ impl ModelSelect {
             selected_model: None,
             model_picker,
             model_picker_bounds: Bounds::default(),
+            model_picker_loading: false,
             model_picker_open: false,
             _subscriptions: Vec::new(),
         };
         this.bind_store_events(window, cx);
         this.ensure_models_loaded(window, cx);
-        this.sync_models_from_store(window, cx);
+        this.sync_models_from_store(window, cx, false);
         this
     }
 
@@ -115,13 +117,13 @@ impl ModelSelect {
             &cx.global::<ModelStore>().deref().clone(),
             window,
             |this, _, window, cx| {
-                this.sync_models_from_store(window, cx);
+                this.sync_models_from_store(window, cx, false);
             },
         );
         let config_subscription =
             cx.observe_global_in::<AiChatConfig>(window, |this, window, cx| {
-                this.sync_selection_with_config(cx);
-                this.sync_models_from_store(window, cx);
+                let selection_changed = this.sync_selection_with_config(cx);
+                this.sync_models_from_store(window, cx, selection_changed);
             });
         self._subscriptions.push(store_subscription);
         self._subscriptions.push(config_subscription);
@@ -141,46 +143,71 @@ impl ModelSelect {
         cx.global::<ModelStore>().read(cx).snapshot()
     }
 
-    fn sync_models_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = self.model_store_snapshot(cx);
-        self.models = snapshot.models.clone();
+    fn sync_models_from_store(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        force_selection_sync: bool,
+    ) {
+        let ModelStoreSnapshot { models, status } = self.model_store_snapshot(cx);
+        let models_changed = self.models != models;
+        if models_changed {
+            self.models = models;
+        }
 
         let keep_selected = self.selected_model.as_ref().is_some_and(|selected| {
             self.models.iter().any(|model| {
                 model.provider_name == selected.provider_name && model.id == selected.id
             })
         });
+        let mut selection_changed = force_selection_sync;
         if !keep_selected && self.selected_model.take().is_some() {
+            selection_changed = true;
             cx.emit(ModelSelectEvent::Change(None));
         }
 
-        let sections = model_sections(&self.models);
-        let selected_ix =
-            PickerListDelegate::selected_index_for(&sections, self.selected_model.as_ref());
-        let is_loading = matches!(
-            snapshot.status,
-            Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
-        );
-        self.model_picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_sections(sections);
-            picker.delegate_mut().set_loading(is_loading);
-            picker.set_selected_index(selected_ix, window, cx);
+        let next_loading = model_store_is_loading(status);
+        let loading_changed = self.model_picker_loading != next_loading;
+        if loading_changed {
+            self.model_picker_loading = next_loading;
+        }
+
+        let picker_selection = (models_changed || selection_changed).then(|| {
+            let sections = model_sections(&self.models);
+            let selected_ix =
+                PickerListDelegate::selected_index_for(&sections, self.selected_model.as_ref());
+            (sections, selected_ix)
         });
-        cx.emit(ModelSelectEvent::ModelsChanged);
-        cx.notify();
+
+        if picker_selection.is_some() || loading_changed {
+            self.model_picker.update(cx, |picker, cx| {
+                if let Some((sections, selected_ix)) = picker_selection {
+                    picker.delegate_mut().set_sections(sections);
+                    picker.set_selected_index(selected_ix, window, cx);
+                }
+                if loading_changed {
+                    picker.delegate_mut().set_loading(next_loading);
+                }
+            });
+            if models_changed {
+                cx.emit(ModelSelectEvent::ModelsChanged);
+            }
+            cx.notify();
+        }
     }
 
-    fn sync_selection_with_config(&mut self, cx: &mut Context<Self>) {
+    fn sync_selection_with_config(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(selected_model) = self.selected_model.as_ref() else {
-            return;
+            return false;
         };
         let configured =
             provider_is_configured(cx.global::<AiChatConfig>(), &selected_model.provider_name)
                 .unwrap_or(false);
         if !configured && self.selected_model.take().is_some() {
             cx.emit(ModelSelectEvent::Change(None));
-            cx.notify();
+            return true;
         }
+        false
     }
 
     fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -221,7 +248,7 @@ impl ModelSelect {
         let search_label = cx.global::<I18n>().t("field-search-models");
         let reload_tooltip = cx.global::<I18n>().t("button-reload");
         let configure_label = cx.global::<I18n>().t("button-configure");
-        let snapshot = self.model_store_snapshot(cx);
+        let is_loading = self.model_picker_loading;
         let on_mouse_down_out = cx.listener(|select, ev: &MouseDownEvent, window, cx| {
             if select.model_picker_bounds.contains(&ev.position) {
                 return;
@@ -262,13 +289,7 @@ impl ModelSelect {
                                 .ghost()
                                 .small()
                                 .tooltip(reload_tooltip)
-                                .disabled(matches!(
-                                    snapshot.status,
-                                    Some(
-                                        ModelStoreStatus::InitialLoading
-                                            | ModelStoreStatus::Refreshing
-                                    )
-                                ))
+                                .disabled(is_loading)
                                 .on_click(cx.listener(|select, _event, window, cx| {
                                     cx.stop_propagation();
                                     select.reload_models(window, cx);
@@ -308,8 +329,11 @@ impl Render for ModelSelect {
                     {
                         let state = cx.entity();
                         move |bounds, cx| {
-                            state.update(cx, |select, _| {
-                                select.model_picker_bounds = bounds;
+                            state.update(cx, |select, cx| {
+                                if select.model_picker_bounds != bounds {
+                                    select.model_picker_bounds = bounds;
+                                    cx.notify();
+                                }
                             })
                         }
                     },
@@ -320,5 +344,28 @@ impl Render for ModelSelect {
             .when(self.model_picker_open, |this| {
                 this.child(self.render_model_picker(window, cx))
             })
+    }
+}
+
+fn model_store_is_loading(status: Option<ModelStoreStatus>) -> bool {
+    matches!(
+        status,
+        Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_store_is_loading;
+    use crate::state::ModelStoreStatus;
+
+    #[test]
+    fn model_store_loading_status_matches_refresh_states() {
+        assert!(model_store_is_loading(Some(
+            ModelStoreStatus::InitialLoading
+        )));
+        assert!(model_store_is_loading(Some(ModelStoreStatus::Refreshing)));
+        assert!(!model_store_is_loading(Some(ModelStoreStatus::Idle)));
+        assert!(!model_store_is_loading(None));
     }
 }

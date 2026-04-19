@@ -84,27 +84,20 @@ where
             .w_full()
             .relative()
             .gap_x_1()
+            .min_h(px(28.))
             .px_3()
             .py_1()
+            .rounded(cx.theme().radius)
             .text_base()
             .text_color(cx.theme().foreground)
             .items_center()
             .justify_between()
-            .child(
-                div()
-                    .absolute()
-                    .top(px(1.))
-                    .right(px(2.))
-                    .bottom(px(1.))
-                    .left(px(2.))
-                    .rounded(cx.theme().radius)
-                    .when(self.is_selected, |this| {
-                        this.bg(cx.theme().secondary_active)
-                    })
-                    .when(!self.is_selected, |this| {
-                        this.hover(|this| this.bg(cx.theme().secondary_hover))
-                    }),
-            )
+            .when(self.is_selected, |this| {
+                this.bg(cx.theme().secondary_active)
+            })
+            .when(!self.is_selected, |this| {
+                this.hover(|this| this.bg(cx.theme().secondary_hover))
+            })
             .child(
                 h_flex()
                     .relative()
