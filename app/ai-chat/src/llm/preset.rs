@@ -86,6 +86,26 @@ mod tests {
     }
 
     #[test]
+    fn build_request_template_defaults_ollama_boolean_thinking_to_false() -> anyhow::Result<()> {
+        let model = ProviderModel::new("Ollama", "qwen3", ProviderModelCapability::Streaming)
+            .with_metadata(json!({
+                "capabilities": ["completion", "thinking"],
+                "family": "qwen3",
+                "families": ["qwen3"]
+            }));
+        let template = build_request_template(
+            &model,
+            Some(&json!({
+                "model": "qwen3",
+                "stream": true
+            })),
+        )?;
+
+        assert_eq!(template["think"], false);
+        Ok(())
+    }
+
+    #[test]
     fn build_request_template_skips_invalid_saved_ext_settings() -> anyhow::Result<()> {
         let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
         let template = build_request_template(
