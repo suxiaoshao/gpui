@@ -1,6 +1,7 @@
 use super::{
     ConversationDraft, PersistedWorkspaceState, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH,
-    SIDEBAR_MIN_WIDTH, WindowPlacementKind, WorkspaceState, persistence::*,
+    SIDEBAR_MIN_WIDTH, WindowPlacementKind, WorkspaceState, clamp_fallback_window_size,
+    persistence::*,
 };
 use crate::database::Mode;
 use gpui::{Bounds, WindowBounds, point, px, size};
@@ -249,6 +250,24 @@ fn fallback_display_prefers_saved_display_then_primary() {
             &displays,
         ),
         Some(1)
+    );
+}
+
+#[test]
+fn fallback_window_size_clamps_to_display_bounds() {
+    let small_display = display(1, 0., 0., 1366., 768., true);
+
+    assert_eq!(
+        clamp_fallback_window_size(size(px(1536.), px(864.)), Some(small_display.bounds)),
+        size(px(1366.), px(768.))
+    );
+    assert_eq!(
+        clamp_fallback_window_size(size(px(960.), px(720.)), Some(small_display.bounds)),
+        size(px(960.), px(720.))
+    );
+    assert_eq!(
+        clamp_fallback_window_size(size(px(1536.), px(864.)), None),
+        size(px(1536.), px(864.))
     );
 }
 

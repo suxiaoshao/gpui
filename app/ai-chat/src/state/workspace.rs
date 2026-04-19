@@ -445,12 +445,38 @@ fn restored_window_placement_from_state(
         };
     }
 
-    let display_id = fallback_display_id_for_persisted_window(persisted_bounds, &displays)
-        .and_then(|display_id| display_id_from_raw(cx, display_id));
+    let fallback_display_id = fallback_display_id_for_persisted_window(persisted_bounds, &displays);
+    let fallback_display_bounds = fallback_display_id.and_then(|display_id| {
+        displays
+            .iter()
+            .find(|display| display.id == display_id)
+            .map(|display| display.bounds)
+    });
+    let fallback_size = clamp_fallback_window_size(fallback_size, fallback_display_bounds);
+    let display_id = fallback_display_id.and_then(|display_id| display_id_from_raw(cx, display_id));
     WindowPlacement {
         window_bounds: WindowBounds::Windowed(Bounds::centered(display_id, fallback_size, cx)),
         display_id,
     }
+}
+
+fn clamp_fallback_window_size(
+    fallback_size: Size<Pixels>,
+    display_bounds: Option<Bounds<Pixels>>,
+) -> Size<Pixels> {
+    let Some(display_bounds) = display_bounds else {
+        return fallback_size;
+    };
+    let display_width = f32::from(display_bounds.size.width);
+    let display_height = f32::from(display_bounds.size.height);
+    if display_width <= 0. || display_height <= 0. {
+        return fallback_size;
+    }
+
+    size(
+        px(f32::from(fallback_size.width).min(display_width)),
+        px(f32::from(fallback_size.height).min(display_height)),
+    )
 }
 
 fn persisted_window_bounds(
