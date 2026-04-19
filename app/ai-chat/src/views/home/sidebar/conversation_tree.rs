@@ -5,6 +5,7 @@ use crate::{
         add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
     },
     database::{Conversation, Folder},
+    i18n::I18n,
     state::{ChatData, ChatDataEvent, ChatDataInner},
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -253,7 +254,8 @@ impl SidebarItem for ConversationTree {
                             .justify_center()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(root_label),
+                            .child(root_label)
+                            .context_menu(root_context_menu),
                     )
                     .on_drag_move::<DragConversationTreeItem>({
                         move |event, window, cx| {
@@ -275,10 +277,8 @@ impl SidebarItem for ConversationTree {
                             return;
                         }
                         drag.move_to_root(cx);
-                    })
-                    .context_menu(root_context_menu),
+                    }),
             )
-            .context_menu(root_context_menu)
     }
 }
 
@@ -486,16 +486,17 @@ impl Render for DragConversationTreeItem {
 fn root_context_menu(
     menu: PopupMenu,
     _window: &mut Window,
-    _cx: &mut Context<PopupMenu>,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let i18n = cx.global::<I18n>();
     menu.check_side(Side::Left)
         .item(
-            PopupMenuItem::new("Add Conversation")
+            PopupMenuItem::new(i18n.t("sidebar-add-conversation"))
                 .icon(IconName::Plus)
                 .on_click(|_, window, cx| open_add_conversation_dialog(None, None, window, cx)),
         )
         .item(
-            PopupMenuItem::new("Add Folder")
+            PopupMenuItem::new(i18n.t("sidebar-add-folder"))
                 .icon(IconName::Plus)
                 .on_click(|_, window, cx| open_add_folder_dialog(None, window, cx)),
         )
