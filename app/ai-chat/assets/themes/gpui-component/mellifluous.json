@@ -188,6 +188,7 @@
         "tab.active.foreground": "#abb2bf",
         "tab.background": "#1A1A1A00",
         "tab.foreground": "#abb2bf",
+        "tab_bar.background": "#2f2f2f",
         "title_bar.background": "#171717",
         "title_bar.border": "#444444",
         "base.red": "#C95954",
