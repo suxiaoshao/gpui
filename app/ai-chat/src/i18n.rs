@@ -189,6 +189,7 @@ fn build_bundle(lang: &str, source: &str) -> FluentBundle<FluentResource> {
 mod tests {
     use super::{I18n, locale_for_language};
     use crate::state::Language;
+    use fluent_bundle::FluentArgs;
 
     #[test]
     fn explicit_language_selects_expected_locale() {
@@ -200,5 +201,45 @@ mod tests {
             I18n::new(locale_for_language(Language::English)).t("language-system"),
             "System"
         );
+    }
+
+    #[test]
+    fn destructive_confirmation_keys_are_localized() {
+        let keys = [
+            "button-regenerate",
+            "dialog-delete-message-title",
+            "dialog-delete-message-message",
+            "dialog-clear-conversation-title",
+            "dialog-clear-conversation-message",
+            "dialog-delete-temporary-message-title",
+            "dialog-delete-temporary-message-message",
+            "dialog-clear-temporary-chat-title",
+            "dialog-clear-temporary-chat-message",
+            "dialog-delete-material-theme-title",
+            "dialog-delete-material-theme-message",
+            "dialog-regenerate-message-title",
+            "dialog-regenerate-message-message",
+        ];
+
+        for locale in ["en-US", "zh-CN"] {
+            let i18n = I18n::for_locale_tag(locale);
+            for key in keys {
+                assert_ne!(i18n.t(key), key, "{key} should be localized in {locale}");
+            }
+
+            let mut conversation_args = FluentArgs::new();
+            conversation_args.set("title", "Demo");
+            assert_ne!(
+                i18n.t_with_args("dialog-delete-conversation-message", &conversation_args),
+                "dialog-delete-conversation-message"
+            );
+
+            let mut folder_args = FluentArgs::new();
+            folder_args.set("name", "Archive");
+            assert_ne!(
+                i18n.t_with_args("dialog-delete-folder-message", &folder_args),
+                "dialog-delete-folder-message"
+            );
+        }
     }
 }

@@ -14,6 +14,7 @@ use crate::{
     i18n::I18n,
     state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Icon, Sizable,
@@ -281,6 +282,10 @@ pub(super) fn folder_popup_menu(
     let id = folder.id;
     let name = folder.name.clone();
     let i18n = cx.global::<I18n>();
+    let mut delete_args = FluentArgs::new();
+    delete_args.set("name", name.as_ref().to_string());
+    let delete_title = i18n.t("dialog-delete-folder-title");
+    let delete_message = i18n.t_with_args("dialog-delete-folder-message", &delete_args);
     menu.item(
         PopupMenuItem::new(i18n.t("button-edit"))
             .icon(IconName::Edit)
@@ -304,15 +309,13 @@ pub(super) fn folder_popup_menu(
     )
     .item(PopupMenuItem::separator())
     .item(
-        PopupMenuItem::new("Delete")
+        PopupMenuItem::new(i18n.t("button-delete"))
             .icon(IconName::Trash)
             .on_click(move |_, window, cx| {
                 let chat_data = cx.global::<ChatData>().deref().clone();
                 open_delete_confirm_dialog(
-                    "Delete Folder",
-                    SharedString::from(format!(
-                        "Delete folder \"{name}\" and its contents? This action cannot be undone."
-                    )),
+                    delete_title.clone(),
+                    delete_message.clone(),
                     move |_window, cx| {
                         chat_data.update(cx, |_this, cx| {
                             cx.emit(ChatDataEvent::DeleteFolder(id));

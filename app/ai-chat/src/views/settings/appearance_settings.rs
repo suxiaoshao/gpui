@@ -1,5 +1,6 @@
 use crate::{
     assets::IconName,
+    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     i18n::I18n,
     state::{AiChatConfig, ThemeMode, theme as app_theme},
 };
@@ -204,9 +205,26 @@ impl AppearanceSettingsPage {
             .danger()
             .xsmall()
             .tooltip(delete_material_theme_label)
-            .on_click(move |_, _, cx| {
+            .on_click(move |_, window, cx| {
                 cx.stop_propagation();
-                Self::delete_material_theme(delete_id.clone(), cx);
+                let delete_id = delete_id.clone();
+                let (title, message) = {
+                    let i18n = cx.global::<I18n>();
+                    (
+                        i18n.t("dialog-delete-material-theme-title"),
+                        i18n.t("dialog-delete-material-theme-message"),
+                    )
+                };
+                open_destructive_confirm_dialog(
+                    title,
+                    message,
+                    DestructiveAction::Delete,
+                    move |_window, cx| {
+                        Self::delete_material_theme(delete_id.clone(), cx);
+                    },
+                    window,
+                    cx,
+                );
             })
             .into_any_element()
         });
