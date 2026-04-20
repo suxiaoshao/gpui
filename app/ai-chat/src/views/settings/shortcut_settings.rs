@@ -1084,7 +1084,8 @@ impl ShortcutSettingsPage {
         cx: &App,
     ) -> AnyElement {
         v_flex()
-            .flex_1()
+            .flex_none()
+            .w(min_width)
             .min_w(min_width)
             .gap_1()
             .child(
@@ -1208,6 +1209,7 @@ impl ShortcutSettingsPage {
             field_hotkey,
             field_send_content,
             field_preset,
+            field_actions,
             empty_model_picker,
             invalid_hotkey_label,
         ) = {
@@ -1219,6 +1221,7 @@ impl ShortcutSettingsPage {
                 i18n.t("field-hotkey"),
                 i18n.t("field-send-content"),
                 i18n.t("field-preset"),
+                i18n.t("field-actions"),
                 i18n.t("empty-model-picker"),
                 i18n.t("notify-invalid-shortcut-hotkey"),
             )
@@ -1261,7 +1264,17 @@ impl ShortcutSettingsPage {
                             cx,
                         ),
                     )
-                    .child(self.render_shortcut_actions(row, cx)),
+                    .child(
+                        self.render_row_field(
+                            field_mode.clone().into(),
+                            px(140.),
+                            Select::new(&row.mode_select)
+                                .small()
+                                .placeholder(field_mode.clone())
+                                .w_full(),
+                            cx,
+                        ),
+                    ),
             )
             .child(
                 h_flex()
@@ -1271,11 +1284,12 @@ impl ShortcutSettingsPage {
                     .flex_wrap()
                     .child(
                         self.render_row_field(
-                            field_mode.clone().into(),
-                            px(140.),
-                            Select::new(&row.mode_select)
+                            field_send_content.clone().into(),
+                            px(300.),
+                            Select::new(&row.input_source_select)
                                 .small()
-                                .placeholder(field_mode.clone())
+                                .placeholder(field_send_content.clone())
+                                .menu_width(px(320.))
                                 .w_full(),
                             cx,
                         ),
@@ -1296,21 +1310,16 @@ impl ShortcutSettingsPage {
                         cx,
                     ))
                     .child(self.render_enabled_field(row, cx))
-                    .child(
-                        self.render_row_field(
-                            field_send_content.clone().into(),
-                            px(180.),
-                            Select::new(&row.input_source_select)
-                                .small()
-                                .placeholder(field_send_content.clone())
-                                .w_full(),
-                            cx,
-                        ),
-                    )
                     .child(self.render_row_field(
                         field_preset.into(),
                         px(92.),
                         self.render_ext_settings_cell(row, window, cx),
+                        cx,
+                    ))
+                    .child(self.render_row_field(
+                        field_actions.into(),
+                        px(112.),
+                        self.render_shortcut_actions(row, cx),
                         cx,
                     )),
             )

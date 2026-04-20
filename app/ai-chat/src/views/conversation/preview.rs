@@ -579,76 +579,79 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                                 )
                             }),
                     ),
-                )
+            )
             .child(
-                v_flex()
+                div()
                     .flex_1()
                     .min_h_0()
-                    .gap_4()
-                    .p_4()
-                    .child(Label::new(section_information).text_lg())
+                    .overflow_y_scrollbar()
                     .child(
-                        DescriptionList::new()
-                            .columns(2)
-                            .children(self.description_items(cx))
-                            .layout(Axis::Vertical),
-                    )
-                    .child(Label::new(section_content).text_lg())
-                    .map(|this| {
-                        if is_editing {
-                            this.child(render_editor(
-                                "message-preview-text",
-                                field_text.into(),
-                                &self.input.text,
-                                px(132.),
-                            ))
-                            .child(render_editor(
-                                "message-preview-reasoning-summary",
-                                field_reasoning_summary.into(),
-                                &self.input.reasoning_summary,
-                                px(104.),
-                            ))
-                            .child(render_editor(
-                                "message-preview-citations",
-                                field_citations.into(),
-                                &self.input.citations,
-                                px(132.),
-                            ))
-                            .child(render_preview_json(
-                                "message-preview-send-content-preview",
-                                field_send_content.into(),
-                                send_content_value,
-                                cx,
-                            ))
-                        } else {
-                            this.child(render_preview_text(
-                                "message-preview-text-preview",
-                                field_text.into(),
-                                text_value,
-                                cx,
-                            ))
-                            .child(render_preview_text(
-                                "message-preview-reasoning-summary-preview",
-                                field_reasoning_summary.into(),
-                                reasoning_value,
-                                cx,
-                            ))
-                            .child(render_preview_json(
-                                "message-preview-citations-preview",
-                                field_citations.into(),
-                                citations_value,
-                                cx,
-                            ))
-                            .child(render_preview_json(
-                                "message-preview-send-content-preview",
-                                field_send_content.into(),
-                                send_content_value,
-                                cx,
-                            ))
-                        }
-                    })
-                    .overflow_hidden()
-                    .overflow_y_scrollbar(),
+                        v_flex()
+                            .w_full()
+                            .gap_4()
+                            .p_4()
+                            .child(Label::new(section_information).text_lg())
+                            .child(
+                                DescriptionList::new()
+                                    .columns(2)
+                                    .children(self.description_items(cx))
+                                    .layout(Axis::Vertical),
+                            )
+                            .child(Label::new(section_content).text_lg())
+                            .map(|this| {
+                                if is_editing {
+                                    this.child(render_editor(
+                                        "message-preview-text",
+                                        field_text.into(),
+                                        &self.input.text,
+                                        px(132.),
+                                    ))
+                                    .child(render_editor(
+                                        "message-preview-reasoning-summary",
+                                        field_reasoning_summary.into(),
+                                        &self.input.reasoning_summary,
+                                        px(104.),
+                                    ))
+                                    .child(render_editor(
+                                        "message-preview-citations",
+                                        field_citations.into(),
+                                        &self.input.citations,
+                                        px(132.),
+                                    ))
+                                    .child(render_preview_json(
+                                        "message-preview-send-content-preview",
+                                        field_send_content.into(),
+                                        send_content_value,
+                                        cx,
+                                    ))
+                                } else {
+                                    this.child(render_preview_text(
+                                        "message-preview-text-preview",
+                                        field_text.into(),
+                                        text_value,
+                                        cx,
+                                    ))
+                                    .child(render_preview_text(
+                                        "message-preview-reasoning-summary-preview",
+                                        field_reasoning_summary.into(),
+                                        reasoning_value,
+                                        cx,
+                                    ))
+                                    .child(render_preview_json(
+                                        "message-preview-citations-preview",
+                                        field_citations.into(),
+                                        citations_value,
+                                        cx,
+                                    ))
+                                    .child(render_preview_json(
+                                        "message-preview-send-content-preview",
+                                        field_send_content.into(),
+                                        send_content_value,
+                                        cx,
+                                    ))
+                                }
+                            }),
+                    ),
             )
             .children(dialog_layer)
             .children(notification_layer)

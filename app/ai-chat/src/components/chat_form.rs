@@ -268,11 +268,14 @@ impl ChatForm {
             return;
         };
         self.last_input_text = next.clone();
-        self.open_template_picker(Some(slash_restore_position), window, cx);
+        self.template_picker_open = true;
+        self.slash_restore_position = Some(slash_restore_position);
+        self.rebuild_template_picker(window, cx);
         self.input_state.update(cx, |input, cx| {
             input.set_value(next, window, cx);
             input.set_cursor_position(slash_restore_position, window, cx);
         });
+        self.focus_template_picker(window, cx);
         cx.notify();
     }
 

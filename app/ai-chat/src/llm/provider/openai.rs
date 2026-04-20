@@ -3,10 +3,9 @@ use super::{
     ProviderModelCapability,
 };
 use crate::{
-    assets::IconName,
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    i18n::{I18n, t_static},
+    i18n::t_static,
     llm::Message,
     state::AiChatConfig,
 };
@@ -14,9 +13,7 @@ use eventsource_stream::Eventsource;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable,
-    button::{Button, ButtonVariants},
-    h_flex,
+    Sizable,
     input::{Input, InputEvent, InputState},
     setting::{SettingField, SettingGroup, SettingItem},
 };
@@ -120,136 +117,61 @@ struct BaseUrlFieldState {
 struct ApiKeyFieldState {
     input: Entity<InputState>,
     last_value: String,
-    revealed: bool,
     _subscription: Subscription,
 }
 
-fn masked_api_key_placeholder(value: &str) -> SharedString {
-    if value.is_empty() {
-        SharedString::default()
-    } else {
-        "************".into()
-    }
-}
-
 fn openai_api_key_setting_item() -> SettingItem {
-    SettingItem::render(|options, window, cx| {
-        let initial_value = openai_settings(cx).api_key.unwrap_or_default();
-        let state = window
-            .use_keyed_state("openai-api-key-setting-row", cx, |window, cx| {
-                let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .default_value(initial_value.clone())
-                        .masked(true)
-                });
-                input.update(cx, |input, cx| {
-                    input.set_masked(true, window, cx);
-                });
-                let _subscription = cx.subscribe_in(&input, window, {
-                    move |state: &mut ApiKeyFieldState, input, event: &InputEvent, _window, cx| {
-                        if !matches!(event, InputEvent::Change) {
-                            return;
-                        }
+    SettingItem::new(
+        t_static("field-api-key"),
+        SettingField::render(|options, window, cx| {
+            let initial_value = openai_settings(cx).api_key.unwrap_or_default();
+            let state = window
+                .use_keyed_state("openai-api-key-setting-row", cx, |window, cx| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .default_value(initial_value.clone())
+                            .masked(true)
+                    });
+                    let _subscription = cx.subscribe_in(&input, window, {
+                        move |state: &mut ApiKeyFieldState,
+                              input,
+                              event: &InputEvent,
+                              _window,
+                              cx| {
+                            if !matches!(event, InputEvent::Change) {
+                                return;
+                            }
 
-                        let next_value = input.read(cx).value().to_string();
-                        if next_value == state.last_value {
-                            return;
-                        }
+                            let next_value = input.read(cx).value().to_string();
+                            if next_value == state.last_value {
+                                return;
+                            }
 
-                        let mut open_settings = openai_settings(cx);
-                        open_settings.api_key = if next_value.is_empty() {
-                            None
-                        } else {
-                            Some(next_value.clone())
-                        };
-                        save_openai_settings(open_settings, cx);
-                        state.last_value = next_value;
-                    }
-                });
-
-                ApiKeyFieldState {
-                    input,
-                    last_value: initial_value,
-                    revealed: false,
-                    _subscription,
-                }
-            })
-            .clone();
-        let (input, revealed, has_value) = {
-            let field = state.read(cx);
-            (
-                field.input.clone(),
-                field.revealed,
-                !field.input.read(cx).value().is_empty(),
-            )
-        };
-        let (show_tooltip, hide_tooltip) = {
-            let i18n = cx.global::<I18n>();
-            (
-                i18n.t("tooltip-show-api-key"),
-                i18n.t("tooltip-hide-api-key"),
-            )
-        };
-
-        h_flex()
-            .w_full()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .child(t_static("field-api-key")),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(if revealed {
-                        Input::new(&input)
-                            .with_size(options.size)
-                            .w(px(272.))
-                            .into_any_element()
-                    } else {
-                        div()
-                            .w(px(272.))
-                            .h(px(32.))
-                            .flex()
-                            .items_center()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().background)
-                            .px_3()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(masked_api_key_placeholder(if has_value { "x" } else { "" }))
-                            .into_any_element()
-                    })
-                    .child(
-                        Button::new("openai-api-key-reveal-setting")
-                            .icon(if revealed {
-                                IconName::EyeOff
+                            let mut open_settings = openai_settings(cx);
+                            open_settings.api_key = if next_value.is_empty() {
+                                None
                             } else {
-                                IconName::Eye
-                            })
-                            .ghost()
-                            .small()
-                            .tooltip(if revealed { hide_tooltip } else { show_tooltip })
-                            .on_click(move |_, window, cx| {
-                                state.update(cx, |field, cx| {
-                                    field.revealed = !field.revealed;
-                                    let revealed = field.revealed;
-                                    field.input.update(cx, |input, cx| {
-                                        input.set_masked(!revealed, window, cx);
-                                    });
-                                    cx.notify();
-                                });
-                            }),
-                    ),
-            )
-    })
+                                Some(next_value.clone())
+                            };
+                            save_openai_settings(open_settings, cx);
+                            state.last_value = next_value;
+                        }
+                    });
+
+                    ApiKeyFieldState {
+                        input,
+                        last_value: initial_value,
+                        _subscription,
+                    }
+                })
+                .read(cx);
+
+            Input::new(&state.input)
+                .with_size(options.size)
+                .w(px(320.))
+                .mask_toggle()
+        }),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1043,8 +965,8 @@ mod tests {
         ExtSettingControl, HostedTool, OpenAIProvider, OpenAIRequestTemplate, Provider,
         ProviderModel, ProviderModelCapability, REASONING_EFFORT_KEY, REASONING_HIGH,
         REASONING_LOW, REASONING_MEDIUM, REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH,
-        ReasoningConfig, ResponsesCreateResponse, classify_model, masked_api_key_placeholder,
-        normalize_base_url, parse_response_stream_event,
+        ReasoningConfig, ResponsesCreateResponse, classify_model, normalize_base_url,
+        parse_response_stream_event,
     };
     use crate::{
         database::Content,
@@ -1068,16 +990,6 @@ mod tests {
     fn normalize_base_url_defaults_when_empty() {
         assert_eq!(normalize_base_url(""), "https://api.openai.com/v1");
         assert_eq!(normalize_base_url("   "), "https://api.openai.com/v1");
-    }
-
-    #[test]
-    fn masked_api_key_placeholder_never_contains_secret_value() {
-        let secret = "sk-test-mask-only";
-        let placeholder = masked_api_key_placeholder(secret);
-
-        assert!(!placeholder.is_empty());
-        assert!(!placeholder.as_ref().contains(secret));
-        assert_eq!(masked_api_key_placeholder(""), "");
     }
 
     #[test]
