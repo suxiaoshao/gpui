@@ -1,6 +1,9 @@
 use crate::{
     assets::IconName,
-    components::message::MessageViewExt,
+    components::{
+        delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+        message::MessageViewExt,
+    },
     database::{Content, Conversation, Db, Message, Role},
     errors::{AiChatError, AiChatResult},
     i18n::I18n,
@@ -300,11 +303,27 @@ impl MessageViewExt for Message {
         });
     }
 
-    fn delete_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
+    fn delete_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
         let chat_data = cx.global::<ChatData>().deref().clone();
-        chat_data.update(cx, move |_this, cx| {
-            cx.emit(ChatDataEvent::DeleteMessage(id));
-        });
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-delete-message-title"),
+                i18n.t("dialog-delete-message-message"),
+            )
+        };
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Delete,
+            move |_window, cx| {
+                chat_data.update(cx, move |_this, cx| {
+                    cx.emit(ChatDataEvent::DeleteMessage(id));
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     fn can_resend(&self, cx: &App) -> bool {
@@ -317,17 +336,33 @@ impl MessageViewExt for Message {
             .is_some_and(|panel| !panel.read(cx).has_running_task())
     }
 
-    fn resend_message_by_id(id: Self::Id, _window: &mut Window, cx: &mut App) {
-        let panel = cx
-            .global::<WorkspaceStore>()
-            .read(cx)
-            .active_conversation_panel();
-        let Some(panel) = panel else {
-            return;
+    fn resend_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-regenerate-message-title"),
+                i18n.t("dialog-regenerate-message-message"),
+            )
         };
-        panel.update(cx, |this, cx| {
-            this.resend_message(id, _window, cx);
-        });
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Regenerate,
+            move |window, cx| {
+                let panel = cx
+                    .global::<WorkspaceStore>()
+                    .read(cx)
+                    .active_conversation_panel();
+                let Some(panel) = panel else {
+                    return;
+                };
+                panel.update(cx, |this, cx| {
+                    this.resend_message(id, window, cx);
+                });
+            },
+            window,
+            cx,
+        );
     }
 }
 

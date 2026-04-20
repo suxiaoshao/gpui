@@ -9,6 +9,7 @@ use crate::{
     state::{ChatData, ChatDataEvent, WorkspaceStore},
     views::home::{open_copy_conversation_dialog, open_export_conversation_prompt},
 };
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Sizable,
@@ -139,6 +140,10 @@ pub(super) fn conversation_popup_menu(
     let id = conversation.id;
     let title = conversation.title.clone();
     let i18n = cx.global::<I18n>();
+    let mut delete_args = FluentArgs::new();
+    delete_args.set("title", title.as_ref().to_string());
+    let delete_title = i18n.t("dialog-delete-conversation-title");
+    let delete_message = i18n.t_with_args("dialog-delete-conversation-message", &delete_args);
     menu.item(
         PopupMenuItem::new(i18n.t("button-copy-to-new-conversation"))
             .icon(IconName::Copy)
@@ -175,15 +180,13 @@ pub(super) fn conversation_popup_menu(
             }),
     )
     .item(
-        PopupMenuItem::new("Delete")
+        PopupMenuItem::new(i18n.t("button-delete"))
             .icon(IconName::Trash)
             .on_click(move |_, window, cx| {
                 let chat_data = cx.global::<ChatData>().deref().clone();
                 open_delete_confirm_dialog(
-                    "Delete Conversation",
-                    SharedString::from(format!(
-                        "Delete conversation \"{title}\"? This action cannot be undone."
-                    )),
+                    delete_title.clone(),
+                    delete_message.clone(),
                     move |_window, cx| {
                         chat_data.update(cx, |_this, cx| {
                             cx.emit(ChatDataEvent::DeleteConversation(id));

@@ -1,6 +1,8 @@
 use crate::{
     components::{
-        add_conversation::open_add_conversation_dialog, chat_form::ChatFormSnapshot,
+        add_conversation::open_add_conversation_dialog,
+        chat_form::ChatFormSnapshot,
+        delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
     },
     database::{Content, Mode, Role, Status},
@@ -140,14 +142,7 @@ impl MessageViewExt for TemporaryMessage {
     }
 
     fn delete_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let template_detail = find_temporary_detail(window, cx);
-        if let Some(template_detail) = template_detail {
-            template_detail.update(cx, |this, _cx| {
-                this.detail
-                    .messages
-                    .retain(|message| message.id != message_id);
-            });
-        } else {
+        let Some(template_detail) = find_temporary_detail(window, cx) else {
             let (title, message) = {
                 let i18n = cx.global::<I18n>();
                 (
@@ -162,7 +157,31 @@ impl MessageViewExt for TemporaryMessage {
                     .with_type(NotificationType::Error),
                 cx,
             );
-        }
+            return;
+        };
+
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-delete-temporary-message-title"),
+                i18n.t("dialog-delete-temporary-message-message"),
+            )
+        };
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Delete,
+            move |_window, cx| {
+                template_detail.update(cx, |this, cx| {
+                    this.detail
+                        .messages
+                        .retain(|message| message.id != message_id);
+                    cx.notify();
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     fn can_resend(&self, cx: &App) -> bool {
@@ -181,12 +200,28 @@ impl MessageViewExt for TemporaryMessage {
     }
 
     fn resend_message_by_id(message_id: Self::Id, window: &mut Window, cx: &mut App) {
-        let template_detail = find_temporary_detail(window, cx);
-        if let Some(template_detail) = template_detail {
-            template_detail.update(cx, |this, cx| {
-                this.resend_message(message_id, window, cx);
-            });
-        }
+        let Some(template_detail) = find_temporary_detail(window, cx) else {
+            return;
+        };
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-regenerate-message-title"),
+                i18n.t("dialog-regenerate-message-message"),
+            )
+        };
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Regenerate,
+            move |window, cx| {
+                template_detail.update(cx, |this, cx| {
+                    this.resend_message(message_id, window, cx);
+                });
+            },
+            window,
+            cx,
+        );
     }
 }
 
@@ -432,12 +467,31 @@ impl ConversationDetailViewExt for TemporaryDetailState {
     }
 
     fn clear(
-        view: &mut ConversationDetailView<Self>,
-        _window: &mut Window,
+        _view: &mut ConversationDetailView<Self>,
+        window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
-        view.detail.clear_messages();
-        cx.notify();
+        let detail = cx.entity().downgrade();
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-clear-temporary-chat-title"),
+                i18n.t("dialog-clear-temporary-chat-message"),
+            )
+        };
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Clear,
+            move |_window, cx| {
+                let _ = detail.update(cx, |view, cx| {
+                    view.detail.clear_messages();
+                    cx.notify();
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     fn supports_save(&self) -> bool {

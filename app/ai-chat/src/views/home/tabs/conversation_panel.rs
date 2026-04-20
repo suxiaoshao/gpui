@@ -3,6 +3,7 @@ use crate::{
     components::{
         add_conversation::{InitialConversationFields, open_add_conversation_dialog_with_fields},
         chat_form::ChatFormSnapshot,
+        delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     },
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
@@ -267,14 +268,30 @@ impl ConversationDetailViewExt for ConversationPanelState {
 
     fn clear(
         view: &mut ConversationDetailView<Self>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
         let chat_data = cx.global::<ChatData>().deref().clone();
         let conversation_id = view.detail.conversation_id;
-        chat_data.update(cx, move |_this, cx| {
-            cx.emit(ChatDataEvent::ClearConversationMessages(conversation_id));
-        });
+        let (title, message) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-clear-conversation-title"),
+                i18n.t("dialog-clear-conversation-message"),
+            )
+        };
+        open_destructive_confirm_dialog(
+            title,
+            message,
+            DestructiveAction::Clear,
+            move |_window, cx| {
+                chat_data.update(cx, move |_this, cx| {
+                    cx.emit(ChatDataEvent::ClearConversationMessages(conversation_id));
+                });
+            },
+            window,
+            cx,
+        );
     }
 }
 
