@@ -60,8 +60,12 @@ tab-templates = 模板
 tab-template = 模板
 
 section-information = 信息
+section-content = 内容
 alert-error-title = 错误
 message-status-paused = 已暂停
+role-developer = 开发者
+role-user = 用户
+role-assistant = 助手
 
 button-add = 添加
 button-add-prompt = 添加提示词
@@ -79,10 +83,13 @@ button-export = 导出
 button-open = 打开
 button-copy-to-new-conversation = 复制为新会话
 button-clear = 清空对话
-button-reload = Reload
+button-reload = 重新加载
+button-preview = 预览
 button-reset = 重置
 button-regenerate = 重新生成
 button-save = 保存对话
+button-save-message = 保存消息
+button-save-shortcut = 保存快捷键
 button-submit = 提交
 button-add-material-theme = 添加 Material You 主题
 button-delete-material-theme = 删除 Material You 主题
@@ -95,6 +102,9 @@ tooltip-send-message = 发送消息
 tooltip-pause-message = 暂停生成
 tooltip-clear-conversation = 清空对话
 tooltip-save-conversation = 保存对话
+tooltip-select-template = 选择模板
+tooltip-show-api-key = 显示 API Key
+tooltip-hide-api-key = 隐藏 API Key
 tooltip-copy-conversation = 复制为新会话
 tooltip-export-conversation = 导出会话
 tooltip-ollama-web-search-help =
@@ -167,6 +177,8 @@ tooltip-ollama-web-search-help =
     - [API docs](https://ollama.com/api)
 temporary-chat-title = 临时对话
 temporary-chat-description = 开始一段临时对话，需要时可在聊天表单中选择模板。
+temporary-chat-empty-title = 开始临时对话
+temporary-chat-empty-description = 选择模板，或直接输入问题开始。
 
 field-id = ID
 field-name = 名称

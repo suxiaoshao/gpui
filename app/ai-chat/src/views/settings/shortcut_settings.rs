@@ -25,15 +25,13 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     popover::Popover,
+    scroll::ScrollableElement,
     select::{
         SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState,
     },
-    table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use std::{collections::BTreeMap, ops::Deref};
-
-const ROW_MIN_HEIGHT: f32 = 36.;
 
 #[derive(Clone)]
 struct TemplateChoice {
@@ -280,123 +278,15 @@ struct ShortcutSaveData {
     input_source: ShortcutInputSource,
 }
 
-struct ShortcutBindingsTableDelegate {
-    page: WeakEntity<ShortcutSettingsPage>,
-    columns: Vec<Column>,
-}
-
-impl ShortcutBindingsTableDelegate {
-    fn new(page: WeakEntity<ShortcutSettingsPage>, cx: &App) -> Self {
-        let i18n = cx.global::<I18n>();
-        Self {
-            page,
-            columns: vec![
-                Column::new("template", i18n.t("field-template"))
-                    .width(px(180.))
-                    .fixed_left(),
-                Column::new("model", i18n.t("field-model")).width(px(200.)),
-                Column::new("mode", i18n.t("field-mode")).width(px(150.)),
-                Column::new("preset", i18n.t("field-preset")).width(px(96.)),
-                Column::new("send_content", i18n.t("field-send-content")).width(px(200.)),
-                Column::new("hotkey", i18n.t("field-hotkey")).width(px(156.)),
-                Column::new("enabled", i18n.t("field-enabled"))
-                    .p_0()
-                    .width(px(44.)),
-                Column::new("actions", i18n.t("field-actions"))
-                    .p_0()
-                    .width(px(140.)),
-            ],
-        }
-    }
-}
-
-impl TableDelegate for ShortcutBindingsTableDelegate {
-    fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, cx: &App) -> usize {
-        self.page
-            .upgrade()
-            .map(|page| page.read(cx).rows.len())
-            .unwrap_or_default()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
-    }
-
-    fn render_tr(
-        &mut self,
-        row_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> Stateful<Div> {
-        div()
-            .id(("shortcut-row", row_ix))
-            .min_h(px(ROW_MIN_HEIGHT))
-            .border_color(cx.theme().table_row_border)
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let Some(page) = self.page.upgrade() else {
-            return div().into_any_element();
-        };
-
-        page.update(cx, |page, cx| {
-            let Some(row) = page.rows.get(row_ix) else {
-                return div().into_any_element();
-            };
-            page.render_cell(row, col_ix, window, cx).into_any_element()
-        })
-    }
-
-    fn render_empty(
-        &mut self,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(cx.global::<I18n>().t("empty-shortcut-bindings"))
-    }
-}
-
 pub(crate) struct ShortcutSettingsPage {
     rows: Vec<ShortcutBindingRowState>,
     templates: Vec<ConversationTemplate>,
-    table: Entity<TableState<ShortcutBindingsTableDelegate>>,
     next_temp_key: u64,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ShortcutSettingsPage {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let page = cx.entity().downgrade();
-        let table = cx.new(|cx| {
-            TableState::new(
-                ShortcutBindingsTableDelegate::new(page.clone(), cx),
-                window,
-                cx,
-            )
-            .row_selectable(false)
-            .col_selectable(false)
-            .sortable(false)
-            .col_movable(false)
-            .col_resizable(true)
-        });
-
         let model_store = cx.global::<ModelStore>().deref().clone();
         let model_subscription = cx.observe_in(&model_store, window, |this, _, window, cx| {
             this.refresh_model_backed_rows(window, cx);
@@ -407,7 +297,6 @@ impl ShortcutSettingsPage {
         let mut this = Self {
             rows: Vec::new(),
             templates: Vec::new(),
-            table,
             next_temp_key: 1,
             _subscriptions: vec![model_subscription],
         };
@@ -440,8 +329,8 @@ impl ShortcutSettingsPage {
         );
     }
 
-    fn refresh_table(&mut self, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| table.refresh(cx));
+    fn refresh_view(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
     }
 
     fn available_models(&self, cx: &App) -> Vec<ProviderModel> {
@@ -488,7 +377,7 @@ impl ShortcutSettingsPage {
             .into_iter()
             .map(|binding| self.build_row(Some(binding), window, cx))
             .collect();
-        self.refresh_table(cx);
+        self.refresh_view(cx);
         cx.notify();
     }
 
@@ -746,7 +635,7 @@ impl ShortcutSettingsPage {
             window,
             cx,
         );
-        self.refresh_table(cx);
+        self.refresh_view(cx);
         cx.notify();
     }
 
@@ -1035,7 +924,7 @@ impl ShortcutSettingsPage {
                 cx,
             );
         }
-        self.refresh_table(cx);
+        self.refresh_view(cx);
         cx.notify();
     }
 
@@ -1057,7 +946,7 @@ impl ShortcutSettingsPage {
                     .on_click(cx.listener(|this, _, window, cx| {
                         let row = this.build_row(None, window, cx);
                         this.rows.insert(0, row);
-                        this.refresh_table(cx);
+                        this.refresh_view(cx);
                         cx.notify();
                     })),
             )
@@ -1187,154 +1076,245 @@ impl ShortcutSettingsPage {
             .into_any_element()
     }
 
-    fn render_control_cell(&self, child: impl IntoElement) -> AnyElement {
-        h_flex()
-            .h_full()
-            .items_center()
-            .px_2()
+    fn render_row_field(
+        &self,
+        label: SharedString,
+        min_width: Pixels,
+        child: impl IntoElement,
+        cx: &App,
+    ) -> AnyElement {
+        v_flex()
+            .flex_1()
+            .min_w(min_width)
+            .gap_1()
+            .child(
+                Label::new(label)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
             .child(child)
             .into_any_element()
     }
 
-    fn render_cell(
+    fn render_enabled_field(
         &self,
         row: &ShortcutBindingRowState,
-        col_ix: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row_key = row.key;
+        v_flex()
+            .gap_1()
+            .min_w(px(92.))
+            .child(
+                Label::new(cx.global::<I18n>().t("field-enabled"))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Checkbox::new(("shortcut-enabled", row.key))
+                    .checked(row.enabled)
+                    .on_click(cx.listener(move |this, checked, _window, cx| {
+                        let Some(row) = this.rows.iter_mut().find(|row| row.key == row_key) else {
+                            return;
+                        };
+                        row.enabled = *checked;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_shortcut_actions(
+        &self,
+        row: &ShortcutBindingRowState,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row_key = row.key;
+        let is_new = row.binding_id.is_none();
+        let (save_tooltip, reset_tooltip, delete_tooltip) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t(if is_new {
+                    "button-create"
+                } else {
+                    "button-save-shortcut"
+                }),
+                i18n.t(if is_new {
+                    "button-cancel"
+                } else {
+                    "button-reset"
+                }),
+                i18n.t("button-delete"),
+            )
+        };
+
+        h_flex()
+            .flex_initial()
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new(("shortcut-save", row.key))
+                    .small()
+                    .ghost()
+                    .icon(if is_new {
+                        IconName::Upload
+                    } else {
+                        IconName::Save
+                    })
+                    .tooltip(save_tooltip)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.save_row(row_key, window, cx);
+                    })),
+            )
+            .child(
+                Button::new(("shortcut-reset", row.key))
+                    .small()
+                    .ghost()
+                    .icon(if is_new {
+                        IconName::X
+                    } else {
+                        IconName::RefreshCcw
+                    })
+                    .tooltip(reset_tooltip)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.reset_row(row_key, window, cx);
+                    })),
+            )
+            .when(!is_new, |this| {
+                this.child(
+                    Button::new(("shortcut-delete", row.key))
+                        .small()
+                        .danger()
+                        .icon(IconName::Trash)
+                        .tooltip(delete_tooltip)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.confirm_delete_row(row_key, window, cx);
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_shortcut_row(
+        &self,
+        row: &ShortcutBindingRowState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match col_ix {
-            0 => self.render_control_cell(
-                Select::new(&row.template_select)
-                    .small()
-                    .placeholder(cx.global::<I18n>().t("field-template"))
-                    .w_full(),
-            ),
-            1 => self.render_control_cell(
-                Select::new(&row.model_select)
-                    .small()
-                    .placeholder(cx.global::<I18n>().t("field-model"))
-                    .empty(Label::new(cx.global::<I18n>().t("empty-model-picker")).text_sm())
-                    .w_full(),
-            ),
-            2 => self.render_control_cell(
-                Select::new(&row.mode_select)
-                    .small()
-                    .placeholder(cx.global::<I18n>().t("field-mode"))
-                    .w_full(),
-            ),
-            3 => self.render_control_cell(self.render_ext_settings_cell(row, window, cx)),
-            4 => self.render_control_cell(
-                Select::new(&row.input_source_select)
-                    .small()
-                    .placeholder(cx.global::<I18n>().t("field-send-content"))
-                    .w_full(),
-            ),
-            5 => v_flex()
-                .h_full()
-                .justify_center()
-                .px_2()
-                .gap_1()
-                .child(row.hotkey_input.clone())
-                .when_some(row.invalid_hotkey.as_ref(), |this, hotkey| {
-                    this.child(
-                        Label::new(format!(
-                            "{}: {}",
-                            cx.global::<I18n>().t("notify-invalid-shortcut-hotkey"),
-                            hotkey
-                        ))
-                        .text_xs()
-                        .text_color(cx.theme().danger),
-                    )
-                })
-                .into_any_element(),
-            6 => h_flex()
-                .h_full()
-                .items_center()
-                .justify_center()
-                .child(
-                    Checkbox::new(("shortcut-enabled", row.key))
-                        .checked(row.enabled)
-                        .on_click({
-                            let row_key = row.key;
-                            cx.listener(move |this, checked, _window, cx| {
-                                let Some(row) = this.rows.iter_mut().find(|row| row.key == row_key)
-                                else {
-                                    return;
-                                };
-                                row.enabled = *checked;
-                                cx.notify();
-                            })
-                        }),
-                )
-                .into_any_element(),
-            7 => {
-                let row_key = row.key;
-                let is_new = row.binding_id.is_none();
-                let (save_tooltip, reset_tooltip, delete_tooltip) = {
-                    let i18n = cx.global::<I18n>();
-                    (
-                        i18n.t(if is_new {
-                            "button-create"
-                        } else {
-                            "button-save"
-                        }),
-                        i18n.t(if is_new {
-                            "button-cancel"
-                        } else {
-                            "button-reset"
-                        }),
-                        i18n.t("button-delete"),
-                    )
-                };
+        let (
+            field_template,
+            field_model,
+            field_mode,
+            field_hotkey,
+            field_send_content,
+            field_preset,
+            empty_model_picker,
+            invalid_hotkey_label,
+        ) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("field-template"),
+                i18n.t("field-model"),
+                i18n.t("field-mode"),
+                i18n.t("field-hotkey"),
+                i18n.t("field-send-content"),
+                i18n.t("field-preset"),
+                i18n.t("empty-model-picker"),
+                i18n.t("notify-invalid-shortcut-hotkey"),
+            )
+        };
+        v_flex()
+            .id(("shortcut-row-card", row.key))
+            .w_full()
+            .gap_3()
+            .p_3()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
                 h_flex()
-                    .h_full()
-                    .items_center()
-                    .gap_2()
+                    .w_full()
+                    .items_start()
+                    .gap_3()
+                    .flex_wrap()
                     .child(
-                        Button::new(("shortcut-save", row.key))
-                            .small()
-                            .ghost()
-                            .icon(if is_new {
-                                IconName::Upload
-                            } else {
-                                IconName::Save
-                            })
-                            .tooltip(save_tooltip)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.save_row(row_key, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("shortcut-reset", row.key))
-                            .small()
-                            .ghost()
-                            .icon(if is_new {
-                                IconName::X
-                            } else {
-                                IconName::RefreshCcw
-                            })
-                            .tooltip(reset_tooltip)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.reset_row(row_key, window, cx);
-                            })),
-                    )
-                    .when(!is_new, |this| {
-                        this.child(
-                            Button::new(("shortcut-delete", row.key))
+                        self.render_row_field(
+                            field_template.clone().into(),
+                            px(180.),
+                            Select::new(&row.template_select)
                                 .small()
-                                .danger()
-                                .icon(IconName::Trash)
-                                .tooltip(delete_tooltip)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.confirm_delete_row(row_key, window, cx);
-                                })),
-                        )
-                    })
-                    .into_any_element()
-            }
-            _ => div().into_any_element(),
-        }
+                                .placeholder(field_template.clone())
+                                .w_full(),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.render_row_field(
+                            field_model.clone().into(),
+                            px(220.),
+                            Select::new(&row.model_select)
+                                .small()
+                                .placeholder(field_model.clone())
+                                .empty(Label::new(empty_model_picker).text_sm())
+                                .w_full(),
+                            cx,
+                        ),
+                    )
+                    .child(self.render_shortcut_actions(row, cx)),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_3()
+                    .flex_wrap()
+                    .child(
+                        self.render_row_field(
+                            field_mode.clone().into(),
+                            px(140.),
+                            Select::new(&row.mode_select)
+                                .small()
+                                .placeholder(field_mode.clone())
+                                .w_full(),
+                            cx,
+                        ),
+                    )
+                    .child(self.render_row_field(
+                        field_hotkey.into(),
+                        px(156.),
+                        v_flex().gap_1().child(row.hotkey_input.clone()).when_some(
+                            row.invalid_hotkey.as_ref(),
+                            |this, hotkey| {
+                                this.child(
+                                    Label::new(format!("{}: {}", invalid_hotkey_label, hotkey))
+                                        .text_xs()
+                                        .text_color(cx.theme().danger),
+                                )
+                            },
+                        ),
+                        cx,
+                    ))
+                    .child(self.render_enabled_field(row, cx))
+                    .child(
+                        self.render_row_field(
+                            field_send_content.clone().into(),
+                            px(180.),
+                            Select::new(&row.input_source_select)
+                                .small()
+                                .placeholder(field_send_content.clone())
+                                .w_full(),
+                            cx,
+                        ),
+                    )
+                    .child(self.render_row_field(
+                        field_preset.into(),
+                        px(92.),
+                        self.render_ext_settings_cell(row, window, cx),
+                        cx,
+                    )),
+            )
+            .into_any_element()
     }
 
     fn save_payload(&self, row_key: u64, cx: &App) -> Result<ShortcutSaveData, SharedString> {
@@ -1430,7 +1410,7 @@ impl ShortcutSettingsPage {
             return;
         };
         self.rows[index] = self.build_row(Some(saved.clone()), window, cx);
-        self.refresh_table(cx);
+        self.refresh_view(cx);
         self.notify_success(
             if payload.binding_id.is_some() {
                 "notify-shortcut-updated-success"
@@ -1452,7 +1432,7 @@ impl ShortcutSettingsPage {
         } else {
             self.rows.remove(index);
         }
-        self.refresh_table(cx);
+        self.refresh_view(cx);
         cx.notify();
     }
 
@@ -1479,7 +1459,7 @@ impl ShortcutSettingsPage {
         };
         let Some(binding_id) = self.rows[index].binding_id else {
             self.rows.remove(index);
-            self.refresh_table(cx);
+            self.refresh_view(cx);
             cx.notify();
             return;
         };
@@ -1489,7 +1469,7 @@ impl ShortcutSettingsPage {
         match result {
             Ok(()) => {
                 self.rows.remove(index);
-                self.refresh_table(cx);
+                self.refresh_view(cx);
                 self.notify_success("notify-shortcut-deleted-success", window, cx);
                 cx.notify();
             }
@@ -1501,18 +1481,34 @@ impl ShortcutSettingsPage {
 }
 
 impl Render for ShortcutSettingsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let row_elements = self
+            .rows
+            .iter()
+            .map(|row| self.render_shortcut_row(row, window, cx))
+            .collect::<Vec<_>>();
         v_flex()
             .w_full()
             .gap_3()
             .child(self.render_toolbar(cx))
-            .child(
-                div().w_full().h(px(560.)).child(
-                    DataTable::new(&self.table)
-                        .small()
-                        .stripe(true)
-                        .scrollbar_visible(true, true),
-                ),
-            )
+            .child(div().w_full().h(px(560.)).overflow_y_scrollbar().child(
+                if row_elements.is_empty() {
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(cx.global::<I18n>().t("empty-shortcut-bindings"))
+                        .into_any_element()
+                } else {
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .children(row_elements)
+                        .into_any_element()
+                },
+            ))
     }
 }

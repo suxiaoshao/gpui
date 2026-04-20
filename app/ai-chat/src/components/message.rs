@@ -7,12 +7,12 @@ use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, Sizable, WindowExt,
     alert::Alert,
-    avatar::Avatar,
     badge::Badge,
     button::{Button, ButtonVariants},
     description_list::DescriptionItem,
     divider::Divider,
     h_flex,
+    label::Label,
     notification::{Notification, NotificationType},
     popover::Popover,
     scroll::ScrollableElement,
@@ -117,6 +117,64 @@ fn status_badge_color(status: &Status, cx: &App) -> Hsla {
     }
 }
 
+pub(crate) fn role_label(role: Role, cx: &App) -> SharedString {
+    let key = match role {
+        Role::Developer => "role-developer",
+        Role::User => "role-user",
+        Role::Assistant => "role-assistant",
+    };
+    cx.global::<I18n>().t(key).into()
+}
+
+fn role_icon(role: Role) -> IconName {
+    match role {
+        Role::Developer => IconName::Shield,
+        Role::User => IconName::UserRound,
+        Role::Assistant => IconName::Bot,
+    }
+}
+
+fn role_color(role: Role, cx: &App) -> Hsla {
+    match role {
+        Role::Developer => cx.theme().warning,
+        Role::User => cx.theme().primary,
+        Role::Assistant => cx.theme().blue,
+    }
+}
+
+pub(crate) fn render_role_icon(role: Role, cx: &App) -> AnyElement {
+    let color = role_color(role, cx);
+    div()
+        .size(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(color.opacity(0.12))
+        .border_1()
+        .border_color(color.opacity(0.32))
+        .text_color(color)
+        .child(Icon::new(role_icon(role)).with_size(px(16.)))
+        .into_any_element()
+}
+
+pub(crate) fn render_role_pill(role: Role, cx: &App) -> AnyElement {
+    let color = role_color(role, cx);
+    h_flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded(px(6.))
+        .bg(color.opacity(0.10))
+        .border_1()
+        .border_color(color.opacity(0.22))
+        .text_color(color)
+        .child(Icon::new(role_icon(role)).with_size(px(12.)))
+        .child(Label::new(role_label(role, cx)).text_xs())
+        .into_any_element()
+}
+
 fn message_actions(can_resend: bool) -> Vec<MessageAction> {
     let mut actions = vec![
         MessageAction::Copy,
@@ -164,20 +222,13 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
         let reasoning_summary_label = reasoning_summary_label(data.status(), cx.global::<I18n>());
         let message_error = visible_error(data.status(), data.error()).map(ToOwned::to_owned);
         let can_resend = data.can_resend(cx);
+        let role = *data.role();
         let avatar = Badge::new()
             .dot()
             .count(1)
             .color(status_badge_color(data.status(), cx))
-            .child(
-                Avatar::new()
-                    .name(data.role().to_string())
-                    .src(match data.role() {
-                        Role::Developer => "png/system.png",
-                        Role::User => "jpg/user.jpg",
-                        Role::Assistant => "jpg/assistant.jpg",
-                    })
-                    .with_size(px(32.)),
-            );
+            .child(render_role_icon(role, cx));
+        let role_label = role_label(role, cx);
         let copy_text = data.content().display_markdown(&sources_label);
         let reasoning_summary = data
             .content()
@@ -280,6 +331,11 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                             .px_4()
                             .gap_2()
                             .overflow_x_hidden()
+                            .child(
+                                Label::new(role_label)
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
                             .when_some(reasoning_summary, |this, summary| {
                                 let popover_button_id = button_id.clone();
                                 this.child(

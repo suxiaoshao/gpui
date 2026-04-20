@@ -16,7 +16,7 @@ use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Sizable,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Position},
     list::ListState,
@@ -267,14 +267,24 @@ impl ChatForm {
             cx.notify();
             return;
         };
-        self.template_picker_open = true;
-        self.slash_restore_position = Some(slash_restore_position);
         self.last_input_text = next.clone();
-        self.rebuild_template_picker(window, cx);
+        self.open_template_picker(Some(slash_restore_position), window, cx);
         self.input_state.update(cx, |input, cx| {
             input.set_value(next, window, cx);
             input.set_cursor_position(slash_restore_position, window, cx);
         });
+        cx.notify();
+    }
+
+    fn open_template_picker(
+        &mut self,
+        slash_restore_position: Option<Position>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.template_picker_open = true;
+        self.slash_restore_position = slash_restore_position;
+        self.rebuild_template_picker(window, cx);
         self.focus_template_picker(window, cx);
         cx.notify();
     }
@@ -447,6 +457,7 @@ impl Render for ChatForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_tooltip = cx.global::<I18n>().t("tooltip-send-message");
         let pause_tooltip = cx.global::<I18n>().t("tooltip-pause-message");
+        let template_tooltip = cx.global::<I18n>().t("tooltip-select-template");
         let mut root = v_flex();
         root.style().align_items = Some(AlignItems::Stretch);
 
@@ -489,7 +500,17 @@ impl Render for ChatForm {
                             .gap_1()
                             .child(self.model_select.clone())
                             .child(self.ext_settings.clone())
-                            .child(self.mode_select.clone()),
+                            .child(self.mode_select.clone())
+                            .child(
+                                Button::new("chat-form-template-picker")
+                                    .icon(IconName::LayoutTemplate)
+                                    .small()
+                                    .ghost()
+                                    .tooltip(template_tooltip)
+                                    .on_click(cx.listener(|form, _, window, cx| {
+                                        form.open_template_picker(None, window, cx);
+                                    })),
+                            ),
                     )
                     .child(div().flex_1())
                     .child(h_flex().items_center().gap_1().child(if self.running {

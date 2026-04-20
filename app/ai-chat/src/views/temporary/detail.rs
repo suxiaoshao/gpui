@@ -24,9 +24,11 @@ use async_compat::CompatExt;
 use futures::pin_mut;
 use gpui::*;
 use gpui_component::{
-    Root, WindowExt,
+    ActiveTheme, Root, WindowExt,
     description_list::DescriptionItem,
+    label::Label,
     notification::{Notification, NotificationType},
+    v_flex,
 };
 use smol::stream::StreamExt;
 use std::rc::Rc;
@@ -390,6 +392,23 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         Some(cx.global::<I18n>().t("temporary-chat-description").into())
     }
 
+    fn empty_state(&self, cx: &App) -> Option<AnyElement> {
+        Some(
+            v_flex()
+                .items_center()
+                .gap_2()
+                .max_w(px(360.))
+                .text_center()
+                .child(Label::new(cx.global::<I18n>().t("temporary-chat-empty-title")).text_lg())
+                .child(
+                    Label::new(cx.global::<I18n>().t("temporary-chat-empty-description"))
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn key_context(&self) -> Option<&'static str> {
         Some(CONTEXT)
     }
@@ -463,7 +482,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
     }
 
     fn supports_clear(&self) -> bool {
-        true
+        !self.messages.is_empty()
     }
 
     fn clear(
@@ -495,7 +514,7 @@ impl ConversationDetailViewExt for TemporaryDetailState {
     }
 
     fn supports_save(&self) -> bool {
-        true
+        !self.messages.is_empty()
     }
 
     fn save(
@@ -983,6 +1002,7 @@ mod tests {
         TemporaryDetailState, TemporaryMessage, build_history_messages, build_request_body,
     };
     use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
+    use crate::views::conversation::detail::ConversationDetailViewExt;
     use std::rc::Rc;
     use time::OffsetDateTime;
 
@@ -1064,5 +1084,23 @@ mod tests {
 
         assert!(source.messages.is_empty());
         assert_eq!(source.autoincrement_id, 0);
+    }
+
+    #[test]
+    fn empty_temporary_chat_hides_clear_and_save_actions() {
+        let empty = TemporaryDetailState {
+            messages: Vec::new(),
+            autoincrement_id: 0,
+        };
+        assert!(!empty.supports_clear());
+        assert!(!empty.supports_save());
+
+        let message = make_message(Role::Assistant, Status::Normal, Content::new("hello"));
+        let populated = TemporaryDetailState {
+            messages: vec![message],
+            autoincrement_id: 1,
+        };
+        assert!(populated.supports_clear());
+        assert!(populated.supports_save());
     }
 }

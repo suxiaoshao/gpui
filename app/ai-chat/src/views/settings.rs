@@ -289,6 +289,7 @@ impl Render for SettingsView {
                 div().flex_1().overflow_hidden().child(
                     Settings::new(settings_id)
                         .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
+                        .sidebar_width(px(280.))
                         .pages(pages),
                 ),
             )

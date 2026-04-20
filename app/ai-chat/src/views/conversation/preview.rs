@@ -2,7 +2,7 @@ use crate::{
     assets::IconName,
     components::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
-        message::MessageViewExt,
+        message::{MessageViewExt, render_role_pill},
     },
     database::{Content, Conversation, Db, Message, Role},
     errors::{AiChatError, AiChatResult},
@@ -12,13 +12,15 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    Root, WindowExt,
+    ActiveTheme, Root, WindowExt,
     button::{Button, Toggle, ToggleGroup, ToggleVariants},
     description_list::{DescriptionItem, DescriptionList},
+    h_flex,
     input::{Input, InputState},
     label::Label,
     notification::Notification,
     scroll::ScrollableElement,
+    text::TextView,
     v_flex,
 };
 use std::ops::Deref;
@@ -142,13 +144,79 @@ fn render_editor(
     id: &'static str,
     label: SharedString,
     input: &Entity<InputState>,
-    disabled: bool,
+    height: Pixels,
 ) -> AnyElement {
     v_flex()
         .id(id)
         .gap_1()
         .child(Label::new(label).text_sm())
-        .child(Input::new(input).disabled(disabled).h(px(180.)).w_full())
+        .child(Input::new(input).min_h(height).max_h(px(240.)).w_full())
+        .into_any_element()
+}
+
+fn render_preview_text(
+    id: impl Into<SharedString>,
+    label: SharedString,
+    value: String,
+    cx: &App,
+) -> AnyElement {
+    let value = value.trim().to_string();
+    let empty = value.is_empty();
+    let body = if empty {
+        Label::new(cx.global::<I18n>().t("field-none"))
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element()
+    } else {
+        TextView::markdown(id.into(), &value)
+            .selectable(true)
+            .into_any_element()
+    };
+
+    v_flex()
+        .gap_2()
+        .child(Label::new(label).text_sm())
+        .child(
+            div()
+                .w_full()
+                .min_h(px(72.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .p_3()
+                .child(body),
+        )
+        .into_any_element()
+}
+
+fn render_preview_json(
+    id: impl Into<SharedString>,
+    label: SharedString,
+    value: String,
+    cx: &App,
+) -> AnyElement {
+    let trimmed = value.trim();
+    let empty = matches!(trimmed, "" | "[]" | "{}" | "null");
+    let body = if empty {
+        cx.global::<I18n>().t("field-none").to_string()
+    } else {
+        format!("```json\n{trimmed}\n```")
+    };
+
+    v_flex()
+        .gap_2()
+        .child(Label::new(label).text_sm())
+        .child(
+            div()
+                .w_full()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .p_3()
+                .child(TextView::markdown(id.into(), &body).selectable(true)),
+        )
         .into_any_element()
 }
 
@@ -390,6 +458,9 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             field_reasoning_summary,
             field_citations,
             field_send_content,
+            button_preview,
+            button_edit,
+            button_save_message,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -401,110 +472,181 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                 i18n.t("field-reasoning-summary"),
                 i18n.t("field-citations"),
                 i18n.t("field-send-content"),
+                i18n.t("button-preview"),
+                i18n.t("button-edit"),
+                i18n.t("button-save-message"),
             )
         };
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
-        let disabled = matches!(self.preview_type, PreviewType::Preview);
+        let is_editing = matches!(self.preview_type, PreviewType::Edit);
+        let text_value = self.input.text.read(cx).value().to_string();
+        let reasoning_value = self.input.reasoning_summary.read(cx).value().to_string();
+        let citations_value = self.input.citations.read(cx).value().to_string();
+        let send_content_value = self.input.send_content.read(cx).value().to_string();
 
         v_flex()
             .size_full()
-            .p_2()
-            .gap_2()
+            .overflow_hidden()
             .child(
-                ToggleGroup::new("message-preview-mode")
-                    .outline()
+                h_flex()
+                    .flex_initial()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .p_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        Toggle::new("preview")
-                            .icon(IconName::Eye)
-                            .label("Preview")
-                            .checked(self.preview_type.preview_checked()),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(render_role_pill(*self.role(), cx))
+                            .child(Label::new(format!("#{}", self.id())).text_sm()),
                     )
                     .child(
-                        Toggle::new("edit")
-                            .icon(IconName::Edit)
-                            .label("Edit")
-                            .checked(self.preview_type.edit_checked()),
-                    )
-                    .on_click(cx.listener(|view, checkeds: &Vec<bool>, _, _cx| {
-                        match (checkeds.first(), checkeds.get(1), &view.preview_type) {
-                            (Some(true), _, PreviewType::Edit)
-                            | (_, Some(false), PreviewType::Edit) => {
-                                view.preview_type = PreviewType::Preview
-                            }
-                            (_, Some(true), PreviewType::Preview)
-                            | (Some(false), _, PreviewType::Preview) => {
-                                view.preview_type = PreviewType::Edit
-                            }
-                            _ => {}
-                        }
-                    })),
-            )
-            .when(matches!(self.preview_type, PreviewType::Edit), |this| {
-                this.child(
-                    Button::new("message-preview-submit")
-                        .icon(IconName::Upload)
-                        .on_click({
-                            let update_success_title = update_success_title.clone();
-                            let update_failed_title = update_failed_title.clone();
-                            cx.listener(move |view, _, window, cx| match view.submit(window, cx) {
-                                Ok(_) => {
-                                    window.push_notification(
-                                        Notification::new()
-                                            .title(update_success_title.clone())
-                                            .with_type(gpui_component::notification::NotificationType::Success),
-                                        cx,
-                                    );
-                                }
-                                Err(err) => {
-                                    window.push_notification(
-                                        Notification::new()
-                                            .title(update_failed_title.clone())
-                                            .message(err.to_string())
-                                            .with_type(gpui_component::notification::NotificationType::Error),
-                                        cx,
-                                    );
-                                }
-                            })
-                        }),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                ToggleGroup::new("message-preview-mode")
+                                    .outline()
+                                    .child(
+                                        Toggle::new("preview")
+                                            .icon(IconName::Eye)
+                                            .label(button_preview)
+                                            .checked(self.preview_type.preview_checked()),
+                                    )
+                                    .child(
+                                        Toggle::new("edit")
+                                            .icon(IconName::Edit)
+                                            .label(button_edit)
+                                            .checked(self.preview_type.edit_checked()),
+                                    )
+                                    .on_click(cx.listener(
+                                        |view, checkeds: &Vec<bool>, _, _cx| {
+                                            match (
+                                                checkeds.first(),
+                                                checkeds.get(1),
+                                                &view.preview_type,
+                                            ) {
+                                                (Some(true), _, PreviewType::Edit)
+                                                | (_, Some(false), PreviewType::Edit) => {
+                                                    view.preview_type = PreviewType::Preview
+                                                }
+                                                (_, Some(true), PreviewType::Preview)
+                                                | (Some(false), _, PreviewType::Preview) => {
+                                                    view.preview_type = PreviewType::Edit
+                                                }
+                                                _ => {}
+                                            }
+                                        },
+                                    )),
+                            )
+                            .when(is_editing, |this| {
+                                this.child(
+                                    Button::new("message-preview-submit")
+                                        .icon(IconName::Save)
+                                        .label(button_save_message.clone())
+                                        .on_click({
+                                            let update_success_title =
+                                                update_success_title.clone();
+                                            let update_failed_title = update_failed_title.clone();
+                                            cx.listener(move |view, _, window, cx| {
+                                                match view.submit(window, cx) {
+                                                    Ok(_) => {
+                                                        window.push_notification(
+                                                            Notification::new()
+                                                                .title(
+                                                                    update_success_title.clone(),
+                                                                )
+                                                                .with_type(gpui_component::notification::NotificationType::Success),
+                                                            cx,
+                                                        );
+                                                    }
+                                                    Err(err) => {
+                                                        window.push_notification(
+                                                            Notification::new()
+                                                                .title(update_failed_title.clone())
+                                                                .message(err.to_string())
+                                                                .with_type(gpui_component::notification::NotificationType::Error),
+                                                            cx,
+                                                        );
+                                                    }
+                                                }
+                                            })
+                                        }),
+                                )
+                            }),
+                    ),
                 )
-            })
             .child(
                 v_flex()
                     .flex_1()
+                    .min_h_0()
                     .gap_4()
+                    .p_4()
                     .child(Label::new(section_information).text_lg())
                     .child(
                         DescriptionList::new()
-                            .columns(3)
+                            .columns(2)
                             .children(self.description_items(cx))
                             .layout(Axis::Vertical),
                     )
                     .child(Label::new(section_content).text_lg())
-                    .child(render_editor(
-                        "message-preview-text",
-                        field_text.into(),
-                        &self.input.text,
-                        disabled,
-                    ))
-                    .child(render_editor(
-                        "message-preview-reasoning-summary",
-                        field_reasoning_summary.into(),
-                        &self.input.reasoning_summary,
-                        disabled,
-                    ))
-                    .child(render_editor(
-                        "message-preview-citations",
-                        field_citations.into(),
-                        &self.input.citations,
-                        disabled,
-                    ))
-                    .child(render_editor(
-                        "message-preview-send-content",
-                        field_send_content.into(),
-                        &self.input.send_content,
-                        true,
-                    ))
+                    .map(|this| {
+                        if is_editing {
+                            this.child(render_editor(
+                                "message-preview-text",
+                                field_text.into(),
+                                &self.input.text,
+                                px(132.),
+                            ))
+                            .child(render_editor(
+                                "message-preview-reasoning-summary",
+                                field_reasoning_summary.into(),
+                                &self.input.reasoning_summary,
+                                px(104.),
+                            ))
+                            .child(render_editor(
+                                "message-preview-citations",
+                                field_citations.into(),
+                                &self.input.citations,
+                                px(132.),
+                            ))
+                            .child(render_preview_json(
+                                "message-preview-send-content-preview",
+                                field_send_content.into(),
+                                send_content_value,
+                                cx,
+                            ))
+                        } else {
+                            this.child(render_preview_text(
+                                "message-preview-text-preview",
+                                field_text.into(),
+                                text_value,
+                                cx,
+                            ))
+                            .child(render_preview_text(
+                                "message-preview-reasoning-summary-preview",
+                                field_reasoning_summary.into(),
+                                reasoning_value,
+                                cx,
+                            ))
+                            .child(render_preview_json(
+                                "message-preview-citations-preview",
+                                field_citations.into(),
+                                citations_value,
+                                cx,
+                            ))
+                            .child(render_preview_json(
+                                "message-preview-send-content-preview",
+                                field_send_content.into(),
+                                send_content_value,
+                                cx,
+                            ))
+                        }
+                    })
                     .overflow_hidden()
                     .overflow_y_scrollbar(),
             )

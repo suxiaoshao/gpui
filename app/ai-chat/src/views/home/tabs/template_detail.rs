@@ -1,19 +1,20 @@
 use crate::{
     assets::IconName,
-    components::template_edit_dialog::open_template_edit_dialog,
-    database::{ConversationTemplate, Db, Role},
+    components::{
+        message::{render_role_icon, render_role_pill},
+        template_edit_dialog::open_template_edit_dialog,
+    },
+    database::{ConversationTemplate, Db},
     errors::AiChatResult,
     i18n::I18n,
     state::WorkspaceStore,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::description_list::{DescriptionItem, DescriptionList};
 use gpui_component::{
-    ActiveTheme, Sizable, WindowExt,
-    avatar::Avatar,
+    ActiveTheme, WindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
-    divider::Divider,
     h_flex,
     label::Label,
     notification::{Notification, NotificationType},
@@ -192,46 +193,19 @@ impl Render for TemplateDetailView {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .child(
-                h_flex()
-                    .flex_initial()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("template-refresh")
-                            .icon(IconName::RefreshCcw)
-                            .ghost()
-                            .tooltip(reload_label)
-                            .on_click(cx.listener(|view, _, _window, cx| {
-                                view.reload_template(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("template-edit")
-                            .ghost()
-                            .icon(IconName::Edit)
-                            .tooltip(edit_label)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.open_edit_dialog(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("template-delete")
-                            .danger()
-                            .icon(IconName::Trash)
-                            .tooltip(delete_label)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.open_delete_dialog(window, cx);
-                            })),
-                    ),
-            )
             .child(match &self.template {
-                Ok(template) => render_template_detail(template, window, cx),
+                Ok(template) => v_flex()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(render_template_header(
+                        template,
+                        reload_label.into(),
+                        edit_label.into(),
+                        delete_label.into(),
+                        cx,
+                    ))
+                    .child(render_template_detail(template, window, cx))
+                    .into_any_element(),
                 Err(err) => v_flex()
                     .flex_1()
                     .min_h_0()
@@ -243,6 +217,98 @@ impl Render for TemplateDetailView {
     }
 }
 
+fn render_template_header(
+    template: &ConversationTemplate,
+    reload_label: SharedString,
+    edit_label: SharedString,
+    delete_label: SharedString,
+    cx: &mut Context<TemplateDetailView>,
+) -> AnyElement {
+    let prompt_count = template.prompts.len();
+    h_flex()
+        .flex_initial()
+        .items_start()
+        .justify_between()
+        .gap_3()
+        .px_4()
+        .py_3()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            h_flex()
+                .items_start()
+                .gap_3()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(40.))
+                        .rounded(px(8.))
+                        .bg(cx.theme().accent.opacity(0.65))
+                        .child(Label::new(template.icon.clone()).text_lg()),
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .overflow_hidden()
+                        .child(Label::new(template.name.clone()).text_lg().truncate())
+                        .when_some(template.description.clone(), |this, description| {
+                            this.child(
+                                Label::new(description)
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate(),
+                            )
+                        })
+                        .child(
+                            Label::new(format!(
+                                "{} {}",
+                                prompt_count,
+                                cx.global::<I18n>().t("field-prompts")
+                            ))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                        ),
+                ),
+        )
+        .child(
+            h_flex()
+                .flex_initial()
+                .items_center()
+                .gap_1()
+                .child(
+                    Button::new("template-refresh")
+                        .icon(IconName::RefreshCcw)
+                        .ghost()
+                        .tooltip(reload_label)
+                        .on_click(cx.listener(|view, _, _window, cx| {
+                            view.reload_template(cx);
+                        })),
+                )
+                .child(
+                    Button::new("template-edit")
+                        .ghost()
+                        .icon(IconName::Edit)
+                        .tooltip(edit_label)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.open_edit_dialog(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("template-delete")
+                        .danger()
+                        .icon(IconName::Trash)
+                        .tooltip(delete_label)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.open_delete_dialog(window, cx);
+                        })),
+                ),
+        )
+        .into_any_element()
+}
+
 fn render_template_detail(
     template: &ConversationTemplate,
     window: &mut Window,
@@ -251,32 +317,30 @@ fn render_template_detail(
     let i18n = cx.global::<I18n>();
     let merged_items = vec![
         DescriptionItem::new(i18n.t("field-id")).value(template.id.to_string()),
-        DescriptionItem::new(i18n.t("field-name")).value(template.name.clone()),
-        DescriptionItem::new(i18n.t("field-icon")).value(template.icon.clone()),
         DescriptionItem::new(i18n.t("field-prompts")).value(template.prompts.len().to_string()),
         DescriptionItem::new(i18n.t("field-description"))
             .value(template.description.clone().unwrap_or("-".to_string()))
-            .span(3),
+            .span(2),
     ];
 
     v_flex()
         .id(template.id)
         .flex_1()
         .min_h_0()
-        .gap_3()
+        .gap_4()
         .px_4()
         .py_3()
         .child(Label::new(i18n.t("section-information")).text_lg())
         .child(
             div().child(
                 DescriptionList::new()
-                    .columns(3)
+                    .columns(2)
                     .children(merged_items)
                     .layout(Axis::Vertical),
             ),
         )
         .child(Label::new(i18n.t("field-prompts")).text_lg())
-        .child(v_flex().id("template-prompts").children(
+        .child(v_flex().id("template-prompts").gap_2().children(
             template.prompts.iter().enumerate().map(|(index, prompt)| {
                 render_prompt_message(template.id, index, prompt, window, cx)
             }),
@@ -291,35 +355,32 @@ fn render_prompt_message(
     index: usize,
     prompt: &crate::database::ConversationTemplatePrompt,
     _window: &mut Window,
-    _cx: &mut App,
+    cx: &mut App,
 ) -> AnyElement {
     let text_id: SharedString = format!("template-prompt-{template_id}-{index}").into();
     v_flex()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().background)
+        .p_3()
         .child(
             h_flex()
                 .items_start()
-                .gap_2()
+                .gap_3()
+                .child(render_role_icon(prompt.role, cx))
                 .child(
-                    Avatar::new()
-                        .name(prompt.role.to_string())
-                        .src(prompt_avatar(prompt.role))
-                        .with_size(px(32.)),
-                )
-                .child(
-                    TextView::markdown(text_id, &prompt.prompt)
-                        .selectable(true)
+                    v_flex()
                         .flex_1()
-                        .overflow_x_hidden(),
+                        .min_w_0()
+                        .gap_2()
+                        .child(render_role_pill(prompt.role, cx))
+                        .child(
+                            TextView::markdown(text_id, &prompt.prompt)
+                                .selectable(true)
+                                .overflow_x_hidden(),
+                        ),
                 ),
         )
-        .child(Divider::horizontal().my_2().ml(px(40.)))
         .into_any_element()
-}
-
-fn prompt_avatar(role: Role) -> &'static str {
-    match role {
-        Role::Developer => "png/system.png",
-        Role::User => "jpg/user.jpg",
-        Role::Assistant => "jpg/assistant.jpg",
-    }
 }
