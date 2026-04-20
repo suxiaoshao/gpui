@@ -32,7 +32,7 @@ impl Render for DragTab {
             .border_color(cx.theme().drag_border)
             .rounded_sm()
             .bg(cx.theme().tab_active)
-            .text_color(cx.theme().tab_foreground)
+            .text_color(cx.theme().tab_active_foreground)
             .opacity(0.85)
             .child(Label::new(&self.icon).text_xs().line_height(rems(0.75)))
             .child(Label::new(&self.name).text_xs().line_height(rems(0.75)))
@@ -92,8 +92,12 @@ impl RenderOnce for ConversationTabView {
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)
+            .bg(cx.theme().tab)
+            .text_color(cx.theme().tab_foreground)
             .when(is_active, |this| {
-                this.bg(cx.theme().tab_active).border_b_0()
+                this.bg(cx.theme().tab_active)
+                    .text_color(cx.theme().tab_active_foreground)
+                    .border_b_0()
             })
             .drag_over::<DragTab>(move |this, _drag, _window, cx| {
                 if is_active {

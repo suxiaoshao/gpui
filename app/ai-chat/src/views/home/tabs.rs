@@ -46,7 +46,7 @@ impl Render for TabsView {
                         h_flex()
                             .flex_initial()
                             .h_7()
-                            .bg(cx.theme().accent)
+                            .bg(cx.theme().tab_bar)
                             .children(workspace.tabs())
                             .child(
                                 div()

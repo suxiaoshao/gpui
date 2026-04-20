@@ -228,11 +228,11 @@ fn apply_material_surface_tokens(
     colors.skeleton = Some(hex(scheme.surface_container_high));
     colors.switch = Some(hex(scheme.surface_container_highest));
     colors.switch_thumb = Some(hex(scheme.surface));
-    colors.tab = Some(hex_alpha(scheme.surface, 0x00));
+    colors.tab = Some(hex(scheme.surface_container));
     colors.tab_active = Some(hex(scheme.surface));
     colors.tab_active_foreground = Some(hex(scheme.on_surface));
-    colors.tab_bar = Some(hex(scheme.surface_container_low));
-    colors.tab_bar_segmented = Some(hex(scheme.surface_container));
+    colors.tab_bar = Some(hex(scheme.surface_container_high));
+    colors.tab_bar_segmented = Some(hex(scheme.surface_container_high));
     colors.tab_foreground = Some(hex(scheme.on_surface_variant));
     colors.table = Some(hex(scheme.surface));
     colors.table_even = Some(hex(scheme.surface_container_lowest));
@@ -242,7 +242,7 @@ fn apply_material_surface_tokens(
     colors.table_foot_foreground = Some(hex(scheme.on_surface_variant));
     colors.table_hover = Some(hex(scheme.surface_container));
     colors.table_row_border = Some(palette.divider.clone());
-    colors.title_bar = Some(hex(scheme.surface_container_low));
+    colors.title_bar = Some(hex(scheme.surface_container_highest));
     colors.title_bar_border = Some(palette.divider.clone());
     colors.tiles = Some(hex(scheme.surface_container_low));
 }
@@ -664,6 +664,47 @@ mod tests {
     }
 
     #[test]
+    fn generated_material_theme_uses_distinct_tab_surface_layers() {
+        for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+            let scheme = material_scheme(mode);
+            let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+            let colors = &config.colors;
+
+            assert_eq!(
+                colors.title_bar,
+                Some(hex(scheme.surface_container_highest))
+            );
+            assert_eq!(colors.tab_bar, Some(hex(scheme.surface_container_high)));
+            assert_eq!(colors.tab, Some(hex(scheme.surface_container)));
+            assert_eq!(
+                colors.tab_bar_segmented,
+                Some(hex(scheme.surface_container_high))
+            );
+            assert_eq!(colors.tab_active, Some(hex(scheme.surface)));
+            assert_eq!(colors.tab_active, colors.background);
+
+            assert_ne!(colors.title_bar, colors.tab_bar);
+            assert_ne!(colors.tab_bar, colors.tab);
+            assert_ne!(colors.tab_bar, colors.tab_active);
+            assert_ne!(colors.tab, colors.tab_active);
+            assert_ne!(colors.title_bar, colors.tab_active);
+
+            assert!(
+                contrast_ratio(
+                    color_from_option(&colors.tab),
+                    color_from_option(&colors.tab_foreground)
+                ) >= 4.5
+            );
+            assert!(
+                contrast_ratio(
+                    color_from_option(&colors.tab_active),
+                    color_from_option(&colors.tab_active_foreground)
+                ) >= 4.5
+            );
+        }
+    }
+
+    #[test]
     fn generated_material_theme_uses_material_state_layers() {
         for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
             let scheme = material_scheme(mode);
@@ -858,7 +899,10 @@ mod tests {
             ("sidebar_border", &colors.sidebar_border),
             ("tab", &colors.tab),
             ("tab_active", &colors.tab_active),
+            ("tab_active_foreground", &colors.tab_active_foreground),
             ("tab_bar", &colors.tab_bar),
+            ("tab_bar_segmented", &colors.tab_bar_segmented),
+            ("tab_foreground", &colors.tab_foreground),
             ("table", &colors.table),
             ("table_hover", &colors.table_hover),
             ("title_bar", &colors.title_bar),
