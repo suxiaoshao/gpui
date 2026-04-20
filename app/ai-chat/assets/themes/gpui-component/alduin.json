@@ -41,6 +41,7 @@
         "tab.active.foreground": "#ebdbb2",
         "tab.background": "#14141400",
         "tab.foreground": "#848382",
+        "tab_bar.background": "#2e2b29",
         "table.row.border": "#50494570",
         "title_bar.background": "#262626",
         "title_bar.border": "#3a3a3a",

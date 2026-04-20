@@ -29,6 +29,9 @@ const INFO_SEED_COLOR: Argb = Argb::from_rgb(0x0E, 0xA5, 0xE9);
 const SUCCESS_SEED_COLOR: Argb = Argb::from_rgb(0x22, 0xC5, 0x5E);
 const WARNING_SEED_COLOR: Argb = Argb::from_rgb(0xF5, 0x9E, 0x0B);
 const CHART_EXTRA_SEED_COLOR: Argb = Argb::from_rgb(0xA8, 0x55, 0xF7);
+const MATERIAL_SOFT_DIVIDER_ALPHA: u8 = 0x1F;
+const MATERIAL_HOVER_STATE_LAYER_ALPHA: u8 = 0x14;
+const MATERIAL_PRESSED_STATE_LAYER_ALPHA: u8 = 0x1A;
 
 #[derive(Clone)]
 pub(crate) struct ThemeChoice {
@@ -169,18 +172,15 @@ fn adapt_material_scheme(
     scheme: &MaterializedScheme,
 ) -> ThemeConfig {
     let mut colors = ThemeConfigColors::default();
+    let palette = MaterialPalette::new(mode, scheme);
 
-    apply_material_surface_tokens(&mut colors, scheme);
-    apply_material_control_tokens(&mut colors, scheme);
-    apply_material_interaction_tokens(&mut colors, mode, scheme);
-    apply_material_status_tokens(&mut colors, scheme);
+    apply_material_surface_tokens(&mut colors, scheme, &palette);
+    apply_material_control_tokens(&mut colors, scheme, &palette);
+    apply_material_interaction_tokens(&mut colors, mode, scheme, &palette);
+    apply_material_status_tokens(&mut colors, scheme, &palette);
 
-    colors.overlay = Some(if mode.is_dark() {
-        "#FFFFFF08".into()
-    } else {
-        "#0000001F".into()
-    });
-    colors.window_border = Some(hex(scheme.outline_variant));
+    colors.overlay = Some(palette.overlay.clone());
+    colors.window_border = Some(palette.divider.clone());
 
     ThemeConfig {
         name: SharedString::from(format!(
@@ -196,10 +196,14 @@ fn adapt_material_scheme(
     }
 }
 
-fn apply_material_surface_tokens(colors: &mut ThemeConfigColors, scheme: &MaterializedScheme) {
+fn apply_material_surface_tokens(
+    colors: &mut ThemeConfigColors,
+    scheme: &MaterializedScheme,
+    palette: &MaterialPalette,
+) {
     colors.background = Some(hex(scheme.surface));
     colors.foreground = Some(hex(scheme.on_surface));
-    colors.border = Some(hex(scheme.outline_variant));
+    colors.border = Some(palette.divider.clone());
     colors.accordion = Some(hex(scheme.surface_container_low));
     colors.accordion_hover = Some(hex(scheme.surface_container));
     colors.group_box = Some(hex(scheme.surface_container_low));
@@ -219,16 +223,16 @@ fn apply_material_surface_tokens(colors: &mut ThemeConfigColors, scheme: &Materi
     colors.scrollbar_thumb = Some(hex_alpha(scheme.outline, 0xE6));
     colors.scrollbar_thumb_hover = Some(hex(scheme.outline));
     colors.sidebar = Some(hex(scheme.surface_container_low));
-    colors.sidebar_border = Some(hex(scheme.outline_variant));
+    colors.sidebar_border = Some(palette.divider.clone());
     colors.sidebar_foreground = Some(hex(scheme.on_surface));
     colors.skeleton = Some(hex(scheme.surface_container_high));
     colors.switch = Some(hex(scheme.surface_container_highest));
     colors.switch_thumb = Some(hex(scheme.surface));
-    colors.tab = Some(hex_alpha(scheme.surface, 0x00));
+    colors.tab = Some(hex(scheme.surface_container));
     colors.tab_active = Some(hex(scheme.surface));
     colors.tab_active_foreground = Some(hex(scheme.on_surface));
-    colors.tab_bar = Some(hex(scheme.surface_container_low));
-    colors.tab_bar_segmented = Some(hex(scheme.surface_container));
+    colors.tab_bar = Some(hex(scheme.surface_container_high));
+    colors.tab_bar_segmented = Some(hex(scheme.surface_container_high));
     colors.tab_foreground = Some(hex(scheme.on_surface_variant));
     colors.table = Some(hex(scheme.surface));
     colors.table_even = Some(hex(scheme.surface_container_lowest));
@@ -237,31 +241,35 @@ fn apply_material_surface_tokens(colors: &mut ThemeConfigColors, scheme: &Materi
     colors.table_foot = Some(hex(scheme.surface_container_low));
     colors.table_foot_foreground = Some(hex(scheme.on_surface_variant));
     colors.table_hover = Some(hex(scheme.surface_container));
-    colors.table_row_border = Some(hex_alpha(scheme.outline_variant, 0xB3));
-    colors.title_bar = Some(hex(scheme.surface_container_low));
-    colors.title_bar_border = Some(hex(scheme.outline_variant));
-    colors.tiles = Some(hex(scheme.surface));
+    colors.table_row_border = Some(palette.divider.clone());
+    colors.title_bar = Some(hex(scheme.surface_container_highest));
+    colors.title_bar_border = Some(palette.divider.clone());
+    colors.tiles = Some(hex(scheme.surface_container_low));
 }
 
-fn apply_material_control_tokens(colors: &mut ThemeConfigColors, scheme: &MaterializedScheme) {
+fn apply_material_control_tokens(
+    colors: &mut ThemeConfigColors,
+    scheme: &MaterializedScheme,
+    palette: &MaterialPalette,
+) {
     colors.button_primary = Some(hex(scheme.primary));
-    colors.button_primary_active = Some(hex(scheme.primary));
+    colors.button_primary_active = Some(palette.primary.active.clone());
     colors.button_primary_foreground = Some(hex(scheme.on_primary));
-    colors.button_primary_hover = Some(hex(scheme.primary));
+    colors.button_primary_hover = Some(palette.primary.hover.clone());
     colors.caret = Some(hex(scheme.primary));
     colors.link = Some(hex(scheme.primary));
     colors.link_active = Some(hex(scheme.primary));
     colors.link_hover = Some(hex(scheme.primary));
     colors.primary = Some(hex(scheme.primary));
-    colors.primary_active = Some(hex(scheme.primary));
+    colors.primary_active = Some(palette.primary.active.clone());
     colors.primary_foreground = Some(hex(scheme.on_primary));
-    colors.primary_hover = Some(hex(scheme.primary));
+    colors.primary_hover = Some(palette.primary.hover.clone());
     colors.progress_bar = Some(hex(scheme.primary));
     colors.ring = Some(hex(scheme.primary));
     colors.secondary = Some(hex(scheme.secondary_container));
-    colors.secondary_active = Some(hex(scheme.surface_container_high));
-    colors.secondary_foreground = Some(hex(scheme.on_surface));
-    colors.secondary_hover = Some(hex(scheme.surface_container));
+    colors.secondary_active = Some(palette.secondary.active.clone());
+    colors.secondary_foreground = Some(hex(scheme.on_secondary_container));
+    colors.secondary_hover = Some(palette.secondary.hover.clone());
     colors.sidebar_primary = Some(hex(scheme.primary));
     colors.sidebar_primary_foreground = Some(hex(scheme.on_primary));
     colors.slider_bar = Some(hex(scheme.primary));
@@ -272,6 +280,7 @@ fn apply_material_interaction_tokens(
     colors: &mut ThemeConfigColors,
     mode: ComponentThemeMode,
     scheme: &MaterializedScheme,
+    palette: &MaterialPalette,
 ) {
     colors.accent = Some(hex(scheme.secondary_container));
     colors.accent_foreground = Some(hex(scheme.on_secondary_container));
@@ -282,14 +291,20 @@ fn apply_material_interaction_tokens(
     ));
     colors.list_active = Some(hex_alpha(scheme.primary, 0x33));
     colors.list_active_border = Some(hex(scheme.primary));
+    colors.list_hover = Some(palette.action_hover(scheme.surface));
     colors.selection = Some(hex_alpha(scheme.primary, 0x66));
     colors.sidebar_accent = Some(hex(scheme.secondary_container));
     colors.sidebar_accent_foreground = Some(hex(scheme.on_secondary_container));
     colors.table_active = Some(hex_alpha(scheme.primary, 0x33));
     colors.table_active_border = Some(hex(scheme.primary));
+    colors.table_hover = Some(palette.action_hover(scheme.surface));
 }
 
-fn apply_material_status_tokens(colors: &mut ThemeConfigColors, scheme: &MaterializedScheme) {
+fn apply_material_status_tokens(
+    colors: &mut ThemeConfigColors,
+    scheme: &MaterializedScheme,
+    palette: &MaterialPalette,
+) {
     let primary_roles = material_error_roles_for_palette(scheme, scheme.primary_palette.clone());
     let danger_roles = material_error_roles_for_palette(scheme, scheme.error_palette.clone());
     let info_roles = material_error_roles_for_palette(
@@ -317,21 +332,96 @@ fn apply_material_status_tokens(colors: &mut ThemeConfigColors, scheme: &Materia
     colors.chart_bullish = Some(hex(success_roles.color));
     colors.chart_bearish = Some(hex(danger_roles.color));
     colors.danger = Some(hex(danger_roles.color));
-    colors.danger_active = Some(hex(danger_roles.color));
+    colors.danger_active = Some(palette.role_active(danger_roles.color, danger_roles.on_color));
     colors.danger_foreground = Some(hex(danger_roles.on_color));
-    colors.danger_hover = Some(hex(danger_roles.color));
+    colors.danger_hover = Some(palette.role_hover(danger_roles.color, danger_roles.on_color));
     colors.info = Some(hex(info_roles.color));
     colors.info_foreground = Some(hex(info_roles.on_color));
-    colors.info_hover = Some(hex(info_roles.color));
-    colors.info_active = Some(hex(info_roles.color));
+    colors.info_hover = Some(palette.role_hover(info_roles.color, info_roles.on_color));
+    colors.info_active = Some(palette.role_active(info_roles.color, info_roles.on_color));
     colors.success = Some(hex(success_roles.color));
     colors.success_foreground = Some(hex(success_roles.on_color));
-    colors.success_hover = Some(hex(success_roles.color));
-    colors.success_active = Some(hex(success_roles.color));
+    colors.success_hover = Some(palette.role_hover(success_roles.color, success_roles.on_color));
+    colors.success_active = Some(palette.role_active(success_roles.color, success_roles.on_color));
     colors.warning = Some(hex(warning_roles.color));
-    colors.warning_active = Some(hex(warning_roles.color));
-    colors.warning_hover = Some(hex(warning_roles.color));
+    colors.warning_active = Some(palette.role_active(warning_roles.color, warning_roles.on_color));
+    colors.warning_hover = Some(palette.role_hover(warning_roles.color, warning_roles.on_color));
     colors.warning_foreground = Some(hex(warning_roles.on_color));
+}
+
+#[derive(Clone)]
+struct MaterialPalette {
+    divider: SharedString,
+    overlay: SharedString,
+    on_surface: Argb,
+    primary: MaterialInteractiveRole,
+    secondary: MaterialInteractiveRole,
+    action: MaterialActionPalette,
+}
+
+impl MaterialPalette {
+    fn new(mode: ComponentThemeMode, scheme: &MaterializedScheme) -> Self {
+        let action = MaterialActionPalette::new();
+
+        Self {
+            divider: hex_alpha(scheme.on_surface, MATERIAL_SOFT_DIVIDER_ALPHA),
+            overlay: if mode.is_dark() {
+                "#FFFFFF08".into()
+            } else {
+                "#0000001F".into()
+            },
+            on_surface: scheme.on_surface,
+            primary: MaterialInteractiveRole::new(scheme.primary, scheme.on_primary, &action),
+            secondary: MaterialInteractiveRole::new(
+                scheme.secondary_container,
+                scheme.on_secondary_container,
+                &action,
+            ),
+            action,
+        }
+    }
+
+    fn action_hover(&self, container: Argb) -> SharedString {
+        state_layer(container, self.on_surface, self.action.hover_alpha)
+    }
+
+    fn role_hover(&self, container: Argb, content: Argb) -> SharedString {
+        state_layer(container, content, self.action.hover_alpha)
+    }
+
+    fn role_active(&self, container: Argb, content: Argb) -> SharedString {
+        state_layer(container, content, self.action.active_alpha)
+    }
+}
+
+#[derive(Clone)]
+struct MaterialInteractiveRole {
+    hover: SharedString,
+    active: SharedString,
+}
+
+impl MaterialInteractiveRole {
+    fn new(container: Argb, content: Argb, action: &MaterialActionPalette) -> Self {
+        Self {
+            hover: state_layer(container, content, action.hover_alpha),
+            active: state_layer(container, content, action.active_alpha),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MaterialActionPalette {
+    hover_alpha: u8,
+    active_alpha: u8,
+}
+
+impl MaterialActionPalette {
+    fn new() -> Self {
+        Self {
+            hover_alpha: MATERIAL_HOVER_STATE_LAYER_ALPHA,
+            active_alpha: MATERIAL_PRESSED_STATE_LAYER_ALPHA,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -399,6 +489,27 @@ fn hex_alpha(color: Argb, alpha: u8) -> SharedString {
         alpha
     )
     .into()
+}
+
+fn state_layer(container: Argb, content: Argb, alpha: u8) -> SharedString {
+    hex(blend_argb(container, content, alpha))
+}
+
+fn blend_argb(container: Argb, overlay: Argb, alpha: u8) -> Argb {
+    fn blend_channel(container: u8, overlay: u8, alpha: u8) -> u8 {
+        let container = u16::from(container);
+        let overlay = u16::from(overlay);
+        let alpha = u16::from(alpha);
+        let inverse_alpha = 255 - alpha;
+
+        ((overlay * alpha + container * inverse_alpha + 127) / 255) as u8
+    }
+
+    Argb::from_rgb(
+        blend_channel(container.red(), overlay.red(), alpha),
+        blend_channel(container.green(), overlay.green(), alpha),
+        blend_channel(container.blue(), overlay.blue(), alpha),
+    )
 }
 
 #[cfg(test)]
@@ -490,24 +601,174 @@ mod tests {
     #[test]
     fn generated_dark_material_theme_keeps_secondary_selection_readable() {
         let scheme = material_scheme(ComponentThemeMode::Dark);
+        let palette = MaterialPalette::new(ComponentThemeMode::Dark, &scheme);
         let config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
             .expect("dark material theme");
 
         assert_eq!(
-            config.colors.secondary_active,
-            Some(hex(scheme.surface_container_high))
+            config.colors.secondary,
+            Some(hex(scheme.secondary_container))
         );
-        assert_ne!(config.colors.secondary_active, Some(hex(scheme.secondary)));
+        assert_eq!(
+            config.colors.secondary_hover,
+            Some(palette.secondary.hover.clone())
+        );
+        assert_eq!(
+            config.colors.secondary_active,
+            Some(palette.secondary.active.clone())
+        );
         assert_eq!(
             config.colors.secondary_foreground,
-            Some(hex(scheme.on_surface))
+            Some(hex(scheme.on_secondary_container))
+        );
+        assert_ne!(config.colors.secondary, config.colors.secondary_hover);
+        assert_ne!(config.colors.secondary, config.colors.secondary_active);
+        assert_ne!(
+            config.colors.secondary_hover,
+            config.colors.secondary_active
         );
 
-        let theme = preview_theme(&std::rc::Rc::new(config));
-        assert!(
-            theme.secondary_foreground.l - theme.secondary_active.l > 0.35,
-            "secondary selected text should stay visibly lighter than the dark selected background"
-        );
+        let foreground = color_from_option(&config.colors.secondary_foreground);
+        for background in [
+            &config.colors.secondary,
+            &config.colors.secondary_hover,
+            &config.colors.secondary_active,
+        ] {
+            assert!(
+                contrast_ratio(color_from_option(background), foreground) >= 4.5,
+                "secondary states should remain readable"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_material_theme_uses_soft_general_dividers() {
+        for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+            let scheme = material_scheme(mode);
+            let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+            let divider = hex_alpha(scheme.on_surface, MATERIAL_SOFT_DIVIDER_ALPHA);
+
+            for border in [
+                &config.colors.border,
+                &config.colors.sidebar_border,
+                &config.colors.title_bar_border,
+                &config.colors.table_row_border,
+                &config.colors.window_border,
+            ] {
+                assert_eq!(border, &Some(divider.clone()));
+            }
+
+            assert_ne!(config.colors.border, Some(hex(scheme.outline_variant)));
+            assert_eq!(config.colors.input, Some(hex(scheme.outline_variant)));
+        }
+    }
+
+    #[test]
+    fn generated_material_theme_uses_distinct_tab_surface_layers() {
+        for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+            let scheme = material_scheme(mode);
+            let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+            let colors = &config.colors;
+
+            assert_eq!(
+                colors.title_bar,
+                Some(hex(scheme.surface_container_highest))
+            );
+            assert_eq!(colors.tab_bar, Some(hex(scheme.surface_container_high)));
+            assert_eq!(colors.tab, Some(hex(scheme.surface_container)));
+            assert_eq!(
+                colors.tab_bar_segmented,
+                Some(hex(scheme.surface_container_high))
+            );
+            assert_eq!(colors.tab_active, Some(hex(scheme.surface)));
+            assert_eq!(colors.tab_active, colors.background);
+
+            assert_ne!(colors.title_bar, colors.tab_bar);
+            assert_ne!(colors.tab_bar, colors.tab);
+            assert_ne!(colors.tab_bar, colors.tab_active);
+            assert_ne!(colors.tab, colors.tab_active);
+            assert_ne!(colors.title_bar, colors.tab_active);
+
+            assert!(
+                contrast_ratio(
+                    color_from_option(&colors.tab),
+                    color_from_option(&colors.tab_foreground)
+                ) >= 4.5
+            );
+            assert!(
+                contrast_ratio(
+                    color_from_option(&colors.tab_active),
+                    color_from_option(&colors.tab_active_foreground)
+                ) >= 4.5
+            );
+        }
+    }
+
+    #[test]
+    fn generated_material_theme_uses_material_state_layers() {
+        for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+            let scheme = material_scheme(mode);
+            let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+            let danger_roles =
+                material_error_roles_for_palette(&scheme, scheme.error_palette.clone());
+
+            assert_eq!(
+                config.colors.primary_hover,
+                Some(state_layer(
+                    scheme.primary,
+                    scheme.on_primary,
+                    MATERIAL_HOVER_STATE_LAYER_ALPHA
+                ))
+            );
+            assert_eq!(
+                config.colors.primary_active,
+                Some(state_layer(
+                    scheme.primary,
+                    scheme.on_primary,
+                    MATERIAL_PRESSED_STATE_LAYER_ALPHA
+                ))
+            );
+            assert_eq!(
+                config.colors.button_primary_hover,
+                config.colors.primary_hover
+            );
+            assert_eq!(
+                config.colors.button_primary_active,
+                config.colors.primary_active
+            );
+            assert_eq!(
+                config.colors.secondary_hover,
+                Some(state_layer(
+                    scheme.secondary_container,
+                    scheme.on_secondary_container,
+                    MATERIAL_HOVER_STATE_LAYER_ALPHA
+                ))
+            );
+            assert_eq!(
+                config.colors.secondary_active,
+                Some(state_layer(
+                    scheme.secondary_container,
+                    scheme.on_secondary_container,
+                    MATERIAL_PRESSED_STATE_LAYER_ALPHA
+                ))
+            );
+            assert_eq!(
+                config.colors.danger_hover,
+                Some(state_layer(
+                    danger_roles.color,
+                    danger_roles.on_color,
+                    MATERIAL_HOVER_STATE_LAYER_ALPHA
+                ))
+            );
+            assert_eq!(
+                config.colors.danger_active,
+                Some(state_layer(
+                    danger_roles.color,
+                    danger_roles.on_color,
+                    MATERIAL_PRESSED_STATE_LAYER_ALPHA
+                ))
+            );
+        }
     }
 
     #[test]
@@ -552,6 +813,114 @@ mod tests {
                         >= 4.5
                 );
             }
+        }
+    }
+
+    #[test]
+    fn generated_material_control_states_are_distinct_and_readable() {
+        for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+            let config =
+                generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme config");
+            let colors = &config.colors;
+
+            for (name, background, hover, active, foreground) in [
+                (
+                    "primary",
+                    &colors.primary,
+                    &colors.primary_hover,
+                    &colors.primary_active,
+                    &colors.primary_foreground,
+                ),
+                (
+                    "button_primary",
+                    &colors.button_primary,
+                    &colors.button_primary_hover,
+                    &colors.button_primary_active,
+                    &colors.button_primary_foreground,
+                ),
+                (
+                    "danger",
+                    &colors.danger,
+                    &colors.danger_hover,
+                    &colors.danger_active,
+                    &colors.danger_foreground,
+                ),
+                (
+                    "info",
+                    &colors.info,
+                    &colors.info_hover,
+                    &colors.info_active,
+                    &colors.info_foreground,
+                ),
+                (
+                    "success",
+                    &colors.success,
+                    &colors.success_hover,
+                    &colors.success_active,
+                    &colors.success_foreground,
+                ),
+                (
+                    "warning",
+                    &colors.warning,
+                    &colors.warning_hover,
+                    &colors.warning_active,
+                    &colors.warning_foreground,
+                ),
+            ] {
+                assert_ne!(background, hover, "{name} hover should be derived");
+                assert_ne!(background, active, "{name} active should be derived");
+
+                let foreground = color_from_option(foreground);
+                for state in [background, hover, active] {
+                    assert!(
+                        contrast_ratio(color_from_option(state), foreground) >= 4.5,
+                        "{name} foreground should remain readable"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_material_theme_fills_component_tokens() {
+        let config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
+            .expect("dark material theme");
+        let colors = &config.colors;
+
+        for (name, color) in [
+            ("background", &colors.background),
+            ("foreground", &colors.foreground),
+            ("border", &colors.border),
+            ("input", &colors.input),
+            ("group_box", &colors.group_box),
+            ("muted", &colors.muted),
+            ("popover", &colors.popover),
+            ("sidebar", &colors.sidebar),
+            ("sidebar_border", &colors.sidebar_border),
+            ("tab", &colors.tab),
+            ("tab_active", &colors.tab_active),
+            ("tab_active_foreground", &colors.tab_active_foreground),
+            ("tab_bar", &colors.tab_bar),
+            ("tab_bar_segmented", &colors.tab_bar_segmented),
+            ("tab_foreground", &colors.tab_foreground),
+            ("table", &colors.table),
+            ("table_hover", &colors.table_hover),
+            ("title_bar", &colors.title_bar),
+            ("window_border", &colors.window_border),
+            ("primary", &colors.primary),
+            ("primary_hover", &colors.primary_hover),
+            ("primary_active", &colors.primary_active),
+            ("secondary", &colors.secondary),
+            ("secondary_hover", &colors.secondary_hover),
+            ("secondary_active", &colors.secondary_active),
+            ("list_active", &colors.list_active),
+            ("table_active", &colors.table_active),
+            ("danger", &colors.danger),
+            ("info", &colors.info),
+            ("success", &colors.success),
+            ("warning", &colors.warning),
+        ] {
+            assert!(color.is_some(), "{name} should be generated");
         }
     }
 

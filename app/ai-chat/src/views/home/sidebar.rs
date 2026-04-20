@@ -119,6 +119,7 @@ impl Render for SidebarView {
                 Sidebar::new("sidebar")
                     .side(Side::Left)
                     .w_full()
+                    .border_r_0()
                     .collapsible(false)
                     .collapsed(false)
                     .header(SidebarHeader::new().child(app_title))
