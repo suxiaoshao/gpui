@@ -13,12 +13,13 @@ use crate::{
         },
     },
     errors::AiChatResult,
+    search::field_matches_query,
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
 use time::OffsetDateTime;
 
-use super::utils::{deserialize_offset_date_time, field_matches_query, serialize_offset_date_time};
+use super::utils::{deserialize_offset_date_time, serialize_offset_date_time};
 
 #[derive(serde::Serialize, Clone, serde::Deserialize)]
 pub struct ConversationTemplatePrompt {

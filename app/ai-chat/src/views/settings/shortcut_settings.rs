@@ -25,7 +25,6 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     popover::Popover,
-    scroll::ScrollableElement,
     select::{
         SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState,
     },
@@ -1500,24 +1499,23 @@ impl Render for ShortcutSettingsPage {
             .w_full()
             .gap_3()
             .child(self.render_toolbar(cx))
-            .child(div().w_full().h(px(560.)).overflow_y_scrollbar().child(
-                if row_elements.is_empty() {
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(cx.global::<I18n>().t("empty-shortcut-bindings"))
-                        .into_any_element()
-                } else {
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .children(row_elements)
-                        .into_any_element()
-                },
-            ))
+            .child(if row_elements.is_empty() {
+                div()
+                    .w_full()
+                    .min_h(px(280.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(cx.global::<I18n>().t("empty-shortcut-bindings"))
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .children(row_elements)
+                    .into_any_element()
+            })
     }
 }

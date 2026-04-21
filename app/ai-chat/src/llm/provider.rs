@@ -8,7 +8,7 @@ use futures::{
     future::{BoxFuture, join_all},
     stream::BoxStream,
 };
-use gpui_component::setting::SettingGroup;
+use gpui::App;
 
 mod ollama;
 mod openai;
@@ -67,6 +67,27 @@ pub(crate) struct ExtSettingItem {
     pub(crate) control: ExtSettingControl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderSettingsFieldKind {
+    Text,
+    SecretText,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderSettingsFieldSpec {
+    pub(crate) key: &'static str,
+    pub(crate) label_key: &'static str,
+    pub(crate) kind: ProviderSettingsFieldKind,
+    pub(crate) search_keywords: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderSettingsSpec {
+    pub(crate) provider_name: &'static str,
+    pub(crate) title_key: &'static str,
+    pub(crate) fields: &'static [ProviderSettingsFieldSpec],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExtSettingControl {
     Select {
@@ -96,7 +117,9 @@ pub(crate) trait Provider: Sync {
         config: AiChatConfig,
         settings: toml::Value,
     ) -> BoxFuture<'static, AiChatResult<Vec<ProviderModel>>>;
-    fn setting_group(&self) -> SettingGroup;
+    fn settings_spec(&self) -> ProviderSettingsSpec;
+    fn read_settings_field(&self, key: &str, config: &AiChatConfig) -> Option<String>;
+    fn write_settings_field(&self, key: &str, value: String, cx: &mut App) -> AiChatResult<()>;
     fn ext_settings(
         &self,
         _model: &ProviderModel,
@@ -152,10 +175,10 @@ pub(crate) fn provider_names() -> Vec<&'static str> {
     PROVIDERS.iter().map(|provider| provider.name()).collect()
 }
 
-pub(crate) fn provider_setting_groups() -> Vec<SettingGroup> {
+pub(crate) fn provider_settings_specs() -> Vec<ProviderSettingsSpec> {
     PROVIDERS
         .iter()
-        .map(|provider| provider.setting_group())
+        .map(|provider| provider.settings_spec())
         .collect()
 }
 
@@ -248,11 +271,14 @@ pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBat
 mod tests {
     use super::{
         AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, Provider, ProviderModel,
-        ProviderModelCapability, ProviderModelsFailure, available_models_from_providers,
+        ProviderModelCapability, ProviderModelsFailure, ProviderSettingsFieldKind,
+        ProviderSettingsSpec, available_models_from_providers, provider_settings_specs,
     };
-    use crate::{errors::AiChatError, state::AiChatConfig};
+    use crate::{
+        errors::{AiChatError, AiChatResult},
+        state::AiChatConfig,
+    };
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
-    use gpui_component::setting::SettingGroup;
 
     struct MockProvider {
         name: &'static str,
@@ -306,7 +332,20 @@ mod tests {
             async move { result }.boxed()
         }
 
-        fn setting_group(&self) -> SettingGroup {
+        fn settings_spec(&self) -> ProviderSettingsSpec {
+            unreachable!()
+        }
+
+        fn read_settings_field(&self, _key: &str, _config: &AiChatConfig) -> Option<String> {
+            unreachable!()
+        }
+
+        fn write_settings_field(
+            &self,
+            _key: &str,
+            _value: String,
+            _cx: &mut gpui::App,
+        ) -> AiChatResult<()> {
             unreachable!()
         }
 
@@ -391,5 +430,21 @@ mod tests {
         assert_eq!(batch.successes.len(), 1);
         assert_eq!(batch.successes[0].provider_name, "Provider A");
         assert!(batch.failures.is_empty());
+    }
+
+    #[test]
+    fn openai_api_key_settings_field_is_secret_text() {
+        let specs = provider_settings_specs();
+        let openai = specs
+            .iter()
+            .find(|spec| spec.provider_name == "OpenAI")
+            .expect("OpenAI settings spec exists");
+        let api_key = openai
+            .fields
+            .iter()
+            .find(|field| field.key == "apiKey")
+            .expect("OpenAI API key field exists");
+
+        assert_eq!(api_key.kind, ProviderSettingsFieldKind::SecretText);
     }
 }

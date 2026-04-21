@@ -204,6 +204,7 @@ field-search-extension = Search extensions
 field-search-conversation = Search conversations
 field-search-template = Search templates
 field-search-models = Search models
+field-search-settings = Search settings
 mode-contextual = Contextual
 mode-single = Single
 mode-assistant-only = Assistant Only
@@ -313,6 +314,7 @@ notify-open-config-file-failed = Open config file failed
 notify-export-conversation-success = Conversation exported
 notify-export-conversation-failed = Export conversation failed
 conversation-search-no-results = No conversations found.
+settings-search-no-results = No matching settings.
 
 delete-message-failed-title = Delete Message Failed
 delete-message-failed-message = Message view not available.

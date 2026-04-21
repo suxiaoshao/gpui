@@ -171,15 +171,6 @@ impl Display for Language {
 }
 
 impl Language {
-    pub(crate) fn from_str(s: &str) -> Self {
-        match s {
-            "en" => Self::English,
-            "zh" => Self::Chinese,
-            "system" => Self::System,
-            _ => Self::System,
-        }
-    }
-
     pub(crate) fn options() -> [Self; 3] {
         [Self::System, Self::English, Self::Chinese]
     }

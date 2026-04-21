@@ -204,6 +204,7 @@ field-search-extension = 搜索扩展
 field-search-conversation = 搜索会话
 field-search-template = 搜索模板
 field-search-models = 搜索模型
+field-search-settings = 搜索设置
 mode-contextual = 上下文模式
 mode-single = 单轮模式
 mode-assistant-only = 仅助手模式
@@ -313,6 +314,7 @@ notify-open-config-file-failed = 打开配置文件失败
 notify-export-conversation-success = 会话已导出
 notify-export-conversation-failed = 导出会话失败
 conversation-search-no-results = 未找到会话。
+settings-search-no-results = 未找到匹配的设置。
 
 delete-message-failed-title = 删除消息失败
 delete-message-failed-message = 消息窗口不可用。

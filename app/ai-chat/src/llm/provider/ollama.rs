@@ -1,17 +1,16 @@
 use super::{
     ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
-    ProviderModelCapability,
+    ProviderModelCapability, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
+    ProviderSettingsSpec,
 };
 use crate::{
     database::{Content, Role, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    i18n::t_static,
     llm::Message,
     state::AiChatConfig,
 };
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
-use gpui::*;
-use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+use gpui::App;
 use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::Url;
@@ -22,6 +21,15 @@ use toml::Value;
 use tracing::{Level, event};
 
 pub(crate) struct OllamaProvider;
+
+const BASE_URL_FIELD_KEY: &str = "baseUrl";
+
+const OLLAMA_SETTINGS_FIELDS: &[ProviderSettingsFieldSpec] = &[ProviderSettingsFieldSpec {
+    key: BASE_URL_FIELD_KEY,
+    label_key: "field-base-url",
+    kind: ProviderSettingsFieldKind::Text,
+    search_keywords: "ollama base url endpoint local",
+}];
 
 const THINK_KEY: &str = "think";
 const WEB_SEARCH_KEY: &str = "web_search";
@@ -163,13 +171,16 @@ impl OllamaSettings {
     }
 }
 
-fn ollama_settings(cx: &App) -> OllamaSettings {
-    let config = cx.global::<AiChatConfig>();
+fn ollama_settings_from_config(config: &AiChatConfig) -> OllamaSettings {
     config
         .get_provider_settings(OllamaProvider.name())
         .and_then(|x| x.clone().try_into::<OllamaSettings>().ok())
         .map(OllamaSettings::normalized)
         .unwrap_or_default()
+}
+
+fn ollama_settings(cx: &App) -> OllamaSettings {
+    ollama_settings_from_config(cx.global::<AiChatConfig>())
 }
 
 fn save_ollama_settings(settings: OllamaSettings, cx: &mut App) {
@@ -865,24 +876,40 @@ impl Provider for OllamaProvider {
         .boxed()
     }
 
-    fn setting_group(&self) -> SettingGroup {
-        SettingGroup::new()
-            .title(t_static("settings-ollama-title"))
-            .item(SettingItem::new(
-                t_static("field-base-url"),
-                SettingField::input(
-                    |cx| ollama_settings(cx).base_url.into(),
-                    |value, cx| {
-                        let mut settings = ollama_settings(cx);
-                        settings.base_url = if value.trim().is_empty() {
-                            default_base_url()
-                        } else {
-                            normalize_base_url(&value)
-                        };
-                        save_ollama_settings(settings, cx);
-                    },
-                ),
-            ))
+    fn settings_spec(&self) -> ProviderSettingsSpec {
+        ProviderSettingsSpec {
+            provider_name: self.name(),
+            title_key: "settings-ollama-title",
+            fields: OLLAMA_SETTINGS_FIELDS,
+        }
+    }
+
+    fn read_settings_field(&self, key: &str, config: &AiChatConfig) -> Option<String> {
+        let settings = ollama_settings_from_config(config);
+        match key {
+            BASE_URL_FIELD_KEY => Some(settings.base_url),
+            _ => None,
+        }
+    }
+
+    fn write_settings_field(&self, key: &str, value: String, cx: &mut App) -> AiChatResult<()> {
+        let mut settings = ollama_settings(cx);
+        match key {
+            BASE_URL_FIELD_KEY => {
+                settings.base_url = if value.trim().is_empty() {
+                    default_base_url()
+                } else {
+                    normalize_base_url(&value)
+                };
+            }
+            _ => {
+                return Err(AiChatError::StreamError(format!(
+                    "unsupported Ollama settings field: {key}"
+                )));
+            }
+        }
+        save_ollama_settings(settings, cx);
+        Ok(())
     }
 
     fn ext_settings(

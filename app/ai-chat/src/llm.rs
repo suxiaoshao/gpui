@@ -13,8 +13,9 @@ pub(crate) use provider::ProviderModelsSuccess;
 pub(crate) use provider::{
     AvailableModelsBatch, ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate,
     OllamaProvider, OllamaSettings, OpenAIProvider, OpenAISettings, Provider, ProviderModel,
-    ProviderModelsFailure, available_models, provider_by_name, provider_is_configured,
-    provider_names, provider_setting_groups,
+    ProviderModelsFailure, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
+    ProviderSettingsSpec, available_models, provider_by_name, provider_is_configured,
+    provider_names, provider_settings_specs,
 };
 pub(crate) use runner::FetchRunner;
 pub(crate) use types::Message;

@@ -22,4 +22,3 @@ pub use global_shortcut_bindings::{
     GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding,
 };
 pub use messages::{Content, Message, NewMessage, UrlCitation};
-pub(crate) use utils::field_matches_query;
