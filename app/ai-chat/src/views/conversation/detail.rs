@@ -37,6 +37,9 @@ pub(crate) trait ConversationDetailViewExt: Sized + 'static {
     fn header_leading(&self, _cx: &App) -> Option<AnyElement> {
         None
     }
+    fn empty_state(&self, _cx: &App) -> Option<AnyElement> {
+        None
+    }
     fn header_actions(
         _view: &mut ConversationDetailView<Self>,
         _window: &mut Window,
@@ -339,6 +342,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
         let was_at_end = list_is_at_end(&self.message_list, alignment);
         let change = self.sync_message_list(message_revisions);
         self.maybe_reveal_latest_message(change, was_at_end);
+        let message_count = self.message_revisions.len();
 
         let title = self.detail.title(cx);
         let subtitle = self
@@ -355,6 +359,9 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
         let message_list = self.message_list.clone();
         let this = cx.entity().downgrade();
         let has_subtitle = subtitle.is_some();
+        let empty_state = (message_count == 0)
+            .then(|| self.detail.empty_state(cx))
+            .flatten();
         let header_body = match subtitle {
             Some(subtitle) => h_flex()
                 .gap_2()
@@ -441,29 +448,42 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                     }),
             )
             .child(Divider::horizontal())
-            .child(
-                div()
+            .child({
+                let content = div()
                     .id(SharedString::from(format!("{element_prefix}-content")))
                     .flex_1()
                     .overflow_hidden()
                     .relative()
-                    .w_full()
-                    .child(
-                        list(message_list.clone(), move |ix, _window, cx| {
-                            this.upgrade()
-                                .and_then(|view| {
-                                    view.read(cx)
-                                        .detail
-                                        .message_at(ix, cx)
-                                        .map(MessageView::new)
-                                })
-                                .map(|message| message.into_any_element())
-                                .unwrap_or_else(|| div().into_any_element())
-                        })
-                        .size_full(),
+                    .w_full();
+                if let Some(empty_state) = empty_state {
+                    content.child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .p_6()
+                            .child(empty_state),
                     )
-                    .vertical_scrollbar(&message_list),
-            )
+                } else {
+                    content
+                        .child(
+                            list(message_list.clone(), move |ix, _window, cx| {
+                                this.upgrade()
+                                    .and_then(|view| {
+                                        view.read(cx)
+                                            .detail
+                                            .message_at(ix, cx)
+                                            .map(MessageView::new)
+                                    })
+                                    .map(|message| message.into_any_element())
+                                    .unwrap_or_else(|| div().into_any_element())
+                            })
+                            .size_full(),
+                        )
+                        .vertical_scrollbar(&message_list)
+                }
+            })
             .child({
                 let mut footer = v_flex();
                 footer.style().align_items = Some(AlignItems::Stretch);

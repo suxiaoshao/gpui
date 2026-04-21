@@ -1,22 +1,17 @@
 use super::{
     ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
-    ProviderModelCapability,
+    ProviderModelCapability, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
+    ProviderSettingsSpec,
 };
 use crate::{
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    i18n::t_static,
     llm::Message,
     state::AiChatConfig,
 };
 use eventsource_stream::Eventsource;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
-use gpui::*;
-use gpui_component::{
-    Sizable,
-    input::{Input, InputEvent, InputState},
-    setting::{SettingField, SettingGroup, SettingItem},
-};
+use gpui::App;
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -31,6 +26,31 @@ use toml::Value;
 use tracing::{Level, event};
 
 pub(crate) struct OpenAIProvider;
+
+const API_KEY_FIELD_KEY: &str = "apiKey";
+const BASE_URL_FIELD_KEY: &str = "baseUrl";
+const HTTP_PROXY_FIELD_KEY: &str = "httpProxy";
+
+const OPENAI_SETTINGS_FIELDS: &[ProviderSettingsFieldSpec] = &[
+    ProviderSettingsFieldSpec {
+        key: API_KEY_FIELD_KEY,
+        label_key: "field-api-key",
+        kind: ProviderSettingsFieldKind::SecretText,
+        search_keywords: "openai api key secret token credential",
+    },
+    ProviderSettingsFieldSpec {
+        key: BASE_URL_FIELD_KEY,
+        label_key: "field-base-url",
+        kind: ProviderSettingsFieldKind::Text,
+        search_keywords: "openai base url endpoint api",
+    },
+    ProviderSettingsFieldSpec {
+        key: HTTP_PROXY_FIELD_KEY,
+        label_key: "field-http-proxy",
+        kind: ProviderSettingsFieldKind::Text,
+        search_keywords: "openai http proxy network",
+    },
+];
 
 fn default_base_url() -> String {
     "https://api.openai.com/v1".to_string()
@@ -85,13 +105,16 @@ impl OpenAISettings {
     }
 }
 
-fn openai_settings(cx: &App) -> OpenAISettings {
-    let config = cx.global::<AiChatConfig>();
+fn openai_settings_from_config(config: &AiChatConfig) -> OpenAISettings {
     config
         .get_provider_settings(OpenAIProvider.name())
         .and_then(|x| x.clone().try_into::<OpenAISettings>().ok())
         .map(OpenAISettings::normalized)
         .unwrap_or_default()
+}
+
+fn openai_settings(cx: &App) -> OpenAISettings {
+    openai_settings_from_config(cx.global::<AiChatConfig>())
 }
 
 fn save_openai_settings(settings: OpenAISettings, cx: &mut App) {
@@ -106,12 +129,6 @@ fn save_openai_settings(settings: OpenAISettings, cx: &mut App) {
     if let Err(err) = config.save() {
         event!(Level::ERROR, "Failed to save OpenAI settings: {}", err);
     }
-}
-
-struct BaseUrlFieldState {
-    input: Entity<InputState>,
-    last_value: String,
-    _subscription: Subscription,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -741,101 +758,48 @@ impl Provider for OpenAIProvider {
         .boxed()
     }
 
-    fn setting_group(&self) -> gpui_component::setting::SettingGroup {
-        SettingGroup::new()
-            .title(t_static("settings-openai-title"))
-            .item(SettingItem::new(
-                t_static("field-api-key"),
-                SettingField::input(
-                    |cx| {
-                        let openai_setting = openai_settings(cx);
-                        openai_setting.api_key.map(Into::into).unwrap_or_default()
-                    },
-                    |value, cx| {
-                        let mut open_settings = openai_settings(cx);
-                        open_settings.api_key = if value.is_empty() {
-                            None
-                        } else {
-                            Some(value.into())
-                        };
-                        save_openai_settings(open_settings, cx);
-                    },
-                ),
-            ))
-            .item(SettingItem::new(
-                t_static("field-base-url"),
-                SettingField::render(|options, window, cx| {
-                    let initial_value = openai_settings(cx).base_url;
-                    let state = window
-                        .use_keyed_state("openai-base-url-field", cx, |window, cx| {
-                            let input = cx.new(|cx| {
-                                InputState::new(window, cx).default_value(initial_value.clone())
-                            });
-                            let _subscription = cx.subscribe_in(&input, window, {
-                                move |state: &mut BaseUrlFieldState,
-                                      input,
-                                      event: &InputEvent,
-                                      window,
-                                      cx| {
-                                    if !matches!(event, InputEvent::Change) {
-                                        return;
-                                    }
+    fn settings_spec(&self) -> ProviderSettingsSpec {
+        ProviderSettingsSpec {
+            provider_name: self.name(),
+            title_key: "settings-openai-title",
+            fields: OPENAI_SETTINGS_FIELDS,
+        }
+    }
 
-                                    let current_value = input.read(cx).value().to_string();
-                                    let next_value = if current_value.trim().is_empty() {
-                                        default_base_url()
-                                    } else {
-                                        normalize_base_url(&current_value)
-                                    };
+    fn read_settings_field(&self, key: &str, config: &AiChatConfig) -> Option<String> {
+        let settings = openai_settings_from_config(config);
+        match key {
+            API_KEY_FIELD_KEY => Some(settings.api_key.unwrap_or_default()),
+            BASE_URL_FIELD_KEY => Some(settings.base_url),
+            HTTP_PROXY_FIELD_KEY => Some(settings.http_proxy.unwrap_or_default()),
+            _ => None,
+        }
+    }
 
-                                    if next_value == state.last_value {
-                                        return;
-                                    }
-
-                                    if current_value != next_value {
-                                        input.update(cx, |input, cx| {
-                                            input.set_value(next_value.clone(), window, cx);
-                                        });
-                                    }
-
-                                    let mut settings = openai_settings(cx);
-                                    settings.base_url = next_value.clone();
-                                    save_openai_settings(settings, cx);
-                                    state.last_value = next_value;
-                                }
-                            });
-
-                            BaseUrlFieldState {
-                                input,
-                                last_value: initial_value,
-                                _subscription,
-                            }
-                        })
-                        .read(cx);
-
-                    Input::new(&state.input).with_size(options.size).w(px(256.))
-                }),
-            ))
-            .item(SettingItem::new(
-                t_static("field-http-proxy"),
-                SettingField::input(
-                    |cx| {
-                        openai_settings(cx)
-                            .http_proxy
-                            .map(Into::into)
-                            .unwrap_or_default()
-                    },
-                    |value, cx| {
-                        let mut open_settings = openai_settings(cx);
-                        open_settings.http_proxy = if value.is_empty() {
-                            None
-                        } else {
-                            Some(value.into())
-                        };
-                        save_openai_settings(open_settings, cx);
-                    },
-                ),
-            ))
+    fn write_settings_field(&self, key: &str, value: String, cx: &mut App) -> AiChatResult<()> {
+        let mut settings = openai_settings(cx);
+        match key {
+            API_KEY_FIELD_KEY => {
+                settings.api_key = if value.is_empty() { None } else { Some(value) };
+            }
+            BASE_URL_FIELD_KEY => {
+                settings.base_url = if value.trim().is_empty() {
+                    default_base_url()
+                } else {
+                    normalize_base_url(&value)
+                };
+            }
+            HTTP_PROXY_FIELD_KEY => {
+                settings.http_proxy = if value.is_empty() { None } else { Some(value) };
+            }
+            _ => {
+                return Err(AiChatError::StreamError(format!(
+                    "unsupported OpenAI settings field: {key}"
+                )));
+            }
+        }
+        save_openai_settings(settings, cx);
+        Ok(())
     }
 
     fn ext_settings(

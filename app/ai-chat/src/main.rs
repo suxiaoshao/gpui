@@ -16,6 +16,7 @@ mod hotkey;
 mod i18n;
 mod llm;
 mod platform;
+mod search;
 mod state;
 mod tray;
 mod views;

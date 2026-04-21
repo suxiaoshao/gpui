@@ -11,7 +11,6 @@ mod schema;
 mod service;
 mod types;
 
-pub(crate) use service::field_matches_query;
 pub use service::{
     Content, Conversation, ConversationTemplate, ConversationTemplatePrompt, Folder, Message,
     NewConversation, NewConversationTemplate, NewFolder, NewMessage, UrlCitation,

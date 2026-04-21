@@ -1,30 +1,34 @@
 use crate::{
     app_menus,
-    assets::IconName,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
-    i18n::{self, I18n},
-    llm::provider_setting_groups,
-    state::{AiChatConfig, Language, WindowPlacementKind, WorkspaceStore},
-    tray,
+    i18n::I18n,
+    llm::provider_settings_specs,
+    state::{AiChatConfig, WindowPlacementKind, WorkspaceStore},
 };
 use gpui::*;
 use gpui_component::{
-    Root, StyledExt, TitleBar, WindowExt,
-    button::{Button, ButtonVariants},
-    h_flex,
+    Root, StyledExt, TitleBar, h_flex,
+    input::{InputEvent, InputState},
     label::Label,
-    notification::{Notification, NotificationType},
-    setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
 use std::{any::TypeId, ops::Deref};
 use tracing::{Level, event};
 
 pub(super) mod appearance_settings;
+mod general_settings;
+mod layout;
+mod provider_settings;
 pub(super) mod shortcut_settings;
 
-use self::appearance_settings::AppearanceSettingsPage;
-use self::shortcut_settings::ShortcutSettingsPage;
+use self::{
+    appearance_settings::AppearanceSettingsPage,
+    layout::{
+        SETTINGS_SIDEBAR_DEFAULT_WIDTH, SettingsPageFrame, SettingsPageKey, SettingsPageSpec,
+        SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
+    },
+    shortcut_settings::ShortcutSettingsPage,
+};
 
 actions!([OpenSetting]);
 
@@ -32,6 +36,13 @@ actions!([OpenSetting]);
 enum SettingsOpenTarget {
     General,
     Provider,
+}
+
+fn page_key_from_open_target(target: SettingsOpenTarget) -> SettingsPageKey {
+    match target {
+        SettingsOpenTarget::General => SettingsPageKey::General,
+        SettingsOpenTarget::Provider => SettingsPageKey::Provider,
+    }
 }
 
 const SETTINGS_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(960.), px(720.));
@@ -52,9 +63,11 @@ pub fn init(cx: &mut App) {
 pub struct SettingsView {
     focus_handle: FocusHandle,
     hotkey_input: Entity<HotkeyInput>,
+    settings_search_input: Entity<InputState>,
     appearance_settings: Entity<AppearanceSettingsPage>,
     shortcut_settings: Entity<ShortcutSettingsPage>,
-    open_target: SettingsOpenTarget,
+    selected_page: SettingsPageKey,
+    sidebar_width: Pixels,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -67,10 +80,18 @@ impl SettingsView {
             HotkeyInput::new("temporary-hotkey-input", window, cx)
                 .default_value(temporary_hotkey.and_then(|x| string_to_keystroke(&x)))
         });
+        let settings_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-settings"))
+        });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
         let _subscriptions = vec![
             cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes),
+            cx.subscribe_in(
+                &settings_search_input,
+                window,
+                Self::subscribe_settings_search_changes,
+            ),
             cx.observe_window_bounds(window, |_settings, window, cx| {
                 if !cx.has_global::<WorkspaceStore>() {
                     return;
@@ -94,12 +115,27 @@ impl SettingsView {
         Self {
             focus_handle,
             hotkey_input,
+            settings_search_input,
             appearance_settings,
             shortcut_settings,
-            open_target,
+            selected_page: page_key_from_open_target(open_target),
+            sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
             _subscriptions,
         }
     }
+
+    fn subscribe_settings_search_changes(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            cx.notify();
+        }
+    }
+
     fn subscribe_hotkey_changes(
         &mut self,
         state: Entity<HotkeyInput>,
@@ -133,143 +169,58 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (
-            page_general,
-            page_appearance,
-            page_provider,
-            page_shortcuts,
-            group_basic_options,
-            field_language,
-            field_http_proxy,
-            field_temporary_hotkey,
-            field_config_file,
-            button_open,
-            open_config_failed,
-        ) = {
-            let i18n = cx.global::<I18n>();
-            (
-                i18n.t("settings-page-general"),
-                i18n.t("settings-page-appearance"),
-                i18n.t("settings-page-provider"),
-                i18n.t("settings-page-shortcuts"),
-                i18n.t("settings-group-basic-options"),
-                i18n.t("field-language"),
-                i18n.t("field-http-proxy"),
-                i18n.t("field-temporary-conversation-hotkey"),
-                i18n.t("field-config-file"),
-                i18n.t("button-open"),
-                i18n.t("notify-open-config-file-failed"),
-            )
-        };
         let settings_title = cx.global::<I18n>().t("settings-title");
+        let search_no_results = cx.global::<I18n>().t("settings-search-no-results");
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
-        let hotkey_input = self.hotkey_input.clone();
-        let provider_page = provider_setting_groups().into_iter().fold(
-            SettingPage::new(page_provider),
-            |page: SettingPage, group| page.group(group),
-        );
-        let shortcuts_page = SettingPage::new(page_shortcuts).group(SettingGroup::new().item(
-            SettingItem::render({
-                let page = self.shortcut_settings.clone();
-                move |_options, _window, _cx| page.clone()
-            }),
-        ));
-        let appearance_page = SettingPage::new(page_appearance).group(SettingGroup::new().item(
-            SettingItem::render({
-                let page = self.appearance_settings.clone();
-                move |_options, _window, _cx| page.clone()
-            }),
-        ));
-        let general_page = SettingPage::new(page_general).group(
-            SettingGroup::new()
-                .title(group_basic_options)
-                .item(SettingItem::new(
-                    field_language,
-                    SettingField::dropdown(
-                        Language::options()
-                            .into_iter()
-                            .map(|language| {
-                                (
-                                    language.to_string().into(),
-                                    cx.global::<I18n>().t(language.label_key()).into(),
-                                )
-                            })
-                            .collect(),
-                        |cx: &App| {
-                            let config = cx.global::<AiChatConfig>();
-                            config.language().to_string().into()
-                        },
-                        |val: SharedString, cx: &mut App| {
-                            {
-                                let config = cx.global_mut::<AiChatConfig>();
-                                config.set_language(Language::from_str(&val));
-                            }
-                            i18n::refresh_i18n(cx);
-                            cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
-                            tray::refresh(cx);
-                            cx.refresh_windows();
-                        },
-                    ),
-                ))
-                .item(SettingItem::new(
-                    field_http_proxy,
-                    SettingField::input(
-                        |cx: &App| {
-                            let config = cx.global::<AiChatConfig>();
-                            config
-                                .http_proxy
-                                .as_ref()
-                                .map(|proxy| proxy.into())
-                                .unwrap_or_default()
-                        },
-                        |val: SharedString, cx: &mut App| {
-                            if val.is_empty() {
-                                cx.global_mut::<AiChatConfig>().set_http_proxy(None);
-                            } else {
-                                cx.global_mut::<AiChatConfig>()
-                                    .set_http_proxy(Some(val.into()));
-                            }
-                        },
-                    ),
-                ))
-                .item(SettingItem::new(
-                    field_temporary_hotkey,
-                    SettingField::render(move |_options, _window, _cx| hotkey_input.clone()),
-                ))
-                .item(SettingItem::new(
-                    field_config_file,
-                    SettingField::render(move |_options, _window, _cx| {
-                        Button::new("open-config-file")
-                            .icon(IconName::FilePen)
-                            .label(button_open.clone())
-                            .ghost()
-                            .on_click({
-                                let open_config_failed = open_config_failed.clone();
-                                move |_, window, cx| match AiChatConfig::path() {
-                                    Ok(path) => cx.open_with_system(&path),
-                                    Err(err) => window.push_notification(
-                                        Notification::new()
-                                            .title(open_config_failed.clone())
-                                            .message(err.to_string())
-                                            .with_type(NotificationType::Error),
-                                        cx,
-                                    ),
-                                }
-                            })
-                    }),
-                )),
-        );
-        let (settings_id, pages) = match self.open_target {
-            SettingsOpenTarget::General => (
-                "my-settings-general",
-                vec![general_page, appearance_page, provider_page, shortcuts_page],
-            ),
-            SettingsOpenTarget::Provider => (
-                "my-settings-provider",
-                vec![provider_page, general_page, appearance_page, shortcuts_page],
-            ),
+        let query = self
+            .settings_search_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let page_specs = settings_page_specs(cx);
+        let visible_pages = page_specs
+            .iter()
+            .filter(|spec| settings_page_matches(spec, &query))
+            .cloned()
+            .collect::<Vec<_>>();
+        let active_page_key = visible_pages
+            .iter()
+            .find(|spec| spec.key == self.selected_page)
+            .or_else(|| visible_pages.first())
+            .map(|spec| spec.key)
+            .unwrap_or(self.selected_page);
+        let active_page_title = page_specs
+            .iter()
+            .find(|spec| spec.key == active_page_key)
+            .map(|spec| spec.title.clone())
+            .unwrap_or_else(|| settings_title.clone().into());
+        let page_body = if visible_pages.is_empty() {
+            SettingsPageFrame::new(
+                settings_title.clone(),
+                settings_empty_message(search_no_results),
+            )
+            .into_any_element()
+        } else {
+            SettingsPageFrame::new(
+                active_page_title,
+                match active_page_key {
+                    SettingsPageKey::General => {
+                        general_settings::render(self.hotkey_input.clone(), window, cx)
+                    }
+                    SettingsPageKey::Appearance => {
+                        self.appearance_settings.clone().into_any_element()
+                    }
+                    SettingsPageKey::Provider => provider_settings::render(window, cx),
+                    SettingsPageKey::Shortcuts => self.shortcut_settings.clone().into_any_element(),
+                },
+            )
+            .into_any_element()
         };
+        let resize_view = cx.entity().downgrade();
+        let select_view = cx.entity().downgrade();
+
         v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)
@@ -282,14 +233,30 @@ impl Render for SettingsView {
             .on_action(cx.listener(Self::zoom))
             .child(
                 div()
-                    .child(TitleBar::new().child(settings_title_bar_title(settings_title)))
+                    .child(TitleBar::new().child(settings_title_bar_title(settings_title.clone())))
                     .flex_initial(),
             )
             .child(
-                div().flex_1().overflow_hidden().child(
-                    Settings::new(settings_id)
-                        .with_group_variant(gpui_component::group_box::GroupBoxVariant::Outline)
-                        .pages(pages),
+                div().flex_1().min_h_0().overflow_hidden().child(
+                    SettingsShell::new(
+                        self.sidebar_width,
+                        self.settings_search_input.clone(),
+                        visible_pages,
+                        active_page_key,
+                        page_body,
+                    )
+                    .on_resize(move |width, _window, cx| {
+                        let _ = resize_view.update(cx, |view, cx| {
+                            view.sidebar_width = width;
+                            cx.notify();
+                        });
+                    })
+                    .on_select(move |key, _window, cx| {
+                        let _ = select_view.update(cx, |view, cx| {
+                            view.selected_page = key;
+                            cx.notify();
+                        });
+                    }),
                 ),
             )
             .children(dialog_layer)
@@ -327,7 +294,11 @@ fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, c
             match window.update(cx, |root, window, cx| {
                 if let Ok(settings) = root.view().clone().downcast::<SettingsView>() {
                     settings.update(cx, |settings, cx| {
-                        settings.open_target = target;
+                        settings.selected_page = page_key_from_open_target(target);
+                        let search_input = settings.settings_search_input.clone();
+                        search_input.update(cx, |search_input, cx| {
+                            search_input.set_value("", window, cx);
+                        });
                         cx.notify();
                     });
                 }
@@ -376,6 +347,72 @@ fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
     };
 }
 
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 4] {
+    let i18n = cx.global::<I18n>();
+    let page_general = i18n.t("settings-page-general");
+    let page_appearance = i18n.t("settings-page-appearance");
+    let page_provider = i18n.t("settings-page-provider");
+    let page_shortcuts = i18n.t("settings-page-shortcuts");
+    let group_basic_options = i18n.t("settings-group-basic-options");
+    let field_language = i18n.t("field-language");
+    let field_http_proxy = i18n.t("field-http-proxy");
+    let field_temporary_hotkey = i18n.t("field-temporary-conversation-hotkey");
+    let field_config_file = i18n.t("field-config-file");
+    let mut provider_labels = vec![page_provider.clone()];
+    let mut provider_keywords =
+        String::from("provider model api key base url proxy openai ollama 提供方 模型 密钥");
+    for spec in provider_settings_specs() {
+        provider_labels.push(i18n.t(spec.title_key));
+        for field in spec.fields {
+            provider_labels.push(i18n.t(field.label_key));
+            provider_keywords.push(' ');
+            provider_keywords.push_str(field.search_keywords);
+        }
+    }
+
+    [
+        SettingsPageSpec::new(
+            SettingsPageKey::General,
+            page_general.clone(),
+            settings_search_text(
+                [
+                    page_general.as_str(),
+                    group_basic_options.as_str(),
+                    field_language.as_str(),
+                    field_http_proxy.as_str(),
+                    field_temporary_hotkey.as_str(),
+                    field_config_file.as_str(),
+                ],
+                "general basic language proxy http hotkey shortcut temporary conversation config file",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Appearance,
+            page_appearance.clone(),
+            settings_search_text(
+                [page_appearance.as_str()],
+                "appearance theme color mode light dark system material you bright custom 主题 外观 亮色 暗色 系统 自定义",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Provider,
+            page_provider.clone(),
+            settings_search_text(
+                provider_labels.iter().map(String::as_str),
+                &provider_keywords,
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Shortcuts,
+            page_shortcuts.clone(),
+            settings_search_text(
+                [page_shortcuts.as_str()],
+                "shortcuts shortcut hotkey template model mode send content preset enabled 快捷键 模板 模型 模式 发送内容 预设 启用",
+            ),
+        ),
+    ]
+}
+
 fn settings_title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
     h_flex()
         .w_full()
@@ -395,7 +432,10 @@ fn settings_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions 
 
 #[cfg(test)]
 mod tests {
-    use super::settings_titlebar_options;
+    use super::{
+        SettingsPageKey, SettingsPageSpec, settings_page_matches, settings_search_text,
+        settings_titlebar_options,
+    };
     use gpui_component::TitleBar;
 
     #[test]
@@ -412,5 +452,45 @@ mod tests {
             titlebar.traffic_light_position,
             expected.traffic_light_position
         );
+    }
+
+    #[test]
+    fn settings_search_matches_localized_labels_and_keywords() {
+        let shortcuts = SettingsPageSpec::new(
+            SettingsPageKey::Shortcuts,
+            "快捷键",
+            settings_search_text(["快捷键"], "shortcut hotkey template"),
+        );
+
+        assert!(settings_page_matches(&shortcuts, "快捷键"));
+        assert!(settings_page_matches(&shortcuts, "hotkey"));
+        assert!(!settings_page_matches(&shortcuts, "provider"));
+    }
+
+    #[test]
+    fn settings_search_matches_localized_labels_by_pinyin() {
+        let provider = SettingsPageSpec::new(
+            SettingsPageKey::Provider,
+            "提供方",
+            settings_search_text(["提供方"], "provider api key"),
+        );
+        let shortcuts = SettingsPageSpec::new(
+            SettingsPageKey::Shortcuts,
+            "快捷键",
+            settings_search_text(["快捷键"], "shortcut hotkey template"),
+        );
+
+        assert!(settings_page_matches(&provider, "tigongfang"));
+        assert!(settings_page_matches(&provider, "tgf"));
+        assert!(settings_page_matches(&shortcuts, "kuaijiejian"));
+        assert!(settings_page_matches(&shortcuts, "kjj"));
+    }
+
+    #[test]
+    fn settings_search_text_normalizes_case() {
+        let text = settings_search_text(["API Key"], "OpenAI Provider");
+
+        assert!(text.contains("api key"));
+        assert!(text.contains("openai provider"));
     }
 }

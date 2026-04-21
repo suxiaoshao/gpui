@@ -44,6 +44,7 @@ macro_rules! define_icon_assets {
 
 define_icon_assets!(
     ArrowLeft => "arrow-left",
+    Bot => "bot",
     BrushCleaning => "brush-cleaning",
     Bug => "bug",
     Check => "check",
@@ -55,6 +56,7 @@ define_icon_assets!(
     Edit => "square-pen",
     EllipsisVertical => "ellipsis-vertical",
     Eye => "eye",
+    EyeOff => "eye-off",
     FilePen => "file-pen",
     Folder => "folder",
     FolderClosed => "folder-closed",
@@ -75,9 +77,11 @@ define_icon_assets!(
     Send => "send",
     Settings => "settings",
     Share => "share",
+    Shield => "shield",
     Trash => "trash",
     TriangleAlert => "triangle-alert",
     Upload => "upload",
+    UserRound => "user-round",
     X => "x",
 );
 

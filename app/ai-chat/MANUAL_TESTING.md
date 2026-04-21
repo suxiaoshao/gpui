@@ -2,6 +2,10 @@
 
 This checklist covers the ChatGPT workflow migration in issue #60. Theme changes and WASM extensions are intentionally out of scope.
 
+## Related Checklists
+
+For the UI/UX audit remediation checklist, see [docs/testing/ui-ux-audit.md](docs/testing/ui-ux-audit.md).
+
 ## Setup
 
 1. Start `ai-chat` from the issue branch.
