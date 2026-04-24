@@ -355,7 +355,7 @@ where
 
     deferred(
         anchored()
-            .anchor(Corner::BottomLeft)
+            .anchor(Anchor::BottomLeft)
             .snap_to_window_with_margin(px(8.))
             .position(point(bounds.left(), bounds.top()))
             .child(
