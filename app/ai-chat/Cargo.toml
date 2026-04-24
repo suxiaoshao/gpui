@@ -9,6 +9,9 @@ homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
 build = "build.rs"
 
+[package.metadata.cargo-shear]
+ignored = ["libsqlite3-sys"]
+
 [package.metadata.bundle]
 name = "AI Chat"
 identifier = "top.sushao.ai-chat"
@@ -45,7 +48,7 @@ platform-ext = { workspace = true }
 material-color-utils = { version = "0.1.3", default-features = false }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.102"
-tray-icon = { version = "0.21.3", default-features = false, features = ["common-controls-v6"] }
+tray-icon = { version = "0.22.1", default-features = false, features = ["common-controls-v6"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 # i18n
@@ -57,14 +60,14 @@ sys-locale = "0.3.2"
 thiserror = "2.0.18"
 
 # database
-diesel = { version = "2.3.7", features = [
+diesel = { version = "2.3.8", features = [
   "sqlite",
   "r2d2",
   "time",
   "returning_clauses_for_sqlite_3_35",
   "serde_json",
 ] }
-libsqlite3-sys = { version = "0.35.0", features = ["bundled-windows"] }
+libsqlite3-sys = { version = "0.37.0", features = ["bundled-windows"] }
 dirs-next = "2.0.0"
 time = { version = "0.3.47", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -78,7 +81,7 @@ tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 # http request
 reqwest = { version = "0.13.2", features = ["json", "stream"] }
-tokio = { version = "1.52.0", features = [
+tokio = { version = "1.52.1", features = [
   "rt",
   "rt-multi-thread",
   "sync",

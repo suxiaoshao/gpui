@@ -344,7 +344,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                             "reasoning-summary-popover-{}",
                                             popover_button_id
                                         )))
-                                        .anchor(Corner::TopLeft)
+                                        .anchor(Anchor::TopLeft)
                                         .appearance(false)
                                         .trigger(
                                             Button::new(SharedString::from(format!(

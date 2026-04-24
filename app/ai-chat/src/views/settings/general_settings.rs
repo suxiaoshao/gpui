@@ -98,7 +98,7 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
         .outline()
         .small()
         .w(px(220.))
-        .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
             language_options
                 .iter()
                 .fold(menu, |menu, (language, label)| {

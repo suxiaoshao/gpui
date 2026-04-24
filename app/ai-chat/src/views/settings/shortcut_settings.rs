@@ -1046,7 +1046,7 @@ impl ShortcutSettingsPage {
         };
 
         Popover::new(("shortcut-preset-popover", row.key))
-            .anchor(Corner::BottomLeft)
+            .anchor(Anchor::BottomLeft)
             .appearance(false)
             .trigger(
                 Button::new(("shortcut-preset-trigger", row.key))
