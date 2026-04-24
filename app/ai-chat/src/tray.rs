@@ -18,7 +18,11 @@ const MENU_OPEN_TEMPORARY: &str = "tray-open-temporary";
 const MENU_ABOUT: &str = "tray-about";
 const MENU_QUIT: &str = "tray-quit";
 
-const TRAY_TEMPLATE_ICON_BYTES: &[u8] = include_bytes!("../assets/png/tray-template.png");
+#[cfg(target_os = "macos")]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../assets/png/tray-template.png");
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../build-assets/icon/app-icon.iconset/icon_32x32.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayMenuAction {
@@ -285,7 +289,7 @@ fn build_menu(strings: &TrayStrings) -> anyhow::Result<Menu> {
 }
 
 fn load_tray_icon() -> anyhow::Result<Icon> {
-    let image = image::load_from_memory(TRAY_TEMPLATE_ICON_BYTES)
+    let image = image::load_from_memory(TRAY_ICON_BYTES)
         .context("decode tray icon png failed")?
         .into_rgba8();
     let (width, height) = image.dimensions();
@@ -319,6 +323,15 @@ mod tests {
         assert_eq!(tray_menu_action(MENU_ABOUT), Some(TrayMenuAction::About));
         assert_eq!(tray_menu_action(MENU_QUIT), Some(TrayMenuAction::Quit));
         assert_eq!(tray_menu_action("unknown"), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn tray_icon_bytes_decode_to_rgba32() {
+        let image = image::load_from_memory(TRAY_ICON_BYTES).expect("tray icon decodes");
+
+        assert_eq!(image.width(), 32);
+        assert_eq!(image.height(), 32);
+        assert_eq!(image.color(), image::ColorType::Rgba8);
     }
 
     #[::core::prelude::v1::test]

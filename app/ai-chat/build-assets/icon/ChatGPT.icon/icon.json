@@ -1,19 +1,29 @@
 {
   "color-space-for-untagged-svg-colors" : "display-p3",
-  "fill" : {
-    "automatic-gradient" : "extended-srgb:0.38039,0.33333,0.96078,1.00000"
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.38039,0.33333,0.96078,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "automatic-gradient" : "extended-gray:0.00000,1.00000"
+      }
+    }
+  ],
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "Logo设计要求 2025年9月19日.png",
-          "name" : "Logo设计要求 2025年9月19日",
+          "image-name" : "app-icon-liquid-glass.png",
+          "name" : "app-icon-liquid-glass",
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
-              -17.15625,
-              -10.734375
+              0,
+              0
             ]
           }
         }
