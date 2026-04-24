@@ -9,7 +9,6 @@ use gpui_component::{
     alert::Alert,
     badge::Badge,
     button::{Button, ButtonVariants},
-    description_list::DescriptionItem,
     divider::Divider,
     h_flex,
     label::Label,
@@ -57,9 +56,6 @@ pub trait MessageViewExt: 'static {
     fn status(&self) -> &Status;
     fn error(&self) -> Option<&str>;
     fn id(&self) -> Self::Id;
-    fn description_items(&self, _cx: &App) -> Vec<DescriptionItem> {
-        Vec::new()
-    }
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn pause_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
     fn delete_message_by_id(id: Self::Id, window: &mut Window, cx: &mut App);
