@@ -1,9 +1,9 @@
 use crate::{
-    assets::IconName,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role,
     },
-    i18n::{I18n, t_static},
+    foundation::assets::IconName,
+    foundation::i18n::{I18n, t_static},
 };
 use gpui::*;
 use gpui_component::{

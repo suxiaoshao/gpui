@@ -1,6 +1,6 @@
 use crate::{
-    assets::IconName,
-    i18n::I18n,
+    foundation::assets::IconName,
+    foundation::i18n::I18n,
     state::{AddConversationMessage, ChatData, ChatDataEvent},
 };
 use gpui::*;

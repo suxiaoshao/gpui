@@ -14,8 +14,8 @@ use self::{
 
 use crate::{
     database::Conversation,
+    features::home::{ConversationPanelView, ConversationTabView},
     state::{ChatData, ChatDataInner},
-    views::home::{ConversationPanelView, ConversationTabView},
 };
 use gpui::*;
 use std::{collections::BTreeSet, ops::Deref};
@@ -508,7 +508,7 @@ fn display_id_from_raw(cx: &App, raw_id: u32) -> Option<DisplayId> {
         .map(|display| display.id())
 }
 
-pub(crate) fn init(window: &mut Window, cx: &mut Context<crate::views::home::HomeView>) {
+pub(crate) fn init(window: &mut Window, cx: &mut Context<crate::features::home::HomeView>) {
     let data = cx.new(|cx| WorkspaceState::new(window, cx));
     cx.set_global(WorkspaceStore { data });
 }

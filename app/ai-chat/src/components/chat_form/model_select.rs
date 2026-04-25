@@ -4,11 +4,11 @@ use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerTrigger, render_picker_popover,
 };
 use crate::{
-    assets::IconName,
-    i18n::I18n,
+    features::settings::open_provider_settings_window,
+    foundation::assets::IconName,
+    foundation::i18n::I18n,
     llm::{ProviderModel, provider_is_configured},
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
-    views::settings::open_provider_settings_window,
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{

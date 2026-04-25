@@ -5,10 +5,10 @@ mod picker;
 mod template_picker;
 
 use crate::{
-    assets::IconName,
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::AiChatResult,
-    i18n::I18n,
+    foundation::assets::IconName,
+    foundation::i18n::I18n,
     llm::{apply_ext_setting, build_request_template, preset_ext_settings, provider_by_name},
     state::ConversationDraft,
 };

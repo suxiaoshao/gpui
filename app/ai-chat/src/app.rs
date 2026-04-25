@@ -1,14 +1,17 @@
 use crate::errors::{AiChatError, AiChatResult};
-use crate::views::home::HomeView;
-use crate::{app_menus, assets, components, database, hotkey, i18n, state, tray, views};
+use crate::features::home::HomeView;
+use crate::{components, database, features, foundation, state};
+use foundation::I18n;
 use gpui::*;
 use gpui_component::input;
 use gpui_component::{Root, TitleBar};
-use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::WindowExt;
+
+pub(crate) mod menus;
+pub(crate) mod tray;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat";
 const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -100,18 +103,18 @@ fn init(cx: &mut App) {
 
     state::theme::init(cx);
     state::config::init(cx);
-    i18n::init_i18n(cx);
-    app_menus::init(cx);
-    cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+    foundation::init_i18n(cx);
+    menus::init(cx);
+    cx.set_menus(menus::app_menus(cx.global::<I18n>()));
     #[cfg(target_os = "macos")]
-    app_menus::ensure_localized_window_menu_registered();
+    menus::ensure_localized_window_menu_registered();
     cx.activate(true);
 
     database::init_store(cx);
     components::init(cx);
-    views::init(cx);
+    features::init(cx);
     state::chat::init_global(cx);
-    hotkey::init(cx);
+    features::hotkey::init(cx);
 }
 
 fn register_main_window_close_behavior(window: &mut Window, cx: &mut App) {
@@ -221,17 +224,17 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
 
 pub(crate) fn open_temporary_window(cx: &mut App) {
     prepare_temporary_window_action(cx);
-    cx.defer(hotkey::open_temporary_window);
+    cx.defer(features::hotkey::open_temporary_window);
 }
 
 pub(crate) fn toggle_temporary_window(cx: &mut App) {
     prepare_temporary_window_action(cx);
-    cx.defer(hotkey::toggle_temporary_window);
+    cx.defer(features::hotkey::toggle_temporary_window);
 }
 
 fn prepare_temporary_window_action(cx: &mut App) {
     #[cfg(target_os = "macos")]
-    hotkey::record_front_app_for_temporary_window(cx);
+    features::hotkey::record_front_app_for_temporary_window(cx);
     cx.activate(true);
 }
 
@@ -286,7 +289,7 @@ pub(crate) fn run() -> AiChatResult<()> {
 
     let span = tracing::info_span!("ai-chat");
     let _enter = span.enter();
-    let app = gpui_platform::application().with_assets(assets::Assets::default());
+    let app = gpui_platform::application().with_assets(foundation::Assets::default());
     app.on_reopen(show_or_create_main_window);
     event!(Level::INFO, "app created");
 

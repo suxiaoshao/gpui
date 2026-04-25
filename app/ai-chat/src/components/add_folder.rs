@@ -10,8 +10,8 @@ use std::ops::Deref;
 use tracing::{Level, event};
 
 use crate::{
-    assets::IconName,
-    i18n::I18n,
+    foundation::assets::IconName,
+    foundation::i18n::I18n,
     state::{ChatData, ChatDataEvent},
 };
 

@@ -2,9 +2,9 @@ use super::{AddConversationMessage, ChatDataInner};
 use crate::{
     database::{Conversation, Db, Folder, Message, NewConversation, NewFolder, NewMessage},
     errors::AiChatResult,
-    i18n::I18n,
+    features::home::HomeView,
+    foundation::i18n::I18n,
     state::WorkspaceStore,
-    views::home::HomeView,
 };
 use gpui::*;
 use gpui_component::{

@@ -2,7 +2,7 @@ use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerSection, PickerTrigger, render_picker_popover,
 };
 use crate::{
-    i18n::I18n,
+    foundation::i18n::I18n,
     llm::{ExtSettingControl, ExtSettingItem, ExtSettingOption},
 };
 use gpui::{StatefulInteractiveElement, prelude::FluentBuilder as _, *};
