@@ -1,7 +1,7 @@
 use crate::{
     database::{Content, Conversation, Db, Folder, Message, Role, Status},
     errors::AiChatResult,
-    search::field_matches_query,
+    foundation::search::field_matches_query,
 };
 use gpui::*;
 use std::collections::BTreeSet;

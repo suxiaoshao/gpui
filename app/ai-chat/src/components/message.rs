@@ -1,7 +1,7 @@
 use crate::{
-    assets::IconName,
     database::{Content, Role, Status},
-    i18n::I18n,
+    foundation::assets::IconName,
+    foundation::i18n::I18n,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{

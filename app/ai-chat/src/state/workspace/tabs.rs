@@ -4,9 +4,9 @@ use super::{
 };
 use crate::{
     database::{Conversation, ConversationTemplate, Db},
-    i18n::I18n,
+    features::home::{ConversationPanelView, TemplateDetailView, TemplateListView},
+    foundation::i18n::I18n,
     state::{ChatData, ChatDataInner},
-    views::home::{ConversationPanelView, TemplateDetailView, TemplateListView},
 };
 use gpui::*;
 

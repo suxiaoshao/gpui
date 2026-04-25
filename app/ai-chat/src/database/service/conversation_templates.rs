@@ -13,7 +13,7 @@ use crate::{
         },
     },
     errors::AiChatResult,
-    search::field_matches_query,
+    foundation::search::field_matches_query,
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;

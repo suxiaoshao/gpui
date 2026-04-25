@@ -8,7 +8,7 @@
 use crate::{
     app::APP_NAME,
     errors::{AiChatError, AiChatResult},
-    hotkey::GlobalHotkeyState,
+    features::hotkey::GlobalHotkeyState,
     llm::{
         OllamaProvider, OllamaSettings, OpenAIProvider, OpenAISettings, Provider, provider_names,
     },

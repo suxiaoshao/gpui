@@ -1,7 +1,7 @@
 use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerSection, PickerTrigger, render_picker_popover,
 };
-use crate::{database::Mode, i18n::I18n};
+use crate::{database::Mode, foundation::i18n::I18n};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{list::ListState, select::SelectItem};
 use std::rc::Rc;

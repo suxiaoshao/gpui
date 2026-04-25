@@ -1,7 +1,7 @@
 use crate::{
     app::{open_temporary_window, quit_app, show_or_create_main_window, toggle_temporary_window},
-    i18n::I18n,
-    views::about::open_about_window,
+    features::about::open_about_window,
+    foundation::i18n::I18n,
 };
 use anyhow::{Context as _, anyhow};
 use fluent_bundle::FluentArgs;

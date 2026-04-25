@@ -1,7 +1,7 @@
 use crate::{
     app::{open_temporary_window, quit_app, show_or_create_main_window},
-    i18n::I18n,
-    views::{about::open_about_window, settings::open_settings_window_from_menu},
+    features::{about::open_about_window, settings::open_settings_window_from_menu},
+    foundation::i18n::I18n,
 };
 use fluent_bundle::FluentArgs;
 #[cfg(target_os = "macos")]

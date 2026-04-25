@@ -1,4 +1,4 @@
-use crate::assets::IconName;
+use crate::foundation::assets::IconName;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Sizable, Size, StyledExt,

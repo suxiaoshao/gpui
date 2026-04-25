@@ -7,7 +7,7 @@ use gpui_component::{
 };
 use std::rc::Rc;
 
-use crate::i18n::I18n;
+use crate::foundation::i18n::I18n;
 
 type OnConfirm = dyn Fn(&mut Window, &mut App);
 

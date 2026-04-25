@@ -1,5 +1,5 @@
 use crate::{
-    i18n::I18n,
+    foundation::i18n::I18n,
     llm::{AvailableModelsBatch, ProviderModel, ProviderModelsFailure, available_models},
     state::AiChatConfig,
 };

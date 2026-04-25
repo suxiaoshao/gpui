@@ -1,4 +1,4 @@
-use crate::assets;
+use crate::foundation::assets;
 use gpui::{App, SharedString};
 use gpui_component::{
     Theme, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode as ComponentThemeMode,
