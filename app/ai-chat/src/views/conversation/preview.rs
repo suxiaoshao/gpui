@@ -694,11 +694,11 @@ impl MessagePreviewExt for Message {
     ) -> AiChatResult<()> {
         let message_id = self.id;
         let conn = &mut cx.global::<Db>().get()?;
-        Message::update_content(message_id, &content, conn)?;
+        let updated_time = Message::update_content(message_id, &content, conn)?;
         let chat_data = cx.global::<ChatData>().deref().clone();
         chat_data.update(cx, move |data, cx| {
             if let Ok(data) = data
-                && data.update_message_content(message_id, content)
+                && data.update_message_content(message_id, content, updated_time)
             {
                 cx.notify();
             }

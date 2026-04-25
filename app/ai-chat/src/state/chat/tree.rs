@@ -5,6 +5,7 @@ use crate::{
 };
 use gpui::*;
 use std::collections::BTreeSet;
+use time::OffsetDateTime;
 
 pub struct ChatDataInner {
     pub(crate) conversations: Vec<Conversation>,
@@ -419,11 +420,17 @@ impl ChatDataInner {
         update(message);
         true
     }
-    pub(crate) fn update_message_content(&mut self, message_id: i32, content: Content) -> bool {
+    pub(crate) fn update_message_content(
+        &mut self,
+        message_id: i32,
+        content: Content,
+        updated_time: OffsetDateTime,
+    ) -> bool {
         let mut content = Some(content);
         self.update_message_by_id(message_id, |message| {
             if let Some(content) = content.take() {
                 message.content = content;
+                message.updated_time = updated_time;
             }
         })
     }
@@ -710,18 +717,18 @@ mod tests {
         data.add_message(1, message(10, 1));
         data.add_message(4, message(20, 4));
 
-        assert!(data.update_message_content(20, Content::new("updated nested")));
-        assert_eq!(
-            data.message(4, 20).expect("message should exist").content,
-            Content::new("updated nested")
-        );
+        let nested_time = now();
+        assert!(data.update_message_content(20, Content::new("updated nested"), nested_time));
+        let nested = data.message(4, 20).expect("message should exist");
+        assert_eq!(nested.content, Content::new("updated nested"));
+        assert_eq!(nested.updated_time, nested_time);
 
-        assert!(data.update_message_content(10, Content::new("updated root")));
-        assert_eq!(
-            data.message(1, 10).expect("message should exist").content,
-            Content::new("updated root")
-        );
-        assert!(!data.update_message_content(99, Content::new("missing")));
+        let root_time = now();
+        assert!(data.update_message_content(10, Content::new("updated root"), root_time));
+        let root = data.message(1, 10).expect("message should exist");
+        assert_eq!(root.content, Content::new("updated root"));
+        assert_eq!(root.updated_time, root_time);
+        assert!(!data.update_message_content(99, Content::new("missing"), now()));
     }
 
     #[test]
