@@ -2,8 +2,8 @@ use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
-    http_form::{HttpForm, HttpFormEvent},
-    i18n::I18n,
+    features::request::{HttpForm, HttpFormEvent},
+    foundation::I18n,
 };
 
 pub struct UrlInput {

@@ -1,18 +1,18 @@
 use crate::errors::FeiwenError;
 use errors::FeiwenResult;
+use features::WorkspaceView;
+use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
-use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-use views::WorkspaceView;
 
 mod errors;
+mod features;
 mod fetch;
-mod i18n;
+mod foundation;
 mod store;
-mod views;
 
 static APP_NAME: &str = "top.sushao.feiwen";
 
@@ -29,7 +29,7 @@ fn init(cx: &mut App) {
     cx.activate(true);
     cx.on_action(quit);
 
-    i18n::init_i18n(cx);
+    foundation::i18n::init_i18n(cx);
     store::init_store(cx);
 }
 

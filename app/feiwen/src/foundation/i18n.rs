@@ -4,8 +4,8 @@ use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use gpui::{App, Global};
 use unic_langid::LanguageIdentifier;
 
-const EN_US: &str = include_str!("../locales/en-US/main.ftl");
-const ZH_CN: &str = include_str!("../locales/zh-CN/main.ftl");
+const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
+const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 enum Locale {
@@ -45,15 +45,18 @@ impl I18n {
         let Some(bundle) = self.bundle() else {
             return key.to_string();
         };
+
         let Some(message) = bundle.get_message(key) else {
             return key.to_string();
         };
+
         let Some(pattern) = message.value() else {
             return key.to_string();
         };
 
         let mut errors = vec![];
         let text = bundle.format_pattern(pattern, args, &mut errors);
+
         if errors.is_empty() {
             text.to_string()
         } else {

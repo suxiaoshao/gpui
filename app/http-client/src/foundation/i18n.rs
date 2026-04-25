@@ -4,8 +4,8 @@ use fluent_bundle::{FluentBundle, FluentResource};
 use gpui::{App, Global};
 use unic_langid::LanguageIdentifier;
 
-const EN_US: &str = include_str!("../locales/en-US/main.ftl");
-const ZH_CN: &str = include_str!("../locales/zh-CN/main.ftl");
+const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
+const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 enum Locale {

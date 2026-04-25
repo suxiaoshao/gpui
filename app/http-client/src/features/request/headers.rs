@@ -1,5 +1,7 @@
-use crate::http_form::{HttpForm, HttpFormEvent};
-use crate::i18n::I18n;
+use crate::{
+    features::request::{HttpForm, HttpFormEvent},
+    foundation::I18n,
+};
 use gpui::*;
 use gpui_component::{
     button::Button,

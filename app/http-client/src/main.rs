@@ -1,8 +1,8 @@
 use errors::HttpClientResult;
+use features::HttpFormView;
+use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
-use http_form::HttpFormView;
-use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -10,14 +10,8 @@ use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitE
 use crate::errors::HttpClientError;
 
 mod errors;
-mod http_body;
-mod http_form;
-mod http_headers;
-mod http_method;
-mod http_params;
-mod http_tab;
-mod i18n;
-mod url_input;
+mod features;
+mod foundation;
 
 static APP_NAME: &str = "top.sushao.http-client";
 
@@ -33,7 +27,7 @@ fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
-    i18n::init_i18n(cx);
+    foundation::i18n::init_i18n(cx);
 }
 
 fn get_logs_dir() -> HttpClientResult<PathBuf> {

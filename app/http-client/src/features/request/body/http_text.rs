@@ -5,7 +5,7 @@ use gpui_component::{
     select::SelectItem,
 };
 
-use crate::http_body::{HttpBodyEvent, HttpBodyForm};
+use crate::features::request::body::{HttpBodyEvent, HttpBodyForm};
 
 #[derive(Default, Clone, Copy)]
 pub enum TextType {

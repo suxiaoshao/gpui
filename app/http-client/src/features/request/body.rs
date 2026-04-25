@@ -1,3 +1,4 @@
+pub use self::{http_text::HttpText, x_form::XForm};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, IndexPath,
@@ -7,10 +8,8 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
-pub use http_text::HttpText;
-pub use x_form::XForm;
 
-use crate::http_body::{
+use crate::features::request::body::{
     form_data::FormDataView,
     http_text::{HttpTextView, TextType},
     x_form::XFormView,

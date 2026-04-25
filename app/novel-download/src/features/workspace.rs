@@ -1,7 +1,7 @@
 use crate::{
     crawler::{ContentItem, Fetch, NovelBaseData},
     errors::{NovelError, NovelResult},
-    i18n::I18n,
+    foundation::I18n,
 };
 use async_compat::Compat;
 use fluent_bundle::FluentArgs;

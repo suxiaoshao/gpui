@@ -1,7 +1,7 @@
 use crate::{
     errors::HttpClientResult,
-    http_form::{HttpForm, HttpFormEvent},
-    i18n::I18n,
+    features::request::{HttpForm, HttpFormEvent},
+    foundation::I18n,
 };
 use gpui::*;
 use gpui_component::{

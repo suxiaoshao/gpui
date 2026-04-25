@@ -1,6 +1,6 @@
 use crate::{
-    http_body::{HttpBodyEvent, HttpBodyForm},
-    i18n::I18n,
+    features::request::body::{HttpBodyEvent, HttpBodyForm},
+    foundation::I18n,
 };
 use gpui::*;
 use gpui_component::{

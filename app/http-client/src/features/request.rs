@@ -1,9 +1,11 @@
 use crate::{
-    http_headers::HttpHeader,
-    http_method::{HttpMethod, SelectHttpMethod},
-    http_tab::HttpTabView,
-    i18n::I18n,
-    url_input::UrlInput,
+    features::request::{
+        headers::HttpHeader,
+        method::{HttpMethod, SelectHttpMethod},
+        tab::HttpTabView,
+        url_input::UrlInput,
+    },
+    foundation::I18n,
 };
 use gpui::*;
 use gpui_component::{
@@ -21,6 +23,13 @@ pub enum HttpFormEvent {
     AddHeader,
     DeleteHeader(usize),
 }
+
+mod body;
+mod headers;
+mod method;
+mod params;
+mod tab;
+mod url_input;
 
 pub struct HttpForm {
     pub http_method: HttpMethod,

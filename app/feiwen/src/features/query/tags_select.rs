@@ -1,6 +1,6 @@
 use crate::{
     errors::FeiwenResult,
-    i18n::I18n,
+    foundation::I18n,
     store::{
         Db,
         service::{Tag, TagWithId},

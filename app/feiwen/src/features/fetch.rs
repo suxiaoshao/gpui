@@ -5,7 +5,7 @@ use super::{
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     fetch::{self, FetchRunner},
-    i18n::I18n,
+    foundation::I18n,
     store::{Db, service::Novel},
 };
 use async_compat::Compat;

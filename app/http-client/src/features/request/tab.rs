@@ -2,8 +2,10 @@ use gpui::*;
 use gpui_component::tab::{Tab, TabBar};
 
 use crate::{
-    http_body::HttpBodyView, http_form::HttpForm, http_headers::HttpHeadersView,
-    http_params::HttpParamsView, i18n::I18n,
+    features::request::{
+        HttpForm, body::HttpBodyView, headers::HttpHeadersView, params::HttpParamsView,
+    },
+    foundation::I18n,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

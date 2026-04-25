@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     errors::FeiwenError,
-    i18n::I18n,
+    foundation::I18n,
     store::{
         Db,
         service::{Novel, TagWithId},

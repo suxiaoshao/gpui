@@ -1,7 +1,8 @@
 use errors::{NovelError, NovelResult};
+use features::WorkspaceView;
+use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
-use i18n::I18n;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{
@@ -10,12 +11,11 @@ use tracing_subscriber::{
     layer::SubscriberExt,
     util::SubscriberInitExt,
 };
-use views::WorkspaceView;
 
 mod crawler;
 mod errors;
-mod i18n;
-mod views;
+mod features;
+mod foundation;
 
 static APP_NAME: &str = "top.sushao.novel-download";
 
@@ -26,7 +26,7 @@ fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
-    i18n::init_i18n(cx);
+    foundation::i18n::init_i18n(cx);
 }
 
 fn get_logs_dir() -> NovelResult<PathBuf> {
