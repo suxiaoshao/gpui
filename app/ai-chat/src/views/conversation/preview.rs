@@ -804,7 +804,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                                 this.child(
                                     Button::new("message-preview-submit")
                                         .icon(IconName::Save)
-                                        .label(button_save_message.clone())
+                                        .tooltip(button_save_message.clone())
                                         .on_click({
                                             let update_success_title =
                                                 update_success_title.clone();
