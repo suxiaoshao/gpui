@@ -1,5 +1,6 @@
 use crate::{
     assets::IconName,
+    components::search_list,
     i18n::I18n,
     state::{ChatData, ConversationSearchResult, WorkspaceStore},
 };
@@ -266,9 +267,7 @@ impl ConversationSearchView {
                 window,
                 cx,
             );
-            let has_items = state.delegate().items_count(0, cx) > 0;
-            state.set_selected_index(has_items.then_some(IndexPath::default()), window, cx);
-            state.scroll_to_item(IndexPath::default(), ScrollStrategy::Top, window, cx);
+            search_list::select_first_if_any(&mut state, window, cx);
             state
         })
     }
@@ -309,23 +308,7 @@ impl ConversationSearchView {
 
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         self.results.update(cx, |state, cx| {
-            let count = state.delegate().items.len();
-            if count == 0 {
-                state.set_selected_index(None, window, cx);
-                return;
-            }
-
-            let current = state.selected_index().map(|ix| ix.row).unwrap_or(0);
-            let next = if delta < 0 {
-                if current == 0 { count - 1 } else { current - 1 }
-            } else if current + 1 >= count {
-                0
-            } else {
-                current + 1
-            };
-            let next_ix = IndexPath::default().row(next);
-            state.set_selected_index(Some(next_ix), window, cx);
-            state.scroll_to_item(next_ix, ScrollStrategy::Top, window, cx);
+            search_list::move_selected(state, delta, window, cx)
         });
         cx.notify();
     }
@@ -336,11 +319,7 @@ impl ConversationSearchView {
         }
 
         self.results.update(cx, |state, cx| {
-            let selected = state.selected_index();
-            state
-                .delegate_mut()
-                .set_selected_index(selected, window, cx);
-            state.delegate_mut().confirm(enter.secondary, window, cx);
+            search_list::confirm_selected(state, enter.secondary, window, cx);
         });
         cx.stop_propagation();
     }
@@ -349,7 +328,7 @@ impl ConversationSearchView {
 impl Render for ConversationSearchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let no_results = cx.global::<I18n>().t("conversation-search-no-results");
-        let count = self.results.read(cx).delegate().items.len();
+        let count = search_list::item_count(self.results.read(cx), cx);
         v_flex()
             .key_context(CONTEXT)
             .w_full()

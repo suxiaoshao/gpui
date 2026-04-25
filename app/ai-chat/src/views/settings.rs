@@ -1,5 +1,5 @@
 use crate::{
-    app_menus,
+    app::menus,
     components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     i18n::I18n,
     llm::provider_settings_specs,
@@ -158,11 +158,11 @@ impl SettingsView {
         });
     }
 
-    fn minimize(&mut self, _: &app_menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
+    fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
         window.minimize_window();
     }
 
-    fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
+    fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
 }

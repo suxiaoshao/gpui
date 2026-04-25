@@ -1,5 +1,5 @@
 use crate::{
-    app_menus,
+    app::menus,
     components::{
         add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
     },
@@ -117,11 +117,11 @@ impl HomeView {
         panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
     }
 
-    fn minimize(&mut self, _: &app_menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
+    fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
         window.minimize_window();
     }
 
-    fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
+    fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
 

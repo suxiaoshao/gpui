@@ -140,6 +140,22 @@ pub(crate) trait Provider: Sync {
     }
 }
 
+pub(crate) fn optional_setting_value(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+pub(crate) fn normalized_or_default(
+    value: &str,
+    default: impl FnOnce() -> String,
+    normalize: impl FnOnce(&str) -> String,
+) -> String {
+    if value.trim().is_empty() {
+        default()
+    } else {
+        normalize(value)
+    }
+}
+
 pub(crate) use ollama::{OllamaProvider, OllamaSettings};
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};
 

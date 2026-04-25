@@ -19,10 +19,10 @@ const MENU_ABOUT: &str = "tray-about";
 const MENU_QUIT: &str = "tray-quit";
 
 #[cfg(target_os = "macos")]
-const TRAY_ICON_BYTES: &[u8] = include_bytes!("../assets/png/tray-template.png");
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../assets/png/tray-template.png");
 #[cfg(not(target_os = "macos"))]
 const TRAY_ICON_BYTES: &[u8] =
-    include_bytes!("../build-assets/icon/app-icon.iconset/icon_32x32.png");
+    include_bytes!("../../build-assets/icon/app-icon.iconset/icon_32x32.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayMenuAction {

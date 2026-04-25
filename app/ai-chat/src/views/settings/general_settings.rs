@@ -1,10 +1,9 @@
 use crate::{
-    app_menus,
+    app::{menus, tray},
     assets::IconName,
     components::hotkey_input::HotkeyInput,
     i18n::{self, I18n},
     state::{AiChatConfig, Language},
-    tray,
 };
 use gpui::*;
 use gpui_component::{
@@ -112,7 +111,7 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
                                     config.set_language(language);
                                 }
                                 i18n::refresh_i18n(cx);
-                                cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+                                cx.set_menus(menus::app_menus(cx.global::<I18n>()));
                                 tray::refresh(cx);
                                 cx.refresh_windows();
                             }),

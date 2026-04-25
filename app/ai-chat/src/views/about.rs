@@ -1,4 +1,4 @@
-use crate::{app::APP_NAME, app_menus, i18n::I18n};
+use crate::{app::APP_NAME, app::menus, i18n::I18n};
 use fluent_bundle::FluentArgs;
 use gpui::{
     App, AppContext as _, Context, FocusHandle, Focusable, FontWeight, InteractiveElement,
@@ -97,11 +97,11 @@ impl AboutWindow {
         }
     }
 
-    fn minimize(&mut self, _: &app_menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
+    fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
         window.minimize_window();
     }
 
-    fn zoom(&mut self, _: &app_menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
+    fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
 }

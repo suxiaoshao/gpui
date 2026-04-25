@@ -13,6 +13,13 @@ use crate::{
 
 use super::utils::serialize_offset_date_time;
 
+fn conversation_path(title: &str, folder: Option<&SqlFolder>) -> String {
+    match folder {
+        Some(folder) => format!("{}/{}", folder.path, title),
+        None => format!("/{title}"),
+    }
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct Conversation {
     pub id: i32,
@@ -65,10 +72,7 @@ impl Conversation {
         let folder = folder_id
             .map(|folder_id| SqlFolder::find(folder_id, conn))
             .transpose()?;
-        let path = match folder {
-            Some(folder) => format!("{}/{}", folder.path, title),
-            None => format!("/{title}"),
-        };
+        let path = conversation_path(title, folder.as_ref());
         if SqlFolder::path_exists(&path, conn)? {
             return Err(AiChatError::FolderPathExists(path));
         }
@@ -149,12 +153,11 @@ impl Conversation {
             let conversation = SqlConversation::find(id, conn)?;
 
             // Calculate new path
-            let new_path = if let Some(folder_id) = conversation.folder_id {
-                let folder = SqlFolder::find(folder_id, conn)?;
-                format!("{}/{}", folder.path, title)
-            } else {
-                format!("/{title}")
-            };
+            let folder = conversation
+                .folder_id
+                .map(|folder_id| SqlFolder::find(folder_id, conn))
+                .transpose()?;
+            let new_path = conversation_path(title, folder.as_ref());
 
             // Check for path conflicts (only if title changed)
             if conversation.title != title && SqlConversation::path_exists(&new_path, conn)? {
@@ -209,10 +212,7 @@ impl Conversation {
             let target_folder = target_folder_id
                 .map(|folder_id| SqlFolder::find(folder_id, conn))
                 .transpose()?;
-            let new_path = match target_folder {
-                Some(ref folder) => format!("{}/{}", folder.path, conversation.title),
-                None => format!("/{}", conversation.title),
-            };
+            let new_path = conversation_path(&conversation.title, target_folder.as_ref());
             if SqlFolder::path_exists(&new_path, conn)? {
                 return Err(AiChatError::FolderPathExists(new_path));
             }

@@ -6,7 +6,6 @@
 use crate::errors::AiChatResult;
 
 mod app;
-mod app_menus;
 mod assets;
 mod components;
 mod database;
@@ -18,7 +17,6 @@ mod llm;
 mod platform;
 mod search;
 mod state;
-mod tray;
 mod views;
 
 fn main() -> AiChatResult<()> {

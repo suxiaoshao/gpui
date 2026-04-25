@@ -1,6 +1,6 @@
 use crate::errors::{AiChatError, AiChatResult};
 use crate::views::home::HomeView;
-use crate::{app_menus, assets, components, database, hotkey, i18n, state, tray, views};
+use crate::{assets, components, database, hotkey, i18n, state, views};
 use gpui::*;
 use gpui_component::input;
 use gpui_component::{Root, TitleBar};
@@ -9,6 +9,9 @@ use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::WindowExt;
+
+pub(crate) mod menus;
+pub(crate) mod tray;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat";
 const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -101,10 +104,10 @@ fn init(cx: &mut App) {
     state::theme::init(cx);
     state::config::init(cx);
     i18n::init_i18n(cx);
-    app_menus::init(cx);
-    cx.set_menus(app_menus::app_menus(cx.global::<I18n>()));
+    menus::init(cx);
+    cx.set_menus(menus::app_menus(cx.global::<I18n>()));
     #[cfg(target_os = "macos")]
-    app_menus::ensure_localized_window_menu_registered();
+    menus::ensure_localized_window_menu_registered();
     cx.activate(true);
 
     database::init_store(cx);
