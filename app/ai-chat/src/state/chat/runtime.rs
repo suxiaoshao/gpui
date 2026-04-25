@@ -1,6 +1,8 @@
 use super::{AddConversationMessage, ChatDataInner};
 use crate::{
-    database::{Conversation, Db, Folder, Message, NewConversation, NewFolder, NewMessage},
+    database::{
+        Content, Conversation, Db, Folder, Message, NewConversation, NewFolder, NewMessage,
+    },
     errors::AiChatResult,
     i18n::I18n,
     state::WorkspaceStore,
@@ -46,6 +48,10 @@ pub enum ChatDataEvent {
         target_parent_id: Option<i32>,
     },
     DeleteMessage(i32),
+    UpdateMessageContent {
+        message_id: i32,
+        content: Content,
+    },
     ClearConversationMessages(i32),
     DeleteConversation(i32),
     DeleteFolder(i32),
@@ -95,6 +101,7 @@ impl ChatData {
             update_folder_failed,
             update_conversation_failed,
             delete_message_failed,
+            update_message_failed,
             delete_conversation_failed,
             delete_folder_failed,
             move_conversation_failed,
@@ -107,6 +114,7 @@ impl ChatData {
                 i18n.t("notify-update-folder-failed").into(),
                 i18n.t("notify-update-conversation-failed").into(),
                 i18n.t("notify-delete-message-failed").into(),
+                i18n.t("notify-update-message-failed").into(),
                 i18n.t("notify-delete-conversation-failed").into(),
                 i18n.t("notify-delete-folder-failed").into(),
                 i18n.t("notify-move-conversation-failed").into(),
@@ -195,6 +203,16 @@ impl ChatData {
                 window,
                 delete_message_failed,
                 "delete message",
+                cx,
+            ),
+            ChatDataEvent::UpdateMessageContent {
+                message_id,
+                content,
+            } => Self::handle_event_result(
+                Self::update_message_content(state, *message_id, content.clone(), cx),
+                window,
+                update_message_failed,
+                "update message content",
                 cx,
             ),
             ChatDataEvent::ClearConversationMessages(conversation_id) => Self::handle_event_result(
@@ -394,6 +412,24 @@ impl ChatData {
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.clear_conversation_messages(conversation_id);
+            }
+        });
+        Ok(())
+    }
+
+    fn update_message_content(
+        state: &Entity<AiChatResult<ChatDataInner>>,
+        message_id: i32,
+        content: Content,
+        cx: &mut Context<HomeView>,
+    ) -> AiChatResult<()> {
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::update_content(message_id, &content, conn)?;
+        state.update(cx, |data, cx| {
+            if let Ok(data) = data
+                && data.update_message_content(message_id, content)
+            {
+                cx.notify();
             }
         });
         Ok(())

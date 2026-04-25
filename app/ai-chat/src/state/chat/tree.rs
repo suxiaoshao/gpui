@@ -419,6 +419,57 @@ impl ChatDataInner {
         update(message);
         true
     }
+    pub(crate) fn update_message_content(&mut self, message_id: i32, content: Content) -> bool {
+        let mut content = Some(content);
+        self.update_message_by_id(message_id, |message| {
+            if let Some(content) = content.take() {
+                message.content = content;
+            }
+        })
+    }
+    fn update_message_by_id(&mut self, message_id: i32, update: impl FnOnce(&mut Message)) -> bool {
+        let mut update = Some(update);
+        for conversation in &mut self.conversations {
+            if let Some(message) = conversation
+                .messages
+                .iter_mut()
+                .find(|message| message.id == message_id)
+            {
+                if let Some(update) = update.take() {
+                    update(message);
+                }
+                return true;
+            }
+        }
+        Self::__update_message_by_id(&mut self.folders, message_id, &mut update)
+    }
+    fn __update_message_by_id<F>(
+        folders: &mut [Folder],
+        message_id: i32,
+        update: &mut Option<F>,
+    ) -> bool
+    where
+        F: FnOnce(&mut Message),
+    {
+        for folder in folders {
+            for conversation in &mut folder.conversations {
+                if let Some(message) = conversation
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    if let Some(update) = update.take() {
+                        update(message);
+                    }
+                    return true;
+                }
+            }
+            if Self::__update_message_by_id(&mut folder.folders, message_id, update) {
+                return true;
+            }
+        }
+        false
+    }
     fn __delete_message(
         folders: &mut [Folder],
         conversations: &mut [Conversation],
@@ -645,6 +696,32 @@ mod tests {
             Content::new("updated")
         );
         assert!(!data.update_message(2, 99, |_| {}));
+    }
+
+    #[test]
+    fn update_message_content_finds_messages_by_id_across_tree() {
+        let mut data = empty_chat_data();
+        data.conversations.push(conversation(1, None));
+        let mut root = folder(2, None);
+        let mut child = folder(3, Some(2));
+        child.conversations.push(conversation(4, Some(3)));
+        root.folders.push(child);
+        data.folders.push(root);
+        data.add_message(1, message(10, 1));
+        data.add_message(4, message(20, 4));
+
+        assert!(data.update_message_content(20, Content::new("updated nested")));
+        assert_eq!(
+            data.message(4, 20).expect("message should exist").content,
+            Content::new("updated nested")
+        );
+
+        assert!(data.update_message_content(10, Content::new("updated root")));
+        assert_eq!(
+            data.message(1, 10).expect("message should exist").content,
+            Content::new("updated root")
+        );
+        assert!(!data.update_message_content(99, Content::new("missing")));
     }
 
     #[test]

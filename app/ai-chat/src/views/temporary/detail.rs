@@ -235,6 +235,10 @@ impl MessagePreviewExt for TemporaryMessage {
         }
         Ok(())
     }
+
+    fn set_content(&mut self, content: Content) {
+        self.content = content;
+    }
 }
 
 impl TemporaryMessage {

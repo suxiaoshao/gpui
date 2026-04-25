@@ -118,7 +118,7 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
         }
     }
 
-    fn submit(&self, window: &mut Window, cx: &mut Context<Self>) -> AiChatResult<()> {
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AiChatResult<()> {
         let text = self.input.text.read(cx).value().to_string();
         let reasoning_summary = self
             .input
@@ -129,15 +129,14 @@ impl<T: MessagePreviewExt> MessagePreview<T> {
             .to_string();
         let citations = serde_json::from_str(&self.input.citations.read(cx).value())
             .map_err(|err| AiChatError::StreamError(err.to_string()))?;
-        self.on_update_content(
-            Content {
-                text,
-                reasoning_summary: (!reasoning_summary.is_empty()).then_some(reasoning_summary),
-                citations,
-            },
-            window,
-            cx,
-        )?;
+        let content = Content {
+            text,
+            reasoning_summary: (!reasoning_summary.is_empty()).then_some(reasoning_summary),
+            citations,
+        };
+        self.message
+            .on_update_content(content.clone(), window, cx)?;
+        self.message.set_content(content);
         Ok(())
     }
 }
@@ -471,11 +470,6 @@ fn render_preview_json(
         .child(
             div()
                 .w_full()
-                .rounded(px(8.))
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().background)
-                .p_3()
                 .child(TextView::markdown(id.into(), &body).selectable(true)),
         )
         .into_any_element()
@@ -535,6 +529,8 @@ pub trait MessagePreviewExt: MessageViewExt {
         window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()>;
+
+    fn set_content(&mut self, content: Content);
 }
 
 impl MessageViewExt for Message {
@@ -696,9 +692,19 @@ impl MessagePreviewExt for Message {
         _window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()> {
-        let conn = &mut cx.global::<Db>().get()?;
-        Message::update_content(self.id, &content, conn)?;
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        let message_id = self.id;
+        chat_data.update(cx, move |_this, cx| {
+            cx.emit(ChatDataEvent::UpdateMessageContent {
+                message_id,
+                content,
+            });
+        });
         Ok(())
+    }
+
+    fn set_content(&mut self, content: Content) {
+        self.content = content;
     }
 }
 
