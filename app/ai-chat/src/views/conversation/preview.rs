@@ -692,13 +692,16 @@ impl MessagePreviewExt for Message {
         _window: &mut Window,
         cx: &mut App,
     ) -> AiChatResult<()> {
-        let chat_data = cx.global::<ChatData>().deref().clone();
         let message_id = self.id;
-        chat_data.update(cx, move |_this, cx| {
-            cx.emit(ChatDataEvent::UpdateMessageContent {
-                message_id,
-                content,
-            });
+        let conn = &mut cx.global::<Db>().get()?;
+        Message::update_content(message_id, &content, conn)?;
+        let chat_data = cx.global::<ChatData>().deref().clone();
+        chat_data.update(cx, move |data, cx| {
+            if let Ok(data) = data
+                && data.update_message_content(message_id, content)
+            {
+                cx.notify();
+            }
         });
         Ok(())
     }
