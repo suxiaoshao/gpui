@@ -357,10 +357,10 @@ impl Message {
         id: i32,
         content: &Content,
         conn: &mut SqliteConnection,
-    ) -> AiChatResult<()> {
+    ) -> AiChatResult<OffsetDateTime> {
         let time = OffsetDateTime::now_utc();
         SqlMessage::update_content(id, serde_json::to_value(content)?, time, conn)?;
-        Ok(())
+        Ok(time)
     }
     pub fn reset_for_resend(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         let time = OffsetDateTime::now_utc();

@@ -25,7 +25,6 @@ use futures::pin_mut;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Root, WindowExt,
-    description_list::DescriptionItem,
     label::Label,
     notification::{Notification, NotificationType},
     v_flex,
@@ -83,39 +82,6 @@ impl MessageViewExt for TemporaryMessage {
 
     fn id(&self) -> Self::Id {
         self.id
-    }
-
-    fn description_items(&self, cx: &App) -> Vec<DescriptionItem> {
-        let i18n = cx.global::<I18n>();
-        vec![
-            DescriptionItem::new(i18n.t("field-id")).value(self.id.to_string()),
-            DescriptionItem::new(i18n.t("field-provider")).value(self.provider.clone()),
-            DescriptionItem::new(i18n.t("field-role")).value(self.role.to_string()),
-            DescriptionItem::new(i18n.t("field-status")).value(self.status.to_string()),
-            DescriptionItem::new(i18n.t("field-created-time")).value(
-                self.created_time
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|_| self.created_time.to_string()),
-            ),
-            DescriptionItem::new(i18n.t("field-updated-time")).value(
-                self.updated_time
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|_| self.updated_time.to_string()),
-            ),
-            DescriptionItem::new(i18n.t("field-start-time")).value(
-                self.start_time
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|_| self.start_time.to_string()),
-            ),
-            DescriptionItem::new(i18n.t("field-end-time")).value(
-                self.end_time
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|_| self.end_time.to_string()),
-            ),
-            DescriptionItem::new(i18n.t("field-error"))
-                .value(self.error.clone().unwrap_or_else(|| "-".to_string()))
-                .span(3),
-        ]
     }
 
     fn open_view_by_id(id: Self::Id, window: &mut Window, cx: &mut App) {
@@ -228,6 +194,26 @@ impl MessageViewExt for TemporaryMessage {
 }
 
 impl MessagePreviewExt for TemporaryMessage {
+    fn provider_name(&self) -> &str {
+        &self.provider
+    }
+
+    fn created_time(&self) -> OffsetDateTime {
+        self.created_time
+    }
+
+    fn updated_time(&self) -> OffsetDateTime {
+        self.updated_time
+    }
+
+    fn start_time(&self) -> OffsetDateTime {
+        self.start_time
+    }
+
+    fn end_time(&self) -> OffsetDateTime {
+        self.end_time
+    }
+
     fn on_update_content(
         &self,
         content: Content,
@@ -248,6 +234,10 @@ impl MessagePreviewExt for TemporaryMessage {
             });
         }
         Ok(())
+    }
+
+    fn set_content(&mut self, content: Content) {
+        self.content = content;
     }
 }
 
