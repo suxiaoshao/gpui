@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI Computer Use Debugging"
+  short_description: "Validate GPUI apps with Computer Use"
+  default_prompt: "Use $gpui-computer-use-debugging to validate a local GPUI desktop app with Computer Use."
