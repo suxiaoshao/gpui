@@ -1,16 +1,19 @@
 use crate::{
     components::message::render_role_pill,
     database::ConversationTemplate,
+    features::settings::template_settings::{
+        TEMPLATE_DIALOG_MARGIN_TOP, TEMPLATE_DIALOG_MAX_HEIGHT, TEMPLATE_DIALOG_WIDTH,
+    },
     foundation::{assets::IconName, i18n::I18n},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
-    dialog::{DialogClose, DialogFooter},
+    dialog::DialogFooter,
+    divider::Divider,
     h_flex,
     label::Label,
-    scroll::ScrollableElement,
     text::TextView,
     v_flex,
 };
@@ -26,11 +29,10 @@ pub(super) fn open_template_view_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let (dialog_title, edit_label, delete_label, close_label, id_label, prompts_label): (
+    let (dialog_title, edit_label, delete_label, id_label, prompts_label): (
         String,
         SharedString,
         SharedString,
-        String,
         SharedString,
         String,
     ) = {
@@ -39,7 +41,6 @@ pub(super) fn open_template_view_dialog(
             i18n.t("dialog-view-template-title"),
             i18n.t("button-edit").into(),
             i18n.t("button-delete").into(),
-            i18n.t("button-close"),
             i18n.t("field-id").into(),
             i18n.t("field-prompts"),
         )
@@ -48,11 +49,14 @@ pub(super) fn open_template_view_dialog(
         let edit_action = on_edit.clone();
         let delete_action = on_delete.clone();
         dialog
+            .w(px(TEMPLATE_DIALOG_WIDTH))
+            .max_h(px(TEMPLATE_DIALOG_MAX_HEIGHT))
+            .margin_top(px(TEMPLATE_DIALOG_MARGIN_TOP))
             .title(dialog_title.clone())
             .child(
                 v_flex()
-                    .w(px(640.))
-                    .max_h(px(620.))
+                    .w_full()
+                    .min_w_0()
                     .gap_4()
                     .child(render_template_dialog_header(
                         &template,
@@ -65,30 +69,17 @@ pub(super) fn open_template_view_dialog(
                     ))
                     .child(
                         v_flex()
+                            .w_full()
+                            .min_w_0()
                             .gap_3()
                             .child(Label::new(prompts_label.clone()).text_sm().font_medium())
                             .child(
                                 v_flex()
-                                    .max_h(px(420.))
-                                    .overflow_y_scrollbar()
-                                    .gap_2()
-                                    .children(
-                                        template
-                                            .prompts
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(index, prompt)| {
-                                                render_prompt_block(template.id, index, prompt, cx)
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ),
+                                    .w_full()
+                                    .min_w_0()
+                                    .children(render_prompt_blocks(&template, cx)),
                             ),
                     ),
-            )
-            .footer(
-                DialogFooter::new().child(
-                    DialogClose::new().child(Button::new("close").label(close_label.clone())),
-                ),
             )
     });
 }
@@ -117,14 +108,17 @@ pub(super) fn open_delete_template_dialog(
             .child(
                 v_flex()
                     .w(px(420.))
-                    .gap_4()
+                    .gap_3()
                     .child(Label::new(message.clone()).text_sm())
+                    .child(Divider::horizontal())
                     .child(render_template_delete_summary(&template, cx)),
             )
             .footer(
                 DialogFooter::new()
                     .child(
-                        DialogClose::new().child(Button::new("cancel").label(cancel_label.clone())),
+                        Button::new("delete-template-cancel")
+                            .label(cancel_label.clone())
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
                         Button::new("confirm-delete-template")
@@ -222,6 +216,17 @@ fn render_template_dialog_header(
         .into_any_element()
 }
 
+fn render_prompt_blocks(template: &ConversationTemplate, cx: &mut App) -> Vec<AnyElement> {
+    let mut elements = Vec::with_capacity(template.prompts.len().saturating_mul(2));
+    for (index, prompt) in template.prompts.iter().enumerate() {
+        if index > 0 {
+            elements.push(Divider::horizontal().my_3().into_any_element());
+        }
+        elements.push(render_prompt_block(template.id, index, prompt, cx));
+    }
+    elements
+}
+
 fn render_prompt_block(
     template_id: i32,
     index: usize,
@@ -230,21 +235,13 @@ fn render_prompt_block(
 ) -> AnyElement {
     let text_id: SharedString = format!("settings-template-prompt-{template_id}-{index}").into();
     v_flex()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .p_3()
+        .w_full()
+        .min_w_0()
         .gap_2()
         .child(
             h_flex()
                 .items_center()
                 .gap_2()
-                .child(
-                    Label::new(format!("#{}", index + 1))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground),
-                )
                 .child(render_role_pill(prompt.role, cx)),
         )
         .child(
@@ -260,11 +257,7 @@ fn render_template_delete_summary(template: &ConversationTemplate, cx: &mut App)
         .w_full()
         .items_start()
         .gap_3()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .p_3()
+        .py_2()
         .child(
             div()
                 .flex()

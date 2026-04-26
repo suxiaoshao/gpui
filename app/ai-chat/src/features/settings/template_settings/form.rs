@@ -2,20 +2,22 @@ use crate::{
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role,
     },
+    features::settings::template_settings::{
+        TEMPLATE_DIALOG_MARGIN_TOP, TEMPLATE_DIALOG_MAX_HEIGHT, TEMPLATE_DIALOG_WIDTH,
+    },
     foundation::{assets::IconName, i18n::I18n},
 };
 use gpui::*;
 use gpui_component::{
-    Sizable, WindowExt,
+    ActiveTheme, WindowExt,
     button::{Button, ButtonVariants},
-    dialog::{DialogClose, DialogFooter},
+    dialog::DialogFooter,
     divider::Divider,
     form::{field, v_form},
     h_flex,
     input::{Input, InputState},
     label::Label,
     notification::{Notification, NotificationType},
-    scroll::ScrollableElement,
     select::{Select, SelectState},
     v_flex,
 };
@@ -23,6 +25,8 @@ use std::rc::Rc;
 use time::OffsetDateTime;
 
 type OnSaved = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+const TEMPLATE_PROMPT_EDITOR_HEIGHT: f32 = 280.;
 
 #[derive(Clone)]
 struct TemplateDialogLabels {
@@ -162,26 +166,31 @@ fn open_template_form_dialog(
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
+            .w(px(TEMPLATE_DIALOG_WIDTH))
+            .max_h(px(TEMPLATE_DIALOG_MAX_HEIGHT))
+            .margin_top(px(TEMPLATE_DIALOG_MARGIN_TOP))
             .title(labels.dialog_title.clone())
             .child(
-                v_flex().w(px(680.)).max_h(px(640.)).child(
+                v_flex().w_full().min_w_0().child(
                     v_form()
+                        .w_full()
+                        .min_w_0()
                         .child(
                             field()
                                 .required(true)
                                 .label(labels.name_label.clone())
-                                .child(Input::new(&fields.name_input)),
+                                .child(Input::new(&fields.name_input).w_full().min_w_0()),
                         )
                         .child(
                             field()
                                 .required(true)
                                 .label(labels.icon_label.clone())
-                                .child(Input::new(&fields.icon_input)),
+                                .child(Input::new(&fields.icon_input).w_full().min_w_0()),
                         )
                         .child(
                             field()
                                 .label(labels.description_label.clone())
-                                .child(Input::new(&fields.description_input)),
+                                .child(Input::new(&fields.description_input).w_full().min_w_0()),
                         )
                         .child(field().child(fields.prompt_form_input.clone())),
                 ),
@@ -189,8 +198,9 @@ fn open_template_form_dialog(
             .footer(
                 DialogFooter::new()
                     .child(
-                        DialogClose::new()
-                            .child(Button::new("cancel").label(labels.cancel_label.clone())),
+                        Button::new("cancel")
+                            .label(labels.cancel_label.clone())
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
                         Button::new("submit")
@@ -435,7 +445,9 @@ impl PromptEditorRow {
         let prompt_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("field-prompt"))
-                .multi_line(true)
+                .code_editor("markdown")
+                .line_number(true)
+                .searchable(true)
         });
         prompt_input.update(cx, |input, cx| input.set_value(prompt, window, cx));
         Self {
@@ -447,13 +459,11 @@ impl PromptEditorRow {
 
 impl Render for PromptListForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (prompts_label, delete_label, role_label, content_label, add_prompt_label) = {
+        let (prompts_label, delete_label, add_prompt_label) = {
             let i18n = cx.global::<I18n>();
             (
                 i18n.t("field-prompts"),
                 i18n.t("button-delete"),
-                i18n.t("field-role"),
-                i18n.t("section-content"),
                 i18n.t("button-add-prompt"),
             )
         };
@@ -465,17 +475,20 @@ impl Render for PromptListForm {
             .map(|(index, row)| {
                 let this = this.clone();
                 v_flex()
+                    .w_full()
+                    .min_w_0()
                     .gap_2()
                     .child(
                         h_flex()
+                            .w_full()
+                            .min_w_0()
                             .items_center()
                             .justify_between()
-                            .child(Label::new(format!("#{}", index + 1)))
+                            .child(Select::new(&row.role_input).w(px(200.)).min_w(px(160.)))
                             .child(
                                 Button::new(("prompt-delete", index))
                                     .icon(IconName::X)
                                     .ghost()
-                                    .small()
                                     .tooltip(delete_label.clone())
                                     .on_click(move |_, _window, cx| {
                                         let _ = this.update(cx, |form, cx| {
@@ -485,26 +498,24 @@ impl Render for PromptListForm {
                             ),
                     )
                     .child(
-                        field()
-                            .required(true)
-                            .label(role_label.clone())
-                            .child(Select::new(&row.role_input)),
-                    )
-                    .child(
-                        field().required(true).label(content_label.clone()).child(
-                            Input::new(&row.prompt_input)
-                                .min_h(px(144.))
-                                .max_h(px(240.)),
-                        ),
+                        Input::new(&row.prompt_input)
+                            .w_full()
+                            .min_w_0()
+                            .h(px(TEMPLATE_PROMPT_EDITOR_HEIGHT))
+                            .font_family(cx.theme().mono_font_family.clone()),
                     )
                     .child(Divider::horizontal())
                     .into_any_element()
             })
             .collect::<Vec<_>>();
         v_flex()
+            .w_full()
+            .min_w_0()
             .gap_3()
             .child(
                 h_flex()
+                    .w_full()
+                    .min_w_0()
                     .items_center()
                     .justify_between()
                     .child(Label::new(prompts_label))
@@ -517,13 +528,7 @@ impl Render for PromptListForm {
                             }),
                     ),
             )
-            .child(
-                v_flex()
-                    .max_h(px(360.))
-                    .overflow_y_scrollbar()
-                    .gap_3()
-                    .children(prompt_fields),
-            )
+            .child(v_flex().w_full().min_w_0().gap_3().children(prompt_fields))
     }
 }
 
