@@ -34,24 +34,24 @@ This checklist covers the UI/UX remediation tracked in issue #84. It is organize
 11. Resize the preview window narrower and shorter, then confirm controls remain reachable and text does not overlap.
 12. Confirm there is only one meaningful vertical scroll surface for the detail content.
 
-## Template Detail
+## Template Settings
 
-1. Open the template list from the sidebar.
-2. Open a template with one prompt and a template with multiple prompts.
-3. Confirm the template detail page shows the template icon, name, description, and prompt count near the top.
-4. Confirm refresh, edit, and delete actions are grouped with the page header and have tooltips.
-5. Confirm metadata reads as product information instead of a raw debug table.
-6. Confirm each prompt clearly shows role and content without relying only on avatar imagery.
+1. Open Settings > Templates.
+2. Search by template name and description.
+3. Open a template with one prompt and a template with multiple prompts.
+4. Confirm the list row shows only icon, name, description, and prompt count.
+5. Confirm the view dialog shows icon, name, description, ID, and prompt blocks without duplicate metadata.
+6. Confirm each prompt clearly shows index, role, and content without relying only on avatar imagery.
 7. Confirm long prompt content wraps cleanly and remains selectable.
-8. Confirm dividers, spacing, and scroll behavior make the prompt list easy to scan.
+8. Confirm add and edit use the same form dialog and keep prompt rows scrollable.
 9. Confirm delete opens a destructive confirmation dialog with localized copy.
-10. Confirm edit updates the visible template detail without requiring a full app restart.
+10. Confirm add, edit, and delete refresh the Settings > Templates list without a full app restart.
 
 ## Settings Search
 
 1. Open Settings.
 2. Confirm the settings search input is visibly discoverable in the sidebar or header.
-3. Search for General, Appearance, Provider, Shortcuts, API Key, HTTP Proxy, and Theme.
+3. Search for General, Appearance, Provider, Templates, Shortcuts, API Key, HTTP Proxy, and Theme.
 4. Confirm matching pages or settings remain visible and non-matching areas are reduced or hidden consistently.
 5. Confirm clearing search restores the default settings navigation.
 6. Confirm keyboard focus starts in a predictable place and Tab navigation reaches search, sidebar items, and page controls.

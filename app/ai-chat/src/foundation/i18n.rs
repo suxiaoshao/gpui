@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU8, Ordering},
-};
+use std::collections::HashMap;
 
 use crate::state::{AiChatConfig, Language};
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
@@ -10,30 +7,10 @@ use unic_langid::LanguageIdentifier;
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
 const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
-const LOCALE_UNSET: u8 = u8::MAX;
-static CURRENT_STATIC_LOCALE: AtomicU8 = AtomicU8::new(LOCALE_UNSET);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 enum Locale {
     EnUs,
     ZhCn,
-}
-
-impl Locale {
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::EnUs),
-            1 => Some(Self::ZhCn),
-            _ => None,
-        }
-    }
-
-    fn as_u8(self) -> u8 {
-        match self {
-            Self::EnUs => 0,
-            Self::ZhCn => 1,
-        }
-    }
 }
 
 pub(crate) struct I18n {
@@ -45,18 +22,12 @@ impl Global for I18n {}
 
 pub(crate) fn init_i18n(cx: &mut App) {
     let i18n = I18n::from_config(cx);
-    set_static_locale(i18n.locale);
     cx.set_global(i18n);
 }
 
 pub(crate) fn refresh_i18n(cx: &mut App) {
     let i18n = I18n::from_config(cx);
-    set_static_locale(i18n.locale);
     cx.set_global(i18n);
-}
-
-pub(crate) fn t_static(key: &str) -> String {
-    I18n::new(static_locale()).t(key)
 }
 
 impl I18n {
@@ -131,14 +102,6 @@ fn locale_for_language(language: Language) -> Locale {
         Language::Chinese => Locale::ZhCn,
         Language::System => detect_locale(),
     }
-}
-
-fn set_static_locale(locale: Locale) {
-    CURRENT_STATIC_LOCALE.store(locale.as_u8(), Ordering::Relaxed);
-}
-
-fn static_locale() -> Locale {
-    Locale::from_u8(CURRENT_STATIC_LOCALE.load(Ordering::Relaxed)).unwrap_or_else(detect_locale)
 }
 
 fn detect_locale() -> Locale {

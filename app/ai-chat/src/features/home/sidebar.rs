@@ -94,7 +94,6 @@ impl Render for SidebarView {
             actions_title,
             settings_label,
             search_label,
-            template_list_label,
             add_conversation_label,
             add_folder_label,
         ) = {
@@ -105,7 +104,6 @@ impl Render for SidebarView {
                 i18n.t("sidebar-actions"),
                 i18n.t("sidebar-settings"),
                 i18n.t("sidebar-search-conversation"),
-                i18n.t("sidebar-template-list"),
                 i18n.t("sidebar-add-conversation"),
                 i18n.t("sidebar-add-folder"),
             )
@@ -170,18 +168,6 @@ impl Render for SidebarView {
                                             window.dispatch_action(
                                                 OpenConversationSearch.boxed_clone(),
                                                 cx,
-                                            );
-                                        })),
-                                )
-                                .child(
-                                    SidebarMenuItem::new(template_list_label)
-                                        .icon(IconName::LayoutTemplate)
-                                        .on_click(cx.listener(|_this, _event, window, cx| {
-                                            cx.global::<WorkspaceStore>().deref().clone().update(
-                                                cx,
-                                                |workspace, cx| {
-                                                    workspace.open_template_list_tab(window, cx);
-                                                },
                                             );
                                         })),
                                 )

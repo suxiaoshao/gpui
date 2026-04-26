@@ -31,8 +31,7 @@ For the UI/UX audit remediation checklist, see [docs/testing/ui-ux-audit.md](doc
 1. Focus different Home regions: sidebar, conversation tab, and an empty area.
 2. Press `Cmd+N` on macOS or `Ctrl+N` on Windows/Linux and confirm the add conversation dialog opens.
 3. Press `Cmd+Shift+N` on macOS or `Ctrl+Shift+N` on Windows/Linux and confirm the add folder dialog opens.
-4. Open the template list and press `Cmd+N` or `Ctrl+N`; confirm the add template dialog opens instead of the add conversation dialog.
-5. Open Settings, About, Temporary Conversation, or Message Preview and confirm the Home new conversation/folder shortcuts do not fire there.
+4. Open Settings, About, Temporary Conversation, or Message Preview and confirm the Home new conversation/folder shortcuts do not fire there.
 
 ## Conversation Export
 
@@ -79,5 +78,5 @@ For the UI/UX audit remediation checklist, see [docs/testing/ui-ux-audit.md](doc
 1. Edit, delete, and move conversations and folders.
 2. Clear a normal conversation.
 3. Preview, edit, delete, pause, and resend normal conversation messages.
-4. Open the template list and template details.
+4. Open Settings > Templates and test view, add, edit, and delete dialogs.
 5. Confirm the global temporary hotkey still opens and hides the popup as before.

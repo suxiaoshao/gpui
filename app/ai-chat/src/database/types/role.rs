@@ -43,7 +43,12 @@ impl SelectItem for Role {
     type Value = Self;
 
     fn title(&self) -> SharedString {
-        self.to_string().into()
+        match self {
+            Role::Developer => "Developer",
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+        }
+        .into()
     }
 
     fn value(&self) -> &Self::Value {

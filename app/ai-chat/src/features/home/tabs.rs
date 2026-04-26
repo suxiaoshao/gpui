@@ -8,19 +8,13 @@ use std::ops::Deref;
 
 mod conversation_panel;
 mod conversation_tab;
-mod template_detail;
-mod template_list;
 
 pub(crate) use conversation_panel::{
     ConversationPanelView, open_copy_conversation_dialog, open_export_conversation_prompt,
 };
 pub(crate) use conversation_tab::{ConversationTabView, DragTab};
-pub(crate) use template_detail::TemplateDetailView;
-pub(crate) use template_list::TemplateListView;
 
-pub fn init(cx: &mut App) {
-    template_list::init(cx);
-}
+pub fn init(_cx: &mut App) {}
 
 pub(crate) struct TabsView {
     workspace: WeakEntity<WorkspaceState>,
