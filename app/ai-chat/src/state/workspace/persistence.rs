@@ -359,8 +359,6 @@ impl WorkspaceState {
                         })
                         .unwrap_or(PersistedTab::Conversation { id, draft: None }),
                 ),
-                TabKind::TemplateList => next_tabs.push(PersistedTab::TemplateList),
-                TabKind::TemplateDetail(id) => next_tabs.push(PersistedTab::TemplateDetail { id }),
             }
         }
         self.persisted.tabs = next_tabs;

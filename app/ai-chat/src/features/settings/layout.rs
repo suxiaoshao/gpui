@@ -24,6 +24,7 @@ pub(super) enum SettingsPageKey {
     General,
     Appearance,
     Provider,
+    Templates,
     Shortcuts,
 }
 

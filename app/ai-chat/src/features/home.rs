@@ -18,8 +18,8 @@ use gpui_component::{
 };
 use std::ops::Deref;
 pub(crate) use tabs::{
-    ConversationPanelView, ConversationTabView, TemplateDetailView, TemplateListView,
-    open_copy_conversation_dialog, open_export_conversation_prompt,
+    ConversationPanelView, ConversationTabView, open_copy_conversation_dialog,
+    open_export_conversation_prompt,
 };
 
 mod search;

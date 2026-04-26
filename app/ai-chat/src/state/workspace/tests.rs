@@ -135,6 +135,45 @@ sidebar_width = 300.0
     assert_eq!(state.settings_window_bounds, None);
 }
 
+#[test]
+fn legacy_template_tabs_deserialize_but_do_not_sync_back() {
+    let state: PersistedWorkspaceState = toml::from_str(
+        r#"
+version = 1
+
+[[tabs]]
+kind = "template_list"
+
+[[tabs]]
+kind = "template_detail"
+id = 42
+
+[active_tab]
+kind = "template_detail"
+id = 42
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(state.tabs.len(), 2);
+    assert!(matches!(state.tabs[0], PersistedTab::TemplateList));
+    assert!(matches!(
+        state.active_tab,
+        Some(PersistedTabKey::TemplateDetail { id: 42 })
+    ));
+
+    let mut workspace = WorkspaceState {
+        persisted: state,
+        tabs: Vec::new(),
+        active_tab: None,
+        save_task: None,
+    };
+    workspace.sync_persisted_tabs();
+
+    assert!(workspace.persisted.tabs.is_empty());
+    assert_eq!(workspace.persisted.active_tab, None);
+}
+
 fn window_bounds(x: f32, y: f32, width: f32, height: f32) -> PersistedWindowBounds {
     PersistedWindowBounds {
         mode: PersistedWindowMode::Windowed,

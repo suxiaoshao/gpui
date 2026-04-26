@@ -163,40 +163,6 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    pub(crate) fn open_template_list_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .tabs
-            .iter()
-            .all(|tab| tab.kind != TabKind::TemplateList)
-        {
-            self.tabs.push(Self::template_tab(window, cx));
-        }
-        self.active_tab = Some(TabKind::TemplateList);
-        self.sync_persisted_tabs();
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn open_template_detail_tab(
-        &mut self,
-        template_id: i32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !Self::template_exists(template_id, cx) {
-            return;
-        }
-        let kind = TabKind::TemplateDetail(template_id);
-        if self.tabs.iter().all(|tab| tab.kind != kind) {
-            self.tabs
-                .push(Self::template_detail_tab(template_id, window, cx));
-        }
-        self.active_tab = Some(kind);
-        self.sync_persisted_tabs();
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
     pub(crate) fn activate_tab(
         &mut self,
         tab_key: i32,
@@ -229,9 +195,8 @@ impl WorkspaceState {
             .map(|tab| tab.kind)
         {
             self.tabs.retain(|tab| tab.kind.key() != tab_key);
-            if let TabKind::Conversation(id) = removed_kind {
-                self.remove_draft(id);
-            }
+            let TabKind::Conversation(id) = removed_kind;
+            self.remove_draft(id);
             if self.active_tab.is_some_and(|kind| kind.key() == tab_key) {
                 self.active_tab = self.tabs.first().map(|tab| tab.kind);
             }
@@ -295,34 +260,13 @@ impl WorkspaceState {
             }
             tab.icon = conversation.icon.clone().into();
             tab.name = conversation.title.clone().into();
-            if let tabs::TabPanel::Conversation(panel) = &tab.panel {
-                panel.update(cx, |panel, cx| panel.sync_metadata(conversation, cx));
-            }
+            let tabs::TabPanel::Conversation(panel) = &tab.panel;
+            panel.update(cx, |panel, cx| panel.sync_metadata(conversation, cx));
             updated = true;
         }
         if updated {
             cx.notify();
         }
-    }
-
-    pub(crate) fn remove_template_detail_tab(&mut self, template_id: i32, cx: &mut Context<Self>) {
-        let existed = self
-            .tabs
-            .iter()
-            .any(|tab| tab.kind == TabKind::TemplateDetail(template_id));
-        self.tabs
-            .retain(|tab| tab.kind != TabKind::TemplateDetail(template_id));
-        if existed
-            && !self
-                .tabs
-                .iter()
-                .any(|tab| Some(tab.kind) == self.active_tab)
-        {
-            self.active_tab = self.tabs.first().map(|tab| tab.kind);
-        }
-        self.sync_persisted_tabs();
-        self.schedule_save(cx);
-        cx.notify();
     }
 
     pub(crate) fn sync_conversation_chat_form_state(
@@ -388,7 +332,6 @@ impl WorkspaceState {
             }
             match &tab.panel {
                 TabPanel::Conversation(panel) => Some(panel.clone()),
-                TabPanel::TemplateList(_) | TabPanel::TemplateDetail(_) => None,
             }
         })
     }

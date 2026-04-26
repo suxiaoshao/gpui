@@ -3,9 +3,8 @@ use super::{
     persistence::{PersistedTab, PersistedTabKey},
 };
 use crate::{
-    database::{Conversation, ConversationTemplate, Db},
-    features::home::{ConversationPanelView, TemplateDetailView, TemplateListView},
-    foundation::i18n::I18n,
+    database::Conversation,
+    features::home::ConversationPanelView,
     state::{ChatData, ChatDataInner},
 };
 use gpui::*;
@@ -13,15 +12,11 @@ use gpui::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TabKind {
     Conversation(i32),
-    TemplateList,
-    TemplateDetail(i32),
 }
 
 #[derive(Clone)]
 pub(super) enum TabPanel {
     Conversation(Entity<ConversationPanelView>),
-    TemplateList(Entity<TemplateListView>),
-    TemplateDetail(Entity<TemplateDetailView>),
 }
 
 #[derive(Clone)]
@@ -36,16 +31,12 @@ impl TabKind {
     pub(super) fn key(self) -> i32 {
         match self {
             TabKind::Conversation(id) => id,
-            TabKind::TemplateList => i32::MIN,
-            TabKind::TemplateDetail(id) => id.saturating_add(1).saturating_neg(),
         }
     }
 
     pub(super) fn persisted_key(self) -> PersistedTabKey {
         match self {
             Self::Conversation(id) => PersistedTabKey::Conversation { id },
-            Self::TemplateList => PersistedTabKey::TemplateList,
-            Self::TemplateDetail(id) => PersistedTabKey::TemplateDetail { id },
         }
     }
 }
@@ -54,8 +45,6 @@ impl TabPanel {
     pub(super) fn into_any_element(self) -> AnyElement {
         match self {
             Self::Conversation(panel) => panel.into_any_element(),
-            Self::TemplateList(panel) => panel.into_any_element(),
-            Self::TemplateDetail(panel) => panel.into_any_element(),
         }
     }
 }
@@ -68,14 +57,7 @@ impl WorkspaceState {
                 PersistedTab::Conversation { id, draft } => {
                     let _ = self.try_add_restored_conversation_tab(id, draft, window, cx);
                 }
-                PersistedTab::TemplateList => {
-                    self.tabs.push(Self::template_tab(window, cx));
-                }
-                PersistedTab::TemplateDetail { id } => {
-                    if Self::template_exists(id, cx) {
-                        self.tabs.push(Self::template_detail_tab(id, window, cx));
-                    }
-                }
+                PersistedTab::TemplateList | PersistedTab::TemplateDetail { .. } => {}
             }
         }
 
@@ -126,14 +108,6 @@ impl WorkspaceState {
         true
     }
 
-    pub(super) fn template_exists(template_id: i32, cx: &App) -> bool {
-        cx.global::<Db>()
-            .get()
-            .ok()
-            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok())
-            .is_some()
-    }
-
     fn conversation_tab(
         conversation: Conversation,
         draft: Option<ConversationDraft>,
@@ -169,53 +143,5 @@ impl WorkspaceState {
             window,
             cx,
         ));
-    }
-
-    pub(super) fn template_tab(window: &mut Window, cx: &mut App) -> AppTab {
-        AppTab {
-            kind: TabKind::TemplateList,
-            icon: "📋".into(),
-            name: cx.global::<I18n>().t("tab-templates").into(),
-            panel: TabPanel::TemplateList(cx.new(|cx| TemplateListView::new(window, cx))),
-        }
-    }
-
-    pub(super) fn template_detail_tab(
-        template_id: i32,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> AppTab {
-        let (icon, name) = cx
-            .global::<Db>()
-            .get()
-            .ok()
-            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok())
-            .map(|template| {
-                (
-                    SharedString::from(template.icon),
-                    SharedString::from(format!(
-                        "{}: {}",
-                        cx.global::<I18n>().t("tab-template"),
-                        template.name
-                    )),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    SharedString::from("🧩"),
-                    SharedString::from(format!(
-                        "{} #{template_id}",
-                        cx.global::<I18n>().t("tab-template")
-                    )),
-                )
-            });
-        AppTab {
-            kind: TabKind::TemplateDetail(template_id),
-            icon,
-            name,
-            panel: TabPanel::TemplateDetail(
-                cx.new(|cx| TemplateDetailView::new(template_id, window, cx)),
-            ),
-        }
     }
 }

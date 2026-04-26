@@ -20,6 +20,7 @@ mod general_settings;
 mod layout;
 mod provider_settings;
 pub(super) mod shortcut_settings;
+mod template_settings;
 
 use self::{
     appearance_settings::AppearanceSettingsPage,
@@ -28,6 +29,7 @@ use self::{
         SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
     },
     shortcut_settings::ShortcutSettingsPage,
+    template_settings::TemplateSettingsPage,
 };
 
 actions!([OpenSetting]);
@@ -66,6 +68,7 @@ pub struct SettingsView {
     settings_search_input: Entity<InputState>,
     appearance_settings: Entity<AppearanceSettingsPage>,
     shortcut_settings: Entity<ShortcutSettingsPage>,
+    template_settings: Entity<TemplateSettingsPage>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
     _subscriptions: Vec<Subscription>,
@@ -85,6 +88,7 @@ impl SettingsView {
         });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
+        let template_settings = cx.new(|cx| TemplateSettingsPage::new(window, cx));
         let _subscriptions = vec![
             cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes),
             cx.subscribe_in(
@@ -118,6 +122,7 @@ impl SettingsView {
             settings_search_input,
             appearance_settings,
             shortcut_settings,
+            template_settings,
             selected_page: page_key_from_open_target(open_target),
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
             _subscriptions,
@@ -213,6 +218,7 @@ impl Render for SettingsView {
                         self.appearance_settings.clone().into_any_element()
                     }
                     SettingsPageKey::Provider => provider_settings::render(window, cx),
+                    SettingsPageKey::Templates => self.template_settings.clone().into_any_element(),
                     SettingsPageKey::Shortcuts => self.shortcut_settings.clone().into_any_element(),
                 },
             )
@@ -347,11 +353,12 @@ fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 4] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {
     let i18n = cx.global::<I18n>();
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
+    let page_templates = i18n.t("settings-page-templates");
     let page_shortcuts = i18n.t("settings-page-shortcuts");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
@@ -400,6 +407,14 @@ fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 4] {
             settings_search_text(
                 provider_labels.iter().map(String::as_str),
                 &provider_keywords,
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Templates,
+            page_templates.clone(),
+            settings_search_text(
+                [page_templates.as_str()],
+                "templates template prompt prompts reusable crud add edit delete view search 模板 提示词 添加 编辑 删除 查看 搜索",
             ),
         ),
         SettingsPageSpec::new(
