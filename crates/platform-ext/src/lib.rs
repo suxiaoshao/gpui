@@ -1,4 +1,5 @@
 pub mod app;
+pub mod appearance;
 mod error;
 pub mod ocr;
 

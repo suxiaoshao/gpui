@@ -42,6 +42,13 @@ pub fn init(cx: &mut App) {
     tabs::init(cx);
 }
 
+fn apply_current_theme(window: &mut Window, cx: &mut App) {
+    let theme_registry = ThemeRegistry::global(cx);
+    let config = cx.global::<AiChatConfig>();
+    let config = config.gpui_theme(theme_registry, window);
+    Theme::global_mut(cx).apply_config(&config);
+}
+
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
     tabs: Entity<TabsView>,
@@ -58,12 +65,7 @@ impl HomeView {
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
         let workspace = cx.global::<WorkspaceStore>().deref().clone();
-        {
-            let theme_registry = ThemeRegistry::global(cx);
-            let config = cx.global::<AiChatConfig>();
-            let config = config.gpui_theme(theme_registry, window);
-            Theme::global_mut(cx).apply_config(&config);
-        }
+        apply_current_theme(window, cx);
 
         Self {
             sidebar,
@@ -89,19 +91,20 @@ impl HomeView {
                         });
                 }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
-                    let theme_registry = ThemeRegistry::global(cx);
-                    let config = cx.global::<AiChatConfig>();
-                    let config = config.gpui_theme(theme_registry, window);
-                    Theme::global_mut(cx).apply_config(&config);
+                    apply_current_theme(window, cx);
                     cx.refresh_windows();
                 }),
                 cx.observe_global_in::<AiChatConfig>(window, |_state, window, cx| {
-                    let theme_registry = ThemeRegistry::global(cx);
-                    let config = cx.global::<AiChatConfig>();
-                    let config = config.gpui_theme(theme_registry, window);
-                    Theme::global_mut(cx).apply_config(&config);
+                    apply_current_theme(window, cx);
                     cx.refresh_windows();
                 }),
+                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
+                    window,
+                    |_state, window, cx| {
+                        apply_current_theme(window, cx);
+                        cx.refresh_windows();
+                    },
+                ),
             ],
         }
     }

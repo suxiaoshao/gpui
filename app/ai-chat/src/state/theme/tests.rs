@@ -92,6 +92,15 @@ fn material_you_id_normalizes_hex_color() {
 }
 
 #[test]
+fn system_accent_material_you_id_is_stable() {
+    assert_eq!(
+        normalize_theme_id(SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID),
+        SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+    );
+    assert!(material_you_color_from_id(SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID).is_none());
+}
+
+#[test]
 fn normalize_theme_id_canonicalizes_material_you_color() {
     assert_eq!(
         normalize_theme_id("material-you:#aabbcc"),

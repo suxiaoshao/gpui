@@ -195,6 +195,11 @@ impl AppearanceSettingsPage {
         };
         let selected_indicator =
             selected.then(|| selected_badge(selected_label, colors.primary).into_any_element());
+        let primary_swatch = if app_theme::is_system_accent_material_you_theme_id(&id) {
+            app_theme::system_accent_hsla().unwrap_or(colors.primary)
+        } else {
+            colors.primary
+        };
         let delete_button = app_theme::material_you_color_from_id(&id).map(|_| {
             let delete_id = id.clone();
             Button::new(SharedString::from(format!(
@@ -302,7 +307,7 @@ impl AppearanceSettingsPage {
                             .when_some(delete_button, |this, button| this.child(button)),
                     )
                     .child(h_flex().gap_1().children([
-                        swatch(colors.primary),
+                        swatch(primary_swatch),
                         swatch(colors.secondary),
                         swatch(colors.accent),
                         swatch(colors.muted),
