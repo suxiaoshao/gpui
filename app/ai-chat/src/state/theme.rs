@@ -18,11 +18,7 @@ use material_color_utils::{
 };
 use platform_ext::appearance::{SystemAccentColorObserver, observe_system_accent_color_changes};
 use serde_json::{Map, Value, json};
-use std::{
-    rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::rc::Rc;
 use tracing::{Level, event};
 
 const PRESET_PREFIX: &str = "preset:";
@@ -31,7 +27,6 @@ pub(crate) const SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID: &str = "material-you:syste
 pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "preset:Default Light";
 pub(crate) const DEFAULT_DARK_THEME_ID: &str = "preset:Default Dark";
 pub(crate) const DEFAULT_CUSTOM_THEME_COLOR: &str = "#3271AE";
-const SYSTEM_ACCENT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SEMANTIC_CHROMA: f64 = 60.0;
 const INFO_SEED_COLOR: Argb = Argb::from_rgb(0x0E, 0xA5, 0xE9);
 const SUCCESS_SEED_COLOR: Argb = Argb::from_rgb(0x22, 0xC5, 0x5E);
@@ -43,7 +38,6 @@ const MATERIAL_SOFT_DIVIDER_ALPHA: u8 = 0x1F;
 const MATERIAL_HOVER_STATE_LAYER_ALPHA: u8 = 0x14;
 const MATERIAL_PRESSED_STATE_LAYER_ALPHA: u8 = 0x1A;
 const MATERIAL_EDITOR_INVISIBLE_ALPHA: u8 = 0x66;
-static SYSTEM_ACCENT_CHANGE_VERSION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub(crate) struct ThemeChoice {
@@ -54,9 +48,8 @@ pub(crate) struct ThemeChoice {
 
 pub(crate) struct SystemAccentThemeState {
     _observer: Option<SystemAccentColorObserver>,
-    _task: Task<()>,
-    _version: u64,
-    _color: Option<String>,
+    _task: Option<Task<()>>,
+    color: Option<String>,
 }
 
 impl Global for SystemAccentThemeState {}
@@ -189,41 +182,38 @@ pub(crate) fn preview_theme(config: &Rc<ThemeConfig>) -> Theme {
 }
 
 fn init_system_accent_theme(cx: &mut App) {
-    let observer = observe_system_accent_color_changes(|| {
-        SYSTEM_ACCENT_CHANGE_VERSION.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = smol::channel::bounded(1);
+    let observer = observe_system_accent_color_changes(move || {
+        let _ = tx.try_send(());
     });
     let color = system_accent_color();
-    let mut version = SYSTEM_ACCENT_CHANGE_VERSION.load(Ordering::Relaxed);
-    let mut current_color = color.clone();
-    let task = cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor()
-                .timer(SYSTEM_ACCENT_POLL_INTERVAL)
-                .await;
-            let next_version = SYSTEM_ACCENT_CHANGE_VERSION.load(Ordering::Relaxed);
-            let next_color = system_accent_color();
-            if next_version == version && next_color == current_color {
-                continue;
-            }
-
-            version = next_version;
-            current_color = next_color.clone();
-            cx.update(|cx| {
-                cx.update_global::<SystemAccentThemeState, _>(|state, _cx| {
-                    state._version = next_version;
-                    state._color = next_color;
+    let task = observer.as_ref().map(|_| {
+        cx.spawn(async move |cx| {
+            while rx.recv().await.is_ok() {
+                let next_color = system_accent_color();
+                cx.update(|cx| {
+                    if system_accent_color_changed(
+                        &cx.global::<SystemAccentThemeState>().color,
+                        &next_color,
+                    ) {
+                        cx.update_global::<SystemAccentThemeState, _>(|state, _cx| {
+                            state.color = next_color;
+                        });
+                    }
                 });
-                cx.refresh_windows();
-            });
-        }
+            }
+        })
     });
 
     cx.set_global(SystemAccentThemeState {
         _observer: observer,
         _task: task,
-        _version: version,
-        _color: color,
+        color,
     });
+}
+
+fn system_accent_color_changed(current: &Option<String>, next: &Option<String>) -> bool {
+    current != next
 }
 
 fn generated_theme_choice(color: &str, mode: ComponentThemeMode) -> Option<ThemeChoice> {
