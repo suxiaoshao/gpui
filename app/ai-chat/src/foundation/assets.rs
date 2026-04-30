@@ -4,6 +4,8 @@ use gpui_component::IconNamed;
 use rust_embed::RustEmbed;
 use std::{borrow::Cow, collections::BTreeSet};
 
+pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.ico";
+
 macro_rules! define_icon_assets {
     ($( $variant:ident => $slug:literal ),+ $(,)?) => {
         #[allow(dead_code)]
@@ -214,7 +216,7 @@ impl AssetSource for Assets {
 
 #[cfg(test)]
 mod tests {
-    use super::{Assets, IconName};
+    use super::{APP_ICON_ASSET_PATH, Assets, IconName};
     use gpui::{AssetSource, SharedString};
     use gpui_component::IconNamed;
 
@@ -243,6 +245,17 @@ mod tests {
 
         assert!(!send.is_empty());
         assert!(!trash.is_empty());
+    }
+
+    #[test]
+    fn app_icon_asset_loads() {
+        let assets = Assets::default();
+        let icon = assets
+            .load(APP_ICON_ASSET_PATH)
+            .expect("load app icon")
+            .expect("app icon exists");
+
+        assert!(!icon.is_empty());
     }
 
     #[test]

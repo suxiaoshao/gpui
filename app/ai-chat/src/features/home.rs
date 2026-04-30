@@ -1,7 +1,9 @@
 use crate::{
     app::menus,
     components::{
-        add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
+        add_conversation::open_add_conversation_dialog,
+        add_folder::open_add_folder_dialog,
+        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
     features::home::{sidebar::SidebarView, tabs::TabsView},
     foundation::i18n::I18n,
@@ -13,7 +15,6 @@ use gpui_component::{
     alert::Alert,
     h_flex,
     label::Label,
-    menu::AppMenuBar,
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -53,7 +54,7 @@ fn apply_current_theme(window: &mut Window, cx: &mut App) {
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
     tabs: Entity<TabsView>,
-    app_menu_bar: Entity<AppMenuBar>,
+    app_menu_bar: Entity<TitleBarAppMenuBar>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -66,7 +67,7 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
-        let app_menu_bar = AppMenuBar::new(cx);
+        let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let workspace = cx.global::<WorkspaceStore>().deref().clone();
         apply_current_theme(window, cx);
 
@@ -236,7 +237,7 @@ impl Render for HomeView {
 }
 
 fn title_bar_content(
-    app_menu_bar: Entity<AppMenuBar>,
+    app_menu_bar: Entity<TitleBarAppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()
@@ -245,23 +246,9 @@ fn title_bar_content(
         .min_w_0()
         .overflow_hidden()
         .when(menus::should_render_component_menu_bar(), |this| {
-            this.child(component_menu_bar(app_menu_bar))
+            this.child(title_bar_leading(app_menu_bar))
         })
         .child(title_bar_title(title))
-}
-
-fn component_menu_bar(app_menu_bar: Entity<AppMenuBar>) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .h_full()
-        .flex_none()
-        .pr_2()
-        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-            window.prevent_default();
-            cx.stop_propagation();
-        })
-        .child(app_menu_bar)
 }
 
 fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {

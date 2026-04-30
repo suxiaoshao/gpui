@@ -1,4 +1,8 @@
-use crate::{app::APP_NAME, app::menus, foundation::i18n::I18n};
+use crate::{
+    app::APP_NAME,
+    app::menus,
+    foundation::{assets::APP_ICON_ASSET_PATH, i18n::I18n},
+};
 use fluent_bundle::FluentArgs;
 use gpui::{
     App, AppContext as _, Context, FocusHandle, Focusable, FontWeight, InteractiveElement,
@@ -8,8 +12,6 @@ use gpui::{
 #[cfg(target_os = "macos")]
 use gpui::{Point, point};
 use gpui_component::{ActiveTheme, Sizable, button::Button, h_flex, label::Label, v_flex};
-
-const ABOUT_APP_ICON: &str = "build-assets/icon/app-icon.ico";
 
 pub(crate) fn open_about_window(cx: &mut App) {
     if let Some(existing) = cx
@@ -133,7 +135,7 @@ impl Render for AboutWindow {
                 v_flex()
                     .items_center()
                     .gap_4()
-                    .child(img(ABOUT_APP_ICON).size(px(72.)).flex_shrink_0())
+                    .child(img(APP_ICON_ASSET_PATH).size(px(72.)).flex_shrink_0())
                     .child(
                         Label::new(i18n.t("app-title"))
                             .text_size(px(20.))

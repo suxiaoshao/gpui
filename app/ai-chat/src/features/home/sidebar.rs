@@ -8,7 +8,7 @@ use crate::{
 use gpui::*;
 use gpui_component::{
     Collapsible, Side,
-    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarItem, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarGroup, SidebarItem, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
 use std::ops::Deref;
@@ -89,7 +89,6 @@ impl Render for SidebarView {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         let (
-            app_title,
             conversation_tree_title,
             actions_title,
             settings_label,
@@ -99,7 +98,6 @@ impl Render for SidebarView {
         ) = {
             let i18n = cx.global::<I18n>();
             (
-                i18n.t("sidebar-app-title"),
                 i18n.t("sidebar-conversation-tree"),
                 i18n.t("sidebar-actions"),
                 i18n.t("sidebar-settings"),
@@ -120,7 +118,6 @@ impl Render for SidebarView {
                     .border_r_0()
                     .collapsible(false)
                     .collapsed(false)
-                    .header(SidebarHeader::new().child(app_title))
                     .child(SidebarSection::Tree(
                         SidebarGroup::new(conversation_tree_title).child(
                             self.chat_data
