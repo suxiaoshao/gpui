@@ -52,9 +52,9 @@ fn about_window_size() -> gpui::Size<gpui::Pixels> {
 }
 
 #[cfg(target_os = "macos")]
-fn about_titlebar_options(_: &I18n) -> TitlebarOptions {
+fn about_titlebar_options(i18n: &I18n) -> TitlebarOptions {
     TitlebarOptions {
-        title: None,
+        title: Some(about_window_title(i18n).into()),
         appears_transparent: true,
         traffic_light_position: Some(about_traffic_light_position()),
     }
@@ -68,7 +68,6 @@ fn about_titlebar_options(i18n: &I18n) -> TitlebarOptions {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn about_window_title(i18n: &I18n) -> String {
     let mut args = FluentArgs::new();
     args.set("app_name", i18n.t("app-title"));
@@ -184,10 +183,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_about_titlebar_is_transparent_with_visible_traffic_lights() {
+    fn macos_about_titlebar_has_system_title_and_visible_traffic_lights() {
         let titlebar = about_titlebar_options(&I18n::english_for_test());
 
-        assert!(titlebar.title.is_none());
+        assert_eq!(
+            titlebar.title.as_ref().map(|title| title.as_ref()),
+            Some("About AI Chat")
+        );
         assert!(titlebar.appears_transparent);
         assert_eq!(
             titlebar.traffic_light_position,

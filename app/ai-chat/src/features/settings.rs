@@ -5,11 +5,12 @@ use crate::{
     llm::provider_settings_specs,
     state::{AiChatConfig, WindowPlacementKind, WorkspaceStore},
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     Root, StyledExt, TitleBar, h_flex,
     input::{InputEvent, InputState},
     label::Label,
+    menu::AppMenuBar,
     v_flex,
 };
 use std::{any::TypeId, ops::Deref};
@@ -69,6 +70,7 @@ pub struct SettingsView {
     appearance_settings: Entity<AppearanceSettingsPage>,
     shortcut_settings: Entity<ShortcutSettingsPage>,
     template_settings: Entity<TemplateSettingsPage>,
+    app_menu_bar: Entity<AppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
     _subscriptions: Vec<Subscription>,
@@ -89,6 +91,7 @@ impl SettingsView {
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let shortcut_settings = cx.new(|cx| ShortcutSettingsPage::new(window, cx));
         let template_settings = cx.new(|cx| TemplateSettingsPage::new(window, cx));
+        let app_menu_bar = AppMenuBar::new(cx);
         let _subscriptions = vec![
             cx.subscribe(&hotkey_input, Self::subscribe_hotkey_changes),
             cx.subscribe_in(
@@ -123,10 +126,16 @@ impl SettingsView {
             appearance_settings,
             shortcut_settings,
             template_settings,
+            app_menu_bar,
             selected_page: page_key_from_open_target(open_target),
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
             _subscriptions,
         }
+    }
+
+    pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
+        self.app_menu_bar
+            .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
     }
 
     fn subscribe_settings_search_changes(
@@ -239,7 +248,10 @@ impl Render for SettingsView {
             .on_action(cx.listener(Self::zoom))
             .child(
                 div()
-                    .child(TitleBar::new().child(settings_title_bar_title(settings_title.clone())))
+                    .child(TitleBar::new().child(settings_title_bar_content(
+                        self.app_menu_bar.clone(),
+                        settings_title.clone(),
+                    )))
                     .flex_initial(),
             )
             .child(
@@ -428,9 +440,39 @@ fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {
     ]
 }
 
-fn settings_title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+fn settings_title_bar_content(
+    app_menu_bar: Entity<AppMenuBar>,
+    title: impl Into<SharedString>,
+) -> impl IntoElement {
     h_flex()
         .w_full()
+        .h_full()
+        .min_w_0()
+        .overflow_hidden()
+        .when(menus::should_render_component_menu_bar(), |this| {
+            this.child(settings_component_menu_bar(app_menu_bar))
+        })
+        .child(settings_title_bar_title(title))
+}
+
+fn settings_component_menu_bar(app_menu_bar: Entity<AppMenuBar>) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .h_full()
+        .flex_none()
+        .pr_2()
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .child(app_menu_bar)
+}
+
+fn settings_title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+    h_flex()
+        .flex_1()
+        .min_w_0()
         .h_full()
         .justify_center()
         .overflow_hidden()

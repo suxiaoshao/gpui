@@ -13,6 +13,7 @@ use gpui_component::{
     alert::Alert,
     h_flex,
     label::Label,
+    menu::AppMenuBar,
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -52,6 +53,7 @@ fn apply_current_theme(window: &mut Window, cx: &mut App) {
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
     tabs: Entity<TabsView>,
+    app_menu_bar: Entity<AppMenuBar>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -64,12 +66,14 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
+        let app_menu_bar = AppMenuBar::new(cx);
         let workspace = cx.global::<WorkspaceStore>().deref().clone();
         apply_current_theme(window, cx);
 
         Self {
             sidebar,
             tabs,
+            app_menu_bar,
             focus_handle,
             _subscriptions: vec![
                 cx.observe(&workspace, |_state, _workspace, cx| {
@@ -118,6 +122,11 @@ impl HomeView {
             return;
         };
         panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
+    }
+
+    pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
+        self.app_menu_bar
+            .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
@@ -182,7 +191,10 @@ impl Render for HomeView {
             .on_action(cx.listener(Self::add_folder))
             .child(
                 div()
-                    .child(TitleBar::new().child(title_bar_title(titlebar_title)))
+                    .child(
+                        TitleBar::new()
+                            .child(title_bar_content(self.app_menu_bar.clone(), titlebar_title)),
+                    )
                     .flex_initial(),
             )
             .map(|this| match chat_data {
@@ -223,9 +235,39 @@ impl Render for HomeView {
     }
 }
 
-fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+fn title_bar_content(
+    app_menu_bar: Entity<AppMenuBar>,
+    title: impl Into<SharedString>,
+) -> impl IntoElement {
     h_flex()
         .w_full()
+        .h_full()
+        .min_w_0()
+        .overflow_hidden()
+        .when(menus::should_render_component_menu_bar(), |this| {
+            this.child(component_menu_bar(app_menu_bar))
+        })
+        .child(title_bar_title(title))
+}
+
+fn component_menu_bar(app_menu_bar: Entity<AppMenuBar>) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .h_full()
+        .flex_none()
+        .pr_2()
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .child(app_menu_bar)
+}
+
+fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+    h_flex()
+        .flex_1()
+        .min_w_0()
         .h_full()
         .justify_center()
         .overflow_hidden()

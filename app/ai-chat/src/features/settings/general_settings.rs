@@ -1,5 +1,5 @@
 use crate::{
-    app::{menus, tray},
+    app::{self, menus, tray},
     components::hotkey_input::HotkeyInput,
     foundation::assets::IconName,
     foundation::i18n::{self, I18n},
@@ -111,7 +111,8 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
                                     config.set_language(language);
                                 }
                                 i18n::refresh_i18n(cx);
-                                cx.set_menus(menus::app_menus(cx.global::<I18n>()));
+                                menus::sync_app_menus(cx);
+                                app::reload_app_menu_bars(cx);
                                 tray::refresh(cx);
                                 cx.refresh_windows();
                             }),
