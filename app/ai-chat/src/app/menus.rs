@@ -6,7 +6,9 @@ use crate::{
 use fluent_bundle::FluentArgs;
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
-use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui::{App, KeyBinding, Menu, MenuItem, OwnedMenu, actions};
+use gpui_component::GlobalState;
+#[cfg(target_os = "macos")]
 use tracing::{Level, event};
 
 actions!(
@@ -25,6 +27,7 @@ actions!(
     ]
 );
 
+#[cfg(any(target_os = "macos", test))]
 const WINDOW_MENU_INDEX: usize = 1;
 
 pub(crate) fn init(cx: &mut App) {
@@ -86,6 +89,22 @@ pub(crate) fn app_menus(i18n: &I18n) -> Vec<Menu> {
     ]
 }
 
+pub(crate) fn component_app_menus(i18n: &I18n) -> Vec<OwnedMenu> {
+    app_menus(i18n).into_iter().map(Menu::owned).collect()
+}
+
+pub(crate) fn sync_app_menus(cx: &mut App) {
+    let component_menus = component_app_menus(cx.global::<I18n>());
+
+    cx.set_menus(app_menus(cx.global::<I18n>()));
+    GlobalState::global_mut(cx).set_app_menus(component_menus);
+}
+
+pub(crate) const fn should_render_component_menu_bar() -> bool {
+    !cfg!(target_os = "macos")
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn ensure_localized_window_menu_registered() {
     match platform_ext::app::set_windows_menu_from_main_menu_index(WINDOW_MENU_INDEX) {
         Ok(()) => {
@@ -134,6 +153,10 @@ mod tests {
         menus.iter().map(|menu| menu.name.to_string()).collect()
     }
 
+    fn owned_menu_names(menus: &[OwnedMenu]) -> Vec<String> {
+        menus.iter().map(|menu| menu.name.to_string()).collect()
+    }
+
     fn item_names(items: Vec<MenuItem>) -> Vec<String> {
         items
             .into_iter()
@@ -158,6 +181,24 @@ mod tests {
         let i18n = I18n::for_locale_tag("zh-CN");
 
         assert_eq!(menu_names(&app_menus(&i18n)), vec!["AI 对话", "窗口"]);
+    }
+
+    #[test]
+    fn builds_component_app_menus_from_app_menu_source() {
+        let i18n = I18n::english_for_test();
+
+        assert_eq!(
+            owned_menu_names(&component_app_menus(&i18n)),
+            menu_names(&app_menus(&i18n))
+        );
+    }
+
+    #[test]
+    fn component_menu_bar_visibility_matches_platform() {
+        assert_eq!(
+            should_render_component_menu_bar(),
+            !cfg!(target_os = "macos")
+        );
     }
 
     #[test]

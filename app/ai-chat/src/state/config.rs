@@ -623,6 +623,56 @@ darkTheme = "material-you:#00aa00"
     }
 
     #[test]
+    fn selected_system_accent_theme_does_not_enter_custom_theme_colors() -> anyhow::Result<()> {
+        let config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+theme = "system"
+lightTheme = "material-you:system-accent"
+darkTheme = "material-you:system-accent"
+customThemeColors = []
+"##,
+        )?;
+
+        assert_eq!(
+            config.light_theme_id(),
+            theme::SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+        );
+        assert_eq!(
+            config.dark_theme_id(),
+            theme::SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+        );
+        assert!(config.custom_theme_colors().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn system_accent_theme_cannot_be_removed_as_custom_color() -> anyhow::Result<()> {
+        let mut config: AiChatConfig = toml::from_str(
+            r##"
+[theme]
+lightTheme = "material-you:system-accent"
+darkTheme = "material-you:system-accent"
+customThemeColors = ["#123456"]
+"##,
+        )?;
+
+        assert!(!config.remove_custom_theme_color(theme::SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID));
+        assert_eq!(config.custom_theme_colors(), &["#123456".to_string()]);
+        assert_eq!(
+            config.light_theme_id(),
+            theme::SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+        );
+        assert_eq!(
+            config.dark_theme_id(),
+            theme::SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn remove_custom_theme_color_removes_unselected_material_theme() -> anyhow::Result<()> {
         let mut config: AiChatConfig = toml::from_str(
             r##"

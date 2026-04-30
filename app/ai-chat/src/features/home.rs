@@ -1,7 +1,9 @@
 use crate::{
     app::menus,
     components::{
-        add_conversation::open_add_conversation_dialog, add_folder::open_add_folder_dialog,
+        add_conversation::open_add_conversation_dialog,
+        add_folder::open_add_folder_dialog,
+        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
     features::home::{sidebar::SidebarView, tabs::TabsView},
     foundation::i18n::I18n,
@@ -42,9 +44,17 @@ pub fn init(cx: &mut App) {
     tabs::init(cx);
 }
 
+fn apply_current_theme(window: &mut Window, cx: &mut App) {
+    let theme_registry = ThemeRegistry::global(cx);
+    let config = cx.global::<AiChatConfig>();
+    let config = config.gpui_theme(theme_registry, window);
+    Theme::global_mut(cx).apply_config(&config);
+}
+
 pub(crate) struct HomeView {
     sidebar: Entity<SidebarView>,
     tabs: Entity<TabsView>,
+    app_menu_bar: Entity<TitleBarAppMenuBar>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,17 +67,14 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let sidebar = cx.new(|cx| SidebarView::new(window, cx));
         let tabs = cx.new(TabsView::new);
+        let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let workspace = cx.global::<WorkspaceStore>().deref().clone();
-        {
-            let theme_registry = ThemeRegistry::global(cx);
-            let config = cx.global::<AiChatConfig>();
-            let config = config.gpui_theme(theme_registry, window);
-            Theme::global_mut(cx).apply_config(&config);
-        }
+        apply_current_theme(window, cx);
 
         Self {
             sidebar,
             tabs,
+            app_menu_bar,
             focus_handle,
             _subscriptions: vec![
                 cx.observe(&workspace, |_state, _workspace, cx| {
@@ -89,19 +96,20 @@ impl HomeView {
                         });
                 }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
-                    let theme_registry = ThemeRegistry::global(cx);
-                    let config = cx.global::<AiChatConfig>();
-                    let config = config.gpui_theme(theme_registry, window);
-                    Theme::global_mut(cx).apply_config(&config);
+                    apply_current_theme(window, cx);
                     cx.refresh_windows();
                 }),
                 cx.observe_global_in::<AiChatConfig>(window, |_state, window, cx| {
-                    let theme_registry = ThemeRegistry::global(cx);
-                    let config = cx.global::<AiChatConfig>();
-                    let config = config.gpui_theme(theme_registry, window);
-                    Theme::global_mut(cx).apply_config(&config);
+                    apply_current_theme(window, cx);
                     cx.refresh_windows();
                 }),
+                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
+                    window,
+                    |_state, window, cx| {
+                        apply_current_theme(window, cx);
+                        cx.refresh_windows();
+                    },
+                ),
             ],
         }
     }
@@ -115,6 +123,11 @@ impl HomeView {
             return;
         };
         panel.update(cx, |panel, cx| panel.focus_chat_form(window, cx));
+    }
+
+    pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
+        self.app_menu_bar
+            .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
@@ -179,7 +192,10 @@ impl Render for HomeView {
             .on_action(cx.listener(Self::add_folder))
             .child(
                 div()
-                    .child(TitleBar::new().child(title_bar_title(titlebar_title)))
+                    .child(
+                        TitleBar::new()
+                            .child(title_bar_content(self.app_menu_bar.clone(), titlebar_title)),
+                    )
                     .flex_initial(),
             )
             .map(|this| match chat_data {
@@ -220,9 +236,25 @@ impl Render for HomeView {
     }
 }
 
-fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+fn title_bar_content(
+    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    title: impl Into<SharedString>,
+) -> impl IntoElement {
     h_flex()
         .w_full()
+        .h_full()
+        .min_w_0()
+        .overflow_hidden()
+        .when(menus::should_render_component_menu_bar(), |this| {
+            this.child(title_bar_leading(app_menu_bar))
+        })
+        .child(title_bar_title(title))
+}
+
+fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
+    h_flex()
+        .flex_1()
+        .min_w_0()
         .h_full()
         .justify_center()
         .overflow_hidden()

@@ -1,4 +1,8 @@
-use crate::{app::APP_NAME, app::menus, foundation::i18n::I18n};
+use crate::{
+    app::APP_NAME,
+    app::menus,
+    foundation::{assets::APP_ICON_ASSET_PATH, i18n::I18n},
+};
 use fluent_bundle::FluentArgs;
 use gpui::{
     App, AppContext as _, Context, FocusHandle, Focusable, FontWeight, InteractiveElement,
@@ -8,8 +12,6 @@ use gpui::{
 #[cfg(target_os = "macos")]
 use gpui::{Point, point};
 use gpui_component::{ActiveTheme, Sizable, button::Button, h_flex, label::Label, v_flex};
-
-const ABOUT_APP_ICON: &str = "build-assets/icon/app-icon.ico";
 
 pub(crate) fn open_about_window(cx: &mut App) {
     if let Some(existing) = cx
@@ -52,9 +54,9 @@ fn about_window_size() -> gpui::Size<gpui::Pixels> {
 }
 
 #[cfg(target_os = "macos")]
-fn about_titlebar_options(_: &I18n) -> TitlebarOptions {
+fn about_titlebar_options(i18n: &I18n) -> TitlebarOptions {
     TitlebarOptions {
-        title: None,
+        title: Some(about_window_title(i18n).into()),
         appears_transparent: true,
         traffic_light_position: Some(about_traffic_light_position()),
     }
@@ -68,7 +70,6 @@ fn about_titlebar_options(i18n: &I18n) -> TitlebarOptions {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn about_window_title(i18n: &I18n) -> String {
     let mut args = FluentArgs::new();
     args.set("app_name", i18n.t("app-title"));
@@ -134,7 +135,7 @@ impl Render for AboutWindow {
                 v_flex()
                     .items_center()
                     .gap_4()
-                    .child(img(ABOUT_APP_ICON).size(px(72.)).flex_shrink_0())
+                    .child(img(APP_ICON_ASSET_PATH).size(px(72.)).flex_shrink_0())
                     .child(
                         Label::new(i18n.t("app-title"))
                             .text_size(px(20.))
@@ -184,10 +185,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_about_titlebar_is_transparent_with_visible_traffic_lights() {
+    fn macos_about_titlebar_has_system_title_and_visible_traffic_lights() {
         let titlebar = about_titlebar_options(&I18n::english_for_test());
 
-        assert!(titlebar.title.is_none());
+        assert_eq!(
+            titlebar.title.as_ref().map(|title| title.as_ref()),
+            Some("About AI Chat")
+        );
         assert!(titlebar.appears_transparent);
         assert_eq!(
             titlebar.traffic_light_position,

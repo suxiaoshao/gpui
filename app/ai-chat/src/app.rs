@@ -1,5 +1,5 @@
 use crate::errors::{AiChatError, AiChatResult};
-use crate::features::home::HomeView;
+use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{components, database, features, foundation, state};
 use foundation::I18n;
 use gpui::*;
@@ -105,7 +105,7 @@ fn init(cx: &mut App) {
     state::config::init(cx);
     foundation::init_i18n(cx);
     menus::init(cx);
-    cx.set_menus(menus::app_menus(cx.global::<I18n>()));
+    menus::sync_app_menus(cx);
     #[cfg(target_os = "macos")]
     menus::ensure_localized_window_menu_registered();
     cx.activate(true);
@@ -183,10 +183,7 @@ pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, anyho
         WindowOptions {
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
-            titlebar: Some(TitlebarOptions {
-                title: Some(title.into()),
-                ..TitleBar::title_bar_options()
-            }),
+            titlebar: Some(main_titlebar_options(title)),
             window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         },
@@ -194,8 +191,34 @@ pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, anyho
     )
 }
 
+fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.into()),
+        ..TitleBar::title_bar_options()
+    }
+}
+
 pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
     find_window_by_view::<HomeView>(cx)
+}
+
+pub(crate) fn reload_app_menu_bars(cx: &mut App) {
+    let roots = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<Root>())
+        .collect::<Vec<_>>();
+
+    for root in roots {
+        let _ = root.update(cx, |root, _window, cx| {
+            let _ = with_root_view::<HomeView, _>(root, cx, |home, cx| {
+                home.update(cx, |home, cx| home.reload_app_menu_bar(cx));
+            });
+            let _ = with_root_view::<SettingsView, _>(root, cx, |settings, cx| {
+                settings.update(cx, |settings, cx| settings.reload_app_menu_bar(cx));
+            });
+        });
+    }
 }
 
 pub(crate) fn show_or_create_main_window(cx: &mut App) {
@@ -304,13 +327,30 @@ pub(crate) fn run() -> AiChatResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_hide_main_window_on_close;
+    use super::{main_titlebar_options, should_hide_main_window_on_close};
+    use gpui_component::TitleBar;
 
     #[::core::prelude::v1::test]
     fn main_window_close_behavior_matches_platform_support() {
         assert_eq!(
             should_hide_main_window_on_close(),
             cfg!(any(target_os = "macos", target_os = "windows"))
+        );
+    }
+
+    #[test]
+    fn main_window_uses_component_titlebar_options() {
+        let titlebar = main_titlebar_options("AI Chat");
+        let expected = TitleBar::title_bar_options();
+
+        assert_eq!(
+            titlebar.title.as_ref().map(|title| title.as_ref()),
+            Some("AI Chat")
+        );
+        assert_eq!(titlebar.appears_transparent, expected.appears_transparent);
+        assert_eq!(
+            titlebar.traffic_light_position,
+            expected.traffic_light_position
         );
     }
 }

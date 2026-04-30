@@ -1,7 +1,7 @@
 use crate::foundation::assets;
-use gpui::{App, SharedString};
+use gpui::{App, BorrowAppContext, Global, Hsla, SharedString, Task};
 use gpui_component::{
-    Theme, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode as ComponentThemeMode,
+    Colorize, Theme, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode as ComponentThemeMode,
     ThemeRegistry, highlighter::HighlightThemeStyle,
 };
 use material_color_utils::{
@@ -16,12 +16,14 @@ use material_color_utils::{
     theme_from_color,
     utils::color_utils::Argb,
 };
+use platform_ext::appearance::{SystemAccentColorObserver, observe_system_accent_color_changes};
 use serde_json::{Map, Value, json};
 use std::rc::Rc;
 use tracing::{Level, event};
 
 const PRESET_PREFIX: &str = "preset:";
 const MATERIAL_YOU_PREFIX: &str = "material-you:";
+pub(crate) const SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID: &str = "material-you:system-accent";
 pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "preset:Default Light";
 pub(crate) const DEFAULT_DARK_THEME_ID: &str = "preset:Default Dark";
 pub(crate) const DEFAULT_CUSTOM_THEME_COLOR: &str = "#3271AE";
@@ -44,6 +46,14 @@ pub(crate) struct ThemeChoice {
     pub(crate) config: Rc<ThemeConfig>,
 }
 
+pub(crate) struct SystemAccentThemeState {
+    _observer: Option<SystemAccentColorObserver>,
+    _task: Option<Task<()>>,
+    color: Option<String>,
+}
+
+impl Global for SystemAccentThemeState {}
+
 pub(crate) fn init(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
     for theme_set in assets::bundled_theme_sets() {
@@ -51,6 +61,7 @@ pub(crate) fn init(cx: &mut App) {
             event!(Level::ERROR, "Failed to load bundled theme set: {}", err);
         }
     }
+    init_system_accent_theme(cx);
 }
 
 pub(crate) fn preset_theme_id(name: &str) -> String {
@@ -64,6 +75,9 @@ pub(crate) fn material_you_theme_id(color: &str) -> Option<String> {
 pub(crate) fn normalize_theme_id(id: &str) -> String {
     if id.starts_with(PRESET_PREFIX) {
         return id.to_string();
+    }
+    if is_system_accent_material_you_theme_id(id) {
+        return SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID.to_string();
     }
     if id.starts_with(MATERIAL_YOU_PREFIX) {
         return material_you_color_from_id(id)
@@ -80,6 +94,18 @@ pub(crate) fn normalize_hex_color(color: &str) -> Option<String> {
 pub(crate) fn material_you_color_from_id(id: &str) -> Option<String> {
     id.strip_prefix(MATERIAL_YOU_PREFIX)
         .and_then(normalize_hex_color)
+}
+
+pub(crate) fn is_system_accent_material_you_theme_id(id: &str) -> bool {
+    id == SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID
+}
+
+pub(crate) fn system_accent_color() -> Option<String> {
+    platform_ext::appearance::system_accent_color().map(|color| color.to_hex())
+}
+
+pub(crate) fn system_accent_hsla() -> Option<Hsla> {
+    system_accent_color().and_then(|color| Hsla::parse_hex(&color).ok())
 }
 
 pub(crate) fn theme_choices(
@@ -103,6 +129,10 @@ pub(crate) fn theme_choices(
             .iter()
             .filter_map(|color| generated_theme_choice(color, mode)),
     );
+
+    if let Some(choice) = system_accent_theme_choice(mode) {
+        choices.push(choice);
+    }
 
     choices
 }
@@ -128,6 +158,12 @@ pub(crate) fn resolve_theme_config(
         return Rc::new(theme);
     }
 
+    if is_system_accent_material_you_theme_id(&theme_id)
+        && let Some(theme) = system_accent_theme_config(mode)
+    {
+        return Rc::new(theme);
+    }
+
     match mode {
         ComponentThemeMode::Light => Rc::clone(registry.default_light_theme()),
         ComponentThemeMode::Dark => Rc::clone(registry.default_dark_theme()),
@@ -145,6 +181,41 @@ pub(crate) fn preview_theme(config: &Rc<ThemeConfig>) -> Theme {
     theme
 }
 
+fn init_system_accent_theme(cx: &mut App) {
+    let (tx, rx) = smol::channel::bounded(1);
+    let observer = observe_system_accent_color_changes(move || {
+        let _ = tx.try_send(());
+    });
+    let color = system_accent_color();
+    let task = observer.as_ref().map(|_| {
+        cx.spawn(async move |cx| {
+            while rx.recv().await.is_ok() {
+                let next_color = system_accent_color();
+                cx.update(|cx| {
+                    if system_accent_color_changed(
+                        &cx.global::<SystemAccentThemeState>().color,
+                        &next_color,
+                    ) {
+                        cx.update_global::<SystemAccentThemeState, _>(|state, _cx| {
+                            state.color = next_color;
+                        });
+                    }
+                });
+            }
+        })
+    });
+
+    cx.set_global(SystemAccentThemeState {
+        _observer: observer,
+        _task: task,
+        color,
+    });
+}
+
+fn system_accent_color_changed(current: &Option<String>, next: &Option<String>) -> bool {
+    current != next
+}
+
 fn generated_theme_choice(color: &str, mode: ComponentThemeMode) -> Option<ThemeChoice> {
     let color = normalize_hex_color(color)?;
     let config = generated_theme_config(&color, mode)?;
@@ -153,6 +224,25 @@ fn generated_theme_choice(color: &str, mode: ComponentThemeMode) -> Option<Theme
         name: config.name.clone(),
         config: Rc::new(config),
     })
+}
+
+fn system_accent_theme_choice(mode: ComponentThemeMode) -> Option<ThemeChoice> {
+    let config = system_accent_theme_config(mode)?;
+    Some(ThemeChoice {
+        id: SYSTEM_ACCENT_MATERIAL_YOU_THEME_ID.to_string(),
+        name: config.name.clone(),
+        config: Rc::new(config),
+    })
+}
+
+fn system_accent_theme_config(mode: ComponentThemeMode) -> Option<ThemeConfig> {
+    let color = system_accent_color()?;
+    let mut config = generated_theme_config(&color, mode)?;
+    config.name = SharedString::from(format!(
+        "System Accent Material You {}",
+        if mode.is_dark() { "Dark" } else { "Light" }
+    ));
+    Some(config)
 }
 
 fn generated_theme_config(color: &str, mode: ComponentThemeMode) -> Option<ThemeConfig> {

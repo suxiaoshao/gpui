@@ -17,7 +17,7 @@ sys-locale = "0.3.2"
 thiserror = "2.0.18"
 
 # http
-reqwest = {version = "0.13.2",features=["query"]}
+reqwest = {version = "0.13.3",features=["query"]}
 async-compat = "0.2.5"
 
 # html
@@ -27,7 +27,7 @@ regex = "1.12.3"
 url = "2.5.8"
 
 # database
-diesel = { version = "2.3.8", features = ["sqlite", "r2d2"] }
+diesel = { version = "2.3.9", features = ["sqlite", "r2d2"] }
 dirs-next = "2.0.0"
 
 # log

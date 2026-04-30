@@ -191,7 +191,7 @@ fn handle_tray_event(event: TrayIconEvent, cx: &mut AsyncApp) {
 #[cfg(not(target_os = "linux"))]
 fn build_tray_icon(strings: &TrayStrings) -> anyhow::Result<TrayIcon> {
     let menu = build_menu(strings)?;
-    let mut builder = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .with_id(TRAY_ICON_ID)
         .with_menu(Box::new(menu))
         .with_tooltip(strings.tooltip.clone())
@@ -199,9 +199,7 @@ fn build_tray_icon(strings: &TrayStrings) -> anyhow::Result<TrayIcon> {
         .with_icon(load_tray_icon()?);
 
     #[cfg(target_os = "macos")]
-    {
-        builder = builder.with_icon_as_template(true);
-    }
+    let builder = builder.with_icon_as_template(true);
 
     builder
         .build()

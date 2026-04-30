@@ -7,12 +7,12 @@ publish = false
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 image = "0.25.10"
-plist = "1.8.0"
+plist = "1.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 toml = "1.1.2"
-tauri-bundler = "2.8.1"
-tauri-utils = "2.8.3"
+tauri-bundler = "2.9.0"
+tauri-utils = "2.9.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 walkdir = "2.5.0"
