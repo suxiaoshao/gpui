@@ -35,13 +35,17 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
 
     let manifest_path = app_dir.join("Cargo.toml");
     let main_bin_name = get_main_binary_name(&manifest_path)?;
-    let (package_settings, mut bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
+    let (package_settings, bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
 
     let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
 
     #[cfg(target_os = "macos")]
-    macos::prepare_bundle_settings(&mut bundle_settings)?;
+    let bundle_settings = {
+        let mut bundle_settings = bundle_settings;
+        macos::prepare_bundle_settings(&mut bundle_settings)?;
+        bundle_settings
+    };
 
     let mut settings_builder = SettingsBuilder::new()
         .project_out_directory(&out_dir)

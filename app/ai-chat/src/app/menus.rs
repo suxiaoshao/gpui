@@ -7,6 +7,7 @@ use fluent_bundle::FluentArgs;
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+#[cfg(target_os = "macos")]
 use tracing::{Level, event};
 
 actions!(
@@ -25,6 +26,7 @@ actions!(
     ]
 );
 
+#[cfg(any(target_os = "macos", test))]
 const WINDOW_MENU_INDEX: usize = 1;
 
 pub(crate) fn init(cx: &mut App) {
@@ -86,6 +88,7 @@ pub(crate) fn app_menus(i18n: &I18n) -> Vec<Menu> {
     ]
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn ensure_localized_window_menu_registered() {
     match platform_ext::app::set_windows_menu_from_main_menu_index(WINDOW_MENU_INDEX) {
         Ok(()) => {
