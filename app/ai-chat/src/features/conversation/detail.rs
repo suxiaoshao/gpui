@@ -26,10 +26,16 @@ use gpui_component::{
 
 actions!([DetailEscape]);
 
+pub(crate) trait MessageRevisionExt {
+    type Id: Copy + Eq + 'static;
+
+    fn message_id(&self) -> Self::Id;
+}
+
 pub(crate) trait ConversationDetailViewExt: Sized + 'static {
     type Message: Clone + crate::components::message::MessageViewExt<Id = Self::MessageId>;
     type MessageId: Copy + Eq + 'static;
-    type Revision: Clone + PartialEq + Eq + 'static;
+    type Revision: Clone + PartialEq + Eq + MessageRevisionExt<Id = Self::MessageId> + 'static;
 
     fn title(&self, cx: &App) -> SharedString;
     fn subtitle(&self, _cx: &App) -> Option<SharedString> {
@@ -621,7 +627,19 @@ fn first_revision_diff<T: PartialEq>(
         })
 }
 
-fn message_list_sync_operation<T: PartialEq>(
+fn first_message_identity_diff<T: MessageRevisionExt>(
+    previous_revisions: &[T],
+    next_revisions: &[T],
+    start_index: usize,
+) -> Option<usize> {
+    previous_revisions[start_index..]
+        .iter()
+        .zip(next_revisions[start_index..].iter())
+        .position(|(left, right)| left.message_id() != right.message_id())
+        .map(|offset| start_index + offset)
+}
+
+fn message_list_sync_operation<T: PartialEq + MessageRevisionExt>(
     list_item_count: usize,
     previous_revisions: &[T],
     next_revisions: &[T],
@@ -637,8 +655,17 @@ fn message_list_sync_operation<T: PartialEq>(
     };
 
     if previous_revisions.len() == next_revisions.len() {
-        MessageListSyncOperation::Remeasure {
-            range: first_diff..next_revisions.len(),
+        if let Some(first_identity_diff) =
+            first_message_identity_diff(previous_revisions, next_revisions, first_diff)
+        {
+            MessageListSyncOperation::Splice {
+                old_range: first_identity_diff..previous_revisions.len(),
+                count: next_revisions.len().saturating_sub(first_identity_diff),
+            }
+        } else {
+            MessageListSyncOperation::Remeasure {
+                range: first_diff..next_revisions.len(),
+            }
         }
     } else {
         MessageListSyncOperation::Splice {

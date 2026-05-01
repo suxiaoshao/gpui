@@ -1,8 +1,29 @@
 use super::{
-    InitialMessageReveal, MessageListSyncOperation, RunningTask, first_revision_diff,
-    message_list_sync_operation,
+    InitialMessageReveal, MessageListSyncOperation, MessageRevisionExt, RunningTask,
+    first_revision_diff, message_list_sync_operation,
 };
 use gpui::Task;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TestRevision {
+    id: usize,
+    content_version: usize,
+}
+
+impl MessageRevisionExt for TestRevision {
+    type Id = usize;
+
+    fn message_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+fn revision(id: usize, content_version: usize) -> TestRevision {
+    TestRevision {
+        id,
+        content_version,
+    }
+}
 
 #[test]
 fn running_task_binds_and_matches_messages() {
@@ -19,23 +40,65 @@ fn running_task_binds_and_matches_messages() {
 #[test]
 fn message_list_sync_remeasures_existing_items_instead_of_splicing_them() {
     assert_eq!(
-        message_list_sync_operation(2, &[1, 2], &[1, 3]),
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 2)]
+        ),
         MessageListSyncOperation::Remeasure { range: 1..2 }
     );
     assert_eq!(
-        message_list_sync_operation(2, &[1, 2], &[1, 2, 3]),
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 1), revision(3, 1)]
+        ),
         MessageListSyncOperation::Splice {
             old_range: 2..2,
             count: 1,
         }
     );
     assert_eq!(
-        message_list_sync_operation(1, &[1, 2], &[1, 3]),
+        message_list_sync_operation(
+            1,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 2)]
+        ),
         MessageListSyncOperation::Reset { count: 2 }
     );
     assert_eq!(
-        message_list_sync_operation(2, &[1, 2], &[1, 2]),
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 1)]
+        ),
         MessageListSyncOperation::None
+    );
+}
+
+#[test]
+fn message_list_sync_splices_equal_length_identity_changes() {
+    assert_eq!(
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(3, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 1..2,
+            count: 1,
+        }
+    );
+    assert_eq!(
+        message_list_sync_operation(
+            3,
+            &[revision(1, 1), revision(2, 1), revision(3, 1)],
+            &[revision(1, 1), revision(3, 1), revision(2, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 1..3,
+            count: 2,
+        }
     );
 }
 
