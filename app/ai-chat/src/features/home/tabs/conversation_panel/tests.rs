@@ -22,6 +22,19 @@ fn make_message(id: i32, role: Role, status: Status, content: Content) -> Messag
 }
 
 #[test]
+fn conversation_panel_message_list_starts_at_bottom_with_full_measurement() {
+    let state = ConversationPanelState {
+        conversation_id: 1,
+        conversation_icon: "chat".into(),
+        conversation_title: "Default".into(),
+        conversation_info: None,
+    };
+
+    assert_eq!(state.message_list_alignment(), ListAlignment::Bottom);
+    assert!(state.measure_all_message_list());
+}
+
+#[test]
 fn get_history_contextual_includes_all_normal_messages_and_user() {
     let contents = build_history_messages(
         vec![

@@ -16,7 +16,7 @@ use gpui_component::{
     popover::Popover,
     scroll::ScrollableElement,
     spinner::Spinner,
-    text::TextView,
+    text::{TextView, TextViewState},
     v_flex,
 };
 use std::{
@@ -25,11 +25,16 @@ use std::{
 };
 
 #[derive(IntoElement)]
-pub(crate) struct MessageView<T: MessageViewExt>(T);
+pub(crate) struct MessageView<T: MessageViewExt>(T, Option<Entity<TextViewState>>);
 
 impl<T: MessageViewExt> MessageView<T> {
     pub fn new(data: T) -> Self {
-        Self(data)
+        Self(data, None)
+    }
+
+    pub(crate) fn with_text_state(mut self, text_state: Option<Entity<TextViewState>>) -> Self {
+        self.1 = text_state;
+        self
     }
 }
 
@@ -186,6 +191,7 @@ fn message_actions(can_resend: bool) -> Vec<MessageAction> {
 impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = self.0;
+        let text_state = self.1;
         let (
             copy_success_title,
             copy_success_message,
@@ -311,6 +317,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                     .into_any_element(),
             })
             .collect::<Vec<_>>();
+
         v_flex()
             .group("message")
             .w_full()
@@ -394,10 +401,14 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                                     ),
                                 )
                             })
-                            .child(
-                                TextView::markdown(text_id, &copy_text)
-                                    .selectable(true),
-                            )
+                            .child(match text_state {
+                                Some(text_state) => {
+                                    TextView::new(&text_state).selectable(true).into_any_element()
+                                }
+                                None => TextView::markdown(text_id, &copy_text)
+                                    .selectable(true)
+                                    .into_any_element(),
+                            })
                             .when_some(message_error, |this, error| {
                                 this.child(
                                     div().child(

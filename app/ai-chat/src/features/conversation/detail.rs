@@ -1,7 +1,7 @@
 use crate::{
     components::{
         chat_form::{ChatForm, ChatFormEvent},
-        message::MessageView,
+        message::{MessageView, MessageViewExt},
     },
     foundation::assets::IconName,
     foundation::i18n::I18n,
@@ -10,7 +10,7 @@ use crate::{
 use gpui::actions;
 use gpui::{
     AlignItems, AnyElement, App, AppContext, Context, Entity, FocusHandle, InteractiveElement,
-    IntoElement, ListAlignment, ListOffset, ListState, ParentElement, Render, SharedString, Styled,
+    IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString, Styled,
     Subscription, Task, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_component::{
@@ -20,6 +20,7 @@ use gpui_component::{
     h_flex,
     label::Label,
     scroll::ScrollableElement,
+    text::TextViewState,
     v_flex,
 };
 
@@ -57,7 +58,7 @@ pub(crate) trait ConversationDetailViewExt: Sized + 'static {
     fn message_list_alignment(&self) -> ListAlignment {
         ListAlignment::Top
     }
-    fn auto_scroll_new_messages_when_at_end(&self) -> bool {
+    fn measure_all_message_list(&self) -> bool {
         false
     }
 
@@ -145,33 +146,43 @@ pub(crate) struct ConversationDetailView<T: ConversationDetailViewExt> {
     focus_handle: FocusHandle,
     pub(crate) message_list: ListState,
     pub(crate) message_revisions: Vec<T::Revision>,
+    message_ids: Vec<T::MessageId>,
+    message_text_states: Vec<MessageTextState<T::MessageId>>,
     pub(crate) chat_form: Entity<ChatForm>,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) task: Option<RunningTask<T::MessageId>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct MessageListChange {
-    item_count_increased: bool,
-    latest_revision_changed: bool,
+struct MessageTextState<I> {
+    id: I,
+    state: Entity<TextViewState>,
+    _subscription: Subscription,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PreservedScrollOffset {
-    item_ix: usize,
-    offset_in_item: gpui::Pixels,
+#[derive(Debug, PartialEq, Eq)]
+enum MessageListSyncOperation {
+    None,
+    Reset {
+        count: usize,
+    },
+    Remeasure {
+        range: std::ops::Range<usize>,
+    },
+    Splice {
+        old_range: std::ops::Range<usize>,
+        count: usize,
+    },
 }
 
 impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     pub(crate) fn new_with_detail(detail: T, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let alignment = detail.message_list_alignment();
-        let auto_scroll_new_messages = detail.auto_scroll_new_messages_when_at_end();
         let should_focus = detail.focus_on_init();
         let focus_handle = cx.focus_handle();
         if should_focus {
             focus_handle.focus(window, cx);
         }
-        let message_list = if should_measure_all_message_list(auto_scroll_new_messages) {
+        let message_list = if detail.measure_all_message_list() {
             ListState::new(0, alignment, px(1000.)).measure_all()
         } else {
             ListState::new(0, alignment, px(1000.))
@@ -191,6 +202,8 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             focus_handle,
             message_list,
             message_revisions: Vec::new(),
+            message_ids: Vec::new(),
+            message_text_states: Vec::new(),
             chat_form,
             _subscriptions,
             task: None,
@@ -279,69 +292,96 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         }
     }
 
-    fn sync_message_list(&mut self, next_revisions: Vec<T::Revision>) -> MessageListChange {
-        let change = message_list_change(&self.message_revisions, &next_revisions);
+    fn sync_message_list(&mut self, next_revisions: Vec<T::Revision>) {
+        let list_count = self.message_list.item_count();
+        let operation =
+            message_list_sync_operation(list_count, &self.message_revisions, &next_revisions);
 
-        if self.message_list.item_count() != self.message_revisions.len() {
-            self.message_list.reset(next_revisions.len());
-            self.message_revisions = next_revisions;
-            return change;
-        }
-
-        if self.message_revisions == next_revisions {
-            return change;
-        }
-
-        let first_diff = self
-            .message_revisions
-            .iter()
-            .zip(next_revisions.iter())
-            .position(|(left, right)| left != right)
-            .unwrap_or_else(|| self.message_revisions.len().min(next_revisions.len()));
-        let preserved_scroll_offset = preserved_tail_item_scroll_offset(
-            &self.message_list,
-            self.message_revisions.len(),
-            next_revisions.len(),
-            first_diff,
-        );
-
-        self.message_list.splice(
-            first_diff..self.message_revisions.len(),
-            next_revisions.len().saturating_sub(first_diff),
-        );
-        if let Some(scroll_offset) = preserved_scroll_offset {
-            self.message_list.scroll_to(ListOffset {
-                item_ix: scroll_offset.item_ix,
-                offset_in_item: scroll_offset.offset_in_item,
-            });
+        match operation {
+            MessageListSyncOperation::None => return,
+            MessageListSyncOperation::Reset { count } => self.message_list.reset(count),
+            MessageListSyncOperation::Remeasure { range } => {
+                self.message_list.remeasure_items(range);
+            }
+            MessageListSyncOperation::Splice { old_range, count } => {
+                self.message_list.splice(old_range, count);
+            }
         }
         self.message_revisions = next_revisions;
-        change
     }
 
-    fn maybe_reveal_latest_message(&mut self, change: MessageListChange, was_at_end: bool) {
-        if should_reveal_latest_message(
-            self.detail.auto_scroll_new_messages_when_at_end(),
-            was_at_end,
-            change,
-            self.message_revisions.len(),
-        ) {
-            scroll_to_message_end(
-                &self.message_list,
-                self.detail.message_list_alignment(),
-                self.message_revisions.len(),
-            );
+    fn sync_message_text_states(&mut self, cx: &mut Context<ConversationDetailView<T>>) {
+        if !self.detail.measure_all_message_list() {
+            return;
         }
+
+        let sources_label = cx.global::<I18n>().t("field-sources");
+        let mut next_ids = Vec::with_capacity(self.message_revisions.len());
+
+        for index in 0..self.message_revisions.len() {
+            let Some(message) = self.detail.message_at(index, cx) else {
+                continue;
+            };
+            let message_id = message.id();
+            let source = message.content().display_markdown(&sources_label);
+            self.ensure_message_text_state(message_id, &source, cx);
+            next_ids.push(message_id);
+        }
+
+        self.message_text_states
+            .retain(|entry| next_ids.contains(&entry.id));
+        self.message_ids = next_ids;
+    }
+
+    fn ensure_message_text_state(
+        &mut self,
+        message_id: T::MessageId,
+        source: &str,
+        cx: &mut Context<ConversationDetailView<T>>,
+    ) {
+        if let Some(entry) = self
+            .message_text_states
+            .iter()
+            .find(|entry| entry.id == message_id)
+        {
+            entry
+                .state
+                .update(cx, |state, cx| state.set_text(source, cx));
+            return;
+        }
+
+        let state = cx.new(|cx| TextViewState::markdown(source, cx));
+        let subscription = cx.observe(&state, move |this, _, cx| {
+            if let Some(index) = this
+                .message_ids
+                .iter()
+                .position(|current_id| *current_id == message_id)
+            {
+                this.message_list.remeasure_items(index..index + 1);
+                cx.notify();
+            }
+        });
+
+        self.message_text_states.push(MessageTextState {
+            id: message_id,
+            state,
+            _subscription: subscription,
+        });
+    }
+
+    fn message_text_state(&self, message_id: T::MessageId) -> Option<Entity<TextViewState>> {
+        self.message_text_states
+            .iter()
+            .find(|entry| entry.id == message_id)
+            .map(|entry| entry.state.clone())
     }
 }
 
 impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message_revisions = self.detail.message_revisions(cx);
-        let alignment = self.detail.message_list_alignment();
-        let was_at_end = list_is_at_end(&self.message_list, alignment);
-        let change = self.sync_message_list(message_revisions);
-        self.maybe_reveal_latest_message(change, was_at_end);
+        self.sync_message_list(message_revisions);
+        self.sync_message_text_states(cx);
         let message_count = self.message_revisions.len();
 
         let title = self.detail.title(cx);
@@ -471,10 +511,11 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                             list(message_list.clone(), move |ix, _window, cx| {
                                 this.upgrade()
                                     .and_then(|view| {
-                                        view.read(cx)
-                                            .detail
-                                            .message_at(ix, cx)
-                                            .map(MessageView::new)
+                                        let view = view.read(cx);
+                                        view.detail.message_at(ix, cx).map(|message| {
+                                            let text_state = view.message_text_state(message.id());
+                                            MessageView::new(message).with_text_state(text_state)
+                                        })
                                     })
                                     .map(|message| message.into_any_element())
                                     .unwrap_or_else(|| div().into_any_element())
@@ -506,105 +547,45 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
     }
 }
 
-fn should_measure_all_message_list(auto_scroll_new_messages: bool) -> bool {
-    auto_scroll_new_messages
-}
-
-const SCROLL_END_EPSILON_PX: f32 = 1.;
-
-fn scroll_to_message_end(message_list: &ListState, alignment: ListAlignment, item_count: usize) {
-    if item_count == 0 {
-        return;
-    }
-
-    match alignment {
-        ListAlignment::Bottom => message_list.scroll_to_reveal_item(item_count - 1),
-        ListAlignment::Top => message_list.scroll_to(ListOffset {
-            item_ix: item_count,
-            offset_in_item: px(0.),
-        }),
-    }
-}
-fn list_is_at_end(message_list: &ListState, alignment: ListAlignment) -> bool {
-    match alignment {
-        ListAlignment::Bottom => {
-            let scroll_top = message_list.logical_scroll_top();
-            scroll_top.item_ix >= message_list.item_count() && scroll_top.offset_in_item == px(0.)
-        }
-        ListAlignment::Top => {
-            let max_offset = message_list.max_offset_for_scrollbar().y;
-            if max_offset == px(0.) {
-                true
-            } else {
-                let current_offset = (-message_list.scroll_px_offset_for_scrollbar().y).max(px(0.));
-                current_offset + px(SCROLL_END_EPSILON_PX) >= max_offset
-            }
-        }
-    }
-}
-
-fn latest_revision_changed<T: PartialEq>(
-    previous_revision: Option<&T>,
-    next_revision: Option<&T>,
-) -> bool {
-    match (previous_revision, next_revision) {
-        (Some(previous), Some(next)) => previous != next,
-        _ => false,
-    }
-}
-
-fn preserved_tail_item_scroll_offset(
-    message_list: &ListState,
-    previous_item_count: usize,
-    next_item_count: usize,
-    first_diff: usize,
-) -> Option<PreservedScrollOffset> {
-    if previous_item_count == 0
-        || previous_item_count != next_item_count
-        || first_diff + 1 != previous_item_count
-    {
-        return None;
-    }
-
-    let scroll_top = message_list.logical_scroll_top();
-    if scroll_top.item_ix != first_diff || scroll_top.offset_in_item == px(0.) {
-        return None;
-    }
-
-    Some(PreservedScrollOffset {
-        item_ix: scroll_top.item_ix,
-        offset_in_item: scroll_top.offset_in_item,
-    })
-}
-
-fn message_list_change<T: PartialEq>(
+fn first_revision_diff<T: PartialEq>(
     previous_revisions: &[T],
     next_revisions: &[T],
-) -> MessageListChange {
-    MessageListChange {
-        item_count_increased: next_revisions.len() > previous_revisions.len(),
-        latest_revision_changed: latest_revision_changed(
-            previous_revisions.last(),
-            next_revisions.last(),
-        ),
-    }
+) -> Option<usize> {
+    previous_revisions
+        .iter()
+        .zip(next_revisions.iter())
+        .position(|(left, right)| left != right)
+        .or_else(|| {
+            (previous_revisions.len() != next_revisions.len())
+                .then(|| previous_revisions.len().min(next_revisions.len()))
+        })
 }
 
-fn should_reveal_latest_message(
-    auto_scroll_new_messages: bool,
-    was_at_end: bool,
-    change: MessageListChange,
-    next_item_count: usize,
-) -> bool {
-    if !auto_scroll_new_messages || next_item_count == 0 {
-        return false;
+fn message_list_sync_operation<T: PartialEq>(
+    list_item_count: usize,
+    previous_revisions: &[T],
+    next_revisions: &[T],
+) -> MessageListSyncOperation {
+    if list_item_count != previous_revisions.len() {
+        return MessageListSyncOperation::Reset {
+            count: next_revisions.len(),
+        };
     }
 
-    if change.item_count_increased {
-        return true;
-    }
+    let Some(first_diff) = first_revision_diff(previous_revisions, next_revisions) else {
+        return MessageListSyncOperation::None;
+    };
 
-    was_at_end && change.latest_revision_changed
+    if previous_revisions.len() == next_revisions.len() {
+        MessageListSyncOperation::Remeasure {
+            range: first_diff..next_revisions.len(),
+        }
+    } else {
+        MessageListSyncOperation::Splice {
+            old_range: first_diff..previous_revisions.len(),
+            count: next_revisions.len().saturating_sub(first_diff),
+        }
+    }
 }
 
 #[cfg(test)]
