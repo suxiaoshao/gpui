@@ -61,6 +61,9 @@ pub(crate) trait ConversationDetailViewExt: Sized + 'static {
     fn measure_all_message_list(&self) -> bool {
         false
     }
+    fn initially_reveal_latest_message(&self) -> bool {
+        false
+    }
 
     fn message_revisions(&self, cx: &App) -> Vec<Self::Revision>;
     fn message_at(&self, index: usize, cx: &App) -> Option<Self::Message>;
@@ -148,6 +151,7 @@ pub(crate) struct ConversationDetailView<T: ConversationDetailViewExt> {
     pub(crate) message_revisions: Vec<T::Revision>,
     message_ids: Vec<T::MessageId>,
     message_text_states: Vec<MessageTextState<T::MessageId>>,
+    initial_message_reveal: InitialMessageReveal,
     pub(crate) chat_form: Entity<ChatForm>,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) task: Option<RunningTask<T::MessageId>>,
@@ -157,6 +161,36 @@ struct MessageTextState<I> {
     id: I,
     state: Entity<TextViewState>,
     _subscription: Subscription,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InitialMessageReveal {
+    enabled: bool,
+    pending: bool,
+}
+
+impl InitialMessageReveal {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            pending: enabled,
+        }
+    }
+
+    fn record_sync_operation(&mut self, operation: &MessageListSyncOperation) {
+        if self.enabled && matches!(operation, MessageListSyncOperation::Reset { .. }) {
+            self.pending = true;
+        }
+    }
+
+    fn take_if_ready(&mut self, message_count: usize) -> bool {
+        if self.enabled && self.pending && message_count > 0 {
+            self.pending = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,6 +211,7 @@ enum MessageListSyncOperation {
 impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
     pub(crate) fn new_with_detail(detail: T, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let alignment = detail.message_list_alignment();
+        let initially_reveal_latest_message = detail.initially_reveal_latest_message();
         let should_focus = detail.focus_on_init();
         let focus_handle = cx.focus_handle();
         if should_focus {
@@ -204,6 +239,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             message_revisions: Vec::new(),
             message_ids: Vec::new(),
             message_text_states: Vec::new(),
+            initial_message_reveal: InitialMessageReveal::new(initially_reveal_latest_message),
             chat_form,
             _subscriptions,
             task: None,
@@ -296,6 +332,8 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         let list_count = self.message_list.item_count();
         let operation =
             message_list_sync_operation(list_count, &self.message_revisions, &next_revisions);
+        self.initial_message_reveal
+            .record_sync_operation(&operation);
 
         match operation {
             MessageListSyncOperation::None => return,
@@ -375,6 +413,27 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             .find(|entry| entry.id == message_id)
             .map(|entry| entry.state.clone())
     }
+
+    fn schedule_initial_message_reveal(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<ConversationDetailView<T>>,
+    ) {
+        if !self
+            .initial_message_reveal
+            .take_if_ready(self.message_revisions.len())
+        {
+            return;
+        }
+
+        cx.defer_in(window, |this, _window, cx| {
+            if this.message_revisions.is_empty() {
+                return;
+            }
+            this.message_list.scroll_to_end();
+            cx.notify();
+        });
+    }
 }
 
 impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
@@ -382,6 +441,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
         let message_revisions = self.detail.message_revisions(cx);
         self.sync_message_list(message_revisions);
         self.sync_message_text_states(cx);
+        self.schedule_initial_message_reveal(window, cx);
         let message_count = self.message_revisions.len();
 
         let title = self.detail.title(cx);

@@ -172,10 +172,14 @@ impl ConversationDetailViewExt for ConversationPanelState {
     }
 
     fn message_list_alignment(&self) -> ListAlignment {
-        ListAlignment::Bottom
+        ListAlignment::Top
     }
 
     fn measure_all_message_list(&self) -> bool {
+        true
+    }
+
+    fn initially_reveal_latest_message(&self) -> bool {
         true
     }
 

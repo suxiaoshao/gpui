@@ -22,7 +22,7 @@ fn make_message(id: i32, role: Role, status: Status, content: Content) -> Messag
 }
 
 #[test]
-fn conversation_panel_message_list_starts_at_bottom_with_full_measurement() {
+fn conversation_panel_message_list_uses_top_order_with_initial_reveal() {
     let state = ConversationPanelState {
         conversation_id: 1,
         conversation_icon: "chat".into(),
@@ -30,8 +30,9 @@ fn conversation_panel_message_list_starts_at_bottom_with_full_measurement() {
         conversation_info: None,
     };
 
-    assert_eq!(state.message_list_alignment(), ListAlignment::Bottom);
+    assert_eq!(state.message_list_alignment(), ListAlignment::Top);
     assert!(state.measure_all_message_list());
+    assert!(state.initially_reveal_latest_message());
 }
 
 #[test]
