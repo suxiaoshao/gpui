@@ -10,7 +10,9 @@ use crate::{
     features::hotkey::GlobalHotkeyState,
     features::{
         conversation::{
-            detail::{ConversationDetailView, ConversationDetailViewExt, DetailEscape},
+            detail::{
+                ConversationDetailView, ConversationDetailViewExt, DetailEscape, MessageRevisionExt,
+            },
             preview::{MessagePreviewExt, open_message_preview_window},
         },
         temporary::TemporaryView,
@@ -345,6 +347,14 @@ impl TemporaryMessageRevision {
             content_len,
             error_len: message.error.as_ref().map_or(0, String::len),
         }
+    }
+}
+
+impl MessageRevisionExt for TemporaryMessageRevision {
+    type Id = usize;
+
+    fn message_id(&self) -> Self::Id {
+        self.id
     }
 }
 

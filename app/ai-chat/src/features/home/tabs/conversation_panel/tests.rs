@@ -22,6 +22,20 @@ fn make_message(id: i32, role: Role, status: Status, content: Content) -> Messag
 }
 
 #[test]
+fn conversation_panel_message_list_uses_top_order_with_initial_reveal() {
+    let state = ConversationPanelState {
+        conversation_id: 1,
+        conversation_icon: "chat".into(),
+        conversation_title: "Default".into(),
+        conversation_info: None,
+    };
+
+    assert_eq!(state.message_list_alignment(), ListAlignment::Top);
+    assert!(state.measure_all_message_list());
+    assert!(state.initially_reveal_latest_message());
+}
+
+#[test]
 fn get_history_contextual_includes_all_normal_messages_and_user() {
     let contents = build_history_messages(
         vec![

@@ -1,9 +1,29 @@
 use super::{
-    MessageListChange, PreservedScrollOffset, RunningTask, latest_revision_changed, list_is_at_end,
-    message_list_change, preserved_tail_item_scroll_offset, should_measure_all_message_list,
-    should_reveal_latest_message,
+    InitialMessageReveal, MessageListSyncOperation, MessageRevisionExt, RunningTask,
+    first_revision_diff, message_list_sync_operation,
 };
-use gpui::{ListAlignment, ListState, Task, px};
+use gpui::Task;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TestRevision {
+    id: usize,
+    content_version: usize,
+}
+
+impl MessageRevisionExt for TestRevision {
+    type Id = usize;
+
+    fn message_id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+fn revision(id: usize, content_version: usize) -> TestRevision {
+    TestRevision {
+        id,
+        content_version,
+    }
+}
 
 #[test]
 fn running_task_binds_and_matches_messages() {
@@ -18,113 +38,124 @@ fn running_task_binds_and_matches_messages() {
 }
 
 #[test]
-fn auto_scrolling_lists_use_full_measurement() {
-    assert!(should_measure_all_message_list(true));
-    assert!(!should_measure_all_message_list(false));
-}
-
-#[test]
-fn bottom_aligned_list_is_at_end_only_at_bottom_offset() {
-    let state = ListState::new(3, ListAlignment::Bottom, px(100.));
-    assert!(list_is_at_end(&state, ListAlignment::Bottom));
-
-    state.scroll_to_reveal_item(0);
-    assert!(!list_is_at_end(&state, ListAlignment::Bottom));
-    assert!(list_is_at_end(&state, ListAlignment::Top));
-}
-
-#[test]
-fn latest_revision_change_only_tracks_last_message() {
-    assert!(latest_revision_changed(Some(&2), Some(&3)));
-    assert!(!latest_revision_changed(Some(&2), Some(&2)));
-    assert!(!latest_revision_changed::<i32>(None, None));
-}
-
-#[test]
-fn message_list_change_tracks_new_items_and_tail_updates() {
+fn message_list_sync_remeasures_existing_items_instead_of_splicing_them() {
     assert_eq!(
-        message_list_change(&[1], &[1, 2]),
-        MessageListChange {
-            item_count_increased: true,
-            latest_revision_changed: true,
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 2)]
+        ),
+        MessageListSyncOperation::Remeasure { range: 1..2 }
+    );
+    assert_eq!(
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 1), revision(3, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 2..2,
+            count: 1,
         }
     );
     assert_eq!(
-        message_list_change(&[1, 2], &[9, 2]),
-        MessageListChange {
-            item_count_increased: false,
-            latest_revision_changed: false,
+        message_list_sync_operation(
+            1,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 2)]
+        ),
+        MessageListSyncOperation::Reset { count: 2 }
+    );
+    assert_eq!(
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(2, 1)]
+        ),
+        MessageListSyncOperation::None
+    );
+}
+
+#[test]
+fn message_list_sync_splices_equal_length_identity_changes() {
+    assert_eq!(
+        message_list_sync_operation(
+            2,
+            &[revision(1, 1), revision(2, 1)],
+            &[revision(1, 1), revision(3, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 1..2,
+            count: 1,
+        }
+    );
+    assert_eq!(
+        message_list_sync_operation(
+            3,
+            &[revision(1, 1), revision(2, 1), revision(3, 1)],
+            &[revision(1, 1), revision(3, 1), revision(2, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 1..3,
+            count: 2,
         }
     );
 }
 
 #[test]
-fn preserves_scroll_offset_for_last_item_only_when_viewport_is_inside_it() {
-    let state = ListState::new(2, ListAlignment::Top, px(100.));
-    state.scroll_to(gpui::ListOffset {
-        item_ix: 1,
-        offset_in_item: px(42.),
-    });
-
+fn message_list_sync_splices_from_first_diff_when_identity_change_follows_content_change() {
     assert_eq!(
-        preserved_tail_item_scroll_offset(&state, 2, 2, 1),
-        Some(PreservedScrollOffset {
-            item_ix: 1,
-            offset_in_item: px(42.),
-        })
+        message_list_sync_operation(
+            3,
+            &[revision(1, 1), revision(2, 1), revision(3, 1)],
+            &[revision(1, 2), revision(2, 1), revision(4, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 0..3,
+            count: 3,
+        }
     );
-    assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 2, 0), None);
-    assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 3, 1), None);
-
-    state.scroll_to(gpui::ListOffset {
-        item_ix: 1,
-        offset_in_item: px(0.),
-    });
-    assert_eq!(preserved_tail_item_scroll_offset(&state, 2, 2, 1), None);
 }
 
 #[test]
-fn reveal_latest_message_for_new_message_or_tail_chunk_at_end() {
-    assert!(should_reveal_latest_message(
-        true,
-        false,
-        MessageListChange {
-            item_count_increased: true,
-            latest_revision_changed: true,
-        },
-        2,
-    ));
-    assert!(should_reveal_latest_message(
-        true,
-        true,
-        MessageListChange {
-            item_count_increased: false,
-            latest_revision_changed: true,
-        },
-        2,
-    ));
-    assert!(!should_reveal_latest_message(
-        true,
-        false,
-        MessageListChange {
-            item_count_increased: false,
-            latest_revision_changed: true,
-        },
-        2,
-    ));
-    assert!(!should_reveal_latest_message(
-        true,
-        true,
-        MessageListChange::default(),
-        2,
-    ));
-    assert!(!should_reveal_latest_message(
-        false,
-        true,
-        MessageListChange {
-            item_count_increased: true,
-            latest_revision_changed: true,
-        },
-        2,
-    ));
+fn first_revision_diff_finds_content_and_length_changes() {
+    assert_eq!(first_revision_diff(&[1, 2, 3], &[1, 9, 3]), Some(1));
+    assert_eq!(first_revision_diff(&[1, 2], &[1, 2, 3]), Some(2));
+    assert_eq!(first_revision_diff(&[1, 2, 3], &[1, 2]), Some(2));
+    assert_eq!(first_revision_diff(&[1, 2], &[1, 2]), None);
+}
+
+#[test]
+fn initial_message_reveal_waits_for_first_non_empty_message_list() {
+    let mut reveal = InitialMessageReveal::new(true);
+
+    assert!(!reveal.take_if_ready(0));
+    assert!(reveal.take_if_ready(1));
+    assert!(!reveal.take_if_ready(1));
+}
+
+#[test]
+fn initial_message_reveal_is_rearmed_only_by_reset() {
+    let mut reveal = InitialMessageReveal::new(true);
+    assert!(reveal.take_if_ready(2));
+
+    reveal.record_sync_operation(&MessageListSyncOperation::Remeasure { range: 1..2 });
+    assert!(!reveal.take_if_ready(2));
+
+    reveal.record_sync_operation(&MessageListSyncOperation::Splice {
+        old_range: 2..2,
+        count: 1,
+    });
+    assert!(!reveal.take_if_ready(3));
+
+    reveal.record_sync_operation(&MessageListSyncOperation::Reset { count: 3 });
+    assert!(reveal.take_if_ready(3));
+}
+
+#[test]
+fn initial_message_reveal_stays_disabled_when_not_configured() {
+    let mut reveal = InitialMessageReveal::new(false);
+
+    reveal.record_sync_operation(&MessageListSyncOperation::Reset { count: 2 });
+    assert!(!reveal.take_if_ready(2));
 }

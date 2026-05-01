@@ -7,7 +7,9 @@ use crate::{
     database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
     errors::{AiChatError, AiChatResult},
     export::{ExportType, export_conversation_to_path, suggested_export_file_name},
-    features::conversation::detail::{ConversationDetailView, ConversationDetailViewExt},
+    features::conversation::detail::{
+        ConversationDetailView, ConversationDetailViewExt, MessageRevisionExt,
+    },
     foundation::assets::IconName,
     foundation::i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
@@ -73,6 +75,14 @@ impl MessageRevision {
             content_len,
             error_len: message.error.as_ref().map_or(0, String::len),
         }
+    }
+}
+
+impl MessageRevisionExt for MessageRevision {
+    type Id = i32;
+
+    fn message_id(&self) -> Self::Id {
+        self.id
     }
 }
 
@@ -175,7 +185,11 @@ impl ConversationDetailViewExt for ConversationPanelState {
         ListAlignment::Top
     }
 
-    fn auto_scroll_new_messages_when_at_end(&self) -> bool {
+    fn measure_all_message_list(&self) -> bool {
+        true
+    }
+
+    fn initially_reveal_latest_message(&self) -> bool {
         true
     }
 
