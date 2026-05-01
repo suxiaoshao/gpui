@@ -655,12 +655,10 @@ fn message_list_sync_operation<T: PartialEq + MessageRevisionExt>(
     };
 
     if previous_revisions.len() == next_revisions.len() {
-        if let Some(first_identity_diff) =
-            first_message_identity_diff(previous_revisions, next_revisions, first_diff)
-        {
+        if first_message_identity_diff(previous_revisions, next_revisions, first_diff).is_some() {
             MessageListSyncOperation::Splice {
-                old_range: first_identity_diff..previous_revisions.len(),
-                count: next_revisions.len().saturating_sub(first_identity_diff),
+                old_range: first_diff..previous_revisions.len(),
+                count: next_revisions.len().saturating_sub(first_diff),
             }
         } else {
             MessageListSyncOperation::Remeasure {

@@ -103,6 +103,21 @@ fn message_list_sync_splices_equal_length_identity_changes() {
 }
 
 #[test]
+fn message_list_sync_splices_from_first_diff_when_identity_change_follows_content_change() {
+    assert_eq!(
+        message_list_sync_operation(
+            3,
+            &[revision(1, 1), revision(2, 1), revision(3, 1)],
+            &[revision(1, 2), revision(2, 1), revision(4, 1)]
+        ),
+        MessageListSyncOperation::Splice {
+            old_range: 0..3,
+            count: 3,
+        }
+    );
+}
+
+#[test]
 fn first_revision_diff_finds_content_and_length_changes() {
     assert_eq!(first_revision_diff(&[1, 2, 3], &[1, 9, 3]), Some(1));
     assert_eq!(first_revision_diff(&[1, 2], &[1, 2, 3]), Some(2));
