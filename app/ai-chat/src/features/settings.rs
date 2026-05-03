@@ -436,7 +436,7 @@ fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {
             page_shortcuts.clone(),
             settings_search_text(
                 [page_shortcuts.as_str()],
-                "shortcuts shortcut hotkey template model mode send content preset enabled 快捷键 模板 模型 模式 发送内容 预设 启用",
+                "shortcuts shortcut hotkey global shortcut binding template model mode send content screenshot ocr selection clipboard preset form enabled disabled unavailable conflict registration status 快捷键 全局快捷键 模板 模型 模式 发送内容 截图 OCR 选中文字 剪贴板 预设表单 启用 停用 模型不可用 热键冲突 注册失败 需处理",
             ),
         ),
     ]

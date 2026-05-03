@@ -140,6 +140,12 @@ fn format_keystroke_label(keystroke: &Keystroke) -> String {
     parts.join(DIVIDER)
 }
 
+pub(crate) fn format_hotkey_label(hotkey: &str) -> String {
+    string_to_keystroke(hotkey)
+        .map(|keystroke| format_keystroke_label(&keystroke))
+        .unwrap_or_else(|| hotkey.to_string())
+}
+
 pub fn string_to_keystroke(string: &str) -> Option<Keystroke> {
     if string.contains('-') && !string.contains('+') {
         return None;
