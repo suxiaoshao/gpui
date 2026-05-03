@@ -10,9 +10,8 @@ use crate::{
         hotkey::GlobalHotkeyState,
         settings::shortcut_settings::{
             SHORTCUT_DIALOG_MARGIN_TOP, SHORTCUT_DIALOG_MAX_HEIGHT, SHORTCUT_DIALOG_WIDTH,
-            choices::{
-                ExtSettingChoice, InputSourceChoice, ModeChoice, ModelChoice, TemplateChoice,
-            },
+            choices::{ExtSettingChoice, ModelChoice, TemplateChoice},
+            segmented::single_selected_index,
             validation::{ShortcutValidationError, validate_hotkey},
         },
     },
@@ -25,8 +24,8 @@ use crate::{
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IndexPath, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt,
+    button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     checkbox::Checkbox,
     dialog::DialogFooter,
     divider::Divider,
@@ -88,10 +87,9 @@ struct ShortcutFormState {
     templates: Vec<ConversationTemplate>,
     template_select: Entity<SelectState<Vec<TemplateChoice>>>,
     model_select: Entity<SelectState<SearchableVec<SelectGroup<ModelChoice>>>>,
-    mode_select: Entity<SelectState<Vec<ModeChoice>>>,
-    input_source_select: Entity<SelectState<Vec<InputSourceChoice>>>,
     hotkey_input: Entity<HotkeyInput>,
     provider_name: String,
+    chat_mode: Mode,
     hotkey: Option<String>,
     hotkey_error: Option<ShortcutValidationError>,
     enabled: bool,
@@ -225,8 +223,6 @@ impl ShortcutFormState {
             )
             .searchable(true)
         });
-        let mode_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
-        let input_source_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
         let hotkey_input = cx.new(|cx| HotkeyInput::new("shortcut-form-hotkey", window, cx));
         let mut this = Self {
             mode,
@@ -236,10 +232,9 @@ impl ShortcutFormState {
             templates,
             template_select,
             model_select,
-            mode_select,
-            input_source_select,
             hotkey_input,
             provider_name: String::new(),
+            chat_mode: Mode::Contextual,
             hotkey: None,
             hotkey_error: None,
             enabled: true,
@@ -294,6 +289,7 @@ impl ShortcutFormState {
 
         self.binding_id = binding.map(|binding| binding.id);
         self.provider_name = provider_name;
+        self.chat_mode = mode;
         self.hotkey = hotkey.filter(|hotkey| string_to_keystroke(hotkey).is_some());
         self.enabled = binding.map(|binding| binding.enabled).unwrap_or(true);
         self.input_source = input_source;
@@ -322,29 +318,6 @@ impl ShortcutFormState {
         );
         self.model_select = cx.new(|cx| {
             SelectState::new(model_choices, Some(model_selected), window, cx).searchable(true)
-        });
-        self.mode_select = cx.new(|cx| {
-            SelectState::new(
-                vec![
-                    ModeChoice::new(Mode::Contextual, cx),
-                    ModeChoice::new(Mode::Single, cx),
-                    ModeChoice::new(Mode::AssistantOnly, cx),
-                ],
-                Some(self.mode_selected_index(mode)),
-                window,
-                cx,
-            )
-        });
-        self.input_source_select = cx.new(|cx| {
-            SelectState::new(
-                vec![
-                    InputSourceChoice::new(ShortcutInputSource::SelectionOrClipboard, cx),
-                    InputSourceChoice::new(ShortcutInputSource::Screenshot, cx),
-                ],
-                Some(self.input_source_selected_index(input_source)),
-                window,
-                cx,
-            )
         });
         self.hotkey_input = cx.new(|cx| {
             HotkeyInput::new("shortcut-form-hotkey", window, cx)
@@ -396,19 +369,6 @@ impl ShortcutFormState {
                     return;
                 };
                 this.handle_model_change(model_value.clone(), window, cx);
-            },
-        ));
-
-        self._subscriptions.push(cx.subscribe_in(
-            &self.input_source_select,
-            window,
-            |this, _state, event: &SelectEvent<Vec<InputSourceChoice>>, _window, cx| {
-                let SelectEvent::Confirm(Some(input_source)) = event else {
-                    return;
-                };
-                this.input_source = *input_source;
-                this.save_error = None;
-                cx.notify();
             },
         ));
     }
@@ -565,13 +525,6 @@ impl ShortcutFormState {
         let (provider_name, model_id) = Self::split_model_choice_key(&model_value)
             .map(|(provider_name, model_id)| (provider_name.to_string(), model_id.to_string()))
             .ok_or_else(|| SharedString::from(cx.global::<I18n>().t("notify-select-model")))?;
-        let mode = self
-            .mode_select
-            .read(cx)
-            .selected_value()
-            .copied()
-            .ok_or_else(|| SharedString::from(cx.global::<I18n>().t("notify-select-mode")))?;
-
         Ok(NewGlobalShortcutBinding {
             hotkey,
             enabled: self.enabled,
@@ -583,7 +536,7 @@ impl ShortcutFormState {
                 .flatten(),
             provider_name,
             model_id,
-            mode,
+            mode: self.chat_mode,
             request_template: self.request_template.clone(),
             input_source: self.input_source,
         })
@@ -604,13 +557,12 @@ impl ShortcutFormState {
             .as_deref()
             .and_then(Self::split_model_choice_key)
             .unwrap_or(("", ""));
-        let mode = self.mode_select.read(cx).selected_value().copied();
         self.hotkey.as_deref() != Some(binding.hotkey.as_str())
             || self.enabled != binding.enabled
             || template_id != binding.template_id
             || provider_name != binding.provider_name
             || model_id != binding.model_id
-            || mode != Some(binding.mode)
+            || self.chat_mode != binding.mode
             || self.input_source != binding.input_source
             || self.request_template != binding.request_template
     }
@@ -672,21 +624,6 @@ impl ShortcutFormState {
         _cx: &App,
     ) -> IndexPath {
         choices.position(&value.to_string()).unwrap_or_default()
-    }
-
-    fn mode_selected_index(&self, mode: Mode) -> IndexPath {
-        match mode {
-            Mode::Contextual => IndexPath::default().row(0),
-            Mode::Single => IndexPath::default().row(1),
-            Mode::AssistantOnly => IndexPath::default().row(2),
-        }
-    }
-
-    fn input_source_selected_index(&self, input_source: ShortcutInputSource) -> IndexPath {
-        match input_source {
-            ShortcutInputSource::SelectionOrClipboard => IndexPath::default().row(0),
-            ShortcutInputSource::Screenshot => IndexPath::default().row(1),
-        }
     }
 
     fn split_model_choice_key(value: &str) -> Option<(&str, &str)> {
@@ -806,6 +743,59 @@ impl ShortcutFormState {
             .text_xs()
             .text_color(cx.theme().danger)
             .child(message.unwrap_or_default())
+            .into_any_element()
+    }
+
+    fn render_mode_segments(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current_index = mode_option_index(self.chat_mode);
+        ToggleGroup::new("shortcut-form-mode-segments")
+            .segmented()
+            .outline()
+            .w_full()
+            .children(mode_options().into_iter().enumerate().map(|(index, mode)| {
+                render_segment_toggle(
+                    ("shortcut-form-mode-segment", index as u64),
+                    mode_label(mode, cx),
+                    mode_description(mode, cx),
+                    index == current_index,
+                )
+            }))
+            .on_click(cx.listener(move |form, checkeds: &Vec<bool>, _window, cx| {
+                let next_index = single_selected_index(mode_option_index(form.chat_mode), checkeds);
+                if let Some(mode) = mode_options().get(next_index).copied() {
+                    form.chat_mode = mode;
+                    form.save_error = None;
+                    cx.notify();
+                }
+            }))
+            .into_any_element()
+    }
+
+    fn render_input_source_segments(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current_index = input_source_option_index(self.input_source);
+        ToggleGroup::new("shortcut-form-input-source-segments")
+            .segmented()
+            .outline()
+            .w_full()
+            .children(input_source_options().into_iter().enumerate().map(
+                |(index, input_source)| {
+                    render_segment_toggle(
+                        ("shortcut-form-input-source-segment", index as u64),
+                        input_source_label(input_source, cx),
+                        input_source_description(input_source, cx),
+                        index == current_index,
+                    )
+                },
+            ))
+            .on_click(cx.listener(move |form, checkeds: &Vec<bool>, _window, cx| {
+                let next_index =
+                    single_selected_index(input_source_option_index(form.input_source), checkeds);
+                if let Some(input_source) = input_source_options().get(next_index).copied() {
+                    form.input_source = input_source;
+                    form.save_error = None;
+                    cx.notify();
+                }
+            }))
             .into_any_element()
     }
 
@@ -995,19 +985,14 @@ impl Render for ShortcutFormState {
                         ),
                     )
                     .child(
-                        field().label(field_mode.clone()).child(
-                            Select::new(&self.mode_select)
-                                .placeholder(field_mode.clone())
-                                .w_full(),
-                        ),
+                        field()
+                            .label(field_mode.clone())
+                            .child(self.render_mode_segments(cx)),
                     )
                     .child(
-                        field().label(field_send_content.clone()).child(
-                            Select::new(&self.input_source_select)
-                                .placeholder(field_send_content.clone())
-                                .menu_width(px(320.))
-                                .w_full(),
-                        ),
+                        field()
+                            .label(field_send_content.clone())
+                            .child(self.render_input_source_segments(cx)),
                     )
                     .child(
                         field().required(true).label(field_hotkey).child(
@@ -1047,6 +1032,92 @@ impl Render for ShortcutFormState {
     }
 }
 
+fn mode_options() -> [Mode; 3] {
+    [Mode::Contextual, Mode::Single, Mode::AssistantOnly]
+}
+
+fn mode_option_index(mode: Mode) -> usize {
+    mode_options()
+        .iter()
+        .position(|option| *option == mode)
+        .unwrap_or(0)
+}
+
+fn input_source_options() -> [ShortcutInputSource; 2] {
+    [
+        ShortcutInputSource::SelectionOrClipboard,
+        ShortcutInputSource::Screenshot,
+    ]
+}
+
+fn input_source_option_index(input_source: ShortcutInputSource) -> usize {
+    input_source_options()
+        .iter()
+        .position(|option| *option == input_source)
+        .unwrap_or(0)
+}
+
+fn mode_label(mode: Mode, cx: &App) -> String {
+    let key = match mode {
+        Mode::Contextual => "mode-contextual",
+        Mode::Single => "mode-single",
+        Mode::AssistantOnly => "mode-assistant-only",
+    };
+    cx.global::<I18n>().t(key)
+}
+
+fn mode_description(mode: Mode, cx: &App) -> String {
+    let key = match mode {
+        Mode::Contextual => "shortcut-mode-contextual-description",
+        Mode::Single => "shortcut-mode-single-description",
+        Mode::AssistantOnly => "shortcut-mode-assistant-only-description",
+    };
+    cx.global::<I18n>().t(key)
+}
+
+fn input_source_label(input_source: ShortcutInputSource, cx: &App) -> String {
+    let key = match input_source {
+        ShortcutInputSource::SelectionOrClipboard => "send-content-selection-or-clipboard",
+        ShortcutInputSource::Screenshot => "send-content-screenshot",
+    };
+    cx.global::<I18n>().t(key)
+}
+
+fn input_source_description(input_source: ShortcutInputSource, cx: &App) -> String {
+    let key = match input_source {
+        ShortcutInputSource::SelectionOrClipboard => {
+            "shortcut-input-selection-or-clipboard-description"
+        }
+        ShortcutInputSource::Screenshot => "shortcut-input-screenshot-description",
+    };
+    cx.global::<I18n>().t(key)
+}
+
+fn render_segment_toggle(
+    id: impl Into<ElementId>,
+    title: String,
+    description: String,
+    checked: bool,
+) -> Toggle {
+    Toggle::new(id)
+        .checked(checked)
+        .flex_1()
+        .min_w_0()
+        .h_auto()
+        .min_h(px(58.))
+        .px_3()
+        .py_2()
+        .child(
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .items_center()
+                .gap_1()
+                .child(Label::new(title).text_sm().font_medium().truncate())
+                .child(Label::new(description).text_xs().truncate()),
+        )
+}
+
 fn notify_error(
     title: impl Into<SharedString>,
     message: impl Into<SharedString>,
@@ -1069,4 +1140,40 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
             .with_type(NotificationType::Success),
         cx,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_source_option_index, input_source_options, mode_option_index, mode_options};
+    use crate::database::{Mode, ShortcutInputSource};
+
+    #[test]
+    fn mode_segments_cover_saved_modes_in_stable_order() {
+        assert_eq!(
+            mode_options(),
+            [Mode::Contextual, Mode::Single, Mode::AssistantOnly]
+        );
+        assert_eq!(mode_option_index(Mode::Contextual), 0);
+        assert_eq!(mode_option_index(Mode::Single), 1);
+        assert_eq!(mode_option_index(Mode::AssistantOnly), 2);
+    }
+
+    #[test]
+    fn input_source_segments_cover_saved_sources_in_stable_order() {
+        assert_eq!(
+            input_source_options(),
+            [
+                ShortcutInputSource::SelectionOrClipboard,
+                ShortcutInputSource::Screenshot
+            ]
+        );
+        assert_eq!(
+            input_source_option_index(ShortcutInputSource::SelectionOrClipboard),
+            0
+        );
+        assert_eq!(
+            input_source_option_index(ShortcutInputSource::Screenshot),
+            1
+        );
+    }
 }

@@ -13,6 +13,7 @@ use crate::{
                 open_delete_shortcut_dialog, open_shortcut_status_dialog,
             },
             form::{open_add_shortcut_dialog, open_edit_shortcut_dialog},
+            segmented::single_selected_index,
             validation::validate_hotkey,
         },
     },
@@ -22,14 +23,13 @@ use crate::{
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Sizable, StyledExt, WindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Icon, Sizable, StyledExt, WindowExt,
+    button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
-    select::{Select, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
 use std::{ops::Deref, rc::Rc};
@@ -104,27 +104,32 @@ impl ShortcutStatusFilter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModeFilter {
     All,
     Mode(Mode),
 }
 
-#[derive(Clone)]
-struct ModeFilterChoice {
-    value: ModeFilter,
-    label: SharedString,
-}
-
-impl SelectItem for ModeFilterChoice {
-    type Value = ModeFilter;
-
-    fn title(&self) -> SharedString {
-        self.label.clone()
+impl ModeFilter {
+    fn index(self) -> usize {
+        mode_filter_options()
+            .iter()
+            .position(|filter| *filter == self)
+            .unwrap_or(0)
     }
 
-    fn value(&self) -> &Self::Value {
-        &self.value
+    fn matches(self, mode: Mode) -> bool {
+        match self {
+            Self::All => true,
+            Self::Mode(filter_mode) => filter_mode == mode,
+        }
+    }
+
+    fn label(self, cx: &App) -> String {
+        match self {
+            Self::All => cx.global::<I18n>().t("shortcut-filter-all-modes"),
+            Self::Mode(mode) => mode_label(mode, cx),
+        }
     }
 }
 
@@ -158,7 +163,7 @@ struct ShortcutSearchParts<'a> {
 
 pub(crate) struct ShortcutSettingsPage {
     search_input: Entity<InputState>,
-    mode_filter_select: Entity<SelectState<Vec<ModeFilterChoice>>>,
+    mode_filter: ModeFilter,
     status_filter: ShortcutStatusFilter,
     templates: Vec<ConversationTemplate>,
     bindings: Result<Vec<GlobalShortcutBinding>, String>,
@@ -171,14 +176,6 @@ impl ShortcutSettingsPage {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("shortcut-search-placeholder"))
         });
-        let mode_filter_select = cx.new(|cx| {
-            SelectState::new(
-                mode_filter_choices(cx),
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
         let model_store = cx.global::<ModelStore>().deref().clone();
         let model_subscription = cx.observe_in(&model_store, window, |this, _, _window, cx| {
             cx.notify();
@@ -188,7 +185,7 @@ impl ShortcutSettingsPage {
 
         let mut this = Self {
             search_input,
-            mode_filter_select,
+            mode_filter: ModeFilter::All,
             status_filter: ShortcutStatusFilter::All,
             templates: Vec::new(),
             bindings: Ok(Vec::new()),
@@ -198,15 +195,6 @@ impl ShortcutSettingsPage {
             &this.search_input,
             window,
             Self::on_search_input_event,
-        ));
-        this._subscriptions.push(cx.subscribe_in(
-            &this.mode_filter_select,
-            window,
-            |_, _state, event: &SelectEvent<Vec<ModeFilterChoice>>, _window, cx| {
-                if matches!(event, SelectEvent::Confirm(_)) {
-                    cx.notify();
-                }
-            },
         ));
         this._subscriptions.push(model_subscription);
         this.reload_from_database(cx);
@@ -271,12 +259,8 @@ impl ShortcutSettingsPage {
         self.search_input.read(cx).value().trim().to_string()
     }
 
-    fn current_mode_filter(&self, cx: &App) -> ModeFilter {
-        self.mode_filter_select
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or(ModeFilter::All)
+    fn current_mode_filter(&self) -> ModeFilter {
+        self.mode_filter
     }
 
     fn available_models(&self, cx: &App) -> Vec<ProviderModel> {
@@ -296,14 +280,11 @@ impl ShortcutSettingsPage {
 
     fn filtered_items(&self, cx: &App) -> Vec<ShortcutListItem> {
         let query = self.current_query(cx);
-        let mode_filter = self.current_mode_filter(cx);
+        let mode_filter = self.current_mode_filter();
         self.all_items(cx)
             .into_iter()
             .filter(|item| self.status_filter.matches(item.status))
-            .filter(|item| match mode_filter {
-                ModeFilter::All => true,
-                ModeFilter::Mode(mode) => item.binding.mode == mode,
-            })
+            .filter(|item| mode_filter.matches(item.binding.mode))
             .filter(|item| query.is_empty() || field_matches_query(&item.search_text, &query))
             .collect()
     }
@@ -581,28 +562,80 @@ impl ShortcutSettingsPage {
         h_flex()
             .w_full()
             .items_center()
+            .justify_between()
             .gap_2()
+            .flex_wrap()
             .child(
-                Input::new(&self.search_input)
-                    .flex_1()
-                    .prefix(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
-                    .cleanable(true),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .flex_wrap()
+                    .child(
+                        Input::new(&self.search_input)
+                            .w(px(420.))
+                            .min_w(px(320.))
+                            .max_w(px(420.))
+                            .prefix(
+                                Icon::new(IconName::Search).text_color(cx.theme().muted_foreground),
+                            )
+                            .cleanable(true),
+                    )
+                    .child(self.render_mode_filter(cx)),
             )
-            .child(Select::new(&self.mode_filter_select).small().w(px(180.)))
             .child(
-                Button::new("shortcut-settings-reload")
-                    .icon(IconName::RefreshCcw)
-                    .ghost()
-                    .tooltip(reload_label)
-                    .on_click(cx.listener(|page, _, window, cx| page.reload(window, cx))),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_none()
+                    .child(
+                        Button::new("shortcut-settings-reload")
+                            .icon(IconName::RefreshCcw)
+                            .ghost()
+                            .tooltip(reload_label)
+                            .on_click(cx.listener(|page, _, window, cx| page.reload(window, cx))),
+                    )
+                    .child(
+                        Button::new("shortcut-settings-add")
+                            .icon(IconName::Plus)
+                            .label(add_label)
+                            .primary()
+                            .on_click(
+                                cx.listener(|page, _, window, cx| page.open_add_dialog(window, cx)),
+                            ),
+                    ),
             )
-            .child(
-                Button::new("shortcut-settings-add")
-                    .icon(IconName::Plus)
-                    .label(add_label)
-                    .primary()
-                    .on_click(cx.listener(|page, _, window, cx| page.open_add_dialog(window, cx))),
+            .into_any_element()
+    }
+
+    fn render_mode_filter(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current_index = self.mode_filter.index();
+        ToggleGroup::new("shortcut-mode-filter")
+            .segmented()
+            .outline()
+            .small()
+            .children(
+                mode_filter_options()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, filter)| {
+                        Toggle::new(("shortcut-mode-filter-item", index as u64))
+                            .label(filter.label(cx))
+                            .checked(index == current_index)
+                            .min_w(px(if matches!(filter, ModeFilter::All) {
+                                88.
+                            } else {
+                                104.
+                            }))
+                    }),
             )
+            .on_click(cx.listener(move |page, checkeds: &Vec<bool>, _window, cx| {
+                let next_index = single_selected_index(page.mode_filter.index(), checkeds);
+                if let Some(filter) = mode_filter_options().get(next_index).copied() {
+                    page.mode_filter = filter;
+                    cx.notify();
+                }
+            }))
             .into_any_element()
     }
 
@@ -1030,24 +1063,12 @@ impl StatusCounts {
     }
 }
 
-fn mode_filter_choices(cx: &App) -> Vec<ModeFilterChoice> {
-    vec![
-        ModeFilterChoice {
-            value: ModeFilter::All,
-            label: cx.global::<I18n>().t("shortcut-filter-all-modes").into(),
-        },
-        ModeFilterChoice {
-            value: ModeFilter::Mode(Mode::Contextual),
-            label: mode_label(Mode::Contextual, cx).into(),
-        },
-        ModeFilterChoice {
-            value: ModeFilter::Mode(Mode::Single),
-            label: mode_label(Mode::Single, cx).into(),
-        },
-        ModeFilterChoice {
-            value: ModeFilter::Mode(Mode::AssistantOnly),
-            label: mode_label(Mode::AssistantOnly, cx).into(),
-        },
+fn mode_filter_options() -> [ModeFilter; 4] {
+    [
+        ModeFilter::All,
+        ModeFilter::Mode(Mode::Contextual),
+        ModeFilter::Mode(Mode::Single),
+        ModeFilter::Mode(Mode::AssistantOnly),
     ]
 }
 
@@ -1261,7 +1282,7 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
 #[cfg(test)]
 mod tests {
     use super::{
-        ShortcutSearchParts, ShortcutStatus, ShortcutStatusFilter, StatusCounts,
+        ModeFilter, ShortcutSearchParts, ShortcutStatus, ShortcutStatusFilter, StatusCounts,
         shortcut_search_text,
     };
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
@@ -1306,6 +1327,17 @@ mod tests {
         assert_eq!(counts.enabled, 1);
         assert_eq!(counts.disabled, 1);
         assert_eq!(counts.needs_action, 2);
+    }
+
+    #[test]
+    fn mode_filter_matches_expected_modes() {
+        assert!(ModeFilter::All.matches(Mode::Contextual));
+        assert!(ModeFilter::All.matches(Mode::Single));
+        assert!(ModeFilter::All.matches(Mode::AssistantOnly));
+        assert!(ModeFilter::Mode(Mode::Contextual).matches(Mode::Contextual));
+        assert!(!ModeFilter::Mode(Mode::Contextual).matches(Mode::Single));
+        assert!(ModeFilter::Mode(Mode::Single).matches(Mode::Single));
+        assert!(ModeFilter::Mode(Mode::AssistantOnly).matches(Mode::AssistantOnly));
     }
 
     #[test]

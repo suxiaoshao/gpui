@@ -1,8 +1,4 @@
-use crate::{
-    database::{ConversationTemplate, Mode, ShortcutInputSource},
-    foundation::i18n::I18n,
-    llm::ProviderModel,
-};
+use crate::{database::ConversationTemplate, foundation::i18n::I18n, llm::ProviderModel};
 use gpui::*;
 use gpui_component::select::SelectItem;
 
@@ -85,95 +81,6 @@ impl SelectItem for ModelChoice {
 
     fn title(&self) -> SharedString {
         self.title.clone()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct ModeChoice {
-    pub(super) value: Mode,
-    pub(super) label: SharedString,
-}
-
-impl ModeChoice {
-    pub(super) fn new(value: Mode, cx: &App) -> Self {
-        let label = {
-            let key = match value {
-                Mode::Contextual => "mode-contextual",
-                Mode::Single => "mode-single",
-                Mode::AssistantOnly => "mode-assistant-only",
-            };
-            cx.global::<I18n>().t(key).into()
-        };
-        Self { value, label }
-    }
-
-    pub(super) fn label(&self) -> SharedString {
-        self.label.clone()
-    }
-}
-
-impl SelectItem for ModeChoice {
-    type Value = Mode;
-
-    fn title(&self) -> SharedString {
-        self.value.to_string().into()
-    }
-
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(div().child(self.label()).into_any_element())
-    }
-
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let _ = cx;
-        div().child(self.label())
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct InputSourceChoice {
-    pub(super) value: ShortcutInputSource,
-    pub(super) label: SharedString,
-}
-
-impl InputSourceChoice {
-    pub(super) fn new(value: ShortcutInputSource, cx: &App) -> Self {
-        let label = {
-            let key = match value {
-                ShortcutInputSource::SelectionOrClipboard => "send-content-selection-or-clipboard",
-                ShortcutInputSource::Screenshot => "send-content-screenshot",
-            };
-            cx.global::<I18n>().t(key).into()
-        };
-        Self { value, label }
-    }
-
-    pub(super) fn label(&self) -> SharedString {
-        self.label.clone()
-    }
-}
-
-impl SelectItem for InputSourceChoice {
-    type Value = ShortcutInputSource;
-
-    fn title(&self) -> SharedString {
-        self.value.to_string().into()
-    }
-
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(div().child(self.label()).into_any_element())
-    }
-
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let _ = cx;
-        div().child(self.label())
     }
 
     fn value(&self) -> &Self::Value {

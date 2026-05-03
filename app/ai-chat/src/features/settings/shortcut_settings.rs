@@ -2,6 +2,7 @@ mod choices;
 mod dialogs;
 mod form;
 mod list;
+mod segmented;
 mod validation;
 
 pub(crate) use list::ShortcutSettingsPage;
