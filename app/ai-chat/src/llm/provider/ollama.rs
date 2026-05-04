@@ -906,6 +906,7 @@ impl Provider for OllamaProvider {
             }
         }
         save_ollama_settings(settings, cx);
+        crate::state::chat::reload_models(cx);
         Ok(())
     }
 

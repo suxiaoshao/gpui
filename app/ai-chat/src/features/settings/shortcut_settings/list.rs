@@ -181,7 +181,6 @@ impl ShortcutSettingsPage {
             cx.notify();
             this.reload_from_database(cx);
         });
-        model_store.update(cx, |store, cx| store.ensure_loaded(window, cx));
 
         let mut this = Self {
             search_input,
@@ -435,7 +434,7 @@ impl ShortcutSettingsPage {
             ShortcutStatusActions {
                 on_reload_models: Rc::new(move |window, cx| {
                     let model_store = cx.global::<ModelStore>().deref().clone();
-                    model_store.update(cx, |store, cx| store.reload(window, cx));
+                    model_store.update(cx, |store, cx| store.reload(cx));
                     let _ = reload_page.update(cx, |page, cx| page.reload(window, cx));
                 }),
                 on_reregister: Rc::new(move |binding_id, window, cx| {

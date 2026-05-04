@@ -349,6 +349,7 @@ template-error-prompt-empty = Prompt cannot be empty:
 template-error-name-icon-required = Name and icon are required
 
 field-raw = Raw
+shortcut-models-loading = Loading models...
 empty-model-picker = No models available
 empty-template-picker = No templates available
 empty-shortcut-bindings = No shortcut bindings yet

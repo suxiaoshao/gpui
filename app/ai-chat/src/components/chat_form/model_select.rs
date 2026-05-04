@@ -80,7 +80,6 @@ impl ModelSelect {
             _subscriptions: Vec::new(),
         };
         this.bind_store_events(window, cx);
-        this.ensure_models_loaded(window, cx);
         this.sync_models_from_store(window, cx, false);
         this
     }
@@ -129,14 +128,9 @@ impl ModelSelect {
         self._subscriptions.push(config_subscription);
     }
 
-    fn ensure_models_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reload_models(&mut self, cx: &mut Context<Self>) {
         let model_store = cx.global::<ModelStore>().deref().clone();
-        model_store.update(cx, |store, cx| store.ensure_loaded(window, cx));
-    }
-
-    fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let model_store = cx.global::<ModelStore>().deref().clone();
-        model_store.update(cx, |store, cx| store.reload(window, cx));
+        model_store.update(cx, |store, cx| store.reload(cx));
     }
 
     fn model_store_snapshot(&self, cx: &App) -> ModelStoreSnapshot {
@@ -149,7 +143,12 @@ impl ModelSelect {
         cx: &mut Context<Self>,
         force_selection_sync: bool,
     ) {
-        let ModelStoreSnapshot { models, status } = self.model_store_snapshot(cx);
+        let ModelStoreSnapshot {
+            models,
+            status,
+            failures,
+        } = self.model_store_snapshot(cx);
+        let _provider_failures_present = !failures.is_empty();
         let models_changed = self.models != models;
         if models_changed {
             self.models = models;
@@ -212,7 +211,6 @@ impl ModelSelect {
 
     fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model_picker_open = true;
-        self.ensure_models_loaded(window, cx);
         self.focus_model_picker(window, cx);
         cx.notify();
     }
@@ -290,9 +288,9 @@ impl ModelSelect {
                                 .small()
                                 .tooltip(reload_tooltip)
                                 .disabled(is_loading)
-                                .on_click(cx.listener(|select, _event, window, cx| {
+                                .on_click(cx.listener(|select, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    select.reload_models(window, cx);
+                                    select.reload_models(cx);
                                 })),
                         )
                         .into_any_element(),

@@ -20,7 +20,7 @@ use crate::{
         ExtSettingControl, ExtSettingItem, ProviderModel, apply_ext_setting,
         build_request_template, preset_ext_settings,
     },
-    state::{AiChatConfig, ModelStore},
+    state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -36,7 +36,7 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectState},
     v_flex,
 };
-use std::rc::Rc;
+use std::{ops::Deref, rc::Rc};
 
 type OnSaved = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
@@ -50,7 +50,7 @@ enum FormExtSettingState {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ShortcutDialogMode {
     Add,
     Edit,
@@ -88,6 +88,8 @@ struct ShortcutFormState {
     template_select: Entity<SelectState<Vec<TemplateChoice>>>,
     model_select: Entity<SelectState<SearchableVec<SelectGroup<ModelChoice>>>>,
     hotkey_input: Entity<HotkeyInput>,
+    model_store_models: Vec<ProviderModel>,
+    model_store_status: Option<ModelStoreStatus>,
     provider_name: String,
     chat_mode: Mode,
     hotkey: Option<String>,
@@ -233,6 +235,8 @@ impl ShortcutFormState {
             template_select,
             model_select,
             hotkey_input,
+            model_store_models: Vec::new(),
+            model_store_status: None,
             provider_name: String::new(),
             chat_mode: Mode::Contextual,
             hotkey: None,
@@ -246,6 +250,7 @@ impl ShortcutFormState {
             _subscriptions: Vec::new(),
         };
         this.rebuild_controls(binding.as_ref(), window, cx);
+        this.refresh_model_choices_from_store(window, cx);
         this
     }
 
@@ -264,7 +269,13 @@ impl ShortcutFormState {
         cx: &mut Context<Self>,
     ) {
         self._subscriptions.clear();
-        let available_models = Self::available_models(cx);
+        let ModelStoreSnapshot {
+            models: available_models,
+            status,
+            ..
+        } = Self::model_store_snapshot(cx);
+        self.model_store_models = available_models.clone();
+        self.model_store_status = status;
         let template_id = binding.and_then(|binding| binding.template_id);
         let provider_name = binding
             .map(|binding| binding.provider_name.clone())
@@ -311,14 +322,12 @@ impl ShortcutFormState {
             Some((&self.provider_name, &model_id)),
             cx,
         );
-        let model_selected = self.model_selected_index(
+        let model_selected = Self::model_selected_index(
             &model_choices,
             &ModelChoice::key(&self.provider_name, &model_id),
-            cx,
         );
-        self.model_select = cx.new(|cx| {
-            SelectState::new(model_choices, Some(model_selected), window, cx).searchable(true)
-        });
+        self.model_select = cx
+            .new(|cx| SelectState::new(model_choices, model_selected, window, cx).searchable(true));
         self.hotkey_input = cx.new(|cx| {
             HotkeyInput::new("shortcut-form-hotkey", window, cx)
                 .small()
@@ -337,6 +346,12 @@ impl ShortcutFormState {
     }
 
     fn bind_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model_store = cx.global::<ModelStore>().deref().clone();
+        self._subscriptions
+            .push(cx.observe_in(&model_store, window, |this, _, window, cx| {
+                this.refresh_model_choices_from_store(window, cx);
+            }));
+
         self._subscriptions.push(cx.subscribe_in(
             &self.hotkey_input,
             window,
@@ -373,6 +388,70 @@ impl ShortcutFormState {
         ));
     }
 
+    fn refresh_model_choices_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous_model_value = self.model_select.read(cx).selected_value().cloned();
+        let ModelStoreSnapshot { models, status, .. } = Self::model_store_snapshot(cx);
+        let models_changed = self.model_store_models != models;
+        let status_changed = self.model_store_status != status;
+
+        self.model_store_status = status;
+        if !models_changed {
+            if status_changed {
+                cx.notify();
+            }
+            return;
+        }
+
+        self.model_store_models = models.clone();
+        let (fallback_provider, fallback_model) = self
+            .initial_binding
+            .as_ref()
+            .filter(|binding| Some(binding.id) == self.binding_id)
+            .map(|binding| (binding.provider_name.as_str(), binding.model_id.as_str()))
+            .unwrap_or((self.provider_name.as_str(), ""));
+        let selected_key = selected_model_key_for_refresh(
+            previous_model_value.as_deref(),
+            fallback_provider,
+            fallback_model,
+            &models,
+        );
+        let unresolved_model = selected_key
+            .as_deref()
+            .and_then(Self::split_model_choice_key);
+        let model_choices = Self::model_choices_from(&models, unresolved_model, cx);
+        let selected_index = selected_key
+            .as_deref()
+            .and_then(|key| Self::model_selected_index(&model_choices, key));
+
+        self.model_select.update(cx, |select, cx| {
+            select.set_items(model_choices, window, cx);
+            select.set_selected_index(selected_index, window, cx);
+        });
+
+        let current_model_value = self.model_select.read(cx).selected_value().cloned();
+        if let Some((provider_name, _)) = current_model_value
+            .as_deref()
+            .and_then(Self::split_model_choice_key)
+        {
+            self.provider_name = provider_name.to_string();
+        }
+
+        let saved_template = should_preserve_request_template_on_model_refresh(
+            previous_model_value.as_deref(),
+            current_model_value.as_deref(),
+        )
+        .then(|| self.request_template.clone());
+        Self::refresh_request_template_with_models(
+            self,
+            &models,
+            saved_template.as_ref(),
+            false,
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
     fn handle_model_change(
         &mut self,
         model_value: String,
@@ -380,11 +459,14 @@ impl ShortcutFormState {
         cx: &mut Context<Self>,
     ) {
         let available_models = Self::available_models(cx);
-        if let Some((provider_name, model_id)) = Self::split_model_choice_key(&model_value)
-            && available_models
-                .iter()
-                .any(|model| model.provider_name == provider_name && model.id == model_id)
-        {
+        let resolved_model =
+            Self::split_model_choice_key(&model_value).and_then(|(provider_name, model_id)| {
+                available_models
+                    .iter()
+                    .find(|model| model.provider_name == provider_name && model.id == model_id)
+                    .map(|_| provider_name)
+            });
+        if let Some(provider_name) = resolved_model {
             self.provider_name = provider_name.to_string();
         }
         Self::refresh_request_template_with_models(self, &available_models, None, true, window, cx);
@@ -568,7 +650,11 @@ impl ShortcutFormState {
     }
 
     fn available_models(cx: &App) -> Vec<ProviderModel> {
-        cx.global::<ModelStore>().read(cx).snapshot().models
+        Self::model_store_snapshot(cx).models
+    }
+
+    fn model_store_snapshot(cx: &App) -> ModelStoreSnapshot {
+        cx.global::<ModelStore>().read(cx).snapshot()
     }
 
     fn template_options(&self, cx: &App) -> Vec<TemplateChoice> {
@@ -618,12 +704,12 @@ impl ShortcutFormState {
     }
 
     fn model_selected_index(
-        &self,
         choices: &SearchableVec<SelectGroup<ModelChoice>>,
         value: &str,
-        _cx: &App,
-    ) -> IndexPath {
-        choices.position(&value.to_string()).unwrap_or_default()
+    ) -> Option<IndexPath> {
+        (!value.is_empty())
+            .then(|| choices.position(&value.to_string()))
+            .flatten()
     }
 
     fn split_model_choice_key(value: &str) -> Option<(&str, &str)> {
@@ -901,6 +987,7 @@ impl Render for ShortcutFormState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dirty = matches!(self.mode, ShortcutDialogMode::Edit) && self.is_dirty(cx);
         let (
+            loading_model_picker,
             empty_model_picker,
             unsaved_changes,
             field_template,
@@ -914,6 +1001,7 @@ impl Render for ShortcutFormState {
         ) = {
             let i18n = cx.global::<I18n>();
             (
+                i18n.t("shortcut-models-loading"),
                 i18n.t("empty-model-picker"),
                 i18n.t("shortcut-unsaved-changes"),
                 i18n.t("field-template"),
@@ -931,6 +1019,11 @@ impl Render for ShortcutFormState {
             .as_deref()
             .map(format_hotkey_label)
             .unwrap_or_default();
+        let model_empty_label = if model_store_is_loading(self.model_store_status) {
+            loading_model_picker
+        } else {
+            empty_model_picker
+        };
 
         v_flex()
             .w_full()
@@ -980,7 +1073,7 @@ impl Render for ShortcutFormState {
                         field().label(field_model.clone()).child(
                             Select::new(&self.model_select)
                                 .placeholder(field_model.clone())
-                                .empty(Label::new(empty_model_picker).text_sm())
+                                .empty(Label::new(model_empty_label).text_sm())
                                 .w_full(),
                         ),
                     )
@@ -1093,6 +1186,40 @@ fn input_source_description(input_source: ShortcutInputSource, cx: &App) -> Stri
     cx.global::<I18n>().t(key)
 }
 
+fn model_store_is_loading(status: Option<ModelStoreStatus>) -> bool {
+    matches!(
+        status,
+        Some(ModelStoreStatus::InitialLoading | ModelStoreStatus::Refreshing)
+    )
+}
+
+fn selected_model_key_for_refresh(
+    current_value: Option<&str>,
+    fallback_provider_name: &str,
+    fallback_model_id: &str,
+    models: &[ProviderModel],
+) -> Option<String> {
+    current_value
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            (!fallback_provider_name.is_empty() && !fallback_model_id.is_empty())
+                .then(|| ModelChoice::key(fallback_provider_name, fallback_model_id))
+        })
+        .or_else(|| {
+            models
+                .first()
+                .map(|model| ModelChoice::key(&model.provider_name, &model.id))
+        })
+}
+
+fn should_preserve_request_template_on_model_refresh(
+    previous_value: Option<&str>,
+    current_value: Option<&str>,
+) -> bool {
+    matches!((previous_value, current_value), (Some(previous), Some(current)) if previous == current)
+}
+
 fn render_segment_toggle(
     id: impl Into<ElementId>,
     title: String,
@@ -1144,8 +1271,21 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
 
 #[cfg(test)]
 mod tests {
-    use super::{input_source_option_index, input_source_options, mode_option_index, mode_options};
+    use super::{
+        input_source_option_index, input_source_options, mode_option_index, mode_options,
+        model_store_is_loading, selected_model_key_for_refresh,
+        should_preserve_request_template_on_model_refresh,
+    };
     use crate::database::{Mode, ShortcutInputSource};
+    use crate::{
+        features::settings::shortcut_settings::choices::ModelChoice,
+        llm::{ProviderModel, ProviderModelCapability},
+        state::ModelStoreStatus,
+    };
+
+    fn model(provider_name: &str, model_id: &str) -> ProviderModel {
+        ProviderModel::new(provider_name, model_id, ProviderModelCapability::Streaming)
+    }
 
     #[test]
     fn mode_segments_cover_saved_modes_in_stable_order() {
@@ -1175,5 +1315,70 @@ mod tests {
             input_source_option_index(ShortcutInputSource::Screenshot),
             1
         );
+    }
+
+    #[test]
+    fn model_store_loading_status_matches_refresh_states() {
+        assert!(model_store_is_loading(Some(
+            ModelStoreStatus::InitialLoading
+        )));
+        assert!(model_store_is_loading(Some(ModelStoreStatus::Refreshing)));
+        assert!(!model_store_is_loading(Some(ModelStoreStatus::Idle)));
+        assert!(!model_store_is_loading(None));
+    }
+
+    #[test]
+    fn model_refresh_selects_default_when_previous_selection_is_empty() {
+        let models = vec![model("OpenAI", "gpt-5.4-mini")];
+
+        assert_eq!(
+            selected_model_key_for_refresh(None, "", "", &models),
+            Some(ModelChoice::key("OpenAI", "gpt-5.4-mini"))
+        );
+    }
+
+    #[test]
+    fn model_refresh_preserves_unresolved_selection_until_it_resolves() {
+        let unresolved = ModelChoice::key("OpenAI", "gpt-5.4-mini");
+        let models = vec![model("OpenAI", "gpt-5.4-mini")];
+
+        assert_eq!(
+            selected_model_key_for_refresh(Some(&unresolved), "", "", &[]),
+            Some(unresolved.clone())
+        );
+        assert_eq!(
+            selected_model_key_for_refresh(Some(&unresolved), "", "", &models),
+            Some(unresolved)
+        );
+    }
+
+    #[test]
+    fn model_refresh_does_not_clear_user_selected_model() {
+        let selected = ModelChoice::key("Ollama", "qwen3");
+        let models = vec![model("OpenAI", "gpt-5.4-mini"), model("Ollama", "qwen3")];
+
+        assert_eq!(
+            selected_model_key_for_refresh(Some(&selected), "", "", &models),
+            Some(selected)
+        );
+    }
+
+    #[test]
+    fn request_template_is_preserved_only_when_model_selection_stays_same() {
+        let selected = ModelChoice::key("OpenAI", "gpt-5.4-mini");
+        let changed = ModelChoice::key("Ollama", "qwen3");
+
+        assert!(should_preserve_request_template_on_model_refresh(
+            Some(&selected),
+            Some(&selected)
+        ));
+        assert!(!should_preserve_request_template_on_model_refresh(
+            None,
+            Some(&selected)
+        ));
+        assert!(!should_preserve_request_template_on_model_refresh(
+            Some(&selected),
+            Some(&changed)
+        ));
     }
 }

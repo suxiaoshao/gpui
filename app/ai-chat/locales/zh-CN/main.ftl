@@ -349,6 +349,7 @@ template-error-prompt-empty = 提示词不能为空：
 template-error-name-icon-required = 名称和图标不能为空
 
 field-raw = 原始内容
+shortcut-models-loading = 获取模型中...
 empty-model-picker = 暂无可用模型
 empty-template-picker = 暂无模板
 empty-shortcut-bindings = 暂无快捷键绑定

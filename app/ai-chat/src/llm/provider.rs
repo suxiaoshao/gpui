@@ -5,10 +5,11 @@ use crate::{
     state::AiChatConfig,
 };
 use futures::{
-    future::{BoxFuture, join_all},
-    stream::BoxStream,
+    future::{BoxFuture, Either, select},
+    stream::{BoxStream, FuturesUnordered, StreamExt},
 };
 use gpui::App;
+use std::time::Duration;
 
 mod ollama;
 mod openai;
@@ -186,6 +187,7 @@ pub(crate) struct AvailableModelsBatch {
 }
 
 const PROVIDERS: [&dyn Provider; 2] = [&OllamaProvider, &OpenAIProvider];
+pub(crate) const MODEL_LIST_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) fn provider_names() -> Vec<&'static str> {
     PROVIDERS.iter().map(|provider| provider.name()).collect()
@@ -232,39 +234,71 @@ fn sort_models(models: &mut [ProviderModel]) {
     });
 }
 
-async fn available_models_from_providers(
+async fn load_provider_models(
+    provider_name: String,
+    list_models: BoxFuture<'static, AiChatResult<Vec<ProviderModel>>>,
+    timeout: Duration,
+) -> Result<ProviderModelsSuccess, ProviderModelsFailure> {
+    match with_timeout(list_models, timeout).await {
+        Ok(Ok(mut models)) => {
+            sort_models(&mut models);
+            Ok(ProviderModelsSuccess {
+                provider_name,
+                models,
+            })
+        }
+        Ok(Err(err)) => Err(ProviderModelsFailure {
+            provider_name,
+            message: err.to_string(),
+        }),
+        Err(()) => Err(ProviderModelsFailure {
+            provider_name,
+            message: format!(
+                "model list request timed out after {}",
+                format_model_list_timeout(timeout)
+            ),
+        }),
+    }
+}
+
+fn format_model_list_timeout(timeout: Duration) -> String {
+    if timeout.as_secs() > 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{}ms", timeout.as_millis())
+    }
+}
+
+async fn with_timeout<T>(future: BoxFuture<'static, T>, timeout: Duration) -> Result<T, ()> {
+    let timer = futures::FutureExt::map(smol::Timer::after(timeout), |_| ());
+    futures::pin_mut!(future);
+    futures::pin_mut!(timer);
+    match select(future, timer).await {
+        Either::Left((result, _)) => Ok(result),
+        Either::Right(((), _)) => Err(()),
+    }
+}
+
+async fn available_models_from_providers_with_timeout(
     providers: &[&dyn Provider],
     config: AiChatConfig,
+    timeout: Duration,
 ) -> AvailableModelsBatch {
-    let tasks = providers
-        .iter()
-        .filter_map(|provider| {
-            let (settings, settings_json) = provider_settings_json(&config, *provider)?;
-            if !provider.is_configured(&settings_json) {
-                return None;
-            }
-            let provider_name = provider.name().to_string();
-            let list_models = provider.list_models(config.clone(), settings);
-            Some(async move {
-                match list_models.await {
-                    Ok(mut models) => {
-                        sort_models(&mut models);
-                        Ok(ProviderModelsSuccess {
-                            provider_name,
-                            models,
-                        })
-                    }
-                    Err(err) => Err(ProviderModelsFailure {
-                        provider_name,
-                        message: err.to_string(),
-                    }),
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut tasks = FuturesUnordered::new();
+    for provider in providers {
+        let Some((settings, settings_json)) = provider_settings_json(&config, *provider) else {
+            continue;
+        };
+        if !provider.is_configured(&settings_json) {
+            continue;
+        }
+        let provider_name = provider.name().to_string();
+        let list_models = provider.list_models(config.clone(), settings);
+        tasks.push(load_provider_models(provider_name, list_models, timeout));
+    }
 
     let mut batch = AvailableModelsBatch::default();
-    for outcome in join_all(tasks).await {
+    while let Some(outcome) = tasks.next().await {
         match outcome {
             Ok(success) => batch.successes.push(success),
             Err(failure) => batch.failures.push(failure),
@@ -279,6 +313,14 @@ async fn available_models_from_providers(
     batch
 }
 
+async fn available_models_from_providers(
+    providers: &[&dyn Provider],
+    config: AiChatConfig,
+) -> AvailableModelsBatch {
+    available_models_from_providers_with_timeout(providers, config, MODEL_LIST_PROVIDER_TIMEOUT)
+        .await
+}
+
 pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBatch {
     available_models_from_providers(&PROVIDERS, config).await
 }
@@ -288,19 +330,22 @@ mod tests {
     use super::{
         AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, Provider, ProviderModel,
         ProviderModelCapability, ProviderModelsFailure, ProviderSettingsFieldKind,
-        ProviderSettingsSpec, available_models_from_providers, provider_settings_specs,
+        ProviderSettingsSpec, available_models_from_providers,
+        available_models_from_providers_with_timeout, provider_settings_specs,
     };
     use crate::{
         errors::{AiChatError, AiChatResult},
         state::AiChatConfig,
     };
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
+    use std::time::Duration;
 
     struct MockProvider {
         name: &'static str,
         configured: bool,
         models: Vec<ProviderModel>,
         error: Option<&'static str>,
+        pending: bool,
     }
 
     impl Provider for MockProvider {
@@ -341,6 +386,9 @@ mod tests {
             _config: AiChatConfig,
             _settings: toml::Value,
         ) -> BoxFuture<'static, crate::errors::AiChatResult<Vec<ProviderModel>>> {
+            if self.pending {
+                return futures::future::pending().boxed();
+            }
             let result = match self.error {
                 Some(message) => Err(AiChatError::StreamError(message.to_string())),
                 None => Ok(self.models.clone()),
@@ -393,12 +441,14 @@ mod tests {
             configured: true,
             models: vec![model("Provider A", "b"), model("Provider A", "a")],
             error: None,
+            pending: false,
         };
         let failure = MockProvider {
             name: "Provider B",
             configured: true,
             models: vec![],
             error: Some("boom"),
+            pending: false,
         };
 
         let batch = available_models_from_providers(
@@ -429,12 +479,14 @@ mod tests {
             configured: true,
             models: vec![model("Provider A", "a")],
             error: None,
+            pending: false,
         };
         let unconfigured = MockProvider {
             name: "Provider B",
             configured: false,
             models: vec![model("Provider B", "b")],
             error: Some("should not run"),
+            pending: false,
         };
 
         let batch = available_models_from_providers(
@@ -446,6 +498,40 @@ mod tests {
         assert_eq!(batch.successes.len(), 1);
         assert_eq!(batch.successes[0].provider_name, "Provider A");
         assert!(batch.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn available_models_times_out_pending_provider_without_blocking_successes() {
+        let success = MockProvider {
+            name: "Provider A",
+            configured: true,
+            models: vec![model("Provider A", "a")],
+            error: None,
+            pending: false,
+        };
+        let pending = MockProvider {
+            name: "Provider B",
+            configured: true,
+            models: vec![],
+            error: None,
+            pending: true,
+        };
+
+        let batch = available_models_from_providers_with_timeout(
+            &[&success, &pending],
+            configured_config(&["Provider A", "Provider B"]),
+            Duration::from_millis(10),
+        )
+        .await;
+
+        assert_eq!(batch.successes.len(), 1);
+        assert_eq!(batch.successes[0].provider_name, "Provider A");
+        assert_eq!(batch.failures.len(), 1);
+        assert_eq!(batch.failures[0].provider_name, "Provider B");
+        assert_eq!(
+            batch.failures[0].message,
+            "model list request timed out after 10ms"
+        );
     }
 
     #[test]
