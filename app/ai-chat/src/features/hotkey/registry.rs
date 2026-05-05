@@ -104,6 +104,8 @@ impl GlobalHotkeyState {
         if binding.enabled
             && let Err(err) = self.register_action(&binding.hotkey, action)
         {
+            self.shortcut_registration_errors
+                .insert(binding.id, err.to_string());
             if let Some(old_binding) = previous.as_ref()
                 && should_unregister_previous
                 && old_binding.enabled
@@ -114,6 +116,7 @@ impl GlobalHotkeyState {
         }
 
         self.shortcut_bindings.insert(binding.id, binding.clone());
+        self.shortcut_registration_errors.remove(&binding.id);
         event!(
             Level::INFO,
             binding_id = binding.id,
@@ -136,6 +139,7 @@ impl GlobalHotkeyState {
             "Removing global shortcut runtime binding"
         );
         self.shortcut_bindings.remove(&binding.id);
+        self.shortcut_registration_errors.remove(&binding.id);
         if binding.enabled {
             self.unregister_action(
                 &binding.hotkey,
@@ -168,7 +172,15 @@ impl GlobalHotkeyState {
             "Loading initial global shortcut bindings"
         );
         for binding in bindings {
-            self.upsert_binding_runtime(&binding)?;
+            if let Err(err) = self.upsert_binding_runtime(&binding) {
+                event!(
+                    Level::ERROR,
+                    binding_id = binding.id,
+                    hotkey = %binding.hotkey,
+                    error = ?err,
+                    "Failed to load global shortcut runtime binding"
+                );
+            }
         }
         event!(
             Level::INFO,
@@ -178,6 +190,35 @@ impl GlobalHotkeyState {
             "Loaded initial hotkeys"
         );
         Ok(())
+    }
+
+    pub(crate) fn diagnostics(&self) -> ShortcutRuntimeDiagnostics {
+        ShortcutRuntimeDiagnostics {
+            temporary_hotkey: self.temporary_hotkey.clone(),
+            registered_bindings: self
+                .shortcut_bindings
+                .iter()
+                .filter(|(_, binding)| binding.enabled)
+                .map(|(id, binding)| (*id, binding.hotkey.clone()))
+                .collect(),
+            registration_errors: self.shortcut_registration_errors.clone(),
+        }
+    }
+
+    pub(crate) fn diagnostics_snapshot(cx: &App) -> ShortcutRuntimeDiagnostics {
+        cx.try_global::<GlobalHotkeyState>()
+            .map(GlobalHotkeyState::diagnostics)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn reregister_global_shortcut_binding(id: i32, cx: &mut App) -> AiChatResult<()> {
+        let mut conn = cx.global::<Db>().get()?;
+        let binding = GlobalShortcutBinding::find(id, &mut conn)?;
+        let mut runtime_result = Ok(());
+        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+            runtime_result = hotkeys.upsert_binding_runtime(&binding);
+        });
+        runtime_result
     }
 
     fn action_for_id(&self, hotkey_id: u32) -> Option<RegisteredHotkeyAction> {

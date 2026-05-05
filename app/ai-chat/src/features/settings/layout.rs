@@ -240,16 +240,23 @@ impl RenderOnce for SettingsPageFrame {
                     .child(Label::new(self.title).text_lg().font_medium()),
             )
             .child(
-                div().flex_1().min_h_0().w_full().overflow_hidden().child(
-                    div().size_full().overflow_y_scrollbar().child(
-                        v_flex()
-                            .w_full()
-                            .max_w(px(960.))
-                            .gap_4()
-                            .p_4()
-                            .child(self.body),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(
+                        div().size_full().overflow_y_scrollbar().child(
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .max_w(px(960.))
+                                .gap_4()
+                                .p_4()
+                                .child(self.body),
+                        ),
                     ),
-                ),
             )
     }
 }

@@ -53,12 +53,20 @@ pub struct GlobalHotkeyState {
     temporary_hotkey: Option<String>,
     shortcut_bindings: BTreeMap<i32, GlobalShortcutBinding>,
     hotkey_actions: BTreeMap<u32, RegisteredHotkeyAction>,
+    shortcut_registration_errors: BTreeMap<i32, String>,
     _task: Task<()>,
     #[cfg(target_os = "macos")]
     front_app: Option<Retained<NSRunningApplication>>,
 }
 
 impl Global for GlobalHotkeyState {}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ShortcutRuntimeDiagnostics {
+    pub(crate) temporary_hotkey: Option<String>,
+    pub(crate) registered_bindings: BTreeMap<i32, String>,
+    pub(crate) registration_errors: BTreeMap<i32, String>,
+}
 
 pub fn init(cx: &mut App) {
     let span = tracing::info_span!("features::hotkey::init");
@@ -105,6 +113,7 @@ fn inner_init(cx: &mut App) -> AiChatResult<()> {
         temporary_hotkey: None,
         shortcut_bindings: BTreeMap::new(),
         hotkey_actions: BTreeMap::new(),
+        shortcut_registration_errors: BTreeMap::new(),
         _task: task,
         #[cfg(target_os = "macos")]
         front_app: None,

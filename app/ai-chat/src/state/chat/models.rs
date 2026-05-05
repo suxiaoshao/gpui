@@ -1,17 +1,13 @@
 use crate::{
-    foundation::i18n::I18n,
     llm::{AvailableModelsBatch, ProviderModel, ProviderModelsFailure, available_models},
     state::AiChatConfig,
 };
 use async_compat::CompatExt;
 use gpui::*;
-use gpui_component::{
-    WindowExt,
-    notification::{Notification, NotificationType},
-};
-use std::collections::HashSet;
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref, time::Duration};
 use tracing::{Level, event};
+
+const MODEL_RELOAD_DEBOUNCE: Duration = Duration::from_millis(600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelStoreStatus {
@@ -24,6 +20,7 @@ pub(crate) enum ModelStoreStatus {
 pub(crate) struct ModelStoreSnapshot {
     pub(crate) models: Vec<ProviderModel>,
     pub(crate) status: Option<ModelStoreStatus>,
+    pub(crate) failures: Vec<ProviderModelsFailure>,
 }
 
 pub(crate) struct ModelStoreState {
@@ -31,7 +28,10 @@ pub(crate) struct ModelStoreState {
     status: ModelStoreStatus,
     loaded_once: bool,
     last_config_fingerprint: Option<String>,
+    last_failures: Vec<ProviderModelsFailure>,
     request_version: u64,
+    load_task: Option<Task<()>>,
+    debounced_reload_task: Option<Task<()>>,
 }
 
 impl Default for ModelStoreState {
@@ -41,7 +41,10 @@ impl Default for ModelStoreState {
             status: ModelStoreStatus::Idle,
             loaded_once: false,
             last_config_fingerprint: None,
+            last_failures: Vec::new(),
             request_version: 0,
+            load_task: None,
+            debounced_reload_task: None,
         }
     }
 }
@@ -51,19 +54,80 @@ impl ModelStoreState {
         ModelStoreSnapshot {
             models: self.models.clone(),
             status: Some(self.status),
+            failures: self.last_failures.clone(),
         }
     }
 
-    pub(crate) fn ensure_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.refresh(false, window, cx);
+    pub(crate) fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
+        self.refresh(false, cx);
     }
 
-    pub(crate) fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.refresh(true, window, cx);
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.cancel_debounced_reload();
+        self.refresh(true, cx);
     }
 
-    fn refresh(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.status != ModelStoreStatus::Idle {
+    pub(crate) fn schedule_reload(&mut self, cx: &mut Context<Self>) {
+        self.cancel_debounced_reload();
+        self.debounced_reload_task = Some(cx.spawn(async move |state, cx| {
+            smol::Timer::after(MODEL_RELOAD_DEBOUNCE).await;
+            let _ = state.update(cx, |this, cx| {
+                this.refresh(true, cx);
+            });
+        }));
+    }
+
+    fn cancel_debounced_reload(&mut self) -> bool {
+        self.debounced_reload_task.take().is_some()
+    }
+
+    fn prepare_running_task(&mut self, force: bool) -> bool {
+        if self.load_task.is_some() && !force {
+            event!(
+                Level::INFO,
+                status = ?self.status,
+                request_version = self.request_version,
+                "model store load skipped: request already running"
+            );
+            return false;
+        }
+        if force && self.load_task.take().is_some() {
+            event!(
+                Level::INFO,
+                request_version = self.request_version,
+                "model store load task cancelled for forced reload"
+            );
+        }
+        true
+    }
+
+    fn apply_load_result(
+        &mut self,
+        request_version: u64,
+        fingerprint: String,
+        batch: &AvailableModelsBatch,
+    ) -> bool {
+        if self.request_version != request_version {
+            event!(
+                Level::INFO,
+                request_version,
+                current_request_version = self.request_version,
+                "model store load result ignored: stale request"
+            );
+            return false;
+        }
+
+        self.status = ModelStoreStatus::Idle;
+        self.models = merge_models(&self.models, batch);
+        self.loaded_once = true;
+        self.last_config_fingerprint = Some(fingerprint);
+        self.last_failures = batch.failures.clone();
+        self.load_task = None;
+        true
+    }
+
+    fn refresh(&mut self, force: bool, cx: &mut Context<Self>) {
+        if !self.prepare_running_task(force) {
             return;
         }
 
@@ -84,9 +148,18 @@ impl ModelStoreState {
             && self.loaded_once
             && self.last_config_fingerprint.as_deref() == Some(fingerprint.as_str())
         {
+            event!(
+                Level::INFO,
+                loaded_once = self.loaded_once,
+                models_count = self.models.len(),
+                request_version = self.request_version,
+                "model store load skipped: settings unchanged"
+            );
             return;
         }
 
+        let previous_status = self.status;
+        let previous_models_count = self.models.len();
         self.request_version = self.request_version.saturating_add(1);
         let request_version = self.request_version;
         self.status = if self.loaded_once {
@@ -94,44 +167,45 @@ impl ModelStoreState {
         } else {
             ModelStoreStatus::InitialLoading
         };
+        event!(
+            Level::INFO,
+            force,
+            request_version,
+            previous_status = ?previous_status,
+            next_status = ?self.status,
+            loaded_once = self.loaded_once,
+            previous_models_count,
+            "model store load started"
+        );
         cx.notify();
 
-        let state = cx.entity().downgrade();
-        cx.spawn_in(window, async move |_, cx| {
+        self.load_task = Some(cx.spawn(async move |state, cx| {
             let batch = available_models(config).compat().await;
-            let _ = state.update_in(cx, move |this, window, cx| {
-                if this.request_version != request_version {
+            let _ = state.update(cx, move |this, cx| {
+                if !this.apply_load_result(request_version, fingerprint, &batch) {
                     return;
                 }
+                event!(
+                    Level::INFO,
+                    request_version,
+                    loaded_once = this.loaded_once,
+                    success_providers = batch.successes.len(),
+                    failed_providers = batch.failures.len(),
+                    final_models_count = this.models.len(),
+                    "model store load completed"
+                );
 
-                this.status = ModelStoreStatus::Idle;
-                this.models = merge_models(&this.models, &batch);
-                this.loaded_once = true;
-                this.last_config_fingerprint = Some(fingerprint);
-
-                if !batch.failures.is_empty() {
-                    let title = cx.global::<I18n>().t("notify-load-models-partial-failed");
-                    let message = format_failure_message(&batch.failures);
-                    window.push_notification(
-                        Notification::new()
-                            .title(title)
-                            .message(message)
-                            .with_type(NotificationType::Error),
-                        cx,
+                for failure in &batch.failures {
+                    event!(
+                        Level::ERROR,
+                        provider = %failure.provider_name,
+                        error = %failure.message,
+                        "load provider models failed"
                     );
-                    for failure in &batch.failures {
-                        event!(
-                            Level::ERROR,
-                            "load provider models failed: provider={}, error={}",
-                            failure.provider_name,
-                            failure.message
-                        );
-                    }
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 }
 
@@ -151,7 +225,24 @@ impl Global for ModelStore {}
 
 pub(crate) fn init_global(cx: &mut App) {
     let data = cx.new(|_| ModelStoreState::default());
-    cx.set_global(ModelStore { data });
+    cx.set_global(ModelStore { data: data.clone() });
+    data.update(cx, |store, cx| store.ensure_loaded(cx));
+}
+
+pub(crate) fn reload_models(cx: &mut App) {
+    if !cx.has_global::<ModelStore>() {
+        return;
+    }
+    let data = cx.global::<ModelStore>().deref().clone();
+    data.update(cx, |store, cx| store.reload(cx));
+}
+
+pub(crate) fn reload_models_debounced(cx: &mut App) {
+    if !cx.has_global::<ModelStore>() {
+        return;
+    }
+    let data = cx.global::<ModelStore>().deref().clone();
+    data.update(cx, |store, cx| store.schedule_reload(cx));
 }
 
 fn merge_models(previous: &[ProviderModel], batch: &AvailableModelsBatch) -> Vec<ProviderModel> {
@@ -176,21 +267,14 @@ fn merge_models(previous: &[ProviderModel], batch: &AvailableModelsBatch) -> Vec
     models
 }
 
-fn format_failure_message(failures: &[ProviderModelsFailure]) -> String {
-    failures
-        .iter()
-        .map(|failure| format!("{}: {}", failure.provider_name, failure.message))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{format_failure_message, merge_models};
+    use super::{ModelStoreState, merge_models};
     use crate::llm::{
         AvailableModelsBatch, ProviderModel, ProviderModelCapability, ProviderModelsFailure,
         ProviderModelsSuccess,
     };
+    use gpui::Task;
 
     fn model(provider: &str, id: &str) -> ProviderModel {
         ProviderModel::new(provider, id, ProviderModelCapability::Streaming)
@@ -239,18 +323,91 @@ mod tests {
     }
 
     #[test]
-    fn format_failure_message_lists_each_provider_on_its_own_line() {
-        let message = format_failure_message(&[
-            ProviderModelsFailure {
-                provider_name: "Ollama".to_string(),
-                message: "request failed".to_string(),
-            },
-            ProviderModelsFailure {
-                provider_name: "OpenAI".to_string(),
-                message: "api key missing".to_string(),
-            },
-        ]);
+    fn running_task_blocks_non_force_load() {
+        let mut store = ModelStoreState {
+            load_task: Some(Task::ready(())),
+            ..Default::default()
+        };
 
-        assert_eq!(message, "Ollama: request failed\nOpenAI: api key missing");
+        assert!(!store.prepare_running_task(false));
+        assert!(store.load_task.is_some());
+    }
+
+    #[test]
+    fn forced_reload_clears_running_task_before_starting_new_load() {
+        let mut store = ModelStoreState {
+            load_task: Some(Task::ready(())),
+            ..Default::default()
+        };
+
+        assert!(store.prepare_running_task(true));
+        assert!(store.load_task.is_none());
+    }
+
+    #[test]
+    fn cancel_debounced_reload_drops_pending_task() {
+        let mut store = ModelStoreState {
+            debounced_reload_task: Some(Task::ready(())),
+            ..Default::default()
+        };
+
+        assert!(store.cancel_debounced_reload());
+        assert!(store.debounced_reload_task.is_none());
+        assert!(!store.cancel_debounced_reload());
+    }
+
+    #[test]
+    fn apply_load_result_clears_task_and_returns_to_idle() {
+        let mut store = ModelStoreState {
+            status: super::ModelStoreStatus::InitialLoading,
+            request_version: 7,
+            load_task: Some(Task::ready(())),
+            ..Default::default()
+        };
+        let batch = AvailableModelsBatch {
+            successes: vec![ProviderModelsSuccess {
+                provider_name: "OpenAI".to_string(),
+                models: vec![model("OpenAI", "gpt-5")],
+            }],
+            failures: vec![ProviderModelsFailure {
+                provider_name: "Ollama".to_string(),
+                message: "timeout".to_string(),
+            }],
+        };
+
+        assert!(store.apply_load_result(7, "fingerprint".to_string(), &batch));
+        assert!(store.load_task.is_none());
+        assert_eq!(store.status, super::ModelStoreStatus::Idle);
+        assert!(store.loaded_once);
+        assert_eq!(
+            store.last_config_fingerprint.as_deref(),
+            Some("fingerprint")
+        );
+        assert_eq!(store.last_failures, batch.failures);
+        assert_eq!(store.models, vec![model("OpenAI", "gpt-5")]);
+    }
+
+    #[test]
+    fn stale_load_result_does_not_clear_current_task_or_models() {
+        let mut store = ModelStoreState {
+            status: super::ModelStoreStatus::Refreshing,
+            request_version: 8,
+            models: vec![model("OpenAI", "gpt-4.1")],
+            load_task: Some(Task::ready(())),
+            ..Default::default()
+        };
+        let batch = AvailableModelsBatch {
+            successes: vec![ProviderModelsSuccess {
+                provider_name: "OpenAI".to_string(),
+                models: vec![model("OpenAI", "gpt-5")],
+            }],
+            failures: vec![],
+        };
+
+        assert!(!store.apply_load_result(7, "old".to_string(), &batch));
+        assert!(store.load_task.is_some());
+        assert_eq!(store.status, super::ModelStoreStatus::Refreshing);
+        assert_eq!(store.models, vec![model("OpenAI", "gpt-4.1")]);
+        assert!(!store.loaded_once);
     }
 }

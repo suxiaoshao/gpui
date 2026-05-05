@@ -150,6 +150,7 @@ fn app_http_proxy_input(window: &mut Window, cx: &mut App) -> AnyElement {
                         Some(next_value.clone())
                     };
                     cx.global_mut::<AiChatConfig>().set_http_proxy(next_proxy);
+                    crate::state::chat::reload_models_debounced(cx);
                     state.last_value = next_value;
                 }
             });

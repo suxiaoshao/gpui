@@ -7,15 +7,16 @@ use crate::{
     features::settings::open_provider_settings_window,
     foundation::assets::IconName,
     foundation::i18n::I18n,
-    llm::{ProviderModel, provider_is_configured},
+    llm::{ProviderModel, ProviderModelsFailure, provider_is_configured},
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable,
+    ActiveTheme, Disableable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     list::ListState,
+    notification::{Notification, NotificationType},
 };
 use model_picker::{ModelOption, model_sections};
 use std::ops::Deref;
@@ -35,6 +36,7 @@ pub(crate) struct ModelSelect {
     model_picker_bounds: Bounds<Pixels>,
     model_picker_loading: bool,
     model_picker_open: bool,
+    provider_failures: Vec<ProviderModelsFailure>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -77,10 +79,10 @@ impl ModelSelect {
             model_picker_bounds: Bounds::default(),
             model_picker_loading: false,
             model_picker_open: false,
+            provider_failures: Vec::new(),
             _subscriptions: Vec::new(),
         };
         this.bind_store_events(window, cx);
-        this.ensure_models_loaded(window, cx);
         this.sync_models_from_store(window, cx, false);
         this
     }
@@ -129,14 +131,8 @@ impl ModelSelect {
         self._subscriptions.push(config_subscription);
     }
 
-    fn ensure_models_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let model_store = cx.global::<ModelStore>().deref().clone();
-        model_store.update(cx, |store, cx| store.ensure_loaded(window, cx));
-    }
-
-    fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let model_store = cx.global::<ModelStore>().deref().clone();
-        model_store.update(cx, |store, cx| store.reload(window, cx));
+    fn reload_models(&mut self, cx: &mut Context<Self>) {
+        crate::state::chat::reload_models(cx);
     }
 
     fn model_store_snapshot(&self, cx: &App) -> ModelStoreSnapshot {
@@ -149,7 +145,11 @@ impl ModelSelect {
         cx: &mut Context<Self>,
         force_selection_sync: bool,
     ) {
-        let ModelStoreSnapshot { models, status } = self.model_store_snapshot(cx);
+        let ModelStoreSnapshot {
+            models,
+            status,
+            failures,
+        } = self.model_store_snapshot(cx);
         let models_changed = self.models != models;
         if models_changed {
             self.models = models;
@@ -168,6 +168,13 @@ impl ModelSelect {
 
         let next_loading = model_store_is_loading(status);
         let loading_changed = self.model_picker_loading != next_loading;
+        let should_notify_failures = should_notify_model_load_failures(
+            &self.provider_failures,
+            &failures,
+            self.model_picker_loading,
+            next_loading,
+        );
+        self.provider_failures = failures;
         if loading_changed {
             self.model_picker_loading = next_loading;
         }
@@ -194,6 +201,9 @@ impl ModelSelect {
             }
             cx.notify();
         }
+        if should_notify_failures {
+            notify_model_load_failures(&self.provider_failures, window, cx);
+        }
     }
 
     fn sync_selection_with_config(&mut self, cx: &mut Context<Self>) -> bool {
@@ -212,7 +222,6 @@ impl ModelSelect {
 
     fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model_picker_open = true;
-        self.ensure_models_loaded(window, cx);
         self.focus_model_picker(window, cx);
         cx.notify();
     }
@@ -290,9 +299,9 @@ impl ModelSelect {
                                 .small()
                                 .tooltip(reload_tooltip)
                                 .disabled(is_loading)
-                                .on_click(cx.listener(|select, _event, window, cx| {
+                                .on_click(cx.listener(|select, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    select.reload_models(window, cx);
+                                    select.reload_models(cx);
                                 })),
                         )
                         .into_any_element(),
@@ -354,10 +363,50 @@ fn model_store_is_loading(status: Option<ModelStoreStatus>) -> bool {
     )
 }
 
+fn should_notify_model_load_failures(
+    previous: &[ProviderModelsFailure],
+    current: &[ProviderModelsFailure],
+    was_loading: bool,
+    is_loading: bool,
+) -> bool {
+    !is_loading && !current.is_empty() && (previous != current || was_loading)
+}
+
+fn notify_model_load_failures(
+    failures: &[ProviderModelsFailure],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.push_notification(
+        Notification::new()
+            .title(cx.global::<I18n>().t("notify-load-models-partial-failed"))
+            .message(format_failure_message(failures))
+            .with_type(NotificationType::Error),
+        cx,
+    );
+}
+
+fn format_failure_message(failures: &[ProviderModelsFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.provider_name, failure.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::model_store_is_loading;
-    use crate::state::ModelStoreStatus;
+    use super::{
+        format_failure_message, model_store_is_loading, should_notify_model_load_failures,
+    };
+    use crate::{llm::ProviderModelsFailure, state::ModelStoreStatus};
+
+    fn failure(provider: &str, message: &str) -> ProviderModelsFailure {
+        ProviderModelsFailure {
+            provider_name: provider.to_string(),
+            message: message.to_string(),
+        }
+    }
 
     #[test]
     fn model_store_loading_status_matches_refresh_states() {
@@ -367,5 +416,50 @@ mod tests {
         assert!(model_store_is_loading(Some(ModelStoreStatus::Refreshing)));
         assert!(!model_store_is_loading(Some(ModelStoreStatus::Idle)));
         assert!(!model_store_is_loading(None));
+    }
+
+    #[test]
+    fn model_load_failures_notify_when_new_or_reload_finishes() {
+        let previous = [failure("OpenAI", "api key missing")];
+        let current = [failure("OpenAI", "api key missing")];
+        let changed = [failure("Ollama", "request failed")];
+
+        assert!(!should_notify_model_load_failures(
+            &[],
+            &current,
+            false,
+            true
+        ));
+        assert!(should_notify_model_load_failures(
+            &[],
+            &current,
+            false,
+            false
+        ));
+        assert!(!should_notify_model_load_failures(
+            &previous, &current, false, false
+        ));
+        assert!(should_notify_model_load_failures(
+            &previous, &current, true, false
+        ));
+        assert!(should_notify_model_load_failures(
+            &previous, &changed, false, false
+        ));
+        assert!(!should_notify_model_load_failures(
+            &previous,
+            &[],
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn format_failure_message_lists_each_provider_on_its_own_line() {
+        let message = format_failure_message(&[
+            failure("Ollama", "request failed"),
+            failure("OpenAI", "api key missing"),
+        ]);
+
+        assert_eq!(message, "Ollama: request failed\nOpenAI: api key missing");
     }
 }
