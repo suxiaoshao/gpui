@@ -24,12 +24,12 @@ use gpui::{AppContext as _, StatefulInteractiveElement as _, prelude::FluentBuil
 use gpui_component::{
     ActiveTheme, Icon, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
-    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::{Scrollbar, ScrollbarShow},
+    switch::Switch,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
 };
@@ -794,8 +794,9 @@ impl ShortcutSettingsPage {
                 self.render_table_cell(
                     SHORTCUT_TABLE_ENABLED_COLUMN,
                     h_flex().w_full().justify_center().child(
-                        Checkbox::new(("shortcut-row-enabled", binding_id as u64))
+                        Switch::new(("shortcut-row-enabled", binding_id as u64))
                             .checked(item.binding.enabled)
+                            .small()
                             .on_click(cx.listener(move |page, checked, window, cx| {
                                 page.toggle_enabled(binding_id, *checked, window, cx);
                             })),

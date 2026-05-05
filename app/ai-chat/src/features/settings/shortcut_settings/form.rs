@@ -24,7 +24,6 @@ use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
-    checkbox::Checkbox,
     dialog::DialogFooter,
     divider::Divider,
     form::{field, v_form},
@@ -32,6 +31,7 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectState},
+    switch::Switch,
     v_flex,
 };
 use std::{ops::Deref, rc::Rc};
@@ -953,11 +953,14 @@ impl ShortcutFormState {
                                 )
                             }),
                     )
-                    .child(Checkbox::new(item.key).checked(value).on_click(cx.listener(
-                        move |this, checked, window, cx| {
-                            this.handle_boolean_ext_setting(setting_key, *checked, window, cx);
-                        },
-                    )))
+                    .child(
+                        Switch::new(item.key)
+                            .checked(value)
+                            .small()
+                            .on_click(cx.listener(move |this, checked, window, cx| {
+                                this.handle_boolean_ext_setting(setting_key, *checked, window, cx);
+                            })),
+                    )
                     .into_any_element()
             }
         });
@@ -1089,7 +1092,7 @@ impl Render for ShortcutFormState {
                     )
                     .child(
                         field().label(field_enabled).child(
-                            Checkbox::new("shortcut-form-enabled")
+                            Switch::new("shortcut-form-enabled")
                                 .checked(self.enabled)
                                 .on_click(cx.listener(|this, checked, _window, cx| {
                                     this.enabled = *checked;
