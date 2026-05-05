@@ -129,8 +129,7 @@ impl ModelSelect {
     }
 
     fn reload_models(&mut self, cx: &mut Context<Self>) {
-        let model_store = cx.global::<ModelStore>().deref().clone();
-        model_store.update(cx, |store, cx| store.reload(cx));
+        crate::state::chat::reload_models(cx);
     }
 
     fn model_store_snapshot(&self, cx: &App) -> ModelStoreSnapshot {

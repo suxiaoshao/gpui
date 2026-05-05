@@ -796,7 +796,7 @@ impl Provider for OpenAIProvider {
             }
         }
         save_openai_settings(settings, cx);
-        crate::state::chat::reload_models(cx);
+        crate::state::chat::reload_models_debounced(cx);
         Ok(())
     }
 

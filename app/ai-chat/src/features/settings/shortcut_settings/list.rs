@@ -405,8 +405,7 @@ impl ShortcutSettingsPage {
             item.status_details(cx),
             ShortcutStatusActions {
                 on_reload_models: Rc::new(move |window, cx| {
-                    let model_store = cx.global::<ModelStore>().deref().clone();
-                    model_store.update(cx, |store, cx| store.reload(cx));
+                    crate::state::chat::reload_models(cx);
                     let _ = reload_page.update(cx, |page, cx| page.reload(window, cx));
                 }),
                 on_reregister: Rc::new(move |binding_id, window, cx| {

@@ -4,9 +4,10 @@ use crate::{
 };
 use async_compat::CompatExt;
 use gpui::*;
-use std::collections::HashSet;
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref, time::Duration};
 use tracing::{Level, event};
+
+const MODEL_RELOAD_DEBOUNCE: Duration = Duration::from_millis(600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelStoreStatus {
@@ -30,6 +31,7 @@ pub(crate) struct ModelStoreState {
     last_failures: Vec<ProviderModelsFailure>,
     request_version: u64,
     load_task: Option<Task<()>>,
+    debounced_reload_task: Option<Task<()>>,
 }
 
 impl Default for ModelStoreState {
@@ -42,6 +44,7 @@ impl Default for ModelStoreState {
             last_failures: Vec::new(),
             request_version: 0,
             load_task: None,
+            debounced_reload_task: None,
         }
     }
 }
@@ -60,7 +63,22 @@ impl ModelStoreState {
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.cancel_debounced_reload();
         self.refresh(true, cx);
+    }
+
+    pub(crate) fn schedule_reload(&mut self, cx: &mut Context<Self>) {
+        self.cancel_debounced_reload();
+        self.debounced_reload_task = Some(cx.spawn(async move |state, cx| {
+            smol::Timer::after(MODEL_RELOAD_DEBOUNCE).await;
+            let _ = state.update(cx, |this, cx| {
+                this.refresh(true, cx);
+            });
+        }));
+    }
+
+    fn cancel_debounced_reload(&mut self) -> bool {
+        self.debounced_reload_task.take().is_some()
     }
 
     fn prepare_running_task(&mut self, force: bool) -> bool {
@@ -219,6 +237,14 @@ pub(crate) fn reload_models(cx: &mut App) {
     data.update(cx, |store, cx| store.reload(cx));
 }
 
+pub(crate) fn reload_models_debounced(cx: &mut App) {
+    if !cx.has_global::<ModelStore>() {
+        return;
+    }
+    let data = cx.global::<ModelStore>().deref().clone();
+    data.update(cx, |store, cx| store.schedule_reload(cx));
+}
+
 fn merge_models(previous: &[ProviderModel], batch: &AvailableModelsBatch) -> Vec<ProviderModel> {
     let failed_providers = batch
         .failures
@@ -316,6 +342,18 @@ mod tests {
 
         assert!(store.prepare_running_task(true));
         assert!(store.load_task.is_none());
+    }
+
+    #[test]
+    fn cancel_debounced_reload_drops_pending_task() {
+        let mut store = ModelStoreState {
+            debounced_reload_task: Some(Task::ready(())),
+            ..Default::default()
+        };
+
+        assert!(store.cancel_debounced_reload());
+        assert!(store.debounced_reload_task.is_none());
+        assert!(!store.cancel_debounced_reload());
     }
 
     #[test]
