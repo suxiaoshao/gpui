@@ -13,7 +13,6 @@ use crate::{
                 open_delete_shortcut_dialog, open_shortcut_status_dialog,
             },
             form::{open_add_shortcut_dialog, open_edit_shortcut_dialog},
-            segmented::single_selected_index,
             validation::validate_hotkey,
         },
     },
@@ -21,18 +20,70 @@ use crate::{
     llm::{ExtSettingControl, ProviderModel, preset_ext_settings},
     state::ModelStore,
 };
-use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
+use gpui::{AppContext as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Icon, Sizable, StyledExt, WindowExt,
-    button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
+    button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
+    scroll::{Scrollbar, ScrollbarShow},
+    table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
 };
 use std::{ops::Deref, rc::Rc};
+
+#[derive(Clone, Copy, Debug)]
+struct ShortcutColumnSpec {
+    width: f32,
+}
+
+const SHORTCUT_TABLE_TEMPLATE_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 220. };
+const SHORTCUT_TABLE_HOTKEY_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 120. };
+const SHORTCUT_TABLE_INPUT_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 150. };
+const SHORTCUT_TABLE_MODEL_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 240. };
+const SHORTCUT_TABLE_MODE_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 120. };
+const SHORTCUT_TABLE_STATUS_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 160. };
+const SHORTCUT_TABLE_ENABLED_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 100. };
+const SHORTCUT_TABLE_ACTIONS_COLUMN: ShortcutColumnSpec = ShortcutColumnSpec { width: 176. };
+const SHORTCUT_TABLE_MIN_CELL_WIDTH: f32 = 100.;
+const SHORTCUT_TABLE_HEADER_HEIGHT: f32 = 38.;
+const SHORTCUT_TABLE_ROW_HEIGHT: f32 = 74.;
+const SHORTCUT_TABLE_SCROLLBAR_HEIGHT: f32 = 14.;
+
+fn shortcut_table_column_specs() -> [ShortcutColumnSpec; 8] {
+    let columns = [
+        SHORTCUT_TABLE_TEMPLATE_COLUMN,
+        SHORTCUT_TABLE_HOTKEY_COLUMN,
+        SHORTCUT_TABLE_INPUT_COLUMN,
+        SHORTCUT_TABLE_MODEL_COLUMN,
+        SHORTCUT_TABLE_MODE_COLUMN,
+        SHORTCUT_TABLE_STATUS_COLUMN,
+        SHORTCUT_TABLE_ENABLED_COLUMN,
+        SHORTCUT_TABLE_ACTIONS_COLUMN,
+    ];
+    debug_assert!(
+        columns
+            .iter()
+            .all(|column| column.width >= SHORTCUT_TABLE_MIN_CELL_WIDTH)
+    );
+    columns
+}
+
+fn shortcut_table_width() -> f32 {
+    shortcut_table_column_specs()
+        .into_iter()
+        .map(|column| column.width)
+        .sum::<f32>()
+}
+
+fn shortcut_table_height(row_count: usize) -> f32 {
+    SHORTCUT_TABLE_HEADER_HEIGHT
+        + row_count as f32 * SHORTCUT_TABLE_ROW_HEIGHT
+        + SHORTCUT_TABLE_SCROLLBAR_HEIGHT
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortcutStatus {
@@ -67,72 +118,6 @@ impl ShortcutStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShortcutStatusFilter {
-    All,
-    Enabled,
-    Disabled,
-    NeedsAction,
-}
-
-impl ShortcutStatusFilter {
-    fn id(self) -> u64 {
-        match self {
-            Self::All => 0,
-            Self::Enabled => 1,
-            Self::Disabled => 2,
-            Self::NeedsAction => 3,
-        }
-    }
-
-    fn matches(self, status: ShortcutStatus) -> bool {
-        match self {
-            Self::All => true,
-            Self::Enabled => status == ShortcutStatus::Enabled,
-            Self::Disabled => status == ShortcutStatus::Disabled,
-            Self::NeedsAction => status.requires_action(),
-        }
-    }
-
-    fn label_key(self) -> &'static str {
-        match self {
-            Self::All => "shortcut-filter-all",
-            Self::Enabled => "shortcut-filter-enabled",
-            Self::Disabled => "shortcut-filter-disabled",
-            Self::NeedsAction => "shortcut-filter-needs-action",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModeFilter {
-    All,
-    Mode(Mode),
-}
-
-impl ModeFilter {
-    fn index(self) -> usize {
-        mode_filter_options()
-            .iter()
-            .position(|filter| *filter == self)
-            .unwrap_or(0)
-    }
-
-    fn matches(self, mode: Mode) -> bool {
-        match self {
-            Self::All => true,
-            Self::Mode(filter_mode) => filter_mode == mode,
-        }
-    }
-
-    fn label(self, cx: &App) -> String {
-        match self {
-            Self::All => cx.global::<I18n>().t("shortcut-filter-all-modes"),
-            Self::Mode(mode) => mode_label(mode, cx),
-        }
-    }
-}
-
 struct ShortcutListItem {
     binding: GlobalShortcutBinding,
     title: String,
@@ -163,8 +148,7 @@ struct ShortcutSearchParts<'a> {
 
 pub(crate) struct ShortcutSettingsPage {
     search_input: Entity<InputState>,
-    mode_filter: ModeFilter,
-    status_filter: ShortcutStatusFilter,
+    table_scroll_handle: ScrollHandle,
     templates: Vec<ConversationTemplate>,
     bindings: Result<Vec<GlobalShortcutBinding>, String>,
     _subscriptions: Vec<Subscription>,
@@ -184,8 +168,7 @@ impl ShortcutSettingsPage {
 
         let mut this = Self {
             search_input,
-            mode_filter: ModeFilter::All,
-            status_filter: ShortcutStatusFilter::All,
+            table_scroll_handle: ScrollHandle::new(),
             templates: Vec::new(),
             bindings: Ok(Vec::new()),
             _subscriptions: Vec::new(),
@@ -258,10 +241,6 @@ impl ShortcutSettingsPage {
         self.search_input.read(cx).value().trim().to_string()
     }
 
-    fn current_mode_filter(&self) -> ModeFilter {
-        self.mode_filter
-    }
-
     fn available_models(&self, cx: &App) -> Vec<ProviderModel> {
         cx.global::<ModelStore>().read(cx).snapshot().models
     }
@@ -279,11 +258,8 @@ impl ShortcutSettingsPage {
 
     fn filtered_items(&self, cx: &App) -> Vec<ShortcutListItem> {
         let query = self.current_query(cx);
-        let mode_filter = self.current_mode_filter();
         self.all_items(cx)
             .into_iter()
-            .filter(|item| self.status_filter.matches(item.status))
-            .filter(|item| mode_filter.matches(item.binding.mode))
             .filter(|item| query.is_empty() || field_matches_query(&item.search_text, &query))
             .collect()
     }
@@ -359,10 +335,6 @@ impl ShortcutSettingsPage {
 
     fn bindings_for_status(&self) -> Vec<GlobalShortcutBinding> {
         self.bindings.as_ref().cloned().unwrap_or_default()
-    }
-
-    fn status_counts(&self, cx: &App) -> StatusCounts {
-        StatusCounts::from_items(self.all_items(cx).iter().map(|item| item.status))
     }
 
     fn open_add_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -563,24 +535,12 @@ impl ShortcutSettingsPage {
             .items_center()
             .justify_between()
             .gap_2()
-            .flex_wrap()
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
+                Input::new(&self.search_input)
+                    .flex_1()
                     .min_w_0()
-                    .flex_wrap()
-                    .child(
-                        Input::new(&self.search_input)
-                            .w(px(420.))
-                            .min_w(px(320.))
-                            .max_w(px(420.))
-                            .prefix(
-                                Icon::new(IconName::Search).text_color(cx.theme().muted_foreground),
-                            )
-                            .cleanable(true),
-                    )
-                    .child(self.render_mode_filter(cx)),
+                    .prefix(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground))
+                    .cleanable(true),
             )
             .child(
                 h_flex()
@@ -607,75 +567,6 @@ impl ShortcutSettingsPage {
             .into_any_element()
     }
 
-    fn render_mode_filter(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current_index = self.mode_filter.index();
-        ToggleGroup::new("shortcut-mode-filter")
-            .segmented()
-            .outline()
-            .small()
-            .children(
-                mode_filter_options()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, filter)| {
-                        Toggle::new(("shortcut-mode-filter-item", index as u64))
-                            .label(filter.label(cx))
-                            .checked(index == current_index)
-                            .min_w(px(if matches!(filter, ModeFilter::All) {
-                                88.
-                            } else {
-                                104.
-                            }))
-                    }),
-            )
-            .on_click(cx.listener(move |page, checkeds: &Vec<bool>, _window, cx| {
-                let next_index = single_selected_index(page.mode_filter.index(), checkeds);
-                if let Some(filter) = mode_filter_options().get(next_index).copied() {
-                    page.mode_filter = filter;
-                    cx.notify();
-                }
-            }))
-            .into_any_element()
-    }
-
-    fn render_status_filters(&self, cx: &mut Context<Self>) -> AnyElement {
-        let counts = self.status_counts(cx);
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_2()
-            .children(
-                [
-                    (ShortcutStatusFilter::All, counts.total),
-                    (ShortcutStatusFilter::Enabled, counts.enabled),
-                    (ShortcutStatusFilter::Disabled, counts.disabled),
-                    (ShortcutStatusFilter::NeedsAction, counts.needs_action),
-                ]
-                .into_iter()
-                .map(|(filter, count)| self.render_status_filter(filter, count, cx)),
-            )
-            .into_any_element()
-    }
-
-    fn render_status_filter(
-        &self,
-        filter: ShortcutStatusFilter,
-        count: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let label = cx.global::<I18n>().t(filter.label_key());
-        Button::new(("shortcut-status-filter", filter.id()))
-            .small()
-            .when(self.status_filter == filter, |button| button.primary())
-            .when(self.status_filter != filter, |button| button.ghost())
-            .label(format!("{label}  {count}"))
-            .on_click(cx.listener(move |page, _, _window, cx| {
-                page.status_filter = filter;
-                cx.notify();
-            }))
-            .into_any_element()
-    }
-
     fn render_list(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(bindings) = self.bindings.as_ref().ok() else {
             return self.render_error_state(window, cx);
@@ -696,18 +587,52 @@ impl ShortcutSettingsPage {
             );
         }
 
-        v_flex()
+        let table_height = shortcut_table_height(items.len());
+
+        div()
             .w_full()
             .min_w_0()
+            .max_w(relative(1.))
+            .h(px(table_height))
             .rounded(px(8.))
             .border_1()
             .border_color(cx.theme().border)
             .overflow_hidden()
-            .child(self.render_table_header(cx))
-            .children(
-                items
-                    .iter()
-                    .map(|item| self.render_item_row(item, window, cx)),
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .pb(px(SHORTCUT_TABLE_SCROLLBAR_HEIGHT))
+                    .child(
+                        div()
+                            .id("shortcut-table-scroll")
+                            .size_full()
+                            .track_scroll(&self.table_scroll_handle)
+                            .overflow_x_scroll()
+                            .child(
+                                div()
+                                    .w(px(shortcut_table_width()))
+                                    .min_w(px(shortcut_table_width()))
+                                    .flex_shrink_0()
+                                    .child(self.render_table(&items, window, cx)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(SHORTCUT_TABLE_SCROLLBAR_HEIGHT))
+                            .child(
+                                Scrollbar::horizontal(&self.table_scroll_handle)
+                                    .scrollbar_show(ScrollbarShow::Always),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -761,28 +686,60 @@ impl ShortcutSettingsPage {
             .into_any_element()
     }
 
-    fn render_table_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let i18n = cx.global::<I18n>();
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_2()
-            .bg(cx.theme().secondary.opacity(0.45))
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(Label::new(i18n.t("field-template")).w(px(200.)))
-            .child(Label::new(i18n.t("field-hotkey")).w(px(104.)))
-            .child(Label::new(i18n.t("field-send-content")).w(px(140.)))
-            .child(Label::new(i18n.t("field-model")).flex_1())
-            .child(Label::new(i18n.t("field-mode")).w(px(116.)))
-            .child(Label::new(i18n.t("field-status")).w(px(132.)))
-            .child(Label::new(i18n.t("field-enabled")).w(px(60.)))
-            .child(Label::new(i18n.t("field-actions")).w(px(132.)))
+    fn render_table(
+        &self,
+        items: &[ShortcutListItem],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        Table::new()
+            .small()
+            .w(px(shortcut_table_width()))
+            .child(self.render_table_header(cx))
+            .child(
+                TableBody::new().children(
+                    items
+                        .iter()
+                        .map(|item| self.render_item_row(item, window, cx)),
+                ),
+            )
             .into_any_element()
+    }
+
+    fn render_table_header(&self, cx: &mut Context<Self>) -> TableHeader {
+        let i18n = cx.global::<I18n>();
+        TableHeader::new().child(
+            TableRow::new()
+                .h(px(SHORTCUT_TABLE_HEADER_HEIGHT))
+                .child(
+                    self.render_table_head(
+                        i18n.t("field-template"),
+                        SHORTCUT_TABLE_TEMPLATE_COLUMN,
+                    ),
+                )
+                .child(self.render_table_head(i18n.t("field-hotkey"), SHORTCUT_TABLE_HOTKEY_COLUMN))
+                .child(
+                    self.render_table_head(
+                        i18n.t("field-send-content"),
+                        SHORTCUT_TABLE_INPUT_COLUMN,
+                    ),
+                )
+                .child(self.render_table_head(i18n.t("field-model"), SHORTCUT_TABLE_MODEL_COLUMN))
+                .child(self.render_table_head(i18n.t("field-mode"), SHORTCUT_TABLE_MODE_COLUMN))
+                .child(self.render_table_head(i18n.t("field-status"), SHORTCUT_TABLE_STATUS_COLUMN))
+                .child(
+                    self.render_table_head(i18n.t("field-enabled"), SHORTCUT_TABLE_ENABLED_COLUMN),
+                )
+                .child(
+                    self.render_table_head(i18n.t("field-actions"), SHORTCUT_TABLE_ACTIONS_COLUMN),
+                ),
+        )
+    }
+
+    fn render_table_head(&self, label: String, column: ShortcutColumnSpec) -> TableHead {
+        TableHead::new()
+            .w(px(column.width))
+            .child(Label::new(label).text_xs().truncate())
     }
 
     fn render_item_row(
@@ -790,71 +747,75 @@ impl ShortcutSettingsPage {
         item: &ShortcutListItem,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> TableRow {
         let binding_id = item.binding.id;
-        h_flex()
-            .id(("shortcut-row", binding_id as u64))
-            .w_full()
-            .min_w_0()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .hover(|this| this.bg(cx.theme().secondary_hover))
-            .child(self.render_template_cell(item, cx))
+        TableRow::new()
+            .min_h(px(SHORTCUT_TABLE_ROW_HEIGHT))
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_TEMPLATE_COLUMN,
+                self.render_template_cell(item, cx),
+            ))
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_HOTKEY_COLUMN,
+                Label::new(item.hotkey_label.clone()).text_sm().truncate(),
+            ))
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_INPUT_COLUMN,
+                Label::new(item.input_label.clone()).text_sm().truncate(),
+            ))
             .child(
-                Label::new(item.hotkey_label.clone())
-                    .w(px(104.))
-                    .text_sm()
-                    .truncate(),
+                self.render_table_cell(
+                    SHORTCUT_TABLE_MODEL_COLUMN,
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            Label::new(item.binding.model_id.clone())
+                                .text_sm()
+                                .truncate(),
+                        )
+                        .child(
+                            Label::new(item.binding.provider_name.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate(),
+                        ),
+                ),
             )
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_MODE_COLUMN,
+                Label::new(item.mode_label.clone()).text_sm().truncate(),
+            ))
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_STATUS_COLUMN,
+                self.render_status_badge(item, cx),
+            ))
             .child(
-                Label::new(item.input_label.clone())
-                    .w(px(140.))
-                    .text_sm()
-                    .truncate(),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1()
-                    .child(
-                        Label::new(item.binding.model_id.clone())
-                            .text_sm()
-                            .truncate(),
-                    )
-                    .child(
-                        Label::new(item.binding.provider_name.clone())
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate(),
+                self.render_table_cell(
+                    SHORTCUT_TABLE_ENABLED_COLUMN,
+                    h_flex().w_full().justify_center().child(
+                        Checkbox::new(("shortcut-row-enabled", binding_id as u64))
+                            .checked(item.binding.enabled)
+                            .on_click(cx.listener(move |page, checked, window, cx| {
+                                page.toggle_enabled(binding_id, *checked, window, cx);
+                            })),
                     ),
+                ),
             )
-            .child(
-                Label::new(item.mode_label.clone())
-                    .w(px(116.))
-                    .text_sm()
-                    .truncate(),
-            )
-            .child(self.render_status_badge(item, cx))
-            .child(
-                Checkbox::new(("shortcut-row-enabled", binding_id as u64))
-                    .checked(item.binding.enabled)
-                    .on_click(cx.listener(move |page, checked, window, cx| {
-                        page.toggle_enabled(binding_id, *checked, window, cx);
-                    }))
-                    .w(px(60.)),
-            )
-            .child(self.render_actions(binding_id, cx))
-            .into_any_element()
+            .child(self.render_table_cell(
+                SHORTCUT_TABLE_ACTIONS_COLUMN,
+                self.render_actions(binding_id, cx),
+            ))
+    }
+
+    fn render_table_cell(&self, column: ShortcutColumnSpec, child: impl IntoElement) -> TableCell {
+        TableCell::new().w(px(column.width)).child(child)
     }
 
     fn render_template_cell(&self, item: &ShortcutListItem, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
-            .w(px(200.))
+            .w_full()
             .min_w_0()
             .items_center()
             .gap_2()
@@ -894,7 +855,8 @@ impl ShortcutSettingsPage {
     fn render_status_badge(&self, item: &ShortcutListItem, cx: &mut Context<Self>) -> AnyElement {
         let (fg, bg) = status_colors(item.status, cx);
         h_flex()
-            .w(px(132.))
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap_1()
             .child(
@@ -931,7 +893,7 @@ impl ShortcutSettingsPage {
 
     fn render_actions(&self, binding_id: i32, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
-            .w(px(132.))
+            .w_full()
             .items_center()
             .gap_1()
             .child(
@@ -996,7 +958,6 @@ impl Render for ShortcutSettingsPage {
                     ),
             )
             .child(self.render_toolbar(window, cx))
-            .child(self.render_status_filters(cx))
             .child(self.render_list(window, cx))
     }
 }
@@ -1036,39 +997,6 @@ impl ShortcutListItem {
             },
         }
     }
-}
-
-#[derive(Default)]
-struct StatusCounts {
-    total: usize,
-    enabled: usize,
-    disabled: usize,
-    needs_action: usize,
-}
-
-impl StatusCounts {
-    fn from_items(statuses: impl IntoIterator<Item = ShortcutStatus>) -> Self {
-        let mut counts = Self::default();
-        for status in statuses {
-            counts.total += 1;
-            match status {
-                ShortcutStatus::Enabled => counts.enabled += 1,
-                ShortcutStatus::Disabled => counts.disabled += 1,
-                _ if status.requires_action() => counts.needs_action += 1,
-                _ => {}
-            }
-        }
-        counts
-    }
-}
-
-fn mode_filter_options() -> [ModeFilter; 4] {
-    [
-        ModeFilter::All,
-        ModeFilter::Mode(Mode::Contextual),
-        ModeFilter::Mode(Mode::Single),
-        ModeFilter::Mode(Mode::AssistantOnly),
-    ]
 }
 
 fn resolve_status(
@@ -1281,8 +1209,8 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
 #[cfg(test)]
 mod tests {
     use super::{
-        ModeFilter, ShortcutSearchParts, ShortcutStatus, ShortcutStatusFilter, StatusCounts,
-        shortcut_search_text,
+        SHORTCUT_TABLE_MIN_CELL_WIDTH, ShortcutSearchParts, shortcut_search_text,
+        shortcut_table_column_specs, shortcut_table_height, shortcut_table_width,
     };
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
     use time::OffsetDateTime;
@@ -1305,38 +1233,39 @@ mod tests {
     }
 
     #[test]
-    fn status_filter_matches_expected_groups() {
-        assert!(ShortcutStatusFilter::All.matches(ShortcutStatus::RegistrationFailed));
-        assert!(ShortcutStatusFilter::Enabled.matches(ShortcutStatus::Enabled));
-        assert!(!ShortcutStatusFilter::Enabled.matches(ShortcutStatus::ModelUnavailable));
-        assert!(ShortcutStatusFilter::NeedsAction.matches(ShortcutStatus::HotkeyConflict));
-        assert!(!ShortcutStatusFilter::NeedsAction.matches(ShortcutStatus::Disabled));
+    fn shortcut_table_columns_fit_component_cell_min_width() {
+        let [
+            template,
+            hotkey,
+            input,
+            model,
+            mode,
+            status,
+            enabled,
+            actions,
+        ] = shortcut_table_column_specs();
+
+        for column in [
+            template, hotkey, input, model, mode, status, enabled, actions,
+        ] {
+            assert!(column.width >= SHORTCUT_TABLE_MIN_CELL_WIDTH);
+        }
+        assert!(hotkey.width < template.width);
+        assert!(enabled.width < hotkey.width);
+        assert!(actions.width < model.width);
+        assert!(input.width < model.width);
+        assert_eq!(
+            shortcut_table_width(),
+            shortcut_table_column_specs()
+                .into_iter()
+                .map(|column| column.width)
+                .sum::<f32>()
+        );
     }
 
     #[test]
-    fn status_counts_group_action_required_statuses() {
-        let counts = StatusCounts::from_items([
-            ShortcutStatus::Enabled,
-            ShortcutStatus::Disabled,
-            ShortcutStatus::ModelUnavailable,
-            ShortcutStatus::RegistrationFailed,
-        ]);
-
-        assert_eq!(counts.total, 4);
-        assert_eq!(counts.enabled, 1);
-        assert_eq!(counts.disabled, 1);
-        assert_eq!(counts.needs_action, 2);
-    }
-
-    #[test]
-    fn mode_filter_matches_expected_modes() {
-        assert!(ModeFilter::All.matches(Mode::Contextual));
-        assert!(ModeFilter::All.matches(Mode::Single));
-        assert!(ModeFilter::All.matches(Mode::AssistantOnly));
-        assert!(ModeFilter::Mode(Mode::Contextual).matches(Mode::Contextual));
-        assert!(!ModeFilter::Mode(Mode::Contextual).matches(Mode::Single));
-        assert!(ModeFilter::Mode(Mode::Single).matches(Mode::Single));
-        assert!(ModeFilter::Mode(Mode::AssistantOnly).matches(Mode::AssistantOnly));
+    fn shortcut_table_height_includes_header_rows_and_scrollbar() {
+        assert!(shortcut_table_height(2) > shortcut_table_height(1));
     }
 
     #[test]
@@ -1358,6 +1287,8 @@ mod tests {
         assert!(search_text.contains("gpt-5.4-mini"));
         assert!(search_text.contains("super+shift+k"));
         assert!(search_text.contains("选中文字"));
+        assert!(search_text.contains("单轮模式"));
+        assert!(search_text.contains("已启用"));
         assert!(search_text.contains("联网搜索"));
     }
 }

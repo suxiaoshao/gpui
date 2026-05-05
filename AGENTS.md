@@ -34,7 +34,8 @@
 ## 3. UI 与 GPUI 规则
 
 - 涉及落地页、官网页、品牌页、视觉稿、高表现力界面或需要明显视觉设计判断的 UI 任务时，默认遵从 `frontend-skill` 的设计原则；重点吸收其关于构图、层级、留白、图像叙事、文案克制与动效节制的要求，不要产出模板化 SaaS 卡片拼盘。
-- 编写 UI 时优先使用 `gpui-component` 现成组件；组件库没有合适组件时再自行实现。
+- 编写 UI 时默认优先使用 `gpui-component` 现成组件；实现前先检查组件文档、story 和源码 API，确认没有合适组件或组件语义明显不匹配时，才自行实现局部 UI。
+- 自行实现 UI 时只补齐 `gpui-component` 没有覆盖的缺口，不要重复实现组件库已提供的表格、按钮、输入、选择器、对话框、滚动条等通用能力。
 - 在本仓库中落实 `frontend-skill` 时，要映射到 GPUI 语境：`GPUI` 的布局与样式 API 可类比 `tailwindcss` 的组合思路，`gpui-component` 的组件复用方式可类比 `shadcn/ui`，但必须以仓库现有的 GPUI / `gpui-component` 模式实现，不能照搬 Web DOM、CSS 或 React 组件习惯。
 - 组件列表与示例优先参考：`https://longbridge.github.io/gpui-component/docs/components/`
 - 具体 API 以 `https://docs.rs/gpui-component/latest/gpui_component/` 为准，不要凭记忆猜接口。

@@ -1,7 +1,5 @@
 use crate::{
-    components::hotkey_input::{
-        HotkeyEvent, HotkeyInput, format_hotkey_label, string_to_keystroke,
-    },
+    components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     database::{
         ConversationTemplate, Db, GlobalShortcutBinding, Mode, NewGlobalShortcutBinding,
         ShortcutInputSource,
@@ -161,6 +159,7 @@ fn open_shortcut_form_dialog(
         let on_saved = on_saved.clone();
         dialog
             .w(px(SHORTCUT_DIALOG_WIDTH))
+            .h(px(SHORTCUT_DIALOG_MAX_HEIGHT))
             .max_h(px(SHORTCUT_DIALOG_MAX_HEIGHT))
             .margin_top(px(SHORTCUT_DIALOG_MARGIN_TOP))
             .title(title.clone())
@@ -996,7 +995,6 @@ impl Render for ShortcutFormState {
             field_send_content,
             field_hotkey,
             field_enabled,
-            hotkey_placeholder,
             preset_settings,
         ) = {
             let i18n = cx.global::<I18n>();
@@ -1010,15 +1008,9 @@ impl Render for ShortcutFormState {
                 i18n.t("field-send-content"),
                 i18n.t("field-hotkey"),
                 i18n.t("field-enabled"),
-                i18n.t("shortcut-hotkey-placeholder"),
                 i18n.t("shortcut-preset-settings"),
             )
         };
-        let formatted_hotkey = self
-            .hotkey
-            .as_deref()
-            .map(format_hotkey_label)
-            .unwrap_or_default();
         let model_empty_label = if model_store_is_loading(self.model_store_status) {
             loading_model_picker
         } else {
@@ -1092,16 +1084,7 @@ impl Render for ShortcutFormState {
                             v_flex()
                                 .gap_1()
                                 .child(self.hotkey_input.clone())
-                                .child(self.render_hotkey_error(cx))
-                                .child(
-                                    Label::new(if formatted_hotkey.is_empty() {
-                                        hotkey_placeholder
-                                    } else {
-                                        formatted_hotkey
-                                    })
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground),
-                                ),
+                                .child(self.render_hotkey_error(cx)),
                         ),
                     )
                     .child(
