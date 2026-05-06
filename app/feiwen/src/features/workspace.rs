@@ -1,6 +1,9 @@
 use gpui::*;
 
-use super::{fetch::FetchView, query::QueryView};
+use super::{
+    fetch::{FetchTaskState, FetchView},
+    query::QueryView,
+};
 
 #[derive(Default, Clone, Copy)]
 pub(crate) enum RouterType {
@@ -23,6 +26,7 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 pub(crate) struct WorkspaceView {
     workspace: Entity<Workspace>,
     focus_handle: FocusHandle,
+    _fetch_task: Entity<FetchTaskState>,
     fetch_view: Entity<FetchView>,
     query_view: Entity<QueryView>,
     _subscriptions: Vec<Subscription>,
@@ -31,11 +35,15 @@ pub(crate) struct WorkspaceView {
 impl WorkspaceView {
     pub(crate) fn new(window: &mut Window, workspace_cx: &mut Context<Self>) -> Self {
         let workspace = workspace_cx.new(|_cx| Default::default());
+        let fetch_task = workspace_cx.new(|_cx| FetchTaskState::default());
         let _subscriptions = vec![workspace_cx.subscribe(&workspace, Self::subscribe)];
         Self {
             focus_handle: workspace_cx.focus_handle(),
-            fetch_view: workspace_cx.new(|cx| FetchView::new(window, workspace.clone(), cx)),
-            query_view: workspace_cx.new(|cx| QueryView::new(workspace.clone(), window, cx)),
+            fetch_view: workspace_cx
+                .new(|cx| FetchView::new(window, workspace.clone(), fetch_task.clone(), cx)),
+            query_view: workspace_cx
+                .new(|cx| QueryView::new(workspace.clone(), fetch_task.clone(), window, cx)),
+            _fetch_task: fetch_task,
             workspace,
             _subscriptions,
         }

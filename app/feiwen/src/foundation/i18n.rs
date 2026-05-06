@@ -37,10 +37,6 @@ impl I18n {
         self.translate(key, None)
     }
 
-    pub(crate) fn t_with_args(&self, key: &str, args: &FluentArgs<'_>) -> String {
-        self.translate(key, Some(args))
-    }
-
     fn translate(&self, key: &str, args: Option<&FluentArgs<'_>>) -> String {
         let Some(bundle) = self.bundle() else {
             return key.to_string();
