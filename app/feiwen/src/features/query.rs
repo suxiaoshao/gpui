@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::{
     Workspace,
+    fetch::FetchTaskState,
     workspace::{RouterType, WorkspaceEvent},
 };
 use crate::{
@@ -12,11 +13,14 @@ use crate::{
         service::{Novel, TagWithId},
     },
 };
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
+    ActiveTheme,
     alert::Alert,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
+    label::Label,
     scroll::ScrollableElement,
     v_flex,
 };
@@ -49,6 +53,7 @@ impl Query {
 
 pub(crate) struct QueryView {
     workspace: Entity<Workspace>,
+    fetch_task: Entity<FetchTaskState>,
     tag_select_view: Entity<TagsSelect>,
     search_input: Entity<InputState>,
     data: QueryData,
@@ -59,6 +64,7 @@ pub(crate) struct QueryView {
 impl QueryView {
     pub(crate) fn new(
         workspace: Entity<Workspace>,
+        fetch_task: Entity<FetchTaskState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -67,6 +73,7 @@ impl QueryView {
         let search_placeholder = cx.global::<I18n>().t("query-search-placeholder");
         Self {
             workspace,
+            fetch_task,
             tag_select_view: cx.new(TagsSelect::new),
             search_input: cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder)),
             data: QueryData::Init,
@@ -149,6 +156,9 @@ impl Render for QueryView {
             .flex_col()
             .gap_2()
             .child(header)
+            .when_some(self.render_fetch_summary(cx), |this, summary| {
+                this.child(summary)
+            })
             .child(self.tag_select_view.clone())
             .child(match &self.data {
                 QueryData::Err(feiwen_error) => div().flex_1().child(
@@ -163,5 +173,43 @@ impl Render for QueryView {
                 ),
                 QueryData::Init => div(),
             })
+    }
+}
+
+impl QueryView {
+    fn render_fetch_summary(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let i18n = cx.global::<I18n>();
+        let task = self.fetch_task.read(cx);
+        if !task.has_visible_summary() {
+            return None;
+        }
+        let summary = task.summary_text(i18n)?;
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded_lg()
+                .bg(cx.theme().accent.opacity(0.35))
+                .px_3()
+                .py_2()
+                .child(
+                    Label::new(summary)
+                        .text_sm()
+                        .text_color(cx.theme().foreground),
+                )
+                .child(
+                    Button::new("query-fetch-summary-open")
+                        .label(i18n.t("fetch-summary-open"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.workspace.update(cx, |_data, cx| {
+                                cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
+                            });
+                        })),
+                ),
+        )
     }
 }
