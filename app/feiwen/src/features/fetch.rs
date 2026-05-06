@@ -159,15 +159,16 @@ impl Runner<'_> {
                     self.form_emit(FetchFormEvent::FetchNetworkError);
                 }
                 FeiwenError::DescParse
+                | FeiwenError::FetchBlocked
+                | FeiwenError::FetchLogin
                 | FeiwenError::HrefParse
+                | FeiwenError::NovelListParse
                 | FeiwenError::CountParse
-                | FeiwenError::ReadCountParse
                 | FeiwenError::WordCountParse
                 | FeiwenError::AuthorNameParse
                 | FeiwenError::NovelIdParse(_)
                 | FeiwenError::AuthorIdParse(_)
                 | FeiwenError::ChapterIdParse(_)
-                | FeiwenError::ReplyCountParse
                 | FeiwenError::CountUintParse(_) => {
                     event!(Level::ERROR, "Failed to fetch parse: {:?}", err);
                     self.form_emit(FetchFormEvent::FetchParseError);
@@ -481,7 +482,7 @@ impl FetchView {
         let cookie = form.cookie.clone();
         let form = subscriber.downgrade();
         let task = cx.spawn(async move |_, cx| {
-            let span = tracing::info_span!("send", url, start_page, end_page, cookie);
+            let span = tracing::info_span!("send", url, start_page, end_page);
             let mut runner = Runner {
                 conn,
                 url,

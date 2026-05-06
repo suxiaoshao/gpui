@@ -32,12 +32,14 @@ pub(crate) enum FeiwenError {
     ChapterIdParse(String),
     #[error("count 解析错误")]
     CountParse,
+    #[error("文库页面被站点拦截")]
+    FetchBlocked,
+    #[error("文库页面需要登录")]
+    FetchLogin,
+    #[error("文库列表解析为空")]
+    NovelListParse,
     #[error("word count 解析错误")]
     WordCountParse,
-    #[error("read count 解析错误")]
-    ReadCountParse,
-    #[error("reply count 解析错误")]
-    ReplyCountParse,
     #[error("count uint 解析错误,{}",.0)]
     CountUintParse(String),
     #[error("log file not found")]

@@ -5,7 +5,7 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
 };
 use diesel::{
-    SqliteConnection,
+    RunQueryDsl, SqliteConnection,
     connection::SimpleConnection,
     r2d2::{ConnectionManager, Pool},
 };
@@ -53,6 +53,7 @@ fn establish_connection() -> FeiwenResult<DbConn> {
     if not_exists {
         create_tables(&pool)?;
     }
+    migrate_tables(&pool)?;
     Ok(pool)
 }
 
@@ -81,4 +82,29 @@ fn create_tables(conn: &DbConn) -> FeiwenResult<()> {
         "../migrations/2022-05-16-064913_novel_tag/up.sql"
     ))?;
     Ok(())
+}
+
+fn migrate_tables(conn: &DbConn) -> FeiwenResult<()> {
+    let conn = &mut conn.get()?;
+    if novel_counts_are_not_null(conn)? {
+        conn.batch_execute(include_str!(
+            "../migrations/2026-05-06-000001_nullable_novel_counts/up.sql"
+        ))?;
+    }
+    Ok(())
+}
+
+fn novel_counts_are_not_null(conn: &mut SqliteConnection) -> FeiwenResult<bool> {
+    #[derive(diesel::QueryableByName)]
+    struct TableColumn {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        name: String,
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        notnull: i32,
+    }
+
+    let columns = diesel::sql_query("PRAGMA table_info(novel)").load::<TableColumn>(conn)?;
+    Ok(columns.iter().any(|column| {
+        matches!(column.name.as_str(), "read_count" | "reply_count") && column.notnull != 0
+    }))
 }

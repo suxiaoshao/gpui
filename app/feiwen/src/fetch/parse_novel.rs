@@ -32,14 +32,31 @@ static SELECTOR_RAT: LazyLock<Selector> = LazyLock::new(|| {
 });
 static SELECTOR_DESC: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("div.col-xs-12.h5.brief-0 > span.smaller-5").unwrap());
+static SELECTOR_FIREWALL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("body.firewall-page").unwrap());
+static SELECTOR_FORM: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("form[action]").unwrap());
 
 pub(crate) fn parse_page(body: String) -> FeiwenResult<Vec<Novel>> {
     let document = Html::parse_document(&body);
+    if document.select(&SELECTOR_FIREWALL).next().is_some() {
+        return Err(FeiwenError::FetchBlocked);
+    }
+    if document.select(&SELECTOR_FORM).any(|form| {
+        form.value()
+            .attr("action")
+            .is_some_and(|action| action.ends_with("/login"))
+    }) {
+        return Err(FeiwenError::FetchLogin);
+    }
     let novels = document
         .select(&SELECTOR_ARTICLE)
         .map(|x| Html::parse_document(&x.inner_html()))
         .map(parse_novel)
         .collect::<FeiwenResult<Vec<_>>>()?;
+    if novels.is_empty() {
+        return Err(FeiwenError::NovelListParse);
+    }
     Ok(novels)
 }
 
@@ -64,4 +81,32 @@ fn parse_novel(doc: Html) -> FeiwenResult<Novel> {
         tags,
         is_limit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::errors::FeiwenError;
+
+    use super::parse_page;
+
+    #[test]
+    fn parse_page_rejects_firewall_page() {
+        let err = parse_page(r#"<body class="firewall-page"></body>"#.to_owned()).unwrap_err();
+        assert!(matches!(err, FeiwenError::FetchBlocked));
+    }
+
+    #[test]
+    fn parse_page_rejects_login_page() {
+        let err = parse_page(
+            r#"<form method="POST" action="https://xn--pxtr7m.com/login"></form>"#.to_owned(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, FeiwenError::FetchLogin));
+    }
+
+    #[test]
+    fn parse_page_rejects_empty_novel_list() {
+        let err = parse_page("<html></html>".to_owned()).unwrap_err();
+        assert!(matches!(err, FeiwenError::NovelListParse));
+    }
 }
