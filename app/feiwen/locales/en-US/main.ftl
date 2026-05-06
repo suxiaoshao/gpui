@@ -53,6 +53,7 @@ fetch-error-kind-database = Database Error
 fetch-error-kind-network = Network Error
 fetch-error-kind-parse = Parse Error
 fetch-error-kind-other = Other Error
+fetch-error-invalid-page-range = Start page cannot be greater than end page
 
 fetch-log-status-running = Fetching
 fetch-log-status-success = Success

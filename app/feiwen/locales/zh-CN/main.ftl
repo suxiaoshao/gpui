@@ -53,6 +53,7 @@ fetch-error-kind-database = 数据库错误
 fetch-error-kind-network = 网络错误
 fetch-error-kind-parse = 解析错误
 fetch-error-kind-other = 其他错误
+fetch-error-invalid-page-range = 起始页不能大于结束页
 
 fetch-log-status-running = 抓取中
 fetch-log-status-success = 成功

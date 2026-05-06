@@ -646,12 +646,13 @@ impl FetchView {
             let start_page = match mode {
                 RunMode::Fresh => {
                     if state.start_page > state.end_page {
+                        let message = cx.global::<I18n>().t("fetch-error-invalid-page-range");
                         self.task_state.update(cx, |state, cx| {
                             state.mark_failed(
                                 FetchPageError {
                                     page: state.start_page,
                                     kind: FetchErrorKind::Other,
-                                    message: "起始页不能大于结束页".to_string(),
+                                    message,
                                 },
                                 None,
                             );
