@@ -69,7 +69,12 @@ impl QueryView {
         cx: &mut Context<Self>,
     ) -> Self {
         let query = cx.new(|_cx| Query::new());
-        let _subscriptions = vec![cx.subscribe_in(&query, window, Self::subscribe_in)];
+        let _subscriptions = vec![
+            cx.subscribe_in(&query, window, Self::subscribe_in),
+            cx.observe(&fetch_task, |_, _, cx| {
+                cx.notify();
+            }),
+        ];
         let search_placeholder = cx.global::<I18n>().t("query-search-placeholder");
         Self {
             workspace,
