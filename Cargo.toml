@@ -4,6 +4,7 @@ members = [
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
+  "crates/app-assets",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
@@ -17,6 +18,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
+app-assets = { path = "./crates/app-assets" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
 

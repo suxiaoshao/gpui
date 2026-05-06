@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     fetch::{self, FetchErrorKind, FetchPageError},
-    foundation::I18n,
+    foundation::{I18n, IconName},
     store::{Db, service::Novel},
 };
 use async_compat::Compat;
@@ -12,14 +12,14 @@ use diesel::{
     SqliteConnection,
     r2d2::{ConnectionManager, PooledConnection},
 };
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable, StyledExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
+    h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
-    scroll::ScrollableElement,
+    table::{Column, DataTable, TableDelegate, TableState},
 };
 use regex::Regex;
 use reqwest::Client;
@@ -27,6 +27,11 @@ use std::time::Instant;
 use tracing::{Instrument, Level, event};
 
 const MAX_PAGE_LOGS: usize = 80;
+const LOG_PAGE_COLUMN: f32 = 72.;
+const LOG_STATUS_COLUMN: f32 = 120.;
+const LOG_INSERTED_COLUMN: f32 = 96.;
+const LOG_ELAPSED_COLUMN: f32 = 96.;
+const LOG_DETAIL_COLUMN: f32 = 520.;
 
 #[derive(Clone)]
 struct FetchRequest {
@@ -409,6 +414,7 @@ impl Runner<'_> {
 pub(crate) struct FetchView {
     workspace: Entity<Workspace>,
     task_state: Entity<FetchTaskState>,
+    log_table: Entity<TableState<FetchLogTableDelegate>>,
     url_input: Entity<InputState>,
     start_page: Entity<InputState>,
     end_page: Entity<InputState>,
@@ -446,6 +452,15 @@ impl FetchView {
                 .pattern(integer_regex)
         });
         let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder(cookie_placeholder));
+        let log_table = cx.new(|cx| {
+            TableState::new(
+                FetchLogTableDelegate {
+                    task_state: task_state.clone(),
+                },
+                window,
+                cx,
+            )
+        });
 
         _subscriptions.push(cx.subscribe_in(
             &url_input,
@@ -565,10 +580,18 @@ impl FetchView {
                 _ => {}
             },
         ));
+        _subscriptions.push(cx.observe(&task_state, |view, _, cx| {
+            view.log_table.update(cx, |table, cx| {
+                table.refresh(cx);
+                cx.notify();
+            });
+            cx.notify();
+        }));
 
         Self {
             workspace,
             task_state,
+            log_table,
             url_input,
             start_page,
             end_page,
@@ -796,8 +819,8 @@ impl FetchView {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .rounded_lg()
-            .child(Label::new(section_config).font_medium())
-            .child(field_label(field_url, field_color))
+            .child(section_title(IconName::Settings, section_config, cx))
+            .child(field_label(IconName::Link, field_url, field_color, cx))
             .child(Input::new(&self.url_input).disabled(is_running))
             .child(
                 div()
@@ -809,7 +832,12 @@ impl FetchView {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(field_label(field_start_page, field_color))
+                            .child(field_label(
+                                IconName::FileText,
+                                field_start_page,
+                                field_color,
+                                cx,
+                            ))
                             .child(NumberInput::new(&self.start_page).disabled(is_running)),
                     )
                     .child(
@@ -818,20 +846,35 @@ impl FetchView {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(field_label(field_end_page, field_color))
+                            .child(field_label(
+                                IconName::FileText,
+                                field_end_page,
+                                field_color,
+                                cx,
+                            ))
                             .child(NumberInput::new(&self.end_page).disabled(is_running)),
                     ),
             )
-            .child(field_label(field_cookie, field_color))
+            .child(field_label(IconName::Cookie, field_cookie, field_color, cx))
             .child(Input::new(&self.cookie_input).disabled(is_running))
             .child(
-                Label::new(cookie_hidden)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Icon::new(IconName::EyeOff)
+                            .size_3()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        Label::new(cookie_hidden)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
             )
             .child(
                 Button::new("fetch-start")
                     .primary()
+                    .icon(IconName::CirclePlay)
                     .label(submit_button)
                     .disabled(is_running)
                     .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
@@ -860,7 +903,7 @@ impl FetchView {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .rounded_lg()
-            .child(Label::new(section_status).font_medium())
+            .child(section_title(IconName::Info, section_status, cx))
             .child(status_body)
     }
 
@@ -872,16 +915,31 @@ impl FetchView {
                 i18n.t("fetch-state-idle-desc"),
             )
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(Label::new(title).text_lg())
-            .child(
-                Label::new(desc)
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground),
-            )
+        status_layout(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(status_title(
+                    IconName::Info,
+                    title,
+                    cx.theme().muted_foreground,
+                ))
+                .child(
+                    Label::new(desc)
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                ),
+            action_panel(
+                IconName::CirclePlay,
+                Button::new("fetch-idle-start")
+                    .primary()
+                    .icon(IconName::CirclePlay)
+                    .label(cx.global::<I18n>().t("fetch-submit-button"))
+                    .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
+                cx,
+            ),
+        )
     }
 
     fn render_progress_status(&self, progress: &FetchProgress, cx: &mut Context<Self>) -> Div {
@@ -892,19 +950,28 @@ impl FetchView {
                 i18n.t("fetch-action-interrupt"),
             )
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(status_title(title, cx.theme().primary))
-            .child(progress_bar(progress, cx))
-            .child(metrics_grid(progress, cx))
-            .child(
+        status_layout(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(status_title(
+                    IconName::LoaderCircle,
+                    title,
+                    cx.theme().primary,
+                ))
+                .child(progress_bar(progress, cx))
+                .child(metrics_grid(progress, cx)),
+            action_panel(
+                IconName::CircleStop,
                 Button::new("fetch-interrupt")
                     .danger()
+                    .icon(IconName::CircleStop)
                     .label(interrupt_label)
                     .on_click(cx.listener(|this, _, _, cx| this.interrupt_fetch(cx))),
-            )
+                cx,
+            ),
+        )
     }
 
     fn render_interrupted_status(&self, progress: &FetchProgress, cx: &mut Context<Self>) -> Div {
@@ -916,32 +983,41 @@ impl FetchView {
                 i18n.t("fetch-action-resume-interrupted"),
             )
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(status_title(title, cx.theme().warning))
-            .child(metrics_grid(progress, cx))
-            .child(
-                Label::new(format!(
-                    "{} {}",
-                    next_page_label,
-                    resume_page_after_interrupt(
-                        progress.last_success_page,
-                        progress.start_page,
-                        progress.end_page
-                    )
-                    .unwrap_or(progress.end_page)
+        status_layout(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(status_title(
+                    IconName::CirclePause,
+                    title,
+                    cx.theme().warning,
                 ))
-                .text_sm()
-                .text_color(cx.theme().muted_foreground),
-            )
-            .child(
+                .child(metrics_grid(progress, cx))
+                .child(
+                    Label::new(format!(
+                        "{} {}",
+                        next_page_label,
+                        resume_page_after_interrupt(
+                            progress.last_success_page,
+                            progress.start_page,
+                            progress.end_page
+                        )
+                        .unwrap_or(progress.end_page)
+                    ))
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+                ),
+            action_panel(
+                IconName::CirclePlay,
                 Button::new("fetch-resume")
                     .warning()
+                    .icon(IconName::CirclePlay)
                     .label(resume_label)
                     .on_click(cx.listener(|this, _, _, cx| this.resume_fetch(cx))),
-            )
+                cx,
+            ),
+        )
     }
 
     fn render_failed_status(&self, failure: &FetchFailure, cx: &mut Context<Self>) -> Div {
@@ -965,61 +1041,80 @@ impl FetchView {
                 i18n.t("fetch-action-retry-failed"),
             )
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(status_title(title, cx.theme().danger))
-            .child(metrics_grid(&failure.progress, cx))
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(metric_card(
-                        failed_page_label,
-                        failure.page.to_string(),
-                        cx.theme().danger,
-                        cx,
-                    ))
-                    .child(metric_card(
-                        error_kind_title,
-                        error_kind_label,
-                        cx.theme().danger,
-                        cx,
-                    ))
-                    .child(metric_card(
-                        error_detail_label,
-                        failure.message.clone(),
-                        cx.theme().danger,
-                        cx,
-                    )),
-            )
-            .child(
-                Label::new(stop_note)
-                    .text_sm()
-                    .text_color(cx.theme().danger),
-            )
-            .child(
+        status_layout(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(status_title(IconName::OctagonX, title, cx.theme().danger))
+                .child(metrics_grid(&failure.progress, cx))
+                .child(
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(metric_card(
+                            failed_page_label,
+                            failure.page.to_string(),
+                            cx.theme().danger,
+                            cx,
+                        ))
+                        .child(metric_card(
+                            error_kind_title,
+                            error_kind_label,
+                            cx.theme().danger,
+                            cx,
+                        ))
+                        .child(metric_card(
+                            error_detail_label,
+                            failure.message.clone(),
+                            cx.theme().danger,
+                            cx,
+                        )),
+                )
+                .child(
+                    Label::new(stop_note)
+                        .text_sm()
+                        .text_color(cx.theme().danger),
+                ),
+            action_panel(
+                IconName::RotateCcw,
                 Button::new("fetch-retry-failed")
                     .danger()
+                    .icon(IconName::RotateCcw)
                     .label(retry_label)
                     .on_click(cx.listener(|this, _, _, cx| this.retry_failed_page(cx))),
-            )
+                cx,
+            ),
+        )
     }
 
     fn render_success_status(&self, progress: &FetchProgress, cx: &mut Context<Self>) -> Div {
         let title = cx.global::<I18n>().t("fetch-state-success");
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(status_title(title, cx.theme().success))
-            .child(metrics_grid(progress, cx))
+        status_layout(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(status_title(
+                    IconName::CircleCheck,
+                    title,
+                    cx.theme().success,
+                ))
+                .child(metrics_grid(progress, cx)),
+            action_panel(
+                IconName::RefreshCcw,
+                Button::new("fetch-success-restart")
+                    .primary()
+                    .icon(IconName::RefreshCcw)
+                    .label(cx.global::<I18n>().t("fetch-submit-button"))
+                    .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
+                cx,
+            ),
+        )
     }
 
     fn render_logs_panel(&self, cx: &mut Context<Self>) -> Div {
         let section_logs = cx.global::<I18n>().t("fetch-section-page-logs");
-        let logs = self.task_state.read(cx).logs.clone();
         div()
             .flex_1()
             .min_h_0()
@@ -1035,14 +1130,13 @@ impl FetchView {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(Label::new(section_logs).font_medium()),
+                    .child(section_title(IconName::List, section_logs, cx)),
             )
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(logs.into_iter().rev().map(|log| render_log_row(log, cx))),
+                    .child(DataTable::new(&self.log_table).small().stripe(true)),
             )
     }
 
@@ -1081,16 +1175,67 @@ impl FetchView {
     }
 }
 
-fn field_label(label: String, color: Hsla) -> Label {
-    Label::new(label).text_sm().font_medium().text_color(color)
+fn section_title(icon: IconName, label: String, cx: &mut Context<FetchView>) -> Div {
+    h_flex()
+        .gap_2()
+        .child(Icon::new(icon).size_4().text_color(cx.theme().foreground))
+        .child(Label::new(label).font_medium())
 }
 
-fn status_title(label: String, color: Hsla) -> Div {
+fn field_label(icon: IconName, label: String, color: Hsla, cx: &mut Context<FetchView>) -> Div {
+    h_flex()
+        .gap_1()
+        .child(
+            Icon::new(icon)
+                .size_3()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(Label::new(label).text_sm().font_medium().text_color(color))
+}
+
+fn status_layout(details: Div, actions: Div) -> Div {
+    div()
+        .flex()
+        .gap_4()
+        .items_stretch()
+        .child(details.flex_1().min_w_0())
+        .child(actions)
+}
+
+fn action_panel(icon: IconName, action: impl IntoElement, cx: &mut Context<FetchView>) -> Div {
+    div()
+        .w(px(240.))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .border_l_1()
+        .border_color(cx.theme().border)
+        .pl_4()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Icon::new(icon)
+                        .size_4()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    Label::new(cx.global::<I18n>().t("fetch-section-actions"))
+                        .text_sm()
+                        .font_medium()
+                        .text_color(cx.theme().muted_foreground),
+                ),
+        )
+        .child(action)
+}
+
+fn status_title(icon: IconName, label: String, color: Hsla) -> Div {
     div()
         .flex()
         .items_center()
         .gap_2()
-        .child(div().size(px(8.)).rounded_full().bg(color))
+        .child(Icon::new(icon).size_4().text_color(color))
         .child(Label::new(label).text_lg().font_medium().text_color(color))
 }
 
@@ -1163,63 +1308,160 @@ fn metric_card(label: String, value: String, color: Hsla, cx: &mut Context<Fetch
         .child(Label::new(value).text_sm().font_medium().text_color(color))
 }
 
-fn render_log_row(log: FetchPageLog, cx: &mut Context<FetchView>) -> Div {
-    let (label, color) = match log.status {
-        FetchPageLogStatus::Running => (
-            cx.global::<I18n>().t("fetch-log-status-running"),
-            cx.theme().primary,
-        ),
-        FetchPageLogStatus::Success => (
-            cx.global::<I18n>().t("fetch-log-status-success"),
-            cx.theme().success,
-        ),
-        FetchPageLogStatus::Failed => (
-            cx.global::<I18n>().t("fetch-log-status-failed"),
-            cx.theme().danger,
-        ),
-    };
-    let message = {
+struct FetchLogTableDelegate {
+    task_state: Entity<FetchTaskState>,
+}
+
+impl FetchLogTableDelegate {
+    fn log_at(&self, row_ix: usize, cx: &App) -> Option<FetchPageLog> {
+        let logs = &self.task_state.read(cx).logs;
+        logs.len()
+            .checked_sub(row_ix + 1)
+            .and_then(|ix| logs.get(ix))
+            .cloned()
+    }
+
+    fn status_cell(log: &FetchPageLog, cx: &mut Context<TableState<Self>>) -> Div {
+        let (label, color, icon) = match log.status {
+            FetchPageLogStatus::Running => (
+                cx.global::<I18n>().t("fetch-log-status-running"),
+                cx.theme().primary,
+                IconName::LoaderCircle,
+            ),
+            FetchPageLogStatus::Success => (
+                cx.global::<I18n>().t("fetch-log-status-success"),
+                cx.theme().success,
+                IconName::CircleCheck,
+            ),
+            FetchPageLogStatus::Failed => (
+                cx.global::<I18n>().t("fetch-log-status-failed"),
+                cx.theme().danger,
+                IconName::OctagonX,
+            ),
+        };
+
+        h_flex()
+            .gap_1()
+            .rounded_full()
+            .px_2()
+            .py_1()
+            .bg(color.opacity(0.10))
+            .child(Icon::new(icon).size_3().text_color(color))
+            .child(Label::new(label).text_xs().text_color(color))
+    }
+}
+
+impl TableDelegate for FetchLogTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        5
+    }
+
+    fn rows_count(&self, cx: &App) -> usize {
+        self.task_state.read(cx).logs.len()
+    }
+
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
         let i18n = cx.global::<I18n>();
-        log_message(&log, i18n)
-    };
-    let inserted = log
-        .inserted
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "-".to_string());
-    let elapsed = log
-        .elapsed_ms
-        .map(format_elapsed)
-        .unwrap_or_else(|| "-".to_string());
-    div()
-        .flex()
-        .items_center()
-        .gap_3()
-        .px_3()
-        .py_2()
-        .border_b_1()
-        .border_color(cx.theme().border.opacity(0.55))
-        .when(log.status == FetchPageLogStatus::Failed, |this| {
-            this.bg(cx.theme().danger.opacity(0.06))
-        })
-        .child(Label::new(log.page.to_string()).w(px(64.)).text_sm())
-        .child(
-            div()
-                .w(px(72.))
-                .rounded_full()
-                .px_2()
-                .py_1()
-                .bg(color.opacity(0.10))
-                .child(Label::new(label).text_xs().text_color(color)),
-        )
-        .child(Label::new(inserted).w(px(84.)).text_sm())
-        .child(Label::new(elapsed).w(px(84.)).text_sm())
-        .child(
-            Label::new(message)
-                .flex_1()
-                .min_w_0()
+        match col_ix {
+            0 => Column::new("page", i18n.t("fetch-log-column-page"))
+                .width(px(LOG_PAGE_COLUMN))
+                .fixed_left()
+                .resizable(false),
+            1 => Column::new("status", i18n.t("fetch-log-column-status"))
+                .width(px(LOG_STATUS_COLUMN))
+                .resizable(false),
+            2 => Column::new("inserted", i18n.t("fetch-log-column-inserted"))
+                .width(px(LOG_INSERTED_COLUMN))
+                .resizable(false),
+            3 => Column::new("elapsed", i18n.t("fetch-log-column-elapsed"))
+                .width(px(LOG_ELAPSED_COLUMN))
+                .resizable(false),
+            _ => Column::new("detail", i18n.t("fetch-log-column-detail"))
+                .width(px(LOG_DETAIL_COLUMN))
+                .resizable(true),
+        }
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let mut row = div().id(("fetch-log-row", row_ix));
+        if self
+            .log_at(row_ix, cx)
+            .is_some_and(|log| log.status == FetchPageLogStatus::Failed)
+        {
+            row = row.bg(cx.theme().danger.opacity(0.06));
+        }
+        row
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(log) = self.log_at(row_ix, cx) else {
+            return Label::new("").into_any_element();
+        };
+
+        match col_ix {
+            0 => Label::new(log.page.to_string())
                 .text_sm()
-                .text_color(cx.theme().muted_foreground),
-        )
+                .into_any_element(),
+            1 => Self::status_cell(&log, cx).into_any_element(),
+            2 => Label::new(
+                log.inserted
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            )
+            .text_sm()
+            .into_any_element(),
+            3 => Label::new(
+                log.elapsed_ms
+                    .map(format_elapsed)
+                    .unwrap_or_else(|| "-".to_string()),
+            )
+            .text_sm()
+            .into_any_element(),
+            _ => {
+                let message = log_message(&log, cx.global::<I18n>());
+                Label::new(message)
+                    .text_sm()
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn cell_text(&self, row_ix: usize, col_ix: usize, cx: &App) -> String {
+        let Some(log) = self.log_at(row_ix, cx) else {
+            return String::new();
+        };
+
+        match col_ix {
+            0 => log.page.to_string(),
+            1 => match log.status {
+                FetchPageLogStatus::Running => cx.global::<I18n>().t("fetch-log-status-running"),
+                FetchPageLogStatus::Success => cx.global::<I18n>().t("fetch-log-status-success"),
+                FetchPageLogStatus::Failed => cx.global::<I18n>().t("fetch-log-status-failed"),
+            },
+            2 => log
+                .inserted
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            3 => log
+                .elapsed_ms
+                .map(format_elapsed)
+                .unwrap_or_else(|| "-".to_string()),
+            _ => log_message(&log, cx.global::<I18n>()),
+        }
+    }
 }
 
 fn log_message(log: &FetchPageLog, i18n: &I18n) -> String {
