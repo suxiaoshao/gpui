@@ -9,8 +9,8 @@ diesel::table! {
         latest_chapter_name -> Text,
         latest_chapter_id -> Integer,
         word_count -> Integer,
-        read_count -> Integer,
-        reply_count -> Integer,
+        read_count -> Nullable<Integer>,
+        reply_count -> Nullable<Integer>,
         author_id -> Nullable<Integer>,
         author_name -> Text,
     }

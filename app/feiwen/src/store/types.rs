@@ -13,8 +13,8 @@ pub(crate) enum Author {
 #[derive(Debug, Clone)]
 pub(crate) struct NovelCount {
     pub(crate) word_count: i32,
-    pub(crate) read_count: i32,
-    pub(crate) reply_count: i32,
+    pub(crate) read_count: Option<i32>,
+    pub(crate) reply_count: Option<i32>,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
