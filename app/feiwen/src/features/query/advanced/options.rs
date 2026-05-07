@@ -1,5 +1,4 @@
 use crate::{
-    components::PickerOption,
     errors::FeiwenResult,
     store::{
         model::NovelModel,
@@ -8,8 +7,12 @@ use crate::{
     },
 };
 use diesel::SqliteConnection;
-use gpui::{AnyElement, IntoElement, SharedString};
-use gpui_component::select::{SearchableVec, SelectGroup, SelectItem};
+use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window};
+use gpui_component::{
+    label::Label,
+    select::{SearchableVec, SelectGroup, SelectItem},
+    v_flex,
+};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,58 +283,90 @@ pub(super) struct IdOption {
     pub(super) description: String,
 }
 
-impl PickerOption for TagOption {
-    type Key = String;
+impl SelectItem for TagOption {
+    type Value = String;
 
-    fn key(&self) -> Self::Key {
-        self.name.clone()
-    }
-
-    fn label(&self) -> SharedString {
+    fn title(&self) -> SharedString {
         self.name.clone().into()
     }
 
-    fn description(&self) -> Option<SharedString> {
-        Some(format!("标签 ID {}", self.id).into())
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        option_content(self.title(), format!("标签 ID {}", self.id).into())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.name
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        option_matches(&self.name, &format!("标签 ID {}", self.id), query)
     }
 }
 
-impl PickerOption for AuthorOption {
-    type Key = AuthorRef;
+impl SelectItem for AuthorOption {
+    type Value = AuthorRef;
 
-    fn key(&self) -> Self::Key {
-        self.author.clone()
-    }
-
-    fn label(&self) -> SharedString {
+    fn title(&self) -> SharedString {
         self.name.clone().into()
     }
 
-    fn description(&self) -> Option<SharedString> {
-        Some(
-            match &self.author {
-                AuthorRef::Id(id) => format!("作者 ID {id}"),
-                AuthorRef::Name(_) => "匿名作者".to_owned(),
-            }
-            .into(),
-        )
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        option_content(self.title(), self.description().into())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.author
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        option_matches(&self.name, &self.description(), query)
     }
 }
 
-impl PickerOption for IdOption {
-    type Key = i32;
-
-    fn key(&self) -> Self::Key {
-        self.id
+impl AuthorOption {
+    fn description(&self) -> String {
+        match &self.author {
+            AuthorRef::Id(id) => format!("作者 ID {id}"),
+            AuthorRef::Name(_) => "匿名作者".to_owned(),
+        }
     }
+}
 
-    fn label(&self) -> SharedString {
+impl SelectItem for IdOption {
+    type Value = i32;
+
+    fn title(&self) -> SharedString {
         self.label.clone().into()
     }
 
-    fn description(&self) -> Option<SharedString> {
-        Some(self.description.clone().into())
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        option_content(self.title(), self.description.clone().into())
     }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        option_matches(&self.label, &self.description, query)
+    }
+}
+
+fn option_content(title: SharedString, description: SharedString) -> impl IntoElement {
+    v_flex()
+        .min_w_0()
+        .gap_0p5()
+        .child(Label::new(title).text_sm())
+        .child(Label::new(description).text_xs())
+}
+
+fn option_matches(title: &str, description: &str, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_lowercase();
+    title.to_lowercase().contains(&query) || description.to_lowercase().contains(&query)
 }
 
 pub(super) fn field_items() -> FieldSelectItems {

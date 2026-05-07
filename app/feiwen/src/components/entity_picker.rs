@@ -1,80 +1,101 @@
 use gpui::{
-    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    App, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement, MouseDownEvent,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    canvas, div, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName,
+    ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
     label::Label,
-    scroll::ScrollableElement,
+    list::ListState,
+    select::SelectItem,
     v_flex,
 };
+use std::rc::Rc;
 
-use super::picker::PickerOption;
+use super::picker::{
+    PickerListDelegate, PickerPopoverOptions, PickerSection, render_picker_popover,
+};
 
-pub(crate) struct EntityPickerState<T: PickerOption> {
+pub(crate) struct EntityPickerState<T>
+where
+    T: SelectItem + Clone + 'static,
+    T::Value: Clone + PartialEq + 'static,
+{
     options: Vec<T>,
-    selected: Option<T::Key>,
-    input: Entity<InputState>,
+    selected: Option<T::Value>,
+    list: Entity<ListState<PickerListDelegate<T>>>,
+    picker_bounds: Bounds<Pixels>,
     open: bool,
-    _subscriptions: Vec<gpui::Subscription>,
+    placeholder: SharedString,
 }
 
-impl<T: PickerOption> EntityPickerState<T> {
+impl<T> EntityPickerState<T>
+where
+    T: SelectItem + Clone + 'static,
+    T::Value: Clone + PartialEq + 'static,
+{
     pub(crate) fn new(
         options: Vec<T>,
         placeholder: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        let _subscriptions = vec![cx.subscribe_in(&input, window, Self::on_input_event)];
+        let state = cx.entity().downgrade();
+        let on_confirm = Rc::new(move |item: T, window: &mut Window, cx: &mut App| {
+            let state = state.clone();
+            window.defer(cx, move |window, cx| {
+                let _ = state.update(cx, |picker, cx| {
+                    picker.select_value(item.value().clone(), window, cx);
+                });
+            });
+        });
+
+        let state = cx.entity().downgrade();
+        let on_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let _ = state.update(cx, |picker, cx| picker.close(window, cx));
+        });
+
+        let sections = PickerSection::flat(options.clone());
+        let list = cx.new(|cx| {
+            ListState::new(
+                PickerListDelegate::new(
+                    sections,
+                    false,
+                    "无匹配结果".into(),
+                    Vec::new(),
+                    on_confirm,
+                    on_cancel,
+                ),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+
         Self {
             options,
             selected: None,
-            input,
+            list,
+            picker_bounds: Bounds::default(),
             open: false,
-            _subscriptions,
+            placeholder: placeholder.into(),
         }
     }
 
-    pub(crate) fn selected_key(&self) -> Option<T::Key> {
+    pub(crate) fn selected_key(&self) -> Option<T::Value> {
         self.selected.clone()
     }
 
     pub(crate) fn set_options(&mut self, options: Vec<T>, cx: &mut Context<Self>) {
         self.options = options;
         if let Some(selected) = &self.selected
-            && !self.options.iter().any(|option| option.key() == *selected)
+            && !self.options.iter().any(|option| option.value() == selected)
         {
             self.selected = None;
         }
-        cx.notify();
-    }
-
-    fn on_input_event(
-        &mut self,
-        _: &Entity<InputState>,
-        event: &InputEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if matches!(event, InputEvent::Change | InputEvent::Focus) {
-            self.open = true;
-            cx.notify();
-        }
-    }
-
-    fn toggle_open(&mut self, cx: &mut Context<Self>) {
-        self.open = !self.open;
-        cx.notify();
-    }
-
-    fn select_key(&mut self, key: T::Key, cx: &mut Context<Self>) {
-        self.selected = Some(key);
-        self.open = false;
+        self.sync_list(cx);
         cx.notify();
     }
 
@@ -82,127 +103,204 @@ impl<T: PickerOption> EntityPickerState<T> {
         let selected = self.selected.as_ref()?;
         self.options
             .iter()
-            .find(|option| option.key() == *selected)
+            .find(|option| option.value() == selected)
             .cloned()
     }
 
-    fn filtered_options(&self, cx: &gpui::App) -> Vec<T> {
-        let query = self.input.read(cx).value().to_string();
-        self.options
-            .iter()
-            .filter(|option| option.matches(&query))
-            .cloned()
-            .collect()
+    fn selected_values(&self) -> Vec<T::Value> {
+        self.selected.iter().cloned().collect()
+    }
+
+    fn sync_list(&mut self, cx: &mut Context<Self>) {
+        let sections = PickerSection::flat(self.options.clone());
+        let selected_values = self.selected_values();
+        self.list.update(cx, |list, _| {
+            list.delegate_mut().set_sections(sections);
+            list.delegate_mut().set_selected_values(selected_values);
+        });
+    }
+
+    fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = true;
+        self.sync_list(cx);
+        let sections = PickerSection::flat(self.options.clone());
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected.as_ref());
+        self.list.update(cx, |list, cx| {
+            list.set_selected_index(selected_ix, window, cx);
+            list.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open = false;
+        cx.notify();
+    }
+
+    fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            self.close(window, cx);
+        } else {
+            self.open(window, cx);
+        }
+    }
+
+    fn select_value(&mut self, value: T::Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected = Some(value);
+        self.sync_list(cx);
+        let sections = PickerSection::flat(self.options.clone());
+        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected.as_ref());
+        self.list.update(cx, |list, cx| {
+            list.set_selected_index(selected_ix, window, cx)
+        });
+        self.close(window, cx);
+    }
+
+    fn trigger_title(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.selected_option().map_or_else(
+            || {
+                Label::new(self.placeholder.clone())
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .into_any_element()
+            },
+            |option| {
+                v_flex()
+                    .min_w_0()
+                    .child(Label::new(option.title()).text_sm())
+                    .into_any_element()
+            },
+        )
     }
 }
 
-impl<T: PickerOption> Render for EntityPickerState<T> {
+impl<T> Render for EntityPickerState<T>
+where
+    T: SelectItem + Clone + 'static,
+    T::Value: Clone + PartialEq + 'static,
+{
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let selected = self.selected_option();
-        let filtered = self.filtered_options(cx);
+        let list = self.list.clone();
+        let bounds = self.picker_bounds;
+        let trigger_title = self.trigger_title(cx);
+        let on_mouse_down_out = cx.listener(|picker, event: &MouseDownEvent, window, cx| {
+            if picker.picker_bounds.contains(&event.position) {
+                return;
+            }
+            picker.close(window, cx);
+        });
 
-        v_flex()
-            .gap_1()
+        div()
             .child(
                 h_flex()
+                    .relative()
                     .min_h(px(32.))
+                    .w_full()
                     .gap_1()
                     .px_2()
                     .border_1()
                     .border_color(cx.theme().input)
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
+                    .items_center()
                     .child(
-                        v_flex()
+                        canvas(
+                            {
+                                let state = cx.entity();
+                                move |bounds, _, cx| {
+                                    state.update(cx, |picker, _| {
+                                        picker.picker_bounds = bounds;
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
+                        div()
+                            .id("entity-picker-value")
                             .flex_1()
-                            .when_some(selected, |this, option| {
-                                this.child(Label::new(option.label()).text_sm()).when_some(
-                                    option.description(),
-                                    |this, description| {
-                                        this.child(Label::new(description).text_xs())
-                                    },
-                                )
-                            })
-                            .when(self.selected.is_none(), |this| {
-                                this.child(Input::new(&self.input).appearance(false))
-                            }),
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|picker, _, window, cx| {
+                                picker.toggle_open(window, cx);
+                            }))
+                            .child(trigger_title),
                     )
                     .child(
                         Button::new("entity-picker-toggle")
                             .ghost()
-                            .icon(IconName::ChevronDown)
+                            .icon(if self.open {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
                             .tooltip("展开选项")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| this.toggle_open(cx));
-                                }
-                            }),
+                            .on_click(cx.listener(|picker, _, window, cx| {
+                                picker.toggle_open(window, cx);
+                            })),
                     ),
             )
             .when(self.open, |this| {
-                this.child(
-                    v_flex()
-                        .max_h(px(180.))
-                        .overflow_y_scrollbar()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().background)
-                        .shadow_sm()
-                        .when(filtered.is_empty(), |this| {
-                            this.child(
-                                div()
-                                    .p_2()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("无匹配结果"),
-                            )
-                        })
-                        .children(filtered.into_iter().enumerate().map(|(ix, option)| {
-                            render_option(ix, option, &entity, &self.selected)
-                        })),
-                )
+                this.child(render_picker_popover(
+                    bounds,
+                    list,
+                    PickerPopoverOptions::fixed_width(px(320.)).search_placeholder("搜索"),
+                    on_mouse_down_out,
+                    cx,
+                ))
             })
     }
 }
 
-fn render_option<T: PickerOption>(
-    ix: usize,
-    option: T,
-    entity: &Entity<EntityPickerState<T>>,
-    selected: &Option<T::Key>,
-) -> AnyElement {
-    let key = option.key();
-    let is_selected = selected.as_ref().is_some_and(|selected| *selected == key);
-    h_flex()
-        .id(("entity-picker-option", ix))
-        .gap_2()
-        .px_2()
-        .py_1()
-        .items_center()
-        .cursor_pointer()
-        .child(if is_selected {
-            Icon::new(IconName::Check).into_any_element()
-        } else {
-            Icon::new(IconName::BookOpen).into_any_element()
-        })
-        .child(
-            v_flex()
-                .gap_0p5()
-                .child(Label::new(option.label()).text_sm())
-                .when_some(option.description(), |this, description| {
-                    this.child(Label::new(description).text_xs())
-                }),
-        )
-        .on_click({
-            let entity = entity.clone();
-            move |_, _, cx| {
-                entity.update(cx, |this, cx| {
-                    this.select_key(key.clone(), cx);
-                });
-            }
-        })
-        .into_any_element()
+#[cfg(test)]
+mod tests {
+    use gpui::{IntoElement, SharedString, Window};
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct OptionItem {
+        label: &'static str,
+        value: i32,
+        description: &'static str,
+    }
+
+    impl SelectItem for OptionItem {
+        type Value = i32;
+
+        fn title(&self) -> SharedString {
+            self.label.into()
+        }
+
+        fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+            self.label.into_any_element()
+        }
+
+        fn value(&self) -> &Self::Value {
+            &self.value
+        }
+
+        fn matches(&self, query: &str) -> bool {
+            self.label.contains(query) || self.description.contains(query)
+        }
+    }
+
+    #[test]
+    fn select_item_matches_label_and_description() {
+        let item = OptionItem {
+            label: "作者",
+            value: 1,
+            description: "匿名作者",
+        };
+
+        assert!(item.matches("作者"));
+        assert!(item.matches("匿名"));
+        assert!(!item.matches("标签"));
+    }
 }
