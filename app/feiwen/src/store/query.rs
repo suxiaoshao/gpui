@@ -91,7 +91,7 @@ pub(crate) enum TagsPredicate {
     IsNotEmpty,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AuthorRef {
     Id(i32),
     Name(String),
@@ -102,7 +102,6 @@ pub(crate) enum AuthorPredicate {
     Is(AuthorRef),
     In(Vec<AuthorRef>),
     NotIn(Vec<AuthorRef>),
-    NameContains(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,10 +121,15 @@ pub(crate) enum SortExpr {
     Number(NumberField),
     Text(TextField),
     Bool(BoolField),
+    #[allow(dead_code)]
     Constant(f64),
+    #[allow(dead_code)]
     Add(Box<SortExpr>, Box<SortExpr>),
+    #[allow(dead_code)]
     Sub(Box<SortExpr>, Box<SortExpr>),
+    #[allow(dead_code)]
     Mul(Box<SortExpr>, Box<SortExpr>),
+    #[allow(dead_code)]
     Div(Box<SortExpr>, Box<SortExpr>),
 }
 
@@ -217,7 +221,6 @@ impl AuthorPredicate {
             AuthorPredicate::Is(author) => author.matches(record),
             AuthorPredicate::In(authors) => authors.iter().any(|author| author.matches(record)),
             AuthorPredicate::NotIn(authors) => !authors.iter().any(|author| author.matches(record)),
-            AuthorPredicate::NameContains(value) => record.author_name.contains(value),
         }
     }
 }
@@ -482,7 +485,12 @@ mod tests {
         assert!(Predicate::Author(AuthorPredicate::In(vec![AuthorRef::Id(1)])).matches(&known));
         assert!(Predicate::Author(AuthorPredicate::NotIn(vec![AuthorRef::Id(9)])).matches(&known));
         assert!(
-            Predicate::Author(AuthorPredicate::NameContains("author".to_owned())).matches(&known)
+            Predicate::Text {
+                field: TextField::AuthorName,
+                op: TextOp::Contains,
+                value: "author".to_owned(),
+            }
+            .matches(&known)
         );
         assert!(
             Predicate::Author(AuthorPredicate::Is(AuthorRef::Name("匿名作者".to_owned())))
@@ -543,6 +551,14 @@ mod tests {
             )
             .eval(&record(1)),
             Some(SortValue::Number(90.))
+        );
+        assert_eq!(
+            SortExpr::Add(
+                Box::new(SortExpr::Number(NumberField::ReplyCount)),
+                Box::new(SortExpr::Constant(5.)),
+            )
+            .eval(&record(1)),
+            Some(SortValue::Number(15.))
         );
         assert_eq!(
             SortExpr::Mul(

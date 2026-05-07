@@ -8,6 +8,7 @@ use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod components;
 mod errors;
 mod features;
 mod fetch;

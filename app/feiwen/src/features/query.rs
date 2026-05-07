@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use super::{
     Workspace,
     fetch::FetchTaskState,
@@ -8,31 +6,25 @@ use super::{
 use crate::{
     errors::FeiwenError,
     foundation::I18n,
-    store::{
-        Db,
-        service::{Novel, TagWithId},
-    },
+    store::{Db, service::Novel},
 };
-use advanced::AdvancedQueryState;
+use advanced::{AdvancedQueryState, QueryOptions};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, StyledExt,
     alert::Alert,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
     label::Label,
     resizable::{h_resizable, resizable_panel, v_resizable},
     table::{DataTable, TableState},
     v_flex,
 };
 use results_table::ResultsTableDelegate;
-use tags_select::TagsSelect;
 
 mod advanced;
 mod results_table;
-mod tags_select;
 
 #[derive(Default)]
 enum QueryData {
@@ -46,6 +38,7 @@ enum QueryData {
 enum QueryEvent {
     RouteToFetch,
     Search,
+    Reset,
 }
 
 impl EventEmitter<QueryEvent> for Query {}
@@ -61,10 +54,8 @@ impl Query {
 pub(crate) struct QueryView {
     workspace: Entity<Workspace>,
     fetch_task: Entity<FetchTaskState>,
-    tag_select_view: Entity<TagsSelect>,
     advanced: AdvancedQueryState,
     results_table: Entity<TableState<ResultsTableDelegate>>,
-    search_input: Entity<InputState>,
     data: QueryData,
     _subscriptions: Vec<Subscription>,
     query: Entity<Query>,
@@ -84,20 +75,24 @@ impl QueryView {
                 cx.notify();
             }),
         ];
-        let search_placeholder = cx.global::<I18n>().t("query-search-placeholder");
+        let (options, data) = match cx.global::<Db>().get() {
+            Ok(mut conn) => match QueryOptions::load(&mut conn) {
+                Ok(options) => (options, QueryData::Init),
+                Err(err) => (QueryOptions::default(), QueryData::Err(err)),
+            },
+            Err(err) => (QueryOptions::default(), QueryData::Err(err.into())),
+        };
         Self {
             workspace,
             fetch_task,
-            tag_select_view: cx.new(TagsSelect::new),
-            advanced: AdvancedQueryState::new(),
+            advanced: AdvancedQueryState::new(options, window, cx),
             results_table: cx.new(|cx| {
                 TableState::new(ResultsTableDelegate::new(), window, cx)
                     .col_resizable(true)
                     .col_movable(true)
                     .row_selectable(true)
             }),
-            search_input: cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder)),
-            data: QueryData::Init,
+            data,
             _subscriptions,
             query,
         }
@@ -116,16 +111,19 @@ impl QueryView {
                 });
             }
             QueryEvent::Search => {
-                let conn = &mut cx.global::<Db>().get().unwrap();
-                let search_name = self.search_input.read(cx).value();
-                let selected_tags = self
-                    .tag_select_view
-                    .read(cx)
-                    .get_selected()
-                    .into_iter()
-                    .map(|TagWithId { name, .. }| name)
-                    .collect::<HashSet<_>>();
-                let spec = match self.advanced.query_spec(&search_name, &selected_tags, cx) {
+                let options = match cx.global::<Db>().get() {
+                    Ok(mut conn) => QueryOptions::load(&mut conn),
+                    Err(err) => Err(err.into()),
+                };
+                match options {
+                    Ok(options) => self.advanced.set_options(options, cx),
+                    Err(err) => {
+                        self.data = QueryData::Err(err);
+                        cx.notify();
+                        return;
+                    }
+                }
+                let spec = match self.advanced.query_spec(cx) {
                     Ok(spec) => spec,
                     Err(err) => {
                         self.results_table.update(cx, |table, cx| {
@@ -138,7 +136,11 @@ impl QueryView {
                         return;
                     }
                 };
-                match Novel::query(&spec, conn) {
+                let result = match cx.global::<Db>().get() {
+                    Ok(mut conn) => Novel::query(&spec, &mut conn),
+                    Err(err) => Err(err.into()),
+                };
+                match result {
                     Ok(data) => {
                         let count = data.len();
                         self.results_table.update(cx, |table, cx| {
@@ -147,6 +149,25 @@ impl QueryView {
                             cx.notify();
                         });
                         self.data = QueryData::Ok(count);
+                    }
+                    Err(err) => self.data = QueryData::Err(err),
+                }
+                cx.notify();
+            }
+            QueryEvent::Reset => {
+                let options = match cx.global::<Db>().get() {
+                    Ok(mut conn) => QueryOptions::load(&mut conn),
+                    Err(err) => Err(err.into()),
+                };
+                match options {
+                    Ok(options) => {
+                        self.advanced = AdvancedQueryState::new(options, _window, cx);
+                        self.results_table.update(cx, |table, cx| {
+                            table.delegate_mut().set_novels(Vec::new());
+                            table.refresh(cx);
+                            cx.notify();
+                        });
+                        self.data = QueryData::Init;
                     }
                     Err(err) => self.data = QueryData::Err(err),
                 }
@@ -169,26 +190,50 @@ impl Render for QueryView {
         let header = div()
             .flex()
             .flex_initial()
+            .items_center()
+            .justify_between()
             .gap_2()
-            .child(Input::new(&self.search_input))
             .child(
-                Button::new("search")
-                    .label(search_label)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.query.update(cx, |_, cx| {
-                            cx.emit(QueryEvent::Search);
-                        });
-                    })),
+                v_flex()
+                    .gap_1()
+                    .child(Label::new("高级检索").font_semibold())
+                    .child(
+                        Label::new("通过结构化条件、集合选择和字段排序检索作品")
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
             )
             .child(
-                Button::new("router-fetch")
-                    .primary()
-                    .label(route_fetch_label)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.query.update(cx, |_data, cx| {
-                            cx.emit(QueryEvent::RouteToFetch);
-                        });
-                    })),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("query-reset")
+                            .label("重置")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.query.update(cx, |_, cx| {
+                                    cx.emit(QueryEvent::Reset);
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("search")
+                            .primary()
+                            .label(search_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.query.update(cx, |_, cx| {
+                                    cx.emit(QueryEvent::Search);
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("router-fetch")
+                            .label(route_fetch_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.query.update(cx, |_data, cx| {
+                                    cx.emit(QueryEvent::RouteToFetch);
+                                });
+                            })),
+                    ),
             );
         div()
             .flex_1()
@@ -201,7 +246,6 @@ impl Render for QueryView {
             .when_some(self.render_fetch_summary(cx), |this, summary| {
                 this.child(summary)
             })
-            .child(self.tag_select_view.clone())
             .child(self.render_status(error_label, cx))
             .child(
                 h_resizable("query-main")
