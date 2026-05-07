@@ -13,17 +13,26 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px, rems,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, StyledExt,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
-    divider::Divider,
     h_flex,
     input::{Input, NumberInput},
     label::Label,
     scroll::ScrollableElement,
     select::Select,
     switch::Switch,
+    table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
 };
+
+const CONDITION_FIELD_COLUMN_WIDTH: f32 = 140.;
+const CONDITION_RELATION_COLUMN_WIDTH: f32 = 120.;
+const CONDITION_NEGATED_COLUMN_WIDTH: f32 = 56.;
+const CONDITION_ACTION_COLUMN_WIDTH: f32 = 56.;
+const CONDITION_COLUMN_COUNT: usize = 5;
+const SORT_ORDER_COLUMN_WIDTH: f32 = 72.;
+const SORT_DIRECTION_COLUMN_WIDTH: f32 = 112.;
+const SORT_ACTION_COLUMN_WIDTH: f32 = 56.;
 
 impl AdvancedQueryState {
     pub(crate) fn render_filters(&self, cx: &mut Context<QueryView>) -> impl IntoElement {
@@ -97,7 +106,6 @@ impl AdvancedQueryState {
                 v_flex()
                     .flex_1()
                     .min_h_0()
-                    .gap_1()
                     .overflow_y_scrollbar()
                     .when(self.sorts.is_empty(), |this| {
                         this.child(
@@ -111,12 +119,9 @@ impl AdvancedQueryState {
                                 .child("添加排序规则后，列表顺序就是排序优先级"),
                         )
                     })
-                    .children(self.sorts.iter().enumerate().map(|(ix, sort)| {
-                        v_flex()
-                            .gap_1()
-                            .when(ix > 0, |this| this.child(row_separator()))
-                            .child(render_sort_row(ix, sort, cx))
-                    })),
+                    .when(!self.sorts.is_empty(), |this| {
+                        this.child(render_sorts_table(&self.sorts, cx))
+                    }),
             )
     }
 }
@@ -207,16 +212,79 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                     .child("添加条件或子组开始构建高级检索。"),
             )
         })
-        .children(group.items.iter().enumerate().map(|(ix, item)| {
-            v_flex()
-                .gap_2()
-                .when(ix > 0, |this| this.child(row_separator()))
-                .child(match item {
-                    FilterNode::Condition(condition) => render_condition(condition, cx),
-                    FilterNode::Group(group) => render_group(group, depth + 1, cx),
-                })
-        }))
+        .child(render_conditions_table(group, depth, cx))
         .into_any_element()
+}
+
+fn render_conditions_table(
+    group: &FilterGroup,
+    depth: usize,
+    cx: &mut Context<QueryView>,
+) -> impl IntoElement {
+    Table::new()
+        .small()
+        .w_full()
+        .child(
+            TableHeader::new().child(
+                TableRow::new()
+                    .child(condition_table_head("字段", CONDITION_FIELD_COLUMN_WIDTH))
+                    .child(condition_table_head(
+                        "条件",
+                        CONDITION_RELATION_COLUMN_WIDTH,
+                    ))
+                    .child(condition_value_table_head("值"))
+                    .child(condition_table_head("排除", CONDITION_NEGATED_COLUMN_WIDTH))
+                    .child(condition_table_head("操作", CONDITION_ACTION_COLUMN_WIDTH)),
+            ),
+        )
+        .child(
+            TableBody::new().children(group.items.iter().flat_map(|item| match item {
+                FilterNode::Condition(condition) => render_condition_rows(condition, cx),
+                FilterNode::Group(group) => vec![render_group_row(group, depth, cx)],
+            })),
+        )
+}
+
+fn condition_table_head(label: &'static str, width: f32) -> TableHead {
+    TableHead::new()
+        .w(px(width))
+        .min_w(px(width))
+        .flex_none()
+        .child(Label::new(label).text_xs().truncate())
+}
+
+fn condition_value_table_head(label: &'static str) -> TableHead {
+    TableHead::new()
+        .min_w(px(0.))
+        .flex_grow()
+        .child(Label::new(label).text_xs().truncate())
+}
+
+fn condition_table_cell(width: f32, child: impl IntoElement) -> TableCell {
+    TableCell::new()
+        .w(px(width))
+        .min_w(px(width))
+        .flex_none()
+        .child(child)
+}
+
+fn condition_value_table_cell(child: impl IntoElement) -> TableCell {
+    TableCell::new()
+        .min_w(px(0.))
+        .flex_grow()
+        .child(div().w_full().min_w_0().child(child))
+}
+
+fn condition_span_cell(child: impl IntoElement) -> TableCell {
+    TableCell::new()
+        .col_span(CONDITION_COLUMN_COUNT)
+        .min_w(px(0.))
+        .w_full()
+        .child(child)
+}
+
+fn render_group_row(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) -> TableRow {
+    TableRow::new().child(condition_span_cell(render_group(group, depth + 1, cx)))
 }
 
 fn group_relation_toggle(
@@ -252,101 +320,73 @@ fn group_relation_toggle(
         }))
 }
 
-fn render_condition(condition: &ConditionRow, cx: &mut Context<QueryView>) -> AnyElement {
-    let condition_id = condition.id;
-    v_flex()
-        .gap_1()
-        .px_2()
-        .py_2()
-        .hover(|style| style.bg(cx.theme().accent.opacity(0.18)))
-        .child(
-            div()
-                .grid()
-                .gap_2()
-                .grid_cols(4)
-                .child(labeled_control(
-                    "字段",
-                    Select::new(&condition.field_select)
-                        .placeholder("请选择字段")
-                        .w_full()
-                        .into_any_element(),
-                    cx,
-                ))
-                .child(labeled_control(
-                    "条件",
-                    render_relation_select(&condition.draft, cx),
-                    cx,
-                ))
-                .child(labeled_control(
-                    "值",
-                    render_value_editor(&condition.draft, cx),
-                    cx,
-                ))
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            Label::new("排除")
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .child(
-                            h_flex()
-                                .h(rems(2.))
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    Switch::new(("condition-negated", condition_id))
-                                        .checked(condition.negated)
-                                        .on_click(cx.listener(move |this, checked, _, cx| {
-                                            this.advanced
-                                                .set_condition_negated(condition_id, *checked);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    icon_button(
-                                        ("condition-remove", condition_id),
-                                        FeiwenIconName::Trash,
-                                        "删除条件",
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.advanced.remove_node(condition_id);
-                                            cx.notify();
-                                        },
-                                    )),
-                                ),
-                        ),
-                ),
-        )
-        .when_some(condition.error.as_ref(), |this, error| {
-            this.child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .text_color(cx.theme().danger)
-                    .child(Icon::new(IconName::TriangleAlert))
-                    .child(Label::new(error.clone()).text_xs()),
-            )
-        })
-        .into_any_element()
+fn render_condition_rows(condition: &ConditionRow, cx: &mut Context<QueryView>) -> Vec<TableRow> {
+    let mut rows = vec![render_condition_row(condition, cx)];
+    if let Some(error) = condition.error.as_ref() {
+        rows.push(render_condition_error_row(error.clone(), cx));
+    }
+    rows
 }
 
-fn labeled_control(
-    label: &'static str,
-    control: AnyElement,
-    cx: &mut Context<QueryView>,
-) -> impl IntoElement {
-    v_flex()
-        .min_w_0()
-        .gap_1()
+fn render_condition_row(condition: &ConditionRow, cx: &mut Context<QueryView>) -> TableRow {
+    let condition_id = condition.id;
+    TableRow::new()
+        .child(condition_table_cell(
+            CONDITION_FIELD_COLUMN_WIDTH,
+            Select::new(&condition.field_select)
+                .placeholder("请选择字段")
+                .w_full(),
+        ))
+        .child(condition_table_cell(
+            CONDITION_RELATION_COLUMN_WIDTH,
+            render_relation_select(&condition.draft, cx),
+        ))
+        .child(condition_value_table_cell(render_value_editor(
+            &condition.draft,
+            cx,
+        )))
         .child(
-            Label::new(label)
-                .text_xs()
-                .text_color(cx.theme().muted_foreground),
+            condition_table_cell(
+                CONDITION_NEGATED_COLUMN_WIDTH,
+                h_flex().w_full().justify_center().child(
+                    Switch::new(("condition-negated", condition_id))
+                        .checked(condition.negated)
+                        .on_click(cx.listener(move |this, checked, _, cx| {
+                            this.advanced.set_condition_negated(condition_id, *checked);
+                            cx.notify();
+                        })),
+                ),
+            )
+            .min_w(px(0.)),
         )
-        .child(control)
+        .child(
+            condition_table_cell(
+                CONDITION_ACTION_COLUMN_WIDTH,
+                h_flex().w_full().justify_center().child(
+                    icon_button(
+                        ("condition-remove", condition_id),
+                        FeiwenIconName::Trash,
+                        "删除条件",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.advanced.remove_node(condition_id);
+                        cx.notify();
+                    })),
+                ),
+            )
+            .min_w(px(0.)),
+        )
+}
+
+fn render_condition_error_row(error: String, cx: &mut Context<QueryView>) -> TableRow {
+    TableRow::new().child(condition_span_cell(
+        h_flex()
+            .gap_1()
+            .items_center()
+            .text_color(cx.theme().danger)
+            .child(Icon::new(IconName::TriangleAlert))
+            .child(Label::new(error).text_xs()),
+    ))
 }
 
 fn render_relation_select(draft: &ConditionDraft, cx: &mut Context<QueryView>) -> AnyElement {
@@ -447,7 +487,77 @@ fn placeholder_control(text: &'static str, muted: bool, cx: &mut Context<QueryVi
         .into_any_element()
 }
 
-fn render_sort_row(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> AnyElement {
+fn render_sorts_table(sorts: &[SortRow], cx: &mut Context<QueryView>) -> impl IntoElement {
+    let rows = sorts
+        .iter()
+        .enumerate()
+        .map(|(ix, sort)| render_sort_item(ix, sort, cx).into_any_element())
+        .collect::<Vec<_>>();
+
+    v_flex()
+        .w_full()
+        .child(
+            h_flex()
+                .w_full()
+                .bg(cx.theme().table_head)
+                .text_color(cx.theme().table_head_foreground)
+                .border_b_1()
+                .border_color(cx.theme().table_row_border)
+                .child(sort_header_cell("顺序", SORT_ORDER_COLUMN_WIDTH))
+                .child(sort_field_header_cell("排序字段"))
+                .child(sort_header_cell("方向", SORT_DIRECTION_COLUMN_WIDTH))
+                .child(sort_header_cell("操作", SORT_ACTION_COLUMN_WIDTH)),
+        )
+        .child(v_flex().w_full().children(rows))
+}
+
+fn sort_header_cell(label: &'static str, width: f32) -> impl IntoElement {
+    div()
+        .w(px(width))
+        .min_w(px(width))
+        .flex_none()
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .child(Label::new(label).text_xs().truncate())
+}
+
+fn sort_field_header_cell(label: &'static str) -> impl IntoElement {
+    div()
+        .min_w(px(0.))
+        .flex_grow()
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .child(Label::new(label).text_xs().truncate())
+}
+
+fn sort_fixed_cell(width: f32, child: impl IntoElement) -> impl IntoElement {
+    div()
+        .w(px(width))
+        .min_w(px(width))
+        .flex_none()
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .child(child)
+}
+
+fn sort_field_cell(child: impl IntoElement) -> impl IntoElement {
+    div()
+        .min_w(px(0.))
+        .flex_grow()
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .child(div().w_full().min_w_0().child(child))
+}
+
+fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> impl IntoElement {
     let sort_id = sort.id;
     let field_label = sort
         .field
@@ -456,14 +566,15 @@ fn render_sort_row(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> An
     let direction_label = sort_direction_label(sort.direction);
 
     v_flex()
-        .gap_1()
+        .w_full()
+        .when(ix > 0, |this| {
+            this.border_t_1().border_color(cx.theme().table_row_border)
+        })
         .child(
             h_flex()
                 .id(("sort-row", sort_id))
-                .gap_2()
+                .w_full()
                 .items_center()
-                .px_2()
-                .py_2()
                 .hover(|style| style.bg(cx.theme().accent.opacity(0.18)))
                 .drag_over::<DragSortRow>(move |this, drag, _window, cx| {
                     if drag.row_id == sort_id {
@@ -478,91 +589,81 @@ fn render_sort_row(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> An
                     this.advanced.move_sort_before(drag.row_id, sort_id);
                     cx.notify();
                 }))
-                .child(
-                    div()
-                        .id(("sort-drag-handle", sort_id))
-                        .cursor_grab()
-                        .p_1()
-                        .rounded_sm()
-                        .hover(|style| style.bg(cx.theme().accent))
-                        .child(Icon::new(IconName::EllipsisVertical))
-                        .on_drag(
-                            DragSortRow::new(
-                                sort_id,
-                                ix + 1,
-                                field_label,
-                                direction_label,
-                                sort.error.is_some(),
-                            ),
-                            |drag, _position, _window, cx| {
-                                cx.stop_propagation();
-                                cx.new(|_| drag.clone())
-                            },
-                        ),
-                )
-                .child(
-                    Label::new(format!("{}", ix + 1))
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    v_flex()
+                .child(sort_fixed_cell(
+                    SORT_ORDER_COLUMN_WIDTH,
+                    h_flex()
+                        .w_full()
+                        .items_center()
                         .gap_1()
-                        .flex_1()
-                        .min_w(px(140.))
                         .child(
-                            Label::new("排序字段")
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground),
+                            div()
+                                .id(("sort-drag-handle", sort_id))
+                                .cursor_grab()
+                                .p_1()
+                                .rounded_sm()
+                                .hover(|style| style.bg(cx.theme().accent))
+                                .child(Icon::new(IconName::EllipsisVertical))
+                                .on_drag(
+                                    DragSortRow::new(
+                                        sort_id,
+                                        ix + 1,
+                                        field_label,
+                                        direction_label,
+                                        sort.error.is_some(),
+                                    ),
+                                    |drag, _position, _window, cx| {
+                                        cx.stop_propagation();
+                                        cx.new(|_| drag.clone())
+                                    },
+                                ),
                         )
                         .child(
-                            Select::new(&sort.field_select)
-                                .placeholder("请选择排序字段")
-                                .w_full(),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .w(px(112.))
-                        .child(
-                            Label::new("方向")
-                                .text_xs()
+                            Label::new(format!("{}", ix + 1))
+                                .text_sm()
                                 .text_color(cx.theme().muted_foreground),
+                        ),
+                ))
+                .child(sort_field_cell(
+                    Select::new(&sort.field_select)
+                        .placeholder("请选择排序字段")
+                        .w_full(),
+                ))
+                .child(sort_fixed_cell(
+                    SORT_DIRECTION_COLUMN_WIDTH,
+                    Select::new(&sort.direction_select).w_full(),
+                ))
+                .child(sort_fixed_cell(
+                    SORT_ACTION_COLUMN_WIDTH,
+                    h_flex().w_full().justify_center().child(
+                        icon_button(
+                            ("sort-remove", sort_id),
+                            FeiwenIconName::Trash,
+                            "删除排序规则",
                         )
-                        .child(Select::new(&sort.direction_select).w_full()),
-                )
-                .child(
-                    icon_button(
-                        ("sort-remove", sort_id),
-                        FeiwenIconName::Trash,
-                        "删除排序规则",
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.advanced.remove_sort(sort_id);
-                        cx.notify();
-                    })),
-                ),
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.advanced.remove_sort(sort_id);
+                            cx.notify();
+                        })),
+                    ),
+                )),
         )
         .when_some(sort.error.as_ref(), |this, error| {
             this.child(
                 h_flex()
+                    .w_full()
                     .gap_1()
                     .items_center()
+                    .px(px(8.))
+                    .py(px(6.))
                     .text_color(cx.theme().danger)
                     .child(Icon::new(IconName::TriangleAlert))
                     .child(Label::new(error.clone()).text_xs()),
             )
         })
-        .into_any_element()
 }
 
 fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, tooltip: &'static str) -> Button {
     Button::new(id).ghost().icon(icon).tooltip(tooltip)
-}
-
-fn row_separator() -> impl IntoElement {
-    Divider::horizontal()
 }
 
 fn sort_direction_label(direction: SortDirection) -> &'static str {
