@@ -38,7 +38,8 @@ where
 {
     id: SharedString,
     item: Rc<T>,
-    is_selected: bool,
+    is_preselected: bool,
+    is_checked: bool,
 }
 
 impl<T> PickerListItem<T>
@@ -50,8 +51,14 @@ where
         Self {
             id,
             item,
-            is_selected: false,
+            is_preselected: false,
+            is_checked: false,
         }
+    }
+
+    fn checked(mut self, checked: bool) -> Self {
+        self.is_checked = checked;
+        self
     }
 }
 
@@ -61,12 +68,12 @@ where
     T::Value: Clone + PartialEq + 'static,
 {
     fn selected(mut self, selected: bool) -> Self {
-        self.is_selected = selected;
+        self.is_preselected = selected;
         self
     }
 
     fn is_selected(&self) -> bool {
-        self.is_selected
+        self.is_preselected
     }
 }
 
@@ -85,13 +92,13 @@ where
             .py_1()
             .rounded(cx.theme().radius)
             .items_center()
-            .when(self.is_selected, |this| {
+            .when(self.is_preselected, |this| {
                 this.bg(cx.theme().secondary_active)
             })
-            .when(!self.is_selected, |this| {
+            .when(!self.is_preselected, |this| {
                 this.hover(|this| this.bg(cx.theme().secondary_hover))
             })
-            .child(Icon::new(IconName::Check).when(!self.is_selected, |this| this.invisible()))
+            .child(Icon::new(IconName::Check).when(!self.is_checked, |this| this.invisible()))
             .child(
                 div()
                     .flex_1()
@@ -130,7 +137,7 @@ where
         on_confirm: OnConfirm<T>,
         on_cancel: OnCancel,
     ) -> Self {
-        Self {
+        let mut this = Self {
             ix: None,
             all_sections: sections.clone(),
             sections,
@@ -140,7 +147,9 @@ where
             empty_label,
             on_confirm,
             on_cancel,
-        }
+        };
+        this.apply_query();
+        this
     }
 
     pub(crate) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
@@ -150,6 +159,7 @@ where
 
     pub(crate) fn set_selected_values(&mut self, selected_values: Vec<T::Value>) {
         self.selected_values = selected_values;
+        self.apply_query();
     }
 
     pub(crate) fn set_query(&mut self, query: impl Into<String>) {
@@ -180,20 +190,25 @@ where
 
     fn apply_query(&mut self) {
         let query = self.last_query.trim().to_lowercase();
-        if query.is_empty() {
-            self.sections = self.all_sections.clone();
-            return;
-        }
-
         self.sections = self
             .all_sections
             .iter()
             .filter_map(|section| {
-                let items = section
+                let mut items = section
                     .items
                     .iter()
-                    .filter(|item| item.matches(&query))
-                    .cloned()
+                    .enumerate()
+                    .filter(|(_, item)| query.is_empty() || item.matches(&query))
+                    .collect::<Vec<_>>();
+                items.sort_by_key(|(original_ix, item)| {
+                    self.selected_position(item.value())
+                        .map_or((1, usize::MAX, *original_ix), |selected_ix| {
+                            (0, selected_ix, *original_ix)
+                        })
+                });
+                let items = items
+                    .into_iter()
+                    .map(|(_, item)| item.clone())
                     .collect::<Vec<_>>();
                 (!items.is_empty()).then(|| PickerSection {
                     title: section.title.clone(),
@@ -201,6 +216,27 @@ where
                 })
             })
             .collect();
+    }
+
+    fn selected_position(&self, value: &T::Value) -> Option<usize> {
+        self.selected_values
+            .iter()
+            .position(|selected| selected == value)
+    }
+
+    #[cfg(test)]
+    fn checked_titles(&self) -> Vec<SharedString> {
+        self.sections
+            .iter()
+            .flat_map(|section| {
+                section.items.iter().filter_map(|item| {
+                    self.selected_values
+                        .iter()
+                        .any(|selected| selected == item.value())
+                        .then(|| item.title())
+                })
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -268,7 +304,7 @@ where
             .and_then(|section| section.items.get(ix.row))
             .cloned()
             .map(|item| {
-                let is_selected = self
+                let is_checked = self
                     .selected_values
                     .iter()
                     .any(|selected| selected == item.value());
@@ -276,7 +312,7 @@ where
                     format!("picker-item-{}-{}", ix.section, ix.row).into(),
                     item,
                 )
-                .selected(is_selected)
+                .checked(is_checked)
             })
     }
 
@@ -383,14 +419,14 @@ where
 
     deferred(
         anchored()
-            .anchor(gpui::Anchor::BottomLeft)
+            .anchor(gpui::Anchor::TopLeft)
             .snap_to_window_with_margin(px(8.))
-            .position(point(bounds.left(), bounds.top()))
+            .position(point(bounds.left(), bounds.bottom()))
+            .offset(point(px(0.), px(6.)))
             .child(
                 div().w(width).on_mouse_down_out(on_mouse_down_out).child(
                     v_flex()
                         .occlude()
-                        .mb_1p5()
                         .bg(cx.theme().background)
                         .border_1()
                         .border_color(cx.theme().border)
@@ -413,6 +449,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::rc::Rc;
 
     #[derive(Clone, Debug)]
     struct TestItem {
@@ -513,5 +550,108 @@ mod tests {
         delegate.set_query("架空");
 
         assert_eq!(delegate.visible_titles(), vec![SharedString::from("历史")]);
+    }
+
+    #[test]
+    fn selected_values_are_pinned_without_query() {
+        let sections = PickerSection::flat([
+            TestItem {
+                title: "one",
+                value: 1,
+                description: "match",
+            },
+            TestItem {
+                title: "two",
+                value: 2,
+                description: "match",
+            },
+            TestItem {
+                title: "three",
+                value: 3,
+                description: "match",
+            },
+        ]);
+        let delegate = PickerListDelegate::new(
+            sections,
+            false,
+            "无匹配结果".into(),
+            vec![3, 1],
+            noop_confirm(),
+            noop_cancel(),
+        );
+
+        assert_eq!(
+            delegate.visible_titles(),
+            vec![
+                SharedString::from("three"),
+                SharedString::from("one"),
+                SharedString::from("two")
+            ]
+        );
+        assert_eq!(
+            delegate.checked_titles(),
+            vec![SharedString::from("three"), SharedString::from("one")]
+        );
+    }
+
+    #[test]
+    fn selected_values_are_pinned_after_filtering() {
+        let sections = PickerSection::flat([
+            TestItem {
+                title: "one",
+                value: 1,
+                description: "match",
+            },
+            TestItem {
+                title: "two",
+                value: 2,
+                description: "other",
+            },
+            TestItem {
+                title: "three",
+                value: 3,
+                description: "match",
+            },
+            TestItem {
+                title: "four",
+                value: 4,
+                description: "match",
+            },
+        ]);
+        let mut delegate = PickerListDelegate::new(
+            sections,
+            false,
+            "无匹配结果".into(),
+            vec![3],
+            noop_confirm(),
+            noop_cancel(),
+        );
+
+        delegate.set_query("match");
+
+        assert_eq!(
+            delegate.visible_titles(),
+            vec![
+                SharedString::from("three"),
+                SharedString::from("one"),
+                SharedString::from("four")
+            ]
+        );
+    }
+
+    #[test]
+    fn picker_list_item_keeps_checked_and_preselected_separate() {
+        let item = Rc::new(TestItem {
+            title: "one",
+            value: 1,
+            description: "first",
+        });
+        let checked = PickerListItem::new("item".into(), item.clone()).checked(true);
+        assert!(checked.is_checked);
+        assert!(!checked.is_preselected);
+
+        let preselected = PickerListItem::new("item".into(), item).selected(true);
+        assert!(!preselected.is_checked);
+        assert!(preselected.is_preselected);
     }
 }

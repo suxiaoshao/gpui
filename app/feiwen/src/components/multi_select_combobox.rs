@@ -1,13 +1,10 @@
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement, IntoElement,
-    MouseDownEvent, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Window, div,
+    App, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement, MouseDownEvent,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, ElementExt, Sizable, h_flex,
-    input::{Input, InputEvent, InputState},
-    list::ListState,
-    select::SelectItem,
+    ActiveTheme, ElementExt, IndexPath, h_flex, label::Label, list::ListState, select::SelectItem,
     v_flex,
 };
 use std::rc::Rc;
@@ -25,12 +22,10 @@ where
     options: Vec<T>,
     selected: Vec<T::Value>,
     list: Entity<ListState<PickerListDelegate<T>>>,
-    query_input: Entity<InputState>,
     picker_bounds: Bounds<Pixels>,
     picker_bounds_captured: bool,
     open: bool,
     placeholder: SharedString,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl<T> MultiSelectState<T>
@@ -73,21 +68,17 @@ where
                 window,
                 cx,
             )
+            .searchable(true)
         });
-        let query_input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        let _subscriptions =
-            vec![cx.subscribe_in(&query_input, window, Self::on_query_input_event)];
 
         Self {
             options,
             selected: Vec::new(),
             list,
-            query_input,
             picker_bounds: Bounds::default(),
             picker_bounds_captured: false,
             open: false,
             placeholder: placeholder.into(),
-            _subscriptions,
         }
     }
 
@@ -103,25 +94,6 @@ where
         cx.notify();
     }
 
-    fn on_query_input_event(
-        &mut self,
-        state: &Entity<InputState>,
-        event: &InputEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            InputEvent::Focus => self.open(window, cx),
-            InputEvent::Change => {
-                self.open = true;
-                let query = state.read(cx).value().to_string();
-                self.filter_list(query, cx);
-                cx.notify();
-            }
-            InputEvent::PressEnter { .. } | InputEvent::Blur => {}
-        }
-    }
-
     fn sync_list(&mut self, cx: &mut Context<Self>) {
         let sections = PickerSection::flat(self.options.clone());
         let selected_values = self.selected.clone();
@@ -131,21 +103,10 @@ where
         });
     }
 
-    fn filter_list(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
-        let query = query.into();
-        self.list.update(cx, |list, cx| {
-            list.delegate_mut().set_query(query);
-            cx.notify();
-        });
-    }
-
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = true;
         self.sync_list(cx);
-        let query = self.query_input.read(cx).value().to_string();
-        self.filter_list(query, cx);
-        self.query_input
-            .update(cx, |input, cx| input.focus_handle(cx).focus(window, cx));
+        self.clear_search(window, cx);
         cx.notify();
     }
 
@@ -161,7 +122,7 @@ where
             self.selected.push(value);
         }
         self.sync_list(cx);
-        self.clear_query(window, cx);
+        self.clear_search(window, cx);
         self.open = true;
         cx.notify();
     }
@@ -172,10 +133,13 @@ where
         cx.notify();
     }
 
-    fn clear_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.query_input
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.filter_list("", cx);
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.list.update(cx, |list, cx| {
+            list.delegate_mut().set_query("");
+            list.set_query("", window, cx);
+            list.set_selected_index(Some(IndexPath::default()), window, cx);
+            list.focus(window, cx);
+        });
     }
 
     fn selected_options(&self) -> Vec<T> {
@@ -196,21 +160,13 @@ where
     T: SelectItem + Clone + 'static,
     T::Value: Clone + PartialEq + 'static,
 {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let bounds_state = cx.entity();
         let list = self.list.clone();
         let bounds = self.picker_bounds;
         let selected = self.selected_options();
         let has_selection = !selected.is_empty();
-        let input_placeholder = if self.selected.is_empty() {
-            self.placeholder.clone()
-        } else {
-            SharedString::default()
-        };
-        self.query_input.update(cx, |input, cx| {
-            input.set_placeholder(input_placeholder, window, cx);
-        });
         let on_mouse_down_out = cx.listener(|picker, event: &MouseDownEvent, window, cx| {
             if picker.picker_bounds.contains(&event.position) {
                 return;
@@ -281,17 +237,22 @@ where
                             .child(
                                 div()
                                     .id("multi-select-input")
+                                    .flex()
                                     .flex_1()
+                                    .h(px(21.))
                                     .min_w(px(64.))
-                                    .child(
-                                        Input::new(&self.query_input)
-                                            .appearance(false)
-                                            .bordered(false)
-                                            .small()
-                                            .p_0()
-                                            .min_w(px(64.))
-                                            .w_full(),
-                                    ),
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|picker, _, window, cx| {
+                                        picker.open(window, cx);
+                                    }))
+                                    .when(!has_selection, |this| {
+                                        this.child(
+                                            Label::new(self.placeholder.clone())
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -299,7 +260,7 @@ where
                 this.child(render_picker_popover(
                     bounds,
                     list,
-                    PickerPopoverOptions::fixed_width(px(360.)),
+                    PickerPopoverOptions::fixed_width(px(360.)).search_placeholder("搜索"),
                     on_mouse_down_out,
                     cx,
                 ))

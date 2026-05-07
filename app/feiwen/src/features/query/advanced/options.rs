@@ -1,5 +1,6 @@
 use crate::{
     errors::FeiwenResult,
+    foundation::field_matches_query,
     store::{
         model::NovelModel,
         query::{AuthorRef, BoolField, NumberField, SortExpr, TextField},
@@ -137,6 +138,10 @@ impl<T: Copy + Eq + 'static> SelectItem for SelectChoice<T> {
 
     fn value(&self) -> &Self::Value {
         &self.value
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        field_matches_query(self.label, query)
     }
 }
 
@@ -361,12 +366,7 @@ fn option_content(title: SharedString, description: SharedString) -> impl IntoEl
 }
 
 fn option_matches(title: &str, description: &str, query: &str) -> bool {
-    let query = query.trim();
-    if query.is_empty() {
-        return true;
-    }
-    let query = query.to_lowercase();
-    title.to_lowercase().contains(&query) || description.to_lowercase().contains(&query)
+    field_matches_query(title, query) || field_matches_query(description, query)
 }
 
 pub(super) fn field_items() -> FieldSelectItems {
@@ -476,4 +476,31 @@ pub(super) fn sort_direction_items() -> Vec<SelectChoice<SortDirectionChoice>> {
         SelectChoice::new("升序", SortDirectionChoice::Asc),
         SelectChoice::new("降序", SortDirectionChoice::Desc),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_option_matches_pinyin_and_initials() {
+        let option = TagOption {
+            id: 1,
+            name: "中篇".to_owned(),
+        };
+
+        assert!(option.matches("zhongpian"));
+        assert!(option.matches("zp"));
+        assert!(option.matches("标签 ID 1"));
+        assert!(!option.matches("changpian"));
+    }
+
+    #[test]
+    fn select_choice_matches_pinyin_and_initials() {
+        let option = SelectChoice::new("包含全部", TagsRelation::ContainsAll);
+
+        assert!(option.matches("baohan"));
+        assert!(option.matches("bhqb"));
+        assert!(!option.matches("dengyu"));
+    }
 }
