@@ -4,7 +4,7 @@
 
 feiwen query 页已经有结构化查询模型和 DataTable 结果展示能力，但当前 UI 仍混有旧快速搜索框、旧 tags 快捷按钮区、按钮循环切换字段/条件、以及“排除”和“全部满足 / 任一满足”同级的问题。用户无法一眼判断每个条件行里的控件分别代表字段、条件和值，也无法从 PRD 直接推导出实现细节。
 
-本次 PRD 固定第一版 UI 和实现约束：query 页只保留高级检索构建器，所有查询意图都通过结构化条件行表达。旧快速搜索能力用“标题包含 / 作者名称包含”表达；旧 tags 快捷选择能力用“标签包含全部”表达。
+本次 PRD 固定第一版 UI 和实现约束：query 页只保留高级检索构建器，所有查询意图都通过结构化条件行表达。旧快速搜索能力用“标题包含 / 作者的名称包含”表达；旧 tags 快捷选择能力用“标签包含全部”表达。
 
 ## 目标
 
@@ -61,23 +61,19 @@ SortSpec
 
 ## 字段全集
 
-字段 Select 按分组展示，顺序固定：
+字段 Select 不按类别分组，顺序固定：
 
-| 分组 | 字段 label | 内部字段 |
-| --- | --- | --- |
-| 文本字段 | 标题 | `TextField::Title` |
-| 文本字段 | 简介 | `TextField::Description` |
-| 文本字段 | 最新章节标题 | `TextField::LatestChapter` |
-| 文本字段 | 作者名称 | `TextField::AuthorName` |
-| ID 字段 | 作品 ID | `NumberField::NovelId` |
-| ID 字段 | 最新章节 ID | `NumberField::LatestChapterId` |
-| ID 字段 | 作者 ID | `NumberField::AuthorId` |
-| 数字字段 | 字数 | `NumberField::WordCount` |
-| 数字字段 | 阅读数 | `NumberField::ReadCount` |
-| 数字字段 | 回复数 | `NumberField::ReplyCount` |
-| 布尔字段 | 是否受限 | `BoolField::IsLimit` |
-| 集合字段 | 标签 | `TagsPredicate` |
-| 作者字段 | 作者 | `AuthorPredicate` |
+| 字段 label | 内部字段 |
+| --- | --- |
+| 标题 | `TextField::Title` |
+| 简介 | `TextField::Description` |
+| 最新章节标题 | `TextField::LatestChapter` |
+| 作者 | `TextField::AuthorName` / `AuthorPredicate` |
+| 标签 | `TagsPredicate` |
+| 字数 | `NumberField::WordCount` |
+| 阅读数 | `NumberField::ReadCount` |
+| 回复数 | `NumberField::ReplyCount` |
+| 是否受限 | `BoolField::IsLimit` |
 
 ## 字段、条件和值输入器矩阵
 
@@ -89,20 +85,17 @@ SortSpec
 | 标题 | 等于 | `Input` | `Predicate::Text { Title, Equals, value }` |
 | 简介 | 包含、开头是、结尾是、等于 | `Input` | 对应 `TextField::Description` |
 | 最新章节标题 | 包含、开头是、结尾是、等于 | `Input` | 对应 `TextField::LatestChapter` |
-| 作者名称 | 包含、开头是、结尾是、等于 | `Input` | 对应 `TextField::AuthorName` |
+| 作者 | 名称包含、名称开头是、名称结尾是、名称等于 | `Input` | 对应 `TextField::AuthorName` |
+| 作者 | 是 | `EntityPicker` 作者单选，展示作者名和作者编号 | `AuthorPredicate::Is(AuthorRef::Id/Name)` |
+| 作者 | 不是 | `EntityPicker` 作者单选，展示作者名和作者编号 | `FilterExpr::Not(Predicate::Author(AuthorPredicate::Is(...)))` |
+| 作者 | 在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::In(selected_authors)` |
+| 作者 | 不在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::NotIn(selected_authors)` |
 | 字数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` placeholder `输入数字` | `Predicate::Number { WordCount, NumberOp }` |
 | 字数 | 介于范围 | `NumericRangeInput`，两个 `NumberInput`：`最小值`、`最大值` | `NumberOp::Between { min, max }` |
 | 阅读数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` | `Predicate::Number { ReadCount, NumberOp }` |
 | 阅读数 | 介于范围 | `NumericRangeInput` | `NumberOp::Between { min, max }` |
 | 回复数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` | `Predicate::Number { ReplyCount, NumberOp }` |
 | 回复数 | 介于范围 | `NumericRangeInput` | `NumberOp::Between { min, max }` |
-| 作品 ID | 等于、不等于 | `EntityPicker` 单选，数据源为作品 ID + 标题 | `NumberOp::Eq/Ne(selected_id)` |
-| 作品 ID | 大于、大于等于、小于、小于等于 | `NumberInput` placeholder `输入作品 ID` | 对应比较操作 |
-| 作品 ID | 介于范围 | `NumericRangeInput`：`最小 ID`、`最大 ID` | `NumberOp::Between` |
-| 最新章节 ID | 等于、不等于 | `EntityPicker` 单选，数据源为章节 ID + 最新章节标题 | `NumberOp::Eq/Ne(selected_id)` |
-| 最新章节 ID | 大于、大于等于、小于、小于等于、介于范围 | `NumberInput` 或 `NumericRangeInput` | 对应比较操作 |
-| 作者 ID | 等于、不等于 | `EntityPicker` 单选，数据源为作者 ID + 作者名称 | `NumberOp::Eq/Ne(selected_id)` |
-| 作者 ID | 大于、大于等于、小于、小于等于、介于范围 | `NumberInput` 或 `NumericRangeInput` | 对应比较操作 |
 | 是否受限 | 是否 | `Select`，选项 `是`、`否` | `Predicate::Bool { IsLimit, true/false }` |
 | 标签 | 有交集 | `MultiSelectCombobox<TagOption>` | `TagsPredicate::Intersects(selected_tags)` |
 | 标签 | 包含全部 | `MultiSelectCombobox<TagOption>` | `TagsPredicate::ContainsAll(selected_tags)` |
@@ -110,9 +103,8 @@ SortSpec
 | 标签 | 集合相等 | `MultiSelectCombobox<TagOption>` | `TagsPredicate::Equals(selected_tags)` |
 | 标签 | 为空 | 值区域显示 `无需填写` | `TagsPredicate::IsEmpty` |
 | 标签 | 不为空 | 值区域显示 `无需填写` | `TagsPredicate::IsNotEmpty` |
-| 作者 | 是 | `EntityPicker` 作者单选，展示作者名和作者 ID | `AuthorPredicate::Is(AuthorRef::Id/Name)` |
-| 作者 | 在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::In(selected_authors)` |
-| 作者 | 不在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::NotIn(selected_authors)` |
+
+ID 类字段不在筛选字段选择器中单独暴露；编号只作为作者选择器的展示和搜索信息。作者筛选不提供手填数字、大小比较或范围比较。
 
 ## 条件行交互
 
@@ -189,7 +181,7 @@ SortSpec
 ### feiwen 局部新增组件
 
 - `MultiSelectCombobox<T>`：多选、搜索过滤、下拉列表、已选 chip、chip 删除、空结果。
-- `EntityPicker<T>`：单选实体选择器，支持搜索、ID/名称双行展示、选中值摘要。
+- `EntityPicker<T>`：单选实体选择器，支持搜索、编号/名称双行展示、选中值摘要。
 - `ConditionValueEditor`：根据字段和条件选择具体值输入器。
 - `NumericRangeInput`：两个 `NumberInput` 组合，统一处理 min/max。
 
@@ -207,7 +199,6 @@ SortSpec
 | 帮助说明 | `Info` |
 | 已选项 | `Check` |
 | 作者 / 作者选择器 | `User` |
-| 作品 / 章节选择器 | `BookOpen` |
 | Select 排序提示 | `ChevronsUpDown` |
 | 展开 | `ChevronDown` |
 | 折叠 | `ChevronRight` |
@@ -222,7 +213,7 @@ SortSpec
 - 范围缺失：`请填写最小值和最大值`。
 - 范围顺序错误：`最大值必须大于或等于最小值`。
 - 多选集合为空：`请选择至少一项`。
-- 作者或 ID 无法解析：`请选择有效项`。
+- 作者无法解析：`请选择有效作者`。
 - 排序字段为空：`请选择排序字段`。
 
 错误必须显示在对应条件行或排序行内，不使用全局兜底错误。
@@ -231,7 +222,7 @@ SortSpec
 
 - `advanced-query-reference.png`：总体布局图。
 - `advanced-query-filter-states.png`：字段、条件、文本、数字、范围、布尔状态。
-- `advanced-query-collection-states.png`：tags 多选、作者单选、作者多选、ID 选择器。
+- `advanced-query-collection-states.png`：tags 多选、作者单选、作者多选。
 - `advanced-query-nesting-states.png`：根组、子组、三层嵌套、排除 Switch、空组。
 - `advanced-query-sort-table-states.png`：具体字段排序、方向、拖拽优先级、DataTable。
 - `advanced-query-error-states.png`：所有主要错误状态。
@@ -239,7 +230,8 @@ SortSpec
 ## 验收标准
 
 - PRD 明确旧搜索和旧 tags 快捷入口已移除，排序第一版只支持具体字段。
-- PRD 逐项列出字段、条件、值输入器和 `QuerySpec` 转换规则。
+- PRD 逐项列出扁平字段、条件、值输入器和 `QuerySpec` 转换规则。
+- PRD 明确作者的名称文本匹配和作者实体选择都统一收敛到“作者”字段。
 - PRD 明确排序只选择具体字段和方向。
 - PRD 明确需要新增的 feiwen 局部组件和可直接复用的 gpui-component 组件。
 - PRD 明确图标、嵌套层级、错误状态和结果表格规则。

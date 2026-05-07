@@ -3,7 +3,7 @@ use super::{
     sort::DragSortRow,
     state::{
         AdvancedQueryState, AuthorValue, BoolCondition, ConditionDraft, ConditionRow, FilterGroup,
-        FilterNode, IdValue, NumberValue, RelationSelect, SortRow, TagsCondition,
+        FilterNode, NumberValue, RelationSelect, SortRow, TagsCondition,
     },
 };
 use crate::store::query::SortDirection;
@@ -401,9 +401,6 @@ fn render_relation_select(draft: &ConditionDraft, cx: &mut Context<QueryView>) -
         ConditionDraft::Number(condition) => Select::new(&condition.relation_select)
             .w_full()
             .into_any_element(),
-        ConditionDraft::Id(condition) => Select::new(&condition.relation_select)
-            .w_full()
-            .into_any_element(),
         ConditionDraft::Bool(condition) => Select::new(&condition.relation_select)
             .w_full()
             .into_any_element(),
@@ -420,7 +417,6 @@ fn render_relation_entity(relation_select: &RelationSelect) -> AnyElement {
     match relation_select {
         RelationSelect::Text(select) => Select::new(select).w_full().into_any_element(),
         RelationSelect::Number(select) => Select::new(select).w_full().into_any_element(),
-        RelationSelect::Id(select) => Select::new(select).w_full().into_any_element(),
         RelationSelect::Bool(select) => Select::new(select).w_full().into_any_element(),
         RelationSelect::Tags(select) => Select::new(select).w_full().into_any_element(),
         RelationSelect::Author(select) => Select::new(select).w_full().into_any_element(),
@@ -433,12 +429,12 @@ fn render_value_editor(draft: &ConditionDraft, cx: &mut Context<QueryView>) -> A
         ConditionDraft::NoCondition { .. } => placeholder_control("请选择条件", true, cx),
         ConditionDraft::Text(condition) => Input::new(&condition.input).w_full().into_any_element(),
         ConditionDraft::Number(condition) => render_number_value(&condition.value),
-        ConditionDraft::Id(condition) => render_id_value(&condition.value),
         ConditionDraft::Bool(BoolCondition { value_select, .. }) => {
             Select::new(value_select).w_full().into_any_element()
         }
         ConditionDraft::Tags(condition) => render_tags_value(condition, cx),
         ConditionDraft::Author(condition) => match &condition.value {
+            AuthorValue::Text(value) => Input::new(value).w_full().into_any_element(),
             AuthorValue::Single(value) => value.clone().into_any_element(),
             AuthorValue::Multi(value) => value.clone().into_any_element(),
         },
@@ -449,14 +445,6 @@ fn render_number_value(value: &NumberValue) -> AnyElement {
     match value {
         NumberValue::Single(input) => NumberInput::new(input).w_full().into_any_element(),
         NumberValue::Range(range) => range.clone().into_any_element(),
-    }
-}
-
-fn render_id_value(value: &IdValue) -> AnyElement {
-    match value {
-        IdValue::Picker(value) => value.clone().into_any_element(),
-        IdValue::Number(input) => NumberInput::new(input).w_full().into_any_element(),
-        IdValue::Range(range) => range.clone().into_any_element(),
     }
 }
 

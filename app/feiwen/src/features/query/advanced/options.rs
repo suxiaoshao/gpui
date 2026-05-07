@@ -11,7 +11,7 @@ use diesel::SqliteConnection;
 use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window};
 use gpui_component::{
     label::Label,
-    select::{SearchableVec, SelectGroup, SelectItem},
+    select::{SearchableVec, SelectItem},
     v_flex,
 };
 use std::collections::HashMap;
@@ -21,16 +21,12 @@ pub(super) enum FieldKind {
     Title,
     Description,
     LatestChapterTitle,
-    AuthorName,
-    NovelId,
-    LatestChapterId,
-    AuthorId,
+    Author,
+    Tags,
     WordCount,
     ReadCount,
     ReplyCount,
     IsLimit,
-    Tags,
-    Author,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,17 +39,6 @@ pub(super) enum TextRelation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NumberRelation {
-    Eq,
-    Ne,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-    Between,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum IdRelation {
     Eq,
     Ne,
     Lt,
@@ -80,7 +65,12 @@ pub(super) enum TagsRelation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AuthorRelation {
+    NameContains,
+    NameStartsWith,
+    NameEndsWith,
+    NameEquals,
     Is,
+    IsNot,
     In,
     NotIn,
 }
@@ -117,7 +107,7 @@ pub(super) struct SelectChoice<T: Copy + Eq + 'static> {
     value: T,
 }
 
-pub(super) type FieldSelectItems = SearchableVec<SelectGroup<SelectChoice<FieldKind>>>;
+pub(super) type FieldSelectItems = SearchableVec<SelectChoice<FieldKind>>;
 
 impl<T: Copy + Eq + 'static> SelectChoice<T> {
     pub(super) fn new(label: &'static str, value: T) -> Self {
@@ -151,16 +141,12 @@ impl FieldKind {
             Self::Title => Some(TextField::Title),
             Self::Description => Some(TextField::Description),
             Self::LatestChapterTitle => Some(TextField::LatestChapter),
-            Self::AuthorName => Some(TextField::AuthorName),
             _ => None,
         }
     }
 
     pub(super) fn number_field(self) -> Option<NumberField> {
         match self {
-            Self::NovelId => Some(NumberField::NovelId),
-            Self::LatestChapterId => Some(NumberField::LatestChapterId),
-            Self::AuthorId => Some(NumberField::AuthorId),
             Self::WordCount => Some(NumberField::WordCount),
             Self::ReadCount => Some(NumberField::ReadCount),
             Self::ReplyCount => Some(NumberField::ReplyCount),
@@ -211,9 +197,6 @@ impl SortField {
 pub(crate) struct QueryOptions {
     pub(super) tags: Vec<TagOption>,
     pub(super) authors: Vec<AuthorOption>,
-    pub(super) novels: Vec<IdOption>,
-    pub(super) chapters: Vec<IdOption>,
-    pub(super) author_ids: Vec<IdOption>,
 }
 
 impl QueryOptions {
@@ -227,29 +210,9 @@ impl QueryOptions {
             .collect();
         let novels = NovelModel::query(conn)?;
         let mut authors = HashMap::new();
-        let mut novel_options = Vec::new();
-        let mut chapter_options = Vec::new();
-        let mut author_id_options = HashMap::new();
         for novel in novels {
-            novel_options.push(IdOption {
-                id: novel.id,
-                label: novel.name.clone(),
-                description: format!("作品 ID {}", novel.id),
-            });
-            chapter_options.push(IdOption {
-                id: novel.latest_chapter_id,
-                label: novel.latest_chapter_name.clone(),
-                description: format!("最新章节 ID {}", novel.latest_chapter_id),
-            });
             let author_ref = match novel.author_id {
-                Some(id) => {
-                    author_id_options.entry(id).or_insert_with(|| IdOption {
-                        id,
-                        label: novel.author_name.clone(),
-                        description: format!("作者 ID {id}"),
-                    });
-                    AuthorRef::Id(id)
-                }
+                Some(id) => AuthorRef::Id(id),
                 None => AuthorRef::Name(novel.author_name.clone()),
             };
             authors
@@ -262,9 +225,6 @@ impl QueryOptions {
         Ok(Self {
             tags,
             authors: authors.into_values().collect(),
-            novels: novel_options,
-            chapters: chapter_options,
-            author_ids: author_id_options.into_values().collect(),
         })
     }
 }
@@ -279,13 +239,6 @@ pub(super) struct TagOption {
 pub(super) struct AuthorOption {
     pub(super) author: AuthorRef,
     pub(super) name: String,
-}
-
-#[derive(Clone)]
-pub(super) struct IdOption {
-    pub(super) id: i32,
-    pub(super) label: String,
-    pub(super) description: String,
 }
 
 impl SelectItem for TagOption {
@@ -337,26 +290,6 @@ impl AuthorOption {
     }
 }
 
-impl SelectItem for IdOption {
-    type Value = i32;
-
-    fn title(&self) -> SharedString {
-        self.label.clone().into()
-    }
-
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        option_content(self.title(), self.description.clone().into())
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.id
-    }
-
-    fn matches(&self, query: &str) -> bool {
-        option_matches(&self.label, &self.description, query)
-    }
-}
-
 fn option_content(title: SharedString, description: SharedString) -> impl IntoElement {
     v_flex()
         .min_w_0()
@@ -371,25 +304,15 @@ fn option_matches(title: &str, description: &str, query: &str) -> bool {
 
 pub(super) fn field_items() -> FieldSelectItems {
     SearchableVec::new(vec![
-        SelectGroup::new("文本字段").items([
-            SelectChoice::new("标题", FieldKind::Title),
-            SelectChoice::new("简介", FieldKind::Description),
-            SelectChoice::new("最新章节标题", FieldKind::LatestChapterTitle),
-            SelectChoice::new("作者名称", FieldKind::AuthorName),
-        ]),
-        SelectGroup::new("ID 字段").items([
-            SelectChoice::new("作品 ID", FieldKind::NovelId),
-            SelectChoice::new("最新章节 ID", FieldKind::LatestChapterId),
-            SelectChoice::new("作者 ID", FieldKind::AuthorId),
-        ]),
-        SelectGroup::new("数字字段").items([
-            SelectChoice::new("字数", FieldKind::WordCount),
-            SelectChoice::new("阅读数", FieldKind::ReadCount),
-            SelectChoice::new("回复数", FieldKind::ReplyCount),
-        ]),
-        SelectGroup::new("布尔字段").item(SelectChoice::new("是否受限", FieldKind::IsLimit)),
-        SelectGroup::new("集合字段").item(SelectChoice::new("标签", FieldKind::Tags)),
-        SelectGroup::new("作者字段").item(SelectChoice::new("作者", FieldKind::Author)),
+        SelectChoice::new("标题", FieldKind::Title),
+        SelectChoice::new("简介", FieldKind::Description),
+        SelectChoice::new("最新章节标题", FieldKind::LatestChapterTitle),
+        SelectChoice::new("作者", FieldKind::Author),
+        SelectChoice::new("标签", FieldKind::Tags),
+        SelectChoice::new("字数", FieldKind::WordCount),
+        SelectChoice::new("阅读数", FieldKind::ReadCount),
+        SelectChoice::new("回复数", FieldKind::ReplyCount),
+        SelectChoice::new("是否受限", FieldKind::IsLimit),
     ])
 }
 
@@ -411,18 +334,6 @@ pub(super) fn number_relation_items() -> Vec<SelectChoice<NumberRelation>> {
         SelectChoice::new("大于", NumberRelation::Gt),
         SelectChoice::new("大于等于", NumberRelation::Gte),
         SelectChoice::new("介于范围", NumberRelation::Between),
-    ]
-}
-
-pub(super) fn id_relation_items() -> Vec<SelectChoice<IdRelation>> {
-    vec![
-        SelectChoice::new("等于", IdRelation::Eq),
-        SelectChoice::new("不等于", IdRelation::Ne),
-        SelectChoice::new("小于", IdRelation::Lt),
-        SelectChoice::new("小于等于", IdRelation::Lte),
-        SelectChoice::new("大于", IdRelation::Gt),
-        SelectChoice::new("大于等于", IdRelation::Gte),
-        SelectChoice::new("介于范围", IdRelation::Between),
     ]
 }
 
@@ -450,7 +361,12 @@ pub(super) fn tags_relation_items() -> Vec<SelectChoice<TagsRelation>> {
 
 pub(super) fn author_relation_items() -> Vec<SelectChoice<AuthorRelation>> {
     vec![
+        SelectChoice::new("名称包含", AuthorRelation::NameContains),
+        SelectChoice::new("名称开头是", AuthorRelation::NameStartsWith),
+        SelectChoice::new("名称结尾是", AuthorRelation::NameEndsWith),
+        SelectChoice::new("名称等于", AuthorRelation::NameEquals),
         SelectChoice::new("是", AuthorRelation::Is),
+        SelectChoice::new("不是", AuthorRelation::IsNot),
         SelectChoice::new("在集合中", AuthorRelation::In),
         SelectChoice::new("不在集合中", AuthorRelation::NotIn),
     ]
@@ -481,6 +397,7 @@ pub(super) fn sort_direction_items() -> Vec<SelectChoice<SortDirectionChoice>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_component::{IndexPath, select::SelectDelegate};
 
     #[test]
     fn tag_option_matches_pinyin_and_initials() {
@@ -502,5 +419,65 @@ mod tests {
         assert!(option.matches("baohan"));
         assert!(option.matches("bhqb"));
         assert!(!option.matches("dengyu"));
+    }
+
+    #[test]
+    fn field_items_are_flat_and_match_prd_order() {
+        let items = field_items();
+        let labels = (0..items.items_count(0))
+            .map(|row| {
+                items
+                    .item(IndexPath::default().row(row))
+                    .expect("field item should exist")
+                    .title()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "标题",
+                "简介",
+                "最新章节标题",
+                "作者",
+                "标签",
+                "字数",
+                "阅读数",
+                "回复数",
+                "是否受限",
+            ]
+        );
+        assert!(!labels.iter().any(|label| matches!(
+            label.as_str(),
+            "作品 ID" | "最新章节 ID" | "作者 ID" | "作者名称"
+        )));
+    }
+
+    #[test]
+    fn author_relation_items_cover_text_and_entity_conditions() {
+        let items = author_relation_items();
+        let labels = items
+            .iter()
+            .map(|item| item.title().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "名称包含",
+                "名称开头是",
+                "名称结尾是",
+                "名称等于",
+                "是",
+                "不是",
+                "在集合中",
+                "不在集合中",
+            ]
+        );
+        assert!(items[0].matches("mingcheng"));
+        assert!(items[0].matches("mcbh"));
+        assert!(items[5].matches("bushi"));
+        assert!(items[5].matches("bs"));
     }
 }

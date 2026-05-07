@@ -1,10 +1,10 @@
 use super::{
     options::{
         AuthorOption, AuthorRelation, BoolRelation, FieldKind, FieldSelectItems, GroupRelation,
-        IdOption, IdRelation, NumberRelation, QueryOptions, SelectChoice, SortDirectionChoice,
-        SortField, TagsRelation, TextRelation, author_relation_items, bool_relation_items,
-        bool_value_items, field_items, id_relation_items, number_relation_items,
-        sort_direction_items, sort_field_items, tags_relation_items, text_relation_items,
+        NumberRelation, QueryOptions, SelectChoice, SortDirectionChoice, SortField, TagsRelation,
+        TextRelation, author_relation_items, bool_relation_items, bool_value_items, field_items,
+        number_relation_items, sort_direction_items, sort_field_items, tags_relation_items,
+        text_relation_items,
     },
     sort::move_sort_before,
 };
@@ -12,7 +12,7 @@ use crate::{
     components::{EntityPickerState, MultiSelectState, NumericRangeInputState, RangeInputError},
     store::query::{
         AuthorPredicate, BoolField, FilterExpr, NumberOp, Predicate, QuerySpec, SortDirection,
-        SortSpec, TagsPredicate, TextOp,
+        SortSpec, TagsPredicate, TextField, TextOp,
     },
 };
 use gpui::{AppContext, Context, Entity, Subscription, Window};
@@ -28,7 +28,6 @@ use super::super::QueryView;
 type FieldSelectState = SelectState<FieldSelectItems>;
 type TextRelationSelectState = SelectState<Vec<SelectChoice<TextRelation>>>;
 type NumberRelationSelectState = SelectState<Vec<SelectChoice<NumberRelation>>>;
-type IdRelationSelectState = SelectState<Vec<SelectChoice<IdRelation>>>;
 type BoolRelationSelectState = SelectState<Vec<SelectChoice<BoolRelation>>>;
 type BoolValueSelectState = SelectState<Vec<SelectChoice<bool>>>;
 type TagsRelationSelectState = SelectState<Vec<SelectChoice<TagsRelation>>>;
@@ -72,7 +71,6 @@ pub(super) enum ConditionDraft {
     },
     Text(TextCondition),
     Number(NumberCondition),
-    Id(IdCondition),
     Bool(BoolCondition),
     Tags(TagsCondition),
     Author(AuthorCondition),
@@ -81,7 +79,6 @@ pub(super) enum ConditionDraft {
 pub(super) enum RelationSelect {
     Text(Entity<TextRelationSelectState>),
     Number(Entity<NumberRelationSelectState>),
-    Id(Entity<IdRelationSelectState>),
     Bool(Entity<BoolRelationSelectState>),
     Tags(Entity<TagsRelationSelectState>),
     Author(Entity<AuthorRelationSelectState>),
@@ -106,19 +103,6 @@ pub(super) enum NumberValue {
     Range(Entity<NumericRangeInputState>),
 }
 
-pub(super) struct IdCondition {
-    pub(super) field: FieldKind,
-    pub(super) relation: IdRelation,
-    pub(super) relation_select: Entity<IdRelationSelectState>,
-    pub(super) value: IdValue,
-}
-
-pub(super) enum IdValue {
-    Picker(Entity<EntityPickerState<IdOption>>),
-    Number(Entity<InputState>),
-    Range(Entity<NumericRangeInputState>),
-}
-
 pub(super) struct BoolCondition {
     pub(super) relation_select: Entity<BoolRelationSelectState>,
     pub(super) value_select: Entity<BoolValueSelectState>,
@@ -137,6 +121,7 @@ pub(super) struct AuthorCondition {
 }
 
 pub(super) enum AuthorValue {
+    Text(Entity<InputState>),
     Single(Entity<EntityPickerState<AuthorOption>>),
     Multi(Entity<MultiSelectState<AuthorOption>>),
 }
@@ -278,14 +263,8 @@ impl AdvancedQueryState {
         cx: &mut Context<QueryView>,
     ) {
         let relation_select = match field {
-            FieldKind::Title
-            | FieldKind::Description
-            | FieldKind::LatestChapterTitle
-            | FieldKind::AuthorName => {
+            FieldKind::Title | FieldKind::Description | FieldKind::LatestChapterTitle => {
                 RelationSelect::Text(self.new_text_relation_select(condition_id, window, cx))
-            }
-            FieldKind::NovelId | FieldKind::LatestChapterId | FieldKind::AuthorId => {
-                RelationSelect::Id(self.new_id_relation_select(condition_id, window, cx))
             }
             FieldKind::WordCount | FieldKind::ReadCount | FieldKind::ReplyCount => {
                 RelationSelect::Number(self.new_number_relation_select(condition_id, window, cx))
@@ -368,43 +347,6 @@ impl AdvancedQueryState {
         }
     }
 
-    fn set_id_relation(
-        &mut self,
-        condition_id: u64,
-        relation: IdRelation,
-        window: &mut Window,
-        cx: &mut Context<QueryView>,
-    ) {
-        let Some(field) = self.condition_field(condition_id) else {
-            return;
-        };
-        let options = self.id_options(field);
-        let relation_select = self.new_id_relation_select(condition_id, window, cx);
-        relation_select.update(cx, |select, cx| {
-            select.set_selected_value(&relation, window, cx);
-        });
-        let value = match relation {
-            IdRelation::Eq | IdRelation::Ne => {
-                IdValue::Picker(cx.new(|cx| EntityPickerState::new(options, "选择 ID", window, cx)))
-            }
-            IdRelation::Between => IdValue::Range(
-                cx.new(|cx| NumericRangeInputState::new("最小 ID", "最大 ID", window, cx)),
-            ),
-            IdRelation::Lt | IdRelation::Lte | IdRelation::Gt | IdRelation::Gte => {
-                IdValue::Number(cx.new(|cx| InputState::new(window, cx).placeholder("输入 ID")))
-            }
-        };
-        if let Some(condition) = self.find_condition_mut(condition_id) {
-            condition.error = None;
-            condition.draft = ConditionDraft::Id(IdCondition {
-                field,
-                relation,
-                relation_select,
-                value,
-            });
-        }
-    }
-
     fn set_bool_relation(
         &mut self,
         condition_id: u64,
@@ -469,7 +411,13 @@ impl AdvancedQueryState {
             select.set_selected_value(&relation, window, cx);
         });
         let value = match relation {
-            AuthorRelation::Is => AuthorValue::Single(cx.new(|cx| {
+            AuthorRelation::NameContains
+            | AuthorRelation::NameStartsWith
+            | AuthorRelation::NameEndsWith
+            | AuthorRelation::NameEquals => {
+                AuthorValue::Text(cx.new(|cx| InputState::new(window, cx).placeholder("输入文本")))
+            }
+            AuthorRelation::Is | AuthorRelation::IsNot => AuthorValue::Single(cx.new(|cx| {
                 EntityPickerState::new(self.options.authors.clone(), "选择作者", window, cx)
             })),
             AuthorRelation::In | AuthorRelation::NotIn => AuthorValue::Multi(cx.new(|cx| {
@@ -534,27 +482,6 @@ impl AdvancedQueryState {
                 if let SelectEvent::Confirm(Some(relation)) = event {
                     this.advanced
                         .set_number_relation(condition_id, *relation, window, cx);
-                    cx.notify();
-                }
-            },
-        ));
-        select
-    }
-
-    fn new_id_relation_select(
-        &mut self,
-        condition_id: u64,
-        window: &mut Window,
-        cx: &mut Context<QueryView>,
-    ) -> Entity<IdRelationSelectState> {
-        let select = cx.new(|cx| SelectState::new(id_relation_items(), None, window, cx));
-        self.subscriptions.push(cx.subscribe_in(
-            &select,
-            window,
-            move |this, _, event: &SelectEvent<Vec<SelectChoice<IdRelation>>>, window, cx| {
-                if let SelectEvent::Confirm(Some(relation)) = event {
-                    this.advanced
-                        .set_id_relation(condition_id, *relation, window, cx);
                     cx.notify();
                 }
             },
@@ -688,15 +615,6 @@ impl AdvancedQueryState {
         self.root
             .find_condition(condition_id)
             .and_then(|condition| condition.draft.field())
-    }
-
-    fn id_options(&self, field: FieldKind) -> Vec<IdOption> {
-        match field {
-            FieldKind::NovelId => self.options.novels.clone(),
-            FieldKind::LatestChapterId => self.options.chapters.clone(),
-            FieldKind::AuthorId => self.options.author_ids.clone(),
-            _ => Vec::new(),
-        }
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -867,13 +785,6 @@ impl ConditionRow {
                     .ok_or_else(|| "字段与数字条件不匹配".to_owned())?,
                 op: number_op(condition.relation, &condition.value, cx)?,
             },
-            ConditionDraft::Id(condition) => Predicate::Number {
-                field: condition
-                    .field
-                    .number_field()
-                    .ok_or_else(|| "字段与 ID 条件不匹配".to_owned())?,
-                op: id_op(condition.relation, &condition.value, cx)?,
-            },
             ConditionDraft::Bool(condition) => {
                 let value = condition
                     .value_select
@@ -901,28 +812,7 @@ impl ConditionRow {
                 TagsRelation::IsNotEmpty => TagsPredicate::IsNotEmpty,
             }
             .into(),
-            ConditionDraft::Author(condition) => match &condition.value {
-                AuthorValue::Single(value) => {
-                    let author = value
-                        .read(cx)
-                        .selected_key()
-                        .ok_or_else(|| "请选择有效项".to_owned())?;
-                    Predicate::Author(AuthorPredicate::Is(author))
-                }
-                AuthorValue::Multi(value) => {
-                    let authors = value.read(cx).selected_keys();
-                    if authors.is_empty() {
-                        return Err("请选择至少一项".to_owned());
-                    }
-                    Predicate::Author(match condition.relation {
-                        AuthorRelation::In => AuthorPredicate::In(authors),
-                        AuthorRelation::NotIn => AuthorPredicate::NotIn(authors),
-                        AuthorRelation::Is => {
-                            return Err("作者条件和值输入器不匹配".to_owned());
-                        }
-                    })
-                }
-            },
+            ConditionDraft::Author(condition) => return author_expr(condition, cx),
         };
         Ok(FilterExpr::Predicate(predicate))
     }
@@ -934,8 +824,7 @@ impl ConditionDraft {
             ConditionDraft::NoField => None,
             ConditionDraft::NoCondition { field, .. }
             | ConditionDraft::Text(TextCondition { field, .. })
-            | ConditionDraft::Number(NumberCondition { field, .. })
-            | ConditionDraft::Id(IdCondition { field, .. }) => Some(*field),
+            | ConditionDraft::Number(NumberCondition { field, .. }) => Some(*field),
             ConditionDraft::Bool(_) => Some(FieldKind::IsLimit),
             ConditionDraft::Tags(_) => Some(FieldKind::Tags),
             ConditionDraft::Author(_) => Some(FieldKind::Author),
@@ -975,40 +864,6 @@ fn number_op(
     })
 }
 
-fn id_op(relation: IdRelation, value: &IdValue, cx: &gpui::App) -> Result<NumberOp, String> {
-    Ok(match (relation, value) {
-        (IdRelation::Eq, IdValue::Picker(picker)) => NumberOp::Eq(
-            picker
-                .read(cx)
-                .selected_key()
-                .ok_or_else(|| "请选择有效项".to_owned())?,
-        ),
-        (IdRelation::Ne, IdValue::Picker(picker)) => NumberOp::Ne(
-            picker
-                .read(cx)
-                .selected_key()
-                .ok_or_else(|| "请选择有效项".to_owned())?,
-        ),
-        (IdRelation::Between, IdValue::Range(range)) => {
-            let (min, max) = parse_range(range, cx)?;
-            NumberOp::Between { min, max }
-        }
-        (relation, IdValue::Number(input)) => {
-            let value = parse_i32(input, cx)?;
-            match relation {
-                IdRelation::Lt => NumberOp::Lt(value),
-                IdRelation::Lte => NumberOp::Lte(value),
-                IdRelation::Gt => NumberOp::Gt(value),
-                IdRelation::Gte => NumberOp::Gte(value),
-                IdRelation::Eq | IdRelation::Ne | IdRelation::Between => {
-                    return Err("请选择有效项".to_owned());
-                }
-            }
-        }
-        _ => return Err("请选择有效项".to_owned()),
-    })
-}
-
 fn parse_i32(input: &Entity<InputState>, cx: &gpui::App) -> Result<i32, String> {
     let value = input.read(cx).value().trim().to_owned();
     if value.is_empty() {
@@ -1041,6 +896,70 @@ fn selected_tags(condition: &TagsCondition, cx: &gpui::App) -> Result<HashSet<St
     Ok(values.into_iter().collect())
 }
 
+fn author_expr(condition: &AuthorCondition, cx: &gpui::App) -> Result<FilterExpr, String> {
+    match &condition.value {
+        AuthorValue::Text(input) => {
+            let value = input.read(cx).value().trim().to_owned();
+            if value.is_empty() {
+                return Err("请输入文本".to_owned());
+            }
+            Ok(FilterExpr::Predicate(author_text_predicate(
+                condition.relation,
+                value,
+            )?))
+        }
+        AuthorValue::Single(value) => {
+            let author = value
+                .read(cx)
+                .selected_key()
+                .ok_or_else(|| "请选择有效作者".to_owned())?;
+            match condition.relation {
+                AuthorRelation::Is => Ok(author_is_expr(author)),
+                AuthorRelation::IsNot => Ok(author_is_not_expr(author)),
+                _ => Err("作者条件和值输入器不匹配".to_owned()),
+            }
+        }
+        AuthorValue::Multi(value) => {
+            let authors = value.read(cx).selected_keys();
+            if authors.is_empty() {
+                return Err("请选择至少一项".to_owned());
+            }
+            let predicate = match condition.relation {
+                AuthorRelation::In => AuthorPredicate::In(authors),
+                AuthorRelation::NotIn => AuthorPredicate::NotIn(authors),
+                _ => return Err("作者条件和值输入器不匹配".to_owned()),
+            };
+            Ok(FilterExpr::Predicate(Predicate::Author(predicate)))
+        }
+    }
+}
+
+fn author_text_predicate(relation: AuthorRelation, value: String) -> Result<Predicate, String> {
+    Ok(Predicate::Text {
+        field: TextField::AuthorName,
+        op: author_text_op(relation)?,
+        value,
+    })
+}
+
+fn author_text_op(relation: AuthorRelation) -> Result<TextOp, String> {
+    match relation {
+        AuthorRelation::NameContains => Ok(TextOp::Contains),
+        AuthorRelation::NameStartsWith => Ok(TextOp::StartsWith),
+        AuthorRelation::NameEndsWith => Ok(TextOp::EndsWith),
+        AuthorRelation::NameEquals => Ok(TextOp::Equals),
+        _ => Err("作者条件和值输入器不匹配".to_owned()),
+    }
+}
+
+fn author_is_expr(author: crate::store::query::AuthorRef) -> FilterExpr {
+    FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(author)))
+}
+
+fn author_is_not_expr(author: crate::store::query::AuthorRef) -> FilterExpr {
+    FilterExpr::Not(Box::new(author_is_expr(author)))
+}
+
 fn refresh_condition_options(
     options: &QueryOptions,
     condition: &mut ConditionRow,
@@ -1068,19 +987,58 @@ fn refresh_condition_options(
                 value.set_options(options.authors.clone(), cx)
             });
         }
-        ConditionDraft::Id(IdCondition {
-            field,
-            value: IdValue::Picker(value),
-            ..
-        }) => {
-            let id_options = match field {
-                FieldKind::NovelId => options.novels.clone(),
-                FieldKind::LatestChapterId => options.chapters.clone(),
-                FieldKind::AuthorId => options.author_ids.clone(),
-                _ => Vec::new(),
-            };
-            value.update(cx, |value, cx| value.set_options(id_options, cx));
-        }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::query::AuthorRef;
+
+    #[test]
+    fn author_name_relations_map_to_author_name_text_predicates() {
+        assert_eq!(
+            author_text_predicate(AuthorRelation::NameContains, "张三".to_owned()),
+            Ok(Predicate::Text {
+                field: TextField::AuthorName,
+                op: TextOp::Contains,
+                value: "张三".to_owned(),
+            })
+        );
+        assert_eq!(
+            author_text_predicate(AuthorRelation::NameStartsWith, "张".to_owned()),
+            Ok(Predicate::Text {
+                field: TextField::AuthorName,
+                op: TextOp::StartsWith,
+                value: "张".to_owned(),
+            })
+        );
+        assert_eq!(
+            author_text_predicate(AuthorRelation::NameEndsWith, "三".to_owned()),
+            Ok(Predicate::Text {
+                field: TextField::AuthorName,
+                op: TextOp::EndsWith,
+                value: "三".to_owned(),
+            })
+        );
+        assert_eq!(
+            author_text_predicate(AuthorRelation::NameEquals, "张三".to_owned()),
+            Ok(Predicate::Text {
+                field: TextField::AuthorName,
+                op: TextOp::Equals,
+                value: "张三".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn author_is_not_relation_maps_to_not_author_is_expression() {
+        assert_eq!(
+            author_is_not_expr(AuthorRef::Id(42)),
+            FilterExpr::Not(Box::new(FilterExpr::Predicate(Predicate::Author(
+                AuthorPredicate::Is(AuthorRef::Id(42)),
+            ))))
+        );
     }
 }

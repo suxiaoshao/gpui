@@ -4,13 +4,8 @@ use gpui::{
     canvas, div, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName,
-    button::{Button, ButtonVariants},
-    h_flex,
-    label::Label,
-    list::ListState,
-    select::SelectItem,
-    v_flex,
+    ActiveTheme, Icon, IconName, Sizable, h_flex, label::Label, list::ListState,
+    select::SelectItem, v_flex,
 };
 use std::rc::Rc;
 
@@ -193,6 +188,7 @@ where
         div()
             .child(
                 h_flex()
+                    .id("entity-picker-trigger")
                     .relative()
                     .min_h(px(32.))
                     .w_full()
@@ -203,6 +199,9 @@ where
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
                     .items_center()
+                    .on_click(cx.listener(|picker, _, window, cx| {
+                        picker.toggle_open(window, cx);
+                    }))
                     .child(
                         canvas(
                             {
@@ -226,24 +225,12 @@ where
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .truncate()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|picker, _, window, cx| {
-                                picker.toggle_open(window, cx);
-                            }))
                             .child(trigger_title),
                     )
                     .child(
-                        Button::new("entity-picker-toggle")
-                            .ghost()
-                            .icon(if self.open {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .tooltip("展开选项")
-                            .on_click(cx.listener(|picker, _, window, cx| {
-                                picker.toggle_open(window, cx);
-                            })),
+                        Icon::new(IconName::ChevronDown)
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
                     ),
             )
             .when(self.open, |this| {
