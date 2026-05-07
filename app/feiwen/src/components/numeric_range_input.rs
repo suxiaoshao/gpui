@@ -2,7 +2,7 @@ use gpui::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme,
     input::{InputState, NumberInput},
     label::Label,
     v_flex,
@@ -79,5 +79,5 @@ fn range_input(
                 .text_xs()
                 .text_color(cx.theme().muted_foreground),
         )
-        .child(NumberInput::new(input).small())
+        .child(NumberInput::new(input))
 }

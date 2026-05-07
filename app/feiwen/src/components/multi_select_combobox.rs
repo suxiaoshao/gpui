@@ -3,7 +3,7 @@ use gpui::{
     Render, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -132,9 +132,9 @@ impl<T: PickerOption> Render for MultiSelectState<T> {
                                     .child(Tag::secondary().outline().child(option.label()))
                                     .child(
                                         Button::new(("multi-select-remove", ix))
-                                            .xsmall()
                                             .ghost()
                                             .icon(IconName::Close)
+                                            .tooltip("移除已选项")
                                             .on_click({
                                                 let entity = entity.clone();
                                                 move |_, _, cx| {
@@ -146,18 +146,13 @@ impl<T: PickerOption> Render for MultiSelectState<T> {
                                     )
                                     .into_any_element()
                             }))
-                            .child(
-                                Input::new(&self.input)
-                                    .appearance(false)
-                                    .small()
-                                    .min_w(px(120.)),
-                            ),
+                            .child(Input::new(&self.input).appearance(false).min_w(px(120.))),
                     )
                     .child(
                         Button::new("multi-select-toggle")
-                            .xsmall()
                             .ghost()
                             .icon(IconName::ChevronDown)
+                            .tooltip("展开选项")
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -208,11 +203,7 @@ fn render_option<T: PickerOption>(
         .py_1()
         .items_center()
         .cursor_pointer()
-        .child(
-            Icon::new(IconName::Check)
-                .xsmall()
-                .when(!selected, |this| this.invisible()),
-        )
+        .child(Icon::new(IconName::Check).when(!selected, |this| this.invisible()))
         .child(
             v_flex()
                 .gap_0p5()

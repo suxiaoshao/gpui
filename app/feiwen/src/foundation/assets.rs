@@ -19,6 +19,7 @@ define_lucide_icons!(
         RefreshCcw => "refresh-ccw",
         RotateCcw => "rotate-ccw",
         Settings => "settings",
+        Trash => "trash",
         TriangleAlert => "triangle-alert",
     }
 );
@@ -44,6 +45,10 @@ mod tests {
         assert_eq!(
             IconName::CirclePlay.path(),
             SharedString::from("icons/circle-play.svg")
+        );
+        assert_eq!(
+            IconName::Trash.path(),
+            SharedString::from("icons/trash.svg")
         );
     }
 

@@ -3,7 +3,7 @@ use gpui::{
     Render, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, IconName,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -125,14 +125,14 @@ impl<T: PickerOption> Render for EntityPickerState<T> {
                                 )
                             })
                             .when(self.selected.is_none(), |this| {
-                                this.child(Input::new(&self.input).appearance(false).small())
+                                this.child(Input::new(&self.input).appearance(false))
                             }),
                     )
                     .child(
                         Button::new("entity-picker-toggle")
-                            .xsmall()
                             .ghost()
                             .icon(IconName::ChevronDown)
+                            .tooltip("展开选项")
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -184,9 +184,9 @@ fn render_option<T: PickerOption>(
         .items_center()
         .cursor_pointer()
         .child(if is_selected {
-            Icon::new(IconName::Check).xsmall().into_any_element()
+            Icon::new(IconName::Check).into_any_element()
         } else {
-            Icon::new(IconName::BookOpen).xsmall().into_any_element()
+            Icon::new(IconName::BookOpen).into_any_element()
         })
         .child(
             v_flex()

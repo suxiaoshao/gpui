@@ -1,6 +1,7 @@
 use super::state::SortRow;
-use gpui::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, label::Label};
+use crate::foundation::assets::IconName as FeiwenIconName;
+use gpui::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, px};
+use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, label::Label};
 
 pub(super) trait SortRowId {
     fn sort_row_id(&self) -> u64;
@@ -30,14 +31,26 @@ pub(super) fn move_sort_before<T: SortRowId>(rows: &mut Vec<T>, source_id: u64, 
 #[derive(Clone)]
 pub(super) struct DragSortRow {
     pub(super) row_id: u64,
-    label: SharedString,
+    priority: usize,
+    field_label: SharedString,
+    direction_label: SharedString,
+    has_error: bool,
 }
 
 impl DragSortRow {
-    pub(super) fn new(row_id: u64, label: impl Into<SharedString>) -> Self {
+    pub(super) fn new(
+        row_id: u64,
+        priority: usize,
+        field_label: impl Into<SharedString>,
+        direction_label: impl Into<SharedString>,
+        has_error: bool,
+    ) -> Self {
         Self {
             row_id,
-            label: label.into(),
+            priority,
+            field_label: field_label.into(),
+            direction_label: direction_label.into(),
+            has_error,
         }
     }
 }
@@ -46,15 +59,37 @@ impl Render for DragSortRow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .gap_2()
+            .items_center()
             .px_3()
             .py_2()
+            .min_w(px(360.))
             .border_1()
-            .border_color(cx.theme().drag_border)
+            .border_color(if self.has_error {
+                cx.theme().danger
+            } else {
+                cx.theme().drag_border
+            })
             .rounded_sm()
             .bg(cx.theme().background)
             .shadow_sm()
-            .child(Icon::new(IconName::EllipsisVertical).xsmall())
-            .child(Label::new(self.label.clone()).text_sm())
+            .child(Icon::new(IconName::EllipsisVertical))
+            .child(
+                Label::new(format!("{}", self.priority))
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Label::new(self.field_label.clone())
+                    .text_sm()
+                    .font_medium()
+                    .min_w(px(140.)),
+            )
+            .child(
+                Label::new(self.direction_label.clone())
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(Icon::new(FeiwenIconName::Trash).invisible().ml_auto())
     }
 }
 
