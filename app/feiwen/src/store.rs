@@ -13,6 +13,7 @@ use gpui::App;
 use tracing::{Level, event};
 
 pub(crate) mod model;
+pub(crate) mod query;
 pub(crate) mod schema;
 pub(crate) mod service;
 pub(crate) mod types;

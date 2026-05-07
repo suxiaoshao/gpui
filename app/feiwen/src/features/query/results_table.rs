@@ -1,0 +1,237 @@
+use crate::store::{service::Novel, types::Author};
+use gpui::{App, Context, IntoElement, ParentElement, Styled, Window, div};
+use gpui_component::{
+    ActiveTheme, StyledExt,
+    label::Label,
+    table::{Column, ColumnFixed, ColumnSort, TableDelegate, TableState},
+    tag::Tag as TagComponent,
+};
+
+#[derive(Clone, Copy)]
+enum ResultColumn {
+    Title,
+    Author,
+    WordCount,
+    ReadCount,
+    ReplyCount,
+    IsLimit,
+    LatestChapter,
+    Tags,
+}
+
+impl ResultColumn {
+    const ALL: [Self; 8] = [
+        Self::Title,
+        Self::Author,
+        Self::WordCount,
+        Self::ReadCount,
+        Self::ReplyCount,
+        Self::IsLimit,
+        Self::LatestChapter,
+        Self::Tags,
+    ];
+}
+
+pub(crate) struct ResultsTableDelegate {
+    novels: Vec<Novel>,
+}
+
+impl ResultsTableDelegate {
+    pub(crate) fn new() -> Self {
+        Self { novels: Vec::new() }
+    }
+
+    pub(crate) fn set_novels(&mut self, novels: Vec<Novel>) {
+        self.novels = novels;
+    }
+
+    fn column_spec(column: ResultColumn) -> Column {
+        match column {
+            ResultColumn::Title => Column::new("title", "标题")
+                .width(240.)
+                .fixed(ColumnFixed::Left)
+                .sortable(),
+            ResultColumn::Author => Column::new("author", "作者").width(140.).sortable(),
+            ResultColumn::WordCount => Column::new("word_count", "字数")
+                .width(96.)
+                .text_right()
+                .sortable(),
+            ResultColumn::ReadCount => Column::new("read_count", "阅读")
+                .width(96.)
+                .text_right()
+                .sortable(),
+            ResultColumn::ReplyCount => Column::new("reply_count", "回复")
+                .width(96.)
+                .text_right()
+                .sortable(),
+            ResultColumn::IsLimit => Column::new("is_limit", "受限")
+                .width(72.)
+                .text_center()
+                .sortable(),
+            ResultColumn::LatestChapter => Column::new("latest_chapter", "最新章节")
+                .width(180.)
+                .sortable(),
+            ResultColumn::Tags => Column::new("tags", "标签").width(360.),
+        }
+    }
+
+    fn novel_at(&self, row_ix: usize) -> Option<&Novel> {
+        self.novels.get(row_ix)
+    }
+
+    fn author_label(novel: &Novel) -> String {
+        match &novel.author {
+            Author::Anonymous(name) => name.clone(),
+            Author::Known(title) => title.name.clone(),
+        }
+    }
+
+    fn sort_by_column(&mut self, col_ix: usize, sort: ColumnSort) {
+        let descending = matches!(sort, ColumnSort::Descending);
+        match ResultColumn::ALL.get(col_ix).copied() {
+            Some(ResultColumn::Title) => self.sort_by(descending, |novel| novel.title.name.clone()),
+            Some(ResultColumn::Author) => self.sort_by(descending, Self::author_label),
+            Some(ResultColumn::WordCount) => {
+                self.sort_by(descending, |novel| Some(novel.count.word_count))
+            }
+            Some(ResultColumn::ReadCount) => {
+                self.sort_by(descending, |novel| novel.count.read_count)
+            }
+            Some(ResultColumn::ReplyCount) => {
+                self.sort_by(descending, |novel| novel.count.reply_count)
+            }
+            Some(ResultColumn::IsLimit) => self.sort_by(descending, |novel| novel.is_limit),
+            Some(ResultColumn::LatestChapter) => {
+                self.sort_by(descending, |novel| novel.latest_chapter.id)
+            }
+            Some(ResultColumn::Tags) | None => {}
+        }
+    }
+
+    fn sort_by<T, F>(&mut self, descending: bool, value: F)
+    where
+        T: Ord,
+        F: Fn(&Novel) -> T,
+    {
+        self.novels.sort_by(|left, right| {
+            let ordering = value(left).cmp(&value(right));
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+    }
+}
+
+impl TableDelegate for ResultsTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        ResultColumn::ALL.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.novels.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        ResultColumn::ALL
+            .get(col_ix)
+            .copied()
+            .map(Self::column_spec)
+            .unwrap_or_else(|| Column::new("unknown", ""))
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        if sort == ColumnSort::Default {
+            self.novels.sort_by_key(|novel| novel.title.id);
+        } else {
+            self.sort_by_column(col_ix, sort);
+        }
+        cx.notify();
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(novel) = self.novel_at(row_ix) else {
+            return div().into_any_element();
+        };
+        match ResultColumn::ALL[col_ix] {
+            ResultColumn::Title => Label::new(novel.title.name.clone())
+                .text_sm()
+                .font_medium()
+                .truncate()
+                .into_any_element(),
+            ResultColumn::Author => Label::new(Self::author_label(novel))
+                .text_sm()
+                .truncate()
+                .into_any_element(),
+            ResultColumn::WordCount => number_cell(Some(novel.count.word_count)).into_any_element(),
+            ResultColumn::ReadCount => number_cell(novel.count.read_count).into_any_element(),
+            ResultColumn::ReplyCount => number_cell(novel.count.reply_count).into_any_element(),
+            ResultColumn::IsLimit => {
+                let tag = if novel.is_limit {
+                    TagComponent::warning().outline().child("是")
+                } else {
+                    TagComponent::secondary().outline().child("否")
+                };
+                tag.into_any_element()
+            }
+            ResultColumn::LatestChapter => Label::new(novel.latest_chapter.name.clone())
+                .text_sm()
+                .truncate()
+                .into_any_element(),
+            ResultColumn::Tags => {
+                let mut tags = novel
+                    .tags
+                    .iter()
+                    .map(|tag| tag.name.clone())
+                    .collect::<Vec<_>>();
+                tags.sort();
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(
+                        tags.into_iter()
+                            .take(6)
+                            .map(|tag| TagComponent::secondary().outline().child(tag)),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(cx.theme().muted_foreground)
+            .child("暂无查询结果")
+    }
+}
+
+fn number_cell(value: Option<i32>) -> impl IntoElement {
+    Label::new(
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+    )
+    .text_sm()
+}
