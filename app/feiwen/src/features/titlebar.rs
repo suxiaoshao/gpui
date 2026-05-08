@@ -92,7 +92,7 @@ impl FeiwenTitleBar {
     fn summary(&self, cx: &App) -> String {
         let i18n = cx.global::<I18n>();
         match self.router {
-            RouterType::Query => self.query_view.read(cx).titlebar_summary(),
+            RouterType::Query => self.query_view.read(cx).titlebar_summary(i18n),
             RouterType::Fetch => self.fetch_view.read(cx).titlebar_summary(i18n, cx),
         }
     }

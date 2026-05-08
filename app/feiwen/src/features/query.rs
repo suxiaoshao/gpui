@@ -9,6 +9,7 @@ use crate::{
     store::{Db, service::Novel},
 };
 use advanced::{AdvancedQueryState, QueryOptions};
+use fluent_bundle::FluentArgs;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -162,11 +163,12 @@ impl QueryView {
         self.search.is_searching()
     }
 
-    pub(crate) fn titlebar_summary(&self) -> String {
+    pub(crate) fn titlebar_summary(&self, i18n: &I18n) -> String {
         query_titlebar_summary(
             self.advanced.condition_count(),
             self.advanced.sort_count(),
             &self.search,
+            i18n,
         )
     }
 
@@ -378,22 +380,33 @@ impl QueryView {
     }
 }
 
-fn query_titlebar_summary(conditions: usize, sorts: usize, search: &SearchState) -> String {
+fn query_titlebar_summary(
+    conditions: usize,
+    sorts: usize,
+    search: &SearchState,
+    i18n: &I18n,
+) -> String {
     format!(
-        "{} 条条件 · {} 条排序 · {}",
-        conditions,
-        sorts,
-        query_titlebar_result_label(search)
+        "{} · {} · {}",
+        count_message(i18n, "query-titlebar-conditions", conditions),
+        count_message(i18n, "query-titlebar-sorts", sorts),
+        query_titlebar_result_label(search, i18n)
     )
 }
 
-fn query_titlebar_result_label(search: &SearchState) -> String {
+fn query_titlebar_result_label(search: &SearchState, i18n: &I18n) -> String {
     match search {
-        SearchState::Init => "暂无结果".to_owned(),
-        SearchState::Task(_) => "正在搜索".to_owned(),
-        SearchState::Data { count } => format!("{count} 条结果"),
-        SearchState::Error(_) => "查询失败".to_owned(),
+        SearchState::Init => i18n.t("query-titlebar-no-results"),
+        SearchState::Task(_) => i18n.t("query-titlebar-searching"),
+        SearchState::Data { count } => count_message(i18n, "query-titlebar-results", *count),
+        SearchState::Error(_) => i18n.t("query-titlebar-failed"),
     }
+}
+
+fn count_message(i18n: &I18n, key: &str, count: usize) -> String {
+    let mut args = FluentArgs::new();
+    args.set("count", count);
+    i18n.t_with_args(key, &args)
 }
 
 #[cfg(test)]
@@ -401,6 +414,7 @@ mod tests {
     use gpui::Task;
 
     use super::{QueryError, SearchState, query_titlebar_summary};
+    use crate::foundation::i18n::I18n;
 
     #[::core::prelude::v1::test]
     fn search_state_helpers_match_state_variants() {
@@ -422,21 +436,36 @@ mod tests {
 
     #[test]
     fn query_titlebar_summary_reflects_search_state() {
+        let i18n = I18n::chinese_for_test();
         assert_eq!(
-            query_titlebar_summary(0, 0, &SearchState::Init),
+            query_titlebar_summary(0, 0, &SearchState::Init, &i18n),
             "0 条条件 · 0 条排序 · 暂无结果"
         );
         assert_eq!(
-            query_titlebar_summary(2, 1, &SearchState::Data { count: 8 }),
+            query_titlebar_summary(2, 1, &SearchState::Data { count: 8 }, &i18n),
             "2 条条件 · 1 条排序 · 8 条结果"
         );
         assert_eq!(
             query_titlebar_summary(
                 1,
                 0,
-                &SearchState::Error(QueryError::Validation("请选择字段".to_owned()))
+                &SearchState::Error(QueryError::Validation("请选择字段".to_owned())),
+                &i18n
             ),
             "1 条条件 · 0 条排序 · 查询失败"
+        );
+    }
+
+    #[test]
+    fn query_titlebar_summary_uses_english_locale() {
+        let i18n = I18n::english_for_test();
+        assert_eq!(
+            query_titlebar_summary(0, 0, &SearchState::Init, &i18n),
+            "0 conditions · 0 sorts · No results"
+        );
+        assert_eq!(
+            query_titlebar_summary(2, 1, &SearchState::Data { count: 8 }, &i18n),
+            "2 conditions · 1 sorts · 8 results"
         );
     }
 }
