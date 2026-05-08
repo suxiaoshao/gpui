@@ -169,6 +169,14 @@ impl AdvancedQueryState {
         Self::set_group_disabled(&mut self.root, disabled, cx);
     }
 
+    pub(crate) fn condition_count(&self) -> usize {
+        self.root.condition_count()
+    }
+
+    pub(crate) fn sort_count(&self) -> usize {
+        self.sorts.len()
+    }
+
     pub(crate) fn query_spec(&mut self, cx: &gpui::App) -> Result<QuerySpec, String> {
         Self::clear_group_errors(&mut self.root);
         for sort in &mut self.sorts {
@@ -755,6 +763,16 @@ impl AdvancedQueryState {
 }
 
 impl FilterGroup {
+    fn condition_count(&self) -> usize {
+        self.items
+            .iter()
+            .map(|node| match node {
+                FilterNode::Condition(_) => 1,
+                FilterNode::Group(group) => group.condition_count(),
+            })
+            .sum()
+    }
+
     fn find_group_mut(&mut self, group_id: u64) -> Option<&mut FilterGroup> {
         if self.id == group_id {
             return Some(self);

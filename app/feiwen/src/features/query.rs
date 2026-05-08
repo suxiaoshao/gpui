@@ -9,13 +9,13 @@ use crate::{
     store::{Db, service::Novel},
 };
 use advanced::{AdvancedQueryState, QueryOptions};
+use fluent_bundle::FluentArgs;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable, StyledExt,
+    ActiveTheme, Disableable,
     alert::Alert,
-    button::{Button, ButtonVariants},
-    h_flex,
+    button::Button,
     label::Label,
     resizable::{h_resizable, resizable_panel, v_resizable},
     table::{DataTable, TableState},
@@ -80,7 +80,6 @@ struct SearchResult {
 }
 
 enum QueryEvent {
-    RouteToFetch,
     Search,
     Reset,
 }
@@ -147,6 +146,32 @@ impl QueryView {
             query,
         }
     }
+
+    pub(crate) fn request_search(&mut self, cx: &mut Context<Self>) {
+        self.query.update(cx, |_, cx| {
+            cx.emit(QueryEvent::Search);
+        });
+    }
+
+    pub(crate) fn request_reset(&mut self, cx: &mut Context<Self>) {
+        self.query.update(cx, |_, cx| {
+            cx.emit(QueryEvent::Reset);
+        });
+    }
+
+    pub(crate) fn is_searching(&self) -> bool {
+        self.search.is_searching()
+    }
+
+    pub(crate) fn titlebar_summary(&self, i18n: &I18n) -> String {
+        query_titlebar_summary(
+            self.advanced.condition_count(),
+            self.advanced.sort_count(),
+            &self.search,
+            i18n,
+        )
+    }
+
     fn subscribe_in(
         &mut self,
         _state: &Entity<Query>,
@@ -155,14 +180,6 @@ impl QueryView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            QueryEvent::RouteToFetch => {
-                if self.search.is_searching() {
-                    return;
-                }
-                self.workspace.update(cx, |_data, cx| {
-                    cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
-                });
-            }
             QueryEvent::Search => {
                 self.start_search(cx);
             }
@@ -190,67 +207,8 @@ impl QueryView {
 
 impl Render for QueryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (search_label, route_fetch_label, error_label) = {
-            let i18n = cx.global::<I18n>();
-            (
-                i18n.t("query-search-button"),
-                i18n.t("query-route-fetch-button"),
-                i18n.t("query-error-title"),
-            )
-        };
+        let error_label = cx.global::<I18n>().t("query-error-title");
         let searching = self.search.is_searching();
-        let header = div()
-            .flex()
-            .flex_initial()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new("高级检索").font_semibold())
-                    .child(
-                        Label::new("通过结构化条件、集合选择和字段排序检索作品")
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("query-reset")
-                            .label("重置")
-                            .disabled(searching)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.query.update(cx, |_, cx| {
-                                    cx.emit(QueryEvent::Reset);
-                                });
-                            })),
-                    )
-                    .child(
-                        Button::new("search")
-                            .primary()
-                            .label(search_label)
-                            .loading(searching)
-                            .disabled(searching)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.query.update(cx, |_, cx| {
-                                    cx.emit(QueryEvent::Search);
-                                });
-                            })),
-                    )
-                    .child(
-                        Button::new("router-fetch")
-                            .label(route_fetch_label)
-                            .disabled(searching)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.query.update(cx, |_data, cx| {
-                                    cx.emit(QueryEvent::RouteToFetch);
-                                });
-                            })),
-                    ),
-            );
         div()
             .flex_1()
             .p_2()
@@ -258,7 +216,6 @@ impl Render for QueryView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(header)
             .when_some(self.render_fetch_summary(cx), |this, summary| {
                 this.child(summary)
             })
@@ -368,23 +325,14 @@ impl QueryView {
         });
     }
 
-    fn render_status(&self, error_label: String, cx: &mut Context<Self>) -> Div {
+    fn render_status(&self, error_label: String, _cx: &mut Context<Self>) -> Div {
         match &self.search {
             SearchState::Error(err) => div()
                 .flex_initial()
                 .child(Alert::error("query-error-alert", err.to_string()).title(error_label)),
-            SearchState::Data { count } => h_flex()
-                .flex_initial()
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .bg(cx.theme().accent.opacity(0.35))
-                .child(
-                    Label::new(format!("共 {count} 条结果"))
-                        .text_sm()
-                        .text_color(cx.theme().foreground),
-                ),
-            SearchState::Init | SearchState::Task(_) => div().flex_initial(),
+            SearchState::Init | SearchState::Task(_) | SearchState::Data { .. } => {
+                div().flex_initial()
+            }
         }
     }
 
@@ -432,11 +380,41 @@ impl QueryView {
     }
 }
 
+fn query_titlebar_summary(
+    conditions: usize,
+    sorts: usize,
+    search: &SearchState,
+    i18n: &I18n,
+) -> String {
+    format!(
+        "{} · {} · {}",
+        count_message(i18n, "query-titlebar-conditions", conditions),
+        count_message(i18n, "query-titlebar-sorts", sorts),
+        query_titlebar_result_label(search, i18n)
+    )
+}
+
+fn query_titlebar_result_label(search: &SearchState, i18n: &I18n) -> String {
+    match search {
+        SearchState::Init => i18n.t("query-titlebar-no-results"),
+        SearchState::Task(_) => i18n.t("query-titlebar-searching"),
+        SearchState::Data { count } => count_message(i18n, "query-titlebar-results", *count),
+        SearchState::Error(_) => i18n.t("query-titlebar-failed"),
+    }
+}
+
+fn count_message(i18n: &I18n, key: &str, count: usize) -> String {
+    let mut args = FluentArgs::new();
+    args.set("count", count);
+    i18n.t_with_args(key, &args)
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::Task;
 
-    use super::{QueryError, SearchState};
+    use super::{QueryError, SearchState, query_titlebar_summary};
+    use crate::foundation::i18n::I18n;
 
     #[::core::prelude::v1::test]
     fn search_state_helpers_match_state_variants() {
@@ -454,5 +432,40 @@ mod tests {
         let error = SearchState::Error(QueryError::Validation("请选择字段".to_owned()));
         assert!(!error.is_searching());
         assert!(error.is_error());
+    }
+
+    #[test]
+    fn query_titlebar_summary_reflects_search_state() {
+        let i18n = I18n::chinese_for_test();
+        assert_eq!(
+            query_titlebar_summary(0, 0, &SearchState::Init, &i18n),
+            "0 条条件 · 0 条排序 · 暂无结果"
+        );
+        assert_eq!(
+            query_titlebar_summary(2, 1, &SearchState::Data { count: 8 }, &i18n),
+            "2 条条件 · 1 条排序 · 8 条结果"
+        );
+        assert_eq!(
+            query_titlebar_summary(
+                1,
+                0,
+                &SearchState::Error(QueryError::Validation("请选择字段".to_owned())),
+                &i18n
+            ),
+            "1 条条件 · 0 条排序 · 查询失败"
+        );
+    }
+
+    #[test]
+    fn query_titlebar_summary_uses_english_locale() {
+        let i18n = I18n::english_for_test();
+        assert_eq!(
+            query_titlebar_summary(0, 0, &SearchState::Init, &i18n),
+            "0 conditions · 0 sorts · No results"
+        );
+        assert_eq!(
+            query_titlebar_summary(2, 1, &SearchState::Data { count: 8 }, &i18n),
+            "2 conditions · 1 sorts · 8 results"
+        );
     }
 }

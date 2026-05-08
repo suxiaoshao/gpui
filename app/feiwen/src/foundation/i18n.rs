@@ -33,8 +33,22 @@ impl I18n {
         Self { locale, bundles }
     }
 
+    #[cfg(test)]
+    pub(crate) fn chinese_for_test() -> Self {
+        Self::new(Locale::ZhCn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn english_for_test() -> Self {
+        Self::new(Locale::EnUs)
+    }
+
     pub(crate) fn t(&self, key: &str) -> String {
         self.translate(key, None)
+    }
+
+    pub(crate) fn t_with_args(&self, key: &str, args: &FluentArgs<'_>) -> String {
+        self.translate(key, Some(args))
     }
 
     fn translate(&self, key: &str, args: Option<&FluentArgs<'_>>) -> String {
@@ -103,6 +117,7 @@ fn normalize_locale(value: &str) -> Option<LanguageIdentifier> {
 fn build_bundle(lang: &str, source: &str) -> FluentBundle<FluentResource> {
     let langid: LanguageIdentifier = lang.parse().expect("valid language id");
     let mut bundle = FluentBundle::new(vec![langid]);
+    bundle.set_use_isolating(false);
     let resource = FluentResource::try_new(source.to_string()).expect("valid fluent resource");
     bundle
         .add_resource(resource)

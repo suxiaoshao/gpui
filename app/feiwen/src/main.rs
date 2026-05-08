@@ -1,6 +1,6 @@
 use crate::errors::FeiwenError;
 use errors::FeiwenResult;
-use features::WorkspaceView;
+use features::{WorkspaceView, titlebar};
 use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
@@ -27,6 +27,7 @@ fn quit(_: &Quit, cx: &mut App) {
 fn init(cx: &mut App) {
     event!(Level::INFO, "initializing feiwen app");
     gpui_component::init(cx);
+    app_theme::init_system_accent_theme(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
@@ -100,10 +101,7 @@ fn main() -> FeiwenResult<()> {
         event!(Level::INFO, title = %title, "opening main window");
         match cx.open_window(
             WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..Default::default()
-                }),
+                titlebar: Some(main_titlebar_options(title)),
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
@@ -117,4 +115,33 @@ fn main() -> FeiwenResult<()> {
         }
     });
     Ok(())
+}
+
+fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.into()),
+        appears_transparent: true,
+        traffic_light_position: Some(titlebar::traffic_light_position()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::main_titlebar_options;
+    use crate::features::titlebar;
+
+    #[test]
+    fn main_window_uses_custom_titlebar_options() {
+        let options = main_titlebar_options("Feiwen");
+
+        assert_eq!(
+            options.title.as_ref().map(|title| title.as_ref()),
+            Some("Feiwen")
+        );
+        assert!(options.appears_transparent);
+        assert_eq!(
+            options.traffic_light_position,
+            Some(titlebar::traffic_light_position())
+        );
+    }
 }

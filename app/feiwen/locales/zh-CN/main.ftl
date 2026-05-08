@@ -1,9 +1,18 @@
 app-title = 飞文
+titlebar-route-query = 高级检索
+titlebar-route-fetch = 数据抓取
 
 query-search-placeholder = 搜索
 query-search-button = 搜索
+query-reset-button = 重置
 query-route-fetch-button = 抓取
 query-error-title = 错误
+query-titlebar-conditions = { $count } 条条件
+query-titlebar-sorts = { $count } 条排序
+query-titlebar-results = { $count } 条结果
+query-titlebar-no-results = 暂无结果
+query-titlebar-searching = 正在搜索
+query-titlebar-failed = 查询失败
 
 tags-select-retry = 重试
 

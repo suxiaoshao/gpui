@@ -5,6 +5,7 @@ members = [
   "app/http-client",
   "app/novel-download",
   "crates/app-assets",
+  "crates/app-theme",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
@@ -19,6 +20,7 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
 app-assets = { path = "./crates/app-assets" }
+app-theme = { path = "./crates/app-theme", default-features = false }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
 

@@ -10,8 +10,10 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 1. Identify the UI job: action, form input, overlay, layout, navigation, feedback, data display, or advanced interaction.
 2. Read `references/components/index.md` and choose the closest existing gpui-component component.
 3. Read only the specific component reference files needed for the task.
-4. Compose existing components before writing custom app-local UI.
-5. If the bundled reference conflicts with the current dependency, inspect the app's actual `gpui-component` API from Cargo sources, docs.rs for the exact version, or the checked-out dependency source.
+4. If the UI needs custom app-local composition, read the relevant rules first:
+   `references/rules/traits.md`, `references/rules/primitives.md`, `references/rules/theme-and-size.md`, or `references/rules/state-and-interaction.md`.
+5. Compose existing components, traits, helpers, theme tokens, and delegate patterns before writing custom app-local UI.
+6. If the bundled reference conflicts with the current dependency, inspect the app's actual `gpui-component` API from Cargo sources, docs.rs for the exact version, or the checked-out dependency source.
 
 ## Principles
 
@@ -21,6 +23,7 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - Keep desktop differences: buttons normally use the default cursor, keyboard focus matters, overlays belong to the GPUI window/root model, and macOS/Windows control expectations outrank Web DOM habits.
 - Do not copy React, DOM, CSS, or Tailwind code into GPUI. Translate the intent into GPUI elements, `gpui-component` primitives, and the app's existing view patterns.
 - If a shadcn component is not available in gpui-component, prefer composing available gpui-component pieces before creating app-local generic controls.
+- If a need is just size, selected state, disabled state, variant, styling, theme tokens, overlay behavior, or list/select delegation, prefer existing gpui-component traits and helpers over new app-local generic abstractions.
 
 ## Component Selection
 
@@ -43,6 +46,10 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - Component index: `references/components/index.md`
 - Composition rules: `references/rules/composition.md`
 - Styling rules: `references/rules/styling.md`
+- Trait and extension rules: `references/rules/traits.md`
+- Library primitives and helpers: `references/rules/primitives.md`
+- Theme and size rules: `references/rules/theme-and-size.md`
+- State and interaction rules: `references/rules/state-and-interaction.md`
 - Component docs: `references/components/<component>.md`
 - Third-party attribution: `references/third-party/gpui-component-docs.md`
 

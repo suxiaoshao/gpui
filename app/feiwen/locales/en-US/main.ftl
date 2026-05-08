@@ -1,9 +1,18 @@
 app-title = Feiwen
+titlebar-route-query = Query
+titlebar-route-fetch = Fetch
 
 query-search-placeholder = Search
 query-search-button = Search
+query-reset-button = Reset
 query-route-fetch-button = Fetch
 query-error-title = Error
+query-titlebar-conditions = { $count } conditions
+query-titlebar-sorts = { $count } sorts
+query-titlebar-results = { $count } results
+query-titlebar-no-results = No results
+query-titlebar-searching = Searching
+query-titlebar-failed = Query failed
 
 tags-select-retry = Retry
 
