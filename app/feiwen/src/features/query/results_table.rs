@@ -39,6 +39,7 @@ impl ResultColumn {
 
 pub(crate) struct ResultsTableDelegate {
     novels: Vec<Novel>,
+    original_novels: Vec<Novel>,
     loading: bool,
 }
 
@@ -46,11 +47,13 @@ impl ResultsTableDelegate {
     pub(crate) fn new() -> Self {
         Self {
             novels: Vec::new(),
+            original_novels: Vec::new(),
             loading: false,
         }
     }
 
     pub(crate) fn set_novels(&mut self, novels: Vec<Novel>) {
+        self.original_novels = novels.clone();
         self.novels = novels;
     }
 
@@ -158,6 +161,10 @@ impl ResultsTableDelegate {
                 (None, None) => std::cmp::Ordering::Equal,
             });
     }
+
+    fn restore_original_order(&mut self) {
+        self.novels = self.original_novels.clone();
+    }
 }
 
 impl TableDelegate for ResultsTableDelegate {
@@ -189,7 +196,7 @@ impl TableDelegate for ResultsTableDelegate {
         cx: &mut Context<TableState<Self>>,
     ) {
         if sort == ColumnSort::Default {
-            self.novels.sort_by_key(|novel| novel.title.id);
+            self.restore_original_order();
         } else {
             self.sort_by_column(col_ix, sort);
         }
@@ -226,13 +233,10 @@ impl TableDelegate for ResultsTableDelegate {
                     .truncate()
                     .into_any_element();
                 match author_url(&novel.author) {
-                    Some(url) => Link::new((
-                        "author-link",
-                        author_id(&novel.author).unwrap_or_default() as u64,
-                    ))
-                    .href(url)
-                    .child(label)
-                    .into_any_element(),
+                    Some(url) => Link::new(author_link_id(novel))
+                        .href(url)
+                        .child(label)
+                        .into_any_element(),
                     None => label,
                 }
             }
@@ -311,6 +315,14 @@ fn author_id(author: &Author) -> Option<i32> {
     }
 }
 
+fn author_link_id(novel: &Novel) -> String {
+    format!(
+        "author-link-{}-{}",
+        novel.title.id,
+        author_id(&novel.author).unwrap_or_default()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +385,44 @@ mod tests {
 
         delegate.sort_by_column(read_count_col, ColumnSort::Descending);
         assert_eq!(delegate.novel_ids(), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn default_sort_restores_query_result_order() {
+        let mut delegate = ResultsTableDelegate::new();
+        delegate.set_novels(vec![
+            novel_with_read_count(3, Some(30)),
+            novel_with_read_count(1, Some(10)),
+            novel_with_read_count(2, Some(20)),
+        ]);
+        let title_col = ResultColumn::ALL
+            .iter()
+            .position(|column| *column == ResultColumn::Title)
+            .expect("title column exists");
+
+        delegate.sort_by_column(title_col, ColumnSort::Ascending);
+        assert_eq!(delegate.novel_ids(), vec![1, 2, 3]);
+
+        delegate.restore_original_order();
+        assert_eq!(delegate.novel_ids(), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn author_link_id_includes_novel_and_author_ids() {
+        let mut first = novel_with_read_count(1, Some(10));
+        first.author = Author::Known(Title {
+            name: "same author".to_owned(),
+            id: 42,
+        });
+        let mut second = novel_with_read_count(2, Some(20));
+        second.author = Author::Known(Title {
+            name: "same author".to_owned(),
+            id: 42,
+        });
+
+        assert_ne!(author_link_id(&first), author_link_id(&second));
+        assert_eq!(author_link_id(&first), "author-link-1-42");
+        assert_eq!(author_link_id(&second), "author-link-2-42");
     }
 
     fn novel_with_read_count(id: i32, read_count: Option<i32>) -> Novel {

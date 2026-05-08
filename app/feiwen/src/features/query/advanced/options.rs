@@ -222,10 +222,9 @@ impl QueryOptions {
                     name: novel.author_name,
                 });
         }
-        Ok(Self {
-            tags,
-            authors: authors.into_values().collect(),
-        })
+        let mut authors = authors.into_values().collect::<Vec<_>>();
+        sort_author_options(&mut authors);
+        Ok(Self { tags, authors })
     }
 }
 
@@ -287,6 +286,21 @@ impl AuthorOption {
             AuthorRef::Id(id) => format!("作者 ID {id}"),
             AuthorRef::Name(_) => "匿名作者".to_owned(),
         }
+    }
+}
+
+fn sort_author_options(authors: &mut [AuthorOption]) {
+    authors.sort_by(|left, right| {
+        left.name.cmp(&right.name).then_with(|| {
+            author_ref_order_key(&left.author).cmp(&author_ref_order_key(&right.author))
+        })
+    });
+}
+
+fn author_ref_order_key(author: &AuthorRef) -> (u8, i32, &str) {
+    match author {
+        AuthorRef::Id(id) => (0, *id, ""),
+        AuthorRef::Name(name) => (1, 0, name.as_str()),
     }
 }
 
@@ -479,5 +493,42 @@ mod tests {
         assert!(items[0].matches("mcbh"));
         assert!(items[5].matches("bushi"));
         assert!(items[5].matches("bs"));
+    }
+
+    #[test]
+    fn author_options_sort_by_name_then_stable_author_ref() {
+        let mut authors = vec![
+            AuthorOption {
+                author: AuthorRef::Name("anonymous-b".to_owned()),
+                name: "bravo".to_owned(),
+            },
+            AuthorOption {
+                author: AuthorRef::Id(20),
+                name: "alpha".to_owned(),
+            },
+            AuthorOption {
+                author: AuthorRef::Id(10),
+                name: "alpha".to_owned(),
+            },
+            AuthorOption {
+                author: AuthorRef::Name("anonymous-a".to_owned()),
+                name: "alpha".to_owned(),
+            },
+        ];
+
+        sort_author_options(&mut authors);
+
+        assert_eq!(
+            authors
+                .into_iter()
+                .map(|author| author.author)
+                .collect::<Vec<_>>(),
+            vec![
+                AuthorRef::Id(10),
+                AuthorRef::Id(20),
+                AuthorRef::Name("anonymous-a".to_owned()),
+                AuthorRef::Name("anonymous-b".to_owned()),
+            ]
+        );
     }
 }
