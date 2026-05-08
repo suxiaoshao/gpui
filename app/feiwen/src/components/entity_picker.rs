@@ -131,9 +131,11 @@ where
         }
         self.open = true;
         self.sync_list(cx);
-        let sections = PickerSection::flat(self.options.clone());
-        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected.as_ref());
+        let selected = self.selected.clone();
         self.list.update(cx, |list, cx| {
+            let selected_ix = list
+                .delegate()
+                .selected_index_for_current_sections(selected.as_ref());
             list.set_selected_index(selected_ix, window, cx);
             list.focus(window, cx);
         });
@@ -162,9 +164,11 @@ where
         }
         self.selected = Some(value);
         self.sync_list(cx);
-        let sections = PickerSection::flat(self.options.clone());
-        let selected_ix = PickerListDelegate::selected_index_for(&sections, self.selected.as_ref());
+        let selected = self.selected.clone();
         self.list.update(cx, |list, cx| {
+            let selected_ix = list
+                .delegate()
+                .selected_index_for_current_sections(selected.as_ref());
             list.set_selected_index(selected_ix, window, cx)
         });
         self.close(window, cx);

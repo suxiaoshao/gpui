@@ -188,6 +188,17 @@ where
             })
     }
 
+    pub(crate) fn selected_index_for_current_sections<V>(
+        &self,
+        selected_value: Option<&V>,
+    ) -> Option<IndexPath>
+    where
+        T::Value: PartialEq<V>,
+        V: ?Sized,
+    {
+        Self::selected_index_for(&self.sections, selected_value)
+    }
+
     fn apply_query(&mut self) {
         let query = self.last_query.trim().to_lowercase();
         self.sections = self
@@ -594,6 +605,40 @@ mod tests {
         assert_eq!(
             delegate.checked_titles(),
             vec![SharedString::from("three"), SharedString::from("one")]
+        );
+    }
+
+    #[test]
+    fn current_selected_index_uses_reordered_visible_sections() {
+        let sections = PickerSection::flat([
+            TestItem {
+                title: "one",
+                value: 1,
+                description: "match",
+            },
+            TestItem {
+                title: "two",
+                value: 2,
+                description: "match",
+            },
+            TestItem {
+                title: "three",
+                value: 3,
+                description: "match",
+            },
+        ]);
+        let delegate = PickerListDelegate::new(
+            sections,
+            false,
+            "无匹配结果".into(),
+            vec![3],
+            noop_confirm(),
+            noop_cancel(),
+        );
+
+        assert_eq!(
+            delegate.selected_index_for_current_sections(Some(&3)),
+            Some(IndexPath::default().section(0).row(0))
         );
     }
 

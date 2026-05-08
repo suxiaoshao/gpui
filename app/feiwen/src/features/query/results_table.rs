@@ -117,7 +117,7 @@ impl ResultsTableDelegate {
             }
             Some(ResultColumn::IsLimit) => self.sort_by(descending, |novel| novel.is_limit),
             Some(ResultColumn::LatestChapter) => {
-                self.sort_by(descending, |novel| novel.latest_chapter.id)
+                self.sort_by(descending, |novel| novel.latest_chapter.name.clone())
             }
             Some(ResultColumn::Tags) | None => {}
         }
