@@ -4,6 +4,7 @@ titlebar-route-fetch = Fetch
 
 query-search-placeholder = Search
 query-search-button = Search
+query-reset-button = Reset
 query-route-fetch-button = Fetch
 query-error-title = Error
 query-titlebar-conditions = { $count } conditions

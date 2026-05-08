@@ -4,6 +4,7 @@ titlebar-route-fetch = 数据抓取
 
 query-search-placeholder = 搜索
 query-search-button = 搜索
+query-reset-button = 重置
 query-route-fetch-button = 抓取
 query-error-title = 错误
 query-titlebar-conditions = { $count } 条条件

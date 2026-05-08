@@ -112,7 +112,7 @@ impl FeiwenTitleBar {
             .child(
                 Button::new("titlebar-query-reset")
                     .icon(FeiwenIconName::RotateCcw)
-                    .label("重置")
+                    .label(i18n.t("query-reset-button"))
                     .small()
                     .disabled(searching)
                     .on_click({
