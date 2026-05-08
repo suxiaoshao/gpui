@@ -94,7 +94,7 @@ pub(super) struct PersistedWindowBounds {
     #[serde(default)]
     pub(super) height: f32,
     #[serde(default)]
-    pub(super) display_id: Option<u32>,
+    pub(super) display_id: Option<u64>,
 }
 
 impl PersistedWindowBounds {
@@ -114,7 +114,7 @@ impl PersistedWindowBounds {
             y: f32::from(bounds.origin.y),
             width: f32::from(bounds.size.width),
             height: f32::from(bounds.size.height),
-            display_id: display_id.map(u32::from),
+            display_id: display_id.map(u64::from),
         }
     }
 
@@ -141,7 +141,7 @@ impl PersistedWindowBounds {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct WindowDisplaySnapshot {
-    pub(super) id: u32,
+    pub(super) id: u64,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) is_primary: bool,
 }
@@ -149,7 +149,7 @@ pub(super) struct WindowDisplaySnapshot {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct ResolvedWindowBounds {
     pub(super) window_bounds: WindowBounds,
-    pub(super) display_id: u32,
+    pub(super) display_id: u64,
 }
 
 fn has_meaningful_visible_area(
@@ -204,7 +204,7 @@ pub(super) fn resolve_persisted_window_bounds(
 pub(super) fn fallback_display_id_for_persisted_window(
     persisted: Option<PersistedWindowBounds>,
     displays: &[WindowDisplaySnapshot],
-) -> Option<u32> {
+) -> Option<u64> {
     persisted
         .and_then(|persisted| persisted.display_id)
         .and_then(|display_id| {

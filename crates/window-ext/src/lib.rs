@@ -304,9 +304,10 @@ fn resolve_target_scale_factor(
 
 #[cfg(target_os = "windows")]
 fn scale_factor_for_display(display_id: DisplayId) -> Option<f32> {
+    let display_index = usize::try_from(u64::from(display_id)).ok()?;
     available_monitors()
         .into_iter()
-        .nth(u32::from(display_id) as usize)
+        .nth(display_index)
         .and_then(|monitor| get_scale_factor_for_monitor(monitor).ok())
 }
 
@@ -381,7 +382,7 @@ fn resolve_screen_frame(
         let mtm = MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?;
         let screens = NSScreen::screens(mtm);
         for screen in &screens {
-            if screen.CGDirectDisplayID() == u32::from(display_id) {
+            if u64::from(screen.CGDirectDisplayID()) == u64::from(display_id) {
                 return Ok(screen.frame());
             }
         }

@@ -186,7 +186,7 @@ fn window_bounds(x: f32, y: f32, width: f32, height: f32) -> PersistedWindowBoun
 }
 
 fn display(
-    id: u32,
+    id: u64,
     x: f32,
     y: f32,
     width: f32,

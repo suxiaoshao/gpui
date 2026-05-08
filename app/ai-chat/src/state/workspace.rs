@@ -433,21 +433,21 @@ fn persisted_window_bounds(
 }
 
 fn window_display_snapshots(cx: &App) -> Vec<WindowDisplaySnapshot> {
-    let primary_id = cx.primary_display().map(|display| u32::from(display.id()));
+    let primary_id = cx.primary_display().map(|display| u64::from(display.id()));
     cx.displays()
         .into_iter()
         .map(|display| WindowDisplaySnapshot {
-            id: u32::from(display.id()),
+            id: u64::from(display.id()),
             bounds: display.bounds(),
-            is_primary: primary_id == Some(u32::from(display.id())),
+            is_primary: primary_id == Some(u64::from(display.id())),
         })
         .collect()
 }
 
-fn display_id_from_raw(cx: &App, raw_id: u32) -> Option<DisplayId> {
+fn display_id_from_raw(cx: &App, raw_id: u64) -> Option<DisplayId> {
     cx.displays()
         .into_iter()
-        .find(|display| u32::from(display.id()) == raw_id)
+        .find(|display| u64::from(display.id()) == raw_id)
         .map(|display| display.id())
 }
 

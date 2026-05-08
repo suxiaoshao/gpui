@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI Component Usage"
+  short_description: "Use gpui-component components in GPUI apps."
+  default_prompt: "Use $gpui-component-usage to build this GPUI interface with existing gpui-component components."

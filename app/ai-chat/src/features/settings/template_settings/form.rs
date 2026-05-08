@@ -12,13 +12,13 @@ use gpui_component::{
     ActiveTheme, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogFooter,
-    divider::Divider,
     form::{field, v_form},
     h_flex,
     input::{Input, InputState},
     label::Label,
     notification::{Notification, NotificationType},
     select::{Select, SelectState},
+    separator::Separator,
     v_flex,
 };
 use std::rc::Rc;
@@ -504,7 +504,7 @@ impl Render for PromptListForm {
                             .h(px(TEMPLATE_PROMPT_EDITOR_HEIGHT))
                             .font_family(cx.theme().mono_font_family.clone()),
                     )
-                    .child(Divider::horizontal())
+                    .child(Separator::horizontal())
                     .into_any_element()
             })
             .collect::<Vec<_>>();

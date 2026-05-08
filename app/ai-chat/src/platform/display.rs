@@ -5,7 +5,7 @@ pub(crate) const TEMPORARY_WINDOW_SIZE: Size<Pixels> = size(px(800.), px(600.));
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DisplaySnapshot {
-    pub id: u32,
+    pub id: u64,
     pub bounds: Bounds<Pixels>,
     pub is_primary: bool,
 }
@@ -19,7 +19,7 @@ pub(crate) fn target_display(cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
     if let Some(display_id) = platform_ext::app::current_mouse_display_id()
         && let Some(display) = displays
             .iter()
-            .find(|display| u32::from(display.id()) == display_id)
+            .find(|display| u64::from(display.id()) == u64::from(display_id))
     {
         return Some(display.clone());
     }
@@ -29,7 +29,7 @@ pub(crate) fn target_display(cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
         && let Some(display_id) = display_id_for_mouse_location(&snapshots, point(px(x), px(y)))
         && let Some(display) = displays
             .iter()
-            .find(|display| u32::from(display.id()) == display_id)
+            .find(|display| u64::from(display.id()) == display_id)
     {
         return Some(display.clone());
     }
@@ -82,13 +82,13 @@ fn preserve_or_fallback_size(
 }
 
 fn display_snapshots(cx: &App) -> Vec<DisplaySnapshot> {
-    let primary_id = cx.primary_display().map(|display| u32::from(display.id()));
+    let primary_id = cx.primary_display().map(|display| u64::from(display.id()));
     cx.displays()
         .into_iter()
         .map(|display| DisplaySnapshot {
-            id: u32::from(display.id()),
+            id: u64::from(display.id()),
             bounds: display.bounds(),
-            is_primary: primary_id == Some(u32::from(display.id())),
+            is_primary: primary_id == Some(u64::from(display.id())),
         })
         .collect()
 }
@@ -96,7 +96,7 @@ fn display_snapshots(cx: &App) -> Vec<DisplaySnapshot> {
 fn display_id_for_mouse_location(
     displays: &[DisplaySnapshot],
     mouse_location: Point<Pixels>,
-) -> Option<u32> {
+) -> Option<u64> {
     displays
         .iter()
         .find(|display| display.bounds.contains(&mouse_location))
@@ -118,7 +118,7 @@ mod tests {
     use gpui::{Bounds, point, px, size};
 
     fn snapshot(
-        id: u32,
+        id: u64,
         origin_x: f32,
         origin_y: f32,
         width: f32,

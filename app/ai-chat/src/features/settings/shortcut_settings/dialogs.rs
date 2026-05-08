@@ -7,9 +7,9 @@ use gpui_component::{
     ActiveTheme, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogFooter,
-    divider::Divider,
     h_flex,
     label::Label,
+    separator::Separator,
     v_flex,
 };
 use std::rc::Rc;
@@ -71,7 +71,7 @@ pub(super) fn open_delete_shortcut_dialog(
                     .w(px(460.))
                     .gap_3()
                     .child(Label::new(message.clone()).text_sm())
-                    .child(Divider::horizontal())
+                    .child(Separator::horizontal())
                     .child(render_shortcut_summary(&summary, cx)),
             )
             .footer(
