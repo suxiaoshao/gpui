@@ -41,9 +41,18 @@ impl WorkspaceView {
         event!(Level::INFO, "creating feiwen workspace");
         let workspace = workspace_cx.new(|_cx| Default::default());
         let fetch_task = workspace_cx.new(|_cx| FetchTaskState::default());
+        let fetch_view = workspace_cx.new(|cx| FetchView::new(window, fetch_task.clone(), cx));
+        let query_view = workspace_cx
+            .new(|cx| QueryView::new(workspace.clone(), fetch_task.clone(), window, cx));
         apply_current_theme(window, workspace_cx);
         let _subscriptions = vec![
             workspace_cx.subscribe(&workspace, Self::subscribe),
+            workspace_cx.observe(&query_view, |_, _, cx| {
+                cx.notify();
+            }),
+            workspace_cx.observe(&fetch_task, |_, _, cx| {
+                cx.notify();
+            }),
             workspace_cx.observe_window_appearance(window, |_state, window, cx| {
                 apply_current_theme(window, cx);
                 cx.refresh_windows();
@@ -58,9 +67,8 @@ impl WorkspaceView {
         ];
         let this = Self {
             focus_handle: workspace_cx.focus_handle(),
-            fetch_view: workspace_cx.new(|cx| FetchView::new(window, fetch_task.clone(), cx)),
-            query_view: workspace_cx
-                .new(|cx| QueryView::new(workspace.clone(), fetch_task.clone(), window, cx)),
+            fetch_view,
+            query_view,
             _fetch_task: fetch_task,
             workspace,
             _subscriptions,
