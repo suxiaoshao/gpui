@@ -14,7 +14,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
 };
 
-use super::layout::{SettingsRow, SettingsSection};
+use super::layout::{settings_group, settings_row_item};
 
 struct SettingsTextInputState {
     input: Entity<InputState>,
@@ -48,35 +48,41 @@ pub(super) fn render(
         )
     };
 
-    SettingsSection::new(group_basic_options)
-        .child(SettingsRow::new(field_language, language_dropdown(cx)))
-        .child(SettingsRow::new(
-            field_http_proxy,
-            app_http_proxy_input(window, cx),
-        ))
-        .child(SettingsRow::new(field_temporary_hotkey, hotkey_input))
-        .child(SettingsRow::new(
-            field_config_file,
-            Button::new("open-config-file")
-                .icon(IconName::FilePen)
-                .label(button_open)
-                .ghost()
-                .small()
-                .on_click({
-                    let open_config_failed = open_config_failed.clone();
-                    move |_, window, cx| match AiChatConfig::path() {
-                        Ok(path) => cx.open_with_system(&path),
-                        Err(err) => window.push_notification(
-                            Notification::new()
-                                .title(open_config_failed.clone())
-                                .message(err.to_string())
-                                .with_type(NotificationType::Error),
-                            cx,
-                        ),
-                    }
-                }),
-        ))
-        .into_any_element()
+    settings_group(
+        group_basic_options,
+        [
+            settings_row_item(field_language, |_, cx| language_dropdown(cx)),
+            settings_row_item(field_http_proxy, |window, cx| {
+                app_http_proxy_input(window, cx)
+            }),
+            settings_row_item(field_temporary_hotkey, move |_, _| {
+                hotkey_input.clone().into_any_element()
+            }),
+            settings_row_item(field_config_file, move |_, _| {
+                Button::new("open-config-file")
+                    .icon(IconName::FilePen)
+                    .label(button_open.clone())
+                    .ghost()
+                    .small()
+                    .on_click({
+                        let open_config_failed = open_config_failed.clone();
+                        move |_, window, cx| match AiChatConfig::path() {
+                            Ok(path) => cx.open_with_system(&path),
+                            Err(err) => window.push_notification(
+                                Notification::new()
+                                    .title(open_config_failed.clone())
+                                    .message(err.to_string())
+                                    .with_type(NotificationType::Error),
+                                cx,
+                            ),
+                        }
+                    })
+                    .into_any_element()
+            }),
+        ],
+        window,
+        cx,
+    )
 }
 
 fn language_dropdown(cx: &mut App) -> AnyElement {
