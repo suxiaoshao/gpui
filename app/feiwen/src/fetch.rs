@@ -6,6 +6,7 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::service::Novel,
 };
+use tracing::{Level, event};
 
 use self::parse_novel::parse_page;
 
@@ -83,8 +84,21 @@ pub(crate) async fn fetch_page(
     cookies: &str,
     client: &Client,
 ) -> FeiwenResult<Vec<Novel>> {
+    event!(
+        Level::INFO,
+        page,
+        has_cookie = !cookies.is_empty(),
+        "fetching feiwen page"
+    );
     let body = get_content::get_content(url, page, cookies, client).await?;
+    event!(
+        Level::INFO,
+        page,
+        body_len = body.len(),
+        "feiwen page response received"
+    );
     let data = parse_page(body)?;
+    event!(Level::INFO, page, count = data.len(), "feiwen page parsed");
     Ok(data)
 }
 
