@@ -14,7 +14,7 @@ use gpui_component::{
 };
 use tracing::{Level, event};
 
-use super::layout::{SettingsRow, SettingsSection};
+use super::layout::{SettingsRowItem, settings_group, settings_row_item};
 
 struct ProviderSettingsInputState {
     input: Entity<InputState>,
@@ -44,26 +44,21 @@ fn render_provider_section(
     let rows = spec
         .fields
         .iter()
-        .map(|field| render_provider_field(spec.provider_name, *field, window, cx))
+        .map(|field| render_provider_field(spec.provider_name, *field, cx))
         .collect::<Vec<_>>();
 
-    SettingsSection::new(title)
-        .children(rows)
-        .into_any_element()
+    settings_group(title, rows, window, cx)
 }
 
 fn render_provider_field(
     provider_name: &'static str,
     field: ProviderSettingsFieldSpec,
-    window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> SettingsRowItem {
     let label = cx.global::<I18n>().t(field.label_key);
-    SettingsRow::new(
-        label,
-        provider_setting_input(provider_name, field, window, cx),
-    )
-    .into_any_element()
+    settings_row_item(label, move |window, cx| {
+        provider_setting_input(provider_name, field, window, cx)
+    })
 }
 
 fn provider_setting_input(

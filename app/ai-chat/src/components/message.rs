@@ -9,12 +9,12 @@ use gpui_component::{
     alert::Alert,
     badge::Badge,
     button::{Button, ButtonVariants},
-    divider::Divider,
     h_flex,
     label::Label,
     notification::{Notification, NotificationType},
     popover::Popover,
     scroll::ScrollableElement,
+    separator::Separator,
     spinner::Spinner,
     text::{TextView, TextViewState},
     v_flex,
@@ -482,7 +482,7 @@ impl<T: MessageViewExt + 'static> RenderOnce for MessageView<T> {
                         ),
                     }),
             )
-            .child(Divider::horizontal())
+            .child(Separator::horizontal())
     }
 }
 

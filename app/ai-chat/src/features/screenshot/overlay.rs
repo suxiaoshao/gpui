@@ -38,7 +38,7 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
         ));
     }
 
-    let primary_id = cx.primary_display().map(|display| u32::from(display.id()));
+    let primary_id = cx.primary_display().map(|display| u64::from(display.id()));
     let mut handles = Vec::new();
     let Some(display) = target_display(cx) else {
         return Err(CaptureError::BackendUnavailable(
@@ -54,12 +54,12 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
     let bounds = Bounds::new(point(px(0.), px(0.)), display.bounds().size);
     let display_id = display.id();
     let display_info = CaptureDisplay {
-        id_hint: u32::from(display_id),
+        id_hint: u64::from(display_id),
         origin: display.bounds().origin,
         width_px: 0,
         height_px: 0,
         scale_factor: 0.0,
-        is_primary: primary_id == Some(u32::from(display_id)),
+        is_primary: primary_id == Some(u64::from(display_id)),
     };
     event!(
         Level::INFO,

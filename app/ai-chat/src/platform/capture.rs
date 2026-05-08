@@ -7,7 +7,7 @@ use xcap::Monitor;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CaptureDisplay {
-    pub id_hint: u32,
+    pub id_hint: u64,
     pub origin: Point<Pixels>,
     pub width_px: u32,
     pub height_px: u32,
@@ -109,7 +109,7 @@ fn resolve_monitor(display: &CaptureDisplay) -> Result<Monitor, CaptureError> {
 
     #[cfg(target_os = "macos")]
     if let Some(index) = monitors.iter().position(|monitor| {
-        monitor.id().ok() == Some(display.id_hint)
+        monitor.id().ok().map(u64::from) == Some(display.id_hint)
             && monitor.width().ok() == Some(display.width_px)
             && monitor.height().ok() == Some(display.height_px)
     }) {
@@ -120,8 +120,9 @@ fn resolve_monitor(display: &CaptureDisplay) -> Result<Monitor, CaptureError> {
         return Ok(monitors.swap_remove(index));
     }
 
-    let hint_index = display.id_hint as usize;
-    if hint_index < monitors.len() {
+    if let Ok(hint_index) = usize::try_from(display.id_hint)
+        && hint_index < monitors.len()
+    {
         let matches = monitor_matches_display(&monitors[hint_index], display);
         if matches {
             return Ok(monitors.swap_remove(hint_index));

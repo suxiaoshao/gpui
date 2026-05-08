@@ -16,10 +16,10 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
-    divider::Divider,
     h_flex,
     label::Label,
     scroll::ScrollableElement,
+    separator::Separator,
     text::TextViewState,
     v_flex,
 };
@@ -553,7 +553,7 @@ impl<T: ConversationDetailViewExt> Render for ConversationDetailView<T> {
                         }))
                     }),
             )
-            .child(Divider::horizontal())
+            .child(Separator::horizontal())
             .child({
                 let content = div()
                     .id(SharedString::from(format!("{element_prefix}-content")))

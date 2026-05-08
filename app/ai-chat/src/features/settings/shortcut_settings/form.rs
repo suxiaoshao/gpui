@@ -25,12 +25,12 @@ use gpui_component::{
     ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::DialogFooter,
-    divider::Divider,
     form::{field, v_form},
     h_flex,
     label::Label,
     notification::{Notification, NotificationType},
     select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectState},
+    separator::Separator,
     switch::Switch,
     v_flex,
 };
@@ -1101,7 +1101,7 @@ impl Render for ShortcutFormState {
                                 })),
                         ),
                     )
-                    .child(field().child(Divider::horizontal()))
+                    .child(field().child(Separator::horizontal()))
                     .child(
                         field()
                             .label(preset_settings)

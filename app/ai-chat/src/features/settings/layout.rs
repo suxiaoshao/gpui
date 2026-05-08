@@ -18,6 +18,7 @@ pub(super) const SETTINGS_SIDEBAR_MAX_WIDTH: Pixels = px(380.);
 
 type ResizeHandler = Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
 type SelectHandler = Rc<dyn Fn(SettingsPageKey, &mut Window, &mut App)>;
+type SettingsRowRender = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingsPageKey {
@@ -261,96 +262,57 @@ impl RenderOnce for SettingsPageFrame {
     }
 }
 
-#[derive(IntoElement)]
-pub(super) struct SettingsSection {
-    title: SharedString,
-    description: Option<SharedString>,
-    children: Vec<AnyElement>,
+pub(super) fn settings_group(
+    title: impl Into<SharedString>,
+    items: impl IntoIterator<Item = SettingsRowItem>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    GroupBox::new()
+        .outline()
+        .title(v_flex().gap_1().child(Label::new(title.into()).text_sm()))
+        .gap_4()
+        .children(items.into_iter().map(|item| item.render(window, cx)))
+        .border_color(cx.theme().border)
+        .into_any_element()
 }
 
-impl SettingsSection {
-    pub(super) fn new(title: impl Into<SharedString>) -> Self {
-        Self {
-            title: title.into(),
-            description: None,
-            children: Vec::new(),
-        }
-    }
-
-    pub(super) fn child(mut self, child: impl IntoElement) -> Self {
-        self.children.push(child.into_any_element());
-        self
-    }
-
-    pub(super) fn children(mut self, children: Vec<AnyElement>) -> Self {
-        self.children.extend(children);
-        self
-    }
+pub(super) struct SettingsRowItem {
+    render: SettingsRowRender,
 }
 
-impl RenderOnce for SettingsSection {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        GroupBox::new()
-            .outline()
-            .title(
-                v_flex()
-                    .gap_1()
-                    .child(Label::new(self.title).text_sm())
-                    .when_some(self.description, |this, description| {
-                        this.child(
-                            Label::new(description)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    }),
-            )
-            .gap_4()
-            .children(self.children)
-            .border_color(cx.theme().border)
+impl SettingsRowItem {
+    fn render(self, window: &mut Window, cx: &mut App) -> AnyElement {
+        (self.render)(window, cx)
     }
 }
 
-#[derive(IntoElement)]
-pub(super) struct SettingsRow {
-    label: SharedString,
-    description: Option<SharedString>,
-    control: AnyElement,
-}
-
-impl SettingsRow {
-    pub(super) fn new(label: impl Into<SharedString>, control: impl IntoElement) -> Self {
-        Self {
-            label: label.into(),
-            description: None,
-            control: control.into_any_element(),
-        }
+pub(super) fn settings_row_item(
+    label: impl Into<SharedString>,
+    control: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+) -> SettingsRowItem {
+    let label = label.into();
+    SettingsRowItem {
+        render: Rc::new(move |window, cx| settings_row(label.clone(), control(window, cx))),
     }
 }
 
-impl RenderOnce for SettingsRow {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .items_start()
-            .justify_between()
-            .gap_4()
-            .flex_wrap()
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(220.))
-                    .gap_1()
-                    .child(Label::new(self.label).text_sm().truncate())
-                    .when_some(self.description, |this, description| {
-                        this.child(
-                            Label::new(description)
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    }),
-            )
-            .child(div().flex_none().min_w(px(240.)).child(self.control))
-    }
+fn settings_row(label: SharedString, control: AnyElement) -> AnyElement {
+    h_flex()
+        .w_full()
+        .items_start()
+        .justify_between()
+        .gap_4()
+        .flex_wrap()
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(220.))
+                .gap_1()
+                .child(Label::new(label).text_sm().truncate()),
+        )
+        .child(div().flex_none().min_w(px(240.)).child(control))
+        .into_any_element()
 }
 
 pub(super) fn settings_empty_message(message: impl Into<SharedString>) -> AnyElement {

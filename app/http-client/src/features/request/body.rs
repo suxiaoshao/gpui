@@ -1,11 +1,10 @@
 pub use self::{http_text::HttpText, x_form::XForm};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, IndexPath,
-    divider::Divider,
-    h_flex,
+    ActiveTheme, IndexPath, h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectItem, SelectState},
+    separator::Separator,
     v_flex,
 };
 
@@ -227,7 +226,7 @@ impl Render for HttpBodyView {
         v_flex()
             .flex_1()
             .child(header)
-            .child(Divider::horizontal())
+            .child(Separator::horizontal())
             .child(match body_type {
                 BodyType::None => div().into_any_element(),
                 BodyType::Text => self.http_text_view.clone().into_any_element(),

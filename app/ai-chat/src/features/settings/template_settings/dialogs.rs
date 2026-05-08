@@ -11,9 +11,9 @@ use gpui_component::{
     ActiveTheme, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogFooter,
-    divider::Divider,
     h_flex,
     label::Label,
+    separator::Separator,
     text::TextView,
     v_flex,
 };
@@ -110,7 +110,7 @@ pub(super) fn open_delete_template_dialog(
                     .w(px(420.))
                     .gap_3()
                     .child(Label::new(message.clone()).text_sm())
-                    .child(Divider::horizontal())
+                    .child(Separator::horizontal())
                     .child(render_template_delete_summary(&template, cx)),
             )
             .footer(
@@ -220,7 +220,7 @@ fn render_prompt_blocks(template: &ConversationTemplate, cx: &mut App) -> Vec<An
     let mut elements = Vec::with_capacity(template.prompts.len().saturating_mul(2));
     for (index, prompt) in template.prompts.iter().enumerate() {
         if index > 0 {
-            elements.push(Divider::horizontal().my_3().into_any_element());
+            elements.push(Separator::horizontal().my_3().into_any_element());
         }
         elements.push(render_prompt_block(template.id, index, prompt, cx));
     }
