@@ -567,6 +567,38 @@ mod tests {
     }
 
     #[test]
+    fn clearing_query_restores_visible_items() {
+        let sections = PickerSection::flat([
+            TestItem {
+                title: "仙侠",
+                value: 1,
+                description: "长篇",
+            },
+            TestItem {
+                title: "历史",
+                value: 2,
+                description: "架空",
+            },
+        ]);
+        let mut delegate = PickerListDelegate::new(
+            sections,
+            false,
+            "无匹配结果".into(),
+            Vec::new(),
+            noop_confirm(),
+            noop_cancel(),
+        );
+
+        delegate.set_query("架空");
+        delegate.set_query("");
+
+        assert_eq!(
+            delegate.visible_titles(),
+            vec![SharedString::from("仙侠"), SharedString::from("历史")]
+        );
+    }
+
+    #[test]
     fn selected_values_are_pinned_without_query() {
         let sections = PickerSection::flat([
             TestItem {

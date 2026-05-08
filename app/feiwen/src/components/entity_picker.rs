@@ -130,6 +130,10 @@ where
             return;
         }
         self.open = true;
+        self.list.update(cx, |list, cx| {
+            list.delegate_mut().set_query("");
+            list.set_query("", window, cx);
+        });
         self.sync_list(cx);
         let selected = self.selected.clone();
         self.list.update(cx, |list, cx| {

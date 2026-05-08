@@ -10,7 +10,7 @@ use gpui_component::{
 
 const SITE_ORIGIN: &str = "https://xn--pxtr7m.com";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResultColumn {
     Title,
     Description,
@@ -110,10 +110,10 @@ impl ResultsTableDelegate {
                 self.sort_by(descending, |novel| Some(novel.count.word_count))
             }
             Some(ResultColumn::ReadCount) => {
-                self.sort_by(descending, |novel| novel.count.read_count)
+                self.sort_by_missing_last(descending, |novel| novel.count.read_count)
             }
             Some(ResultColumn::ReplyCount) => {
-                self.sort_by(descending, |novel| novel.count.reply_count)
+                self.sort_by_missing_last(descending, |novel| novel.count.reply_count)
             }
             Some(ResultColumn::IsLimit) => self.sort_by(descending, |novel| novel.is_limit),
             Some(ResultColumn::LatestChapter) => {
@@ -136,6 +136,27 @@ impl ResultsTableDelegate {
                 ordering
             }
         });
+    }
+
+    fn sort_by_missing_last<T, F>(&mut self, descending: bool, value: F)
+    where
+        T: Ord,
+        F: Fn(&Novel) -> Option<T>,
+    {
+        self.novels
+            .sort_by(|left, right| match (value(left), value(right)) {
+                (Some(left), Some(right)) => {
+                    let ordering = left.cmp(&right);
+                    if descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
     }
 }
 
@@ -293,6 +314,7 @@ fn author_id(author: &Author) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::types::{NovelCount, Title};
 
     #[test]
     fn loading_defaults_to_false_and_can_be_toggled() {
@@ -331,5 +353,53 @@ mod tests {
     #[test]
     fn anonymous_author_has_no_url() {
         assert_eq!(author_url(&Author::Anonymous("匿名".to_owned())), None);
+    }
+
+    #[test]
+    fn optional_count_sorts_keep_missing_values_last() {
+        let mut delegate = ResultsTableDelegate::new();
+        delegate.set_novels(vec![
+            novel_with_read_count(1, Some(10)),
+            novel_with_read_count(2, None),
+            novel_with_read_count(3, Some(5)),
+        ]);
+        let read_count_col = ResultColumn::ALL
+            .iter()
+            .position(|column| *column == ResultColumn::ReadCount)
+            .expect("read count column exists");
+
+        delegate.sort_by_column(read_count_col, ColumnSort::Ascending);
+        assert_eq!(delegate.novel_ids(), vec![3, 1, 2]);
+
+        delegate.sort_by_column(read_count_col, ColumnSort::Descending);
+        assert_eq!(delegate.novel_ids(), vec![1, 3, 2]);
+    }
+
+    fn novel_with_read_count(id: i32, read_count: Option<i32>) -> Novel {
+        Novel {
+            title: Title {
+                name: format!("title {id}"),
+                id,
+            },
+            author: Author::Anonymous("匿名".to_owned()),
+            latest_chapter: Title {
+                name: format!("chapter {id}"),
+                id,
+            },
+            desc: String::new(),
+            count: NovelCount {
+                word_count: id * 1000,
+                read_count,
+                reply_count: None,
+            },
+            tags: Default::default(),
+            is_limit: false,
+        }
+    }
+
+    impl ResultsTableDelegate {
+        fn novel_ids(&self) -> Vec<i32> {
+            self.novels.iter().map(|novel| novel.title.id).collect()
+        }
     }
 }
