@@ -1,4 +1,6 @@
 app-title = Feiwen
+titlebar-route-query = Query
+titlebar-route-fetch = Fetch
 
 query-search-placeholder = Search
 query-search-button = Search

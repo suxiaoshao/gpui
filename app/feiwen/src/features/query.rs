@@ -80,7 +80,6 @@ struct SearchResult {
 }
 
 enum QueryEvent {
-    RouteToFetch,
     Search,
     Reset,
 }
@@ -155,14 +154,6 @@ impl QueryView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            QueryEvent::RouteToFetch => {
-                if self.search.is_searching() {
-                    return;
-                }
-                self.workspace.update(cx, |_data, cx| {
-                    cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
-                });
-            }
             QueryEvent::Search => {
                 self.start_search(cx);
             }
@@ -190,13 +181,9 @@ impl QueryView {
 
 impl Render for QueryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (search_label, route_fetch_label, error_label) = {
+        let (search_label, error_label) = {
             let i18n = cx.global::<I18n>();
-            (
-                i18n.t("query-search-button"),
-                i18n.t("query-route-fetch-button"),
-                i18n.t("query-error-title"),
-            )
+            (i18n.t("query-search-button"), i18n.t("query-error-title"))
         };
         let searching = self.search.is_searching();
         let header = div()
@@ -237,16 +224,6 @@ impl Render for QueryView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.query.update(cx, |_, cx| {
                                     cx.emit(QueryEvent::Search);
-                                });
-                            })),
-                    )
-                    .child(
-                        Button::new("router-fetch")
-                            .label(route_fetch_label)
-                            .disabled(searching)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.query.update(cx, |_data, cx| {
-                                    cx.emit(QueryEvent::RouteToFetch);
                                 });
                             })),
                     ),

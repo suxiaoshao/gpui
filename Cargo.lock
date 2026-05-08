@@ -126,6 +126,7 @@ name = "ai-chat"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-theme",
  "async-compat",
  "async-stream",
  "dhat",
@@ -143,7 +144,6 @@ dependencies = [
  "gtk",
  "image",
  "libsqlite3-sys",
- "material-color-utils",
  "nom 8.0.0",
  "pinyin",
  "platform-ext",
@@ -272,6 +272,18 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+]
+
+[[package]]
+name = "app-theme"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "material-color-utils",
+ "platform-ext",
+ "serde_json",
+ "smol",
 ]
 
 [[package]]
@@ -3350,6 +3362,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-assets",
+ "app-theme",
  "async-compat",
  "diesel",
  "dirs-next",

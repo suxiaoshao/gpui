@@ -3,7 +3,7 @@ use errors::FeiwenResult;
 use features::WorkspaceView;
 use foundation::I18n;
 use gpui::*;
-use gpui_component::Root;
+use gpui_component::{Root, TitleBar};
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,6 +27,7 @@ fn quit(_: &Quit, cx: &mut App) {
 fn init(cx: &mut App) {
     event!(Level::INFO, "initializing feiwen app");
     gpui_component::init(cx);
+    app_theme::init_system_accent_theme(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
@@ -100,10 +101,7 @@ fn main() -> FeiwenResult<()> {
         event!(Level::INFO, title = %title, "opening main window");
         match cx.open_window(
             WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..Default::default()
-                }),
+                titlebar: Some(main_titlebar_options(title)),
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
@@ -117,4 +115,33 @@ fn main() -> FeiwenResult<()> {
         }
     });
     Ok(())
+}
+
+fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.into()),
+        ..TitleBar::title_bar_options()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::main_titlebar_options;
+    use gpui_component::TitleBar;
+
+    #[test]
+    fn main_window_uses_component_titlebar_options() {
+        let titlebar = main_titlebar_options("Feiwen");
+        let expected = TitleBar::title_bar_options();
+
+        assert_eq!(
+            titlebar.title.as_ref().map(|title| title.as_ref()),
+            Some("Feiwen")
+        );
+        assert_eq!(titlebar.appears_transparent, expected.appears_transparent);
+        assert_eq!(
+            titlebar.traffic_light_position,
+            expected.traffic_light_position
+        );
+    }
 }

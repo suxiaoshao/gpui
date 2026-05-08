@@ -1,4 +1,6 @@
 app-title = 飞文
+titlebar-route-query = 高级检索
+titlebar-route-fetch = 数据抓取
 
 query-search-placeholder = 搜索
 query-search-button = 搜索

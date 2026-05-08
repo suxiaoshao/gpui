@@ -1,7 +1,3 @@
-use super::{
-    Workspace,
-    workspace::{RouterType, WorkspaceEvent},
-};
 use crate::{
     fetch::{self, FetchErrorKind, FetchPageError},
     foundation::{I18n, IconName},
@@ -496,7 +492,6 @@ impl Runner<'_> {
 }
 
 pub(crate) struct FetchView {
-    workspace: Entity<Workspace>,
     task_state: Entity<FetchTaskState>,
     log_table: Entity<TableState<FetchLogTableDelegate>>,
     url_input: Entity<InputState>,
@@ -509,7 +504,6 @@ pub(crate) struct FetchView {
 impl FetchView {
     pub(crate) fn new(
         window: &mut Window,
-        workspace: Entity<Workspace>,
         task_state: Entity<FetchTaskState>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -673,7 +667,6 @@ impl FetchView {
         }));
 
         Self {
-            workspace,
             task_state,
             log_table,
             url_input,
@@ -895,13 +888,7 @@ impl Render for FetchView {
 
 impl FetchView {
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
-        let (route_query_label, title) = {
-            let i18n = cx.global::<I18n>();
-            (
-                i18n.t("fetch-route-query-button"),
-                i18n.t("fetch-page-title"),
-            )
-        };
+        let title = cx.global::<I18n>().t("fetch-page-title");
         div()
             .flex()
             .items_center()
@@ -910,15 +897,6 @@ impl FetchView {
             .border_color(cx.theme().border)
             .px_3()
             .py_2()
-            .child(
-                Button::new("router-query")
-                    .label(route_query_label)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.workspace.update(cx, |_data, cx| {
-                            cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Query));
-                        });
-                    })),
-            )
             .child(Label::new(title).text_lg().font_medium())
             .child(self.render_status_badge(cx))
     }
