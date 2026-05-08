@@ -33,6 +33,11 @@ impl I18n {
         Self { locale, bundles }
     }
 
+    #[cfg(test)]
+    pub(crate) fn chinese_for_test() -> Self {
+        Self::new(Locale::ZhCn)
+    }
+
     pub(crate) fn t(&self, key: &str) -> String {
         self.translate(key, None)
     }

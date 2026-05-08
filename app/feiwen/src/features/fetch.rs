@@ -134,7 +134,7 @@ impl FetchTaskState {
         self.cookie = cookie;
     }
 
-    fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         matches!(self.status, FetchStatus::Running(_))
     }
 
@@ -184,6 +184,11 @@ impl FetchTaskState {
                 progress.total
             )),
         }
+    }
+
+    pub(crate) fn titlebar_summary(&self, i18n: &I18n) -> String {
+        self.summary_text(i18n)
+            .unwrap_or_else(|| i18n.t("fetch-state-idle-title"))
     }
 
     fn request_from(&self, start_page: u32) -> FetchRequest {
@@ -681,6 +686,18 @@ impl FetchView {
         self.start_fetch_from(RunMode::Fresh, cx);
     }
 
+    pub(crate) fn request_start_fetch(&mut self, cx: &mut Context<Self>) {
+        self.start_fetch(cx);
+    }
+
+    pub(crate) fn is_running(&self, cx: &App) -> bool {
+        self.task_state.read(cx).is_running()
+    }
+
+    pub(crate) fn titlebar_summary(&self, i18n: &I18n, cx: &App) -> String {
+        self.task_state.read(cx).titlebar_summary(i18n)
+    }
+
     fn resume_fetch(&mut self, cx: &mut Context<Self>) {
         self.start_fetch_from(RunMode::ResumeInterrupted, cx);
     }
@@ -865,7 +882,6 @@ impl Render for FetchView {
             .overflow_hidden()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_header(cx))
             .child(
                 div()
                     .flex_1()
@@ -887,20 +903,6 @@ impl Render for FetchView {
 }
 
 impl FetchView {
-    fn render_header(&self, cx: &mut Context<Self>) -> Div {
-        let title = cx.global::<I18n>().t("fetch-page-title");
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .px_3()
-            .py_2()
-            .child(Label::new(title).text_lg().font_medium())
-            .child(self.render_status_badge(cx))
-    }
-
     fn render_form_panel(&self, is_running: bool, cx: &mut Context<Self>) -> Div {
         let (
             section_config,
@@ -909,7 +911,6 @@ impl FetchView {
             field_end_page,
             field_cookie,
             cookie_hidden,
-            submit_button,
         ) = {
             let i18n = cx.global::<I18n>();
             (
@@ -919,7 +920,6 @@ impl FetchView {
                 i18n.t("fetch-field-end-page"),
                 i18n.t("fetch-field-cookie"),
                 i18n.t("fetch-cookie-hidden"),
-                i18n.t("fetch-submit-button"),
             )
         };
         let field_color = cx.theme().foreground;
@@ -985,14 +985,6 @@ impl FetchView {
                             .text_color(cx.theme().muted_foreground),
                     ),
             )
-            .child(
-                Button::new("fetch-start")
-                    .primary()
-                    .icon(IconName::CirclePlay)
-                    .label(submit_button)
-                    .disabled(is_running)
-                    .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
-            )
     }
 
     fn render_status_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -1029,31 +1021,20 @@ impl FetchView {
                 i18n.t("fetch-state-idle-desc"),
             )
         };
-        status_layout(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(status_title(
-                    IconName::Info,
-                    title,
-                    cx.theme().muted_foreground,
-                ))
-                .child(
-                    Label::new(desc)
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                ),
-            action_panel(
-                IconName::CirclePlay,
-                Button::new("fetch-idle-start")
-                    .primary()
-                    .icon(IconName::CirclePlay)
-                    .label(cx.global::<I18n>().t("fetch-submit-button"))
-                    .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
-                cx,
-            ),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(status_title(
+                IconName::Info,
+                title,
+                cx.theme().muted_foreground,
+            ))
+            .child(
+                Label::new(desc)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
     }
 
     fn render_progress_status(&self, progress: &FetchProgress, cx: &mut Context<Self>) -> Div {
@@ -1204,27 +1185,16 @@ impl FetchView {
 
     fn render_success_status(&self, progress: &FetchProgress, cx: &mut Context<Self>) -> Div {
         let title = cx.global::<I18n>().t("fetch-state-success");
-        status_layout(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(status_title(
-                    IconName::CircleCheck,
-                    title,
-                    cx.theme().success,
-                ))
-                .child(metrics_grid(progress, cx)),
-            action_panel(
-                IconName::RefreshCcw,
-                Button::new("fetch-success-restart")
-                    .primary()
-                    .icon(IconName::RefreshCcw)
-                    .label(cx.global::<I18n>().t("fetch-submit-button"))
-                    .on_click(cx.listener(|this, _, _, cx| this.start_fetch(cx))),
-                cx,
-            ),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(status_title(
+                IconName::CircleCheck,
+                title,
+                cx.theme().success,
+            ))
+            .child(metrics_grid(progress, cx))
     }
 
     fn render_logs_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -1252,40 +1222,6 @@ impl FetchView {
                     .min_h_0()
                     .child(DataTable::new(&self.log_table).small().stripe(true)),
             )
-    }
-
-    fn render_status_badge(&self, cx: &mut Context<Self>) -> Div {
-        let status = self.task_state.read(cx).status.clone();
-        let (label, color) = match status {
-            FetchStatus::Idle => (
-                cx.global::<I18n>().t("fetch-state-idle-title"),
-                cx.theme().muted_foreground,
-            ),
-            FetchStatus::Running(_) => (
-                cx.global::<I18n>().t("fetch-state-running-title"),
-                cx.theme().primary,
-            ),
-            FetchStatus::Interrupted(_) => (
-                cx.global::<I18n>().t("fetch-state-interrupted-title"),
-                cx.theme().warning,
-            ),
-            FetchStatus::Failed(_) => (
-                cx.global::<I18n>().t("fetch-state-failed-title"),
-                cx.theme().danger,
-            ),
-            FetchStatus::Success(_) => (
-                cx.global::<I18n>().t("fetch-state-success"),
-                cx.theme().success,
-            ),
-        };
-        div()
-            .rounded_full()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(color.opacity(0.35))
-            .bg(color.opacity(0.10))
-            .child(Label::new(label).text_xs().text_color(color))
     }
 }
 
@@ -1634,7 +1570,11 @@ fn retry_page_after_failure(
 
 #[cfg(test)]
 mod tests {
-    use super::{resume_page_after_interrupt, retry_page_after_failure};
+    use super::{
+        FetchFailure, FetchProgress, FetchStatus, FetchTaskState, resume_page_after_interrupt,
+        retry_page_after_failure,
+    };
+    use crate::{fetch::FetchErrorKind, foundation::i18n::I18n};
 
     #[test]
     fn resumes_from_page_after_last_success() {
@@ -1659,5 +1599,36 @@ mod tests {
     #[test]
     fn retry_falls_back_to_start_when_failed_page_is_out_of_range() {
         assert_eq!(retry_page_after_failure(Some(9000), 10, 20), Some(10));
+    }
+
+    #[test]
+    fn titlebar_summary_covers_fetch_statuses() {
+        let i18n = I18n::chinese_for_test();
+        let mut state = FetchTaskState::default();
+        assert_eq!(state.titlebar_summary(&i18n), "未开始");
+
+        let progress = FetchProgress {
+            start_page: 1,
+            end_page: 10,
+            current_page: 4,
+            last_success_page: Some(3),
+            total: 120,
+        };
+        state.status = FetchStatus::Running(progress);
+        assert_eq!(
+            state.titlebar_summary(&i18n),
+            "正在抓取 4 / 10 · 已完成 3 · 入库总数 120"
+        );
+
+        state.status = FetchStatus::Failed(FetchFailure {
+            progress,
+            page: 4,
+            kind: FetchErrorKind::Network,
+            message: "timeout".to_owned(),
+        });
+        assert_eq!(
+            state.titlebar_summary(&i18n),
+            "抓取失败 · 失败页 4 · timeout"
+        );
     }
 }

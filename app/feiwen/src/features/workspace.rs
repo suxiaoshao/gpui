@@ -1,16 +1,11 @@
 use gpui::*;
-use gpui_component::{
-    Sizable, StyledExt, TitleBar,
-    button::{Toggle, ToggleGroup, ToggleVariants},
-    h_flex,
-    label::Label,
-    v_flex,
-};
+use gpui_component::v_flex;
 use tracing::{Level, event};
 
 use super::{
     fetch::{FetchTaskState, FetchView},
     query::QueryView,
+    titlebar::{FeiwenTitleBar, route_title, window_title},
 };
 use crate::foundation::I18n;
 
@@ -27,7 +22,7 @@ pub(crate) enum WorkspaceEvent {
 
 #[derive(Default)]
 pub(crate) struct Workspace {
-    router: RouterType,
+    pub(super) router: RouterType,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -102,7 +97,7 @@ impl WorkspaceView {
 }
 
 impl RouterType {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Fetch => "fetch",
             Self::Query => "query",
@@ -117,101 +112,23 @@ fn apply_current_theme(window: &mut Window, cx: &mut App) {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app_title = cx.global::<I18n>().t("app-title");
-        window.set_window_title(&app_title);
+        let router = self.workspace.read(cx).router;
+        let titlebar_title = route_title(router, cx.global::<I18n>());
+        window.set_window_title(&window_title(&titlebar_title, &app_title));
 
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
             .overflow_hidden()
-            .child(
-                div()
-                    .flex_initial()
-                    .child(TitleBar::new().child(title_bar_content(
-                        self.workspace.clone(),
-                        app_title,
-                        cx,
-                    ))),
-            )
+            .child(div().flex_initial().child(FeiwenTitleBar::new(
+                app_title,
+                router,
+                self.workspace.clone(),
+                self.query_view.clone(),
+                self.fetch_view.clone(),
+            )))
             .child(div().flex_1().min_h_0().child(self.child_view(cx)))
     }
-}
-
-fn title_bar_content(
-    workspace: Entity<Workspace>,
-    app_title: impl Into<SharedString>,
-    cx: &mut Context<WorkspaceView>,
-) -> impl IntoElement {
-    let router = workspace.read(cx).router;
-    h_flex()
-        .w_full()
-        .h_full()
-        .min_w_0()
-        .overflow_hidden()
-        .gap_2()
-        .child(title_bar_title(app_title))
-        .child(route_switcher(workspace, router, cx))
-}
-
-fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
-    h_flex()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .items_center()
-        .overflow_hidden()
-        .child(Label::new(title).text_sm().font_medium().truncate())
-}
-
-fn route_switcher(
-    workspace: Entity<Workspace>,
-    current: RouterType,
-    cx: &mut Context<WorkspaceView>,
-) -> impl IntoElement {
-    let (query_label, fetch_label) = {
-        let i18n = cx.global::<I18n>();
-        (
-            i18n.t("titlebar-route-query"),
-            i18n.t("titlebar-route-fetch"),
-        )
-    };
-
-    ToggleGroup::new("feiwen-titlebar-route")
-        .segmented()
-        .outline()
-        .xsmall()
-        .child(
-            Toggle::new("feiwen-titlebar-route-query")
-                .label(query_label)
-                .checked(matches!(current, RouterType::Query)),
-        )
-        .child(
-            Toggle::new("feiwen-titlebar-route-fetch")
-                .label(fetch_label)
-                .checked(matches!(current, RouterType::Fetch)),
-        )
-        .on_click(cx.listener(move |_this, checked: &Vec<bool>, _, cx| {
-            let next = if checked.first().copied().unwrap_or(false) {
-                RouterType::Query
-            } else if checked.get(1).copied().unwrap_or(false) {
-                RouterType::Fetch
-            } else {
-                current
-            };
-
-            workspace.update(cx, |workspace, cx| {
-                if workspace.router != next {
-                    event!(
-                        Level::INFO,
-                        from = %workspace.router.label(),
-                        to = %next.label(),
-                        "switching feiwen route from titlebar"
-                    );
-                    workspace.router = next;
-                    cx.notify();
-                }
-            });
-            cx.notify();
-        }))
 }
 
 #[cfg(test)]

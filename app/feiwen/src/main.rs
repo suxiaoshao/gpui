@@ -1,9 +1,9 @@
 use crate::errors::FeiwenError;
 use errors::FeiwenResult;
-use features::WorkspaceView;
+use features::{WorkspaceView, titlebar};
 use foundation::I18n;
 use gpui::*;
-use gpui_component::{Root, TitleBar};
+use gpui_component::Root;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -120,28 +120,28 @@ fn main() -> FeiwenResult<()> {
 fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
     TitlebarOptions {
         title: Some(title.into()),
-        ..TitleBar::title_bar_options()
+        appears_transparent: true,
+        traffic_light_position: Some(titlebar::traffic_light_position()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::main_titlebar_options;
-    use gpui_component::TitleBar;
+    use crate::features::titlebar;
 
     #[test]
-    fn main_window_uses_component_titlebar_options() {
-        let titlebar = main_titlebar_options("Feiwen");
-        let expected = TitleBar::title_bar_options();
+    fn main_window_uses_custom_titlebar_options() {
+        let options = main_titlebar_options("Feiwen");
 
         assert_eq!(
-            titlebar.title.as_ref().map(|title| title.as_ref()),
+            options.title.as_ref().map(|title| title.as_ref()),
             Some("Feiwen")
         );
-        assert_eq!(titlebar.appears_transparent, expected.appears_transparent);
+        assert!(options.appears_transparent);
         assert_eq!(
-            titlebar.traffic_light_position,
-            expected.traffic_light_position
+            options.traffic_light_position,
+            Some(titlebar::traffic_light_position())
         );
     }
 }
