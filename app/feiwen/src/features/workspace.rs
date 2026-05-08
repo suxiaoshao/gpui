@@ -1,4 +1,5 @@
 use gpui::*;
+use tracing::{Level, event};
 
 use super::{
     fetch::{FetchTaskState, FetchView},
@@ -34,10 +35,11 @@ pub(crate) struct WorkspaceView {
 
 impl WorkspaceView {
     pub(crate) fn new(window: &mut Window, workspace_cx: &mut Context<Self>) -> Self {
+        event!(Level::INFO, "creating feiwen workspace");
         let workspace = workspace_cx.new(|_cx| Default::default());
         let fetch_task = workspace_cx.new(|_cx| FetchTaskState::default());
         let _subscriptions = vec![workspace_cx.subscribe(&workspace, Self::subscribe)];
-        Self {
+        let this = Self {
             focus_handle: workspace_cx.focus_handle(),
             fetch_view: workspace_cx
                 .new(|cx| FetchView::new(window, workspace.clone(), fetch_task.clone(), cx)),
@@ -46,7 +48,9 @@ impl WorkspaceView {
             _fetch_task: fetch_task,
             workspace,
             _subscriptions,
-        }
+        };
+        event!(Level::INFO, "feiwen workspace created");
+        this
     }
     fn child_view(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         match self.workspace.read(cx).router {
@@ -63,9 +67,24 @@ impl WorkspaceView {
         match emitter {
             WorkspaceEvent::UpdateRouter(router) => {
                 subscriber.update(cx, |data, _| {
+                    event!(
+                        Level::INFO,
+                        from = %data.router.label(),
+                        to = %router.label(),
+                        "switching feiwen route"
+                    );
                     data.router = *router;
                 });
             }
+        }
+    }
+}
+
+impl RouterType {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fetch => "fetch",
+            Self::Query => "query",
         }
     }
 }

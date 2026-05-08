@@ -25,6 +25,7 @@ fn quit(_: &Quit, cx: &mut App) {
 }
 
 fn init(cx: &mut App) {
+    event!(Level::INFO, "initializing feiwen app");
     gpui_component::init(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
@@ -32,6 +33,7 @@ fn init(cx: &mut App) {
 
     foundation::i18n::init_i18n(cx);
     store::init_store(cx);
+    event!(Level::INFO, "feiwen app initialized");
 }
 
 fn get_logs_dir() -> FeiwenResult<PathBuf> {
@@ -48,12 +50,16 @@ fn get_logs_dir() -> FeiwenResult<PathBuf> {
     if let Ok(path) = &path
         && !path.exists()
     {
+        event!(Level::INFO, path = %path.display(), "creating log directory");
         create_dir_all(path).map_err(|_| FeiwenError::LogFileNotFound)?;
     }
     path
 }
 
 fn main() -> FeiwenResult<()> {
+    let logs_dir = get_logs_dir()?;
+    let log_file = logs_dir.join("data.log");
+
     // tracing
     tracing_subscriber::registry()
         .with(
@@ -63,7 +69,7 @@ fn main() -> FeiwenResult<()> {
                     std::fs::OpenOptions::new()
                         .append(true)
                         .create(true)
-                        .open(get_logs_dir()?.join("data.log"))
+                        .open(&log_file)
                         .map_err(|_| FeiwenError::LogFileNotFound)?,
                 )
                 .with_filter(LevelFilter::INFO),
@@ -76,6 +82,13 @@ fn main() -> FeiwenResult<()> {
         )
         .init();
 
+    event!(
+        Level::INFO,
+        logs_dir = %logs_dir.display(),
+        log_file = %log_file.display(),
+        "tracing initialized"
+    );
+
     let span = tracing::info_span!("init");
     let _enter = span.enter();
     let app = gpui_platform::application().with_assets(foundation::Assets::default());
@@ -84,7 +97,8 @@ fn main() -> FeiwenResult<()> {
     app.run(|cx: &mut App| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");
-        if let Err(err) = cx.open_window(
+        event!(Level::INFO, title = %title, "opening main window");
+        match cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some(title.into()),
@@ -98,9 +112,9 @@ fn main() -> FeiwenResult<()> {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
-            event!(Level::ERROR, "{}", err)
-        };
-        event!(Level::INFO, "window opened");
+            Ok(_) => event!(Level::INFO, "main window opened"),
+            Err(err) => event!(Level::ERROR, error = %err, "failed to open main window"),
+        }
     });
     Ok(())
 }

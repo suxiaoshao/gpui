@@ -22,6 +22,7 @@ use gpui_component::{
     v_flex,
 };
 use results_table::ResultsTableDelegate;
+use tracing::{Level, event};
 
 mod advanced;
 mod results_table;
@@ -288,12 +289,14 @@ impl Render for QueryView {
 impl QueryView {
     fn start_search(&mut self, cx: &mut Context<Self>) {
         if self.search.is_searching() {
+            event!(Level::INFO, "ignored query request while search is running");
             return;
         }
 
         let spec = match self.advanced.query_spec(cx) {
             Ok(spec) => spec,
             Err(err) => {
+                event!(Level::ERROR, error = %err, "query validation failed");
                 self.set_results_table(Vec::new(), false, cx);
                 self.search = SearchState::Error(QueryError::Validation(err));
                 cx.notify();
@@ -301,6 +304,7 @@ impl QueryView {
             }
         };
 
+        event!(Level::INFO, "starting feiwen query");
         let pool = cx.global::<Db>().pool();
         let this = cx.entity().downgrade();
 
@@ -310,9 +314,15 @@ impl QueryView {
         let task = cx.spawn(async move |_, cx| {
             let result = cx
                 .background_spawn(async move {
+                    event!(Level::INFO, "running feiwen query in background");
                     let mut conn = pool.get()?;
                     let options = QueryOptions::load(&mut conn)?;
                     let novels = Novel::query(&spec, &mut conn)?;
+                    event!(
+                        Level::INFO,
+                        result_count = novels.len(),
+                        "feiwen query completed in background"
+                    );
                     Ok(SearchResult { options, novels })
                 })
                 .await;
@@ -327,11 +337,13 @@ impl QueryView {
         match result {
             Ok(result) => {
                 let count = result.novels.len();
+                event!(Level::INFO, result_count = count, "feiwen query succeeded");
                 self.advanced.set_options(result.options, cx);
                 self.set_results_table(result.novels, false, cx);
                 self.search = SearchState::Data { count };
             }
             Err(err) => {
+                event!(Level::ERROR, error = %err, "feiwen query failed");
                 self.set_results_table(Vec::new(), false, cx);
                 self.search = SearchState::Error(QueryError::Runtime(err));
             }

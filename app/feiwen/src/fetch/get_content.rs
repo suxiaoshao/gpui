@@ -4,6 +4,7 @@ use reqwest::{
 };
 
 use crate::errors::FeiwenResult;
+use tracing::{Level, event};
 
 pub(crate) async fn get_content(
     url: &str,
@@ -11,7 +12,13 @@ pub(crate) async fn get_content(
     cookies: &str,
     client: &Client,
 ) -> FeiwenResult<String> {
-    let body = client
+    event!(
+        Level::INFO,
+        page,
+        has_cookie = !cookies.is_empty(),
+        "sending feiwen page request"
+    );
+    let response = client
         .get(url)
         .header(COOKIE, cookies)
         .header(
@@ -36,8 +43,20 @@ pub(crate) async fn get_content(
         )
         .query(&[("page", page)])
         .send()
-        .await?
-        .text()
         .await?;
+    let status = response.status();
+    event!(
+        Level::INFO,
+        page,
+        status = %status,
+        "feiwen page request completed"
+    );
+    let body = response.text().await?;
+    event!(
+        Level::INFO,
+        page,
+        body_len = body.len(),
+        "feiwen page body read"
+    );
     Ok(body)
 }

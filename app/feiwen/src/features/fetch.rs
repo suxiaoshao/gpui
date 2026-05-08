@@ -208,6 +208,16 @@ impl FetchTaskState {
         if clear_logs {
             self.logs.clear();
         }
+        event!(
+            Level::INFO,
+            start_page = self.start_page,
+            end_page = self.end_page,
+            run_start_page,
+            ?last_success_page,
+            total,
+            clear_logs,
+            "fetch run state started"
+        );
         self.status = FetchStatus::Running(FetchProgress {
             start_page: self.start_page,
             end_page: self.end_page,
@@ -218,13 +228,22 @@ impl FetchTaskState {
     }
 
     fn interrupt(&mut self) {
+        event!(Level::INFO, "interrupting fetch run");
         self.task = None;
         if let FetchStatus::Running(progress) = self.status {
+            event!(
+                Level::INFO,
+                current_page = progress.current_page,
+                last_success_page = ?progress.last_success_page,
+                total = progress.total,
+                "fetch run interrupted"
+            );
             self.status = FetchStatus::Interrupted(progress);
         }
     }
 
     fn mark_page_started(&mut self, page: u32) {
+        event!(Level::INFO, page, "fetch page started");
         if let FetchStatus::Running(progress) = &mut self.status {
             progress.current_page = page;
         }
@@ -238,6 +257,14 @@ impl FetchTaskState {
     }
 
     fn mark_page_succeeded(&mut self, page: u32, inserted: usize, total: i64, elapsed_ms: u128) {
+        event!(
+            Level::INFO,
+            page,
+            inserted,
+            total,
+            elapsed_ms,
+            "fetch page succeeded"
+        );
         if let FetchStatus::Running(progress) = &mut self.status {
             progress.current_page = page;
             progress.last_success_page = Some(page);
@@ -253,6 +280,14 @@ impl FetchTaskState {
     }
 
     fn mark_failed(&mut self, error: FetchPageError, elapsed_ms: Option<u128>) {
+        event!(
+            Level::ERROR,
+            page = error.page,
+            kind = %error.kind,
+            message = %error.message,
+            ?elapsed_ms,
+            "fetch run failed"
+        );
         let progress = match &self.status {
             FetchStatus::Running(progress) => *progress,
             FetchStatus::Interrupted(progress) => *progress,
@@ -285,6 +320,14 @@ impl FetchTaskState {
     fn mark_succeeded(&mut self) {
         self.task = None;
         if let FetchStatus::Running(progress) = self.status {
+            event!(
+                Level::INFO,
+                start_page = progress.start_page,
+                end_page = progress.end_page,
+                completed_pages = progress.completed_pages(),
+                total = progress.total,
+                "fetch run succeeded"
+            );
             self.status = FetchStatus::Success(progress);
         }
     }
@@ -332,13 +375,26 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     async fn run(&mut self) {
+        event!(
+            Level::INFO,
+            start_page = self.request.start_page,
+            end_page = self.request.end_page,
+            has_cookie = !self.request.cookie.is_empty(),
+            "fetch runner started"
+        );
         let mut total = match Novel::count(&mut self.conn) {
             Ok(total) => total,
             Err(err) => {
+                event!(
+                    Level::ERROR,
+                    error = %err,
+                    "failed to count novels before fetch run"
+                );
                 self.mark_failed(FetchPageError::new(self.request.start_page, err), None);
                 return;
             }
         };
+        event!(Level::INFO, total, "initial novel count loaded");
 
         let start_page = self.request.start_page;
         self.update_state(|state| state.begin_run(start_page, total, false));
@@ -353,6 +409,13 @@ impl Runner<'_> {
                 {
                     Ok(novels) => novels,
                     Err(err) => {
+                        event!(
+                            Level::ERROR,
+                            page,
+                            error = %err,
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            "failed to fetch page data"
+                        );
                         self.mark_failed(
                             FetchPageError::new(page, err),
                             Some(started_at.elapsed().as_millis()),
@@ -364,6 +427,13 @@ impl Runner<'_> {
             let inserted = novels.len();
             for novel in novels {
                 if let Err(err) = novel.save(&mut self.conn) {
+                    event!(
+                        Level::ERROR,
+                        page,
+                        error = %err,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "failed to save fetched novel"
+                    );
                     self.mark_failed(
                         FetchPageError::new(page, err),
                         Some(started_at.elapsed().as_millis()),
@@ -375,6 +445,13 @@ impl Runner<'_> {
             match Novel::count(&mut self.conn) {
                 Ok(next_total) => total = next_total,
                 Err(err) => {
+                    event!(
+                        Level::ERROR,
+                        page,
+                        error = %err,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "failed to count novels after page fetch"
+                    );
                     self.mark_failed(
                         FetchPageError::new(page, err),
                         Some(started_at.elapsed().as_millis()),
@@ -387,6 +464,13 @@ impl Runner<'_> {
             });
         }
 
+        event!(
+            Level::INFO,
+            start_page = self.request.start_page,
+            end_page = self.request.end_page,
+            total,
+            "fetch runner completed"
+        );
         self.update_state(FetchTaskState::mark_succeeded);
     }
 
@@ -620,9 +704,16 @@ impl FetchView {
     }
 
     fn start_fetch_from(&mut self, mode: RunMode, cx: &mut Context<Self>) {
+        event!(Level::INFO, mode = mode.label(), "starting fetch request");
         let conn = match cx.global::<Db>().get() {
             Ok(conn) => conn,
             Err(err) => {
+                event!(
+                    Level::ERROR,
+                    mode = mode.label(),
+                    error = %err,
+                    "failed to get database pool for fetch"
+                );
                 self.task_state.update(cx, |state, cx| {
                     state.mark_failed(
                         FetchPageError {
@@ -641,12 +732,23 @@ impl FetchView {
         let (request, clear_logs) = {
             let state = self.task_state.read(cx);
             if state.is_running() {
+                event!(
+                    Level::INFO,
+                    mode = mode.label(),
+                    "ignored fetch request while running"
+                );
                 return;
             }
             let start_page = match mode {
                 RunMode::Fresh => {
                     if state.start_page > state.end_page {
                         let message = cx.global::<I18n>().t("fetch-error-invalid-page-range");
+                        event!(
+                            Level::ERROR,
+                            start_page = state.start_page,
+                            end_page = state.end_page,
+                            "invalid fetch page range"
+                        );
                         self.task_state.update(cx, |state, cx| {
                             state.mark_failed(
                                 FetchPageError {
@@ -669,7 +771,14 @@ impl FetchView {
                         state.end_page,
                     ) {
                         Some(page) => page,
-                        None => return,
+                        None => {
+                            event!(
+                                Level::INFO,
+                                mode = mode.label(),
+                                "no interrupted fetch page to resume"
+                            );
+                            return;
+                        }
                     }
                 }
                 RunMode::RetryFailed => {
@@ -679,7 +788,14 @@ impl FetchView {
                         state.end_page,
                     ) {
                         Some(page) => page,
-                        None => return,
+                        None => {
+                            event!(
+                                Level::INFO,
+                                mode = mode.label(),
+                                "no failed fetch page to retry"
+                            );
+                            return;
+                        }
                     }
                 }
             };
@@ -688,6 +804,15 @@ impl FetchView {
                 matches!(mode, RunMode::Fresh),
             )
         };
+        event!(
+            Level::INFO,
+            mode = mode.label(),
+            start_page = request.start_page,
+            end_page = request.end_page,
+            has_cookie = !request.cookie.is_empty(),
+            clear_logs,
+            "fetch task scheduled"
+        );
 
         let task_state = self.task_state.downgrade();
         self.task_state.update(cx, |state, cx| {
@@ -724,6 +849,16 @@ enum RunMode {
     Fresh,
     ResumeInterrupted,
     RetryFailed,
+}
+
+impl RunMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::ResumeInterrupted => "resume_interrupted",
+            Self::RetryFailed => "retry_failed",
+        }
+    }
 }
 
 impl Render for FetchView {
