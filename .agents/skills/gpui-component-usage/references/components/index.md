@@ -47,6 +47,15 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Window chrome | [TitleBar](title-bar.md) |
 | Focus management | [FocusTrap](focus-trap.md) |
 
+## Library Primitives and Patterns
+
+| Need | Reference |
+| --- | --- |
+| Shared traits for size, selected, disabled, variants, and delegates | [Trait rules](../rules/traits.md) |
+| Layout helpers, element helpers, icons, root, window helpers, initialization | [Primitive rules](../rules/primitives.md) |
+| Theme tokens, semantic colors, component sizes, typography, spacing | [Theme and size rules](../rules/theme-and-size.md) |
+| Focus, overlay, menu, pointer, loading, selected, and delegated interactions | [State and interaction rules](../rules/state-and-interaction.md) |
+
 ## shadcn/ui Mental Mapping
 
 | shadcn-style need | gpui-component reference |
