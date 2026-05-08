@@ -39,6 +39,7 @@ pub(crate) struct AdvancedQueryState {
     pub(super) root: FilterGroup,
     pub(super) sorts: Vec<SortRow>,
     pub(super) options: QueryOptions,
+    pub(super) disabled: bool,
     next_id: u64,
     subscriptions: Vec<Subscription>,
 }
@@ -150,6 +151,7 @@ impl AdvancedQueryState {
             },
             sorts: Vec::new(),
             options,
+            disabled: false,
             next_id: 1,
             subscriptions: Vec::new(),
         };
@@ -160,6 +162,11 @@ impl AdvancedQueryState {
     pub(crate) fn set_options(&mut self, options: QueryOptions, cx: &mut Context<QueryView>) {
         self.options = options;
         Self::refresh_group_options(&self.options, &mut self.root, cx);
+    }
+
+    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<QueryView>) {
+        self.disabled = disabled;
+        Self::set_group_disabled(&mut self.root, disabled, cx);
     }
 
     pub(crate) fn query_spec(&mut self, cx: &gpui::App) -> Result<QuerySpec, String> {
@@ -182,6 +189,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let id = self.alloc_id();
         let field_select =
             cx.new(|cx| SelectState::new(field_items(), None, window, cx).searchable(true));
@@ -208,6 +218,9 @@ impl AdvancedQueryState {
     }
 
     pub(crate) fn add_group(&mut self, group_id: u64) {
+        if self.disabled {
+            return;
+        }
         let id = self.alloc_id();
         if let Some(group) = self.find_group_mut(group_id) {
             group.items.push(FilterNode::Group(FilterGroup {
@@ -220,38 +233,59 @@ impl AdvancedQueryState {
     }
 
     pub(crate) fn remove_node(&mut self, node_id: u64) {
+        if self.disabled {
+            return;
+        }
         Self::remove_node_from(&mut self.root, node_id);
     }
 
     pub(super) fn set_group_relation(&mut self, group_id: u64, relation: GroupRelation) {
+        if self.disabled {
+            return;
+        }
         if let Some(group) = self.find_group_mut(group_id) {
             group.relation = relation;
         }
     }
 
     pub(crate) fn set_group_negated(&mut self, group_id: u64, negated: bool) {
+        if self.disabled {
+            return;
+        }
         if let Some(group) = self.find_group_mut(group_id) {
             group.negated = negated;
         }
     }
 
     pub(crate) fn set_condition_negated(&mut self, condition_id: u64, negated: bool) {
+        if self.disabled {
+            return;
+        }
         if let Some(condition) = self.find_condition_mut(condition_id) {
             condition.negated = negated;
         }
     }
 
     pub(crate) fn add_sort(&mut self, window: &mut Window, cx: &mut Context<QueryView>) {
+        if self.disabled {
+            return;
+        }
         let id = self.alloc_id();
         let sort = self.new_sort_row(id, Some(SortField::Title), SortDirection::Asc, window, cx);
         self.sorts.push(sort);
     }
 
     pub(crate) fn remove_sort(&mut self, sort_id: u64) {
+        if self.disabled {
+            return;
+        }
         self.sorts.retain(|sort| sort.id != sort_id);
     }
 
     pub(crate) fn move_sort_before(&mut self, source_id: u64, target_id: u64) {
+        if self.disabled {
+            return;
+        }
         move_sort_before(&mut self.sorts, source_id, target_id);
     }
 
@@ -262,6 +296,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let relation_select = match field {
             FieldKind::Title | FieldKind::Description | FieldKind::LatestChapterTitle => {
                 RelationSelect::Text(self.new_text_relation_select(condition_id, window, cx))
@@ -295,6 +332,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let Some(field) = self.condition_field(condition_id) else {
             return;
         };
@@ -321,6 +361,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let Some(field) = self.condition_field(condition_id) else {
             return;
         };
@@ -354,6 +397,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let relation_select = self.new_bool_relation_select(condition_id, window, cx);
         relation_select.update(cx, |select, cx| {
             select.set_selected_value(&BoolRelation::Is, window, cx);
@@ -382,6 +428,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let relation_select = self.new_tags_relation_select(condition_id, window, cx);
         relation_select.update(cx, |select, cx| {
             select.set_selected_value(&relation, window, cx);
@@ -406,6 +455,9 @@ impl AdvancedQueryState {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
+        if self.disabled {
+            return;
+        }
         let relation_select = self.new_author_relation_select(condition_id, window, cx);
         relation_select.update(cx, |select, cx| {
             select.set_selected_value(&relation, window, cx);
@@ -435,6 +487,9 @@ impl AdvancedQueryState {
     }
 
     fn set_sort_field(&mut self, sort_id: u64, field: Option<SortField>) {
+        if self.disabled {
+            return;
+        }
         if let Some(sort) = self.sorts.iter_mut().find(|sort| sort.id == sort_id) {
             sort.field = field;
             sort.error = None;
@@ -442,6 +497,9 @@ impl AdvancedQueryState {
     }
 
     fn set_sort_direction(&mut self, sort_id: u64, direction: SortDirection) {
+        if self.disabled {
+            return;
+        }
         if let Some(sort) = self.sorts.iter_mut().find(|sort| sort.id == sort_id) {
             sort.direction = direction;
         }
@@ -657,6 +715,15 @@ impl AdvancedQueryState {
         }
     }
 
+    fn set_group_disabled(group: &mut FilterGroup, disabled: bool, cx: &mut Context<QueryView>) {
+        for item in &mut group.items {
+            match item {
+                FilterNode::Condition(condition) => condition.set_disabled(disabled, cx),
+                FilterNode::Group(group) => Self::set_group_disabled(group, disabled, cx),
+            }
+        }
+    }
+
     fn clear_group_errors(group: &mut FilterGroup) {
         for item in &mut group.items {
             match item {
@@ -739,6 +806,34 @@ impl SortRow {
 }
 
 impl ConditionRow {
+    fn set_disabled(&mut self, disabled: bool, cx: &mut Context<QueryView>) {
+        match &self.draft {
+            ConditionDraft::Number(condition) => {
+                if let NumberValue::Range(range) = &condition.value {
+                    range.update(cx, |range, cx| range.set_disabled(disabled, cx));
+                }
+            }
+            ConditionDraft::Tags(condition) => {
+                if let Some(value) = &condition.value {
+                    value.update(cx, |value, cx| value.set_disabled(disabled, cx));
+                }
+            }
+            ConditionDraft::Author(condition) => match &condition.value {
+                AuthorValue::Single(value) => {
+                    value.update(cx, |value, cx| value.set_disabled(disabled, cx));
+                }
+                AuthorValue::Multi(value) => {
+                    value.update(cx, |value, cx| value.set_disabled(disabled, cx));
+                }
+                AuthorValue::Text(_) => {}
+            },
+            ConditionDraft::NoField
+            | ConditionDraft::NoCondition { .. }
+            | ConditionDraft::Text(_)
+            | ConditionDraft::Bool(_) => {}
+        }
+    }
+
     fn expr(&mut self, cx: &gpui::App) -> Result<FilterExpr, String> {
         let expr = match self.expr_inner(cx) {
             Ok(expr) => expr,

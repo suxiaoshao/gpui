@@ -4,7 +4,7 @@ use super::{
     workspace::{RouterType, WorkspaceEvent},
 };
 use crate::{
-    errors::FeiwenError,
+    errors::{FeiwenError, FeiwenResult},
     foundation::I18n,
     store::{Db, service::Novel},
 };
@@ -12,7 +12,7 @@ use advanced::{AdvancedQueryState, QueryOptions};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, StyledExt,
+    ActiveTheme, Disableable, StyledExt,
     alert::Alert,
     button::{Button, ButtonVariants},
     h_flex,
@@ -27,12 +27,55 @@ mod advanced;
 mod results_table;
 
 #[derive(Default)]
-enum QueryData {
-    Err(FeiwenError),
-    ValidationErr(String),
-    Ok(usize),
+enum SearchState {
     #[default]
     Init,
+    Task(Task<()>),
+    Error(QueryError),
+    Data {
+        count: usize,
+    },
+}
+
+impl SearchState {
+    fn is_searching(&self) -> bool {
+        match self {
+            Self::Task(task) => {
+                let _ = task.is_ready();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn is_data(&self) -> bool {
+        matches!(self, Self::Data { .. })
+    }
+
+    #[cfg(test)]
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
+    }
+}
+
+enum QueryError {
+    Runtime(FeiwenError),
+    Validation(String),
+}
+
+impl std::fmt::Display for QueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(err) => err.fmt(f),
+            Self::Validation(err) => f.write_str(err),
+        }
+    }
+}
+
+struct SearchResult {
+    options: QueryOptions,
+    novels: Vec<Novel>,
 }
 
 enum QueryEvent {
@@ -56,7 +99,7 @@ pub(crate) struct QueryView {
     fetch_task: Entity<FetchTaskState>,
     advanced: AdvancedQueryState,
     results_table: Entity<TableState<ResultsTableDelegate>>,
-    data: QueryData,
+    search: SearchState,
     _subscriptions: Vec<Subscription>,
     query: Entity<Query>,
 }
@@ -75,12 +118,18 @@ impl QueryView {
                 cx.notify();
             }),
         ];
-        let (options, data) = match cx.global::<Db>().get() {
+        let (options, search) = match cx.global::<Db>().get() {
             Ok(mut conn) => match QueryOptions::load(&mut conn) {
-                Ok(options) => (options, QueryData::Init),
-                Err(err) => (QueryOptions::default(), QueryData::Err(err)),
+                Ok(options) => (options, SearchState::Init),
+                Err(err) => (
+                    QueryOptions::default(),
+                    SearchState::Error(QueryError::Runtime(err)),
+                ),
             },
-            Err(err) => (QueryOptions::default(), QueryData::Err(err.into())),
+            Err(err) => (
+                QueryOptions::default(),
+                SearchState::Error(QueryError::Runtime(err.into())),
+            ),
         };
         Self {
             workspace,
@@ -92,7 +141,7 @@ impl QueryView {
                     .col_movable(true)
                     .row_selectable(true)
             }),
-            data,
+            search,
             _subscriptions,
             query,
         }
@@ -101,75 +150,36 @@ impl QueryView {
         &mut self,
         _state: &Entity<Query>,
         event: &QueryEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             QueryEvent::RouteToFetch => {
+                if self.search.is_searching() {
+                    return;
+                }
                 self.workspace.update(cx, |_data, cx| {
                     cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
                 });
             }
             QueryEvent::Search => {
-                let options = match cx.global::<Db>().get() {
-                    Ok(mut conn) => QueryOptions::load(&mut conn),
-                    Err(err) => Err(err.into()),
-                };
-                match options {
-                    Ok(options) => self.advanced.set_options(options, cx),
-                    Err(err) => {
-                        self.data = QueryData::Err(err);
-                        cx.notify();
-                        return;
-                    }
-                }
-                let spec = match self.advanced.query_spec(cx) {
-                    Ok(spec) => spec,
-                    Err(err) => {
-                        self.results_table.update(cx, |table, cx| {
-                            table.delegate_mut().set_novels(Vec::new());
-                            table.refresh(cx);
-                            cx.notify();
-                        });
-                        self.data = QueryData::ValidationErr(err);
-                        cx.notify();
-                        return;
-                    }
-                };
-                let result = match cx.global::<Db>().get() {
-                    Ok(mut conn) => Novel::query(&spec, &mut conn),
-                    Err(err) => Err(err.into()),
-                };
-                match result {
-                    Ok(data) => {
-                        let count = data.len();
-                        self.results_table.update(cx, |table, cx| {
-                            table.delegate_mut().set_novels(data);
-                            table.refresh(cx);
-                            cx.notify();
-                        });
-                        self.data = QueryData::Ok(count);
-                    }
-                    Err(err) => self.data = QueryData::Err(err),
-                }
-                cx.notify();
+                self.start_search(cx);
             }
             QueryEvent::Reset => {
+                if self.search.is_searching() {
+                    return;
+                }
                 let options = match cx.global::<Db>().get() {
                     Ok(mut conn) => QueryOptions::load(&mut conn),
                     Err(err) => Err(err.into()),
                 };
                 match options {
                     Ok(options) => {
-                        self.advanced = AdvancedQueryState::new(options, _window, cx);
-                        self.results_table.update(cx, |table, cx| {
-                            table.delegate_mut().set_novels(Vec::new());
-                            table.refresh(cx);
-                            cx.notify();
-                        });
-                        self.data = QueryData::Init;
+                        self.advanced = AdvancedQueryState::new(options, window, cx);
+                        self.set_results_table(Vec::new(), false, cx);
+                        self.search = SearchState::Init;
                     }
-                    Err(err) => self.data = QueryData::Err(err),
+                    Err(err) => self.search = SearchState::Error(QueryError::Runtime(err)),
                 }
                 cx.notify();
             }
@@ -187,6 +197,7 @@ impl Render for QueryView {
                 i18n.t("query-error-title"),
             )
         };
+        let searching = self.search.is_searching();
         let header = div()
             .flex()
             .flex_initial()
@@ -209,6 +220,7 @@ impl Render for QueryView {
                     .child(
                         Button::new("query-reset")
                             .label("重置")
+                            .disabled(searching)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.query.update(cx, |_, cx| {
                                     cx.emit(QueryEvent::Reset);
@@ -219,6 +231,8 @@ impl Render for QueryView {
                         Button::new("search")
                             .primary()
                             .label(search_label)
+                            .loading(searching)
+                            .disabled(searching)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.query.update(cx, |_, cx| {
                                     cx.emit(QueryEvent::Search);
@@ -228,6 +242,7 @@ impl Render for QueryView {
                     .child(
                         Button::new("router-fetch")
                             .label(route_fetch_label)
+                            .disabled(searching)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.query.update(cx, |_data, cx| {
                                     cx.emit(QueryEvent::RouteToFetch);
@@ -254,7 +269,7 @@ impl Render for QueryView {
                             .size(px(560.))
                             .size_range(px(360.)..px(820.))
                             .flex_none()
-                            .child(self.advanced.render_filters(cx)),
+                            .child(self.advanced.render_filters(searching, cx)),
                     )
                     .child(
                         v_resizable("query-side")
@@ -262,7 +277,7 @@ impl Render for QueryView {
                                 resizable_panel()
                                     .size(px(220.))
                                     .size_range(px(150.)..px(420.))
-                                    .child(self.advanced.render_sorts(cx)),
+                                    .child(self.advanced.render_sorts(searching, cx)),
                             )
                             .child(resizable_panel().child(self.render_results_table(cx))),
                     ),
@@ -271,15 +286,82 @@ impl Render for QueryView {
 }
 
 impl QueryView {
+    fn start_search(&mut self, cx: &mut Context<Self>) {
+        if self.search.is_searching() {
+            return;
+        }
+
+        let spec = match self.advanced.query_spec(cx) {
+            Ok(spec) => spec,
+            Err(err) => {
+                self.set_results_table(Vec::new(), false, cx);
+                self.search = SearchState::Error(QueryError::Validation(err));
+                cx.notify();
+                return;
+            }
+        };
+
+        let pool = cx.global::<Db>().pool();
+        let this = cx.entity().downgrade();
+
+        self.advanced.set_disabled(true, cx);
+        self.set_table_loading(true, cx);
+
+        let task = cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut conn = pool.get()?;
+                    let options = QueryOptions::load(&mut conn)?;
+                    let novels = Novel::query(&spec, &mut conn)?;
+                    Ok(SearchResult { options, novels })
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| this.finish_search(result, cx));
+        });
+        self.search = SearchState::Task(task);
+        cx.notify();
+    }
+
+    fn finish_search(&mut self, result: FeiwenResult<SearchResult>, cx: &mut Context<Self>) {
+        self.advanced.set_disabled(false, cx);
+        match result {
+            Ok(result) => {
+                let count = result.novels.len();
+                self.advanced.set_options(result.options, cx);
+                self.set_results_table(result.novels, false, cx);
+                self.search = SearchState::Data { count };
+            }
+            Err(err) => {
+                self.set_results_table(Vec::new(), false, cx);
+                self.search = SearchState::Error(QueryError::Runtime(err));
+            }
+        }
+        cx.notify();
+    }
+
+    fn set_results_table(&mut self, novels: Vec<Novel>, loading: bool, cx: &mut Context<Self>) {
+        self.results_table.update(cx, |table, cx| {
+            table.delegate_mut().set_novels(novels);
+            table.delegate_mut().set_loading(loading);
+            table.refresh(cx);
+            cx.notify();
+        });
+    }
+
+    fn set_table_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        self.results_table.update(cx, |table, cx| {
+            table.delegate_mut().set_loading(loading);
+            table.refresh(cx);
+            cx.notify();
+        });
+    }
+
     fn render_status(&self, error_label: String, cx: &mut Context<Self>) -> Div {
-        match &self.data {
-            QueryData::Err(feiwen_error) => div()
+        match &self.search {
+            SearchState::Error(err) => div()
                 .flex_initial()
-                .child(Alert::error("error-alert", feiwen_error.to_string()).title(error_label)),
-            QueryData::ValidationErr(err) => div()
-                .flex_initial()
-                .child(Alert::error("query-validation-error", err.clone()).title(error_label)),
-            QueryData::Ok(count) => h_flex()
+                .child(Alert::error("query-error-alert", err.to_string()).title(error_label)),
+            SearchState::Data { count } => h_flex()
                 .flex_initial()
                 .px_3()
                 .py_1()
@@ -290,7 +372,7 @@ impl QueryView {
                         .text_sm()
                         .text_color(cx.theme().foreground),
                 ),
-            QueryData::Init => div().flex_initial(),
+            SearchState::Init | SearchState::Task(_) => div().flex_initial(),
         }
     }
 
@@ -327,6 +409,7 @@ impl QueryView {
                 .child(
                     Button::new("query-fetch-summary-open")
                         .label(i18n.t("fetch-summary-open"))
+                        .disabled(self.search.is_searching())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.workspace.update(cx, |_data, cx| {
                                 cx.emit(WorkspaceEvent::UpdateRouter(RouterType::Fetch));
@@ -334,5 +417,30 @@ impl QueryView {
                         })),
                 ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::Task;
+
+    use super::{QueryError, SearchState};
+
+    #[::core::prelude::v1::test]
+    fn search_state_helpers_match_state_variants() {
+        assert!(!SearchState::Init.is_searching());
+        assert!(!SearchState::Init.is_data());
+        assert!(!SearchState::Init.is_error());
+
+        let task = SearchState::Task(Task::ready(()));
+        assert!(task.is_searching());
+
+        let data = SearchState::Data { count: 3 };
+        assert!(!data.is_searching());
+        assert!(data.is_data());
+
+        let error = SearchState::Error(QueryError::Validation("请选择字段".to_owned()));
+        assert!(!error.is_searching());
+        assert!(error.is_error());
     }
 }

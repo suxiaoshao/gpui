@@ -13,7 +13,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px, rems,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     h_flex,
     input::{Input, NumberInput},
@@ -35,7 +35,11 @@ const SORT_DIRECTION_COLUMN_WIDTH: f32 = 112.;
 const SORT_ACTION_COLUMN_WIDTH: f32 = 56.;
 
 impl AdvancedQueryState {
-    pub(crate) fn render_filters(&self, cx: &mut Context<QueryView>) -> impl IntoElement {
+    pub(crate) fn render_filters(
+        &self,
+        disabled: bool,
+        cx: &mut Context<QueryView>,
+    ) -> impl IntoElement {
         v_flex()
             .size_full()
             .gap_3()
@@ -58,6 +62,7 @@ impl AdvancedQueryState {
                         Button::new("query-add-root-condition")
                             .icon(IconName::Plus)
                             .label("添加条件")
+                            .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.advanced.add_condition(0, window, cx);
                                 cx.notify();
@@ -69,11 +74,15 @@ impl AdvancedQueryState {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
-                    .child(render_group(&self.root, 0, cx)),
+                    .child(render_group(&self.root, 0, disabled, cx)),
             )
     }
 
-    pub(crate) fn render_sorts(&self, cx: &mut Context<QueryView>) -> impl IntoElement {
+    pub(crate) fn render_sorts(
+        &self,
+        disabled: bool,
+        cx: &mut Context<QueryView>,
+    ) -> impl IntoElement {
         v_flex()
             .size_full()
             .gap_3()
@@ -96,6 +105,7 @@ impl AdvancedQueryState {
                         Button::new("query-add-sort")
                             .icon(IconName::Plus)
                             .label("添加排序")
+                            .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.advanced.add_sort(window, cx);
                                 cx.notify();
@@ -120,13 +130,18 @@ impl AdvancedQueryState {
                         )
                     })
                     .when(!self.sorts.is_empty(), |this| {
-                        this.child(render_sorts_table(&self.sorts, cx))
+                        this.child(render_sorts_table(&self.sorts, disabled, cx))
                     }),
             )
     }
 }
 
-fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) -> AnyElement {
+fn render_group(
+    group: &FilterGroup,
+    depth: usize,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
     let group_id = group.id;
     let relation = group.relation;
     let can_remove = group.id != 0;
@@ -152,11 +167,12 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .child(group_relation_toggle(group_id, relation, cx))
+                        .child(group_relation_toggle(group_id, relation, disabled, cx))
                         .child(
                             Switch::new(("group-negated", group_id))
                                 .checked(group.negated)
                                 .label("排除")
+                                .disabled(disabled)
                                 .on_click(cx.listener(move |this, checked, _, cx| {
                                     this.advanced.set_group_negated(group_id, *checked);
                                     cx.notify();
@@ -171,6 +187,7 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                                 .ghost()
                                 .icon(IconName::Plus)
                                 .label("添加条件")
+                                .disabled(disabled)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.advanced.add_condition(group_id, window, cx);
                                     cx.notify();
@@ -181,6 +198,7 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                                 .ghost()
                                 .icon(IconName::Plus)
                                 .label("添加子组")
+                                .disabled(disabled)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.advanced.add_group(group_id);
                                     cx.notify();
@@ -193,6 +211,7 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                                     FeiwenIconName::Trash,
                                     "删除条件组",
                                 )
+                                .disabled(disabled)
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         this.advanced.remove_node(group_id);
@@ -212,13 +231,14 @@ fn render_group(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) 
                     .child("添加条件或子组开始构建高级检索。"),
             )
         })
-        .child(render_conditions_table(group, depth, cx))
+        .child(render_conditions_table(group, depth, disabled, cx))
         .into_any_element()
 }
 
 fn render_conditions_table(
     group: &FilterGroup,
     depth: usize,
+    disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> impl IntoElement {
     Table::new()
@@ -239,8 +259,8 @@ fn render_conditions_table(
         )
         .child(
             TableBody::new().children(group.items.iter().flat_map(|item| match item {
-                FilterNode::Condition(condition) => render_condition_rows(condition, cx),
-                FilterNode::Group(group) => vec![render_group_row(group, depth, cx)],
+                FilterNode::Condition(condition) => render_condition_rows(condition, disabled, cx),
+                FilterNode::Group(group) => vec![render_group_row(group, depth, disabled, cx)],
             })),
         )
 }
@@ -283,13 +303,24 @@ fn condition_span_cell(child: impl IntoElement) -> TableCell {
         .child(child)
 }
 
-fn render_group_row(group: &FilterGroup, depth: usize, cx: &mut Context<QueryView>) -> TableRow {
-    TableRow::new().child(condition_span_cell(render_group(group, depth + 1, cx)))
+fn render_group_row(
+    group: &FilterGroup,
+    depth: usize,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> TableRow {
+    TableRow::new().child(condition_span_cell(render_group(
+        group,
+        depth + 1,
+        disabled,
+        cx,
+    )))
 }
 
 fn group_relation_toggle(
     group_id: u64,
     relation: GroupRelation,
+    disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> impl IntoElement {
     ToggleGroup::new(("group-relation", group_id))
@@ -305,6 +336,7 @@ fn group_relation_toggle(
                 .label("任一满足")
                 .checked(matches!(relation, GroupRelation::Any)),
         )
+        .disabled(disabled)
         .on_click(cx.listener(move |this, checkeds: &Vec<bool>, _, cx| {
             let next = match relation {
                 GroupRelation::All if checkeds.get(1).copied().unwrap_or(false) => {
@@ -320,29 +352,39 @@ fn group_relation_toggle(
         }))
 }
 
-fn render_condition_rows(condition: &ConditionRow, cx: &mut Context<QueryView>) -> Vec<TableRow> {
-    let mut rows = vec![render_condition_row(condition, cx)];
+fn render_condition_rows(
+    condition: &ConditionRow,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> Vec<TableRow> {
+    let mut rows = vec![render_condition_row(condition, disabled, cx)];
     if let Some(error) = condition.error.as_ref() {
         rows.push(render_condition_error_row(error.clone(), cx));
     }
     rows
 }
 
-fn render_condition_row(condition: &ConditionRow, cx: &mut Context<QueryView>) -> TableRow {
+fn render_condition_row(
+    condition: &ConditionRow,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> TableRow {
     let condition_id = condition.id;
     TableRow::new()
         .child(condition_table_cell(
             CONDITION_FIELD_COLUMN_WIDTH,
             Select::new(&condition.field_select)
                 .placeholder("请选择字段")
+                .disabled(disabled)
                 .w_full(),
         ))
         .child(condition_table_cell(
             CONDITION_RELATION_COLUMN_WIDTH,
-            render_relation_select(&condition.draft, cx),
+            render_relation_select(&condition.draft, disabled, cx),
         ))
         .child(condition_value_table_cell(render_value_editor(
             &condition.draft,
+            disabled,
             cx,
         )))
         .child(
@@ -351,6 +393,7 @@ fn render_condition_row(condition: &ConditionRow, cx: &mut Context<QueryView>) -
                 h_flex().w_full().justify_center().child(
                     Switch::new(("condition-negated", condition_id))
                         .checked(condition.negated)
+                        .disabled(disabled)
                         .on_click(cx.listener(move |this, checked, _, cx| {
                             this.advanced.set_condition_negated(condition_id, *checked);
                             cx.notify();
@@ -368,6 +411,7 @@ fn render_condition_row(condition: &ConditionRow, cx: &mut Context<QueryView>) -
                         FeiwenIconName::Trash,
                         "删除条件",
                     )
+                    .disabled(disabled)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.advanced.remove_node(condition_id);
                         cx.notify();
@@ -389,66 +433,108 @@ fn render_condition_error_row(error: String, cx: &mut Context<QueryView>) -> Tab
     ))
 }
 
-fn render_relation_select(draft: &ConditionDraft, cx: &mut Context<QueryView>) -> AnyElement {
+fn render_relation_select(
+    draft: &ConditionDraft,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
     match draft {
         ConditionDraft::NoField => placeholder_control("请选择字段", true, cx),
         ConditionDraft::NoCondition {
             relation_select, ..
-        } => render_relation_entity(relation_select),
+        } => render_relation_entity(relation_select, disabled),
         ConditionDraft::Text(condition) => Select::new(&condition.relation_select)
+            .disabled(disabled)
             .w_full()
             .into_any_element(),
         ConditionDraft::Number(condition) => Select::new(&condition.relation_select)
+            .disabled(disabled)
             .w_full()
             .into_any_element(),
         ConditionDraft::Bool(condition) => Select::new(&condition.relation_select)
+            .disabled(disabled)
             .w_full()
             .into_any_element(),
         ConditionDraft::Tags(condition) => Select::new(&condition.relation_select)
+            .disabled(disabled)
             .w_full()
             .into_any_element(),
         ConditionDraft::Author(condition) => Select::new(&condition.relation_select)
+            .disabled(disabled)
             .w_full()
             .into_any_element(),
     }
 }
 
-fn render_relation_entity(relation_select: &RelationSelect) -> AnyElement {
+fn render_relation_entity(relation_select: &RelationSelect, disabled: bool) -> AnyElement {
     match relation_select {
-        RelationSelect::Text(select) => Select::new(select).w_full().into_any_element(),
-        RelationSelect::Number(select) => Select::new(select).w_full().into_any_element(),
-        RelationSelect::Bool(select) => Select::new(select).w_full().into_any_element(),
-        RelationSelect::Tags(select) => Select::new(select).w_full().into_any_element(),
-        RelationSelect::Author(select) => Select::new(select).w_full().into_any_element(),
+        RelationSelect::Text(select) => Select::new(select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        RelationSelect::Number(select) => Select::new(select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        RelationSelect::Bool(select) => Select::new(select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        RelationSelect::Tags(select) => Select::new(select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        RelationSelect::Author(select) => Select::new(select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
     }
 }
 
-fn render_value_editor(draft: &ConditionDraft, cx: &mut Context<QueryView>) -> AnyElement {
+fn render_value_editor(
+    draft: &ConditionDraft,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
     match draft {
         ConditionDraft::NoField => placeholder_control("请选择字段", true, cx),
         ConditionDraft::NoCondition { .. } => placeholder_control("请选择条件", true, cx),
-        ConditionDraft::Text(condition) => Input::new(&condition.input).w_full().into_any_element(),
-        ConditionDraft::Number(condition) => render_number_value(&condition.value),
-        ConditionDraft::Bool(BoolCondition { value_select, .. }) => {
-            Select::new(value_select).w_full().into_any_element()
-        }
-        ConditionDraft::Tags(condition) => render_tags_value(condition, cx),
+        ConditionDraft::Text(condition) => Input::new(&condition.input)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        ConditionDraft::Number(condition) => render_number_value(&condition.value, disabled),
+        ConditionDraft::Bool(BoolCondition { value_select, .. }) => Select::new(value_select)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
+        ConditionDraft::Tags(condition) => render_tags_value(condition, disabled, cx),
         ConditionDraft::Author(condition) => match &condition.value {
-            AuthorValue::Text(value) => Input::new(value).w_full().into_any_element(),
+            AuthorValue::Text(value) => Input::new(value)
+                .disabled(disabled)
+                .w_full()
+                .into_any_element(),
             AuthorValue::Single(value) => value.clone().into_any_element(),
             AuthorValue::Multi(value) => value.clone().into_any_element(),
         },
     }
 }
 
-fn render_number_value(value: &NumberValue) -> AnyElement {
+fn render_number_value(value: &NumberValue, disabled: bool) -> AnyElement {
     match value {
-        NumberValue::Single(input) => NumberInput::new(input).w_full().into_any_element(),
+        NumberValue::Single(input) => NumberInput::new(input)
+            .disabled(disabled)
+            .w_full()
+            .into_any_element(),
         NumberValue::Range(range) => range.clone().into_any_element(),
     }
 }
 
-fn render_tags_value(condition: &TagsCondition, cx: &mut Context<QueryView>) -> AnyElement {
+fn render_tags_value(
+    condition: &TagsCondition,
+    _disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
     match &condition.value {
         Some(value) => value.clone().into_any_element(),
         None => placeholder_control("无需填写", false, cx),
@@ -475,11 +561,15 @@ fn placeholder_control(text: &'static str, muted: bool, cx: &mut Context<QueryVi
         .into_any_element()
 }
 
-fn render_sorts_table(sorts: &[SortRow], cx: &mut Context<QueryView>) -> impl IntoElement {
+fn render_sorts_table(
+    sorts: &[SortRow],
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> impl IntoElement {
     let rows = sorts
         .iter()
         .enumerate()
-        .map(|(ix, sort)| render_sort_item(ix, sort, cx).into_any_element())
+        .map(|(ix, sort)| render_sort_item(ix, sort, disabled, cx).into_any_element())
         .collect::<Vec<_>>();
 
     v_flex()
@@ -545,7 +635,12 @@ fn sort_field_cell(child: impl IntoElement) -> impl IntoElement {
         .child(div().w_full().min_w_0().child(child))
 }
 
-fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> impl IntoElement {
+fn render_sort_item(
+    ix: usize,
+    sort: &SortRow,
+    disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> impl IntoElement {
     let sort_id = sort.id;
     let field_label = sort
         .field
@@ -564,19 +659,23 @@ fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> i
                 .w_full()
                 .items_center()
                 .hover(|style| style.bg(cx.theme().accent.opacity(0.18)))
-                .drag_over::<DragSortRow>(move |this, drag, _window, cx| {
-                    if drag.row_id == sort_id {
-                        this
-                    } else {
-                        this.border_l_2()
-                            .border_color(cx.theme().drag_border)
-                            .bg(cx.theme().accent.opacity(0.25))
-                    }
+                .when(!disabled, |this| {
+                    this.drag_over::<DragSortRow>(move |this, drag, _window, cx| {
+                        if drag.row_id == sort_id {
+                            this
+                        } else {
+                            this.border_l_2()
+                                .border_color(cx.theme().drag_border)
+                                .bg(cx.theme().accent.opacity(0.25))
+                        }
+                    })
                 })
-                .on_drop(cx.listener(move |this, drag: &DragSortRow, _window, cx| {
-                    this.advanced.move_sort_before(drag.row_id, sort_id);
-                    cx.notify();
-                }))
+                .when(!disabled, |this| {
+                    this.on_drop(cx.listener(move |this, drag: &DragSortRow, _window, cx| {
+                        this.advanced.move_sort_before(drag.row_id, sort_id);
+                        cx.notify();
+                    }))
+                })
                 .child(sort_fixed_cell(
                     SORT_ORDER_COLUMN_WIDTH,
                     h_flex()
@@ -586,24 +685,26 @@ fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> i
                         .child(
                             div()
                                 .id(("sort-drag-handle", sort_id))
-                                .cursor_grab()
                                 .p_1()
                                 .rounded_sm()
-                                .hover(|style| style.bg(cx.theme().accent))
-                                .child(Icon::new(IconName::EllipsisVertical))
-                                .on_drag(
-                                    DragSortRow::new(
-                                        sort_id,
-                                        ix + 1,
-                                        field_label,
-                                        direction_label,
-                                        sort.error.is_some(),
-                                    ),
-                                    |drag, _position, _window, cx| {
-                                        cx.stop_propagation();
-                                        cx.new(|_| drag.clone())
-                                    },
-                                ),
+                                .when(!disabled, |this| {
+                                    this.cursor_grab()
+                                        .hover(|style| style.bg(cx.theme().accent))
+                                        .on_drag(
+                                            DragSortRow::new(
+                                                sort_id,
+                                                ix + 1,
+                                                field_label,
+                                                direction_label,
+                                                sort.error.is_some(),
+                                            ),
+                                            |drag, _position, _window, cx| {
+                                                cx.stop_propagation();
+                                                cx.new(|_| drag.clone())
+                                            },
+                                        )
+                                })
+                                .child(Icon::new(IconName::EllipsisVertical)),
                         )
                         .child(
                             Label::new(format!("{}", ix + 1))
@@ -614,11 +715,14 @@ fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> i
                 .child(sort_field_cell(
                     Select::new(&sort.field_select)
                         .placeholder("请选择排序字段")
+                        .disabled(disabled)
                         .w_full(),
                 ))
                 .child(sort_fixed_cell(
                     SORT_DIRECTION_COLUMN_WIDTH,
-                    Select::new(&sort.direction_select).w_full(),
+                    Select::new(&sort.direction_select)
+                        .disabled(disabled)
+                        .w_full(),
                 ))
                 .child(sort_fixed_cell(
                     SORT_ACTION_COLUMN_WIDTH,
@@ -628,6 +732,7 @@ fn render_sort_item(ix: usize, sort: &SortRow, cx: &mut Context<QueryView>) -> i
                             FeiwenIconName::Trash,
                             "删除排序规则",
                         )
+                        .disabled(disabled)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.advanced.remove_sort(sort_id);
                             cx.notify();

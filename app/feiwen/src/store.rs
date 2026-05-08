@@ -34,6 +34,12 @@ impl Deref for Db {
     }
 }
 
+impl Db {
+    pub(crate) fn pool(&self) -> DbConn {
+        self.0.clone()
+    }
+}
+
 pub(crate) fn init_store(cx: &mut App) {
     let conn = match establish_connection() {
         Ok(conn) => conn,

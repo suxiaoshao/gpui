@@ -26,6 +26,7 @@ where
     picker_bounds_captured: bool,
     open: bool,
     placeholder: SharedString,
+    disabled: bool,
 }
 
 impl<T> MultiSelectState<T>
@@ -79,6 +80,7 @@ where
             picker_bounds_captured: false,
             open: false,
             placeholder: placeholder.into(),
+            disabled: false,
         }
     }
 
@@ -94,6 +96,14 @@ where
         cx.notify();
     }
 
+    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        self.disabled = disabled;
+        if disabled {
+            self.open = false;
+        }
+        cx.notify();
+    }
+
     fn sync_list(&mut self, cx: &mut Context<Self>) {
         let sections = PickerSection::flat(self.options.clone());
         let selected_values = self.selected.clone();
@@ -104,6 +114,9 @@ where
     }
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.open = true;
         self.sync_list(cx);
         self.clear_search(window, cx);
@@ -116,6 +129,9 @@ where
     }
 
     fn toggle_value(&mut self, value: T::Value, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if let Some(ix) = self.selected.iter().position(|selected| *selected == value) {
             self.selected.remove(ix);
         } else {
@@ -128,6 +144,9 @@ where
     }
 
     fn remove_value(&mut self, value: T::Value, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.selected.retain(|selected| *selected != value);
         self.sync_list(cx);
         cx.notify();
@@ -167,6 +186,7 @@ where
         let bounds = self.picker_bounds;
         let selected = self.selected_options();
         let has_selection = !selected.is_empty();
+        let disabled = self.disabled;
         let on_mouse_down_out = cx.listener(|picker, event: &MouseDownEvent, window, cx| {
             if picker.picker_bounds.contains(&event.position) {
                 return;
@@ -193,6 +213,7 @@ where
                     .border_color(cx.theme().input)
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
+                    .when(disabled, |this| this.bg(cx.theme().muted.opacity(0.55)))
                     .on_prepaint(move |bounds, window, cx| {
                         let needs_frame = bounds_state.update(cx, |picker, _| {
                             let first_capture = !picker.picker_bounds_captured;
@@ -223,14 +244,19 @@ where
                                             ("multi-select-remove", ix),
                                             title,
                                         )
-                                        .on_remove({
-                                            let entity = entity.clone();
-                                            move |_, _, cx| {
-                                                entity.update(cx, |picker, cx| {
-                                                    picker.remove_value(value.clone(), cx);
-                                                });
-                                            }
-                                        }),
+                                        .when(
+                                            !disabled,
+                                            |this| {
+                                                this.on_remove({
+                                                    let entity = entity.clone();
+                                                    move |_, _, cx| {
+                                                        entity.update(cx, |picker, cx| {
+                                                            picker.remove_value(value.clone(), cx);
+                                                        });
+                                                    }
+                                                })
+                                            },
+                                        ),
                                     )
                                     .into_any_element()
                             }))
@@ -242,10 +268,13 @@ where
                                     .h(px(21.))
                                     .min_w(px(64.))
                                     .items_center()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|picker, _, window, cx| {
-                                        picker.open(window, cx);
-                                    }))
+                                    .when(!disabled, |this| {
+                                        this.cursor_pointer().on_click(cx.listener(
+                                            |picker, _, window, cx| {
+                                                picker.open(window, cx);
+                                            },
+                                        ))
+                                    })
                                     .when(!has_selection, |this| {
                                         this.child(
                                             Label::new(self.placeholder.clone())
@@ -256,7 +285,7 @@ where
                             ),
                     ),
             )
-            .when(self.open, |this| {
+            .when(self.open && !disabled, |this| {
                 this.child(render_picker_popover(
                     bounds,
                     list,

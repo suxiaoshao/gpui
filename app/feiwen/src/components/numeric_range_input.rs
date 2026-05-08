@@ -2,7 +2,7 @@ use gpui::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Disableable,
     input::{InputState, NumberInput},
     label::Label,
     v_flex,
@@ -20,6 +20,7 @@ pub(crate) struct NumericRangeInputState {
     max: Entity<InputState>,
     min_label: &'static str,
     max_label: &'static str,
+    disabled: bool,
 }
 
 impl NumericRangeInputState {
@@ -34,7 +35,13 @@ impl NumericRangeInputState {
             max: cx.new(|cx| InputState::new(window, cx).placeholder(max_label)),
             min_label,
             max_label,
+            disabled: false,
         }
+    }
+
+    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        self.disabled = disabled;
+        cx.notify();
     }
 
     pub(crate) fn values(&self, cx: &gpui::App) -> Result<(i32, i32), RangeInputError> {
@@ -61,14 +68,15 @@ impl Render for NumericRangeInputState {
         div()
             .flex()
             .gap_2()
-            .child(range_input(self.min_label, &self.min, cx))
-            .child(range_input(self.max_label, &self.max, cx))
+            .child(range_input(self.min_label, &self.min, self.disabled, cx))
+            .child(range_input(self.max_label, &self.max, self.disabled, cx))
     }
 }
 
 fn range_input(
     label: &'static str,
     input: &Entity<InputState>,
+    disabled: bool,
     cx: &Context<NumericRangeInputState>,
 ) -> impl IntoElement {
     v_flex()
@@ -79,5 +87,5 @@ fn range_input(
                 .text_xs()
                 .text_color(cx.theme().muted_foreground),
         )
-        .child(NumberInput::new(input))
+        .child(NumberInput::new(input).disabled(disabled))
 }

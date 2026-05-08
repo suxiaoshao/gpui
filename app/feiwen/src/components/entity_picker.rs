@@ -24,6 +24,7 @@ where
     picker_bounds: Bounds<Pixels>,
     open: bool,
     placeholder: SharedString,
+    disabled: bool,
 }
 
 impl<T> EntityPickerState<T>
@@ -76,6 +77,7 @@ where
             picker_bounds: Bounds::default(),
             open: false,
             placeholder: placeholder.into(),
+            disabled: false,
         }
     }
 
@@ -91,6 +93,14 @@ where
             self.selected = None;
         }
         self.sync_list(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        self.disabled = disabled;
+        if disabled {
+            self.open = false;
+        }
         cx.notify();
     }
 
@@ -116,6 +126,9 @@ where
     }
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.open = true;
         self.sync_list(cx);
         let sections = PickerSection::flat(self.options.clone());
@@ -133,6 +146,9 @@ where
     }
 
     fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.open {
             self.close(window, cx);
         } else {
@@ -141,6 +157,9 @@ where
     }
 
     fn select_value(&mut self, value: T::Value, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.selected = Some(value);
         self.sync_list(cx);
         let sections = PickerSection::flat(self.options.clone());
@@ -199,9 +218,15 @@ where
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
                     .items_center()
-                    .on_click(cx.listener(|picker, _, window, cx| {
-                        picker.toggle_open(window, cx);
-                    }))
+                    .when(self.disabled, |this| {
+                        this.bg(cx.theme().muted.opacity(0.55))
+                    })
+                    .when(!self.disabled, |this| {
+                        this.cursor_pointer()
+                            .on_click(cx.listener(|picker, _, window, cx| {
+                                picker.toggle_open(window, cx);
+                            }))
+                    })
                     .child(
                         canvas(
                             {
@@ -233,7 +258,7 @@ where
                             .text_color(cx.theme().muted_foreground),
                     ),
             )
-            .when(self.open, |this| {
+            .when(self.open && !self.disabled, |this| {
                 this.child(render_picker_popover(
                     bounds,
                     list,

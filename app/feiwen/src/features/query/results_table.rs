@@ -3,13 +3,17 @@ use gpui::{App, Context, IntoElement, ParentElement, Styled, Window, div};
 use gpui_component::{
     ActiveTheme, StyledExt,
     label::Label,
+    link::Link,
     table::{Column, ColumnFixed, ColumnSort, TableDelegate, TableState},
     tag::Tag as TagComponent,
 };
 
+const SITE_ORIGIN: &str = "https://xn--pxtr7m.com";
+
 #[derive(Clone, Copy)]
 enum ResultColumn {
     Title,
+    Description,
     Author,
     WordCount,
     ReadCount,
@@ -20,8 +24,9 @@ enum ResultColumn {
 }
 
 impl ResultColumn {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Title,
+        Self::Description,
         Self::Author,
         Self::WordCount,
         Self::ReadCount,
@@ -34,15 +39,23 @@ impl ResultColumn {
 
 pub(crate) struct ResultsTableDelegate {
     novels: Vec<Novel>,
+    loading: bool,
 }
 
 impl ResultsTableDelegate {
     pub(crate) fn new() -> Self {
-        Self { novels: Vec::new() }
+        Self {
+            novels: Vec::new(),
+            loading: false,
+        }
     }
 
     pub(crate) fn set_novels(&mut self, novels: Vec<Novel>) {
         self.novels = novels;
+    }
+
+    pub(crate) fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
     }
 
     fn column_spec(column: ResultColumn) -> Column {
@@ -51,6 +64,7 @@ impl ResultsTableDelegate {
                 .width(240.)
                 .fixed(ColumnFixed::Left)
                 .sortable(),
+            ResultColumn::Description => Column::new("description", "简介").width(320.),
             ResultColumn::Author => Column::new("author", "作者").width(140.).sortable(),
             ResultColumn::WordCount => Column::new("word_count", "字数")
                 .width(96.)
@@ -90,6 +104,7 @@ impl ResultsTableDelegate {
         let descending = matches!(sort, ColumnSort::Descending);
         match ResultColumn::ALL.get(col_ix).copied() {
             Some(ResultColumn::Title) => self.sort_by(descending, |novel| novel.title.name.clone()),
+            Some(ResultColumn::Description) => {}
             Some(ResultColumn::Author) => self.sort_by(descending, Self::author_label),
             Some(ResultColumn::WordCount) => {
                 self.sort_by(descending, |novel| Some(novel.count.word_count))
@@ -133,6 +148,10 @@ impl TableDelegate for ResultsTableDelegate {
         self.novels.len()
     }
 
+    fn loading(&self, _: &App) -> bool {
+        self.loading
+    }
+
     fn column(&self, col_ix: usize, _: &App) -> Column {
         ResultColumn::ALL
             .get(col_ix)
@@ -167,15 +186,35 @@ impl TableDelegate for ResultsTableDelegate {
             return div().into_any_element();
         };
         match ResultColumn::ALL[col_ix] {
-            ResultColumn::Title => Label::new(novel.title.name.clone())
+            ResultColumn::Title => Link::new(("novel-title-link", novel.title.id as u64))
+                .href(novel_url(novel.title.id))
+                .child(
+                    Label::new(novel.title.name.clone())
+                        .text_sm()
+                        .font_medium()
+                        .truncate(),
+                )
+                .into_any_element(),
+            ResultColumn::Description => Label::new(novel.desc.clone())
                 .text_sm()
-                .font_medium()
                 .truncate()
                 .into_any_element(),
-            ResultColumn::Author => Label::new(Self::author_label(novel))
-                .text_sm()
-                .truncate()
-                .into_any_element(),
+            ResultColumn::Author => {
+                let label = Label::new(Self::author_label(novel))
+                    .text_sm()
+                    .truncate()
+                    .into_any_element();
+                match author_url(&novel.author) {
+                    Some(url) => Link::new((
+                        "author-link",
+                        author_id(&novel.author).unwrap_or_default() as u64,
+                    ))
+                    .href(url)
+                    .child(label)
+                    .into_any_element(),
+                    None => label,
+                }
+            }
             ResultColumn::WordCount => number_cell(Some(novel.count.word_count)).into_any_element(),
             ResultColumn::ReadCount => number_cell(novel.count.read_count).into_any_element(),
             ResultColumn::ReplyCount => number_cell(novel.count.reply_count).into_any_element(),
@@ -234,4 +273,63 @@ fn number_cell(value: Option<i32>) -> impl IntoElement {
             .unwrap_or_else(|| "-".to_owned()),
     )
     .text_sm()
+}
+
+fn novel_url(id: i32) -> String {
+    format!("{SITE_ORIGIN}/threads/{id}/profile")
+}
+
+fn author_url(author: &Author) -> Option<String> {
+    Some(format!("{SITE_ORIGIN}/users/{}", author_id(author)?))
+}
+
+fn author_id(author: &Author) -> Option<i32> {
+    match author {
+        Author::Known(title) => Some(title.id),
+        Author::Anonymous(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loading_defaults_to_false_and_can_be_toggled() {
+        let mut delegate = ResultsTableDelegate::new();
+
+        assert!(!delegate.loading);
+
+        delegate.set_loading(true);
+        assert!(delegate.loading);
+
+        delegate.set_loading(false);
+        assert!(!delegate.loading);
+    }
+
+    #[test]
+    fn novel_url_uses_title_id() {
+        assert_eq!(
+            novel_url(165143),
+            "https://xn--pxtr7m.com/threads/165143/profile"
+        );
+    }
+
+    #[test]
+    fn known_author_url_uses_author_id() {
+        let author = Author::Known(crate::store::types::Title {
+            name: "作者".to_owned(),
+            id: 538220,
+        });
+
+        assert_eq!(
+            author_url(&author).as_deref(),
+            Some("https://xn--pxtr7m.com/users/538220")
+        );
+    }
+
+    #[test]
+    fn anonymous_author_has_no_url() {
+        assert_eq!(author_url(&Author::Anonymous("匿名".to_owned())), None);
+    }
 }

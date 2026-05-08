@@ -229,12 +229,15 @@ where
         self.sections
             .iter()
             .flat_map(|section| {
-                section.items.iter().filter_map(|item| {
-                    self.selected_values
-                        .iter()
-                        .any(|selected| selected == item.value())
-                        .then(|| item.title())
-                })
+                section
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        self.selected_values
+                            .iter()
+                            .any(|selected| selected == item.value())
+                    })
+                    .map(|item| item.title())
             })
             .collect()
     }
