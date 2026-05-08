@@ -13,6 +13,7 @@ use gpui::App;
 use tracing::{Level, event};
 
 pub(crate) mod model;
+pub(crate) mod query;
 pub(crate) mod schema;
 pub(crate) mod service;
 pub(crate) mod types;
@@ -30,6 +31,12 @@ impl Deref for Db {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Db {
+    pub(crate) fn pool(&self) -> DbConn {
+        self.0.clone()
     }
 }
 

@@ -13,6 +13,7 @@ app-assets.workspace = true
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
+pinyin = "0.11.0"
 
 # err
 thiserror = "2.0.18"

@@ -2,4 +2,4 @@ mod novel;
 mod tag;
 
 pub(crate) use novel::Novel;
-pub(crate) use tag::{Tag, TagWithId};
+pub(crate) use tag::Tag;

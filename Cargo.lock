@@ -3359,6 +3359,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "nom 8.0.0",
+ "pinyin",
  "regex",
  "reqwest 0.13.3",
  "scraper",
