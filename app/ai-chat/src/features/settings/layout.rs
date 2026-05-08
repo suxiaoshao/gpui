@@ -8,7 +8,6 @@ use gpui_component::{
     label::Label,
     resizable::{h_resizable, resizable_panel},
     scroll::ScrollableElement,
-    setting::{RenderOptions, SettingItem},
     v_flex,
 };
 use std::rc::Rc;
@@ -19,6 +18,7 @@ pub(super) const SETTINGS_SIDEBAR_MAX_WIDTH: Pixels = px(380.);
 
 type ResizeHandler = Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
 type SelectHandler = Rc<dyn Fn(SettingsPageKey, &mut Window, &mut App)>;
+type SettingsRowRender = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingsPageKey {
@@ -264,7 +264,7 @@ impl RenderOnce for SettingsPageFrame {
 
 pub(super) fn settings_group(
     title: impl Into<SharedString>,
-    items: impl IntoIterator<Item = SettingItem>,
+    items: impl IntoIterator<Item = SettingsRowItem>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -272,44 +272,28 @@ pub(super) fn settings_group(
         .outline()
         .title(v_flex().gap_1().child(Label::new(title.into()).text_sm()))
         .gap_4()
-        .children(
-            items
-                .into_iter()
-                .enumerate()
-                .map(|(item_ix, item)| render_setting_item(item_ix, item, window, cx)),
-        )
+        .children(items.into_iter().map(|item| item.render(window, cx)))
         .border_color(cx.theme().border)
         .into_any_element()
+}
+
+pub(super) struct SettingsRowItem {
+    render: SettingsRowRender,
+}
+
+impl SettingsRowItem {
+    fn render(self, window: &mut Window, cx: &mut App) -> AnyElement {
+        (self.render)(window, cx)
+    }
 }
 
 pub(super) fn settings_row_item(
     label: impl Into<SharedString>,
     control: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
-) -> SettingItem {
+) -> SettingsRowItem {
     let label = label.into();
-    SettingItem::render(move |_options, window, cx| {
-        settings_row(label.clone(), control(window, cx))
-    })
-}
-
-fn render_setting_item(
-    item_ix: usize,
-    item: SettingItem,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let options = RenderOptions {
-        page_ix: 0,
-        group_ix: 0,
-        item_ix,
-        size: Default::default(),
-        group_variant: Default::default(),
-        layout: Axis::Horizontal,
-    };
-
-    match item {
-        SettingItem::Element { render } => render(&options, window, cx),
-        SettingItem::Item { .. } => div().into_any_element(),
+    SettingsRowItem {
+        render: Rc::new(move |window, cx| settings_row(label.clone(), control(window, cx))),
     }
 }
 

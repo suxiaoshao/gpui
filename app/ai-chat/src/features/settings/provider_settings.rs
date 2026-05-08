@@ -14,7 +14,7 @@ use gpui_component::{
 };
 use tracing::{Level, event};
 
-use super::layout::{settings_group, settings_row_item};
+use super::layout::{SettingsRowItem, settings_group, settings_row_item};
 
 struct ProviderSettingsInputState {
     input: Entity<InputState>,
@@ -54,7 +54,7 @@ fn render_provider_field(
     provider_name: &'static str,
     field: ProviderSettingsFieldSpec,
     cx: &mut App,
-) -> gpui_component::setting::SettingItem {
+) -> SettingsRowItem {
     let label = cx.global::<I18n>().t(field.label_key);
     settings_row_item(label, move |window, cx| {
         provider_setting_input(provider_name, field, window, cx)
