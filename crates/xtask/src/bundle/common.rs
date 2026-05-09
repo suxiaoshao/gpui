@@ -1,34 +1,18 @@
-#[cfg(not(target_os = "windows"))]
-use image::ImageDecoder;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
-use tracing::warn;
 
 use crate::error::{Result, XtaskError};
 
-#[cfg(not(target_os = "windows"))]
 pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
-    let mut src_png = app_dir.join("build-assets/icon/ChatGPT.icon/Assets/logo.png");
-    if !src_png.exists() {
-        src_png = app_dir.join("build-assets/icon/app-icon.png");
-    }
-
+    let icon_dir = app_dir.join("build-assets/icon");
+    let src_png = icon_dir.join("app-icon.png");
     let iconset_dir = app_dir.join("build-assets/icon/app-icon.iconset");
-    let required_icon = iconset_dir.join("icon_512x512@2x.png");
-    let mut should_regenerate = false;
-
-    if required_icon.exists() {
-        if is_rgba16_png(&required_icon)? {
-            should_regenerate = true;
-        } else {
-            return Ok(());
-        }
-    }
 
     if !src_png.exists() {
-        warn!(icon = %src_png.display(), "未找到源图标，跳过 iconset 生成");
-        return Ok(());
+        return Err(XtaskError::msg(format!(
+            "missing bundle base icon {}",
+            src_png.display()
+        )));
     }
 
     fs::create_dir_all(&iconset_dir).map_err(|err| {
@@ -37,24 +21,6 @@ pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
             iconset_dir.display()
         ))
     })?;
-
-    if should_regenerate {
-        for entry in fs::read_dir(&iconset_dir).map_err(|err| {
-            XtaskError::msg(format!(
-                "failed to read iconset dir {}: {err}",
-                iconset_dir.display()
-            ))
-        })? {
-            let path = entry
-                .map_err(|err| XtaskError::msg(format!("failed to read iconset dir entry: {err}")))?
-                .path();
-            if path.extension().and_then(OsStr::to_str) == Some("png") {
-                fs::remove_file(&path).map_err(|err| {
-                    XtaskError::msg(format!("failed to remove {}: {err}", path.display()))
-                })?;
-            }
-        }
-    }
 
     let source_image = image::ImageReader::open(&src_png)
         .map_err(|err| {
@@ -89,16 +55,12 @@ pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<()> {
             .map_err(|err| XtaskError::msg(format!("failed to save iconset image: {err}")))?;
     }
 
+    let ico_image = source_image
+        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    image::DynamicImage::ImageRgba8(ico_image)
+        .save(icon_dir.join("app-icon.ico"))
+        .map_err(|err| XtaskError::msg(format!("failed to save app icon ico: {err}")))?;
+
     Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_rgba16_png(path: &Path) -> Result<bool> {
-    let file = fs::File::open(path)
-        .map_err(|err| XtaskError::msg(format!("failed to open {}: {err}", path.display())))?;
-    let reader = std::io::BufReader::new(file);
-    let decoder = image::codecs::png::PngDecoder::new(reader)
-        .map_err(|err| XtaskError::msg(format!("failed to parse png {}: {err}", path.display())))?;
-
-    Ok(decoder.original_color_type() == image::ExtendedColorType::Rgba16)
 }

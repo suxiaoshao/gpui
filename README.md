@@ -52,20 +52,17 @@ cargo watch -x 'run -p ai-chat'
 
 ## 应用打包
 
-当前已为 `ai-chat` 增加 `cargo-bundle` 打包配置，可直接输出系统应用包（如 macOS `.app`）。
+当前已通过 `xtask` 为 workspace app 提供统一打包入口，可直接输出系统应用包（如 macOS `.app`）。
 
 ```bash
-# 首次安装（只需一次）
-cargo install cargo-bundle
-
-# 方式 1：在工作区根目录执行
-cargo bundle -p ai-chat --release
-
-# 方式 2：使用 xtask（macOS/Linux）
-cargo run -p xtask -- bundle-ai-chat
+# macOS/Linux
+cargo run -p xtask -- bundle ai-chat
+cargo run -p xtask -- bundle feiwen
+cargo run -p xtask -- bundle http-client
+cargo run -p xtask -- bundle novel-download
 
 # Windows MSI（xtask 内部使用 tauri-bundler + WiX，支持 --install）
-cargo run -p xtask -- bundle-ai-chat-windows
+cargo run -p xtask -- bundle ai-chat --install
 ```
 
 默认产物目录：
@@ -73,11 +70,11 @@ cargo run -p xtask -- bundle-ai-chat-windows
 ```bash
 target/release/bundle/
 
-# Windows (xtask bundle-ai-chat-windows)
+# Windows
 target/<target-triple>/release/bundle/msi/
 ```
 
-macOS 下 `bundle-ai-chat` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName=Icon`）。如果系统未安装可用的 `actool`/`xcrun`，会自动降级为普通图标，不影响打包成功。
+打包前 `xtask` 会从每个 app 的 `build-assets/icon/app-icon.png` 派生 iconset 和 `.ico`。macOS 下如果 app 提供唯一的 `.icon` asset catalog，`xtask` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName`）。如果系统未安装可用的 `actool`/`xcrun`，或 `.icon` 注入失败，会自动降级为普通图标，不影响打包成功。
 
 ## 数据与日志位置
 
@@ -118,9 +115,10 @@ diesel migration generate migration_name
 ## Runtime vs Build Assets
 
 - `app/ai-chat/assets/`: runtime assets only (embedded by `rust-embed`).
-- `app/ai-chat/build-assets/`: build/package-time assets only (not embedded for runtime).
-- Icon assets live in `app/ai-chat/build-assets/icon/`.
-- Windows icon default: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
-- Package icon paths are configured in `app/ai-chat/Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
+- `app/{app}/build-assets/`: build/package-time assets only (not embedded for runtime).
+- Icon base assets live in `app/{app}/build-assets/icon/app-icon.png`.
+- `xtask bundle <app>` derives `app-icon.iconset` and `app-icon.ico` from the base PNG before bundling.
+- Windows icon default for `ai-chat`: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
+- Package icon paths are configured in each app `Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
 - Windows MSI bundling in `xtask` uses `tauri-bundler` and reuses the `.ico` path from `[package.metadata.bundle].icon`.
-- macOS bundle icon paths are managed by `crates/xtask/src/main.rs` and use `build-assets/icon/...`.
+- macOS bundle icon paths are managed by `crates/xtask/src/bundle/` and use `build-assets/icon/...`.

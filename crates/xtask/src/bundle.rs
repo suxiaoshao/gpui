@@ -1,7 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-#[cfg(not(target_os = "windows"))]
 pub mod common;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -9,9 +8,9 @@ pub mod settings;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-use crate::cli::BundleAiChatArgs;
+use crate::cli::BundleArgs;
 use crate::cmd::run_cmd;
-use crate::context::{ai_chat_dir, workspace_root};
+use crate::context::workspace_root;
 use crate::error::Result;
 use crate::manifest::get_main_binary_name;
 use tauri_bundler::{BundleBinary, PackageType, SettingsBuilder};
@@ -19,9 +18,9 @@ use tracing::info;
 #[cfg(not(target_os = "windows"))]
 use tracing::warn;
 
-pub fn run(args: BundleAiChatArgs) -> Result<()> {
-    let app_dir = ai_chat_dir()?;
+pub fn run(args: BundleArgs) -> Result<()> {
     let workspace_dir = workspace_root()?;
+    let app_dir = workspace_dir.join("app").join(args.app.app_dir_name());
     let bundle_dir = workspace_dir.join("target/release/bundle");
 
     validate_platform_args(&args);
@@ -29,13 +28,14 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
 
     run_cmd(
         "cargo",
-        &["build", "-p", "ai-chat", "--release"],
+        &["build", "-p", args.app.package_name(), "--release"],
         Some(&workspace_dir),
     )?;
 
     let manifest_path = app_dir.join("Cargo.toml");
     let main_bin_name = get_main_binary_name(&manifest_path)?;
     let (package_settings, bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
+    let product_name = package_settings.product_name.clone();
 
     let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
@@ -67,13 +67,20 @@ pub fn run(args: BundleAiChatArgs) -> Result<()> {
         crate::error::XtaskError::msg(format!("failed to bundle app with tauri-bundler: {err}"))
     })?;
 
-    finalize_platform_bundle(&args, &app_dir, &bundle_dir, &out_dir, bundles)?;
+    finalize_platform_bundle(
+        &args,
+        &app_dir,
+        &bundle_dir,
+        &out_dir,
+        &product_name,
+        bundles,
+    )?;
 
-    info!(bundle_dir = %bundle_dir.display(), "打包完成");
+    info!(app = args.app.package_name(), bundle_dir = %bundle_dir.display(), "打包完成");
     Ok(())
 }
 
-fn validate_platform_args(_args: &BundleAiChatArgs) {
+fn validate_platform_args(_args: &BundleArgs) {
     #[cfg(not(target_os = "windows"))]
     if _args.install {
         warn!("--install is only used on Windows and will be ignored");
@@ -81,22 +88,22 @@ fn validate_platform_args(_args: &BundleAiChatArgs) {
 }
 
 fn prepare_platform_bundle(_app_dir: &Path) -> Result<()> {
-    #[cfg(not(target_os = "windows"))]
     common::prepare_bundle_icons(_app_dir)?;
 
     Ok(())
 }
 
 fn finalize_platform_bundle(
-    _args: &BundleAiChatArgs,
+    _args: &BundleArgs,
     _app_dir: &Path,
     _bundle_dir: &Path,
     _out_dir: &Path,
+    _product_name: &str,
     _bundles: Vec<tauri_bundler::Bundle>,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(app_path) = macos::first_app_bundle(_bundle_dir)? {
+        if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
             macos::inject_liquid_glass_icon(_app_dir, &app_path)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
@@ -132,7 +139,14 @@ fn finalize_platform_bundle(
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (_args, _app_dir, _bundle_dir, _out_dir, _bundles);
+        let _ = (
+            _args,
+            _app_dir,
+            _bundle_dir,
+            _out_dir,
+            _product_name,
+            _bundles,
+        );
     }
 
     Ok(())

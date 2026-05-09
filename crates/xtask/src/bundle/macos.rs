@@ -15,6 +15,20 @@ pub fn prepare_bundle_settings(bundle_settings: &mut BundleSettings) -> Result<(
     Ok(())
 }
 
+pub fn find_app_bundle(bundle_dir: &Path, product_name: &str) -> Result<Option<PathBuf>> {
+    let app_name = format!("{product_name}.app");
+    for bundle_subdir in ["macos", "osx"] {
+        let app_bundle_dir = bundle_dir.join(bundle_subdir);
+        let app_path = app_bundle_dir.join(&app_name);
+        if app_path.is_dir() {
+            return Ok(Some(app_path));
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(test)]
 pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
     for bundle_subdir in ["macos", "osx"] {
         let app_bundle_dir = bundle_dir.join(bundle_subdir);
@@ -26,6 +40,7 @@ pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+#[cfg(test)]
 fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
     if !app_bundle_dir.exists() {
         return Ok(None);
@@ -54,16 +69,15 @@ fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
-    let icon_dir = app_dir.join("build-assets/icon/ChatGPT.icon");
+    let Some(icon_dir) = find_liquid_glass_icon_dir(app_dir)? else {
+        warn!(app_dir = %app_dir.display(), "未找到唯一 .icon 目录，跳过 Liquid Glass 图标注入");
+        return Ok(());
+    };
     let icon_name = icon_dir
         .file_stem()
         .and_then(|x| x.to_str())
         .filter(|x| !x.is_empty())
         .unwrap_or("Icon");
-    if !icon_dir.exists() {
-        warn!(icon_dir = %icon_dir.display(), "未找到 .icon 目录，跳过 Liquid Glass 图标注入");
-        return Ok(());
-    }
 
     if !command_exists("xcrun") {
         warn!("未找到 xcrun，跳过 Liquid Glass 图标注入（保留普通图标）");
@@ -71,7 +85,7 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     }
 
     let tmp_dir = env::temp_dir().join(format!(
-        "ai-chat-assets-{}-{}",
+        "xtask-bundle-assets-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -156,6 +170,32 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn find_liquid_glass_icon_dir(app_dir: &Path) -> Result<Option<PathBuf>> {
+    let icon_root = app_dir.join("build-assets/icon");
+    if !icon_root.exists() {
+        return Ok(None);
+    }
+
+    let mut icon_dirs = Vec::new();
+    for entry in fs::read_dir(&icon_root)
+        .map_err(|err| XtaskError::msg(format!("failed to read {}: {err}", icon_root.display())))?
+    {
+        let path = entry
+            .map_err(|err| XtaskError::msg(format!("failed to read icon dir entry: {err}")))?
+            .path();
+        if path.is_dir() && path.extension().and_then(OsStr::to_str) == Some("icon") {
+            icon_dirs.push(path);
+        }
+    }
+
+    icon_dirs.sort();
+    Ok(if icon_dirs.len() == 1 {
+        icon_dirs.pop()
+    } else {
+        None
+    })
+}
+
 fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
     let mut value = plist::Value::from_file(plist_path)?;
     let dict = value.as_dictionary_mut().ok_or_else(|| {
@@ -194,7 +234,7 @@ fn bundle_info_plist_overrides() -> plist::Dictionary {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle_info_plist_overrides, first_app_bundle};
+    use super::{bundle_info_plist_overrides, find_app_bundle, first_app_bundle};
     use crate::error::Result;
     use std::fs;
     use std::path::PathBuf;
@@ -249,6 +289,19 @@ mod tests {
         let app_path = first_app_bundle(&temp_dir.path)?;
 
         assert_eq!(app_path, Some(osx_app));
+        Ok(())
+    }
+
+    #[test]
+    fn find_app_bundle_uses_product_name() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        fs::create_dir_all(temp_dir.path.join("macos/AI Chat.app"))?;
+        let feiwen_app = temp_dir.path.join("macos/Feiwen.app");
+        fs::create_dir_all(&feiwen_app)?;
+
+        let app_path = find_app_bundle(&temp_dir.path, "Feiwen")?;
+
+        assert_eq!(app_path, Some(feiwen_app));
         Ok(())
     }
 

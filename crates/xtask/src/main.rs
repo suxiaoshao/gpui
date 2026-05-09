@@ -21,7 +21,7 @@ fn main() {
 
     let cli = cli::Cli::parse();
     let result = match cli.command {
-        cli::Commands::BundleAiChat(args) => bundle::run(args),
+        cli::Commands::Bundle(args) => bundle::run(args),
     };
 
     if let Err(err) = result {
