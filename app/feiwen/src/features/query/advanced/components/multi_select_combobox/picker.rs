@@ -167,6 +167,7 @@ where
         self.apply_query();
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_index_for<V>(
         sections: &[PickerSection<T>],
         selected_value: Option<&V>,
@@ -188,6 +189,7 @@ where
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_index_for_current_sections<V>(
         &self,
         selected_value: Option<&V>,

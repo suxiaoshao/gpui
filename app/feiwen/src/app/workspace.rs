@@ -2,12 +2,14 @@ use gpui::*;
 use gpui_component::v_flex;
 use tracing::{Level, event};
 
-use super::{
-    fetch::{FetchTaskState, FetchView},
-    query::QueryView,
-    titlebar::{FeiwenTitleBar, route_title, window_title},
+use super::titlebar::{FeiwenTitleBar, route_title, window_title};
+use crate::{
+    features::{
+        fetch::{FetchTaskState, FetchView},
+        query::QueryView,
+    },
+    foundation::I18n,
 };
-use crate::foundation::I18n;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouterType {

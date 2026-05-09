@@ -545,123 +545,47 @@ impl FetchView {
             )
         });
 
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_text_input(
             &url_input,
+            start_page.clone(),
+            FetchTaskState::set_url,
             window,
-            |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let text = state.read(cx).value().to_string();
-                    view.task_state.update(cx, |task, _| task.set_url(text));
-                }
-                InputEvent::PressEnter { .. } => {
-                    view.start_page.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
+            cx,
         ));
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_page_input(
             &start_page,
+            end_page.clone(),
+            FetchTaskState::set_start_page,
             window,
-            |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let text = state.read(cx).value();
-                    let page = text.parse().unwrap_or(1);
-                    view.task_state
-                        .update(cx, |task, _| task.set_start_page(page));
-                }
-                InputEvent::PressEnter { .. } => {
-                    view.end_page.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
+            cx,
         ));
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_page_step(
             &start_page,
+            |state| state.start_page,
+            FetchTaskState::set_start_page,
             window,
-            |view, state, event, window, cx| match event {
-                NumberInputEvent::Step(StepAction::Decrement) => {
-                    let start_page = match view.task_state.read(cx).start_page {
-                        0 | 1 => 1,
-                        n => n - 1,
-                    };
-                    view.task_state
-                        .update(cx, |task, _| task.set_start_page(start_page));
-                    state.update(cx, |input, cx| {
-                        input.set_value(start_page.to_string(), window, cx);
-                    });
-                }
-                NumberInputEvent::Step(StepAction::Increment) => {
-                    let start_page = view.task_state.read(cx).start_page + 1;
-                    view.task_state
-                        .update(cx, |task, _| task.set_start_page(start_page));
-                    state.update(cx, |input, cx| {
-                        input.set_value(start_page.to_string(), window, cx);
-                    });
-                }
-            },
+            cx,
         ));
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_page_input(
             &end_page,
+            cookie_input.clone(),
+            FetchTaskState::set_end_page,
             window,
-            |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let text = state.read(cx).value();
-                    let page = text.parse().unwrap_or(1);
-                    view.task_state
-                        .update(cx, |task, _| task.set_end_page(page));
-                }
-                InputEvent::PressEnter { .. } => {
-                    view.cookie_input.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
+            cx,
         ));
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_page_step(
             &end_page,
+            |state| state.end_page,
+            FetchTaskState::set_end_page,
             window,
-            |view, state, event, window, cx| match event {
-                NumberInputEvent::Step(StepAction::Decrement) => {
-                    let end_page = match view.task_state.read(cx).end_page {
-                        0 | 1 => 1,
-                        n => n - 1,
-                    };
-                    view.task_state
-                        .update(cx, |task, _| task.set_end_page(end_page));
-                    state.update(cx, |input, cx| {
-                        input.set_value(end_page.to_string(), window, cx);
-                    });
-                }
-                NumberInputEvent::Step(StepAction::Increment) => {
-                    let end_page = view.task_state.read(cx).end_page + 1;
-                    view.task_state
-                        .update(cx, |task, _| task.set_end_page(end_page));
-                    state.update(cx, |input, cx| {
-                        input.set_value(end_page.to_string(), window, cx);
-                    });
-                }
-            },
+            cx,
         ));
-        _subscriptions.push(cx.subscribe_in(
+        _subscriptions.push(Self::subscribe_text_input(
             &cookie_input,
+            url_input.clone(),
+            FetchTaskState::set_cookie,
             window,
-            |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let text = state.read(cx).value().to_string();
-                    view.task_state.update(cx, |task, _| task.set_cookie(text));
-                }
-                InputEvent::PressEnter { .. } => {
-                    view.url_input.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
+            cx,
         ));
         _subscriptions.push(cx.observe(&task_state, |view, _, cx| {
             view.log_table.update(cx, |table, cx| {
@@ -680,6 +604,73 @@ impl FetchView {
             cookie_input,
             _subscriptions,
         }
+    }
+
+    fn subscribe_text_input(
+        input: &Entity<InputState>,
+        next_focus: Entity<InputState>,
+        set_value: fn(&mut FetchTaskState, String),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            input,
+            window,
+            move |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value().to_string();
+                    view.task_state.update(cx, |task, _| set_value(task, text));
+                }
+                InputEvent::PressEnter { .. } => {
+                    next_focus.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        )
+    }
+
+    fn subscribe_page_input(
+        input: &Entity<InputState>,
+        next_focus: Entity<InputState>,
+        set_page: fn(&mut FetchTaskState, u32),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            input,
+            window,
+            move |view, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    let page = parse_page_input(&state.read(cx).value());
+                    view.task_state.update(cx, |task, _| set_page(task, page));
+                }
+                InputEvent::PressEnter { .. } => {
+                    next_focus.update(cx, |input, cx| {
+                        input.focus(window, cx);
+                    });
+                }
+                _ => {}
+            },
+        )
+    }
+
+    fn subscribe_page_step(
+        input: &Entity<InputState>,
+        current_page: fn(&FetchTaskState) -> u32,
+        set_page: fn(&mut FetchTaskState, u32),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(input, window, move |view, state, event, window, cx| {
+            let NumberInputEvent::Step(action) = event;
+            let page = step_page(current_page(view.task_state.read(cx)), *action);
+            view.task_state.update(cx, |task, _| set_page(task, page));
+            state.update(cx, |input, cx| {
+                input.set_value(page.to_string(), window, cx);
+            });
+        })
     }
 
     fn start_fetch(&mut self, cx: &mut Context<Self>) {
@@ -1540,6 +1531,20 @@ fn error_kind_label(kind: FetchErrorKind, i18n: &I18n) -> String {
         FetchErrorKind::Network => i18n.t("fetch-error-kind-network"),
         FetchErrorKind::Parse => i18n.t("fetch-error-kind-parse"),
         FetchErrorKind::Other => i18n.t("fetch-error-kind-other"),
+    }
+}
+
+fn parse_page_input(value: &str) -> u32 {
+    value.parse().unwrap_or(1)
+}
+
+fn step_page(current: u32, action: StepAction) -> u32 {
+    match action {
+        StepAction::Decrement => match current {
+            0 | 1 => 1,
+            n => n - 1,
+        },
+        StepAction::Increment => current + 1,
     }
 }
 

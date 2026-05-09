@@ -514,7 +514,13 @@ fn render_value_editor(
                 .disabled(disabled)
                 .w_full()
                 .into_any_element(),
-            AuthorValue::Single(value) => value.clone().into_any_element(),
+            AuthorValue::Single(value) => Select::new(value)
+                .placeholder("选择作者")
+                .search_placeholder("搜索")
+                .menu_width(px(320.))
+                .disabled(disabled)
+                .w_full()
+                .into_any_element(),
             AuthorValue::Multi(value) => value.clone().into_any_element(),
         },
     }

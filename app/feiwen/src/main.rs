@@ -1,6 +1,6 @@
 use crate::errors::FeiwenError;
+use app::{WorkspaceView, titlebar};
 use errors::FeiwenResult;
-use features::{WorkspaceView, titlebar};
 use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
@@ -8,7 +8,7 @@ use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-mod components;
+mod app;
 mod errors;
 mod features;
 mod fetch;
@@ -128,7 +128,7 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 #[cfg(test)]
 mod tests {
     use super::main_titlebar_options;
-    use crate::features::titlebar;
+    use crate::app::titlebar;
 
     #[test]
     fn main_window_uses_custom_titlebar_options() {

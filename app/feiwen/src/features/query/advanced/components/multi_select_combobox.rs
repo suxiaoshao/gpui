@@ -9,8 +9,11 @@ use gpui_component::{
 };
 use std::rc::Rc;
 
-use super::{
-    ComboboxChip,
+mod chip;
+mod picker;
+
+use self::{
+    chip::ComboboxChip,
     picker::{PickerListDelegate, PickerPopoverOptions, PickerSection, render_picker_popover},
 };
 
