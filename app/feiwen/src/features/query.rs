@@ -280,19 +280,26 @@ impl QueryView {
                     Ok(SearchResult { options, novels })
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| this.finish_search(result, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_search(result, window, cx)
+            });
         });
         self.search = SearchState::Task(task);
         cx.notify();
     }
 
-    fn finish_search(&mut self, result: FeiwenResult<SearchResult>, cx: &mut Context<Self>) {
+    fn finish_search(
+        &mut self,
+        result: FeiwenResult<SearchResult>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.advanced.set_disabled(false, cx);
         match result {
             Ok(result) => {
                 let count = result.novels.len();
                 event!(Level::INFO, result_count = count, "feiwen query succeeded");
-                self.advanced.set_options(result.options, cx);
+                self.advanced.set_options(result.options, window, cx);
                 self.set_results_table(result.novels, false, cx);
                 self.search = SearchState::Data { count };
             }
