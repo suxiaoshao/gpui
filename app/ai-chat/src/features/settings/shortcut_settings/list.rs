@@ -336,7 +336,9 @@ impl ShortcutSettingsPage {
     fn bindings_for_status(&self) -> Vec<GlobalShortcutBinding> {
         self.bindings.as_ref().cloned().unwrap_or_default()
     }
+}
 
+impl ShortcutSettingsPage {
     fn open_add_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let page = cx.entity().downgrade();
         open_add_shortcut_dialog(
@@ -523,7 +525,9 @@ impl ShortcutSettingsPage {
             }
         }
     }
+}
 
+impl ShortcutSettingsPage {
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (reload_label, add_label) = {
             let i18n = cx.global::<I18n>();

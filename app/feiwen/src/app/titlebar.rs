@@ -12,12 +12,11 @@ use gpui_component::{
 };
 use tracing::{Level, event};
 
-use super::{
-    fetch::FetchView,
-    query::QueryView,
-    workspace::{RouterType, Workspace},
+use super::workspace::{RouterType, Workspace};
+use crate::{
+    features::{fetch::FetchView, query::QueryView},
+    foundation::{I18n, IconName as FeiwenIconName},
 };
-use crate::foundation::{I18n, IconName as FeiwenIconName};
 
 pub(crate) const FEIWEN_TITLE_BAR_HEIGHT: Pixels = px(44.);
 pub(crate) const FEIWEN_TRAFFIC_LIGHT_INSET: Pixels = px(14.);
@@ -472,7 +471,7 @@ impl RenderOnce for WindowControls {
 #[cfg(test)]
 mod tests {
     use super::{route_from_tab_index, route_tab_index, route_title, window_title};
-    use crate::{features::workspace::RouterType, foundation::i18n::I18n};
+    use crate::{app::RouterType, foundation::i18n::I18n};
 
     #[test]
     fn route_title_matches_workspace_routes() {

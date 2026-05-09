@@ -386,7 +386,9 @@ impl ShortcutFormState {
             },
         ));
     }
+}
 
+impl ShortcutFormState {
     fn refresh_model_choices_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let previous_model_value = self.model_select.read(cx).selected_value().cloned();
         let ModelStoreSnapshot { models, status, .. } = Self::model_store_snapshot(cx);
@@ -528,7 +530,9 @@ impl ShortcutFormState {
         self.save_error = None;
         cx.notify();
     }
+}
 
+impl ShortcutFormState {
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if let Ok(mut conn) = cx.global::<Db>().get()
             && let Ok(bindings) = GlobalShortcutBinding::all(&mut conn)
@@ -647,7 +651,9 @@ impl ShortcutFormState {
             || self.input_source != binding.input_source
             || self.request_template != binding.request_template
     }
+}
 
+impl ShortcutFormState {
     fn available_models(cx: &App) -> Vec<ProviderModel> {
         Self::model_store_snapshot(cx).models
     }
@@ -816,7 +822,9 @@ impl ShortcutFormState {
             }
         }
     }
+}
 
+impl ShortcutFormState {
     fn render_hotkey_error(&self, cx: &mut Context<Self>) -> AnyElement {
         let message = self
             .hotkey_error

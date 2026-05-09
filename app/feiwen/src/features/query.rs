@@ -1,8 +1,5 @@
-use super::{
-    Workspace,
-    fetch::FetchTaskState,
-    workspace::{RouterType, WorkspaceEvent},
-};
+use super::fetch::FetchTaskState;
+use crate::app::{RouterType, Workspace, WorkspaceEvent};
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     foundation::I18n,

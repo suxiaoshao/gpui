@@ -8,12 +8,8 @@ use crate::{
     },
 };
 use diesel::SqliteConnection;
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window};
-use gpui_component::{
-    label::Label,
-    select::{SearchableVec, SelectItem},
-    v_flex,
-};
+use gpui::{AnyElement, IntoElement, SharedString};
+use gpui_component::select::{SearchableVec, SelectItem};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,10 +243,6 @@ impl SelectItem for TagOption {
         self.name.clone().into()
     }
 
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        option_content(self.title(), format!("标签 ID {}", self.id).into())
-    }
-
     fn value(&self) -> &Self::Value {
         &self.name
     }
@@ -267,25 +259,12 @@ impl SelectItem for AuthorOption {
         self.name.clone().into()
     }
 
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        option_content(self.title(), self.description().into())
-    }
-
     fn value(&self) -> &Self::Value {
         &self.author
     }
 
     fn matches(&self, query: &str) -> bool {
-        option_matches(&self.name, &self.description(), query)
-    }
-}
-
-impl AuthorOption {
-    fn description(&self) -> String {
-        match &self.author {
-            AuthorRef::Id(id) => format!("作者 ID {id}"),
-            AuthorRef::Name(_) => "匿名作者".to_owned(),
-        }
+        field_matches_query(&self.name, query)
     }
 }
 
@@ -302,14 +281,6 @@ fn author_ref_order_key(author: &AuthorRef) -> (u8, i32, &str) {
         AuthorRef::Id(id) => (0, *id, ""),
         AuthorRef::Name(name) => (1, 0, name.as_str()),
     }
-}
-
-fn option_content(title: SharedString, description: SharedString) -> impl IntoElement {
-    v_flex()
-        .min_w_0()
-        .gap_0p5()
-        .child(Label::new(title).text_sm())
-        .child(Label::new(description).text_xs())
 }
 
 fn option_matches(title: &str, description: &str, query: &str) -> bool {

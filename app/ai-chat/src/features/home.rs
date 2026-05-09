@@ -25,6 +25,7 @@ pub(crate) use tabs::{
 };
 
 mod search;
+mod search_list;
 mod sidebar;
 mod tabs;
 

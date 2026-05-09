@@ -1,5 +1,5 @@
+use super::search_list;
 use crate::{
-    components::search_list,
     foundation::assets::IconName,
     foundation::i18n::I18n,
     state::{ChatData, ConversationSearchResult, WorkspaceStore},
