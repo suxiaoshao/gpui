@@ -13,3 +13,8 @@ target
 WixTools
 *.env
 dhat-heap.json
+
+# Bundle icon outputs are derived from app/*/build-assets/icon/app-icon.png.
+app/*/build-assets/icon/app-icon.ico
+app/*/build-assets/icon/app-icon.iconset/
+app/*/build-assets/icon/*.icon/Assets/app-icon-liquid-glass.png

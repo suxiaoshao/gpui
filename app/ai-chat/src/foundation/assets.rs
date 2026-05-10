@@ -4,7 +4,7 @@ use gpui_component::IconNamed;
 use rust_embed::RustEmbed;
 use std::{borrow::Cow, collections::BTreeSet};
 
-pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.ico";
+pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 
 macro_rules! define_icon_assets {
     ($( $variant:ident => $slug:literal ),+ $(,)?) => {
@@ -96,7 +96,7 @@ struct AssetsInner;
 
 #[derive(RustEmbed)]
 #[folder = "."]
-#[include = "build-assets/icon/app-icon.ico"]
+#[include = "build-assets/icon/app-icon.png"]
 struct BuildAssetsInner;
 
 impl AssetSource for AssetsInner {

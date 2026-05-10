@@ -24,7 +24,7 @@ pub fn run(args: BundleArgs) -> Result<()> {
     let bundle_dir = workspace_dir.join("target/release/bundle");
 
     validate_platform_args(&args);
-    prepare_platform_bundle(&app_dir)?;
+    let bundle_icon_assets = prepare_platform_bundle(&app_dir)?;
 
     run_cmd(
         "cargo",
@@ -34,7 +34,8 @@ pub fn run(args: BundleArgs) -> Result<()> {
 
     let manifest_path = app_dir.join("Cargo.toml");
     let main_bin_name = get_main_binary_name(&manifest_path)?;
-    let (package_settings, bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
+    let (package_settings, mut bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
+    bundle_icon_assets.apply_to_bundle_settings(&mut bundle_settings);
     let product_name = package_settings.product_name.clone();
 
     let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name)?;
@@ -74,6 +75,7 @@ pub fn run(args: BundleArgs) -> Result<()> {
         &out_dir,
         &product_name,
         bundles,
+        &bundle_icon_assets,
     )?;
 
     info!(app = args.app.package_name(), bundle_dir = %bundle_dir.display(), "打包完成");
@@ -87,10 +89,8 @@ fn validate_platform_args(_args: &BundleArgs) {
     }
 }
 
-fn prepare_platform_bundle(_app_dir: &Path) -> Result<()> {
-    common::prepare_bundle_icons(_app_dir)?;
-
-    Ok(())
+fn prepare_platform_bundle(_app_dir: &Path) -> Result<common::BundleIconAssets> {
+    common::prepare_bundle_icons(_app_dir)
 }
 
 fn finalize_platform_bundle(
@@ -100,11 +100,12 @@ fn finalize_platform_bundle(
     _out_dir: &Path,
     _product_name: &str,
     _bundles: Vec<tauri_bundler::Bundle>,
+    _bundle_icon_assets: &common::BundleIconAssets,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
-            macos::inject_liquid_glass_icon(_app_dir, &app_path)?;
+            macos::inject_liquid_glass_icon(_app_dir, &app_path, _bundle_icon_assets)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
         }
@@ -146,6 +147,7 @@ fn finalize_platform_bundle(
             _out_dir,
             _product_name,
             _bundles,
+            _bundle_icon_assets,
         );
     }
 

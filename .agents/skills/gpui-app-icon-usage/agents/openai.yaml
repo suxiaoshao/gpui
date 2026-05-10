@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI App Icon Usage"
+  short_description: "Use icons and app assets across GPUI apps"
+  default_prompt: "Use $gpui-app-icon-usage to choose the right icon or app asset pattern for a gpui workspace app."

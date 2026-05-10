@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI App Development"
+  short_description: "Build GPUI apps in this workspace"
+  default_prompt: "Use $gpui-app-development to implement a GPUI app change following this workspace's conventions."
