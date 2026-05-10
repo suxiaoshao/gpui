@@ -1,8 +1,10 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::error::{Result, XtaskError};
+use image::codecs::ico::{IcoEncoder, IcoFrame};
 use tauri_bundler::BundleSettings;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +53,7 @@ const BUNDLE_ICON_OUTPUTS: [BundleIconOutput; 8] = [
         kind: BundleIconOutputKind::MacOsIconset,
     },
 ];
+const ICO_FRAME_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
 pub(crate) struct BundleIconAssets {
     temp_dir: PathBuf,
@@ -73,8 +76,16 @@ impl BundleIconAssets {
 
         #[allow(deprecated)]
         {
-            bundle_settings.windows.icon_path = self.staged_icon_dir.join("app-icon.ico");
+            bundle_settings.windows.icon_path = self.windows_icon_path();
         }
+    }
+
+    fn windows_icon_path(&self) -> PathBuf {
+        BUNDLE_ICON_OUTPUTS
+            .into_iter()
+            .find(|output| output.kind == BundleIconOutputKind::WindowsIco)
+            .map(|output| self.staged_icon_dir.join(output.relative_path))
+            .expect("bundle icon outputs should include a Windows ICO")
     }
 
     fn bundle_icon_paths(&self) -> Vec<PathBuf> {
@@ -164,14 +175,29 @@ pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<BundleIconAssets> {
             .map_err(|err| XtaskError::msg(format!("failed to save iconset image: {err}")))?;
     }
 
-    let ico_image = source_image
-        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
-        .to_rgba8();
-    image::DynamicImage::ImageRgba8(ico_image)
-        .save(assets.staged_icon_dir.join("app-icon.ico"))
+    save_windows_ico(&source_image, &assets.windows_icon_path())
         .map_err(|err| XtaskError::msg(format!("failed to save app icon ico: {err}")))?;
 
     Ok(assets)
+}
+
+fn save_windows_ico(source_image: &image::DynamicImage, path: &Path) -> Result<()> {
+    let mut frames = Vec::with_capacity(ICO_FRAME_SIZES.len());
+    for size in ICO_FRAME_SIZES {
+        let image = source_image
+            .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        frames.push(IcoFrame::as_png(
+            image.as_raw(),
+            size,
+            size,
+            image::ExtendedColorType::Rgba8,
+        )?);
+    }
+
+    let file = File::create(path)?;
+    IcoEncoder::new(BufWriter::new(file)).encode_images(&frames)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,6 +244,10 @@ mod tests {
         assert!(!source_icon_dir.join("app-icon.ico").exists());
         assert!(!source_icon_dir.join("app-icon.iconset").exists());
         assert!(assets.staged_icon_dir.join("app-icon.ico").exists());
+        assert_eq!(
+            ico_frame_count(&assets.staged_icon_dir.join("app-icon.ico"))?,
+            ICO_FRAME_SIZES.len()
+        );
         assert!(
             assets
                 .staged_icon_dir
@@ -241,5 +271,10 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    fn ico_frame_count(path: &Path) -> Result<usize> {
+        let bytes = fs::read(path)?;
+        Ok(u16::from_le_bytes([bytes[4], bytes[5]]) as usize)
     }
 }

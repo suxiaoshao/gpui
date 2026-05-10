@@ -7,7 +7,12 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 mod windows {
+    use image::codecs::ico::{IcoEncoder, IcoFrame};
+    use std::fs::File;
+    use std::io::BufWriter;
     use std::path::{Path, PathBuf};
+
+    const ICO_FRAME_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
     pub(super) fn main() {
         let mut res = winresource::WindowsResource::new();
@@ -90,11 +95,27 @@ mod windows {
         Some(icon)
     }
 
-    fn derive_ico_icon(source_icon: &Path, derived_icon: &Path) -> Result<(), image::ImageError> {
-        let icon = image::open(source_icon)?
-            .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
-            .to_rgba8();
-        image::DynamicImage::ImageRgba8(icon)
-            .save_with_format(derived_icon, image::ImageFormat::Ico)
+    fn derive_ico_icon(
+        source_icon: &Path,
+        derived_icon: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let source_image = image::open(source_icon)?;
+        let mut frames = Vec::with_capacity(ICO_FRAME_SIZES.len());
+
+        for size in ICO_FRAME_SIZES {
+            let image = source_image
+                .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
+                .to_rgba8();
+            frames.push(IcoFrame::as_png(
+                image.as_raw(),
+                size,
+                size,
+                image::ExtendedColorType::Rgba8,
+            )?);
+        }
+
+        let file = File::create(derived_icon)?;
+        IcoEncoder::new(BufWriter::new(file)).encode_images(&frames)?;
+        Ok(())
     }
 }
