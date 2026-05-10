@@ -1,7 +1,23 @@
 [package]
 name = "feiwen"
 version = "0.1.0"
+description = "A GPUI desktop app for Feiwen novel data fetching and querying."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
+
+[package.metadata.bundle]
+name = "Feiwen"
+identifier = "top.sushao.feiwen"
+publisher = "CN=Sushao"
+short_description = "A GPUI desktop app for Feiwen novel data fetching and querying."
+long_description = """
+Feiwen is a GPUI-based desktop application for fetching, storing, and querying
+Feiwen novel metadata.
+"""
+category = "DeveloperTool"
 
 [dependencies]
 # ui

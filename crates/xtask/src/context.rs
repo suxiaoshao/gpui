@@ -10,7 +10,3 @@ pub fn workspace_root() -> Result<PathBuf> {
         .map(Path::to_path_buf)
         .ok_or_else(|| XtaskError::msg("failed to resolve workspace root"))
 }
-
-pub fn ai_chat_dir() -> Result<PathBuf> {
-    Ok(workspace_root()?.join("app/ai-chat"))
-}

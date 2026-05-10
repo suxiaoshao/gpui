@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn};
 
-use crate::bundle::settings::macos_bundle_localizations;
+use crate::bundle::{common::BundleIconAssets, settings::macos_bundle_localizations};
 use crate::cmd::{command_exists, run_cmd_os};
 use crate::error::{Result, XtaskError};
 use tauri_bundler::{BundleSettings, PlistKind};
@@ -15,6 +15,20 @@ pub fn prepare_bundle_settings(bundle_settings: &mut BundleSettings) -> Result<(
     Ok(())
 }
 
+pub fn find_app_bundle(bundle_dir: &Path, product_name: &str) -> Result<Option<PathBuf>> {
+    let app_name = format!("{product_name}.app");
+    for bundle_subdir in ["macos", "osx"] {
+        let app_bundle_dir = bundle_dir.join(bundle_subdir);
+        let app_path = app_bundle_dir.join(&app_name);
+        if app_path.is_dir() {
+            return Ok(Some(app_path));
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(test)]
 pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
     for bundle_subdir in ["macos", "osx"] {
         let app_bundle_dir = bundle_dir.join(bundle_subdir);
@@ -26,6 +40,7 @@ pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+#[cfg(test)]
 fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
     if !app_bundle_dir.exists() {
         return Ok(None);
@@ -53,17 +68,20 @@ fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
-    let icon_dir = app_dir.join("build-assets/icon/ChatGPT.icon");
+pub fn inject_liquid_glass_icon(
+    app_dir: &Path,
+    app_path: &Path,
+    bundle_icon_assets: &BundleIconAssets,
+) -> Result<()> {
+    let Some(icon_dir) = find_liquid_glass_icon_dir(app_dir)? else {
+        warn!(app_dir = %app_dir.display(), "未找到唯一 .icon 目录，跳过 Liquid Glass 图标注入");
+        return Ok(());
+    };
     let icon_name = icon_dir
         .file_stem()
         .and_then(|x| x.to_str())
         .filter(|x| !x.is_empty())
         .unwrap_or("Icon");
-    if !icon_dir.exists() {
-        warn!(icon_dir = %icon_dir.display(), "未找到 .icon 目录，跳过 Liquid Glass 图标注入");
-        return Ok(());
-    }
 
     if !command_exists("xcrun") {
         warn!("未找到 xcrun，跳过 Liquid Glass 图标注入（保留普通图标）");
@@ -71,7 +89,7 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     }
 
     let tmp_dir = env::temp_dir().join(format!(
-        "ai-chat-assets-{}-{}",
+        "xtask-bundle-assets-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -85,12 +103,26 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
         ))
     })?;
 
-    let actool_plist = tmp_dir.join("assetcatalog_generated_info.plist");
+    let actool_source_dir = tmp_dir.join("source");
+    let actool_output_dir = tmp_dir.join("output");
+    fs::create_dir_all(&actool_output_dir).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to create actool output dir {}: {err}",
+            actool_output_dir.display()
+        ))
+    })?;
+    let staged_icon_dir = stage_liquid_glass_icon_dir(
+        &icon_dir,
+        &bundle_icon_assets.source_base_icon(),
+        &actool_source_dir,
+    )?;
+
+    let actool_plist = actool_output_dir.join("assetcatalog_generated_info.plist");
     let actool_args: Vec<&OsStr> = vec![
         OsStr::new("actool"),
-        icon_dir.as_os_str(),
+        staged_icon_dir.as_os_str(),
         OsStr::new("--compile"),
-        tmp_dir.as_os_str(),
+        actool_output_dir.as_os_str(),
         OsStr::new("--output-format"),
         OsStr::new("human-readable-text"),
         OsStr::new("--notices"),
@@ -121,7 +153,7 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let assets_car = tmp_dir.join("Assets.car");
+    let assets_car = actool_output_dir.join("Assets.car");
     if !assets_car.exists() {
         let _ = fs::remove_dir_all(&tmp_dir);
         warn!("未生成 Assets.car，跳过 Liquid Glass 图标注入（保留普通图标）");
@@ -154,6 +186,101 @@ pub fn inject_liquid_glass_icon(app_dir: &Path, app_path: &Path) -> Result<()> {
     let _ = fs::remove_dir_all(&tmp_dir);
     info!(app_path = %app_path.display(), "已注入 Liquid Glass 图标");
     Ok(())
+}
+
+fn stage_liquid_glass_icon_dir(
+    source_icon_dir: &Path,
+    source_base_icon: &Path,
+    stage_root: &Path,
+) -> Result<PathBuf> {
+    let icon_dir_name = source_icon_dir.file_name().ok_or_else(|| {
+        XtaskError::msg(format!(
+            "failed to resolve .icon dir name for {}",
+            source_icon_dir.display()
+        ))
+    })?;
+    let staged_icon_dir = stage_root.join(icon_dir_name);
+    copy_dir_all(source_icon_dir, &staged_icon_dir)?;
+
+    let staged_assets_dir = staged_icon_dir.join("Assets");
+    fs::create_dir_all(&staged_assets_dir).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to create Liquid Glass icon assets dir {}: {err}",
+            staged_assets_dir.display()
+        ))
+    })?;
+
+    let staged_layer = staged_assets_dir.join("app-icon-liquid-glass.png");
+    fs::copy(source_base_icon, &staged_layer).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to stage Liquid Glass icon layer {} from {}: {err}",
+            staged_layer.display(),
+            source_base_icon.display()
+        ))
+    })?;
+
+    Ok(staged_icon_dir)
+}
+
+fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target).map_err(|err| {
+        XtaskError::msg(format!(
+            "failed to create directory {}: {err}",
+            target.display()
+        ))
+    })?;
+
+    for entry in fs::read_dir(source)
+        .map_err(|err| XtaskError::msg(format!("failed to read {}: {err}", source.display())))?
+    {
+        let entry = entry.map_err(|err| {
+            XtaskError::msg(format!(
+                "failed to read entry under {}: {err}",
+                source.display()
+            ))
+        })?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_all(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).map_err(|err| {
+                XtaskError::msg(format!(
+                    "failed to copy {} to {}: {err}",
+                    source_path.display(),
+                    target_path.display()
+                ))
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn find_liquid_glass_icon_dir(app_dir: &Path) -> Result<Option<PathBuf>> {
+    let icon_root = app_dir.join("build-assets/icon");
+    if !icon_root.exists() {
+        return Ok(None);
+    }
+
+    let mut icon_dirs = Vec::new();
+    for entry in fs::read_dir(&icon_root)
+        .map_err(|err| XtaskError::msg(format!("failed to read {}: {err}", icon_root.display())))?
+    {
+        let path = entry
+            .map_err(|err| XtaskError::msg(format!("failed to read icon dir entry: {err}")))?
+            .path();
+        if path.is_dir() && path.extension().and_then(OsStr::to_str) == Some("icon") {
+            icon_dirs.push(path);
+        }
+    }
+
+    icon_dirs.sort();
+    Ok(if icon_dirs.len() == 1 {
+        icon_dirs.pop()
+    } else {
+        None
+    })
 }
 
 fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
@@ -194,7 +321,7 @@ fn bundle_info_plist_overrides() -> plist::Dictionary {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle_info_plist_overrides, first_app_bundle};
+    use super::{bundle_info_plist_overrides, find_app_bundle, first_app_bundle};
     use crate::error::Result;
     use std::fs;
     use std::path::PathBuf;
@@ -249,6 +376,19 @@ mod tests {
         let app_path = first_app_bundle(&temp_dir.path)?;
 
         assert_eq!(app_path, Some(osx_app));
+        Ok(())
+    }
+
+    #[test]
+    fn find_app_bundle_uses_product_name() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        fs::create_dir_all(temp_dir.path.join("macos/AI Chat.app"))?;
+        let feiwen_app = temp_dir.path.join("macos/Feiwen.app");
+        fs::create_dir_all(&feiwen_app)?;
+
+        let app_path = find_app_bundle(&temp_dir.path, "Feiwen")?;
+
+        assert_eq!(app_path, Some(feiwen_app));
         Ok(())
     }
 

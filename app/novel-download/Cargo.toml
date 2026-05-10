@@ -1,7 +1,23 @@
 [package]
 name = "novel-download"
 version = "0.1.0"
+description = "A GPUI desktop app for downloading novels."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
+
+[package.metadata.bundle]
+name = "Novel Download"
+identifier = "top.sushao.novel-download"
+publisher = "CN=Sushao"
+short_description = "A GPUI desktop app for downloading novels."
+long_description = """
+Novel Download is a GPUI-based desktop application for downloading novel
+content from supported sources.
+"""
+category = "Utility"
 
 [dependencies]
 # ui

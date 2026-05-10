@@ -1,7 +1,6 @@
 use crate::error::{Result, XtaskError};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri_bundler::{AppCategory, BundleSettings, PackageSettings};
@@ -68,8 +67,6 @@ struct ManifestBundle {
     #[serde(default)]
     publisher: Option<String>,
     #[serde(default)]
-    icon: Option<Vec<String>>,
-    #[serde(default)]
     category: Option<String>,
     #[serde(default)]
     homepage: Option<String>,
@@ -127,9 +124,6 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
                 .as_deref()
                 .and_then(infer_publisher_from_identifier)
         });
-        bundle_settings.icon = bundle
-            .icon
-            .map(|paths| resolve_manifest_paths(manifest_dir, paths));
         bundle_settings.category = bundle
             .category
             .as_deref()
@@ -149,7 +143,6 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
     bundle_settings.license_file =
         license_file.map(|path| resolve_manifest_path(manifest_dir, &path));
     bundle_settings.resources_map = Some(macos_bundle_localization_resources(manifest_dir)?);
-    sync_windows_icon_path(&mut bundle_settings);
 
     let package_settings = PackageSettings {
         product_name,
@@ -163,14 +156,6 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
     Ok((package_settings, bundle_settings))
 }
 
-fn resolve_manifest_paths(manifest_dir: &Path, paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .map(|path| resolve_manifest_path(manifest_dir, &path))
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect()
-}
-
 fn resolve_manifest_path(manifest_dir: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -178,35 +163,6 @@ fn resolve_manifest_path(manifest_dir: &Path, path: &str) -> PathBuf {
     } else {
         manifest_dir.join(path)
     }
-}
-
-#[allow(deprecated)]
-fn sync_windows_icon_path(bundle_settings: &mut BundleSettings) {
-    if bundle_settings.windows.icon_path != default_windows_icon_path() {
-        return;
-    }
-
-    let Some(icon_path) = bundle_settings
-        .icon
-        .as_ref()
-        .and_then(|paths| {
-            paths.iter().find(|path| {
-                Path::new(path)
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ico"))
-            })
-        })
-        .map(PathBuf::from)
-    else {
-        return;
-    };
-
-    bundle_settings.windows.icon_path = icon_path;
-}
-
-fn default_windows_icon_path() -> PathBuf {
-    PathBuf::from("icons/icon.ico")
 }
 
 fn macos_bundle_localization_resources(manifest_dir: &Path) -> Result<HashMap<String, String>> {
@@ -351,24 +307,12 @@ name = "AI Chat"
 identifier = "top.sushao.ai-chat"
 category = "DeveloperTool"
 deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
-icon = [
-  "build-assets/icon/app-icon.ico",
-  "build-assets/icon/app-icon.png",
-]
 "#,
         )?;
 
         let (_, bundle_settings) = read_bundle_settings(&manifest_path)?;
-        let expected_ico = temp_dir.path.join("build-assets/icon/app-icon.ico");
-        let expected_png = temp_dir.path.join("build-assets/icon/app-icon.png");
 
-        assert_eq!(
-            bundle_settings.icon,
-            Some(vec![
-                expected_ico.to_string_lossy().into_owned(),
-                expected_png.to_string_lossy().into_owned(),
-            ])
-        );
+        assert!(bundle_settings.icon.is_none());
         assert_eq!(
             bundle_settings.license_file,
             Some(temp_dir.path.join("LICENSE"))
@@ -382,7 +326,6 @@ icon = [
                 .schemes,
             vec!["ai-chat-screenclip".to_string()]
         );
-        assert_eq!(bundle_settings.windows.icon_path, expected_ico);
         let resources_map = bundle_settings
             .resources_map
             .as_ref()

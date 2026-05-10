@@ -21,8 +21,7 @@ const MENU_QUIT: &str = "tray-quit";
 #[cfg(target_os = "macos")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../assets/png/tray-template.png");
 #[cfg(not(target_os = "macos"))]
-const TRAY_ICON_BYTES: &[u8] =
-    include_bytes!("../../build-assets/icon/app-icon.iconset/icon_32x32.png");
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../build-assets/icon/app-icon.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayMenuAction {
@@ -287,11 +286,22 @@ fn build_menu(strings: &TrayStrings) -> anyhow::Result<Menu> {
 }
 
 fn load_tray_icon() -> anyhow::Result<Icon> {
+    let image = load_tray_icon_image()?;
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).context("create tray icon failed")
+}
+
+fn load_tray_icon_image() -> anyhow::Result<image::RgbaImage> {
     let image = image::load_from_memory(TRAY_ICON_BYTES)
         .context("decode tray icon png failed")?
         .into_rgba8();
-    let (width, height) = image.dimensions();
-    Icon::from_rgba(image.into_raw(), width, height).context("create tray icon failed")
+
+    #[cfg(not(target_os = "macos"))]
+    let image = image::DynamicImage::ImageRgba8(image)
+        .resize_exact(32, 32, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+
+    Ok(image)
 }
 
 fn tray_menu_action(menu_id: &str) -> Option<TrayMenuAction> {
@@ -325,11 +335,10 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn tray_icon_bytes_decode_to_rgba32() {
-        let image = image::load_from_memory(TRAY_ICON_BYTES).expect("tray icon decodes");
+        let image = load_tray_icon_image().expect("tray icon decodes");
 
         assert_eq!(image.width(), 32);
         assert_eq!(image.height(), 32);
-        assert_eq!(image.color(), image::ColorType::Rgba8);
     }
 
     #[::core::prelude::v1::test]

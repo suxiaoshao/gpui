@@ -10,20 +10,23 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 1. Identify the UI job: action, form input, overlay, layout, navigation, feedback, data display, or advanced interaction.
 2. Read `references/components/index.md` and choose the closest existing gpui-component component.
 3. Read only the specific component reference files needed for the task.
-4. If the UI needs custom app-local composition, read the relevant rules first:
+4. Before implementing, inspect the chosen component's docs, story/demo usage, and source API when available.
+5. If the UI needs custom app-local composition, read the relevant rules first:
    `references/rules/traits.md`, `references/rules/primitives.md`, `references/rules/theme-and-size.md`, or `references/rules/state-and-interaction.md`.
-5. Compose existing components, traits, helpers, theme tokens, and delegate patterns before writing custom app-local UI.
-6. If the bundled reference conflicts with the current dependency, inspect the app's actual `gpui-component` API from Cargo sources, docs.rs for the exact version, or the checked-out dependency source.
+6. Compose existing components, traits, helpers, theme tokens, and delegate patterns before writing custom app-local UI.
+7. If the bundled reference conflicts with the current dependency, inspect the app's actual `gpui-component` API from Cargo sources, docs.rs for the exact version, or the checked-out dependency source.
 
 ## Principles
 
 - Use `gpui-component` first for common controls such as buttons, inputs, selectors, dialogs, sheets, popovers, tables, scrollable areas, feedback, and navigation.
+- If no component fits, implement only the app-local gap; do not copy or re-create generic controls already owned by gpui-component.
 - Treat GPUI style methods as the desktop Rust analogue of Tailwind-style composition: build layout and visual hierarchy with small chained style methods, but use GPUI APIs and existing project patterns.
 - Treat shadcn/ui as a design and composition reference for gpui-component behavior, visual states, sizing, and component structure.
 - Keep desktop differences: buttons normally use the default cursor, keyboard focus matters, overlays belong to the GPUI window/root model, and macOS/Windows control expectations outrank Web DOM habits.
 - Do not copy React, DOM, CSS, or Tailwind code into GPUI. Translate the intent into GPUI elements, `gpui-component` primitives, and the app's existing view patterns.
 - If a shadcn component is not available in gpui-component, prefer composing available gpui-component pieces before creating app-local generic controls.
 - If a need is just size, selected state, disabled state, variant, styling, theme tokens, overlay behavior, or list/select delegation, prefer existing gpui-component traits and helpers over new app-local generic abstractions.
+- Treat bundled component docs as a portable snapshot. When precision matters, verify against the current checkout, Cargo dependency source, story/demo code, or docs.rs for the version in use.
 
 ## Component Selection
 
