@@ -53,6 +53,8 @@ pub struct SystemAccentThemeState {
     _task: Option<Task<()>>,
     #[cfg_attr(not(feature = "system-accent"), allow(dead_code))]
     color: Option<String>,
+    #[cfg_attr(not(feature = "system-accent"), allow(dead_code))]
+    text_highlight_color: Option<String>,
 }
 
 impl Global for SystemAccentThemeState {}
@@ -101,6 +103,18 @@ pub fn system_accent_color() -> Option<String> {
     #[cfg(feature = "system-accent")]
     {
         platform_ext::appearance::system_accent_color().map(|color| color.to_hex())
+    }
+
+    #[cfg(not(feature = "system-accent"))]
+    {
+        None
+    }
+}
+
+pub fn system_text_highlight_color() -> Option<String> {
+    #[cfg(feature = "system-accent")]
+    {
+        platform_ext::appearance::system_text_highlight_color().map(|color| color.to_hex())
     }
 
     #[cfg(not(feature = "system-accent"))]
@@ -194,17 +208,27 @@ pub fn init_system_accent_theme(cx: &mut App) {
             let _ = tx.try_send(());
         });
         let color = system_accent_color();
+        let text_highlight_color = system_text_highlight_color();
         let task = observer.as_ref().map(|_| {
             cx.spawn(async move |cx| {
                 while rx.recv().await.is_ok() {
                     let next_color = system_accent_color();
+                    let next_text_highlight_color = system_text_highlight_color();
                     cx.update(|cx| {
-                        if system_accent_color_changed(
-                            &cx.global::<SystemAccentThemeState>().color,
-                            &next_color,
-                        ) {
+                        let should_update = {
+                            let state = cx.global::<SystemAccentThemeState>();
+                            system_accent_theme_colors_changed(
+                                &state.color,
+                                &state.text_highlight_color,
+                                &next_color,
+                                &next_text_highlight_color,
+                            )
+                        };
+
+                        if should_update {
                             cx.update_global::<SystemAccentThemeState, _>(|state, _cx| {
                                 state.color = next_color;
+                                state.text_highlight_color = next_text_highlight_color;
                             });
                         }
                     });
@@ -216,6 +240,7 @@ pub fn init_system_accent_theme(cx: &mut App) {
             _observer: observer,
             _task: task,
             color,
+            text_highlight_color,
         });
     }
 
@@ -223,11 +248,22 @@ pub fn init_system_accent_theme(cx: &mut App) {
     cx.set_global(SystemAccentThemeState {
         _task: None,
         color: None,
+        text_highlight_color: None,
     });
 }
 
 pub fn system_accent_color_changed(current: &Option<String>, next: &Option<String>) -> bool {
     current != next
+}
+
+fn system_accent_theme_colors_changed(
+    current_accent: &Option<String>,
+    current_text_highlight: &Option<String>,
+    next_accent: &Option<String>,
+    next_text_highlight: &Option<String>,
+) -> bool {
+    system_accent_color_changed(current_accent, next_accent)
+        || current_text_highlight != next_text_highlight
 }
 
 pub fn generated_theme_choice(color: &str, mode: ComponentThemeMode) -> Option<ThemeChoice> {
@@ -252,11 +288,21 @@ pub fn system_accent_theme_choice(mode: ComponentThemeMode) -> Option<ThemeChoic
 pub fn system_accent_theme_config(mode: ComponentThemeMode) -> Option<ThemeConfig> {
     let color = system_accent_color()?;
     let mut config = generated_theme_config(&color, mode)?;
+    apply_system_text_highlight_selection(&mut config, system_text_highlight_color());
     config.name = SharedString::from(format!(
         "System Accent Material You {}",
         if mode.is_dark() { "Dark" } else { "Light" }
     ));
     Some(config)
+}
+
+fn apply_system_text_highlight_selection(
+    config: &mut ThemeConfig,
+    text_highlight_color: Option<String>,
+) {
+    if let Some(color) = text_highlight_color {
+        config.colors.selection = Some(color.into());
+    }
 }
 
 pub fn component_theme_mode_from_appearance(appearance: WindowAppearance) -> ComponentThemeMode {

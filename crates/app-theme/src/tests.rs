@@ -122,6 +122,28 @@ fn system_accent_color_changed_only_updates_on_real_changes() {
 }
 
 #[test]
+fn system_accent_theme_colors_changed_tracks_text_highlight() {
+    assert!(!system_accent_theme_colors_changed(
+        &Some("#123456".to_string()),
+        &Some("#ABCDEF".to_string()),
+        &Some("#123456".to_string()),
+        &Some("#ABCDEF".to_string()),
+    ));
+    assert!(system_accent_theme_colors_changed(
+        &Some("#123456".to_string()),
+        &Some("#ABCDEF".to_string()),
+        &Some("#123456".to_string()),
+        &Some("#FEDCBA".to_string()),
+    ));
+    assert!(system_accent_theme_colors_changed(
+        &Some("#123456".to_string()),
+        &Some("#ABCDEF".to_string()),
+        &Some("#654321".to_string()),
+        &Some("#ABCDEF".to_string()),
+    ));
+}
+
+#[test]
 fn normalize_theme_id_canonicalizes_material_you_color() {
     assert_eq!(
         normalize_theme_id("material-you:#aabbcc"),
@@ -598,4 +620,28 @@ fn generated_material_theme_uses_translucent_selection_tokens() {
     assert!(theme.list_active.a <= 0.2);
     assert!(theme.table_active.a <= 0.2);
     assert!(theme.selection.a <= 0.3);
+}
+
+#[test]
+fn system_text_highlight_overrides_material_selection() {
+    let mut config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
+        .expect("dark material theme");
+
+    apply_system_text_highlight_selection(&mut config, Some("#B3D7FF".to_string()));
+
+    assert_eq!(config.colors.selection, Some("#B3D7FF".into()));
+}
+
+#[test]
+fn missing_system_text_highlight_keeps_generated_material_selection() {
+    let scheme = material_scheme(ComponentThemeMode::Dark);
+    let mut config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
+        .expect("dark material theme");
+
+    apply_system_text_highlight_selection(&mut config, None);
+
+    assert_eq!(
+        config.colors.selection,
+        Some(hex_alpha(scheme.primary, 0x66))
+    );
 }
