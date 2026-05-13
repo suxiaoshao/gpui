@@ -2,12 +2,11 @@ use crate::{
     errors::FeiwenResult,
     foundation::field_matches_query,
     store::{
-        model::NovelModel,
         query::{AuthorRef, BoolField, NumberField, SortExpr, TextField},
         service::Tag,
     },
 };
-use diesel::SqliteConnection;
+use diesel::{QueryableByName, RunQueryDsl, SqliteConnection, sql_types};
 use gpui::{AnyElement, IntoElement, SharedString};
 use gpui_component::select::{SearchableVec, SelectItem};
 use std::collections::HashMap;
@@ -195,6 +194,14 @@ pub(crate) struct QueryOptions {
     pub(super) authors: Vec<AuthorOption>,
 }
 
+#[derive(QueryableByName)]
+struct AuthorOptionRow {
+    #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
+    author_id: Option<i32>,
+    #[diesel(sql_type = sql_types::Text)]
+    author_name: String,
+}
+
 impl QueryOptions {
     pub(crate) fn load(conn: &mut SqliteConnection) -> FeiwenResult<Self> {
         let tags = Tag::tags_with_id(conn)?
@@ -204,24 +211,33 @@ impl QueryOptions {
                 name: tag.name,
             })
             .collect();
-        let novels = NovelModel::query(conn)?;
         let mut authors = HashMap::new();
-        for novel in novels {
-            let author_ref = match novel.author_id {
+        for row in load_author_rows(conn)? {
+            let author_ref = match row.author_id {
                 Some(id) => AuthorRef::Id(id),
-                None => AuthorRef::Name(novel.author_name.clone()),
+                None => AuthorRef::Name(row.author_name.clone()),
             };
             authors
                 .entry(author_ref.clone())
                 .or_insert_with(|| AuthorOption {
                     author: author_ref,
-                    name: novel.author_name,
+                    name: row.author_name,
                 });
         }
         let mut authors = authors.into_values().collect::<Vec<_>>();
         sort_author_options(&mut authors);
         Ok(Self { tags, authors })
     }
+}
+
+fn load_author_rows(conn: &mut SqliteConnection) -> FeiwenResult<Vec<AuthorOptionRow>> {
+    Ok(diesel::sql_query(
+        "\
+        SELECT author_id, author_name \
+        FROM novel \
+        GROUP BY author_id, author_name",
+    )
+    .load::<AuthorOptionRow>(conn)?)
 }
 
 #[derive(Clone)]
@@ -377,6 +393,116 @@ pub(super) fn sort_direction_items() -> Vec<SelectChoice<SortDirectionChoice>> {
         SelectChoice::new("升序", SortDirectionChoice::Asc),
         SelectChoice::new("降序", SortDirectionChoice::Desc),
     ]
+}
+
+#[cfg(test)]
+mod query_options_load_tests {
+    use super::*;
+    use crate::store::{
+        service::{Novel, Tag},
+        types::{Author, NovelCount, Title},
+    };
+    use diesel::{Connection, connection::SimpleConnection};
+    use std::collections::HashSet;
+
+    fn connection() -> SqliteConnection {
+        let mut conn = SqliteConnection::establish(":memory:").unwrap();
+        conn.batch_execute(include_str!(
+            "../../../../migrations/2022-05-15-162950_novel/up.sql"
+        ))
+        .unwrap();
+        conn.batch_execute(include_str!(
+            "../../../../migrations/2022-05-15-163112_tag/up.sql"
+        ))
+        .unwrap();
+        conn.batch_execute(include_str!(
+            "../../../../migrations/2022-05-16-064913_novel_tag/up.sql"
+        ))
+        .unwrap();
+        conn
+    }
+
+    fn novel(id: i32, author: Author, tags: &[&str]) -> Novel {
+        Novel {
+            title: Title {
+                name: format!("novel-{id}"),
+                id,
+            },
+            author,
+            latest_chapter: Title {
+                name: "chapter".to_owned(),
+                id: id * 10,
+            },
+            desc: "desc".to_owned(),
+            count: NovelCount {
+                word_count: 1000,
+                read_count: Some(100),
+                reply_count: Some(10),
+            },
+            tags: tags
+                .iter()
+                .map(|name| Tag {
+                    name: (*name).to_owned(),
+                    id: Some(id),
+                })
+                .collect::<HashSet<_>>(),
+            is_limit: false,
+        }
+    }
+
+    #[test]
+    fn query_options_loads_author_choices_without_full_novel_rows() {
+        let mut conn = connection();
+        novel(
+            1,
+            Author::Known(Title {
+                name: "张三".to_owned(),
+                id: 10,
+            }),
+            &["rust", "gpui"],
+        )
+        .save(&mut conn)
+        .unwrap();
+        novel(
+            2,
+            Author::Known(Title {
+                name: "张三".to_owned(),
+                id: 10,
+            }),
+            &["rust"],
+        )
+        .save(&mut conn)
+        .unwrap();
+        novel(
+            3,
+            Author::Anonymous("匿名".to_owned()),
+            &["rust", "匿名标签"],
+        )
+        .save(&mut conn)
+        .unwrap();
+
+        let options = QueryOptions::load(&mut conn).unwrap();
+
+        assert_eq!(
+            options
+                .authors
+                .iter()
+                .map(|author| (author.name.clone(), author.author.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("匿名".to_owned(), AuthorRef::Name("匿名".to_owned())),
+                ("张三".to_owned(), AuthorRef::Id(10)),
+            ]
+        );
+        let tag_names = options
+            .tags
+            .iter()
+            .map(|tag| tag.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tag_names.first(), Some(&"rust"));
+        assert!(tag_names.contains(&"gpui"));
+        assert!(tag_names.contains(&"匿名标签"));
+    }
 }
 
 #[cfg(test)]

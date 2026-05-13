@@ -119,6 +119,11 @@ fn migrate_tables(conn: &DbConn) -> FeiwenResult<()> {
         ))?;
         event!(Level::INFO, "nullable novel counts migration completed");
     }
+    event!(Level::INFO, "ensuring feiwen query indexes");
+    conn.batch_execute(include_str!(
+        "../migrations/2026-05-13-000001_query_indexes/up.sql"
+    ))?;
+    event!(Level::INFO, "feiwen query indexes ready");
     Ok(())
 }
 

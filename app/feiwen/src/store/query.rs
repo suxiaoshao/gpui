@@ -1,4 +1,6 @@
-use std::{cmp::Ordering, collections::HashSet};
+#[cfg(test)]
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QuerySpec {
@@ -134,6 +136,7 @@ pub(crate) enum SortExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub(crate) struct NovelRecord {
     pub(crate) id: i32,
     pub(crate) title: String,
@@ -150,6 +153,7 @@ pub(crate) struct NovelRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 enum SortValue {
     Number(f64),
     Text(String),
@@ -157,14 +161,81 @@ enum SortValue {
 }
 
 impl QuerySpec {
+    #[cfg(test)]
     pub(crate) fn apply(&self, mut records: Vec<NovelRecord>) -> Vec<NovelRecord> {
         records.retain(|record| self.filter.matches(record));
         apply_sorts(&mut records, &self.sorts);
         records
     }
+
+    pub(crate) fn filter_count(&self) -> usize {
+        self.filter.predicate_count()
+    }
+
+    pub(crate) fn sort_count(&self) -> usize {
+        self.sorts.len()
+    }
+
+    pub(crate) fn where_sql(&self, alias: &str) -> String {
+        self.filter.sql(alias)
+    }
+
+    pub(crate) fn order_sql(&self, alias: &str) -> String {
+        if self.sorts.is_empty() {
+            return String::new();
+        }
+        let parts = self
+            .sorts
+            .iter()
+            .flat_map(|sort| {
+                let expr = sort.expr.sql(alias);
+                let direction = match sort.direction {
+                    SortDirection::Asc => "ASC",
+                    SortDirection::Desc => "DESC",
+                };
+                [
+                    format!("({expr}) IS NULL ASC"),
+                    format!("({expr}) {direction}"),
+                ]
+            })
+            .collect::<Vec<_>>();
+        format!(" ORDER BY {}", parts.join(", "))
+    }
 }
 
 impl FilterExpr {
+    fn predicate_count(&self) -> usize {
+        match self {
+            FilterExpr::All(filters) | FilterExpr::Any(filters) => {
+                filters.iter().map(Self::predicate_count).sum()
+            }
+            FilterExpr::Not(filter) => filter.predicate_count(),
+            FilterExpr::Predicate(_) => 1,
+        }
+    }
+
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            FilterExpr::All(filters) => {
+                if filters.is_empty() {
+                    "1".to_owned()
+                } else {
+                    join_sql(filters, " AND ", alias)
+                }
+            }
+            FilterExpr::Any(filters) => {
+                if filters.is_empty() {
+                    "0".to_owned()
+                } else {
+                    join_sql(filters, " OR ", alias)
+                }
+            }
+            FilterExpr::Not(filter) => format!("NOT ({})", filter.sql(alias)),
+            FilterExpr::Predicate(predicate) => predicate.sql(alias),
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, record: &NovelRecord) -> bool {
         match self {
             FilterExpr::All(filters) => filters.iter().all(|filter| filter.matches(record)),
@@ -176,6 +247,45 @@ impl FilterExpr {
 }
 
 impl Predicate {
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            Predicate::Text { field, op, value } => {
+                let field = field.sql(alias);
+                let value = sql_string(value);
+                match op {
+                    TextOp::Contains => format!("instr({field}, {value}) > 0"),
+                    TextOp::StartsWith => format!("substr({field}, 1, length({value})) = {value}"),
+                    TextOp::EndsWith => format!("substr({field}, -length({value})) = {value}"),
+                    TextOp::Equals => format!("{field} = {value}"),
+                }
+            }
+            Predicate::Number { field, op } => {
+                let field = field.sql(alias);
+                match op {
+                    NumberOp::Eq(value) => format!("({field} IS NOT NULL AND {field} = {value})"),
+                    NumberOp::Ne(value) => format!("({field} IS NOT NULL AND {field} <> {value})"),
+                    NumberOp::Lt(value) => format!("({field} IS NOT NULL AND {field} < {value})"),
+                    NumberOp::Lte(value) => {
+                        format!("({field} IS NOT NULL AND {field} <= {value})")
+                    }
+                    NumberOp::Gt(value) => format!("({field} IS NOT NULL AND {field} > {value})"),
+                    NumberOp::Gte(value) => {
+                        format!("({field} IS NOT NULL AND {field} >= {value})")
+                    }
+                    NumberOp::Between { min, max } => {
+                        format!("({field} IS NOT NULL AND {field} >= {min} AND {field} <= {max})")
+                    }
+                }
+            }
+            Predicate::Bool { field, value } => {
+                format!("{} = {}", field.sql(alias), if *value { 1 } else { 0 })
+            }
+            Predicate::Tags(predicate) => predicate.sql(alias),
+            Predicate::Author(predicate) => predicate.sql(alias),
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, record: &NovelRecord) -> bool {
         match self {
             Predicate::Text { field, op, value } => match op {
@@ -203,6 +313,47 @@ impl Predicate {
 }
 
 impl TagsPredicate {
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            TagsPredicate::Intersects(values) => tag_exists_sql(alias, values, false),
+            TagsPredicate::ContainsAll(values) => values
+                .iter()
+                .map(|value| {
+                    format!(
+                        "EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id = {})",
+                        sql_string(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+                .if_empty("1"),
+            TagsPredicate::ContainedBy(values) => {
+                if values.is_empty() {
+                    format!(
+                        "NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)"
+                    )
+                } else {
+                    let values = sql_string_list(values);
+                    format!(
+                        "NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id NOT IN ({values}))"
+                    )
+                }
+            }
+            TagsPredicate::Equals(values) => {
+                let contains_all = TagsPredicate::ContainsAll(values.clone()).sql(alias);
+                let contained_by = TagsPredicate::ContainedBy(values.clone()).sql(alias);
+                format!("({contains_all}) AND ({contained_by})")
+            }
+            TagsPredicate::IsEmpty => {
+                format!("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)")
+            }
+            TagsPredicate::IsNotEmpty => {
+                format!("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)")
+            }
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, tags: &HashSet<String>) -> bool {
         match self {
             TagsPredicate::Intersects(values) => !tags.is_disjoint(values),
@@ -216,6 +367,22 @@ impl TagsPredicate {
 }
 
 impl AuthorPredicate {
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            AuthorPredicate::Is(author) => author.sql(alias),
+            AuthorPredicate::In(authors) => join_author_sql(authors, " OR ", alias).if_empty("0"),
+            AuthorPredicate::NotIn(authors) => {
+                let sql = join_author_sql(authors, " OR ", alias);
+                if sql.is_empty() {
+                    "1".to_owned()
+                } else {
+                    format!("NOT ({sql})")
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, record: &NovelRecord) -> bool {
         match self {
             AuthorPredicate::Is(author) => author.matches(record),
@@ -226,6 +393,21 @@ impl AuthorPredicate {
 }
 
 impl AuthorRef {
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            AuthorRef::Id(id) => {
+                format!("({alias}.author_id IS NOT NULL AND {alias}.author_id = {id})")
+            }
+            AuthorRef::Name(name) => {
+                format!(
+                    "({alias}.author_id IS NULL AND {alias}.author_name = {})",
+                    sql_string(name)
+                )
+            }
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, record: &NovelRecord) -> bool {
         match self {
             AuthorRef::Id(id) => record.author_id == Some(*id),
@@ -234,6 +416,41 @@ impl AuthorRef {
     }
 }
 
+impl TextField {
+    fn sql(self, alias: &str) -> String {
+        let column = match self {
+            TextField::Title => "name",
+            TextField::Description => "desc",
+            TextField::LatestChapter => "latest_chapter_name",
+            TextField::AuthorName => "author_name",
+        };
+        format!("{alias}.{column}")
+    }
+}
+
+impl NumberField {
+    fn sql(self, alias: &str) -> String {
+        let column = match self {
+            NumberField::NovelId => "id",
+            NumberField::LatestChapterId => "latest_chapter_id",
+            NumberField::WordCount => "word_count",
+            NumberField::ReadCount => "read_count",
+            NumberField::ReplyCount => "reply_count",
+            NumberField::AuthorId => "author_id",
+        };
+        format!("{alias}.{column}")
+    }
+}
+
+impl BoolField {
+    fn sql(self, alias: &str) -> String {
+        match self {
+            BoolField::IsLimit => format!("{alias}.is_limit"),
+        }
+    }
+}
+
+#[cfg(test)]
 impl NovelRecord {
     fn text(&self, field: TextField) -> &str {
         match field {
@@ -262,6 +479,7 @@ impl NovelRecord {
     }
 }
 
+#[cfg(test)]
 fn apply_sorts(records: &mut [NovelRecord], sorts: &[SortSpec]) {
     for sort in sorts.iter().rev() {
         records.sort_by(
@@ -281,6 +499,7 @@ fn apply_sorts(records: &mut [NovelRecord], sorts: &[SortSpec]) {
     }
 }
 
+#[cfg(test)]
 impl SortValue {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
@@ -303,6 +522,25 @@ impl SortValue {
 }
 
 impl SortExpr {
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            SortExpr::Number(field) => field.sql(alias),
+            SortExpr::Text(field) => field.sql(alias),
+            SortExpr::Bool(field) => field.sql(alias),
+            SortExpr::Constant(value) => value.to_string(),
+            SortExpr::Add(left, right) => format!("({} + {})", left.sql(alias), right.sql(alias)),
+            SortExpr::Sub(left, right) => format!("({} - {})", left.sql(alias), right.sql(alias)),
+            SortExpr::Mul(left, right) => format!("({} * {})", left.sql(alias), right.sql(alias)),
+            SortExpr::Div(left, right) => format!(
+                "CASE WHEN ({}) = 0 THEN NULL ELSE (({}) * 1.0 / ({})) END",
+                right.sql(alias),
+                left.sql(alias),
+                right.sql(alias)
+            ),
+        }
+    }
+
+    #[cfg(test)]
     fn eval(&self, record: &NovelRecord) -> Option<SortValue> {
         match self {
             SortExpr::Number(field) => record
@@ -330,10 +568,65 @@ impl SortExpr {
         }
     }
 
+    #[cfg(test)]
     fn eval_number(&self, record: &NovelRecord) -> Option<f64> {
         match self.eval(record)? {
             SortValue::Number(value) => Some(value),
             SortValue::Text(_) | SortValue::Bool(_) => None,
+        }
+    }
+}
+
+fn join_sql(filters: &[FilterExpr], separator: &str, alias: &str) -> String {
+    filters
+        .iter()
+        .map(|filter| format!("({})", filter.sql(alias)))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn join_author_sql(authors: &[AuthorRef], separator: &str, alias: &str) -> String {
+    authors
+        .iter()
+        .map(|author| format!("({})", author.sql(alias)))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn tag_exists_sql(alias: &str, values: &HashSet<String>, negated: bool) -> String {
+    if values.is_empty() {
+        return if negated { "1" } else { "0" }.to_owned();
+    }
+    let values = sql_string_list(values);
+    let op = if negated { "NOT IN" } else { "IN" };
+    format!(
+        "EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id {op} ({values}))"
+    )
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sql_string_list(values: &HashSet<String>) -> String {
+    let mut values = values
+        .iter()
+        .map(|value| sql_string(value))
+        .collect::<Vec<_>>();
+    values.sort();
+    values.join(", ")
+}
+
+trait IfEmpty {
+    fn if_empty(self, fallback: &str) -> String;
+}
+
+impl IfEmpty for String {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.is_empty() {
+            fallback.to_owned()
+        } else {
+            self
         }
     }
 }

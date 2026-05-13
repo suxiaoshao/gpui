@@ -91,6 +91,7 @@ where
         self.selected.clone()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_options(&mut self, options: Vec<T>, cx: &mut Context<Self>) {
         self.options = options;
         self.selected

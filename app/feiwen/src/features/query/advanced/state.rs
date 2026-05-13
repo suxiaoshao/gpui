@@ -154,6 +154,7 @@ impl AdvancedQueryState {
         this
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_options(
         &mut self,
         options: QueryOptions,
@@ -700,6 +701,7 @@ impl AdvancedQueryState {
         })
     }
 
+    #[allow(dead_code)]
     fn refresh_group_options(
         options: &QueryOptions,
         group: &mut FilterGroup,
@@ -801,6 +803,7 @@ impl ConditionRow {
     }
 }
 
+#[allow(dead_code)]
 fn refresh_condition_options(
     options: &QueryOptions,
     condition: &mut ConditionRow,

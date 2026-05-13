@@ -6,8 +6,8 @@ use crate::{
         types::{Author, Title},
     },
 };
+use diesel::SqliteConnection;
 use diesel::prelude::*;
-use diesel::{QueryDsl, SqliteConnection};
 
 #[derive(Insertable, Queryable)]
 #[diesel(table_name = novel)]
@@ -26,11 +26,6 @@ pub(crate) struct NovelModel {
 }
 
 impl NovelModel {
-    pub(crate) fn query(conn: &mut SqliteConnection) -> FeiwenResult<Vec<NovelModel>> {
-        use super::super::schema::novel::dsl;
-        let data = dsl::novel.load::<Self>(conn)?;
-        Ok(data)
-    }
     pub(crate) fn save(mut self, conn: &mut SqliteConnection) -> FeiwenResult<()> {
         use super::super::schema::novel::dsl;
 
