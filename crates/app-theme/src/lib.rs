@@ -33,8 +33,18 @@ const INFO_SEED_COLOR: Argb = Argb::from_rgb(0x0E, 0xA5, 0xE9);
 const SUCCESS_SEED_COLOR: Argb = Argb::from_rgb(0x22, 0xC5, 0x5E);
 const WARNING_SEED_COLOR: Argb = Argb::from_rgb(0xF5, 0x9E, 0x0B);
 const CHART_EXTRA_SEED_COLOR: Argb = Argb::from_rgb(0xA8, 0x55, 0xF7);
-const SYNTAX_KEYWORD_SEED_COLOR: Argb = Argb::from_rgb(0xA8, 0x55, 0xF7);
-const SYNTAX_FUNCTION_SEED_COLOR: Argb = Argb::from_rgb(0xF9, 0x73, 0x16);
+const SYNTAX_KEYWORD_SEED_COLOR: Argb = Argb::from_rgb(0xD9, 0x46, 0xEF);
+const SYNTAX_FUNCTION_SEED_COLOR: Argb = Argb::from_rgb(0x63, 0x66, 0xF1);
+const SYNTAX_TYPE_SEED_COLOR: Argb = Argb::from_rgb(0xEA, 0xB3, 0x08);
+const SYNTAX_PROPERTY_SEED_COLOR: Argb = Argb::from_rgb(0x06, 0xB6, 0xD4);
+const SYNTAX_PROPERTY_CHROMA: f64 = 54.0;
+const SYNTAX_ATTRIBUTE_SEED_COLOR: Argb = Argb::from_rgb(0xF4, 0x3F, 0x5E);
+const SYNTAX_ATTRIBUTE_CHROMA: f64 = 36.0;
+const SYNTAX_TAG_SEED_COLOR: Argb = Argb::from_rgb(0xEC, 0x48, 0x99);
+const SYNTAX_TAG_CHROMA: f64 = 84.0;
+const SYNTAX_STRING_SEED_COLOR: Argb = SUCCESS_SEED_COLOR;
+const SYNTAX_CONSTANT_SEED_COLOR: Argb = Argb::from_rgb(0xF9, 0x73, 0x16);
+const SYNTAX_CONSTANT_CHROMA: f64 = 78.0;
 const MATERIAL_SOFT_DIVIDER_ALPHA: u8 = 0x1F;
 const MATERIAL_HOVER_STATE_LAYER_ALPHA: u8 = 0x14;
 const MATERIAL_PRESSED_STATE_LAYER_ALPHA: u8 = 0x1A;
@@ -609,24 +619,12 @@ fn material_status_tokens(
     scheme: &MaterializedScheme,
     palette: &MaterialPalette,
 ) -> MaterialStatusTokens {
-    let primary_roles = material_error_roles_for_palette(scheme, scheme.primary_palette.clone());
-    let danger_roles = material_error_roles_for_palette(scheme, scheme.error_palette.clone());
-    let info_roles = material_error_roles_for_palette(
-        scheme,
-        semantic_palette(scheme.source_color, INFO_SEED_COLOR, SEMANTIC_CHROMA),
-    );
-    let success_roles = material_error_roles_for_palette(
-        scheme,
-        semantic_palette(scheme.source_color, SUCCESS_SEED_COLOR, SEMANTIC_CHROMA),
-    );
-    let warning_roles = material_error_roles_for_palette(
-        scheme,
-        semantic_palette(scheme.source_color, WARNING_SEED_COLOR, SEMANTIC_CHROMA),
-    );
-    let chart_extra_roles = material_error_roles_for_palette(
-        scheme,
-        semantic_palette(scheme.source_color, CHART_EXTRA_SEED_COLOR, SEMANTIC_CHROMA),
-    );
+    let primary_roles = material_semantic_roles_for_palette(scheme, scheme.primary_palette.clone());
+    let danger_roles = material_semantic_roles_for_palette(scheme, scheme.error_palette.clone());
+    let info_roles = material_semantic_roles_for_seed(scheme, INFO_SEED_COLOR);
+    let success_roles = material_semantic_roles_for_seed(scheme, SUCCESS_SEED_COLOR);
+    let warning_roles = material_semantic_roles_for_seed(scheme, WARNING_SEED_COLOR);
+    let chart_extra_roles = material_semantic_roles_for_seed(scheme, CHART_EXTRA_SEED_COLOR);
 
     MaterialStatusTokens {
         chart_1: hex(primary_roles.color),
@@ -776,34 +774,34 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
 }
 
 fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThemeStyle {
-    let danger_roles = material_error_roles_for_palette(scheme, scheme.error_palette.clone());
-    let info_roles = material_error_roles_for_palette(
+    let danger_roles = material_semantic_roles_for_palette(scheme, scheme.error_palette.clone());
+    let info_roles = material_semantic_roles_for_seed(scheme, INFO_SEED_COLOR);
+    let success_roles = material_semantic_roles_for_seed(scheme, SUCCESS_SEED_COLOR);
+    let warning_roles = material_semantic_roles_for_seed(scheme, WARNING_SEED_COLOR);
+    let syntax_keyword_roles = material_semantic_roles_for_seed(scheme, SYNTAX_KEYWORD_SEED_COLOR);
+    let syntax_function_roles =
+        material_semantic_roles_for_seed(scheme, SYNTAX_FUNCTION_SEED_COLOR);
+    let syntax_type_roles = material_semantic_roles_for_seed(scheme, SYNTAX_TYPE_SEED_COLOR);
+    let syntax_property_roles = material_semantic_roles_for_seed_and_chroma(
         scheme,
-        semantic_palette(scheme.source_color, INFO_SEED_COLOR, SEMANTIC_CHROMA),
+        SYNTAX_PROPERTY_SEED_COLOR,
+        SYNTAX_PROPERTY_CHROMA,
     );
-    let success_roles = material_error_roles_for_palette(
+    let syntax_attribute_roles = material_semantic_roles_for_seed_and_chroma(
         scheme,
-        semantic_palette(scheme.source_color, SUCCESS_SEED_COLOR, SEMANTIC_CHROMA),
+        SYNTAX_ATTRIBUTE_SEED_COLOR,
+        SYNTAX_ATTRIBUTE_CHROMA,
     );
-    let warning_roles = material_error_roles_for_palette(
+    let syntax_tag_roles = material_semantic_roles_for_seed_and_chroma(
         scheme,
-        semantic_palette(scheme.source_color, WARNING_SEED_COLOR, SEMANTIC_CHROMA),
+        SYNTAX_TAG_SEED_COLOR,
+        SYNTAX_TAG_CHROMA,
     );
-    let keyword_roles = material_error_roles_for_palette(
+    let syntax_string_roles = material_semantic_roles_for_seed(scheme, SYNTAX_STRING_SEED_COLOR);
+    let syntax_constant_roles = material_semantic_roles_for_seed_and_chroma(
         scheme,
-        semantic_palette(
-            scheme.source_color,
-            SYNTAX_KEYWORD_SEED_COLOR,
-            SEMANTIC_CHROMA,
-        ),
-    );
-    let function_roles = material_error_roles_for_palette(
-        scheme,
-        semantic_palette(
-            scheme.source_color,
-            SYNTAX_FUNCTION_SEED_COLOR,
-            SEMANTIC_CHROMA,
-        ),
+        SYNTAX_CONSTANT_SEED_COLOR,
+        SYNTAX_CONSTANT_CHROMA,
     );
 
     let editor_background = hex(scheme.surface_container_lowest);
@@ -862,43 +860,43 @@ fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThem
         )),
     );
     root.insert("success.border".into(), json!(hex(success_roles.color)));
-    root.insert("hint".into(), json!(hex(keyword_roles.color)));
+    root.insert("hint".into(), json!(hex(syntax_keyword_roles.color)));
     root.insert(
         "hint.background".into(),
         json!(hex_alpha(
-            keyword_roles.color,
+            syntax_keyword_roles.color,
             MATERIAL_PRESSED_STATE_LAYER_ALPHA
         )),
     );
-    root.insert("hint.border".into(), json!(hex(keyword_roles.color)));
+    root.insert("hint.border".into(), json!(hex(syntax_keyword_roles.color)));
 
     let mut syntax = Map::new();
-    insert_syntax_color(&mut syntax, "attribute", hex(info_roles.color));
-    insert_syntax_color(&mut syntax, "boolean", hex(warning_roles.color));
+    insert_syntax_color(&mut syntax, "attribute", hex(syntax_attribute_roles.color));
+    insert_syntax_color(&mut syntax, "boolean", hex(syntax_constant_roles.color));
     insert_syntax_color(&mut syntax, "comment", hex(scheme.on_surface_variant));
     insert_syntax_color(&mut syntax, "comment.doc", hex(scheme.on_surface_variant));
-    insert_syntax_color(&mut syntax, "constant", hex(warning_roles.color));
-    insert_syntax_color(&mut syntax, "constructor", hex(info_roles.color));
+    insert_syntax_color(&mut syntax, "constant", hex(syntax_constant_roles.color));
+    insert_syntax_color(&mut syntax, "constructor", hex(syntax_type_roles.color));
     insert_syntax_color(&mut syntax, "embedded", editor_foreground.clone());
-    insert_syntax_color(&mut syntax, "function", hex(function_roles.color));
-    insert_syntax_color(&mut syntax, "keyword", hex(keyword_roles.color));
+    insert_syntax_color(&mut syntax, "function", hex(syntax_function_roles.color));
+    insert_syntax_color(&mut syntax, "keyword", hex(syntax_keyword_roles.color));
     insert_syntax_text_style(
         &mut syntax,
         "link_text",
-        hex(info_roles.color),
+        hex(syntax_attribute_roles.color),
         Some("normal"),
         None,
     );
     insert_syntax_text_style(
         &mut syntax,
         "link_uri",
-        hex(info_roles.color),
+        hex(syntax_attribute_roles.color),
         Some("italic"),
         None,
     );
-    insert_syntax_color(&mut syntax, "number", hex(warning_roles.color));
+    insert_syntax_color(&mut syntax, "number", hex(syntax_constant_roles.color));
     insert_syntax_color(&mut syntax, "operator", hex(scheme.on_surface_variant));
-    insert_syntax_color(&mut syntax, "property", editor_foreground.clone());
+    insert_syntax_color(&mut syntax, "property", hex(syntax_property_roles.color));
     insert_syntax_color(&mut syntax, "punctuation", hex(scheme.on_surface_variant));
     insert_syntax_color(
         &mut syntax,
@@ -915,29 +913,45 @@ fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThem
         "punctuation.list_marker",
         hex(scheme.on_surface_variant),
     );
-    insert_syntax_color(&mut syntax, "punctuation.special", hex(warning_roles.color));
-    insert_syntax_color(&mut syntax, "string", hex(success_roles.color));
-    insert_syntax_color(&mut syntax, "string.escape", hex(success_roles.color));
-    insert_syntax_color(&mut syntax, "string.regex", hex(success_roles.color));
-    insert_syntax_color(&mut syntax, "string.special", hex(warning_roles.color));
+    insert_syntax_color(
+        &mut syntax,
+        "punctuation.special",
+        hex(syntax_constant_roles.color),
+    );
+    insert_syntax_color(&mut syntax, "string", hex(syntax_string_roles.color));
+    insert_syntax_color(&mut syntax, "string.escape", hex(syntax_string_roles.color));
+    insert_syntax_color(&mut syntax, "string.regex", hex(syntax_string_roles.color));
+    insert_syntax_color(
+        &mut syntax,
+        "string.special",
+        hex(syntax_constant_roles.color),
+    );
     insert_syntax_color(
         &mut syntax,
         "string.special.symbol",
-        hex(warning_roles.color),
+        hex(syntax_constant_roles.color),
     );
-    insert_syntax_color(&mut syntax, "tag", hex(info_roles.color));
-    insert_syntax_color(&mut syntax, "text.literal", hex(warning_roles.color));
+    insert_syntax_color(&mut syntax, "tag", hex(syntax_tag_roles.color));
+    insert_syntax_color(
+        &mut syntax,
+        "text.literal",
+        hex(syntax_constant_roles.color),
+    );
     insert_syntax_text_style(
         &mut syntax,
         "title",
-        hex(function_roles.color),
+        hex(syntax_function_roles.color),
         None,
         Some(600),
     );
-    insert_syntax_color(&mut syntax, "type", hex(info_roles.color));
+    insert_syntax_color(&mut syntax, "type", hex(syntax_type_roles.color));
     insert_syntax_color(&mut syntax, "variable", editor_foreground);
-    insert_syntax_color(&mut syntax, "variable.special", hex(function_roles.color));
-    insert_syntax_color(&mut syntax, "variant", hex(info_roles.color));
+    insert_syntax_color(
+        &mut syntax,
+        "variable.special",
+        hex(syntax_function_roles.color),
+    );
+    insert_syntax_color(&mut syntax, "variant", hex(syntax_type_roles.color));
     root.insert("syntax".into(), Value::Object(syntax));
 
     serde_json::from_value(Value::Object(root))
@@ -1051,10 +1065,31 @@ struct MaterialSemanticRoles {
     on_container: Argb,
 }
 
-fn material_error_roles_for_palette(
+fn material_semantic_roles_for_seed(
     scheme: &MaterializedScheme,
-    error_palette: TonalPalette,
+    design_color: Argb,
 ) -> MaterialSemanticRoles {
+    material_semantic_roles_for_seed_and_chroma(scheme, design_color, SEMANTIC_CHROMA)
+}
+
+fn material_semantic_roles_for_seed_and_chroma(
+    scheme: &MaterializedScheme,
+    design_color: Argb,
+    chroma: f64,
+) -> MaterialSemanticRoles {
+    material_semantic_roles_for_palette(
+        scheme,
+        semantic_palette(scheme.source_color, design_color, chroma),
+    )
+}
+
+fn material_semantic_roles_for_palette(
+    scheme: &MaterializedScheme,
+    semantic_palette: TonalPalette,
+) -> MaterialSemanticRoles {
+    // material-color-utils exposes dynamic role contrast through MaterialDynamicColors.
+    // Replacing the DynamicScheme error palette lets app-specific semantic palettes
+    // reuse Material's error/on-error tone rules for status, chart, and syntax roles.
     let dynamic_scheme = DynamicScheme::new_with_platform_and_spec(
         Hct::from_argb(scheme.source_color),
         scheme.variant,
@@ -1067,7 +1102,7 @@ fn material_error_roles_for_palette(
         scheme.tertiary_palette.clone(),
         scheme.neutral_palette.clone(),
         scheme.neutral_variant_palette.clone(),
-        error_palette,
+        semantic_palette,
     );
     let dynamic_colors = MaterialDynamicColors::new_with_spec(scheme.spec_version);
     let color = dynamic_colors.error();

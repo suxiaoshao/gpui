@@ -41,6 +41,31 @@ fn syntax_color(highlight: &HighlightThemeStyle, name: &str) -> Argb {
     )
 }
 
+fn main_syntax_palette(highlight: &HighlightThemeStyle) -> Vec<(&'static str, Argb)> {
+    [
+        "keyword",
+        "function",
+        "type",
+        "property",
+        "attribute_link",
+        "tag",
+        "string",
+        "number",
+        "comment",
+        "variable",
+    ]
+    .into_iter()
+    .map(|name| {
+        let token = if name == "attribute_link" {
+            "attribute"
+        } else {
+            name
+        };
+        (name, syntax_color(highlight, token))
+    })
+    .collect()
+}
+
 fn collect_null_paths(prefix: &str, value: &serde_json::Value, paths: &mut Vec<String>) {
     match value {
         serde_json::Value::Null => paths.push(prefix.to_string()),
@@ -81,6 +106,96 @@ fn contrast_ratio(first: Argb, second: Argb) -> f64 {
     };
 
     (lighter + 0.05) / (darker + 0.05)
+}
+
+fn oklab_distance(first: Argb, second: Argb) -> f64 {
+    fn linear_channel(value: u8) -> f64 {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn oklab(color: Argb) -> [f64; 3] {
+        let red = linear_channel(color.red());
+        let green = linear_channel(color.green());
+        let blue = linear_channel(color.blue());
+
+        let l = 0.412_221_470_8 * red + 0.536_332_536_3 * green + 0.051_445_992_9 * blue;
+        let m = 0.211_903_498_2 * red + 0.680_699_545_1 * green + 0.107_396_956_6 * blue;
+        let s = 0.088_302_461_9 * red + 0.281_718_837_6 * green + 0.629_978_700_5 * blue;
+
+        let l = l.cbrt();
+        let m = m.cbrt();
+        let s = s.cbrt();
+
+        [
+            0.210_454_255_3 * l + 0.793_617_785 * m - 0.004_072_046_8 * s,
+            1.977_998_495_1 * l - 2.428_592_205 * m + 0.450_593_709_9 * s,
+            0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766 * s,
+        ]
+    }
+
+    let first = oklab(first);
+    let second = oklab(second);
+    ((first[0] - second[0]).powi(2)
+        + (first[1] - second[1]).powi(2)
+        + (first[2] - second[2]).powi(2))
+    .sqrt()
+}
+
+fn syntax_pair_minimum_oklab_distance(first: &str, second: &str) -> f64 {
+    let pair = [first, second];
+    if pair.contains(&"property") && pair.contains(&"string")
+        || pair.contains(&"property") && pair.contains(&"variable")
+        || pair.contains(&"property") && pair.contains(&"function")
+        || pair.contains(&"attribute_link") && pair.contains(&"type")
+        || pair.contains(&"attribute_link") && pair.contains(&"number")
+    {
+        0.10
+    } else {
+        0.08
+    }
+}
+
+fn assert_syntax_palette_pairwise_distances(
+    mode: ComponentThemeMode,
+    palette: &[(&'static str, Argb)],
+) {
+    let mut failures = Vec::new();
+    let mut nearest = Vec::new();
+
+    for (index, (first_name, first_color)) in palette.iter().enumerate() {
+        for (second_name, second_color) in palette.iter().skip(index + 1) {
+            let distance = oklab_distance(*first_color, *second_color);
+            let minimum = syntax_pair_minimum_oklab_distance(first_name, second_name);
+            let row = format!(
+                "{first_name} {} / {second_name} {}: {distance:.3} >= {minimum:.3}",
+                first_color.to_hex(),
+                second_color.to_hex()
+            );
+
+            if distance < minimum {
+                failures.push(row.clone());
+            }
+            nearest.push((distance, row));
+        }
+    }
+
+    nearest.sort_by(|first, second| first.0.partial_cmp(&second.0).unwrap());
+    assert!(
+        failures.is_empty(),
+        "Material You syntax palette should keep all main token pairs distinct for {mode:?}.\nFailures:\n{}\nNearest pairs:\n{}",
+        failures.join("\n"),
+        nearest
+            .iter()
+            .take(10)
+            .map(|(_, row)| row.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 #[test]
@@ -281,7 +396,8 @@ fn generated_material_theme_uses_material_state_layers() {
     for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
         let scheme = material_scheme(mode);
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
-        let danger_roles = material_error_roles_for_palette(&scheme, scheme.error_palette.clone());
+        let danger_roles =
+            material_semantic_roles_for_palette(&scheme, scheme.error_palette.clone());
 
         assert_eq!(
             config.colors.primary_hover,
@@ -343,10 +459,10 @@ fn generated_material_theme_uses_material_state_layers() {
 }
 
 #[test]
-fn material_error_roles_for_palette_matches_scheme_error_roles() {
+fn material_semantic_roles_for_palette_matches_scheme_error_roles() {
     for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
         let scheme = material_scheme(mode);
-        let roles = material_error_roles_for_palette(&scheme, scheme.error_palette.clone());
+        let roles = material_semantic_roles_for_palette(&scheme, scheme.error_palette.clone());
 
         assert_eq!(roles.color, scheme.error);
         assert_eq!(roles.on_color, scheme.on_error);
@@ -498,6 +614,7 @@ fn generated_material_theme_fills_highlight_tokens() {
             "attribute",
             "boolean",
             "comment",
+            "comment.doc",
             "constant",
             "constructor",
             "embedded",
@@ -511,8 +628,13 @@ fn generated_material_theme_fills_highlight_tokens() {
             "punctuation",
             "punctuation.bracket",
             "punctuation.delimiter",
+            "punctuation.list_marker",
+            "punctuation.special",
             "string",
             "string.escape",
+            "string.regex",
+            "string.special",
+            "string.special.symbol",
             "tag",
             "text.literal",
             "title",
@@ -523,6 +645,39 @@ fn generated_material_theme_fills_highlight_tokens() {
         ] {
             _ = syntax_color(&highlight, name);
         }
+    }
+}
+
+#[test]
+fn generated_material_syntax_roles_do_not_collapse_to_repeated_colors() {
+    for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+        let highlight = config.highlight.expect("highlight should be generated");
+        let palette = main_syntax_palette(&highlight);
+        let distinct = palette
+            .iter()
+            .map(|(_, color)| color.to_hex())
+            .collect::<HashSet<_>>();
+
+        assert!(
+            palette.len() >= 10,
+            "Material You syntax palette should include all main token roles for {mode:?}"
+        );
+        assert!(
+            distinct.len() >= 10,
+            "Material You syntax roles should stay visually distinct for {mode:?}: {distinct:?}"
+        );
+        assert_eq!(
+            syntax_color(&highlight, "attribute"),
+            syntax_color(&highlight, "link_text"),
+            "attribute and link_text should intentionally share the attribute_link color for {mode:?}"
+        );
+        assert_eq!(
+            syntax_color(&highlight, "attribute"),
+            syntax_color(&highlight, "link_uri"),
+            "attribute and link_uri should intentionally share the attribute_link color for {mode:?}"
+        );
+        assert_syntax_palette_pairwise_distances(mode, &palette);
     }
 }
 
