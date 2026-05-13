@@ -154,17 +154,6 @@ impl AdvancedQueryState {
         this
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn set_options(
-        &mut self,
-        options: QueryOptions,
-        window: &mut Window,
-        cx: &mut Context<QueryView>,
-    ) {
-        self.options = options;
-        Self::refresh_group_options(&self.options, &mut self.root, window, cx);
-    }
-
     pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<QueryView>) {
         self.disabled = disabled;
         Self::set_group_disabled(&mut self.root, disabled, cx);
@@ -701,23 +690,6 @@ impl AdvancedQueryState {
         })
     }
 
-    #[allow(dead_code)]
-    fn refresh_group_options(
-        options: &QueryOptions,
-        group: &mut FilterGroup,
-        window: &mut Window,
-        cx: &mut Context<QueryView>,
-    ) {
-        for item in &mut group.items {
-            match item {
-                FilterNode::Condition(condition) => {
-                    refresh_condition_options(options, condition, window, cx)
-                }
-                FilterNode::Group(group) => Self::refresh_group_options(options, group, window, cx),
-            }
-        }
-    }
-
     fn set_group_disabled(group: &mut FilterGroup, disabled: bool, cx: &mut Context<QueryView>) {
         for item in &mut group.items {
             match item {
@@ -799,84 +771,6 @@ impl ConditionRow {
             | ConditionDraft::NoCondition { .. }
             | ConditionDraft::Text(_)
             | ConditionDraft::Bool(_) => {}
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn refresh_condition_options(
-    options: &QueryOptions,
-    condition: &mut ConditionRow,
-    window: &mut Window,
-    cx: &mut Context<QueryView>,
-) {
-    match &condition.draft {
-        ConditionDraft::Tags(TagsCondition {
-            value: Some(value), ..
-        }) => {
-            value.update(cx, |value, cx| value.set_options(options.tags.clone(), cx));
-        }
-        ConditionDraft::Author(AuthorCondition {
-            value: AuthorValue::Single(value),
-            ..
-        }) => {
-            value.update(cx, |value, cx| {
-                let selected =
-                    retained_author_selection(value.selected_value().cloned(), &options.authors);
-                value.set_items(SearchableVec::new(options.authors.clone()), window, cx);
-                if let Some(selected) = selected {
-                    value.set_selected_value(&selected, window, cx);
-                } else {
-                    value.set_selected_index(None, window, cx);
-                }
-            });
-        }
-        ConditionDraft::Author(AuthorCondition {
-            value: AuthorValue::Multi(value),
-            ..
-        }) => {
-            value.update(cx, |value, cx| {
-                value.set_options(options.authors.clone(), cx)
-            });
-        }
-        _ => {}
-    }
-}
-
-fn retained_author_selection(
-    selected: Option<crate::store::query::AuthorRef>,
-    authors: &[AuthorOption],
-) -> Option<crate::store::query::AuthorRef> {
-    let selected = selected?;
-    authors
-        .iter()
-        .any(|author| author.author == selected)
-        .then_some(selected)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::query::AuthorRef;
-
-    #[test]
-    fn retained_author_selection_keeps_existing_author_only_when_still_available() {
-        let authors = vec![author(1, "张三")];
-        assert_eq!(
-            retained_author_selection(Some(AuthorRef::Id(1)), &authors),
-            Some(AuthorRef::Id(1))
-        );
-        assert_eq!(
-            retained_author_selection(Some(AuthorRef::Id(2)), &authors),
-            None
-        );
-        assert_eq!(retained_author_selection(None, &authors), None);
-    }
-
-    fn author(id: i32, name: &str) -> AuthorOption {
-        AuthorOption {
-            author: AuthorRef::Id(id),
-            name: name.to_owned(),
         }
     }
 }

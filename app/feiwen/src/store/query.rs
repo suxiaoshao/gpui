@@ -123,16 +123,6 @@ pub(crate) enum SortExpr {
     Number(NumberField),
     Text(TextField),
     Bool(BoolField),
-    #[allow(dead_code)]
-    Constant(f64),
-    #[allow(dead_code)]
-    Add(Box<SortExpr>, Box<SortExpr>),
-    #[allow(dead_code)]
-    Sub(Box<SortExpr>, Box<SortExpr>),
-    #[allow(dead_code)]
-    Mul(Box<SortExpr>, Box<SortExpr>),
-    #[allow(dead_code)]
-    Div(Box<SortExpr>, Box<SortExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -527,16 +517,6 @@ impl SortExpr {
             SortExpr::Number(field) => field.sql(alias),
             SortExpr::Text(field) => field.sql(alias),
             SortExpr::Bool(field) => field.sql(alias),
-            SortExpr::Constant(value) => value.to_string(),
-            SortExpr::Add(left, right) => format!("({} + {})", left.sql(alias), right.sql(alias)),
-            SortExpr::Sub(left, right) => format!("({} - {})", left.sql(alias), right.sql(alias)),
-            SortExpr::Mul(left, right) => format!("({} * {})", left.sql(alias), right.sql(alias)),
-            SortExpr::Div(left, right) => format!(
-                "CASE WHEN ({}) = 0 THEN NULL ELSE (({}) * 1.0 / ({})) END",
-                right.sql(alias),
-                left.sql(alias),
-                right.sql(alias)
-            ),
         }
     }
 
@@ -548,31 +528,6 @@ impl SortExpr {
                 .map(|value| SortValue::Number(value as f64)),
             SortExpr::Text(field) => Some(SortValue::Text(record.text(*field).to_owned())),
             SortExpr::Bool(field) => Some(SortValue::Bool(record.bool(*field))),
-            SortExpr::Constant(value) => Some(SortValue::Number(*value)),
-            SortExpr::Add(left, right) => Some(SortValue::Number(
-                left.eval_number(record)? + right.eval_number(record)?,
-            )),
-            SortExpr::Sub(left, right) => Some(SortValue::Number(
-                left.eval_number(record)? - right.eval_number(record)?,
-            )),
-            SortExpr::Mul(left, right) => Some(SortValue::Number(
-                left.eval_number(record)? * right.eval_number(record)?,
-            )),
-            SortExpr::Div(left, right) => {
-                let right = right.eval_number(record)?;
-                if right == 0. {
-                    return None;
-                }
-                Some(SortValue::Number(left.eval_number(record)? / right))
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn eval_number(&self, record: &NovelRecord) -> Option<f64> {
-        match self.eval(record)? {
-            SortValue::Number(value) => Some(value),
-            SortValue::Text(_) | SortValue::Bool(_) => None,
         }
     }
 }
@@ -796,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn sorting_supports_fields_math_priority_and_missing_last() {
+    fn sorting_supports_fields_priority_and_missing_last() {
         let mut one = record(1);
         let mut two = record(2);
         let mut three = record(3);
@@ -813,10 +768,7 @@ mod tests {
                     direction: SortDirection::Asc,
                 },
                 SortSpec {
-                    expr: SortExpr::Div(
-                        Box::new(SortExpr::Number(NumberField::ReadCount)),
-                        Box::new(SortExpr::Number(NumberField::WordCount)),
-                    ),
+                    expr: SortExpr::Number(NumberField::ReadCount),
                     direction: SortDirection::Desc,
                 },
             ],
@@ -831,36 +783,6 @@ mod tests {
             vec![2, 3, 1]
         );
 
-        let divide_by_zero = SortExpr::Div(
-            Box::new(SortExpr::Number(NumberField::ReadCount)),
-            Box::new(SortExpr::Constant(0.)),
-        );
-        assert_eq!(divide_by_zero.eval(&record(1)), None);
-
-        assert_eq!(
-            SortExpr::Sub(
-                Box::new(SortExpr::Number(NumberField::ReadCount)),
-                Box::new(SortExpr::Number(NumberField::ReplyCount)),
-            )
-            .eval(&record(1)),
-            Some(SortValue::Number(90.))
-        );
-        assert_eq!(
-            SortExpr::Add(
-                Box::new(SortExpr::Number(NumberField::ReplyCount)),
-                Box::new(SortExpr::Constant(5.)),
-            )
-            .eval(&record(1)),
-            Some(SortValue::Number(15.))
-        );
-        assert_eq!(
-            SortExpr::Mul(
-                Box::new(SortExpr::Number(NumberField::ReplyCount)),
-                Box::new(SortExpr::Constant(2.)),
-            )
-            .eval(&record(1)),
-            Some(SortValue::Number(20.))
-        );
         assert_eq!(
             SortExpr::Bool(BoolField::IsLimit).eval(&record(1)),
             Some(SortValue::Bool(false))

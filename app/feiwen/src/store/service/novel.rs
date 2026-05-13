@@ -7,7 +7,7 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::{
         model::{NovelModel, NovelTagModel, TagModel},
-        query::{FilterExpr, Predicate, QuerySpec, TagsPredicate, TextField, TextOp},
+        query::QuerySpec,
         types::{Author, NovelCount, Title},
     },
 };
@@ -104,40 +104,6 @@ impl Novel {
     }
     pub(crate) fn count(conn: &mut SqliteConnection) -> FeiwenResult<i64> {
         NovelModel::count(conn)
-    }
-    #[allow(dead_code)]
-    pub(crate) fn search(
-        query: &str,
-        tags: &HashSet<String>,
-        conn: &mut SqliteConnection,
-    ) -> FeiwenResult<Vec<Novel>> {
-        let mut filters = Vec::new();
-        if !query.is_empty() {
-            filters.push(FilterExpr::Any(vec![
-                FilterExpr::Predicate(Predicate::Text {
-                    field: TextField::Title,
-                    op: TextOp::Contains,
-                    value: query.to_owned(),
-                }),
-                FilterExpr::Predicate(Predicate::Text {
-                    field: TextField::AuthorName,
-                    op: TextOp::Contains,
-                    value: query.to_owned(),
-                }),
-            ]));
-        }
-        if !tags.is_empty() {
-            filters.push(FilterExpr::Predicate(Predicate::Tags(
-                TagsPredicate::ContainsAll(tags.clone()),
-            )));
-        }
-        Self::query(
-            &QuerySpec {
-                filter: FilterExpr::All(filters),
-                sorts: Vec::new(),
-            },
-            conn,
-        )
     }
 
     pub(crate) fn query(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<Vec<Novel>> {
@@ -247,6 +213,7 @@ impl NovelRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::query::{FilterExpr, Predicate, TagsPredicate};
     use diesel::{Connection, connection::SimpleConnection};
 
     fn connection() -> SqliteConnection {
@@ -313,26 +280,6 @@ mod tests {
         novel.is_limit = is_limit;
         novel.count.reply_count = reply_count;
         novel.save(conn).unwrap();
-    }
-
-    #[test]
-    fn search_keeps_quick_query_and_selected_tags_compatibility() {
-        let mut conn = connection();
-        novel(1, "Rust 入门", "张三", &["rust", "systems"])
-            .save(&mut conn)
-            .unwrap();
-        novel(2, "Python 入门", "Rust 作者", &["python"])
-            .save(&mut conn)
-            .unwrap();
-        novel(3, "Rust 进阶", "李四", &["rust"])
-            .save(&mut conn)
-            .unwrap();
-
-        let tags = HashSet::from(["systems".to_owned()]);
-        let results = Novel::search("Rust", &tags, &mut conn).unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title.id, 1);
     }
 
     #[test]
