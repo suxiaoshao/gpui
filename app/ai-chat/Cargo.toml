@@ -24,7 +24,29 @@ streaming responses, and web search support.
 category = "DeveloperTool"
 
 [features]
+default = ["tree-sitter-languages-basic"]
 dhat-heap = ["dep:dhat"]
+tree-sitter-languages-basic = [
+  "gpui-component/tree-sitter-bash",
+  "gpui-component/tree-sitter-c",
+  "gpui-component/tree-sitter-css",
+  "gpui-component/tree-sitter-diff",
+  "gpui-component/tree-sitter-go",
+  "gpui-component/tree-sitter-graphql",
+  "gpui-component/tree-sitter-html",
+  "gpui-component/tree-sitter-java",
+  "gpui-component/tree-sitter-javascript",
+  "gpui-component/tree-sitter-markdown",
+  "gpui-component/tree-sitter-python",
+  "gpui-component/tree-sitter-rust",
+  "gpui-component/tree-sitter-sql",
+  "gpui-component/tree-sitter-svelte",
+  "gpui-component/tree-sitter-toml",
+  "gpui-component/tree-sitter-tsx",
+  "gpui-component/tree-sitter-typescript",
+  "gpui-component/tree-sitter-yaml",
+]
+tree-sitter-languages-full = ["gpui-component/tree-sitter-languages"]
 
 [dependencies]
 dhat = { version = "0.3.3", optional = true }

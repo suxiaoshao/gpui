@@ -48,7 +48,9 @@ mod macos {
         runtime::{AnyObject, NSObjectProtocol, ProtocolObject},
     };
     use objc2_app_kit::{NSColor, NSColorSpace, NSSystemColorsDidChangeNotification};
-    use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue};
+    use objc2_foundation::{
+        NSNotification, NSNotificationCenter, NSOperationQueue, NSUserDefaults, ns_string,
+    };
     use std::{ptr::NonNull, sync::Arc};
 
     pub(super) struct MacObserver {
@@ -68,7 +70,16 @@ mod macos {
     }
 
     pub(super) fn system_accent_color() -> Option<SystemAccentColor> {
-        let color = NSColor::controlAccentColor();
+        ns_color_to_system_color(NSColor::controlAccentColor())
+    }
+
+    pub(super) fn system_text_highlight_color() -> Option<SystemAccentColor> {
+        let defaults = NSUserDefaults::standardUserDefaults();
+        defaults.objectForKey(ns_string!("AppleHighlightColor"))?;
+        ns_color_to_system_color(NSColor::selectedTextBackgroundColor())
+    }
+
+    fn ns_color_to_system_color(color: Retained<NSColor>) -> Option<SystemAccentColor> {
         let color_space = NSColorSpace::sRGBColorSpace();
         let color = color.colorUsingColorSpace(&color_space)?;
         Some(SystemAccentColor::new(
@@ -175,6 +186,18 @@ pub fn system_accent_color() -> Option<SystemAccentColor> {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+pub fn system_text_highlight_color() -> Option<SystemAccentColor> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::system_text_highlight_color()
+    }
+
+    #[cfg(not(target_os = "macos"))]
     {
         None
     }
