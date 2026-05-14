@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use diesel::{
     query_builder::{AstPass, Query, QueryFragment, QueryId},
@@ -12,6 +12,16 @@ use diesel::{
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct QuerySql {
     parts: Vec<SqlPart>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NovelQueryPlan {
+    anchor: Option<TagAnchor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TagAnchor {
+    tag: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,7 +196,13 @@ impl QuerySpec {
         self.sorts.len()
     }
 
-    pub(crate) fn query_sql(&self, alias: &str) -> QuerySql {
+    pub(crate) fn tag_anchor_candidates(&self) -> HashSet<String> {
+        let mut tags = HashSet::new();
+        self.filter.collect_tag_anchor_candidates(&mut tags);
+        tags
+    }
+
+    pub(crate) fn query_sql_with_plan(&self, alias: &str, plan: &NovelQueryPlan) -> QuerySql {
         let mut sql = QuerySql::new();
         sql.push_sql(
             "\
@@ -201,10 +217,26 @@ impl QuerySpec {
             n.read_count, \
             n.reply_count, \
             n.author_id, \
-            n.author_name \
+            n.author_name ",
+        );
+        if let Some(anchor) = plan.tag_anchor() {
+            sql.push_sql(
+                "\
+        FROM novel_tag t0 INDEXED BY idx_novel_tag_tag_id_novel_id \
+        CROSS JOIN novel n \
+        WHERE t0.tag_id = ",
+            );
+            sql.push_text(anchor);
+            sql.push_sql(" AND ");
+            sql.push_sql(alias);
+            sql.push_sql(".id = t0.novel_id AND ");
+        } else {
+            sql.push_sql(
+                "\
         FROM novel n \
         WHERE ",
-        );
+            );
+        }
         self.filter.push_sql(alias, &mut sql);
         self.push_order_sql(alias, &mut sql);
         sql
@@ -270,6 +302,22 @@ impl FilterExpr {
                 sql.push_sql(")");
             }
             FilterExpr::Predicate(predicate) => predicate.push_sql(alias, sql),
+        }
+    }
+
+    fn collect_tag_anchor_candidates(&self, tags: &mut HashSet<String>) {
+        match self {
+            FilterExpr::All(filters) => {
+                for filter in filters {
+                    filter.collect_tag_anchor_candidates(tags);
+                }
+            }
+            FilterExpr::Predicate(Predicate::Tags(
+                TagsPredicate::ContainsAll(values) | TagsPredicate::Equals(values),
+            )) => {
+                tags.extend(values.iter().cloned());
+            }
+            FilterExpr::Any(_) | FilterExpr::Not(_) | FilterExpr::Predicate(_) => {}
         }
     }
 
@@ -627,6 +675,28 @@ impl SortExpr {
     }
 }
 
+impl NovelQueryPlan {
+    pub(crate) fn from_tag_counts(
+        candidates: HashSet<String>,
+        tag_counts: &HashMap<String, i64>,
+    ) -> Self {
+        let anchor = candidates
+            .into_iter()
+            .min_by(|left, right| {
+                let left_count = tag_counts.get(left).copied().unwrap_or(0);
+                let right_count = tag_counts.get(right).copied().unwrap_or(0);
+                left_count.cmp(&right_count).then_with(|| left.cmp(right))
+            })
+            .map(|tag| TagAnchor { tag });
+
+        Self { anchor }
+    }
+
+    fn tag_anchor(&self) -> Option<&str> {
+        self.anchor.as_ref().map(|anchor| anchor.tag.as_str())
+    }
+}
+
 impl QuerySql {
     pub(crate) fn new() -> Self {
         Self { parts: Vec::new() }
@@ -779,6 +849,13 @@ mod tests {
 
     fn set(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn counts(values: &[(&str, i64)]) -> HashMap<String, i64> {
+        values
+            .iter()
+            .map(|(tag, count)| ((*tag).to_owned(), *count))
+            .collect()
     }
 
     fn record(id: i32) -> NovelRecord {
@@ -977,6 +1054,89 @@ mod tests {
     }
 
     #[test]
+    fn tag_anchor_plan_selects_rarest_positive_and_tag() {
+        let spec = QuerySpec {
+            filter: FilterExpr::All(vec![FilterExpr::Predicate(Predicate::Tags(
+                TagsPredicate::ContainsAll(set(&["BL", "年下", "完结"])),
+            ))]),
+            sorts: Vec::new(),
+        };
+
+        let plan = NovelQueryPlan::from_tag_counts(
+            spec.tag_anchor_candidates(),
+            &counts(&[("BL", 81726), ("年下", 4745), ("完结", 52395)]),
+        );
+
+        assert_eq!(plan.tag_anchor(), Some("年下"));
+    }
+
+    #[test]
+    fn tag_anchor_plan_supports_equals_but_not_empty_sets() {
+        let equals = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Equals(set(&[
+                "rust", "gpui",
+            ])))),
+            sorts: Vec::new(),
+        };
+        let plan = NovelQueryPlan::from_tag_counts(
+            equals.tag_anchor_candidates(),
+            &counts(&[("rust", 10), ("gpui", 2)]),
+        );
+        assert_eq!(plan.tag_anchor(), Some("gpui"));
+
+        for predicate in [
+            TagsPredicate::ContainsAll(HashSet::new()),
+            TagsPredicate::Equals(HashSet::new()),
+        ] {
+            let spec = QuerySpec {
+                filter: FilterExpr::Predicate(Predicate::Tags(predicate)),
+                sorts: Vec::new(),
+            };
+            let plan =
+                NovelQueryPlan::from_tag_counts(spec.tag_anchor_candidates(), &HashMap::new());
+            assert_eq!(plan.tag_anchor(), None);
+        }
+    }
+
+    #[test]
+    fn tag_anchor_candidates_do_not_cross_or_or_not_boundaries() {
+        let spec = QuerySpec {
+            filter: FilterExpr::All(vec![
+                FilterExpr::Any(vec![FilterExpr::Predicate(Predicate::Tags(
+                    TagsPredicate::ContainsAll(set(&["rare"])),
+                ))]),
+                FilterExpr::Not(Box::new(FilterExpr::Predicate(Predicate::Tags(
+                    TagsPredicate::Equals(set(&["excluded"])),
+                )))),
+            ]),
+            sorts: Vec::new(),
+        };
+
+        assert!(spec.tag_anchor_candidates().is_empty());
+    }
+
+    #[test]
+    fn query_sql_with_tag_anchor_uses_indexed_cross_join_and_binds_anchor() {
+        let injection = "tag', 1) --";
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::ContainsAll(set(&[
+                injection,
+            ])))),
+            sorts: Vec::new(),
+        };
+        let plan = NovelQueryPlan::from_tag_counts(spec.tag_anchor_candidates(), &HashMap::new());
+
+        let sql = spec.query_sql_with_plan("n", &plan);
+        let text = sql.sql_with_placeholders();
+
+        assert!(text.contains("FROM novel_tag t0 INDEXED BY idx_novel_tag_tag_id_novel_id"));
+        assert!(text.contains("CROSS JOIN novel n"));
+        assert!(text.contains("WHERE t0.tag_id = ? AND n.id = t0.novel_id AND EXISTS"));
+        assert!(!text.contains(injection));
+        assert_eq!(sql.bind_count(), 2);
+    }
+
+    #[test]
     fn query_sql_uses_binds_for_user_controlled_values() {
         let injection = "' OR 1=1 --";
         let spec = QuerySpec {
@@ -999,7 +1159,7 @@ mod tests {
             }],
         };
 
-        let sql = spec.query_sql("n");
+        let sql = spec.query_sql_with_plan("n", &NovelQueryPlan::default());
         let text = sql.sql_with_placeholders();
 
         assert!(!text.contains(injection));
@@ -1033,7 +1193,7 @@ mod tests {
             sorts: Vec::new(),
         };
 
-        let sql = spec.query_sql("n");
+        let sql = spec.query_sql_with_plan("n", &NovelQueryPlan::default());
         let text = sql.sql_with_placeholders();
 
         assert!(text.contains("substr(n.latest_chapter_name, 1, length(?)) = ?"));

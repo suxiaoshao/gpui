@@ -7,7 +7,7 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::{
         model::{NovelModel, NovelTagModel, TagModel},
-        query::{QuerySpec, QuerySql},
+        query::{NovelQueryPlan, QuerySpec, QuerySql},
         types::{Author, NovelCount, Title},
     },
 };
@@ -59,6 +59,14 @@ struct NovelTagRow {
     name: String,
     #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
     id: Option<i32>,
+}
+
+#[derive(QueryableByName)]
+struct TagCountRow {
+    #[diesel(sql_type = sql_types::Text)]
+    tag_id: String,
+    #[diesel(sql_type = sql_types::BigInt)]
+    tag_count: i64,
 }
 
 impl RenderOnce for Novel {
@@ -120,7 +128,52 @@ impl Novel {
 }
 
 fn query_novel_rows(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<Vec<NovelRow>> {
-    Ok(spec.query_sql("n").load::<NovelRow>(conn)?)
+    let plan = query_plan(spec, conn)?;
+    Ok(spec
+        .query_sql_with_plan("n", &plan)
+        .load::<NovelRow>(conn)?)
+}
+
+fn query_plan(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<NovelQueryPlan> {
+    let candidates = spec.tag_anchor_candidates();
+    if candidates.is_empty() {
+        return Ok(NovelQueryPlan::default());
+    }
+
+    let tag_counts = load_tag_counts(&candidates, conn)?;
+    Ok(NovelQueryPlan::from_tag_counts(candidates, &tag_counts))
+}
+
+fn load_tag_counts(
+    tags: &HashSet<String>,
+    conn: &mut SqliteConnection,
+) -> FeiwenResult<HashMap<String, i64>> {
+    if tags.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut sql = QuerySql::new();
+    sql.push_sql(
+        "\
+        SELECT tag_id, COUNT(*) AS tag_count \
+        FROM novel_tag \
+        WHERE tag_id IN (",
+    );
+    let mut tags = tags.iter().collect::<Vec<_>>();
+    tags.sort();
+    for (ix, tag) in tags.into_iter().enumerate() {
+        if ix > 0 {
+            sql.push_sql(", ");
+        }
+        sql.push_text(tag);
+    }
+    sql.push_sql(") GROUP BY tag_id");
+
+    Ok(sql
+        .load::<TagCountRow>(conn)?
+        .into_iter()
+        .map(|row| (row.tag_id, row.tag_count))
+        .collect())
 }
 
 fn load_tags_for_rows(
@@ -219,6 +272,10 @@ mod tests {
         .unwrap();
         conn.batch_execute(include_str!(
             "../../../migrations/2026-05-06-000001_nullable_novel_counts/up.sql"
+        ))
+        .unwrap();
+        conn.batch_execute(include_str!(
+            "../../../migrations/2026-05-13-000001_query_indexes/up.sql"
         ))
         .unwrap();
         conn
@@ -386,8 +443,75 @@ mod tests {
             ),
             vec![1, 2]
         );
+        assert_eq!(
+            query_ids(
+                TagsPredicate::Equals(HashSet::from(["rust".to_owned(), "gpui".to_owned()])),
+                &mut conn
+            ),
+            vec![3]
+        );
+        assert_eq!(
+            query_ids(TagsPredicate::Equals(HashSet::new()), &mut conn),
+            vec![1]
+        );
         assert_eq!(query_ids(TagsPredicate::IsEmpty, &mut conn), vec![1]);
         assert_eq!(query_ids(TagsPredicate::IsNotEmpty, &mut conn), vec![2, 3]);
+    }
+
+    #[test]
+    fn query_or_and_not_tag_filters_keep_full_result_sets() {
+        let mut conn = connection();
+        save_novel(&mut conn, 1, "rare", &["rare"], false, Some(1));
+        save_novel(&mut conn, 2, "other", &["other"], false, Some(2));
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Any(vec![
+                FilterExpr::Predicate(Predicate::Tags(TagsPredicate::ContainsAll(HashSet::from(
+                    ["rare".to_owned()],
+                )))),
+                FilterExpr::Predicate(Predicate::Text {
+                    field: TextField::Title,
+                    op: TextOp::Equals,
+                    value: "other".to_owned(),
+                }),
+            ]),
+            sorts: vec![crate::store::query::SortSpec {
+                expr: crate::store::query::SortExpr::Number(
+                    crate::store::query::NumberField::NovelId,
+                ),
+                direction: crate::store::query::SortDirection::Asc,
+            }],
+        };
+
+        let results = Novel::query(&spec, &mut conn).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|novel| novel.title.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Not(Box::new(FilterExpr::Predicate(Predicate::Tags(
+                TagsPredicate::ContainsAll(HashSet::from(["rare".to_owned()])),
+            )))),
+            sorts: vec![crate::store::query::SortSpec {
+                expr: crate::store::query::SortExpr::Number(
+                    crate::store::query::NumberField::NovelId,
+                ),
+                direction: crate::store::query::SortDirection::Asc,
+            }],
+        };
+
+        let results = Novel::query(&spec, &mut conn).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|novel| novel.title.id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     #[test]
