@@ -2,6 +2,26 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use diesel::{
+    query_builder::{AstPass, Query, QueryFragment, QueryId},
+    result::QueryResult,
+    sql_types::{Bool, Integer, Text, Untyped},
+    sqlite::Sqlite,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuerySql {
+    parts: Vec<SqlPart>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SqlPart {
+    Raw(String),
+    Text(String),
+    Integer(i32),
+    Bool(bool),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QuerySpec {
     pub(crate) filter: FilterExpr,
@@ -166,30 +186,54 @@ impl QuerySpec {
         self.sorts.len()
     }
 
-    pub(crate) fn where_sql(&self, alias: &str) -> String {
-        self.filter.sql(alias)
+    pub(crate) fn query_sql(&self, alias: &str) -> QuerySql {
+        let mut sql = QuerySql::new();
+        sql.push_sql(
+            "\
+        SELECT \
+            n.id, \
+            n.name, \
+            n.desc, \
+            n.is_limit, \
+            n.latest_chapter_name, \
+            n.latest_chapter_id, \
+            n.word_count, \
+            n.read_count, \
+            n.reply_count, \
+            n.author_id, \
+            n.author_name \
+        FROM novel n \
+        WHERE ",
+        );
+        self.filter.push_sql(alias, &mut sql);
+        self.push_order_sql(alias, &mut sql);
+        sql
     }
 
-    pub(crate) fn order_sql(&self, alias: &str) -> String {
+    fn push_order_sql(&self, alias: &str, sql: &mut QuerySql) {
         if self.sorts.is_empty() {
-            return String::new();
+            return;
         }
-        let parts = self
-            .sorts
-            .iter()
-            .flat_map(|sort| {
-                let expr = sort.expr.sql(alias);
-                let direction = match sort.direction {
-                    SortDirection::Asc => "ASC",
-                    SortDirection::Desc => "DESC",
-                };
-                [
-                    format!("({expr}) IS NULL ASC"),
-                    format!("({expr}) {direction}"),
-                ]
-            })
-            .collect::<Vec<_>>();
-        format!(" ORDER BY {}", parts.join(", "))
+        sql.push_sql(" ORDER BY ");
+        let mut first = true;
+        for sort in &self.sorts {
+            if !first {
+                sql.push_sql(", ");
+            }
+            first = false;
+
+            let expr = sort.expr.sql(alias);
+            let direction = match sort.direction {
+                SortDirection::Asc => "ASC",
+                SortDirection::Desc => "DESC",
+            };
+            sql.push_sql("(");
+            sql.push_sql(&expr);
+            sql.push_sql(") IS NULL ASC, (");
+            sql.push_sql(&expr);
+            sql.push_sql(") ");
+            sql.push_sql(direction);
+        }
     }
 }
 
@@ -204,24 +248,28 @@ impl FilterExpr {
         }
     }
 
-    fn sql(&self, alias: &str) -> String {
+    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
         match self {
             FilterExpr::All(filters) => {
                 if filters.is_empty() {
-                    "1".to_owned()
+                    sql.push_sql("1");
                 } else {
-                    join_sql(filters, " AND ", alias)
+                    join_sql(filters, " AND ", alias, sql);
                 }
             }
             FilterExpr::Any(filters) => {
                 if filters.is_empty() {
-                    "0".to_owned()
+                    sql.push_sql("0");
                 } else {
-                    join_sql(filters, " OR ", alias)
+                    join_sql(filters, " OR ", alias, sql);
                 }
             }
-            FilterExpr::Not(filter) => format!("NOT ({})", filter.sql(alias)),
-            FilterExpr::Predicate(predicate) => predicate.sql(alias),
+            FilterExpr::Not(filter) => {
+                sql.push_sql("NOT (");
+                filter.push_sql(alias, sql);
+                sql.push_sql(")");
+            }
+            FilterExpr::Predicate(predicate) => predicate.push_sql(alias, sql),
         }
     }
 
@@ -237,41 +285,60 @@ impl FilterExpr {
 }
 
 impl Predicate {
-    fn sql(&self, alias: &str) -> String {
+    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
         match self {
             Predicate::Text { field, op, value } => {
                 let field = field.sql(alias);
-                let value = sql_string(value);
                 match op {
-                    TextOp::Contains => format!("instr({field}, {value}) > 0"),
-                    TextOp::StartsWith => format!("substr({field}, 1, length({value})) = {value}"),
-                    TextOp::EndsWith => format!("substr({field}, -length({value})) = {value}"),
-                    TextOp::Equals => format!("{field} = {value}"),
+                    TextOp::Contains => {
+                        sql.push_sql("instr(");
+                        sql.push_sql(field);
+                        sql.push_sql(", ");
+                        sql.push_text(value);
+                        sql.push_sql(") > 0");
+                    }
+                    TextOp::StartsWith => {
+                        sql.push_sql("substr(");
+                        sql.push_sql(field);
+                        sql.push_sql(", 1, length(");
+                        sql.push_text(value);
+                        sql.push_sql(")) = ");
+                        sql.push_text(value);
+                    }
+                    TextOp::EndsWith => {
+                        sql.push_sql("substr(");
+                        sql.push_sql(field);
+                        sql.push_sql(", -length(");
+                        sql.push_text(value);
+                        sql.push_sql(")) = ");
+                        sql.push_text(value);
+                    }
+                    TextOp::Equals => {
+                        sql.push_sql(field);
+                        sql.push_sql(" = ");
+                        sql.push_text(value);
+                    }
                 }
             }
             Predicate::Number { field, op } => {
                 let field = field.sql(alias);
                 match op {
-                    NumberOp::Eq(value) => format!("({field} IS NOT NULL AND {field} = {value})"),
-                    NumberOp::Ne(value) => format!("({field} IS NOT NULL AND {field} <> {value})"),
-                    NumberOp::Lt(value) => format!("({field} IS NOT NULL AND {field} < {value})"),
-                    NumberOp::Lte(value) => {
-                        format!("({field} IS NOT NULL AND {field} <= {value})")
-                    }
-                    NumberOp::Gt(value) => format!("({field} IS NOT NULL AND {field} > {value})"),
-                    NumberOp::Gte(value) => {
-                        format!("({field} IS NOT NULL AND {field} >= {value})")
-                    }
-                    NumberOp::Between { min, max } => {
-                        format!("({field} IS NOT NULL AND {field} >= {min} AND {field} <= {max})")
-                    }
+                    NumberOp::Eq(value) => push_number_compare(sql, &field, "=", *value),
+                    NumberOp::Ne(value) => push_number_compare(sql, &field, "<>", *value),
+                    NumberOp::Lt(value) => push_number_compare(sql, &field, "<", *value),
+                    NumberOp::Lte(value) => push_number_compare(sql, &field, "<=", *value),
+                    NumberOp::Gt(value) => push_number_compare(sql, &field, ">", *value),
+                    NumberOp::Gte(value) => push_number_compare(sql, &field, ">=", *value),
+                    NumberOp::Between { min, max } => push_number_between(sql, &field, *min, *max),
                 }
             }
             Predicate::Bool { field, value } => {
-                format!("{} = {}", field.sql(alias), if *value { 1 } else { 0 })
+                sql.push_sql(field.sql(alias));
+                sql.push_sql(" = ");
+                sql.push_bool(*value);
             }
-            Predicate::Tags(predicate) => predicate.sql(alias),
-            Predicate::Author(predicate) => predicate.sql(alias),
+            Predicate::Tags(predicate) => predicate.push_sql(alias, sql),
+            Predicate::Author(predicate) => predicate.push_sql(alias, sql),
         }
     }
 
@@ -303,42 +370,54 @@ impl Predicate {
 }
 
 impl TagsPredicate {
-    fn sql(&self, alias: &str) -> String {
+    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
         match self {
-            TagsPredicate::Intersects(values) => tag_exists_sql(alias, values, false),
-            TagsPredicate::ContainsAll(values) => values
-                .iter()
-                .map(|value| {
-                    format!(
-                        "EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id = {})",
-                        sql_string(value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" AND ")
-                .if_empty("1"),
+            TagsPredicate::Intersects(values) => push_tag_exists_sql(alias, values, false, sql),
+            TagsPredicate::ContainsAll(values) => {
+                if values.is_empty() {
+                    sql.push_sql("1");
+                } else {
+                    for (ix, value) in sorted_values(values).into_iter().enumerate() {
+                        if ix > 0 {
+                            sql.push_sql(" AND ");
+                        }
+                        sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+                        sql.push_sql(alias);
+                        sql.push_sql(".id AND nt.tag_id = ");
+                        sql.push_text(value);
+                        sql.push_sql(")");
+                    }
+                }
+            }
             TagsPredicate::ContainedBy(values) => {
                 if values.is_empty() {
-                    format!(
-                        "NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)"
-                    )
+                    sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+                    sql.push_sql(alias);
+                    sql.push_sql(".id)");
                 } else {
-                    let values = sql_string_list(values);
-                    format!(
-                        "NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id NOT IN ({values}))"
-                    )
+                    sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+                    sql.push_sql(alias);
+                    sql.push_sql(".id AND nt.tag_id NOT IN (");
+                    push_text_list(values, sql);
+                    sql.push_sql("))");
                 }
             }
             TagsPredicate::Equals(values) => {
-                let contains_all = TagsPredicate::ContainsAll(values.clone()).sql(alias);
-                let contained_by = TagsPredicate::ContainedBy(values.clone()).sql(alias);
-                format!("({contains_all}) AND ({contained_by})")
+                sql.push_sql("(");
+                TagsPredicate::ContainsAll(values.clone()).push_sql(alias, sql);
+                sql.push_sql(") AND (");
+                TagsPredicate::ContainedBy(values.clone()).push_sql(alias, sql);
+                sql.push_sql(")");
             }
             TagsPredicate::IsEmpty => {
-                format!("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)")
+                sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+                sql.push_sql(alias);
+                sql.push_sql(".id)");
             }
             TagsPredicate::IsNotEmpty => {
-                format!("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id)")
+                sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+                sql.push_sql(alias);
+                sql.push_sql(".id)");
             }
         }
     }
@@ -357,16 +436,23 @@ impl TagsPredicate {
 }
 
 impl AuthorPredicate {
-    fn sql(&self, alias: &str) -> String {
+    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
         match self {
-            AuthorPredicate::Is(author) => author.sql(alias),
-            AuthorPredicate::In(authors) => join_author_sql(authors, " OR ", alias).if_empty("0"),
-            AuthorPredicate::NotIn(authors) => {
-                let sql = join_author_sql(authors, " OR ", alias);
-                if sql.is_empty() {
-                    "1".to_owned()
+            AuthorPredicate::Is(author) => author.push_sql(alias, sql),
+            AuthorPredicate::In(authors) => {
+                if authors.is_empty() {
+                    sql.push_sql("0");
                 } else {
-                    format!("NOT ({sql})")
+                    join_author_sql(authors, " OR ", alias, sql);
+                }
+            }
+            AuthorPredicate::NotIn(authors) => {
+                if authors.is_empty() {
+                    sql.push_sql("1");
+                } else {
+                    sql.push_sql("NOT (");
+                    join_author_sql(authors, " OR ", alias, sql);
+                    sql.push_sql(")");
                 }
             }
         }
@@ -383,16 +469,25 @@ impl AuthorPredicate {
 }
 
 impl AuthorRef {
-    fn sql(&self, alias: &str) -> String {
+    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
         match self {
             AuthorRef::Id(id) => {
-                format!("({alias}.author_id IS NOT NULL AND {alias}.author_id = {id})")
+                sql.push_sql("(");
+                sql.push_sql(alias);
+                sql.push_sql(".author_id IS NOT NULL AND ");
+                sql.push_sql(alias);
+                sql.push_sql(".author_id = ");
+                sql.push_i32(*id);
+                sql.push_sql(")");
             }
             AuthorRef::Name(name) => {
-                format!(
-                    "({alias}.author_id IS NULL AND {alias}.author_name = {})",
-                    sql_string(name)
-                )
+                sql.push_sql("(");
+                sql.push_sql(alias);
+                sql.push_sql(".author_id IS NULL AND ");
+                sql.push_sql(alias);
+                sql.push_sql(".author_name = ");
+                sql.push_text(name);
+                sql.push_sql(")");
             }
         }
     }
@@ -532,58 +627,150 @@ impl SortExpr {
     }
 }
 
-fn join_sql(filters: &[FilterExpr], separator: &str, alias: &str) -> String {
-    filters
-        .iter()
-        .map(|filter| format!("({})", filter.sql(alias)))
-        .collect::<Vec<_>>()
-        .join(separator)
-}
-
-fn join_author_sql(authors: &[AuthorRef], separator: &str, alias: &str) -> String {
-    authors
-        .iter()
-        .map(|author| format!("({})", author.sql(alias)))
-        .collect::<Vec<_>>()
-        .join(separator)
-}
-
-fn tag_exists_sql(alias: &str, values: &HashSet<String>, negated: bool) -> String {
-    if values.is_empty() {
-        return if negated { "1" } else { "0" }.to_owned();
+impl QuerySql {
+    pub(crate) fn new() -> Self {
+        Self { parts: Vec::new() }
     }
-    let values = sql_string_list(values);
-    let op = if negated { "NOT IN" } else { "IN" };
-    format!(
-        "EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = {alias}.id AND nt.tag_id {op} ({values}))"
-    )
+
+    pub(crate) fn push_sql(&mut self, sql: impl AsRef<str>) {
+        self.parts.push(SqlPart::Raw(sql.as_ref().to_owned()));
+    }
+
+    pub(crate) fn push_text(&mut self, value: impl AsRef<str>) {
+        self.parts.push(SqlPart::Text(value.as_ref().to_owned()));
+    }
+
+    pub(crate) fn push_i32(&mut self, value: i32) {
+        self.parts.push(SqlPart::Integer(value));
+    }
+
+    pub(crate) fn push_bool(&mut self, value: bool) {
+        self.parts.push(SqlPart::Bool(value));
+    }
+
+    #[cfg(test)]
+    fn sql_with_placeholders(&self) -> String {
+        self.parts
+            .iter()
+            .map(|part| match part {
+                SqlPart::Raw(sql) => sql.as_str(),
+                SqlPart::Text(_) | SqlPart::Integer(_) | SqlPart::Bool(_) => "?",
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn bind_count(&self) -> usize {
+        self.parts
+            .iter()
+            .filter(|part| !matches!(part, SqlPart::Raw(_)))
+            .count()
+    }
 }
 
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+impl Query for QuerySql {
+    type SqlType = Untyped;
 }
 
-fn sql_string_list(values: &HashSet<String>) -> String {
-    let mut values = values
-        .iter()
-        .map(|value| sql_string(value))
-        .collect::<Vec<_>>();
-    values.sort();
-    values.join(", ")
+impl QueryId for QuerySql {
+    type QueryId = ();
+
+    const HAS_STATIC_QUERY_ID: bool = false;
 }
 
-trait IfEmpty {
-    fn if_empty(self, fallback: &str) -> String;
-}
+impl<Conn> diesel::RunQueryDsl<Conn> for QuerySql {}
 
-impl IfEmpty for String {
-    fn if_empty(self, fallback: &str) -> String {
-        if self.is_empty() {
-            fallback.to_owned()
-        } else {
-            self
+impl QueryFragment<Sqlite> for QuerySql {
+    fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, Sqlite>) -> QueryResult<()> {
+        out.unsafe_to_cache_prepared();
+        for part in &self.parts {
+            match part {
+                SqlPart::Raw(sql) => out.push_sql(sql),
+                SqlPart::Text(value) => out.push_bind_param::<Text, _>(value)?,
+                SqlPart::Integer(value) => out.push_bind_param::<Integer, _>(value)?,
+                SqlPart::Bool(value) => out.push_bind_param::<Bool, _>(value)?,
+            }
         }
+        Ok(())
     }
+}
+
+fn join_sql(filters: &[FilterExpr], separator: &str, alias: &str, sql: &mut QuerySql) {
+    for (ix, filter) in filters.iter().enumerate() {
+        if ix > 0 {
+            sql.push_sql(separator);
+        }
+        sql.push_sql("(");
+        filter.push_sql(alias, sql);
+        sql.push_sql(")");
+    }
+}
+
+fn join_author_sql(authors: &[AuthorRef], separator: &str, alias: &str, sql: &mut QuerySql) {
+    for (ix, author) in authors.iter().enumerate() {
+        if ix > 0 {
+            sql.push_sql(separator);
+        }
+        sql.push_sql("(");
+        author.push_sql(alias, sql);
+        sql.push_sql(")");
+    }
+}
+
+fn push_number_compare(sql: &mut QuerySql, field: &str, op: &str, value: i32) {
+    sql.push_sql("(");
+    sql.push_sql(field);
+    sql.push_sql(" IS NOT NULL AND ");
+    sql.push_sql(field);
+    sql.push_sql(" ");
+    sql.push_sql(op);
+    sql.push_sql(" ");
+    sql.push_i32(value);
+    sql.push_sql(")");
+}
+
+fn push_number_between(sql: &mut QuerySql, field: &str, min: i32, max: i32) {
+    sql.push_sql("(");
+    sql.push_sql(field);
+    sql.push_sql(" IS NOT NULL AND ");
+    sql.push_sql(field);
+    sql.push_sql(" >= ");
+    sql.push_i32(min);
+    sql.push_sql(" AND ");
+    sql.push_sql(field);
+    sql.push_sql(" <= ");
+    sql.push_i32(max);
+    sql.push_sql(")");
+}
+
+fn push_tag_exists_sql(alias: &str, values: &HashSet<String>, negated: bool, sql: &mut QuerySql) {
+    if values.is_empty() {
+        sql.push_sql(if negated { "1" } else { "0" });
+        return;
+    }
+    let op = if negated { "NOT IN" } else { "IN" };
+    sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
+    sql.push_sql(alias);
+    sql.push_sql(".id AND nt.tag_id ");
+    sql.push_sql(op);
+    sql.push_sql(" (");
+    push_text_list(values, sql);
+    sql.push_sql("))");
+}
+
+fn push_text_list(values: &HashSet<String>, sql: &mut QuerySql) {
+    for (ix, value) in sorted_values(values).into_iter().enumerate() {
+        if ix > 0 {
+            sql.push_sql(", ");
+        }
+        sql.push_text(value);
+    }
+}
+
+fn sorted_values(values: &HashSet<String>) -> Vec<&String> {
+    let mut values = values.iter().collect::<Vec<_>>();
+    values.sort();
+    values
 }
 
 #[cfg(test)]
@@ -787,5 +974,71 @@ mod tests {
             SortExpr::Bool(BoolField::IsLimit).eval(&record(1)),
             Some(SortValue::Bool(false))
         );
+    }
+
+    #[test]
+    fn query_sql_uses_binds_for_user_controlled_values() {
+        let injection = "' OR 1=1 --";
+        let spec = QuerySpec {
+            filter: FilterExpr::All(vec![
+                FilterExpr::Predicate(Predicate::Text {
+                    field: TextField::Title,
+                    op: TextOp::Contains,
+                    value: injection.to_owned(),
+                }),
+                FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
+                    "author', 1) --".to_owned(),
+                )))),
+                FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Intersects(set(&[
+                    "tag', 1) --",
+                ])))),
+            ]),
+            sorts: vec![SortSpec {
+                expr: SortExpr::Number(NumberField::ReplyCount),
+                direction: SortDirection::Desc,
+            }],
+        };
+
+        let sql = spec.query_sql("n");
+        let text = sql.sql_with_placeholders();
+
+        assert!(!text.contains(injection));
+        assert!(!text.contains("author', 1) --"));
+        assert!(!text.contains("tag', 1) --"));
+        assert!(text.contains("instr(n.name, ?) > 0"));
+        assert!(text.contains("n.author_name = ?"));
+        assert!(text.contains("nt.tag_id IN (?)"));
+        assert!(text.contains("ORDER BY (n.reply_count) IS NULL ASC, (n.reply_count) DESC"));
+        assert_eq!(sql.bind_count(), 3);
+    }
+
+    #[test]
+    fn query_sql_uses_binds_for_repeated_text_and_numeric_values() {
+        let spec = QuerySpec {
+            filter: FilterExpr::All(vec![
+                FilterExpr::Predicate(Predicate::Text {
+                    field: TextField::LatestChapter,
+                    op: TextOp::StartsWith,
+                    value: "chapter".to_owned(),
+                }),
+                FilterExpr::Predicate(Predicate::Number {
+                    field: NumberField::WordCount,
+                    op: NumberOp::Between { min: 10, max: 20 },
+                }),
+                FilterExpr::Predicate(Predicate::Bool {
+                    field: BoolField::IsLimit,
+                    value: true,
+                }),
+            ]),
+            sorts: Vec::new(),
+        };
+
+        let sql = spec.query_sql("n");
+        let text = sql.sql_with_placeholders();
+
+        assert!(text.contains("substr(n.latest_chapter_name, 1, length(?)) = ?"));
+        assert!(text.contains("n.word_count >= ? AND n.word_count <= ?"));
+        assert!(text.contains("n.is_limit = ?"));
+        assert_eq!(sql.bind_count(), 5);
     }
 }

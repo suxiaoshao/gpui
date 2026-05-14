@@ -7,7 +7,7 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::{
         model::{NovelModel, NovelTagModel, TagModel},
-        query::QuerySpec,
+        query::{QuerySpec, QuerySql},
         types::{Author, NovelCount, Title},
     },
 };
@@ -120,26 +120,7 @@ impl Novel {
 }
 
 fn query_novel_rows(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<Vec<NovelRow>> {
-    let sql = format!(
-        "\
-        SELECT \
-            n.id, \
-            n.name, \
-            n.desc, \
-            n.is_limit, \
-            n.latest_chapter_name, \
-            n.latest_chapter_id, \
-            n.word_count, \
-            n.read_count, \
-            n.reply_count, \
-            n.author_id, \
-            n.author_name \
-        FROM novel n \
-        WHERE {}{}",
-        spec.where_sql("n"),
-        spec.order_sql("n")
-    );
-    Ok(diesel::sql_query(sql).load::<NovelRow>(conn)?)
+    Ok(spec.query_sql("n").load::<NovelRow>(conn)?)
 }
 
 fn load_tags_for_rows(
@@ -150,12 +131,8 @@ fn load_tags_for_rows(
         return Ok(HashMap::new());
     }
 
-    let ids = rows
-        .iter()
-        .map(|row| row.id.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
+    let mut sql = QuerySql::new();
+    sql.push_sql(
         "\
         SELECT \
             nt.novel_id, \
@@ -163,9 +140,17 @@ fn load_tags_for_rows(
             tag.id \
         FROM novel_tag nt \
         LEFT JOIN tag ON tag.name = nt.tag_id \
-        WHERE nt.novel_id IN ({ids})"
+        WHERE nt.novel_id IN (",
     );
-    let rows = diesel::sql_query(sql).load::<NovelTagRow>(conn)?;
+    for (ix, row) in rows.iter().enumerate() {
+        if ix > 0 {
+            sql.push_sql(", ");
+        }
+        sql.push_i32(row.id);
+    }
+    sql.push_sql(")");
+
+    let rows = sql.load::<NovelTagRow>(conn)?;
     let mut tags = HashMap::new();
     for row in rows {
         tags.entry(row.novel_id)
@@ -213,7 +198,9 @@ impl NovelRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::query::{FilterExpr, Predicate, TagsPredicate};
+    use crate::store::query::{
+        AuthorPredicate, AuthorRef, FilterExpr, Predicate, TagsPredicate, TextField, TextOp,
+    };
     use diesel::{Connection, connection::SimpleConnection};
 
     fn connection() -> SqliteConnection {
@@ -435,6 +422,65 @@ mod tests {
                 .map(|novel| novel.title.id)
                 .collect::<Vec<_>>(),
             vec![2]
+        );
+    }
+
+    #[test]
+    fn query_binds_text_author_and_tag_values_without_injection() {
+        let mut conn = connection();
+        let injection = "' OR 1=1 --";
+        save_novel(&mut conn, 1, "safe", &["tag"], false, Some(1));
+        save_novel(&mut conn, 2, injection, &["tag', 1) --"], false, Some(2));
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Text {
+                field: TextField::Title,
+                op: TextOp::Equals,
+                value: injection.to_owned(),
+            }),
+            sorts: Vec::new(),
+        };
+        let results = Novel::query(&spec, &mut conn).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|novel| novel.title.id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Intersects(
+                HashSet::from(["tag', 1) --".to_owned()]),
+            ))),
+            sorts: Vec::new(),
+        };
+        let results = Novel::query(&spec, &mut conn).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|novel| novel.title.id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let mut anonymous = novel(3, "anonymous", "author' OR 1=1 --", &["tag"]);
+        anonymous.author = Author::Anonymous("author' OR 1=1 --".to_owned());
+        anonymous.save(&mut conn).unwrap();
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
+                "author' OR 1=1 --".to_owned(),
+            )))),
+            sorts: Vec::new(),
+        };
+        let results = Novel::query(&spec, &mut conn).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|novel| novel.title.id)
+                .collect::<Vec<_>>(),
+            vec![3]
         );
     }
 }
