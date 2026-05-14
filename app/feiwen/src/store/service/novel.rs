@@ -69,6 +69,8 @@ struct TagCountRow {
     tag_count: i64,
 }
 
+const NOVEL_TAG_LOAD_CHUNK_SIZE: usize = 500;
+
 impl RenderOnce for Novel {
     fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         div()
@@ -184,34 +186,35 @@ fn load_tags_for_rows(
         return Ok(HashMap::new());
     }
 
-    let mut sql = QuerySql::new();
-    sql.push_sql(
-        "\
-        SELECT \
-            nt.novel_id, \
-            nt.tag_id AS name, \
-            tag.id \
-        FROM novel_tag nt \
-        LEFT JOIN tag ON tag.name = nt.tag_id \
-        WHERE nt.novel_id IN (",
-    );
-    for (ix, row) in rows.iter().enumerate() {
-        if ix > 0 {
-            sql.push_sql(", ");
-        }
-        sql.push_i32(row.id);
-    }
-    sql.push_sql(")");
-
-    let rows = sql.load::<NovelTagRow>(conn)?;
     let mut tags = HashMap::new();
-    for row in rows {
-        tags.entry(row.novel_id)
-            .or_insert_with(HashSet::new)
-            .insert(Tag {
-                name: row.name,
-                id: row.id,
-            });
+    for chunk in rows.chunks(NOVEL_TAG_LOAD_CHUNK_SIZE) {
+        let mut sql = QuerySql::new();
+        sql.push_sql(
+            "\
+            SELECT \
+                nt.novel_id, \
+                nt.tag_id AS name, \
+                tag.id \
+            FROM novel_tag nt \
+            LEFT JOIN tag ON tag.name = nt.tag_id \
+            WHERE nt.novel_id IN (",
+        );
+        for (ix, row) in chunk.iter().enumerate() {
+            if ix > 0 {
+                sql.push_sql(", ");
+            }
+            sql.push_i32(row.id);
+        }
+        sql.push_sql(")");
+
+        for row in sql.load::<NovelTagRow>(conn)? {
+            tags.entry(row.novel_id)
+                .or_insert_with(HashSet::new)
+                .insert(Tag {
+                    name: row.name,
+                    id: row.id,
+                });
+        }
     }
     Ok(tags)
 }
@@ -326,6 +329,22 @@ mod tests {
         novel.save(conn).unwrap();
     }
 
+    fn novel_row(id: i32) -> NovelRow {
+        NovelRow {
+            id,
+            name: format!("novel-{id}"),
+            desc: String::new(),
+            is_limit: false,
+            latest_chapter_name: String::new(),
+            latest_chapter_id: id * 10,
+            word_count: 1000,
+            read_count: Some(1),
+            reply_count: Some(1),
+            author_id: Some(id),
+            author_name: format!("author-{id}"),
+        }
+    }
+
     #[test]
     fn query_pushes_tag_limit_and_reply_sort_semantics() {
         let mut conn = connection();
@@ -396,6 +415,38 @@ mod tests {
                 .iter()
                 .any(|tag| tag.name == "BL" && tag.id == Some(1))
         );
+    }
+
+    #[test]
+    fn load_tags_for_rows_chunks_large_result_sets() {
+        let mut conn = connection();
+        let total = NOVEL_TAG_LOAD_CHUNK_SIZE + 1;
+        for id in 1..=total {
+            let tag = format!("tag-{id}");
+            save_novel(
+                &mut conn,
+                id as i32,
+                &format!("novel-{id}"),
+                &[tag.as_str()],
+                false,
+                Some(id as i32),
+            );
+        }
+        let rows = (1..=total)
+            .map(|id| novel_row(id as i32))
+            .collect::<Vec<_>>();
+
+        let tags = load_tags_for_rows(&rows, &mut conn).unwrap();
+
+        assert_eq!(tags.len(), total);
+        for id in 1..=total {
+            assert!(
+                tags.get(&(id as i32))
+                    .unwrap()
+                    .iter()
+                    .any(|tag| tag.name == format!("tag-{id}"))
+            );
+        }
     }
 
     #[test]
