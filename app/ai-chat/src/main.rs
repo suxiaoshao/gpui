@@ -9,7 +9,6 @@ mod app;
 mod components;
 mod database;
 mod errors;
-mod export;
 mod features;
 mod foundation;
 mod llm;

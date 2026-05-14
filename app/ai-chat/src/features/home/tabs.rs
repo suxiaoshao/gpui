@@ -9,9 +9,7 @@ use std::ops::Deref;
 mod conversation_panel;
 mod conversation_tab;
 
-pub(crate) use conversation_panel::{
-    ConversationPanelView, open_copy_conversation_dialog, open_export_conversation_prompt,
-};
+pub(crate) use conversation_panel::{ConversationPanelView, open_copy_conversation_dialog};
 pub(crate) use conversation_tab::{ConversationTabView, DragTab};
 
 pub fn init(_cx: &mut App) {}
