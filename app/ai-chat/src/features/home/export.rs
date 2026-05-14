@@ -1,9 +1,18 @@
 use crate::{
     database::{Conversation, Message},
     errors::AiChatResult,
+    foundation::{assets::IconName, i18n::I18n},
+    state::ChatData,
+};
+use gpui::{Context, SharedString, Window};
+use gpui_component::{
+    WindowExt,
+    menu::{PopupMenu, PopupMenuItem},
+    notification::{Notification, NotificationType},
 };
 use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tracing::{Level, event};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExportType {
@@ -55,6 +64,142 @@ pub(crate) fn export_conversation_to_path(
     };
     std::fs::write(&path, bytes)?;
     Ok(path)
+}
+
+pub(crate) fn conversation_export_menu(
+    menu: PopupMenu,
+    conversation_id: i32,
+    _window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let i18n = cx.global::<I18n>();
+    menu.item(
+        PopupMenuItem::new(format!("{} JSON", i18n.t("button-export")))
+            .icon(IconName::Share)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Json, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} CSV", i18n.t("button-export")))
+            .icon(IconName::Share)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Csv, window, cx);
+            }),
+    )
+    .item(
+        PopupMenuItem::new(format!("{} TXT", i18n.t("button-export")))
+            .icon(IconName::Share)
+            .on_click(move |_, window, cx| {
+                open_export_conversation_prompt(conversation_id, ExportType::Txt, window, cx);
+            }),
+    )
+}
+
+pub(crate) fn open_export_conversation_prompt(
+    conversation_id: i32,
+    export_type: ExportType,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let conversation = cx
+        .global::<ChatData>()
+        .read(cx)
+        .as_ref()
+        .ok()
+        .and_then(|data| data.conversation(conversation_id))
+        .cloned();
+    let Some(conversation) = conversation else {
+        return;
+    };
+
+    let suggested_name = suggested_export_file_name(&conversation, export_type);
+    let directory = export_default_directory();
+    let path_prompt = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+    let (success_title, failed_title, sources_label) = {
+        let i18n = cx.global::<I18n>();
+        (
+            i18n.t("notify-export-conversation-success"),
+            i18n.t("notify-export-conversation-failed"),
+            i18n.t("field-sources"),
+        )
+    };
+
+    window
+        .spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+                Err(err) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+
+            let conversation = match cx.read_global::<ChatData, _>(|chat_data, _window, cx| {
+                chat_data
+                    .read(cx)
+                    .as_ref()
+                    .ok()
+                    .and_then(|data| data.conversation(conversation_id))
+                    .cloned()
+            }) {
+                Ok(Some(conversation)) => conversation,
+                Ok(None) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: conversation not found", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+                Err(err) => {
+                    push_export_notification(
+                        cx,
+                        failed_title.into(),
+                        format!("{}: {err}", export_type.label()),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+
+            match export_conversation_to_path(
+                &conversation,
+                export_type,
+                &selected_path,
+                &sources_label,
+            ) {
+                Ok(path) => push_export_notification(
+                    cx,
+                    success_title.into(),
+                    path.display().to_string(),
+                    NotificationType::Success,
+                ),
+                Err(err) => push_export_notification(
+                    cx,
+                    failed_title.into(),
+                    err.to_string(),
+                    NotificationType::Error,
+                ),
+            }
+        })
+        .detach();
 }
 
 fn export_csv(conversation: &Conversation) -> AiChatResult<String> {
@@ -191,6 +336,31 @@ fn unique_path(path: &Path) -> PathBuf {
     }
 
     unreachable!("unbounded suffix search should always return")
+}
+
+fn push_export_notification(
+    cx: &mut gpui::AsyncWindowContext,
+    title: SharedString,
+    message: String,
+    notification_type: NotificationType,
+) {
+    if let Err(err) = cx.window_handle().update(cx, |_, window, cx| {
+        window.push_notification(
+            Notification::new()
+                .title(title)
+                .message(message)
+                .with_type(notification_type),
+            cx,
+        );
+    }) {
+        event!(Level::ERROR, "push export notification failed: {}", err);
+    }
+}
+
+fn export_default_directory() -> PathBuf {
+    dirs_next::document_dir()
+        .or_else(dirs_next::home_dir)
+        .unwrap_or_default()
 }
 
 fn format_time(value: OffsetDateTime) -> String {

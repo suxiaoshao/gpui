@@ -9,6 +9,7 @@ use crate::{
     foundation::i18n::I18n,
     state::{self, AiChatConfig, WindowPlacementKind, WorkspaceStore},
 };
+pub(crate) use export::{ExportType, conversation_export_menu, open_export_conversation_prompt};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     Root, StyledExt, Theme, ThemeRegistry, TitleBar,
@@ -19,11 +20,9 @@ use gpui_component::{
     v_flex,
 };
 use std::ops::Deref;
-pub(crate) use tabs::{
-    ConversationPanelView, ConversationTabView, open_copy_conversation_dialog,
-    open_export_conversation_prompt,
-};
+pub(crate) use tabs::{ConversationPanelView, ConversationTabView, open_copy_conversation_dialog};
 
+mod export;
 mod search;
 mod search_list;
 mod sidebar;
