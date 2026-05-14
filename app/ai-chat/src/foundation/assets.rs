@@ -1,90 +1,54 @@
 use anyhow::{Result, anyhow};
+use app_assets::define_lucide_icons;
 use gpui::{AssetSource, SharedString};
-use gpui_component::IconNamed;
 use rust_embed::RustEmbed;
 use std::{borrow::Cow, collections::BTreeSet};
 
 pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 
-macro_rules! define_icon_assets {
-    ($( $variant:ident => $slug:literal ),+ $(,)?) => {
-        #[allow(dead_code)]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub(crate) enum IconName {
-            $( $variant, )+
-        }
-
-        impl IconNamed for IconName {
-            fn path(self) -> SharedString {
-                match self {
-                    $( Self::$variant => concat!("icons/", $slug, ".svg").into(), )+
-                }
-            }
-        }
-
-        fn load_lucide_icon(path: &str) -> Option<&'static [u8]> {
-            match path {
-                $( concat!("icons/", $slug, ".svg") => Some(include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../third_party/lucide/icons/",
-                    $slug,
-                    ".svg"
-                ))), )+
-                _ => None,
-            }
-        }
-
-        fn list_lucide_icons(path: &str) -> Vec<SharedString> {
-            let icons = [$( SharedString::from(concat!("icons/", $slug, ".svg")), )+];
-            icons
-                .into_iter()
-                .filter(|icon| path.is_empty() || icon.as_ref().starts_with(path))
-                .collect()
-        }
-    };
-}
-
-define_icon_assets!(
-    ArrowLeft => "arrow-left",
-    Bot => "bot",
-    BrushCleaning => "brush-cleaning",
-    Bug => "bug",
-    Check => "check",
-    ChevronDown => "chevron-down",
-    ChevronRight => "chevron-right",
-    ChevronUp => "chevron-up",
-    CircleCheck => "circle-check",
-    Copy => "copy",
-    Edit => "square-pen",
-    EllipsisVertical => "ellipsis-vertical",
-    Eye => "eye",
-    EyeOff => "eye-off",
-    FilePen => "file-pen",
-    Folder => "folder",
-    FolderClosed => "folder-closed",
-    FolderCode => "folder-code",
-    FolderInput => "folder-input",
-    FolderOpen => "folder-open",
-    GripVertical => "grip-vertical",
-    Info => "info",
-    LayoutTemplate => "layout-template",
-    Loader2 => "loader-circle",
-    OctagonX => "octagon-x",
-    PanelLeft => "panel-left",
-    Plug => "plug",
-    Plus => "plus",
-    RefreshCcw => "refresh-ccw",
-    Save => "save",
-    Search => "search",
-    Send => "send",
-    Settings => "settings",
-    Share => "share",
-    Shield => "shield",
-    Trash => "trash",
-    TriangleAlert => "triangle-alert",
-    Upload => "upload",
-    UserRound => "user-round",
-    X => "x",
+define_lucide_icons!(
+    pub(crate) enum IconName {
+        ArrowLeft => "arrow-left",
+        Bot => "bot",
+        BrushCleaning => "brush-cleaning",
+        Bug => "bug",
+        Check => "check",
+        ChevronDown => "chevron-down",
+        ChevronRight => "chevron-right",
+        ChevronUp => "chevron-up",
+        CircleCheck => "circle-check",
+        Copy => "copy",
+        Edit => "square-pen",
+        EllipsisVertical => "ellipsis-vertical",
+        Eye => "eye",
+        EyeOff => "eye-off",
+        FilePen => "file-pen",
+        Folder => "folder",
+        FolderClosed => "folder-closed",
+        FolderCode => "folder-code",
+        FolderInput => "folder-input",
+        FolderOpen => "folder-open",
+        GripVertical => "grip-vertical",
+        Info => "info",
+        LayoutTemplate => "layout-template",
+        Loader2 => "loader-circle",
+        OctagonX => "octagon-x",
+        PanelLeft => "panel-left",
+        Plug => "plug",
+        Plus => "plus",
+        RefreshCcw => "refresh-ccw",
+        Save => "save",
+        Search => "search",
+        Send => "send",
+        Settings => "settings",
+        Share => "share",
+        Shield => "shield",
+        Trash => "trash",
+        TriangleAlert => "triangle-alert",
+        Upload => "upload",
+        UserRound => "user-round",
+        X => "x",
+    }
 );
 
 #[derive(RustEmbed)]
@@ -135,25 +99,6 @@ impl AssetSource for BuildAssetsInner {
     }
 }
 
-#[derive(Default)]
-struct LucideAssets;
-
-impl AssetSource for LucideAssets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path.is_empty() {
-            return Ok(None);
-        }
-
-        load_lucide_icon(path)
-            .map(|icon| Some(Cow::Borrowed(icon)))
-            .ok_or_else(|| anyhow!("could not find asset at path \"{path}\""))
-    }
-
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(list_lucide_icons(path))
-    }
-}
-
 pub struct Assets {
     assets: AssetsInner,
     build_assets: BuildAssetsInner,
@@ -187,11 +132,21 @@ impl Default for Assets {
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        self.assets
-            .load(path)
-            .or_else(|_| self.build_assets.load(path))
-            .or_else(|_| self.lucide_assets.load(path))
-            .or_else(|_| self.components_assets.load(path))
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        for asset in [
+            &self.assets as &dyn AssetSource,
+            &self.build_assets,
+            &self.lucide_assets,
+        ] {
+            if let Ok(Some(data)) = asset.load(path) {
+                return Ok(Some(data));
+            }
+        }
+
+        self.components_assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
