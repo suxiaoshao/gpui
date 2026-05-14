@@ -7,7 +7,7 @@ use gpui_component::{
 
 use crate::features::request::body::{HttpBodyEvent, HttpBodyForm};
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq)]
 pub enum TextType {
     #[default]
     Plaintext,

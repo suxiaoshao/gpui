@@ -22,7 +22,9 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Text input | [Input](input.md) |
 | Multiline/code input | [Editor](editor.md) |
 | Numeric, one-time-code, date, and color input | [NumberInput](number-input.md), [OtpInput](otp-input.md), [DatePicker](date-picker.md), [ColorPicker](color-picker.md) |
-| Single or multiple choices | [Select](select.md), [Radio](radio.md), [Checkbox](checkbox.md), [Switch](switch.md), [Slider](slider.md), [Rating](rating.md) |
+| Simple single choice | [Select](select.md), [Radio](radio.md) |
+| Searchable, multi-select, custom trigger, or custom option rendering | [Combobox](combobox.md) |
+| Boolean, range, rating, date, or color choices | [Checkbox](checkbox.md), [Switch](switch.md), [Slider](slider.md), [Rating](rating.md), [DatePicker](date-picker.md), [ColorPicker](color-picker.md) |
 | Settings pages | [Settings](settings.md), [DescriptionList](description-list.md) |
 
 ## Overlays and Feedback
@@ -62,7 +64,7 @@ Use this index to choose the smallest existing component set for an app UI task.
 | --- | --- |
 | Button, Toggle, ToggleGroup | [Button](button.md), [Toggle](toggle.md) |
 | Input, Textarea, InputOTP, Slider | [Input](input.md), [Editor](editor.md), [OtpInput](otp-input.md), [Slider](slider.md) |
-| Checkbox, RadioGroup, Switch, Select | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md) |
+| Checkbox, RadioGroup, Switch, Select, Combobox, Command-like searchable picker | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md), [Combobox](combobox.md) |
 | Dialog, AlertDialog, Sheet, Popover, Tooltip, HoverCard | [Dialog](dialog.md), [AlertDialog](alert-dialog.md), [Sheet](sheet.md), [Popover](popover.md), [Tooltip](tooltip.md), [HoverCard](hover-card.md) |
 | Alert, Badge, Skeleton, Progress | [Alert](alert.md), [Badge](badge.md), [Skeleton](skeleton.md), [Progress](progress.md) |
 | Tabs, Accordion, Collapsible, Sidebar, Pagination | [Tabs](tabs.md), [Accordion](accordion.md), [Collapsible](collapsible.md), [Sidebar](sidebar.md), [Pagination](pagination.md) |

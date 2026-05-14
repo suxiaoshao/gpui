@@ -18,7 +18,7 @@ mod form_data;
 mod http_text;
 mod x_form;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum BodyType {
     None,
     Text,

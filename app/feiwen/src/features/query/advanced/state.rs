@@ -1,5 +1,5 @@
 use super::{
-    components::{MultiSelectState, NumericRangeInputState},
+    components::NumericRangeInputState,
     options::{
         AuthorOption, AuthorRelation, BoolRelation, FieldKind, FieldSelectItems, GroupRelation,
         NumberRelation, QueryOptions, SelectChoice, SortDirectionChoice, SortField, TagsRelation,
@@ -13,6 +13,7 @@ use crate::store::query::SortDirection;
 use gpui::{AppContext, Context, Entity, Subscription, Window};
 use gpui_component::{
     IndexPath,
+    combobox::ComboboxState,
     input::InputState,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
@@ -27,6 +28,8 @@ type BoolValueSelectState = SelectState<Vec<SelectChoice<bool>>>;
 type TagsRelationSelectState = SelectState<Vec<SelectChoice<TagsRelation>>>;
 type AuthorRelationSelectState = SelectState<Vec<SelectChoice<AuthorRelation>>>;
 type AuthorSelectState = SelectState<SearchableVec<AuthorOption>>;
+pub(super) type TagComboboxState = ComboboxState<SearchableVec<super::options::TagOption>>;
+pub(super) type AuthorComboboxState = ComboboxState<SearchableVec<AuthorOption>>;
 type SortFieldSelectState = SelectState<Vec<SelectChoice<SortField>>>;
 type SortDirectionSelectState = SelectState<Vec<SelectChoice<SortDirectionChoice>>>;
 
@@ -107,7 +110,7 @@ pub(super) struct BoolCondition {
 pub(super) struct TagsCondition {
     pub(super) relation: TagsRelation,
     pub(super) relation_select: Entity<TagsRelationSelectState>,
-    pub(super) value: Option<Entity<MultiSelectState<super::options::TagOption>>>,
+    pub(super) value: Option<Entity<TagComboboxState>>,
 }
 
 pub(super) struct AuthorCondition {
@@ -119,7 +122,7 @@ pub(super) struct AuthorCondition {
 pub(super) enum AuthorValue {
     Text(Entity<InputState>),
     Single(Entity<AuthorSelectState>),
-    Multi(Entity<MultiSelectState<AuthorOption>>),
+    Multi(Entity<AuthorComboboxState>),
 }
 
 pub(super) struct SortRow {
@@ -420,7 +423,16 @@ impl AdvancedQueryState {
             select.set_selected_value(&relation, window, cx);
         });
         let value = relation.needs_value().then(|| {
-            cx.new(|cx| MultiSelectState::new(self.options.tags.clone(), "选择标签", window, cx))
+            cx.new(|cx| {
+                ComboboxState::new(
+                    SearchableVec::new(self.options.tags.clone()),
+                    Vec::new(),
+                    window,
+                    cx,
+                )
+                .multiple(true)
+                .searchable(true)
+            })
         });
         if let Some(condition) = self.find_condition_mut(condition_id) {
             condition.error = None;
@@ -463,7 +475,14 @@ impl AdvancedQueryState {
                 .searchable(true)
             })),
             AuthorRelation::In | AuthorRelation::NotIn => AuthorValue::Multi(cx.new(|cx| {
-                MultiSelectState::new(self.options.authors.clone(), "选择作者", window, cx)
+                ComboboxState::new(
+                    SearchableVec::new(self.options.authors.clone()),
+                    Vec::new(),
+                    window,
+                    cx,
+                )
+                .multiple(true)
+                .searchable(true)
             })),
         };
         if let Some(condition) = self.find_condition_mut(condition_id) {
@@ -755,21 +774,15 @@ impl ConditionRow {
                     range.update(cx, |range, cx| range.set_disabled(disabled, cx));
                 }
             }
-            ConditionDraft::Tags(condition) => {
-                if let Some(value) = &condition.value {
-                    value.update(cx, |value, cx| value.set_disabled(disabled, cx));
-                }
-            }
             ConditionDraft::Author(condition) => match &condition.value {
                 AuthorValue::Single(_) => {}
-                AuthorValue::Multi(value) => {
-                    value.update(cx, |value, cx| value.set_disabled(disabled, cx));
-                }
+                AuthorValue::Multi(_) => {}
                 AuthorValue::Text(_) => {}
             },
             ConditionDraft::NoField
             | ConditionDraft::NoCondition { .. }
             | ConditionDraft::Text(_)
+            | ConditionDraft::Tags(_)
             | ConditionDraft::Bool(_) => {}
         }
     }

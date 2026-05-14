@@ -9,16 +9,19 @@ use super::{
 use crate::store::query::SortDirection;
 use crate::{features::query::QueryView, foundation::assets::IconName as FeiwenIconName};
 use gpui::{
-    AnyElement, AppContext, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px, rems,
+    AnyElement, AppContext, Context, ElementId, Entity, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    px, rems,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
+    combobox::Combobox,
     h_flex,
     input::{Input, NumberInput},
     label::Label,
     scroll::ScrollableElement,
+    searchable_list::{SearchableListDelegate, SearchableListItem},
     select::Select,
     switch::Switch,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
@@ -521,7 +524,7 @@ fn render_value_editor(
                 .disabled(disabled)
                 .w_full()
                 .into_any_element(),
-            AuthorValue::Multi(value) => value.clone().into_any_element(),
+            AuthorValue::Multi(value) => render_multi_combobox(value, "选择作者", disabled),
         },
     }
 }
@@ -538,13 +541,87 @@ fn render_number_value(value: &NumberValue, disabled: bool) -> AnyElement {
 
 fn render_tags_value(
     condition: &TagsCondition,
-    _disabled: bool,
+    disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> AnyElement {
     match &condition.value {
-        Some(value) => value.clone().into_any_element(),
+        Some(value) => render_multi_combobox(value, "选择标签", disabled),
         None => placeholder_control("无需填写", false, cx),
     }
+}
+
+fn render_multi_combobox<D>(
+    state: &Entity<gpui_component::combobox::ComboboxState<D>>,
+    placeholder: &'static str,
+    disabled: bool,
+) -> AnyElement
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem + Clone + 'static,
+    <D::Item as SearchableListItem>::Value: PartialEq + Clone,
+{
+    let trigger_state = state.clone();
+    Combobox::new(state)
+        .placeholder(placeholder)
+        .search_placeholder("搜索")
+        .menu_width(px(360.))
+        .menu_max_h(rems(12.))
+        .disabled(disabled)
+        .render_trigger(move |ctx, _, cx| {
+            let items = ctx.selection;
+
+            if items.is_empty() {
+                return div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(placeholder)
+                    .into_any_element();
+            }
+
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .gap_1()
+                .children(
+                    items
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .map(|(ix, (index, item))| {
+                            let state = trigger_state.clone();
+                            h_flex()
+                                .gap_0p5()
+                                .items_center()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .px_1()
+                                .text_xs()
+                                .child(item.title())
+                                .when(!disabled, |this| {
+                                    this.child(
+                                        Button::new(SharedString::from(format!(
+                                            "multi-select-remove-{placeholder}-{ix}"
+                                        )))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::new(IconName::Close).xsmall())
+                                        .tab_stop(false)
+                                        .on_click({
+                                            let state = state.clone();
+                                            move |_ev, _window, cx| {
+                                                state.update(cx, |state, cx| {
+                                                    state.remove_selected_index(index, cx);
+                                                });
+                                            }
+                                        }),
+                                    )
+                                })
+                        }),
+                )
+                .into_any_element()
+        })
+        .w_full()
+        .into_any_element()
 }
 
 fn placeholder_control(text: &'static str, muted: bool, cx: &mut Context<QueryView>) -> AnyElement {

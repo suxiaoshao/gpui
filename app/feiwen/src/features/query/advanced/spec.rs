@@ -222,7 +222,7 @@ fn selected_tags(condition: &TagsCondition, cx: &gpui::App) -> Result<HashSet<St
     let Some(value) = &condition.value else {
         return Ok(HashSet::new());
     };
-    let values = value.read(cx).selected_keys();
+    let values = value.read(cx).selected_values();
     if values.is_empty() {
         return Err("请选择至少一项".to_owned());
     }
@@ -254,7 +254,7 @@ fn author_expr(condition: &AuthorCondition, cx: &gpui::App) -> Result<FilterExpr
             }
         }
         AuthorValue::Multi(value) => {
-            let authors = value.read(cx).selected_keys();
+            let authors = value.read(cx).selected_values();
             if authors.is_empty() {
                 return Err("请选择至少一项".to_owned());
             }

@@ -1076,7 +1076,9 @@ impl Render for ShortcutFormState {
                         field().label(field_model.clone()).child(
                             Select::new(&self.model_select)
                                 .placeholder(field_model.clone())
-                                .empty(Label::new(model_empty_label).text_sm())
+                                .empty(move |_window, _cx| {
+                                    Label::new(model_empty_label.clone()).text_sm()
+                                })
                                 .w_full(),
                         ),
                     )

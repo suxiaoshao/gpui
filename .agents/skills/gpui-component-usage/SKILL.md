@@ -34,7 +34,7 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 | --- | --- |
 | Primary, secondary, danger, icon, or loading action | `Button`, `ButtonGroup`, `Toggle` |
 | Text entry | `Input`, `Editor`, `NumberInput`, `OtpInput` |
-| Boolean or option selection | `Checkbox`, `Switch`, `Radio`, `Select`, `Slider`, `ColorPicker`, `DatePicker` |
+| Boolean or option selection | `Checkbox`, `Switch`, `Radio`, `Select`, `Combobox`, `Slider`, `ColorPicker`, `DatePicker` |
 | Forms and settings | `Form`, `Settings`, `GroupBox`, `Label`, `DescriptionList` |
 | Modal or confirmation flow | `Dialog`, `AlertDialog` |
 | Non-modal panel or floating content | `Sheet`, `Popover`, `HoverCard`, `Tooltip` |
