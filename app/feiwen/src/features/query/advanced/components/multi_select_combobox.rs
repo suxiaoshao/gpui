@@ -91,14 +91,6 @@ where
         self.selected.clone()
     }
 
-    pub(crate) fn set_options(&mut self, options: Vec<T>, cx: &mut Context<Self>) {
-        self.options = options;
-        self.selected
-            .retain(|value| self.options.iter().any(|option| option.value() == value));
-        self.sync_list(cx);
-        cx.notify();
-    }
-
     pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
         if disabled {

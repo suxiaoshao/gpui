@@ -19,6 +19,7 @@ use gpui_component::{
     v_flex,
 };
 use results_table::ResultsTableDelegate;
+use std::time::Instant;
 use tracing::{Level, event};
 
 mod advanced;
@@ -72,7 +73,6 @@ impl std::fmt::Display for QueryError {
 }
 
 struct SearchResult {
-    options: QueryOptions,
     novels: Vec<Novel>,
 }
 
@@ -258,7 +258,12 @@ impl QueryView {
             }
         };
 
-        event!(Level::INFO, "starting feiwen query");
+        event!(
+            Level::INFO,
+            filter_count = spec.filter_count(),
+            sort_count = spec.sort_count(),
+            "starting feiwen query"
+        );
         let pool = cx.global::<Db>().pool();
         let this = cx.entity().downgrade();
 
@@ -268,16 +273,25 @@ impl QueryView {
         let task = cx.spawn(async move |_, cx| {
             let result = cx
                 .background_spawn(async move {
-                    event!(Level::INFO, "running feiwen query in background");
+                    let started_at = Instant::now();
+                    event!(
+                        Level::INFO,
+                        filter_count = spec.filter_count(),
+                        sort_count = spec.sort_count(),
+                        "running feiwen query in background"
+                    );
                     let mut conn = pool.get()?;
-                    let options = QueryOptions::load(&mut conn)?;
+                    let query_started_at = Instant::now();
                     let novels = Novel::query(&spec, &mut conn)?;
+                    let query_elapsed_ms = query_started_at.elapsed().as_millis();
                     event!(
                         Level::INFO,
                         result_count = novels.len(),
+                        query_elapsed_ms,
+                        total_elapsed_ms = started_at.elapsed().as_millis(),
                         "feiwen query completed in background"
                     );
-                    Ok(SearchResult { options, novels })
+                    Ok(SearchResult { novels })
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -291,16 +305,21 @@ impl QueryView {
     fn finish_search(
         &mut self,
         result: FeiwenResult<SearchResult>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.advanced.set_disabled(false, cx);
         match result {
             Ok(result) => {
                 let count = result.novels.len();
-                event!(Level::INFO, result_count = count, "feiwen query succeeded");
-                self.advanced.set_options(result.options, window, cx);
+                let table_started_at = Instant::now();
                 self.set_results_table(result.novels, false, cx);
+                event!(
+                    Level::INFO,
+                    result_count = count,
+                    set_results_table_elapsed_ms = table_started_at.elapsed().as_millis(),
+                    "feiwen query succeeded"
+                );
                 self.search = SearchState::Data { count };
             }
             Err(err) => {
