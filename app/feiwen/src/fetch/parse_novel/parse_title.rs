@@ -47,9 +47,15 @@ mod test {
     use super::parse_novel_url;
 
     #[test]
-    fn test() -> anyhow::Result<()> {
-        let input = "https://xn--pxtr7m.com/threads/165143/profile";
-        parse_novel_url(input)?;
-        Ok(())
+    fn parse_novel_url_extracts_thread_id() {
+        let (_, id) =
+            parse_novel_url("https://xn--pxtr7m.com/threads/165143/profile").expect("novel url");
+
+        assert_eq!(id, 165143);
+    }
+
+    #[test]
+    fn parse_novel_url_rejects_invalid_url() {
+        assert!(parse_novel_url("https://xn--pxtr7m.com/posts/165143").is_err());
     }
 }

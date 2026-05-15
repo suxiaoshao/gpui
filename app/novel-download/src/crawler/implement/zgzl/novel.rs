@@ -237,30 +237,10 @@ fn get_chapters(document: &Html) -> NovelResult<Vec<String>> {
 
 #[cfg(test)]
 mod test {
-    use crate::crawler::{
-        NovelFn,
-        implement::zgzl::novel::{NovelStart, get_start_from_url},
-    };
+    use crate::crawler::implement::zgzl::novel::{NovelStart, get_start_from_url};
 
-    use super::Novel;
-
-    #[tokio::test]
-    #[ignore = "requires live network access to m.zgzl.net"]
-    async fn test_fetch_novel() -> anyhow::Result<()> {
-        let (novel, start) =
-            Novel::get_novel_data("https://m.zgzl.net/read_otew/68hq7.html").await?;
-        println!("{novel:?}");
-        assert_eq!(
-            start,
-            NovelStart::Chapter {
-                novel_id: "otew".to_string(),
-                chapter_id: "68hq7".to_string(),
-            }
-        );
-        Ok(())
-    }
     #[test]
-    fn test_get_get_start_from_url() -> anyhow::Result<()> {
+    fn get_start_from_url_parses_chapter_and_novel_inputs() {
         let input = "https://m.zgzl.net/read_otew/68hq7.html";
         let data = get_start_from_url(input);
         assert_eq!(
@@ -273,6 +253,5 @@ mod test {
         let input = "otew";
         let data = get_start_from_url(input);
         assert_eq!(data, NovelStart::NovelId("otew".to_string()));
-        Ok(())
     }
 }

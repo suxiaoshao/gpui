@@ -46,16 +46,6 @@ impl SearchState {
             _ => false,
         }
     }
-
-    #[cfg(test)]
-    fn is_data(&self) -> bool {
-        matches!(self, Self::Data { .. })
-    }
-
-    #[cfg(test)]
-    fn is_error(&self) -> bool {
-        matches!(self, Self::Error(_))
-    }
 }
 
 enum QueryError {
@@ -440,21 +430,21 @@ mod tests {
     use crate::foundation::i18n::I18n;
 
     #[::core::prelude::v1::test]
-    fn search_state_helpers_match_state_variants() {
+    fn search_state_searching_status_matches_state_variants() {
         assert!(!SearchState::Init.is_searching());
-        assert!(!SearchState::Init.is_data());
-        assert!(!SearchState::Init.is_error());
+        assert!(!matches!(SearchState::Init, SearchState::Data { .. }));
+        assert!(!matches!(SearchState::Init, SearchState::Error(_)));
 
         let task = SearchState::Task(Task::ready(()));
         assert!(task.is_searching());
 
         let data = SearchState::Data { count: 3 };
         assert!(!data.is_searching());
-        assert!(data.is_data());
+        assert!(matches!(data, SearchState::Data { .. }));
 
         let error = SearchState::Error(QueryError::Validation("请选择字段".to_owned()));
         assert!(!error.is_searching());
-        assert!(error.is_error());
+        assert!(matches!(error, SearchState::Error(_)));
     }
 
     #[test]

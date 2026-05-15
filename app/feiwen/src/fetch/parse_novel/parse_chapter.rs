@@ -49,9 +49,14 @@ mod test {
     use super::parse_chapter_url;
 
     #[test]
-    fn test() -> anyhow::Result<()> {
-        let input = "https://xn--pxtr7m.com/posts/8722849";
-        parse_chapter_url(input)?;
-        Ok(())
+    fn parse_chapter_url_extracts_post_id() {
+        let (_, id) = parse_chapter_url("https://xn--pxtr7m.com/posts/8722849").expect("post url");
+
+        assert_eq!(id, 8722849);
+    }
+
+    #[test]
+    fn parse_chapter_url_rejects_invalid_url() {
+        assert!(parse_chapter_url("https://xn--pxtr7m.com/threads/8722849").is_err());
     }
 }
