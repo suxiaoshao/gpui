@@ -1,4 +1,5 @@
 use crate::{
+    components::chat_form::notify_templates_changed,
     database::{
         ConversationTemplate, ConversationTemplatePrompt, Db, NewConversationTemplate, Role,
     },
@@ -355,6 +356,7 @@ fn save_template(
 
     match result {
         Ok(()) => {
+            notify_templates_changed(cx);
             window.close_dialog(cx);
             window.push_notification(
                 Notification::new()
