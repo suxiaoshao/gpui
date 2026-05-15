@@ -351,24 +351,3 @@ fn popup_menu_from_owned_items(
 
     menu
 }
-
-#[cfg(test)]
-pub(crate) fn title_bar_menu_names(menus: &[OwnedMenu]) -> Vec<String> {
-    menus.iter().map(|menu| menu.name.to_string()).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::title_bar_menu_names;
-    use crate::{app::menus, foundation::i18n::I18n};
-
-    #[test]
-    fn builds_title_bar_menu_names_from_owned_menus() {
-        let i18n = I18n::english_for_test();
-
-        assert_eq!(
-            title_bar_menu_names(&menus::component_app_menus(&i18n)),
-            vec!["AI Chat", "Window"]
-        );
-    }
-}

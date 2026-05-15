@@ -72,19 +72,3 @@ pub(super) async fn fetch_page_content(page_url: &str) -> NovelResult<String> {
     let content = parse_text(&html, &SELECTOR_CHAPTER_CONTENT)?;
     Ok(content)
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[tokio::test]
-    #[ignore = "requires live network access to m.zgzl.net"]
-    async fn test_fetch_page_content() -> anyhow::Result<()> {
-        let chapter_id = "68hq7";
-        let novel_id = "otew";
-        let content = Chapter::get_chapter_data(chapter_id, novel_id).await?;
-        println!("{:?}", content);
-        Ok(())
-    }
-}

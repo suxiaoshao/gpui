@@ -65,9 +65,14 @@ mod test {
     use super::parse_author_url;
 
     #[test]
-    fn test() -> anyhow::Result<()> {
-        let input = "https://xn--pxtr7m.com/users/538220";
-        parse_author_url(input)?;
-        Ok(())
+    fn parse_author_url_extracts_user_id() {
+        let (_, id) = parse_author_url("https://xn--pxtr7m.com/users/538220").expect("user url");
+
+        assert_eq!(id, 538220);
+    }
+
+    #[test]
+    fn parse_author_url_rejects_invalid_url() {
+        assert!(parse_author_url("https://xn--pxtr7m.com/profile/538220").is_err());
     }
 }
