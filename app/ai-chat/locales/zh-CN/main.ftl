@@ -347,6 +347,8 @@ button-reasoning-summary-thinking = 思考中
 template-error-select-role = 请选择提示词角色
 template-error-prompt-empty = 提示词不能为空：
 template-error-name-icon-required = 名称和图标不能为空
+folder-error-name-required = 文件夹名称不能为空
+conversation-error-name-icon-required = 会话名称和图标不能为空
 
 field-raw = 原始内容
 shortcut-models-loading = 获取模型中...

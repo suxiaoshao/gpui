@@ -347,6 +347,8 @@ button-reasoning-summary-thinking = Thinking
 template-error-select-role = Please select role for prompt
 template-error-prompt-empty = Prompt cannot be empty:
 template-error-name-icon-required = Name and icon are required
+folder-error-name-required = Folder name is required
+conversation-error-name-icon-required = Conversation name and icon are required
 
 field-raw = Raw
 shortcut-models-loading = Loading models...
