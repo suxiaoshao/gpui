@@ -33,8 +33,9 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
 ## Workflow
 
 1. Build the app variant that matches the user-visible target.
-   - Prefer the app-specific `cargo run -p xtask -- bundle <app>` command from the App Targets table when validating packaged behavior.
-   - For fast development checks where packaging is irrelevant, run the app package directly, for example `cargo run -p feiwen`.
+   - For Computer Use validation, always build a temporary local `.app` bundle first with the app-specific `cargo run -p xtask -- bundle <app>` command from the App Targets table.
+   - Do not use `cargo run -p <app>` for Computer Use validation. Computer Use attaches to macOS apps, and using a bundle id after `cargo run` can attach to an older installed `/Applications/*.app` instead of the current build.
+   - `cargo run -p <app>` is only acceptable for non-Computer-Use checks such as logs, startup smoke tests, or compile-time behavior.
    - Treat `actool` / CoreSimulator icon warnings as non-fatal when the command still emits the expected app bundle.
    - Do not replace an installed `/Applications/*.app` unless the user explicitly asks or confirms the overwrite.
 
@@ -46,14 +47,17 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
    - If the app does not yet expose a documented way to override the data directory, stop and identify a safe test-data launch method before interacting with user data.
 
 3. Launch the exact artifact under test.
-   - Prefer the target bundle after local changes:
+   - Launch the target bundle after local changes by full path:
      `open "/Users/sushao/Documents/code/gpui/target/release/bundle/macos/<Product Name>.app"`.
    - Quit any previous instance of the same app first if stale UI is likely:
      `osascript -e 'tell application id "<bundle-id>" to quit' || true`.
+   - When isolation requires environment variables such as `HOME`, `CARGO_HOME`, or `RUSTUP_HOME`, launch the bundled executable inside the `.app` with those variables instead of opening an installed app.
    - Commands that open GUI apps generally need sandbox escalation.
 
 4. Attach Computer Use to the app.
-   - Call `mcp__computer_use__.get_app_state({"app":"<bundle-id>"})` before any click, key, or scroll in each assistant turn.
+   - Call `mcp__computer_use__.get_app_state({"app":"<full path to target .app>"})` before any click, key, or scroll in each assistant turn.
+   - Do not attach by bundle id when validating local changes; bundle ids are ambiguous when an older installed app also exists.
+   - Verify the returned app state `App=...` path is the target bundle under the current workspace, for example `target/release/bundle/macos/AI Chat.app`. If it shows `/Applications/*.app`, stop and relaunch the correct local bundle.
    - Use the returned screenshot plus accessibility tree together. Prefer element indices when stable; use coordinates when GPUI controls are not exposed as useful AX elements.
    - If a separate window, dialog, popover, or settings surface is opened, call `get_app_state` again before interacting.
 
@@ -98,6 +102,7 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
 Summarize validation in concrete terms:
 
 - artifact launched, for example `target/release/bundle/macos/AI Chat.app`
+- Computer Use app path confirmed from `get_app_state`; explicitly note if it was not the target local bundle
 - window or dialog inspected
 - interactions performed, for example click edit, scroll down, focus editor, press `Page_Down`
 - QA doc or test case followed, when applicable
