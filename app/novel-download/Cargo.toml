@@ -41,7 +41,7 @@ reqwest = { version = "0.13.3", features = [
 
 # parser
 nom = "8.0.0"
-scraper = "0.26.0"
+scraper = "0.27.0"
 
 # async
 futures = "0.3.32"
@@ -58,4 +58,4 @@ tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 [dev-dependencies]
 anyhow = "1.0.102"
-tokio = { version = "1.52.2", default-features = false, features = ["macros"] }
+tokio = { version = "1.52.3", default-features = false, features = ["macros"] }

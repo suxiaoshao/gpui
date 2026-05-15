@@ -166,6 +166,7 @@ pub(crate) struct ConversationDetailView<T: ConversationDetailViewExt> {
 struct MessageTextState<I> {
     id: I,
     state: Entity<TextViewState>,
+    source: String,
     _subscription: Subscription,
 }
 
@@ -212,6 +213,32 @@ enum MessageListSyncOperation {
         old_range: std::ops::Range<usize>,
         count: usize,
     },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MessageTextUpdate<'a> {
+    Unchanged,
+    Append(&'a str),
+    Replace,
+}
+
+fn message_text_update<'a>(
+    previous: &str,
+    next: &'a str,
+    allow_append: bool,
+) -> MessageTextUpdate<'a> {
+    if previous == next {
+        return MessageTextUpdate::Unchanged;
+    }
+
+    if allow_append
+        && let Some(delta) = next.strip_prefix(previous)
+        && !delta.is_empty()
+    {
+        return MessageTextUpdate::Append(delta);
+    }
+
+    MessageTextUpdate::Replace
 }
 
 impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
@@ -368,7 +395,8 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
             };
             let message_id = message.id();
             let source = message.content().display_markdown(&sources_label);
-            self.ensure_message_text_state(message_id, &source, cx);
+            let allow_append = message.content().citations.is_empty();
+            self.ensure_message_text_state(message_id, &source, allow_append, cx);
             next_ids.push(message_id);
         }
 
@@ -381,16 +409,32 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         &mut self,
         message_id: T::MessageId,
         source: &str,
+        allow_append: bool,
         cx: &mut Context<ConversationDetailView<T>>,
     ) {
         if let Some(entry) = self
             .message_text_states
-            .iter()
+            .iter_mut()
             .find(|entry| entry.id == message_id)
         {
-            entry
-                .state
-                .update(cx, |state, cx| state.set_text(source, cx));
+            match message_text_update(&entry.source, source, allow_append) {
+                MessageTextUpdate::Unchanged => {}
+                MessageTextUpdate::Append(delta) => {
+                    let delta = delta.to_owned();
+                    entry
+                        .state
+                        .update(cx, |state, cx| state.push_str(&delta, cx));
+                    entry.source.clear();
+                    entry.source.push_str(source);
+                }
+                MessageTextUpdate::Replace => {
+                    entry
+                        .state
+                        .update(cx, |state, cx| state.set_text(source, cx));
+                    entry.source.clear();
+                    entry.source.push_str(source);
+                }
+            }
             return;
         }
 
@@ -409,6 +453,7 @@ impl<T: ConversationDetailViewExt> ConversationDetailView<T> {
         self.message_text_states.push(MessageTextState {
             id: message_id,
             state,
+            source: source.to_owned(),
             _subscription: subscription,
         });
     }
