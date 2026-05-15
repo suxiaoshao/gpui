@@ -86,26 +86,6 @@ target/<target-triple>/release/bundle/msi/
   - 数据：`$XDG_CONFIG_HOME/top.sushao.{app}/` 或 `~/.config/top.sushao.{app}/`
   - 日志：`$XDG_DATA_HOME/top.sushao.{app}/logs/data.log` 或 `~/.local/share/top.sushao.{app}/logs/data.log`
 
-## ai-chat 专项说明
-
-### 数据库
-
-- 使用 Diesel + SQLite
-- 迁移文件已内置，首次运行会自动初始化数据库
-
-### 产品与测试文档
-
-- 功能文档入口：[app/ai-chat/docs/features/README.md](app/ai-chat/docs/features/README.md)
-- 测试步骤入口：[app/ai-chat/docs/tests/README.md](app/ai-chat/docs/tests/README.md)
-
-```bash
-# 进入 ai-chat 目录
-cd app/ai-chat
-
-# 生成迁移（需要 diesel_cli）
-diesel migration generate migration_name
-```
-
 ## 技术栈
 
 - GPUI + gpui-component
