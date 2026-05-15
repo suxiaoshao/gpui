@@ -1,6 +1,6 @@
 use super::{
-    InitialMessageReveal, MessageListSyncOperation, MessageRevisionExt, RunningTask,
-    first_revision_diff, message_list_sync_operation,
+    InitialMessageReveal, MessageListSyncOperation, MessageRevisionExt, MessageTextUpdate,
+    RunningTask, first_revision_diff, message_list_sync_operation, message_text_update,
 };
 use gpui::Task;
 
@@ -123,6 +123,42 @@ fn first_revision_diff_finds_content_and_length_changes() {
     assert_eq!(first_revision_diff(&[1, 2], &[1, 2, 3]), Some(2));
     assert_eq!(first_revision_diff(&[1, 2, 3], &[1, 2]), Some(2));
     assert_eq!(first_revision_diff(&[1, 2], &[1, 2]), None);
+}
+
+#[test]
+fn message_text_update_skips_unchanged_source() {
+    assert_eq!(
+        message_text_update("hello", "hello", true),
+        MessageTextUpdate::Unchanged
+    );
+}
+
+#[test]
+fn message_text_update_appends_strict_prefix_delta_when_allowed() {
+    assert_eq!(
+        message_text_update("hello", "hello world", true),
+        MessageTextUpdate::Append(" world")
+    );
+}
+
+#[test]
+fn message_text_update_replaces_non_append_or_disallowed_sources() {
+    assert_eq!(
+        message_text_update("hello world", "hello", true),
+        MessageTextUpdate::Replace
+    );
+    assert_eq!(
+        message_text_update("hello", "goodbye", true),
+        MessageTextUpdate::Replace
+    );
+    assert_eq!(
+        message_text_update(
+            "answer",
+            "answer\n\nSources:\n1. https://example.com",
+            false
+        ),
+        MessageTextUpdate::Replace
+    );
 }
 
 #[test]
