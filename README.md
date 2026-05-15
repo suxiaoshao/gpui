@@ -93,6 +93,11 @@ target/<target-triple>/release/bundle/msi/
 - 使用 Diesel + SQLite
 - 迁移文件已内置，首次运行会自动初始化数据库
 
+### 产品与测试文档
+
+- 功能文档入口：[app/ai-chat/docs/features/README.md](app/ai-chat/docs/features/README.md)
+- 测试步骤入口：[app/ai-chat/docs/tests/README.md](app/ai-chat/docs/tests/README.md)
+
 ```bash
 # 进入 ai-chat 目录
 cd app/ai-chat
