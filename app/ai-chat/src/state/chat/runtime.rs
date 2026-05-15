@@ -243,6 +243,34 @@ impl ChatData {
 
 // Persists folder and conversation changes before updating in-memory state.
 impl ChatData {
+    pub(crate) fn save_conversation(
+        title: &str,
+        icon: &str,
+        info: Option<&str>,
+        folder_id: Option<i32>,
+        initial_messages: Option<&[AddConversationMessage]>,
+        cx: &mut App,
+    ) -> AiChatResult<()> {
+        let state = cx.global::<ChatData>().deref().clone();
+        let conn = &mut cx.global::<Db>().get()?;
+        let conversation = insert_conversation(
+            AddConversationInput {
+                title,
+                icon,
+                info,
+                folder_id,
+                initial_messages,
+            },
+            conn,
+        )?;
+        state.update(cx, |data, _cx| {
+            if let Ok(data) = data {
+                data.add_conversation(conversation);
+            }
+        });
+        Ok(())
+    }
+
     fn add_folder(
         state: &Entity<AiChatResult<ChatDataInner>>,
         name: &str,
@@ -264,31 +292,8 @@ impl ChatData {
         input: AddConversationInput<'_>,
         cx: &mut Context<HomeView>,
     ) -> AiChatResult<()> {
-        let new_conversation = NewConversation {
-            title: input.title,
-            folder_id: input.folder_id,
-            icon: input.icon,
-            info: input.info,
-        };
         let conn = &mut cx.global::<Db>().get()?;
-        let mut conversation = Conversation::insert(new_conversation, conn)?;
-        if let Some(initial_messages) = input.initial_messages {
-            for initial_message in initial_messages {
-                let mut new_message = NewMessage::new(
-                    conversation.id,
-                    &initial_message.provider,
-                    initial_message.role,
-                    &initial_message.content,
-                    &initial_message.send_content,
-                    initial_message.status,
-                );
-                if let Some(error) = initial_message.error.as_ref() {
-                    new_message = new_message.with_error(error);
-                }
-                let message = Message::insert(new_message, conn)?;
-                conversation.messages.push(message);
-            }
-        }
+        let conversation = insert_conversation(input, conn)?;
         state.update(cx, |data, _cx| {
             if let Ok(data) = data {
                 data.add_conversation(conversation);
@@ -296,6 +301,37 @@ impl ChatData {
         });
         Ok(())
     }
+}
+
+fn insert_conversation(
+    input: AddConversationInput<'_>,
+    conn: &mut diesel::SqliteConnection,
+) -> AiChatResult<Conversation> {
+    let new_conversation = NewConversation {
+        title: input.title,
+        folder_id: input.folder_id,
+        icon: input.icon,
+        info: input.info,
+    };
+    let mut conversation = Conversation::insert(new_conversation, conn)?;
+    if let Some(initial_messages) = input.initial_messages {
+        for initial_message in initial_messages {
+            let mut new_message = NewMessage::new(
+                conversation.id,
+                &initial_message.provider,
+                initial_message.role,
+                &initial_message.content,
+                &initial_message.send_content,
+                initial_message.status,
+            );
+            if let Some(error) = initial_message.error.as_ref() {
+                new_message = new_message.with_error(error);
+            }
+            let message = Message::insert(new_message, conn)?;
+            conversation.messages.push(message);
+        }
+    }
+    Ok(conversation)
 }
 
 // Persists folder, conversation, and message deletions or moves.

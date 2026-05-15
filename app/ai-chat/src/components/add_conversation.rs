@@ -12,7 +12,7 @@ use gpui_component::{
     input::{Input, InputState},
     notification::{Notification, NotificationType},
 };
-use std::ops::Deref;
+use std::{ops::Deref, rc::Rc};
 use tracing::{Level, event};
 
 #[derive(Clone, Debug, Default)]
@@ -28,17 +28,36 @@ enum ConversationDialogMode {
         parent_id: Option<i32>,
         initial_fields: InitialConversationFields,
         initial_messages: Option<Vec<AddConversationMessage>>,
+        options: AddConversationDialogOptions,
     },
     Edit {
         conversation_id: i32,
     },
 }
 
+#[derive(Clone)]
+struct AddConversationDialogOptions {
+    title: SharedString,
+    failure_title: SharedString,
+    success_title: Option<SharedString>,
+    on_submit: AddConversationSubmit,
+}
+
+pub(crate) type AddConversationSubmit = Rc<
+    dyn Fn(
+        ConversationSubmission,
+        Option<i32>,
+        Option<Vec<AddConversationMessage>>,
+        &mut Window,
+        &mut App,
+    ) -> bool,
+>;
+
 #[derive(Debug, PartialEq, Eq)]
-struct ConversationSubmission {
-    name: String,
-    icon: String,
-    info: Option<String>,
+pub(crate) struct ConversationSubmission {
+    pub(crate) name: String,
+    pub(crate) icon: String,
+    pub(crate) info: Option<String>,
 }
 
 fn build_conversation_submission(
@@ -66,38 +85,29 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
     let _enter = span.enter();
 
     let is_edit = matches!(mode, ConversationDialogMode::Edit { .. });
-    let (
-        dialog_title,
-        name_label,
-        icon_label,
-        info_label,
-        cancel_label,
-        submit_label,
-        failure_title,
-        required_message,
-    ) = {
+    let (name_label, icon_label, info_label, cancel_label, submit_label, required_message) = {
         let i18n = cx.global::<I18n>();
-        if is_edit {
+        (
+            i18n.t("field-name"),
+            i18n.t("field-icon"),
+            i18n.t("field-info"),
+            i18n.t("button-cancel"),
+            i18n.t("button-submit"),
+            i18n.t("conversation-error-name-icon-required"),
+        )
+    };
+    let (dialog_title, failure_title, success_title) = match &mode {
+        ConversationDialogMode::Add { options, .. } => (
+            options.title.clone(),
+            options.failure_title.clone(),
+            options.success_title.clone(),
+        ),
+        ConversationDialogMode::Edit { .. } => {
+            let i18n = cx.global::<I18n>();
             (
-                i18n.t("dialog-edit-conversation-title"),
-                i18n.t("field-name"),
-                i18n.t("field-icon"),
-                i18n.t("field-info"),
-                i18n.t("button-cancel"),
-                i18n.t("button-submit"),
-                i18n.t("notify-update-conversation-failed"),
-                i18n.t("conversation-error-name-icon-required"),
-            )
-        } else {
-            (
-                i18n.t("dialog-add-conversation-title"),
-                i18n.t("field-name"),
-                i18n.t("field-icon"),
-                i18n.t("field-info"),
-                i18n.t("button-cancel"),
-                i18n.t("button-submit"),
-                i18n.t("notify-add-conversation-failed"),
-                i18n.t("conversation-error-name-icon-required"),
+                i18n.t("dialog-edit-conversation-title").into(),
+                i18n.t("notify-update-conversation-failed").into(),
+                None,
             )
         }
     };
@@ -201,6 +211,7 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                                 let info_input = info_input.clone();
                                 let mode = mode.clone();
                                 let failure_title = failure_title.clone();
+                                let success_title = success_title.clone();
                                 let required_message = required_message.clone();
                                 move |_, window, cx| {
                                     let name = name_input.read(cx).value();
@@ -224,37 +235,78 @@ fn open_conversation_dialog(mode: ConversationDialogMode, window: &mut Window, c
                                             return;
                                         }
                                     };
-                                    let name = SharedString::from(submission.name);
-                                    let icon = SharedString::from(submission.icon);
-                                    let info = submission.info.map(SharedString::from);
-                                    let chat_data = cx.global::<ChatData>().deref().clone();
                                     let mode = mode.clone();
-                                    chat_data.update(cx, move |_this, cx| match mode {
+                                    let submitted = match mode {
                                         ConversationDialogMode::Add {
                                             parent_id,
                                             initial_fields: _,
                                             initial_messages,
-                                        } => cx.emit(ChatDataEvent::AddConversation {
-                                            name,
-                                            icon,
-                                            info,
+                                            options,
+                                        } => options.on_submit.as_ref()(
+                                            submission,
                                             parent_id,
                                             initial_messages,
-                                        }),
-                                        ConversationDialogMode::Edit { conversation_id } => cx
-                                            .emit(ChatDataEvent::UpdateConversation {
-                                                id: conversation_id,
-                                                title: name,
-                                                icon,
-                                                info,
-                                            }),
-                                    });
-                                    window.close_dialog(cx);
+                                            window,
+                                            cx,
+                                        ),
+                                        ConversationDialogMode::Edit { conversation_id } => {
+                                            cx.global::<ChatData>().deref().clone().update(
+                                                cx,
+                                                move |_this, cx| {
+                                                    cx.emit(ChatDataEvent::UpdateConversation {
+                                                        id: conversation_id,
+                                                        title: SharedString::from(submission.name),
+                                                        icon: SharedString::from(submission.icon),
+                                                        info: submission
+                                                            .info
+                                                            .map(SharedString::from),
+                                                    });
+                                                },
+                                            );
+                                            true
+                                        }
+                                    };
+                                    if submitted {
+                                        window.close_dialog(cx);
+                                        if let Some(success_title) = success_title.clone() {
+                                            window.push_notification(
+                                                Notification::new()
+                                                    .title(success_title)
+                                                    .with_type(NotificationType::Success),
+                                                cx,
+                                            );
+                                        }
+                                    }
                                 }
                             }),
                     ),
             )
     });
+}
+
+fn default_add_conversation_options(cx: &mut App) -> AddConversationDialogOptions {
+    let i18n = cx.global::<I18n>();
+    AddConversationDialogOptions {
+        title: i18n.t("dialog-add-conversation-title").into(),
+        failure_title: i18n.t("notify-add-conversation-failed").into(),
+        success_title: None,
+        on_submit: Rc::new(|submission, parent_id, initial_messages, _window, cx| {
+            let name = SharedString::from(submission.name);
+            let icon = SharedString::from(submission.icon);
+            let info = submission.info.map(SharedString::from);
+            let chat_data = cx.global::<ChatData>().deref().clone();
+            chat_data.update(cx, move |_this, cx| {
+                cx.emit(ChatDataEvent::AddConversation {
+                    name,
+                    icon,
+                    info,
+                    parent_id,
+                    initial_messages,
+                });
+            });
+            true
+        }),
+    }
 }
 
 pub fn open_add_conversation_dialog(
@@ -268,6 +320,7 @@ pub fn open_add_conversation_dialog(
             parent_id,
             initial_fields: InitialConversationFields::default(),
             initial_messages,
+            options: default_add_conversation_options(cx),
         },
         window,
         cx,
@@ -286,6 +339,35 @@ pub fn open_add_conversation_dialog_with_fields(
             parent_id,
             initial_fields,
             initial_messages,
+            options: default_add_conversation_options(cx),
+        },
+        window,
+        cx,
+    );
+}
+
+pub(crate) fn open_add_conversation_dialog_with_options(
+    parent_id: Option<i32>,
+    initial_fields: InitialConversationFields,
+    initial_messages: Option<Vec<AddConversationMessage>>,
+    title: SharedString,
+    failure_title: SharedString,
+    success_title: Option<SharedString>,
+    on_submit: AddConversationSubmit,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_conversation_dialog(
+        ConversationDialogMode::Add {
+            parent_id,
+            initial_fields,
+            initial_messages,
+            options: AddConversationDialogOptions {
+                title,
+                failure_title,
+                success_title,
+                on_submit,
+            },
         },
         window,
         cx,
