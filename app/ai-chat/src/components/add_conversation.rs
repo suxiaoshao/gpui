@@ -43,6 +43,16 @@ struct AddConversationDialogOptions {
     on_submit: AddConversationSubmit,
 }
 
+pub(crate) struct AddConversationDialogRequest {
+    pub(crate) parent_id: Option<i32>,
+    pub(crate) initial_fields: InitialConversationFields,
+    pub(crate) initial_messages: Option<Vec<AddConversationMessage>>,
+    pub(crate) title: SharedString,
+    pub(crate) failure_title: SharedString,
+    pub(crate) success_title: Option<SharedString>,
+    pub(crate) on_submit: AddConversationSubmit,
+}
+
 pub(crate) type AddConversationSubmit = Rc<
     dyn Fn(
         ConversationSubmission,
@@ -347,26 +357,20 @@ pub fn open_add_conversation_dialog_with_fields(
 }
 
 pub(crate) fn open_add_conversation_dialog_with_options(
-    parent_id: Option<i32>,
-    initial_fields: InitialConversationFields,
-    initial_messages: Option<Vec<AddConversationMessage>>,
-    title: SharedString,
-    failure_title: SharedString,
-    success_title: Option<SharedString>,
-    on_submit: AddConversationSubmit,
+    request: AddConversationDialogRequest,
     window: &mut Window,
     cx: &mut App,
 ) {
     open_conversation_dialog(
         ConversationDialogMode::Add {
-            parent_id,
-            initial_fields,
-            initial_messages,
+            parent_id: request.parent_id,
+            initial_fields: request.initial_fields,
+            initial_messages: request.initial_messages,
             options: AddConversationDialogOptions {
-                title,
-                failure_title,
-                success_title,
-                on_submit,
+                title: request.title,
+                failure_title: request.failure_title,
+                success_title: request.success_title,
+                on_submit: request.on_submit,
             },
         },
         window,

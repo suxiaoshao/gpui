@@ -1,5 +1,8 @@
 use crate::{
-    components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
+    components::{
+        chat_form::ext_settings::{ExtSettings, ExtSettingsEvent, ExtSettingsLayout},
+        hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
+    },
     database::{
         ConversationTemplate, Db, GlobalShortcutBinding, Mode, NewGlobalShortcutBinding,
         ShortcutInputSource,
@@ -8,16 +11,13 @@ use crate::{
         hotkey::GlobalHotkeyState,
         settings::shortcut_settings::{
             SHORTCUT_DIALOG_MARGIN_TOP, SHORTCUT_DIALOG_MAX_HEIGHT, SHORTCUT_DIALOG_WIDTH,
-            choices::{ExtSettingChoice, ModelChoice, TemplateChoice},
+            choices::{ModelChoice, TemplateChoice},
             segmented::single_selected_index,
             validation::{ShortcutValidationError, validate_hotkey},
         },
     },
     foundation::{assets::IconName, i18n::I18n},
-    llm::{
-        ExtSettingControl, ExtSettingItem, ProviderModel, apply_ext_setting,
-        build_request_template, preset_ext_settings,
-    },
+    llm::{ProviderModel, apply_ext_setting, build_request_template, preset_ext_settings},
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
@@ -29,7 +29,8 @@ use gpui_component::{
     h_flex,
     label::Label,
     notification::{Notification, NotificationType},
-    select::{SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectState},
+    searchable_list::SearchableListDelegate,
+    select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectState},
     separator::Separator,
     switch::Switch,
     v_flex,
@@ -37,16 +38,6 @@ use gpui_component::{
 use std::{ops::Deref, rc::Rc};
 
 type OnSaved = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
-
-enum FormExtSettingState {
-    Select {
-        item: ExtSettingItem,
-        state: Entity<SelectState<Vec<ExtSettingChoice>>>,
-    },
-    Boolean {
-        item: ExtSettingItem,
-    },
-}
 
 #[derive(Clone, Copy, Debug)]
 enum ShortcutDialogMode {
@@ -95,7 +86,7 @@ struct ShortcutFormState {
     enabled: bool,
     input_source: ShortcutInputSource,
     request_template: serde_json::Value,
-    ext_settings: Vec<FormExtSettingState>,
+    ext_settings: Entity<ExtSettings>,
     model_resolved: bool,
     save_error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
@@ -159,7 +150,6 @@ fn open_shortcut_form_dialog(
         let on_saved = on_saved.clone();
         dialog
             .w(px(SHORTCUT_DIALOG_WIDTH))
-            .h(px(SHORTCUT_DIALOG_MAX_HEIGHT))
             .max_h(px(SHORTCUT_DIALOG_MAX_HEIGHT))
             .margin_top(px(SHORTCUT_DIALOG_MARGIN_TOP))
             .title(title.clone())
@@ -225,6 +215,7 @@ impl ShortcutFormState {
             .searchable(true)
         });
         let hotkey_input = cx.new(|cx| HotkeyInput::new("shortcut-form-hotkey", window, cx));
+        let ext_settings = cx.new(|cx| ExtSettings::new(ExtSettingsLayout::Form, window, cx));
         let mut this = Self {
             mode,
             binding_id: binding.as_ref().map(|binding| binding.id),
@@ -243,7 +234,7 @@ impl ShortcutFormState {
             enabled: true,
             input_source: ShortcutInputSource::SelectionOrClipboard,
             request_template: serde_json::json!({}),
-            ext_settings: Vec::new(),
+            ext_settings,
             model_resolved: false,
             save_error: None,
             _subscriptions: Vec::new(),
@@ -385,6 +376,23 @@ impl ShortcutFormState {
                 this.handle_model_change(model_value.clone(), window, cx);
             },
         ));
+
+        self._subscriptions.push(cx.subscribe_in(
+            &self.ext_settings,
+            window,
+            |this, _settings, event: &ExtSettingsEvent, window, cx| {
+                let ExtSettingsEvent::Change(setting) = event;
+                let available_models = Self::available_models(cx);
+                let Some(model) = Self::current_model_from(this, &available_models, cx) else {
+                    return;
+                };
+                if apply_ext_setting(&model, &mut this.request_template, setting).is_ok() {
+                    Self::refresh_ext_settings(this, &model, window, cx);
+                }
+                this.save_error = None;
+                cx.notify();
+            },
+        ));
     }
 }
 
@@ -471,62 +479,6 @@ impl ShortcutFormState {
             self.provider_name = provider_name.to_string();
         }
         Self::refresh_request_template_with_models(self, &available_models, None, true, window, cx);
-        self.save_error = None;
-        cx.notify();
-    }
-
-    fn handle_boolean_ext_setting(
-        &mut self,
-        setting_key: &'static str,
-        value: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let available_models = Self::available_models(cx);
-        let Some(model) = Self::current_model_from(self, &available_models, cx) else {
-            return;
-        };
-        let Some(FormExtSettingState::Boolean { item }) = self
-            .ext_settings
-            .iter_mut()
-            .find(|setting| matches!(setting, FormExtSettingState::Boolean { item } if item.key == setting_key))
-        else {
-            return;
-        };
-        item.control = ExtSettingControl::Boolean(value);
-        if apply_ext_setting(&model, &mut self.request_template, item).is_ok() {
-            Self::refresh_ext_settings(self, &model, window, cx);
-        }
-        self.save_error = None;
-        cx.notify();
-    }
-
-    fn handle_select_ext_setting(
-        &mut self,
-        setting_key: &'static str,
-        value: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let available_models = Self::available_models(cx);
-        let Some(model) = Self::current_model_from(self, &available_models, cx) else {
-            return;
-        };
-        let Some(FormExtSettingState::Select { item, .. }) = self
-            .ext_settings
-            .iter_mut()
-            .find(|setting| matches!(setting, FormExtSettingState::Select { item, .. } if item.key == setting_key))
-        else {
-            return;
-        };
-        let options = match &item.control {
-            ExtSettingControl::Select { options, .. } => options.clone(),
-            ExtSettingControl::Boolean(_) => return,
-        };
-        item.control = ExtSettingControl::Select { value, options };
-        if apply_ext_setting(&model, &mut self.request_template, item).is_ok() {
-            Self::refresh_ext_settings(self, &model, window, cx);
-        }
         self.save_error = None;
         cx.notify();
     }
@@ -744,7 +696,8 @@ impl ShortcutFormState {
     ) {
         let Some(model) = Self::current_model_from(form, available_models, cx) else {
             form.model_resolved = false;
-            form.ext_settings.clear();
+            form.ext_settings
+                .update(cx, |settings, cx| settings.clear(cx));
             if reset_when_unresolved {
                 form.request_template = serde_json::json!({});
             }
@@ -767,60 +720,17 @@ impl ShortcutFormState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        form.ext_settings.clear();
         let settings = match preset_ext_settings(model, &form.request_template) {
             Ok(settings) => settings,
-            Err(_) => return,
-        };
-
-        for setting in settings {
-            match &setting.control {
-                ExtSettingControl::Select { value, options } => {
-                    let items = options
-                        .iter()
-                        .map(|option| ExtSettingChoice {
-                            value: option.value.to_string(),
-                            label: cx.global::<I18n>().t(option.label_key).into(),
-                        })
-                        .collect::<Vec<_>>();
-                    let selected_index = items
-                        .iter()
-                        .position(|item| &item.value == value)
-                        .unwrap_or_default();
-                    let state = cx.new(|cx| {
-                        SelectState::new(
-                            items.clone(),
-                            Some(IndexPath::default().row(selected_index)),
-                            window,
-                            cx,
-                        )
-                    });
-                    let setting_key = setting.key;
-                    form._subscriptions.push(cx.subscribe_in(
-                        &state,
-                        window,
-                        move |this,
-                              _state,
-                              event: &SelectEvent<Vec<ExtSettingChoice>>,
-                              window,
-                              cx| {
-                            let SelectEvent::Confirm(Some(value)) = event else {
-                                return;
-                            };
-                            this.handle_select_ext_setting(setting_key, value.clone(), window, cx);
-                        },
-                    ));
-                    form.ext_settings.push(FormExtSettingState::Select {
-                        item: setting,
-                        state,
-                    });
-                }
-                ExtSettingControl::Boolean(_) => {
-                    form.ext_settings
-                        .push(FormExtSettingState::Boolean { item: setting });
-                }
+            Err(_) => {
+                form.ext_settings
+                    .update(cx, |settings, cx| settings.clear(cx));
+                return;
             }
-        }
+        };
+        form.ext_settings.update(cx, |ext_settings, cx| {
+            ext_settings.set_items(settings, window, cx)
+        });
     }
 }
 
@@ -892,7 +802,7 @@ impl ShortcutFormState {
             .into_any_element()
     }
 
-    fn render_preset_settings(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_preset_settings(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if !self.model_resolved {
             return v_flex()
                 .w_full()
@@ -906,89 +816,20 @@ impl ShortcutFormState {
                 .child(cx.global::<I18n>().t("shortcut-ext-settings-unavailable"))
                 .into_any_element();
         }
-
-        if self.ext_settings.is_empty() {
+        if self.ext_settings.read(cx).is_empty() {
             return div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(cx.global::<I18n>().t("field-none"))
                 .into_any_element();
         }
-
-        let controls = self.ext_settings.iter().map(|setting| match setting {
-            FormExtSettingState::Select { item, state } => h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    v_flex()
-                        .min_w_0()
-                        .gap_1()
-                        .child(Label::new(cx.global::<I18n>().t(item.label_key)).text_sm())
-                        .when_some(item.tooltip, |this, tooltip| {
-                            this.child(
-                                Label::new(cx.global::<I18n>().t(tooltip))
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate(),
-                            )
-                        }),
-                )
-                .child(Select::new(state).small().w(px(180.)))
-                .into_any_element(),
-            FormExtSettingState::Boolean { item } => {
-                let ExtSettingControl::Boolean(value) = item.control else {
-                    unreachable!();
-                };
-                let setting_key = item.key;
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap_1()
-                            .child(Label::new(cx.global::<I18n>().t(item.label_key)).text_sm())
-                            .when_some(item.tooltip, |this, tooltip| {
-                                this.child(
-                                    Label::new(cx.global::<I18n>().t(tooltip))
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .truncate(),
-                                )
-                            }),
-                    )
-                    .child(
-                        Switch::new(item.key)
-                            .checked(value)
-                            .small()
-                            .on_click(cx.listener(move |this, checked, window, cx| {
-                                this.handle_boolean_ext_setting(setting_key, *checked, window, cx);
-                            })),
-                    )
-                    .into_any_element()
-            }
-        });
-
-        let _ = window;
         v_flex()
             .w_full()
             .rounded(px(8.))
             .border_1()
             .border_color(cx.theme().border)
-            .children(controls.enumerate().map(|(index, control)| {
-                v_flex()
-                    .w_full()
-                    .when(index > 0, |this| {
-                        this.border_t_1().border_color(cx.theme().border)
-                    })
-                    .p_3()
-                    .child(control)
-                    .into_any_element()
-            }))
+            .p_3()
+            .child(self.ext_settings.clone())
             .into_any_element()
     }
 }
@@ -1030,7 +871,10 @@ impl Render for ShortcutFormState {
 
         v_flex()
             .w_full()
+            .size_full()
             .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .gap_4()
             .child(
                 h_flex()

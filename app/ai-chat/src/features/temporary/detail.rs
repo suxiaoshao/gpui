@@ -1,6 +1,9 @@
 use crate::{
     components::{
-        add_conversation::{InitialConversationFields, open_add_conversation_dialog_with_options},
+        add_conversation::{
+            AddConversationDialogRequest, InitialConversationFields,
+            open_add_conversation_dialog_with_options,
+        },
         chat_form::ChatFormSnapshot,
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
@@ -548,35 +551,37 @@ impl ConversationDetailViewExt for TemporaryDetailState {
             )
         };
         open_add_conversation_dialog_with_options(
-            None,
-            initial_fields,
-            Some(initial_messages),
-            title.into(),
-            failure_title.clone().into(),
-            Some(success_title.into()),
-            Rc::new(move |submission, parent_id, initial_messages, window, cx| {
-                let result = ChatData::save_conversation(
-                    &submission.name,
-                    &submission.icon,
-                    submission.info.as_deref(),
-                    parent_id,
-                    initial_messages.as_deref(),
-                    cx,
-                );
-                match result {
-                    Ok(()) => true,
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(failure_title.clone())
-                                .message(SharedString::from(err.to_string()))
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                        false
+            AddConversationDialogRequest {
+                parent_id: None,
+                initial_fields,
+                initial_messages: Some(initial_messages),
+                title: title.into(),
+                failure_title: failure_title.clone().into(),
+                success_title: Some(success_title.into()),
+                on_submit: Rc::new(move |submission, parent_id, initial_messages, window, cx| {
+                    let result = ChatData::save_conversation(
+                        &submission.name,
+                        &submission.icon,
+                        submission.info.as_deref(),
+                        parent_id,
+                        initial_messages.as_deref(),
+                        cx,
+                    );
+                    match result {
+                        Ok(()) => true,
+                        Err(err) => {
+                            window.push_notification(
+                                Notification::new()
+                                    .title(failure_title.clone())
+                                    .message(SharedString::from(err.to_string()))
+                                    .with_type(NotificationType::Error),
+                                cx,
+                            );
+                            false
+                        }
                     }
-                }
-            }),
+                }),
+            },
             window,
             cx,
         );

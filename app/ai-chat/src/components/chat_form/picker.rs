@@ -391,6 +391,7 @@ pub(crate) struct PickerTrigger {
     selected: bool,
     open: bool,
     disabled: bool,
+    full_width: bool,
     on_toggle: TriggerClickHandler,
     on_bounds_change: BoundsChangeHandler,
 }
@@ -408,6 +409,7 @@ impl PickerTrigger {
             selected: false,
             open: false,
             disabled: false,
+            full_width: false,
             on_toggle: Rc::new(on_toggle),
             on_bounds_change: Rc::new(on_bounds_change),
         }
@@ -420,6 +422,11 @@ impl PickerTrigger {
 
     pub(crate) fn open(mut self, open: bool) -> Self {
         self.open = open;
+        self
+    }
+
+    pub(crate) fn full_width(mut self) -> Self {
+        self.full_width = true;
         self
     }
 }
@@ -435,6 +442,7 @@ impl RenderOnce for PickerTrigger {
             .selected(is_active)
             .rounded(px(8.))
             .small()
+            .when(self.full_width, |this| this.w_full())
             .disabled(self.disabled)
             .on_click(move |event, window, cx| (self.on_toggle)(event, window, cx))
             .child(

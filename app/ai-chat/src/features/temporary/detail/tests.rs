@@ -179,7 +179,7 @@ fn temporary_save_title_falls_back_without_user_message() {
 
 #[test]
 fn temporary_save_title_truncates_long_user_message() {
-    let message = make_message(Role::User, Status::Normal, Content::new(&"a".repeat(80)));
+    let message = make_message(Role::User, Status::Normal, Content::new("a".repeat(80)));
 
     let title = temporary_save_title(&[message], "Temporary Conversation");
 

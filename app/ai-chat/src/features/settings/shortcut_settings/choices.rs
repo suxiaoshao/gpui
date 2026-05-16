@@ -87,30 +87,3 @@ impl SelectItem for ModelChoice {
         &self.value
     }
 }
-
-#[derive(Clone)]
-pub(super) struct ExtSettingChoice {
-    pub(super) value: String,
-    pub(super) label: SharedString,
-}
-
-impl SelectItem for ExtSettingChoice {
-    type Value = String;
-
-    fn title(&self) -> SharedString {
-        self.value.clone().into()
-    }
-
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(div().child(self.label.clone()).into_any_element())
-    }
-
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let _ = cx;
-        div().child(self.label.clone())
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-}
