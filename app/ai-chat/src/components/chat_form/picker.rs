@@ -424,11 +424,6 @@ impl PickerTrigger {
         self.open = open;
         self
     }
-
-    pub(crate) fn full_width(mut self) -> Self {
-        self.full_width = true;
-        self
-    }
 }
 
 impl RenderOnce for PickerTrigger {

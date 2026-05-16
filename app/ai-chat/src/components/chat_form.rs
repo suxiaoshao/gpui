@@ -12,7 +12,7 @@ use crate::{
     llm::{apply_ext_setting, build_request_template, preset_ext_settings, provider_by_name},
     state::ConversationDraft,
 };
-use ext_settings::{ExtSettings, ExtSettingsEvent, ExtSettingsLayout};
+use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, WindowExt,
@@ -96,7 +96,7 @@ impl ChatForm {
         });
         let mode_select = cx.new(|cx| ModeSelect::new(window, cx));
         let model_select = cx.new(|cx| ModelSelect::new(window, cx));
-        let ext_settings = cx.new(|cx| ExtSettings::new(ExtSettingsLayout::Compact, window, cx));
+        let ext_settings = cx.new(|cx| ExtSettings::new(window, cx));
         let templates = cx
             .global::<Db>()
             .get()

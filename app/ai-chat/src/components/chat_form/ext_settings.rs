@@ -2,21 +2,17 @@ use super::picker::{
     PickerListDelegate, PickerPopoverOptions, PickerSection, PickerTrigger, render_picker_popover,
 };
 use crate::{
-    foundation::{assets::IconName, i18n::I18n},
+    components::ext_setting_help,
+    foundation::i18n::I18n,
     llm::{ExtSettingControl, ExtSettingItem, ExtSettingOption},
 };
-use gpui::{StatefulInteractiveElement, prelude::FluentBuilder as _, *};
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Selectable, Sizable, StyledExt,
+    ElementExt, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
-    label::Label,
     list::ListState,
-    scroll::ScrollableElement,
     select::SelectItem,
-    text::TextView,
-    tooltip::Tooltip,
-    v_flex,
 };
 use std::rc::Rc;
 
@@ -87,36 +83,26 @@ enum ExtSettingState {
     Boolean(ExtSettingItem),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExtSettingsLayout {
-    Compact,
-    Form,
-}
-
 pub(crate) struct ExtSettings {
-    layout: ExtSettingsLayout,
     settings: Vec<ExtSettingState>,
+    help_open_index: Option<usize>,
+    help_positions: Vec<Point<Pixels>>,
 }
 
 impl ExtSettings {
-    pub(crate) fn new(
-        layout: ExtSettingsLayout,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
-            layout,
             settings: Vec::new(),
+            help_open_index: None,
+            help_positions: Vec::new(),
         }
     }
 
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         self.settings.clear();
+        self.help_open_index = None;
+        self.help_positions.clear();
         cx.notify();
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.settings.is_empty()
     }
 
     pub(crate) fn set_items(
@@ -134,6 +120,9 @@ impl ExtSettings {
                 self.setting_state_from_item(item, previous_state, window, cx)
             })
             .collect();
+        self.help_open_index = None;
+        self.help_positions
+            .resize(self.settings.len(), Point::default());
         cx.notify();
     }
 
@@ -284,77 +273,77 @@ impl ExtSettings {
         cx.notify();
     }
 
-    fn setting_tooltip(
-        item: &ExtSettingItem,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyView> {
-        let tooltip_key = item.tooltip?;
-        let markdown = cx.global::<I18n>().t(tooltip_key);
-        Some(
-            Tooltip::element(move |_window, _cx| {
-                div().w(px(520.)).child(
-                    v_flex()
-                        .p_2()
-                        .h(px(360.))
-                        .overflow_hidden()
-                        .overflow_y_scrollbar()
-                        .child(
-                            div().child(
-                                TextView::markdown(
-                                    SharedString::from(format!("ext-setting-tooltip-{index}")),
-                                    markdown.clone(),
-                                )
-                                .selectable(true),
-                            ),
-                        ),
-                )
-            })
-            .build(window, cx),
-        )
+    #[cfg(test)]
+    fn has_tooltip(item: &ExtSettingItem) -> bool {
+        item.tooltip.is_some()
     }
 
-    fn render_label(
+    fn set_help_position(&mut self, index: usize, bounds: Bounds<Pixels>) {
+        if self.help_positions.len() <= index {
+            self.help_positions.resize(index + 1, Point::default());
+        }
+        self.help_positions[index] = ext_setting_help::help_position(bounds);
+    }
+
+    fn show_help(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.help_open_index = Some(index);
+        cx.notify();
+    }
+
+    fn hide_help(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.help_open_index == Some(index) {
+            self.help_open_index = None;
+            cx.notify();
+        }
+    }
+
+    fn attach_help(
+        &self,
         item: &ExtSettingItem,
         index: usize,
+        trigger: Stateful<Div>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let label = Label::new(cx.global::<I18n>().t(item.label_key))
-            .text_sm()
-            .font_medium();
-        let Some(tooltip) = Self::setting_tooltip(item, index, window, cx) else {
-            return h_flex()
-                .items_center()
-                .gap_1()
-                .child(label)
-                .into_any_element();
+        let Some(tooltip_key) = item.tooltip else {
+            return trigger.into_any_element();
         };
+        let state = cx.entity();
+        let positioned_trigger = trigger
+            .on_hover(cx.listener(move |settings, hovered: &bool, _window, cx| {
+                if *hovered {
+                    settings.show_help(index, cx);
+                }
+            }))
+            .on_prepaint(move |bounds, _window, cx| {
+                state.update(cx, |settings, _cx| {
+                    settings.set_help_position(index, bounds);
+                });
+            });
+        let position = self.help_positions.get(index).copied().unwrap_or_default();
 
-        h_flex()
-            .items_center()
-            .gap_1()
-            .child(label)
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "ext-setting-tooltip-trigger-{index}"
-                    )))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size_5()
-                    .rounded_full()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|this| this.text_color(cx.theme().foreground))
-                    .hoverable_tooltip(move |_, _| tooltip.clone())
-                    .child(Icon::new(IconName::Info).size_3()),
-            )
+        positioned_trigger
+            .when(self.help_open_index == Some(index), |this| {
+                this.child(ext_setting_help::help_panel(
+                    SharedString::from(format!("ext-setting-help-panel-{index}")),
+                    tooltip_key,
+                    position,
+                    cx.listener(move |settings, hovered: &bool, _window, cx| {
+                        if *hovered {
+                            settings.show_help(index, cx);
+                        } else {
+                            settings.hide_help(index, cx);
+                        }
+                    }),
+                    window,
+                    cx,
+                ))
+            })
             .into_any_element()
     }
 
     fn render_boolean_compact(
+        &self,
         setting: &ExtSettingItem,
         index: usize,
         window: &mut Window,
@@ -375,90 +364,17 @@ impl ExtSettings {
                     settings.toggle_boolean(key, cx);
                 })
             });
-        let mut container = div()
+        let container = div()
             .id(SharedString::from(format!(
                 "ext-setting-boolean-wrapper-{index}"
             )))
             .child(button);
-        if let Some(tooltip) = Self::setting_tooltip(setting, index, window, cx) {
-            container = container.hoverable_tooltip(move |_, _| tooltip.clone());
-        }
-        container.into_any_element()
+        let _ = window;
+        self.attach_help(setting, index, container, window, cx)
     }
 
     fn render_select_compact(
-        setting: &SelectSettingState,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let SelectTriggerParts {
-            trigger,
-            picker,
-            bounds,
-            key,
-            on_mouse_down_out,
-        } = Self::select_trigger(setting, index, cx);
-
-        let mut container = div()
-            .id(SharedString::from(format!(
-                "ext-setting-select-wrapper-{index}"
-            )))
-            .child(trigger);
-        if let Some(tooltip) = Self::setting_tooltip(&setting.item, index, window, cx) {
-            container = container.hoverable_tooltip(move |_, _| tooltip.clone());
-        }
-        container
-            .when(setting.picker_open, |this| {
-                this.child(render_picker_popover(
-                    bounds,
-                    picker,
-                    PickerPopoverOptions {
-                        min_width: Some(px(150.)),
-                        ..Default::default()
-                    },
-                    on_mouse_down_out,
-                    cx,
-                ))
-            })
-            .id(SharedString::from(format!(
-                "ext-setting-select-container-{key}"
-            )))
-            .into_any_element()
-    }
-
-    fn render_boolean_form(
-        setting: &ExtSettingItem,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let ExtSettingControl::Boolean(value) = setting.control else {
-            unreachable!("boolean setting state always carries boolean control");
-        };
-        let setting_key = setting.key;
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_2()
-            .child(Self::render_label(setting, index, window, cx))
-            .child(
-                h_flex().w_full().justify_start().child(
-                    gpui_component::switch::Switch::new(setting.key)
-                        .checked(value)
-                        .small()
-                        .on_click(cx.listener(move |settings, checked, _window, cx| {
-                            if let Some(item) = settings.set_boolean_value(setting_key, *checked) {
-                                cx.emit(ExtSettingsEvent::Change(item));
-                            }
-                            cx.notify();
-                        })),
-                ),
-            )
-            .into_any_element()
-    }
-
-    fn render_select_form(
+        &self,
         setting: &SelectSettingState,
         index: usize,
         window: &mut Window,
@@ -472,29 +388,25 @@ impl ExtSettings {
             on_mouse_down_out,
         } = Self::select_trigger(setting, index, cx);
 
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_2()
-            .child(Self::render_label(&setting.item, index, window, cx))
-            .child(
-                div()
-                    .w_full()
-                    .child(trigger.full_width())
-                    .when(setting.picker_open, |this| {
-                        this.child(render_picker_popover(
-                            bounds,
-                            picker,
-                            PickerPopoverOptions {
-                                min_width: Some(px(260.)),
-                                ..Default::default()
-                            },
-                            on_mouse_down_out,
-                            cx,
-                        ))
-                    }),
-            )
-            .into_any_element()
+        let container = div()
+            .id(SharedString::from(format!(
+                "ext-setting-select-wrapper-{index}"
+            )))
+            .child(trigger);
+        let container = container.when(setting.picker_open, |this| {
+            this.child(render_picker_popover(
+                bounds,
+                picker,
+                PickerPopoverOptions {
+                    min_width: Some(px(150.)),
+                    ..Default::default()
+                },
+                on_mouse_down_out,
+                cx,
+            ))
+        });
+        let _ = window;
+        self.attach_help(&setting.item, index, container, window, cx)
     }
 
     fn select_trigger(
@@ -570,19 +482,6 @@ impl ExtSettings {
             on_mouse_down_out,
         }
     }
-
-    fn set_boolean_value(&mut self, key: &'static str, value: bool) -> Option<ExtSettingItem> {
-        let Some(ExtSettingState::Boolean(setting)) = self.settings.iter_mut().find(
-            |setting| matches!(setting, ExtSettingState::Boolean(setting) if setting.key == key),
-        ) else {
-            return None;
-        };
-        let ExtSettingControl::Boolean(current) = &mut setting.control else {
-            return None;
-        };
-        *current = value;
-        Some(setting.clone())
-    }
 }
 
 impl Render for ExtSettings {
@@ -592,20 +491,12 @@ impl Render for ExtSettings {
             .iter()
             .enumerate()
             .map(|(index, setting)| match setting {
-                ExtSettingState::Boolean(setting) => match self.layout {
-                    ExtSettingsLayout::Compact => {
-                        Self::render_boolean_compact(setting, index, window, cx)
-                    }
-                    ExtSettingsLayout::Form => {
-                        Self::render_boolean_form(setting, index, window, cx)
-                    }
-                },
-                ExtSettingState::Select(setting) => match self.layout {
-                    ExtSettingsLayout::Compact => {
-                        Self::render_select_compact(setting, index, window, cx)
-                    }
-                    ExtSettingsLayout::Form => Self::render_select_form(setting, index, window, cx),
-                },
+                ExtSettingState::Boolean(setting) => {
+                    self.render_boolean_compact(setting, index, window, cx)
+                }
+                ExtSettingState::Select(setting) => {
+                    self.render_select_compact(setting, index, window, cx)
+                }
             })
             .collect::<Vec<_>>();
 
@@ -613,10 +504,7 @@ impl Render for ExtSettings {
             return div();
         }
 
-        match self.layout {
-            ExtSettingsLayout::Compact => h_flex().items_center().gap_1().children(controls),
-            ExtSettingsLayout::Form => v_flex().w_full().gap_3().children(controls),
-        }
+        h_flex().items_center().gap_1().children(controls)
     }
 }
 
@@ -647,10 +535,10 @@ impl ExtSettingState {
 
 #[cfg(test)]
 mod tests {
-    use super::SelectSettingOption;
+    use super::{ExtSettings, SelectSettingOption};
     use crate::{
         components::chat_form::picker::{PickerListDelegate, PickerSection},
-        llm::ExtSettingOption,
+        llm::{ExtSettingControl, ExtSettingItem, ExtSettingOption},
     };
     use gpui_component::IndexPath;
 
@@ -658,6 +546,15 @@ mod tests {
         ExtSettingOption {
             value,
             label_key: "field-reasoning-effort",
+        }
+    }
+
+    fn setting(tooltip: Option<&'static str>) -> ExtSettingItem {
+        ExtSettingItem {
+            key: "web_search",
+            label_key: "field-web-search",
+            tooltip,
+            control: ExtSettingControl::Boolean(true),
         }
     }
 
@@ -674,5 +571,13 @@ mod tests {
             PickerListDelegate::selected_index_for(&sections, Some("medium")),
             Some(IndexPath::default().row(2))
         );
+    }
+
+    #[test]
+    fn tooltip_trigger_is_rendered_only_for_described_settings() {
+        assert!(ExtSettings::has_tooltip(&setting(Some(
+            "tooltip-ollama-web-search"
+        ))));
+        assert!(!ExtSettings::has_tooltip(&setting(None)));
     }
 }

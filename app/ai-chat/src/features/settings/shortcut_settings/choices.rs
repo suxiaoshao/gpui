@@ -34,6 +34,10 @@ impl SelectItem for TemplateChoice {
         self.label.clone()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(self.label.clone().into_any_element())
+    }
+
     fn matches(&self, query: &str) -> bool {
         self.template.as_ref().map_or_else(
             || self.label.to_lowercase().contains(&query.to_lowercase()),
@@ -81,6 +85,10 @@ impl SelectItem for ModelChoice {
 
     fn title(&self) -> SharedString {
         self.title.clone()
+    }
+
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(self.title.clone().into_any_element())
     }
 
     fn value(&self) -> &Self::Value {

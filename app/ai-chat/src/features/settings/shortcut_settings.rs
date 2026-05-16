@@ -1,5 +1,6 @@
 mod choices;
 mod dialogs;
+mod ext_settings_form;
 mod form;
 mod list;
 mod segmented;
