@@ -118,6 +118,7 @@ impl ShortcutExtSettingsForm {
         match item.control.clone() {
             ExtSettingControl::Select { value, options } => {
                 let raw_options = options.clone();
+                let selected_value = value.clone();
                 let options = options
                     .into_iter()
                     .map(|option| ShortcutExtSettingOption::new(option, cx))
@@ -129,12 +130,16 @@ impl ShortcutExtSettingsForm {
                     previous.raw_options = raw_options;
                     previous.select.update(cx, |select, cx| {
                         select.set_items(options, window, cx);
-                        select.set_selected_index(selected_index, window, cx);
+                        select.set_selected_value(&selected_value, window, cx);
                     });
                     return ExtSettingState::Select(previous);
                 }
 
-                let select = cx.new(|cx| SelectState::new(options, selected_index, window, cx));
+                let select = cx.new(|cx| {
+                    let mut select = SelectState::new(options, selected_index, window, cx);
+                    select.set_selected_value(&selected_value, window, cx);
+                    select
+                });
                 ExtSettingState::Select(SelectSettingState {
                     item,
                     raw_options,

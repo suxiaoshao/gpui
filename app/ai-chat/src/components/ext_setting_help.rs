@@ -1,10 +1,7 @@
 use crate::foundation::{assets::IconName, i18n::I18n};
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, StyledExt,
-    scroll::{Scrollbar, ScrollbarShow},
-    text::TextView,
-    v_flex,
+    ActiveTheme, Icon, StyledExt, scroll::ScrollableElement, text::TextView, v_flex,
 };
 
 pub(crate) fn help_position(bounds: Bounds<Pixels>) -> Point<Pixels> {
@@ -32,19 +29,11 @@ pub(crate) fn help_panel(
     tooltip_key: &'static str,
     position: Point<Pixels>,
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
     let id = id.into();
     let markdown = cx.global::<I18n>().t(tooltip_key);
-    let scroll_handle = window
-        .use_keyed_state(
-            SharedString::from(format!("{id}-scroll-handle")),
-            cx,
-            |_, _| ScrollHandle::new(),
-        )
-        .read(cx)
-        .clone();
 
     deferred(
         anchored()
@@ -65,10 +54,8 @@ pub(crate) fn help_panel(
                         .child(
                             div()
                                 .id(SharedString::from(format!("{id}-scroll")))
-                                .relative()
                                 .size_full()
-                                .track_scroll(&scroll_handle)
-                                .overflow_y_scroll()
+                                .overflow_y_scrollbar()
                                 .child(
                                     div().pr_2().child(
                                         TextView::markdown(
@@ -76,12 +63,6 @@ pub(crate) fn help_panel(
                                             markdown,
                                         )
                                         .selectable(false),
-                                    ),
-                                )
-                                .child(
-                                    div().absolute().top_0().right_0().bottom_0().child(
-                                        Scrollbar::vertical(&scroll_handle)
-                                            .scrollbar_show(ScrollbarShow::Always),
                                     ),
                                 ),
                         ),

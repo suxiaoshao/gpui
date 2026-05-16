@@ -68,24 +68,16 @@ impl ShortcutDialogMode {
 
 struct ShortcutFormState {
     mode: ShortcutDialogMode,
-    binding_id: Option<i32>,
-    initial_data: ShortcutFormInitialData,
+    initial_draft: ShortcutFormDraft,
+    draft: ShortcutFormDraft,
     existing_bindings: Vec<GlobalShortcutBinding>,
     templates: Vec<ConversationTemplate>,
-    selected_template_id: Option<i32>,
-    selected_model_key: Option<String>,
     template_select: Entity<SelectState<Vec<TemplateChoice>>>,
     model_select: Entity<SelectState<SearchableVec<SelectGroup<ModelChoice>>>>,
     hotkey_input: Entity<HotkeyInput>,
     model_store_models: Vec<ProviderModel>,
     model_store_status: Option<ModelStoreStatus>,
-    provider_name: String,
-    chat_mode: Mode,
-    hotkey: Option<String>,
     hotkey_error: Option<ShortcutValidationError>,
-    enabled: bool,
-    input_source: ShortcutInputSource,
-    request_template: serde_json::Value,
     ext_settings: Entity<ShortcutExtSettingsForm>,
     model_resolved: bool,
     save_error: Option<SharedString>,
@@ -93,11 +85,10 @@ struct ShortcutFormState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ShortcutFormInitialData {
+struct ShortcutFormDraft {
     binding_id: Option<i32>,
     template_id: Option<i32>,
-    provider_name: String,
-    model_id: String,
+    model_key: String,
     chat_mode: Mode,
     hotkey: Option<String>,
     enabled: bool,
@@ -105,18 +96,17 @@ struct ShortcutFormInitialData {
     request_template: serde_json::Value,
 }
 
-impl ShortcutFormInitialData {
+impl ShortcutFormDraft {
     fn add(models: &[ProviderModel]) -> Self {
-        let (provider_name, model_id) = models
+        let model_key = models
             .first()
-            .map(|model| (model.provider_name.clone(), model.id.clone()))
+            .map(|model| ModelChoice::key(&model.provider_name, &model.id))
             .unwrap_or_default();
 
         Self {
             binding_id: None,
             template_id: None,
-            provider_name,
-            model_id,
+            model_key,
             chat_mode: Mode::Contextual,
             hotkey: None,
             enabled: true,
@@ -129,14 +119,17 @@ impl ShortcutFormInitialData {
         Self {
             binding_id: Some(binding.id),
             template_id: binding.template_id,
-            provider_name: binding.provider_name,
-            model_id: binding.model_id,
+            model_key: ModelChoice::key(&binding.provider_name, &binding.model_id),
             chat_mode: binding.mode,
             hotkey: Some(binding.hotkey),
             enabled: binding.enabled,
             input_source: binding.input_source,
             request_template: binding.request_template,
         }
+    }
+
+    fn model_parts(&self) -> Option<(&str, &str)> {
+        ShortcutFormState::split_model_choice_key(&self.model_key)
     }
 }
 
@@ -257,9 +250,9 @@ impl ShortcutFormState {
             status,
             ..
         } = Self::model_store_snapshot(cx);
-        let initial_data = binding
-            .map(ShortcutFormInitialData::edit)
-            .unwrap_or_else(|| ShortcutFormInitialData::add(&available_models));
+        let initial_draft = binding
+            .map(ShortcutFormDraft::edit)
+            .unwrap_or_else(|| ShortcutFormDraft::add(&available_models));
         let template_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
         let model_select = cx.new(|cx| {
             SelectState::new(
@@ -274,30 +267,23 @@ impl ShortcutFormState {
         let ext_settings = cx.new(|cx| ShortcutExtSettingsForm::new(window, cx));
         let mut this = Self {
             mode,
-            binding_id: initial_data.binding_id,
-            initial_data,
+            initial_draft: initial_draft.clone(),
+            draft: initial_draft,
             existing_bindings,
             templates,
-            selected_template_id: None,
-            selected_model_key: None,
             template_select,
             model_select,
             hotkey_input,
             model_store_models: available_models,
             model_store_status: status,
-            provider_name: String::new(),
-            chat_mode: Mode::Contextual,
-            hotkey: None,
             hotkey_error: None,
-            enabled: true,
-            input_source: ShortcutInputSource::SelectionOrClipboard,
-            request_template: serde_json::json!({}),
             ext_settings,
             model_resolved: false,
             save_error: None,
             _subscriptions: Vec::new(),
         };
-        this.rebuild_controls(window, cx);
+        this.sync_controls_from_draft(window, cx);
+        this.initial_draft = this.draft.clone();
         this.refresh_model_choices_from_store(window, cx);
         this
     }
@@ -305,11 +291,13 @@ impl ShortcutFormState {
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_error = None;
         self.hotkey_error = None;
-        self.rebuild_controls(window, cx);
+        self.draft = self.initial_draft.clone();
+        self.sync_controls_from_draft(window, cx);
+        self.initial_draft = self.draft.clone();
         cx.notify();
     }
 
-    fn rebuild_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_controls_from_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._subscriptions.clear();
         let ModelStoreSnapshot {
             models: available_models,
@@ -318,21 +306,8 @@ impl ShortcutFormState {
         } = Self::model_store_snapshot(cx);
         self.model_store_models = available_models.clone();
         self.model_store_status = status;
-        let initial_data = self.initial_data.clone();
-        let template_id = initial_data.template_id;
-        let provider_name = initial_data.provider_name.clone();
-        let model_id = initial_data.model_id.clone();
-        let hotkey = initial_data.hotkey.clone();
-        let parsed_hotkey = hotkey.as_deref().and_then(string_to_keystroke);
-
-        self.binding_id = initial_data.binding_id;
-        self.provider_name = provider_name;
-        self.selected_template_id = template_id;
-        self.chat_mode = initial_data.chat_mode;
-        self.hotkey = hotkey.filter(|hotkey| string_to_keystroke(hotkey).is_some());
-        self.enabled = initial_data.enabled;
-        self.input_source = initial_data.input_source;
-        self.request_template = initial_data.request_template.clone();
+        let template_id = self.draft.template_id;
+        let parsed_hotkey = self.draft.hotkey.as_deref().and_then(string_to_keystroke);
 
         self.template_select = cx.new(|cx| {
             SelectState::new(
@@ -346,17 +321,13 @@ impl ShortcutFormState {
         self.template_select.update(cx, |select, cx| {
             select.set_selected_value(&template_id, window, cx);
         });
-        let model_choices = Self::model_choices_from(
-            &available_models,
-            Some((&self.provider_name, &model_id)),
-            cx,
-        );
-        let model_key = ModelChoice::key(&self.provider_name, &model_id);
+        let model_choices =
+            Self::model_choices_from(&available_models, self.draft.model_parts(), cx);
+        let model_key = self.draft.model_key.clone();
         let model_selected = Self::model_selected_index(&model_choices, &model_key);
-        self.selected_model_key = model_selected.map(|_| model_key.clone());
         self.model_select = cx
             .new(|cx| SelectState::new(model_choices, model_selected, window, cx).searchable(true));
-        if self.selected_model_key.is_some() {
+        if model_selected.is_some() {
             self.model_select.update(cx, |select, cx| {
                 select.set_selected_value(&model_key, window, cx);
             });
@@ -370,7 +341,7 @@ impl ShortcutFormState {
         Self::refresh_request_template_with_models(
             self,
             &available_models,
-            Some(&initial_data.request_template),
+            Some(&self.draft.request_template.clone()),
             false,
             window,
             cx,
@@ -391,12 +362,12 @@ impl ShortcutFormState {
             |this, _input, event: &HotkeyEvent, _window, cx| {
                 match event {
                     HotkeyEvent::Confirm(value) => {
-                        this.hotkey = Some(value.to_string());
+                        this.draft.hotkey = Some(value.to_string());
                         this.hotkey_error = None;
                         this.save_error = None;
                     }
                     HotkeyEvent::Cancel => {
-                        this.hotkey = None;
+                        this.draft.hotkey = None;
                         this.hotkey_error = None;
                         this.save_error = None;
                     }
@@ -410,7 +381,7 @@ impl ShortcutFormState {
             window,
             |this, _state, event: &SelectEvent<Vec<TemplateChoice>>, _window, cx| {
                 let SelectEvent::Confirm(template_id) = event;
-                this.selected_template_id = template_id.flatten();
+                this.draft.template_id = template_id.flatten();
                 this.save_error = None;
                 cx.notify();
             },
@@ -440,7 +411,7 @@ impl ShortcutFormState {
                 let Some(model) = Self::current_model_from(this, &available_models, cx) else {
                     return;
                 };
-                if apply_ext_setting(&model, &mut this.request_template, setting).is_ok() {
+                if apply_ext_setting(&model, &mut this.draft.request_template, setting).is_ok() {
                     Self::refresh_ext_settings(this, &model, window, cx);
                 }
                 this.save_error = None;
@@ -452,7 +423,9 @@ impl ShortcutFormState {
 
 impl ShortcutFormState {
     fn refresh_model_choices_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let previous_model_value = self.selected_model_key.clone();
+        let previous_model_value =
+            (!self.draft.model_key.is_empty()).then(|| self.draft.model_key.clone());
+        let was_pristine = self.draft == self.initial_draft;
         let ModelStoreSnapshot { models, status, .. } = Self::model_store_snapshot(cx);
         let models_changed = self.model_store_models != models;
         let status_changed = self.model_store_status != status;
@@ -466,23 +439,7 @@ impl ShortcutFormState {
         }
 
         self.model_store_models = models.clone();
-        let (fallback_provider, fallback_model) = self
-            .initial_data
-            .binding_id
-            .filter(|binding_id| Some(*binding_id) == self.binding_id)
-            .map(|_| {
-                (
-                    self.initial_data.provider_name.as_str(),
-                    self.initial_data.model_id.as_str(),
-                )
-            })
-            .unwrap_or((self.provider_name.as_str(), ""));
-        let selected_key = selected_model_key_for_refresh(
-            previous_model_value.as_deref(),
-            fallback_provider,
-            fallback_model,
-            &models,
-        );
+        let selected_key = selected_model_key_for_refresh(previous_model_value.as_deref(), &models);
         let unresolved_model = selected_key
             .as_deref()
             .and_then(Self::split_model_choice_key);
@@ -494,22 +451,20 @@ impl ShortcutFormState {
         self.model_select.update(cx, |select, cx| {
             select.set_items(model_choices, window, cx);
             select.set_selected_index(selected_index, window, cx);
+            if let Some(selected_key) = selected_key.as_ref() {
+                select.set_selected_value(selected_key, window, cx);
+            }
         });
 
-        self.selected_model_key = selected_index.and(selected_key);
-        if let Some((provider_name, _)) = self
-            .selected_model_key
-            .as_deref()
-            .and_then(Self::split_model_choice_key)
-        {
-            self.provider_name = provider_name.to_string();
-        }
+        self.draft.model_key = selected_index
+            .and_then(|_| selected_key.clone())
+            .unwrap_or_default();
 
         let saved_template = should_preserve_request_template_on_model_refresh(
             previous_model_value.as_deref(),
-            self.selected_model_key.as_deref(),
+            (!self.draft.model_key.is_empty()).then_some(self.draft.model_key.as_str()),
         )
-        .then(|| self.request_template.clone());
+        .then(|| self.draft.request_template.clone());
         Self::refresh_request_template_with_models(
             self,
             &models,
@@ -518,6 +473,9 @@ impl ShortcutFormState {
             window,
             cx,
         );
+        if was_pristine {
+            self.initial_draft = self.draft.clone();
+        }
         cx.notify();
     }
 
@@ -528,17 +486,7 @@ impl ShortcutFormState {
         cx: &mut Context<Self>,
     ) {
         let available_models = Self::available_models(cx);
-        self.selected_model_key = Some(model_value.clone());
-        let resolved_model =
-            Self::split_model_choice_key(&model_value).and_then(|(provider_name, model_id)| {
-                available_models
-                    .iter()
-                    .find(|model| model.provider_name == provider_name && model.id == model_id)
-                    .map(|_| provider_name)
-            });
-        if let Some(provider_name) = resolved_model {
-            self.provider_name = provider_name.to_string();
-        }
+        self.draft.model_key = model_value;
         Self::refresh_request_template_with_models(self, &available_models, None, true, window, cx);
         self.save_error = None;
         cx.notify();
@@ -567,10 +515,10 @@ impl ShortcutFormState {
             }
         };
 
-        match GlobalHotkeyState::save_global_shortcut_binding(self.binding_id, payload, cx) {
+        match GlobalHotkeyState::save_global_shortcut_binding(self.draft.binding_id, payload, cx) {
             Ok(_) => {
                 notify_success(
-                    cx.global::<I18n>().t(if self.binding_id.is_some() {
+                    cx.global::<I18n>().t(if self.draft.binding_id.is_some() {
                         "notify-shortcut-updated-success"
                     } else {
                         "notify-shortcut-created-success"
@@ -601,8 +549,8 @@ impl ShortcutFormState {
     ) -> Result<NewGlobalShortcutBinding, SharedString> {
         let temporary_hotkey = cx.global::<AiChatConfig>().temporary_hotkey.as_deref();
         let hotkey = match validate_hotkey(
-            self.binding_id,
-            self.hotkey.as_deref(),
+            self.draft.binding_id,
+            self.draft.hotkey.as_deref(),
             &self.existing_bindings,
             temporary_hotkey,
         ) {
@@ -613,23 +561,24 @@ impl ShortcutFormState {
             }
         };
 
-        let model_value = self
-            .selected_model_key
-            .clone()
-            .filter(|model| !model.is_empty())
-            .ok_or_else(|| SharedString::from(cx.global::<I18n>().t("notify-select-model")))?;
+        let model_value = self.draft.model_key.clone();
+        if model_value.is_empty() {
+            return Err(SharedString::from(
+                cx.global::<I18n>().t("notify-select-model"),
+            ));
+        }
         let (provider_name, model_id) = Self::split_model_choice_key(&model_value)
             .map(|(provider_name, model_id)| (provider_name.to_string(), model_id.to_string()))
             .ok_or_else(|| SharedString::from(cx.global::<I18n>().t("notify-select-model")))?;
         Ok(NewGlobalShortcutBinding {
             hotkey,
-            enabled: self.enabled,
-            template_id: self.selected_template_id,
+            enabled: self.draft.enabled,
+            template_id: self.draft.template_id,
             provider_name,
             model_id,
-            mode: self.chat_mode,
-            request_template: self.request_template.clone(),
-            input_source: self.input_source,
+            mode: self.draft.chat_mode,
+            request_template: self.draft.request_template.clone(),
+            input_source: self.draft.input_source,
         })
     }
 
@@ -637,20 +586,7 @@ impl ShortcutFormState {
         if !matches!(self.mode, ShortcutDialogMode::Edit) {
             return false;
         }
-        let template_id = self.selected_template_id;
-        let model_value = self.selected_model_key.clone();
-        let (provider_name, model_id) = model_value
-            .as_deref()
-            .and_then(Self::split_model_choice_key)
-            .unwrap_or(("", ""));
-        self.hotkey != self.initial_data.hotkey
-            || self.enabled != self.initial_data.enabled
-            || template_id != self.initial_data.template_id
-            || provider_name != self.initial_data.provider_name
-            || model_id != self.initial_data.model_id
-            || self.chat_mode != self.initial_data.chat_mode
-            || self.input_source != self.initial_data.input_source
-            || self.request_template != self.initial_data.request_template
+        self.draft != self.initial_draft
     }
 }
 
@@ -727,8 +663,9 @@ impl ShortcutFormState {
         available_models: &[ProviderModel],
         _cx: &App,
     ) -> Option<ProviderModel> {
-        let model_value = form.selected_model_key.clone()?;
-        let (provider_name, model_id) = Self::split_model_choice_key(&model_value)?;
+        let model_value =
+            (!form.draft.model_key.is_empty()).then_some(form.draft.model_key.as_str())?;
+        let (provider_name, model_id) = Self::split_model_choice_key(model_value)?;
         available_models
             .iter()
             .find(|model| model.provider_name == provider_name && model.id == model_id)
@@ -748,14 +685,14 @@ impl ShortcutFormState {
             form.ext_settings
                 .update(cx, |settings, cx| settings.clear(cx));
             if reset_when_unresolved {
-                form.request_template = serde_json::json!({});
+                form.draft.request_template = serde_json::json!({});
             }
             return;
         };
 
         form.model_resolved = true;
-        form.request_template =
-            build_request_template(&model, saved_template).unwrap_or_else(|_| {
+        form.draft.request_template = build_request_template(&model, saved_template)
+            .unwrap_or_else(|_| {
                 saved_template
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({}))
@@ -769,7 +706,7 @@ impl ShortcutFormState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let settings = match preset_ext_settings(model, &form.request_template) {
+        let settings = match preset_ext_settings(model, &form.draft.request_template) {
             Ok(settings) => settings,
             Err(_) => {
                 form.ext_settings
@@ -799,7 +736,7 @@ impl ShortcutFormState {
     }
 
     fn render_mode_segments(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current_index = mode_option_index(self.chat_mode);
+        let current_index = mode_option_index(self.draft.chat_mode);
         ToggleGroup::new("shortcut-form-mode-segments")
             .segmented()
             .outline()
@@ -813,9 +750,10 @@ impl ShortcutFormState {
                 )
             }))
             .on_click(cx.listener(move |form, checkeds: &Vec<bool>, _window, cx| {
-                let next_index = single_selected_index(mode_option_index(form.chat_mode), checkeds);
+                let next_index =
+                    single_selected_index(mode_option_index(form.draft.chat_mode), checkeds);
                 if let Some(mode) = mode_options().get(next_index).copied() {
-                    form.chat_mode = mode;
+                    form.draft.chat_mode = mode;
                     form.save_error = None;
                     cx.notify();
                 }
@@ -824,7 +762,7 @@ impl ShortcutFormState {
     }
 
     fn render_input_source_segments(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current_index = input_source_option_index(self.input_source);
+        let current_index = input_source_option_index(self.draft.input_source);
         ToggleGroup::new("shortcut-form-input-source-segments")
             .segmented()
             .outline()
@@ -840,10 +778,12 @@ impl ShortcutFormState {
                 },
             ))
             .on_click(cx.listener(move |form, checkeds: &Vec<bool>, _window, cx| {
-                let next_index =
-                    single_selected_index(input_source_option_index(form.input_source), checkeds);
+                let next_index = single_selected_index(
+                    input_source_option_index(form.draft.input_source),
+                    checkeds,
+                );
                 if let Some(input_source) = input_source_options().get(next_index).copied() {
-                    form.input_source = input_source;
+                    form.draft.input_source = input_source;
                     form.save_error = None;
                     cx.notify();
                 }
@@ -996,9 +936,9 @@ impl Render for ShortcutFormState {
                     .child(
                         field().label(field_enabled).child(
                             Switch::new("shortcut-form-enabled")
-                                .checked(self.enabled)
+                                .checked(self.draft.enabled)
                                 .on_click(cx.listener(|this, checked, _window, cx| {
-                                    this.enabled = *checked;
+                                    this.draft.enabled = *checked;
                                     this.save_error = None;
                                     cx.notify();
                                 })),
@@ -1084,17 +1024,11 @@ fn model_store_is_loading(status: Option<ModelStoreStatus>) -> bool {
 
 fn selected_model_key_for_refresh(
     current_value: Option<&str>,
-    fallback_provider_name: &str,
-    fallback_model_id: &str,
     models: &[ProviderModel],
 ) -> Option<String> {
     current_value
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            (!fallback_provider_name.is_empty() && !fallback_model_id.is_empty())
-                .then(|| ModelChoice::key(fallback_provider_name, fallback_model_id))
-        })
         .or_else(|| {
             models
                 .first()
@@ -1161,8 +1095,8 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
 #[cfg(test)]
 mod tests {
     use super::{
-        ShortcutFormInitialData, input_source_option_index, input_source_options,
-        mode_option_index, mode_options, model_store_is_loading, selected_model_key_for_refresh,
+        ShortcutFormDraft, input_source_option_index, input_source_options, mode_option_index,
+        mode_options, model_store_is_loading, selected_model_key_for_refresh,
         should_preserve_request_template_on_model_refresh,
     };
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
@@ -1242,7 +1176,7 @@ mod tests {
         let models = vec![model("OpenAI", "gpt-5.4-mini")];
 
         assert_eq!(
-            selected_model_key_for_refresh(None, "", "", &models),
+            selected_model_key_for_refresh(None, &models),
             Some(ModelChoice::key("OpenAI", "gpt-5.4-mini"))
         );
     }
@@ -1253,24 +1187,39 @@ mod tests {
         let models = vec![model("OpenAI", "gpt-5.4-mini")];
 
         assert_eq!(
-            selected_model_key_for_refresh(Some(&unresolved), "", "", &[]),
+            selected_model_key_for_refresh(Some(&unresolved), &[]),
             Some(unresolved.clone())
         );
         assert_eq!(
-            selected_model_key_for_refresh(Some(&unresolved), "", "", &models),
+            selected_model_key_for_refresh(Some(&unresolved), &models),
             Some(unresolved)
         );
     }
 
     #[test]
-    fn edit_initial_data_preserves_saved_binding_fields() {
+    fn add_draft_selects_first_model_as_default() {
+        let models = vec![model("OpenAI", "gpt-5.4-mini")];
+        let draft = ShortcutFormDraft::add(&models);
+
+        assert_eq!(draft.model_key, ModelChoice::key("OpenAI", "gpt-5.4-mini"));
+        assert_eq!(draft.chat_mode, Mode::Contextual);
+        assert_eq!(
+            draft.input_source,
+            ShortcutInputSource::SelectionOrClipboard
+        );
+    }
+
+    #[test]
+    fn edit_draft_preserves_saved_binding_fields() {
         let binding = shortcut_binding();
-        let initial = ShortcutFormInitialData::edit(binding.clone());
+        let initial = ShortcutFormDraft::edit(binding.clone());
 
         assert_eq!(initial.binding_id, Some(binding.id));
         assert_eq!(initial.template_id, binding.template_id);
-        assert_eq!(initial.provider_name, binding.provider_name);
-        assert_eq!(initial.model_id, binding.model_id);
+        assert_eq!(
+            initial.model_key,
+            ModelChoice::key(&binding.provider_name, &binding.model_id)
+        );
         assert_eq!(initial.chat_mode, binding.mode);
         assert_eq!(initial.hotkey, Some(binding.hotkey));
         assert_eq!(initial.enabled, binding.enabled);
@@ -1279,12 +1228,20 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_saved_model_is_selectable_before_model_loads() {
+    fn draft_model_parts_split_saved_model_key() {
+        let binding = shortcut_binding();
+        let initial = ShortcutFormDraft::edit(binding);
+
+        assert_eq!(initial.model_parts(), Some(("Ollama", "gpt-oss")));
+    }
+
+    #[test]
+    fn unresolved_saved_model_key_is_preserved_before_model_loads() {
         let key = ModelChoice::key("Ollama", "gpt-oss");
 
         assert_eq!(
-            selected_model_key_for_refresh(None, "Ollama", "gpt-oss", &[]),
-            Some(key)
+            selected_model_key_for_refresh(Some(&key), &[]),
+            Some(key.clone())
         );
     }
 
@@ -1324,7 +1281,7 @@ mod tests {
         let models = vec![model("OpenAI", "gpt-5.4-mini"), model("Ollama", "qwen3")];
 
         assert_eq!(
-            selected_model_key_for_refresh(Some(&selected), "", "", &models),
+            selected_model_key_for_refresh(Some(&selected), &models),
             Some(selected)
         );
     }
