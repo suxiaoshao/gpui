@@ -1,36 +1,19 @@
-#[cfg(test)]
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use diesel::{
-    query_builder::{AstPass, Query, QueryFragment, QueryId},
-    result::QueryResult,
-    sql_types::{Bool, Integer, Text, Untyped},
-    sqlite::Sqlite,
-};
+use polars::prelude::*;
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct QuerySql {
-    parts: Vec<SqlPart>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct NovelQueryPlan {
-    anchor: Option<TagAnchor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TagAnchor {
-    tag: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum SqlPart {
-    Raw(String),
-    Text(String),
-    Integer(i32),
-    Bool(bool),
-}
+const ID: &str = "id";
+const TITLE: &str = "name";
+const DESCRIPTION: &str = "desc";
+const IS_LIMIT: &str = "is_limit";
+const LATEST_CHAPTER_NAME: &str = "latest_chapter_name";
+const LATEST_CHAPTER_ID: &str = "latest_chapter_id";
+const WORD_COUNT: &str = "word_count";
+const READ_COUNT: &str = "read_count";
+const REPLY_COUNT: &str = "reply_count";
+const AUTHOR_ID: &str = "author_id";
+const AUTHOR_NAME: &str = "author_name";
+const TAGS: &str = "tags";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QuerySpec {
@@ -156,7 +139,6 @@ pub(crate) enum SortExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
 pub(crate) struct NovelRecord {
     pub(crate) id: i32,
     pub(crate) title: String,
@@ -169,103 +151,118 @@ pub(crate) struct NovelRecord {
     pub(crate) reply_count: Option<i32>,
     pub(crate) author_id: Option<i32>,
     pub(crate) author_name: String,
-    pub(crate) tags: HashSet<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) tag_ids: HashMap<String, Option<i32>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
-enum SortValue {
-    Number(f64),
-    Text(String),
-    Bool(bool),
+#[derive(Debug, Clone)]
+pub(crate) struct NovelQueryDataset {
+    frame: DataFrame,
+    records: HashMap<i32, NovelRecord>,
+}
+
+impl NovelQueryDataset {
+    pub(crate) fn new(records: Vec<NovelRecord>) -> PolarsResult<Self> {
+        let mut ids = Vec::with_capacity(records.len());
+        let mut titles = Vec::with_capacity(records.len());
+        let mut descriptions = Vec::with_capacity(records.len());
+        let mut is_limits = Vec::with_capacity(records.len());
+        let mut latest_chapter_names = Vec::with_capacity(records.len());
+        let mut latest_chapter_ids = Vec::with_capacity(records.len());
+        let mut word_counts = Vec::with_capacity(records.len());
+        let mut read_counts = Vec::with_capacity(records.len());
+        let mut reply_counts = Vec::with_capacity(records.len());
+        let mut author_ids = Vec::with_capacity(records.len());
+        let mut author_names = Vec::with_capacity(records.len());
+        let mut tag_lists = Vec::with_capacity(records.len());
+        let mut by_id = HashMap::with_capacity(records.len());
+
+        for record in records {
+            ids.push(record.id);
+            titles.push(record.title.clone());
+            descriptions.push(record.desc.clone());
+            is_limits.push(record.is_limit);
+            latest_chapter_names.push(record.latest_chapter_name.clone());
+            latest_chapter_ids.push(record.latest_chapter_id);
+            word_counts.push(record.word_count);
+            read_counts.push(record.read_count);
+            reply_counts.push(record.reply_count);
+            author_ids.push(record.author_id);
+            author_names.push(record.author_name.clone());
+            tag_lists.push(Series::new(PlSmallStr::EMPTY, record.tags.as_slice()));
+            by_id.insert(record.id, record);
+        }
+
+        let tags: ListChunked = tag_lists.into_iter().map(Some).collect();
+        let mut tags = tags.into_series();
+        tags.rename(TAGS.into());
+
+        let height = by_id.len();
+        let frame = DataFrame::new(
+            height,
+            vec![
+                Series::new(ID.into(), ids).into(),
+                Series::new(TITLE.into(), titles).into(),
+                Series::new(DESCRIPTION.into(), descriptions).into(),
+                Series::new(IS_LIMIT.into(), is_limits).into(),
+                Series::new(LATEST_CHAPTER_NAME.into(), latest_chapter_names).into(),
+                Series::new(LATEST_CHAPTER_ID.into(), latest_chapter_ids).into(),
+                Series::new(WORD_COUNT.into(), word_counts).into(),
+                Series::new(READ_COUNT.into(), read_counts).into(),
+                Series::new(REPLY_COUNT.into(), reply_counts).into(),
+                Series::new(AUTHOR_ID.into(), author_ids).into(),
+                Series::new(AUTHOR_NAME.into(), author_names).into(),
+                tags.into(),
+            ],
+        )?;
+
+        Ok(Self {
+            frame,
+            records: by_id,
+        })
+    }
+
+    pub(crate) fn query(&self, spec: &QuerySpec) -> PolarsResult<Vec<NovelRecord>> {
+        let mut frame = self.frame.clone().lazy().filter(spec.filter.expr()?);
+        if !spec.sorts.is_empty() {
+            let sort_exprs = spec
+                .sorts
+                .iter()
+                .map(|sort| sort.expr.expr())
+                .collect::<Vec<_>>();
+            let descending = spec
+                .sorts
+                .iter()
+                .map(|sort| matches!(sort.direction, SortDirection::Desc))
+                .collect::<Vec<_>>();
+            frame = frame.sort_by_exprs(
+                sort_exprs,
+                SortMultipleOptions::default()
+                    .with_order_descending_multi(descending)
+                    .with_nulls_last(true)
+                    .with_maintain_order(true),
+            );
+        }
+
+        let ids = frame.select([col(ID)]).collect()?;
+        let ids = ids.column(ID)?.i32()?;
+        let mut records = Vec::with_capacity(ids.len());
+        for id in ids.into_no_null_iter() {
+            if let Some(record) = self.records.get(&id) {
+                records.push(record.clone());
+            }
+        }
+        Ok(records)
+    }
 }
 
 impl QuerySpec {
-    #[cfg(test)]
-    pub(crate) fn apply(&self, mut records: Vec<NovelRecord>) -> Vec<NovelRecord> {
-        records.retain(|record| self.filter.matches(record));
-        apply_sorts(&mut records, &self.sorts);
-        records
-    }
-
     pub(crate) fn filter_count(&self) -> usize {
         self.filter.predicate_count()
     }
 
     pub(crate) fn sort_count(&self) -> usize {
         self.sorts.len()
-    }
-
-    pub(crate) fn tag_anchor_candidates(&self) -> HashSet<String> {
-        let mut tags = HashSet::new();
-        self.filter.collect_tag_anchor_candidates(&mut tags);
-        tags
-    }
-
-    pub(crate) fn query_sql_with_plan(&self, alias: &str, plan: &NovelQueryPlan) -> QuerySql {
-        let mut sql = QuerySql::new();
-        sql.push_sql(
-            "\
-        SELECT \
-            n.id, \
-            n.name, \
-            n.desc, \
-            n.is_limit, \
-            n.latest_chapter_name, \
-            n.latest_chapter_id, \
-            n.word_count, \
-            n.read_count, \
-            n.reply_count, \
-            n.author_id, \
-            n.author_name ",
-        );
-        if let Some(anchor) = plan.tag_anchor() {
-            sql.push_sql(
-                "\
-        FROM novel_tag t0 INDEXED BY idx_novel_tag_tag_id_novel_id \
-        CROSS JOIN novel n \
-        WHERE t0.tag_id = ",
-            );
-            sql.push_text(anchor);
-            sql.push_sql(" AND ");
-            sql.push_sql(alias);
-            sql.push_sql(".id = t0.novel_id AND ");
-        } else {
-            sql.push_sql(
-                "\
-        FROM novel n \
-        WHERE ",
-            );
-        }
-        self.filter.push_sql(alias, &mut sql);
-        self.push_order_sql(alias, &mut sql);
-        sql
-    }
-
-    fn push_order_sql(&self, alias: &str, sql: &mut QuerySql) {
-        if self.sorts.is_empty() {
-            return;
-        }
-        sql.push_sql(" ORDER BY ");
-        let mut first = true;
-        for sort in &self.sorts {
-            if !first {
-                sql.push_sql(", ");
-            }
-            first = false;
-
-            let expr = sort.expr.sql(alias);
-            let direction = match sort.direction {
-                SortDirection::Asc => "ASC",
-                SortDirection::Desc => "DESC",
-            };
-            sql.push_sql("(");
-            sql.push_sql(&expr);
-            sql.push_sql(") IS NULL ASC, (");
-            sql.push_sql(&expr);
-            sql.push_sql(") ");
-            sql.push_sql(direction);
-        }
     }
 }
 
@@ -280,567 +277,191 @@ impl FilterExpr {
         }
     }
 
-    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
+    fn expr(&self) -> PolarsResult<Expr> {
         match self {
-            FilterExpr::All(filters) => {
-                if filters.is_empty() {
-                    sql.push_sql("1");
-                } else {
-                    join_sql(filters, " AND ", alias, sql);
-                }
-            }
-            FilterExpr::Any(filters) => {
-                if filters.is_empty() {
-                    sql.push_sql("0");
-                } else {
-                    join_sql(filters, " OR ", alias, sql);
-                }
-            }
-            FilterExpr::Not(filter) => {
-                sql.push_sql("NOT (");
-                filter.push_sql(alias, sql);
-                sql.push_sql(")");
-            }
-            FilterExpr::Predicate(predicate) => predicate.push_sql(alias, sql),
-        }
-    }
-
-    fn collect_tag_anchor_candidates(&self, tags: &mut HashSet<String>) {
-        match self {
-            FilterExpr::All(filters) => {
-                for filter in filters {
-                    filter.collect_tag_anchor_candidates(tags);
-                }
-            }
-            FilterExpr::Predicate(Predicate::Tags(
-                TagsPredicate::ContainsAll(values) | TagsPredicate::Equals(values),
-            )) => {
-                tags.extend(values.iter().cloned());
-            }
-            FilterExpr::Any(_) | FilterExpr::Not(_) | FilterExpr::Predicate(_) => {}
-        }
-    }
-
-    #[cfg(test)]
-    fn matches(&self, record: &NovelRecord) -> bool {
-        match self {
-            FilterExpr::All(filters) => filters.iter().all(|filter| filter.matches(record)),
-            FilterExpr::Any(filters) => filters.iter().any(|filter| filter.matches(record)),
-            FilterExpr::Not(filter) => !filter.matches(record),
-            FilterExpr::Predicate(predicate) => predicate.matches(record),
+            FilterExpr::All(filters) => combine_filters(filters, true),
+            FilterExpr::Any(filters) => combine_filters(filters, false),
+            FilterExpr::Not(filter) => Ok(filter.expr()?.not()),
+            FilterExpr::Predicate(predicate) => predicate.expr(),
         }
     }
 }
 
 impl Predicate {
-    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
+    fn expr(&self) -> PolarsResult<Expr> {
         match self {
             Predicate::Text { field, op, value } => {
-                let field = field.sql(alias);
-                match op {
-                    TextOp::Contains => {
-                        sql.push_sql("instr(");
-                        sql.push_sql(field);
-                        sql.push_sql(", ");
-                        sql.push_text(value);
-                        sql.push_sql(") > 0");
-                    }
-                    TextOp::StartsWith => {
-                        sql.push_sql("substr(");
-                        sql.push_sql(field);
-                        sql.push_sql(", 1, length(");
-                        sql.push_text(value);
-                        sql.push_sql(")) = ");
-                        sql.push_text(value);
-                    }
-                    TextOp::EndsWith => {
-                        sql.push_sql("substr(");
-                        sql.push_sql(field);
-                        sql.push_sql(", -length(");
-                        sql.push_text(value);
-                        sql.push_sql(")) = ");
-                        sql.push_text(value);
-                    }
-                    TextOp::Equals => {
-                        sql.push_sql(field);
-                        sql.push_sql(" = ");
-                        sql.push_text(value);
-                    }
-                }
-            }
-            Predicate::Number { field, op } => {
-                let field = field.sql(alias);
-                match op {
-                    NumberOp::Eq(value) => push_number_compare(sql, &field, "=", *value),
-                    NumberOp::Ne(value) => push_number_compare(sql, &field, "<>", *value),
-                    NumberOp::Lt(value) => push_number_compare(sql, &field, "<", *value),
-                    NumberOp::Lte(value) => push_number_compare(sql, &field, "<=", *value),
-                    NumberOp::Gt(value) => push_number_compare(sql, &field, ">", *value),
-                    NumberOp::Gte(value) => push_number_compare(sql, &field, ">=", *value),
-                    NumberOp::Between { min, max } => push_number_between(sql, &field, *min, *max),
-                }
-            }
-            Predicate::Bool { field, value } => {
-                sql.push_sql(field.sql(alias));
-                sql.push_sql(" = ");
-                sql.push_bool(*value);
-            }
-            Predicate::Tags(predicate) => predicate.push_sql(alias, sql),
-            Predicate::Author(predicate) => predicate.push_sql(alias, sql),
-        }
-    }
-
-    #[cfg(test)]
-    fn matches(&self, record: &NovelRecord) -> bool {
-        match self {
-            Predicate::Text { field, op, value } => match op {
-                TextOp::Contains => record.text(*field).contains(value),
-                TextOp::StartsWith => record.text(*field).starts_with(value),
-                TextOp::EndsWith => record.text(*field).ends_with(value),
-                TextOp::Equals => record.text(*field) == value,
-            },
-            Predicate::Number { field, op } => {
-                record.number(*field).is_some_and(|value| match op {
-                    NumberOp::Eq(target) => value == *target,
-                    NumberOp::Ne(target) => value != *target,
-                    NumberOp::Lt(target) => value < *target,
-                    NumberOp::Lte(target) => value <= *target,
-                    NumberOp::Gt(target) => value > *target,
-                    NumberOp::Gte(target) => value >= *target,
-                    NumberOp::Between { min, max } => value >= *min && value <= *max,
+                let field = col(field.column());
+                let value = lit(value.as_str());
+                Ok(match op {
+                    TextOp::Contains => field.str().contains_literal(value),
+                    TextOp::StartsWith => field.str().starts_with(value),
+                    TextOp::EndsWith => field.str().ends_with(value),
+                    TextOp::Equals => field.eq(value),
                 })
             }
-            Predicate::Bool { field, value } => record.bool(*field) == *value,
-            Predicate::Tags(predicate) => predicate.matches(&record.tags),
-            Predicate::Author(predicate) => predicate.matches(record),
+            Predicate::Number { field, op } => {
+                let field = col(field.column());
+                Ok(match op {
+                    NumberOp::Eq(value) => field.eq(lit(*value)),
+                    NumberOp::Ne(value) => field.neq(lit(*value)),
+                    NumberOp::Lt(value) => field.lt(lit(*value)),
+                    NumberOp::Lte(value) => field.lt_eq(lit(*value)),
+                    NumberOp::Gt(value) => field.gt(lit(*value)),
+                    NumberOp::Gte(value) => field.gt_eq(lit(*value)),
+                    NumberOp::Between { min, max } => {
+                        field.clone().gt_eq(lit(*min)).and(field.lt_eq(lit(*max)))
+                    }
+                })
+            }
+            Predicate::Bool { field, value } => Ok(col(field.column()).eq(lit(*value))),
+            Predicate::Tags(predicate) => predicate.expr(),
+            Predicate::Author(predicate) => predicate.expr(),
         }
     }
 }
 
 impl TagsPredicate {
-    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
-        match self {
-            TagsPredicate::Intersects(values) => push_tag_exists_sql(alias, values, false, sql),
-            TagsPredicate::ContainsAll(values) => {
-                if values.is_empty() {
-                    sql.push_sql("1");
-                } else {
-                    for (ix, value) in sorted_values(values).into_iter().enumerate() {
-                        if ix > 0 {
-                            sql.push_sql(" AND ");
-                        }
-                        sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-                        sql.push_sql(alias);
-                        sql.push_sql(".id AND nt.tag_id = ");
-                        sql.push_text(value);
-                        sql.push_sql(")");
-                    }
-                }
-            }
-            TagsPredicate::ContainedBy(values) => {
-                if values.is_empty() {
-                    sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-                    sql.push_sql(alias);
-                    sql.push_sql(".id)");
-                } else {
-                    sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-                    sql.push_sql(alias);
-                    sql.push_sql(".id AND nt.tag_id NOT IN (");
-                    push_text_list(values, sql);
-                    sql.push_sql("))");
-                }
-            }
-            TagsPredicate::Equals(values) => {
-                sql.push_sql("(");
-                TagsPredicate::ContainsAll(values.clone()).push_sql(alias, sql);
-                sql.push_sql(") AND (");
-                TagsPredicate::ContainedBy(values.clone()).push_sql(alias, sql);
-                sql.push_sql(")");
-            }
-            TagsPredicate::IsEmpty => {
-                sql.push_sql("NOT EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-                sql.push_sql(alias);
-                sql.push_sql(".id)");
-            }
-            TagsPredicate::IsNotEmpty => {
-                sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-                sql.push_sql(alias);
-                sql.push_sql(".id)");
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn matches(&self, tags: &HashSet<String>) -> bool {
-        match self {
-            TagsPredicate::Intersects(values) => !tags.is_disjoint(values),
-            TagsPredicate::ContainsAll(values) => tags.is_superset(values),
-            TagsPredicate::ContainedBy(values) => tags.is_subset(values),
-            TagsPredicate::Equals(values) => tags == values,
-            TagsPredicate::IsEmpty => tags.is_empty(),
-            TagsPredicate::IsNotEmpty => !tags.is_empty(),
-        }
+    fn expr(&self) -> PolarsResult<Expr> {
+        let tags = col(TAGS);
+        Ok(match self {
+            TagsPredicate::Intersects(values) => tags
+                .list()
+                .set_intersection(string_list_lit(values)?)
+                .list()
+                .len()
+                .gt(lit(0u32)),
+            TagsPredicate::ContainsAll(values) => string_list_lit(values)?
+                .list()
+                .set_difference(tags)
+                .list()
+                .len()
+                .eq(lit(0u32)),
+            TagsPredicate::ContainedBy(values) => tags
+                .list()
+                .set_difference(string_list_lit(values)?)
+                .list()
+                .len()
+                .eq(lit(0u32)),
+            TagsPredicate::Equals(values) => tags
+                .clone()
+                .list()
+                .set_difference(string_list_lit(values)?)
+                .list()
+                .len()
+                .eq(lit(0u32))
+                .and(
+                    string_list_lit(values)?
+                        .list()
+                        .set_difference(tags)
+                        .list()
+                        .len()
+                        .eq(lit(0u32)),
+                ),
+            TagsPredicate::IsEmpty => tags.list().len().eq(lit(0u32)),
+            TagsPredicate::IsNotEmpty => tags.list().len().gt(lit(0u32)),
+        })
     }
 }
 
 impl AuthorPredicate {
-    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
+    fn expr(&self) -> PolarsResult<Expr> {
         match self {
-            AuthorPredicate::Is(author) => author.push_sql(alias, sql),
-            AuthorPredicate::In(authors) => {
-                if authors.is_empty() {
-                    sql.push_sql("0");
-                } else {
-                    join_author_sql(authors, " OR ", alias, sql);
-                }
-            }
-            AuthorPredicate::NotIn(authors) => {
-                if authors.is_empty() {
-                    sql.push_sql("1");
-                } else {
-                    sql.push_sql("NOT (");
-                    join_author_sql(authors, " OR ", alias, sql);
-                    sql.push_sql(")");
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn matches(&self, record: &NovelRecord) -> bool {
-        match self {
-            AuthorPredicate::Is(author) => author.matches(record),
-            AuthorPredicate::In(authors) => authors.iter().any(|author| author.matches(record)),
-            AuthorPredicate::NotIn(authors) => !authors.iter().any(|author| author.matches(record)),
+            AuthorPredicate::Is(author) => author.expr(),
+            AuthorPredicate::In(authors) => combine_authors(authors, false),
+            AuthorPredicate::NotIn(authors) => Ok(combine_authors(authors, false)?.not()),
         }
     }
 }
 
 impl AuthorRef {
-    fn push_sql(&self, alias: &str, sql: &mut QuerySql) {
-        match self {
-            AuthorRef::Id(id) => {
-                sql.push_sql("(");
-                sql.push_sql(alias);
-                sql.push_sql(".author_id IS NOT NULL AND ");
-                sql.push_sql(alias);
-                sql.push_sql(".author_id = ");
-                sql.push_i32(*id);
-                sql.push_sql(")");
-            }
-            AuthorRef::Name(name) => {
-                sql.push_sql("(");
-                sql.push_sql(alias);
-                sql.push_sql(".author_id IS NULL AND ");
-                sql.push_sql(alias);
-                sql.push_sql(".author_name = ");
-                sql.push_text(name);
-                sql.push_sql(")");
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn matches(&self, record: &NovelRecord) -> bool {
-        match self {
-            AuthorRef::Id(id) => record.author_id == Some(*id),
-            AuthorRef::Name(name) => record.author_id.is_none() && record.author_name == *name,
-        }
+    fn expr(&self) -> PolarsResult<Expr> {
+        Ok(match self {
+            AuthorRef::Id(id) => col(AUTHOR_ID)
+                .is_not_null()
+                .and(col(AUTHOR_ID).eq(lit(*id))),
+            AuthorRef::Name(name) => col(AUTHOR_ID)
+                .is_null()
+                .and(col(AUTHOR_NAME).eq(lit(name.as_str()))),
+        })
     }
 }
 
 impl TextField {
-    fn sql(self, alias: &str) -> String {
-        let column = match self {
-            TextField::Title => "name",
-            TextField::Description => "desc",
-            TextField::LatestChapter => "latest_chapter_name",
-            TextField::AuthorName => "author_name",
-        };
-        format!("{alias}.{column}")
+    fn column(self) -> &'static str {
+        match self {
+            TextField::Title => TITLE,
+            TextField::Description => DESCRIPTION,
+            TextField::LatestChapter => LATEST_CHAPTER_NAME,
+            TextField::AuthorName => AUTHOR_NAME,
+        }
     }
 }
 
 impl NumberField {
-    fn sql(self, alias: &str) -> String {
-        let column = match self {
-            NumberField::NovelId => "id",
-            NumberField::LatestChapterId => "latest_chapter_id",
-            NumberField::WordCount => "word_count",
-            NumberField::ReadCount => "read_count",
-            NumberField::ReplyCount => "reply_count",
-            NumberField::AuthorId => "author_id",
-        };
-        format!("{alias}.{column}")
+    fn column(self) -> &'static str {
+        match self {
+            NumberField::NovelId => ID,
+            NumberField::LatestChapterId => LATEST_CHAPTER_ID,
+            NumberField::WordCount => WORD_COUNT,
+            NumberField::ReadCount => READ_COUNT,
+            NumberField::ReplyCount => REPLY_COUNT,
+            NumberField::AuthorId => AUTHOR_ID,
+        }
     }
 }
 
 impl BoolField {
-    fn sql(self, alias: &str) -> String {
+    fn column(self) -> &'static str {
         match self {
-            BoolField::IsLimit => format!("{alias}.is_limit"),
-        }
-    }
-}
-
-#[cfg(test)]
-impl NovelRecord {
-    fn text(&self, field: TextField) -> &str {
-        match field {
-            TextField::Title => &self.title,
-            TextField::Description => &self.desc,
-            TextField::LatestChapter => &self.latest_chapter_name,
-            TextField::AuthorName => &self.author_name,
-        }
-    }
-
-    fn number(&self, field: NumberField) -> Option<i32> {
-        match field {
-            NumberField::NovelId => Some(self.id),
-            NumberField::LatestChapterId => Some(self.latest_chapter_id),
-            NumberField::WordCount => Some(self.word_count),
-            NumberField::ReadCount => self.read_count,
-            NumberField::ReplyCount => self.reply_count,
-            NumberField::AuthorId => self.author_id,
-        }
-    }
-
-    fn bool(&self, field: BoolField) -> bool {
-        match field {
-            BoolField::IsLimit => self.is_limit,
-        }
-    }
-}
-
-#[cfg(test)]
-fn apply_sorts(records: &mut [NovelRecord], sorts: &[SortSpec]) {
-    for sort in sorts.iter().rev() {
-        records.sort_by(
-            |left, right| match (sort.expr.eval(left), sort.expr.eval(right)) {
-                (Some(left), Some(right)) => {
-                    let ordering = left.cmp(&right);
-                    match sort.direction {
-                        SortDirection::Asc => ordering,
-                        SortDirection::Desc => ordering.reverse(),
-                    }
-                }
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            },
-        );
-    }
-}
-
-#[cfg(test)]
-impl SortValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (SortValue::Number(left), SortValue::Number(right)) => {
-                left.partial_cmp(right).unwrap_or(Ordering::Equal)
-            }
-            (SortValue::Text(left), SortValue::Text(right)) => left.cmp(right),
-            (SortValue::Bool(left), SortValue::Bool(right)) => left.cmp(right),
-            (left, right) => left.kind_order().cmp(&right.kind_order()),
-        }
-    }
-
-    fn kind_order(&self) -> u8 {
-        match self {
-            SortValue::Number(_) => 0,
-            SortValue::Text(_) => 1,
-            SortValue::Bool(_) => 2,
+            BoolField::IsLimit => IS_LIMIT,
         }
     }
 }
 
 impl SortExpr {
-    fn sql(&self, alias: &str) -> String {
+    fn expr(&self) -> Expr {
         match self {
-            SortExpr::Number(field) => field.sql(alias),
-            SortExpr::Text(field) => field.sql(alias),
-            SortExpr::Bool(field) => field.sql(alias),
-        }
-    }
-
-    #[cfg(test)]
-    fn eval(&self, record: &NovelRecord) -> Option<SortValue> {
-        match self {
-            SortExpr::Number(field) => record
-                .number(*field)
-                .map(|value| SortValue::Number(value as f64)),
-            SortExpr::Text(field) => Some(SortValue::Text(record.text(*field).to_owned())),
-            SortExpr::Bool(field) => Some(SortValue::Bool(record.bool(*field))),
+            SortExpr::Number(field) => col(field.column()),
+            SortExpr::Text(field) => col(field.column()),
+            SortExpr::Bool(field) => col(field.column()),
         }
     }
 }
 
-impl NovelQueryPlan {
-    pub(crate) fn from_tag_counts(
-        candidates: HashSet<String>,
-        tag_counts: &HashMap<String, i64>,
-    ) -> Self {
-        let anchor = candidates
-            .into_iter()
-            .min_by(|left, right| {
-                let left_count = tag_counts.get(left).copied().unwrap_or(0);
-                let right_count = tag_counts.get(right).copied().unwrap_or(0);
-                left_count.cmp(&right_count).then_with(|| left.cmp(right))
-            })
-            .map(|tag| TagAnchor { tag });
-
-        Self { anchor }
+fn combine_filters(filters: &[FilterExpr], all: bool) -> PolarsResult<Expr> {
+    let mut filters = filters.iter();
+    let Some(first) = filters.next() else {
+        return Ok(lit(all));
+    };
+    let mut expr = first.expr()?;
+    for filter in filters {
+        expr = if all {
+            expr.and(filter.expr()?)
+        } else {
+            expr.or(filter.expr()?)
+        };
     }
-
-    fn tag_anchor(&self) -> Option<&str> {
-        self.anchor.as_ref().map(|anchor| anchor.tag.as_str())
-    }
+    Ok(expr)
 }
 
-impl QuerySql {
-    pub(crate) fn new() -> Self {
-        Self { parts: Vec::new() }
+fn combine_authors(authors: &[AuthorRef], all: bool) -> PolarsResult<Expr> {
+    let mut authors = authors.iter();
+    let Some(first) = authors.next() else {
+        return Ok(lit(all));
+    };
+    let mut expr = first.expr()?;
+    for author in authors {
+        expr = expr.or(author.expr()?);
     }
-
-    pub(crate) fn push_sql(&mut self, sql: impl AsRef<str>) {
-        self.parts.push(SqlPart::Raw(sql.as_ref().to_owned()));
-    }
-
-    pub(crate) fn push_text(&mut self, value: impl AsRef<str>) {
-        self.parts.push(SqlPart::Text(value.as_ref().to_owned()));
-    }
-
-    pub(crate) fn push_i32(&mut self, value: i32) {
-        self.parts.push(SqlPart::Integer(value));
-    }
-
-    pub(crate) fn push_bool(&mut self, value: bool) {
-        self.parts.push(SqlPart::Bool(value));
-    }
-
-    #[cfg(test)]
-    fn sql_with_placeholders(&self) -> String {
-        self.parts
-            .iter()
-            .map(|part| match part {
-                SqlPart::Raw(sql) => sql.as_str(),
-                SqlPart::Text(_) | SqlPart::Integer(_) | SqlPart::Bool(_) => "?",
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn bind_count(&self) -> usize {
-        self.parts
-            .iter()
-            .filter(|part| !matches!(part, SqlPart::Raw(_)))
-            .count()
-    }
+    Ok(expr)
 }
 
-impl Query for QuerySql {
-    type SqlType = Untyped;
-}
-
-impl QueryId for QuerySql {
-    type QueryId = ();
-
-    const HAS_STATIC_QUERY_ID: bool = false;
-}
-
-impl<Conn> diesel::RunQueryDsl<Conn> for QuerySql {}
-
-impl QueryFragment<Sqlite> for QuerySql {
-    fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, Sqlite>) -> QueryResult<()> {
-        out.unsafe_to_cache_prepared();
-        for part in &self.parts {
-            match part {
-                SqlPart::Raw(sql) => out.push_sql(sql),
-                SqlPart::Text(value) => out.push_bind_param::<Text, _>(value)?,
-                SqlPart::Integer(value) => out.push_bind_param::<Integer, _>(value)?,
-                SqlPart::Bool(value) => out.push_bind_param::<Bool, _>(value)?,
-            }
-        }
-        Ok(())
-    }
-}
-
-fn join_sql(filters: &[FilterExpr], separator: &str, alias: &str, sql: &mut QuerySql) {
-    for (ix, filter) in filters.iter().enumerate() {
-        if ix > 0 {
-            sql.push_sql(separator);
-        }
-        sql.push_sql("(");
-        filter.push_sql(alias, sql);
-        sql.push_sql(")");
-    }
-}
-
-fn join_author_sql(authors: &[AuthorRef], separator: &str, alias: &str, sql: &mut QuerySql) {
-    for (ix, author) in authors.iter().enumerate() {
-        if ix > 0 {
-            sql.push_sql(separator);
-        }
-        sql.push_sql("(");
-        author.push_sql(alias, sql);
-        sql.push_sql(")");
-    }
-}
-
-fn push_number_compare(sql: &mut QuerySql, field: &str, op: &str, value: i32) {
-    sql.push_sql("(");
-    sql.push_sql(field);
-    sql.push_sql(" IS NOT NULL AND ");
-    sql.push_sql(field);
-    sql.push_sql(" ");
-    sql.push_sql(op);
-    sql.push_sql(" ");
-    sql.push_i32(value);
-    sql.push_sql(")");
-}
-
-fn push_number_between(sql: &mut QuerySql, field: &str, min: i32, max: i32) {
-    sql.push_sql("(");
-    sql.push_sql(field);
-    sql.push_sql(" IS NOT NULL AND ");
-    sql.push_sql(field);
-    sql.push_sql(" >= ");
-    sql.push_i32(min);
-    sql.push_sql(" AND ");
-    sql.push_sql(field);
-    sql.push_sql(" <= ");
-    sql.push_i32(max);
-    sql.push_sql(")");
-}
-
-fn push_tag_exists_sql(alias: &str, values: &HashSet<String>, negated: bool, sql: &mut QuerySql) {
-    if values.is_empty() {
-        sql.push_sql(if negated { "1" } else { "0" });
-        return;
-    }
-    let op = if negated { "NOT IN" } else { "IN" };
-    sql.push_sql("EXISTS (SELECT 1 FROM novel_tag nt WHERE nt.novel_id = ");
-    sql.push_sql(alias);
-    sql.push_sql(".id AND nt.tag_id ");
-    sql.push_sql(op);
-    sql.push_sql(" (");
-    push_text_list(values, sql);
-    sql.push_sql("))");
-}
-
-fn push_text_list(values: &HashSet<String>, sql: &mut QuerySql) {
-    for (ix, value) in sorted_values(values).into_iter().enumerate() {
-        if ix > 0 {
-            sql.push_sql(", ");
-        }
-        sql.push_text(value);
-    }
-}
-
-fn sorted_values(values: &HashSet<String>) -> Vec<&String> {
-    let mut values = values.iter().collect::<Vec<_>>();
+fn string_list_lit(values: &HashSet<String>) -> PolarsResult<Expr> {
+    let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
     values.sort();
-    values
+    let series = Series::new(PlSmallStr::EMPTY, values);
+    Ok(lit(series.implode()?.into_series()))
 }
 
 #[cfg(test)]
@@ -849,13 +470,6 @@ mod tests {
 
     fn set(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    fn counts(values: &[(&str, i64)]) -> HashMap<String, i64> {
-        values
-            .iter()
-            .map(|(tag, count)| ((*tag).to_owned(), *count))
-            .collect()
     }
 
     fn record(id: i32) -> NovelRecord {
@@ -871,8 +485,22 @@ mod tests {
             reply_count: Some(id * 10),
             author_id: Some(id),
             author_name: format!("author-{id}"),
-            tags: set(&["rust", "systems"]),
+            tags: vec!["rust".to_owned(), "systems".to_owned()],
+            tag_ids: HashMap::from([
+                ("rust".to_owned(), Some(1)),
+                ("systems".to_owned(), Some(2)),
+            ]),
         }
+    }
+
+    fn query_ids(spec: QuerySpec, records: Vec<NovelRecord>) -> Vec<i32> {
+        NovelQueryDataset::new(records)
+            .unwrap()
+            .query(&spec)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect()
     }
 
     #[test]
@@ -883,7 +511,7 @@ mod tests {
                     FilterExpr::Predicate(Predicate::Text {
                         field: TextField::Title,
                         op: TextOp::Contains,
-                        value: "Rust".to_owned(),
+                        value: "novel".to_owned(),
                     }),
                     FilterExpr::Predicate(Predicate::Text {
                         field: TextField::Description,
@@ -901,36 +529,47 @@ mod tests {
 
         let mut limited = record(2);
         limited.is_limit = true;
-        let results = spec.apply(vec![record(1), limited]);
 
+        assert_eq!(query_ids(spec, vec![record(1), limited]), vec![1]);
         assert_eq!(
-            results
-                .into_iter()
-                .map(|record| record.id)
-                .collect::<Vec<_>>(),
+            query_ids(
+                QuerySpec {
+                    filter: FilterExpr::All(Vec::new()),
+                    sorts: Vec::new(),
+                },
+                vec![record(1)]
+            ),
             vec![1]
         );
-        assert!(FilterExpr::All(Vec::new()).matches(&record(1)));
-        assert!(!FilterExpr::Any(Vec::new()).matches(&record(1)));
+        assert!(
+            query_ids(
+                QuerySpec {
+                    filter: FilterExpr::Any(Vec::new()),
+                    sorts: Vec::new(),
+                },
+                vec![record(1)]
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn text_predicates_cover_all_text_operators() {
-        let row = record(1);
         for (op, value) in [
             (TextOp::Contains, "novel"),
             (TextOp::StartsWith, "Rust"),
             (TextOp::EndsWith, "1"),
             (TextOp::Equals, "Rust novel 1"),
         ] {
-            assert!(
-                Predicate::Text {
+            let spec = QuerySpec {
+                filter: FilterExpr::Predicate(Predicate::Text {
                     field: TextField::Title,
                     op,
                     value: value.to_owned(),
-                }
-                .matches(&row)
-            );
+                }),
+                sorts: Vec::new(),
+            };
+            assert_eq!(query_ids(spec, vec![record(1)]), vec![1]);
         }
     }
 
@@ -951,39 +590,73 @@ mod tests {
                 max: 3000,
             },
         ] {
-            assert!(
-                Predicate::Number {
+            let spec = QuerySpec {
+                filter: FilterExpr::Predicate(Predicate::Number {
                     field: NumberField::WordCount,
                     op,
-                }
-                .matches(&row)
-            );
+                }),
+                sorts: Vec::new(),
+            };
+            assert_eq!(query_ids(spec, vec![row.clone()]), vec![2]);
         }
 
-        assert!(
-            !Predicate::Number {
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Number {
                 field: NumberField::ReadCount,
                 op: NumberOp::Gt(0),
-            }
-            .matches(&row)
-        );
+            }),
+            sorts: Vec::new(),
+        };
+        assert!(query_ids(spec, vec![row]).is_empty());
     }
 
     #[test]
-    fn tags_predicates_cover_set_relations() {
-        let row = record(1);
+    fn tags_predicates_use_polars_list_set_semantics() {
+        let empty = NovelRecord {
+            tags: Vec::new(),
+            ..record(1)
+        };
+        let rust = NovelRecord {
+            id: 2,
+            tags: vec!["rust".to_owned()],
+            ..record(2)
+        };
+        let rust_gpui = NovelRecord {
+            id: 3,
+            tags: vec!["rust".to_owned(), "gpui".to_owned()],
+            ..record(3)
+        };
+        let records = vec![empty, rust, rust_gpui];
 
-        for predicate in [
-            TagsPredicate::Intersects(set(&["rust"])),
-            TagsPredicate::ContainsAll(set(&["rust", "systems"])),
-            TagsPredicate::ContainedBy(set(&["rust", "systems", "extra"])),
-            TagsPredicate::Equals(set(&["rust", "systems"])),
-            TagsPredicate::IsNotEmpty,
-        ] {
-            assert!(Predicate::Tags(predicate).matches(&row));
-        }
+        let query = |predicate| {
+            query_ids(
+                QuerySpec {
+                    filter: FilterExpr::Predicate(Predicate::Tags(predicate)),
+                    sorts: vec![SortSpec {
+                        expr: SortExpr::Number(NumberField::NovelId),
+                        direction: SortDirection::Asc,
+                    }],
+                },
+                records.clone(),
+            )
+        };
 
-        assert!(!Predicate::Tags(TagsPredicate::IsEmpty).matches(&row));
+        assert_eq!(query(TagsPredicate::Intersects(set(&["gpui"]))), vec![3]);
+        assert_eq!(
+            query(TagsPredicate::ContainsAll(set(&["rust"]))),
+            vec![2, 3]
+        );
+        assert_eq!(
+            query(TagsPredicate::ContainedBy(set(&["rust"]))),
+            vec![1, 2]
+        );
+        assert_eq!(
+            query(TagsPredicate::Equals(set(&["rust", "gpui"]))),
+            vec![3]
+        );
+        assert_eq!(query(TagsPredicate::Equals(HashSet::new())), vec![1]);
+        assert_eq!(query(TagsPredicate::IsEmpty), vec![1]);
+        assert_eq!(query(TagsPredicate::IsNotEmpty), vec![2, 3]);
     }
 
     #[test]
@@ -993,25 +666,33 @@ mod tests {
         anonymous.author_id = None;
         anonymous.author_name = "匿名作者".to_owned();
 
-        assert!(Predicate::Author(AuthorPredicate::Is(AuthorRef::Id(1))).matches(&known));
-        assert!(Predicate::Author(AuthorPredicate::In(vec![AuthorRef::Id(1)])).matches(&known));
-        assert!(Predicate::Author(AuthorPredicate::NotIn(vec![AuthorRef::Id(9)])).matches(&known));
-        assert!(
-            Predicate::Text {
-                field: TextField::AuthorName,
-                op: TextOp::Contains,
-                value: "author".to_owned(),
-            }
-            .matches(&known)
-        );
-        assert!(
-            Predicate::Author(AuthorPredicate::Is(AuthorRef::Name("匿名作者".to_owned())))
-                .matches(&anonymous)
-        );
-        assert!(
-            !Predicate::Author(AuthorPredicate::Is(AuthorRef::Name("author-1".to_owned())))
-                .matches(&known)
-        );
+        for predicate in [
+            AuthorPredicate::Is(AuthorRef::Id(1)),
+            AuthorPredicate::In(vec![AuthorRef::Id(1)]),
+            AuthorPredicate::NotIn(vec![AuthorRef::Id(9)]),
+        ] {
+            let spec = QuerySpec {
+                filter: FilterExpr::Predicate(Predicate::Author(predicate)),
+                sorts: Vec::new(),
+            };
+            assert_eq!(query_ids(spec, vec![known.clone()]), vec![1]);
+        }
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
+                "匿名作者".to_owned(),
+            )))),
+            sorts: Vec::new(),
+        };
+        assert_eq!(query_ids(spec, vec![anonymous]), vec![2]);
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
+                "author-1".to_owned(),
+            )))),
+            sorts: Vec::new(),
+        };
+        assert!(query_ids(spec, vec![known]).is_empty());
     }
 
     #[test]
@@ -1038,167 +719,6 @@ mod tests {
             ],
         };
 
-        let results = spec.apply(vec![one, two, three]);
-        assert_eq!(
-            results
-                .into_iter()
-                .map(|record| record.id)
-                .collect::<Vec<_>>(),
-            vec![2, 3, 1]
-        );
-
-        assert_eq!(
-            SortExpr::Bool(BoolField::IsLimit).eval(&record(1)),
-            Some(SortValue::Bool(false))
-        );
-    }
-
-    #[test]
-    fn tag_anchor_plan_selects_rarest_positive_and_tag() {
-        let spec = QuerySpec {
-            filter: FilterExpr::All(vec![FilterExpr::Predicate(Predicate::Tags(
-                TagsPredicate::ContainsAll(set(&["BL", "年下", "完结"])),
-            ))]),
-            sorts: Vec::new(),
-        };
-
-        let plan = NovelQueryPlan::from_tag_counts(
-            spec.tag_anchor_candidates(),
-            &counts(&[("BL", 81726), ("年下", 4745), ("完结", 52395)]),
-        );
-
-        assert_eq!(plan.tag_anchor(), Some("年下"));
-    }
-
-    #[test]
-    fn tag_anchor_plan_supports_equals_but_not_empty_sets() {
-        let equals = QuerySpec {
-            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Equals(set(&[
-                "rust", "gpui",
-            ])))),
-            sorts: Vec::new(),
-        };
-        let plan = NovelQueryPlan::from_tag_counts(
-            equals.tag_anchor_candidates(),
-            &counts(&[("rust", 10), ("gpui", 2)]),
-        );
-        assert_eq!(plan.tag_anchor(), Some("gpui"));
-
-        for predicate in [
-            TagsPredicate::ContainsAll(HashSet::new()),
-            TagsPredicate::Equals(HashSet::new()),
-        ] {
-            let spec = QuerySpec {
-                filter: FilterExpr::Predicate(Predicate::Tags(predicate)),
-                sorts: Vec::new(),
-            };
-            let plan =
-                NovelQueryPlan::from_tag_counts(spec.tag_anchor_candidates(), &HashMap::new());
-            assert_eq!(plan.tag_anchor(), None);
-        }
-    }
-
-    #[test]
-    fn tag_anchor_candidates_do_not_cross_or_or_not_boundaries() {
-        let spec = QuerySpec {
-            filter: FilterExpr::All(vec![
-                FilterExpr::Any(vec![FilterExpr::Predicate(Predicate::Tags(
-                    TagsPredicate::ContainsAll(set(&["rare"])),
-                ))]),
-                FilterExpr::Not(Box::new(FilterExpr::Predicate(Predicate::Tags(
-                    TagsPredicate::Equals(set(&["excluded"])),
-                )))),
-            ]),
-            sorts: Vec::new(),
-        };
-
-        assert!(spec.tag_anchor_candidates().is_empty());
-    }
-
-    #[test]
-    fn query_sql_with_tag_anchor_uses_indexed_cross_join_and_binds_anchor() {
-        let injection = "tag', 1) --";
-        let spec = QuerySpec {
-            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::ContainsAll(set(&[
-                injection,
-            ])))),
-            sorts: Vec::new(),
-        };
-        let plan = NovelQueryPlan::from_tag_counts(spec.tag_anchor_candidates(), &HashMap::new());
-
-        let sql = spec.query_sql_with_plan("n", &plan);
-        let text = sql.sql_with_placeholders();
-
-        assert!(text.contains("FROM novel_tag t0 INDEXED BY idx_novel_tag_tag_id_novel_id"));
-        assert!(text.contains("CROSS JOIN novel n"));
-        assert!(text.contains("WHERE t0.tag_id = ? AND n.id = t0.novel_id AND EXISTS"));
-        assert!(!text.contains(injection));
-        assert_eq!(sql.bind_count(), 2);
-    }
-
-    #[test]
-    fn query_sql_uses_binds_for_user_controlled_values() {
-        let injection = "' OR 1=1 --";
-        let spec = QuerySpec {
-            filter: FilterExpr::All(vec![
-                FilterExpr::Predicate(Predicate::Text {
-                    field: TextField::Title,
-                    op: TextOp::Contains,
-                    value: injection.to_owned(),
-                }),
-                FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
-                    "author', 1) --".to_owned(),
-                )))),
-                FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Intersects(set(&[
-                    "tag', 1) --",
-                ])))),
-            ]),
-            sorts: vec![SortSpec {
-                expr: SortExpr::Number(NumberField::ReplyCount),
-                direction: SortDirection::Desc,
-            }],
-        };
-
-        let sql = spec.query_sql_with_plan("n", &NovelQueryPlan::default());
-        let text = sql.sql_with_placeholders();
-
-        assert!(!text.contains(injection));
-        assert!(!text.contains("author', 1) --"));
-        assert!(!text.contains("tag', 1) --"));
-        assert!(text.contains("instr(n.name, ?) > 0"));
-        assert!(text.contains("n.author_name = ?"));
-        assert!(text.contains("nt.tag_id IN (?)"));
-        assert!(text.contains("ORDER BY (n.reply_count) IS NULL ASC, (n.reply_count) DESC"));
-        assert_eq!(sql.bind_count(), 3);
-    }
-
-    #[test]
-    fn query_sql_uses_binds_for_repeated_text_and_numeric_values() {
-        let spec = QuerySpec {
-            filter: FilterExpr::All(vec![
-                FilterExpr::Predicate(Predicate::Text {
-                    field: TextField::LatestChapter,
-                    op: TextOp::StartsWith,
-                    value: "chapter".to_owned(),
-                }),
-                FilterExpr::Predicate(Predicate::Number {
-                    field: NumberField::WordCount,
-                    op: NumberOp::Between { min: 10, max: 20 },
-                }),
-                FilterExpr::Predicate(Predicate::Bool {
-                    field: BoolField::IsLimit,
-                    value: true,
-                }),
-            ]),
-            sorts: Vec::new(),
-        };
-
-        let sql = spec.query_sql_with_plan("n", &NovelQueryPlan::default());
-        let text = sql.sql_with_placeholders();
-
-        assert!(text.contains("substr(n.latest_chapter_name, 1, length(?)) = ?"));
-        assert!(text.contains("n.word_count >= ? AND n.word_count <= ?"));
-        assert!(text.contains("n.is_limit = ?"));
-        assert_eq!(sql.bind_count(), 5);
+        assert_eq!(query_ids(spec, vec![one, two, three]), vec![2, 3, 1]);
     }
 }

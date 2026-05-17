@@ -3,7 +3,7 @@ use crate::app::{RouterType, Workspace, WorkspaceEvent};
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     foundation::I18n,
-    store::{Db, service::Novel},
+    store::{Db, query::NovelQueryDataset, service::Novel},
 };
 use advanced::{AdvancedQueryState, QueryOptions};
 use fluent_bundle::FluentArgs;
@@ -64,6 +64,7 @@ impl std::fmt::Display for QueryError {
 
 struct SearchResult {
     novels: Vec<Novel>,
+    dataset: Option<NovelQueryDataset>,
 }
 
 enum QueryEvent {
@@ -86,6 +87,7 @@ pub(crate) struct QueryView {
     fetch_task: Entity<FetchTaskState>,
     advanced: AdvancedQueryState,
     results_table: Entity<TableState<ResultsTableDelegate>>,
+    query_dataset: Option<NovelQueryDataset>,
     search: SearchState,
     _subscriptions: Vec<Subscription>,
     query: Entity<Query>,
@@ -101,7 +103,8 @@ impl QueryView {
         let query = cx.new(|_cx| Query::new());
         let _subscriptions = vec![
             cx.subscribe_in(&query, window, Self::subscribe_in),
-            cx.observe(&fetch_task, |_, _, cx| {
+            cx.observe(&fetch_task, |this, _, cx| {
+                this.query_dataset = None;
                 cx.notify();
             }),
         ];
@@ -128,6 +131,7 @@ impl QueryView {
                     .col_movable(true)
                     .row_selectable(true)
             }),
+            query_dataset: None,
             search,
             _subscriptions,
             query,
@@ -181,6 +185,7 @@ impl QueryView {
                 match options {
                     Ok(options) => {
                         self.advanced = AdvancedQueryState::new(options, window, cx);
+                        self.query_dataset = None;
                         self.set_results_table(Vec::new(), false, cx);
                         self.search = SearchState::Init;
                     }
@@ -255,6 +260,7 @@ impl QueryView {
             "starting feiwen query"
         );
         let pool = cx.global::<Db>().pool();
+        let dataset = self.query_dataset.clone();
         let this = cx.entity().downgrade();
 
         self.advanced.set_disabled(true, cx);
@@ -270,18 +276,28 @@ impl QueryView {
                         sort_count = spec.sort_count(),
                         "running feiwen query in background"
                     );
-                    let mut conn = pool.get()?;
                     let query_started_at = Instant::now();
-                    let novels = Novel::query(&spec, &mut conn)?;
+                    let (dataset, loaded_dataset) = match dataset {
+                        Some(dataset) => (dataset, false),
+                        None => {
+                            let mut conn = pool.get()?;
+                            (Novel::query_dataset(&mut conn)?, true)
+                        }
+                    };
+                    let novels = Novel::query_in_dataset(&spec, &dataset)?;
                     let query_elapsed_ms = query_started_at.elapsed().as_millis();
                     event!(
                         Level::INFO,
                         result_count = novels.len(),
+                        loaded_dataset,
                         query_elapsed_ms,
                         total_elapsed_ms = started_at.elapsed().as_millis(),
                         "feiwen query completed in background"
                     );
-                    Ok(SearchResult { novels })
+                    Ok(SearchResult {
+                        novels,
+                        dataset: loaded_dataset.then_some(dataset),
+                    })
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -302,6 +318,9 @@ impl QueryView {
         match result {
             Ok(result) => {
                 let count = result.novels.len();
+                if let Some(dataset) = result.dataset {
+                    self.query_dataset = Some(dataset);
+                }
                 let table_started_at = Instant::now();
                 self.set_results_table(result.novels, false, cx);
                 event!(

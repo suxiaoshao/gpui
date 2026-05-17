@@ -48,6 +48,7 @@ url = "2.5.8"
 # database
 diesel = { version = "2.3.9", features = ["sqlite", "r2d2"] }
 dirs-next = "2.0.0"
+polars = { version = "0.53.0", default-features = false, features = ["lazy", "list_sets", "strings", "regex", "temporal"] }
 
 # log
 tracing = "0.1.44"

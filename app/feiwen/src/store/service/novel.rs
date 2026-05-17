@@ -7,7 +7,8 @@ use crate::{
     errors::{FeiwenError, FeiwenResult},
     store::{
         model::{NovelModel, NovelTagModel, TagModel},
-        query::{NovelQueryPlan, QuerySpec, QuerySql},
+        query::{NovelQueryDataset, NovelRecord, QuerySpec},
+        schema::novel,
         types::{Author, NovelCount, Title},
     },
 };
@@ -26,32 +27,6 @@ pub(crate) struct Novel {
 }
 
 #[derive(QueryableByName)]
-struct NovelRow {
-    #[diesel(sql_type = sql_types::Integer)]
-    id: i32,
-    #[diesel(sql_type = sql_types::Text)]
-    name: String,
-    #[diesel(sql_type = sql_types::Text)]
-    desc: String,
-    #[diesel(sql_type = sql_types::Bool)]
-    is_limit: bool,
-    #[diesel(sql_type = sql_types::Text)]
-    latest_chapter_name: String,
-    #[diesel(sql_type = sql_types::Integer)]
-    latest_chapter_id: i32,
-    #[diesel(sql_type = sql_types::Integer)]
-    word_count: i32,
-    #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
-    read_count: Option<i32>,
-    #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
-    reply_count: Option<i32>,
-    #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
-    author_id: Option<i32>,
-    #[diesel(sql_type = sql_types::Text)]
-    author_name: String,
-}
-
-#[derive(QueryableByName)]
 struct NovelTagRow {
     #[diesel(sql_type = sql_types::Integer)]
     novel_id: i32,
@@ -60,16 +35,6 @@ struct NovelTagRow {
     #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
     id: Option<i32>,
 }
-
-#[derive(QueryableByName)]
-struct TagCountRow {
-    #[diesel(sql_type = sql_types::Text)]
-    tag_id: String,
-    #[diesel(sql_type = sql_types::BigInt)]
-    tag_count: i64,
-}
-
-const NOVEL_TAG_LOAD_CHUNK_SIZE: usize = 500;
 
 impl RenderOnce for Novel {
     fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
@@ -116,111 +81,90 @@ impl Novel {
         NovelModel::count(conn)
     }
 
+    #[cfg(test)]
     pub(crate) fn query(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<Vec<Novel>> {
-        let rows = query_novel_rows(spec, conn)?;
-        let tags = load_tags_for_rows(&rows, conn)?;
-        Ok(rows
+        let dataset = Self::query_dataset(conn)?;
+        Self::query_in_dataset(spec, &dataset)
+    }
+
+    pub(crate) fn query_dataset(conn: &mut SqliteConnection) -> FeiwenResult<NovelQueryDataset> {
+        let rows = novel::table.load::<NovelModel>(conn)?;
+        let tags = load_tags(conn)?;
+        let records = rows
             .into_iter()
             .map(|row| {
                 let row_tags = tags.get(&row.id).cloned().unwrap_or_default();
-                row.into_novel(row_tags)
+                row.into_record(row_tags)
             })
+            .collect();
+        Ok(NovelQueryDataset::new(records)?)
+    }
+
+    pub(crate) fn query_in_dataset(
+        spec: &QuerySpec,
+        dataset: &NovelQueryDataset,
+    ) -> FeiwenResult<Vec<Novel>> {
+        Ok(dataset
+            .query(spec)?
+            .into_iter()
+            .map(NovelRecord::into_novel)
             .collect())
     }
 }
 
-fn query_novel_rows(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<Vec<NovelRow>> {
-    let plan = query_plan(spec, conn)?;
-    Ok(spec
-        .query_sql_with_plan("n", &plan)
-        .load::<NovelRow>(conn)?)
-}
-
-fn query_plan(spec: &QuerySpec, conn: &mut SqliteConnection) -> FeiwenResult<NovelQueryPlan> {
-    let candidates = spec.tag_anchor_candidates();
-    if candidates.is_empty() {
-        return Ok(NovelQueryPlan::default());
-    }
-
-    let tag_counts = load_tag_counts(&candidates, conn)?;
-    Ok(NovelQueryPlan::from_tag_counts(candidates, &tag_counts))
-}
-
-fn load_tag_counts(
-    tags: &HashSet<String>,
-    conn: &mut SqliteConnection,
-) -> FeiwenResult<HashMap<String, i64>> {
-    if tags.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut sql = QuerySql::new();
-    sql.push_sql(
-        "\
-        SELECT tag_id, COUNT(*) AS tag_count \
-        FROM novel_tag \
-        WHERE tag_id IN (",
-    );
-    let mut tags = tags.iter().collect::<Vec<_>>();
-    tags.sort();
-    for (ix, tag) in tags.into_iter().enumerate() {
-        if ix > 0 {
-            sql.push_sql(", ");
-        }
-        sql.push_text(tag);
-    }
-    sql.push_sql(") GROUP BY tag_id");
-
-    Ok(sql
-        .load::<TagCountRow>(conn)?
-        .into_iter()
-        .map(|row| (row.tag_id, row.tag_count))
-        .collect())
-}
-
-fn load_tags_for_rows(
-    rows: &[NovelRow],
-    conn: &mut SqliteConnection,
-) -> FeiwenResult<HashMap<i32, HashSet<Tag>>> {
-    if rows.is_empty() {
-        return Ok(HashMap::new());
-    }
-
+fn load_tags(conn: &mut SqliteConnection) -> FeiwenResult<HashMap<i32, HashSet<Tag>>> {
     let mut tags = HashMap::new();
-    for chunk in rows.chunks(NOVEL_TAG_LOAD_CHUNK_SIZE) {
-        let mut sql = QuerySql::new();
-        sql.push_sql(
-            "\
-            SELECT \
-                nt.novel_id, \
-                nt.tag_id AS name, \
-                tag.id \
-            FROM novel_tag nt \
-            LEFT JOIN tag ON tag.name = nt.tag_id \
-            WHERE nt.novel_id IN (",
-        );
-        for (ix, row) in chunk.iter().enumerate() {
-            if ix > 0 {
-                sql.push_sql(", ");
-            }
-            sql.push_i32(row.id);
-        }
-        sql.push_sql(")");
+    let rows = diesel::sql_query(
+        "\
+        SELECT \
+            nt.novel_id, \
+            nt.tag_id AS name, \
+            tag.id \
+        FROM novel_tag nt \
+        LEFT JOIN tag ON tag.name = nt.tag_id",
+    )
+    .load::<NovelTagRow>(conn)?;
 
-        for row in sql.load::<NovelTagRow>(conn)? {
-            tags.entry(row.novel_id)
-                .or_insert_with(HashSet::new)
-                .insert(Tag {
-                    name: row.name,
-                    id: row.id,
-                });
-        }
+    for row in rows {
+        tags.entry(row.novel_id)
+            .or_insert_with(HashSet::new)
+            .insert(Tag {
+                name: row.name,
+                id: row.id,
+            });
     }
     Ok(tags)
 }
 
-impl NovelRow {
-    fn into_novel(self, tags: HashSet<Tag>) -> Novel {
+impl NovelModel {
+    fn into_record(self, tags: HashSet<Tag>) -> NovelRecord {
+        let mut tag_names = tags.iter().map(|tag| tag.name.clone()).collect::<Vec<_>>();
+        tag_names.sort();
+        let tag_ids = tags
+            .into_iter()
+            .map(|tag| (tag.name, tag.id))
+            .collect::<HashMap<_, _>>();
+
+        NovelRecord {
+            id: self.id,
+            title: self.name,
+            desc: self.desc,
+            is_limit: self.is_limit,
+            latest_chapter_name: self.latest_chapter_name,
+            latest_chapter_id: self.latest_chapter_id,
+            word_count: self.word_count,
+            read_count: self.read_count,
+            reply_count: self.reply_count,
+            author_id: self.author_id,
+            author_name: self.author_name,
+            tags: tag_names,
+            tag_ids,
+        }
+    }
+}
+
+impl NovelRecord {
+    fn into_novel(self) -> Novel {
         let author = match self.author_id {
             Some(author_id) => Author::Known(Title {
                 name: self.author_name,
@@ -233,7 +177,7 @@ impl NovelRow {
             desc: self.desc,
             is_limit: self.is_limit,
             title: Title {
-                name: self.name,
+                name: self.title,
                 id: self.id,
             },
             author,
@@ -246,7 +190,14 @@ impl NovelRow {
                 read_count: self.read_count,
                 reply_count: self.reply_count,
             },
-            tags,
+            tags: self
+                .tags
+                .into_iter()
+                .map(|name| {
+                    let id = self.tag_ids.get(&name).copied().flatten();
+                    Tag { name, id }
+                })
+                .collect(),
         }
     }
 }
@@ -329,22 +280,6 @@ mod tests {
         novel.save(conn).unwrap();
     }
 
-    fn novel_row(id: i32) -> NovelRow {
-        NovelRow {
-            id,
-            name: format!("novel-{id}"),
-            desc: String::new(),
-            is_limit: false,
-            latest_chapter_name: String::new(),
-            latest_chapter_id: id * 10,
-            word_count: 1000,
-            read_count: Some(1),
-            reply_count: Some(1),
-            author_id: Some(id),
-            author_name: format!("author-{id}"),
-        }
-    }
-
     #[test]
     fn query_pushes_tag_limit_and_reply_sort_semantics() {
         let mut conn = connection();
@@ -418,9 +353,9 @@ mod tests {
     }
 
     #[test]
-    fn load_tags_for_rows_chunks_large_result_sets() {
+    fn query_dataset_loads_tags_for_large_result_sets() {
         let mut conn = connection();
-        let total = NOVEL_TAG_LOAD_CHUNK_SIZE + 1;
+        let total = 501;
         for id in 1..=total {
             let tag = format!("tag-{id}");
             save_novel(
@@ -432,19 +367,34 @@ mod tests {
                 Some(id as i32),
             );
         }
-        let rows = (1..=total)
-            .map(|id| novel_row(id as i32))
-            .collect::<Vec<_>>();
 
-        let tags = load_tags_for_rows(&rows, &mut conn).unwrap();
+        let results = Novel::query(
+            &QuerySpec {
+                filter: FilterExpr::default(),
+                sorts: vec![crate::store::query::SortSpec {
+                    expr: crate::store::query::SortExpr::Number(
+                        crate::store::query::NumberField::NovelId,
+                    ),
+                    direction: crate::store::query::SortDirection::Asc,
+                }],
+            },
+            &mut conn,
+        )
+        .unwrap();
 
-        assert_eq!(tags.len(), total);
+        assert_eq!(results.len(), total);
         for id in 1..=total {
             assert!(
-                tags.get(&(id as i32))
-                    .unwrap()
+                results[id - 1]
+                    .tags
                     .iter()
                     .any(|tag| tag.name == format!("tag-{id}"))
+            );
+            assert!(
+                results[id - 1]
+                    .tags
+                    .iter()
+                    .any(|tag| tag.name == format!("tag-{id}") && tag.id == Some(id as i32))
             );
         }
     }
@@ -601,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn query_binds_text_author_and_tag_values_without_injection() {
+    fn query_treats_text_author_and_tag_values_as_plain_values() {
         let mut conn = connection();
         let injection = "' OR 1=1 --";
         save_novel(&mut conn, 1, "safe", &["tag"], false, Some(1));

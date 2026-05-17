@@ -10,6 +10,8 @@ pub(crate) enum FeiwenError {
     Pool(#[from] diesel::r2d2::PoolError),
     #[error("数据库连接池获取链接错误:{}",.0)]
     GetConnection(#[from] diesel::r2d2::Error),
+    #[error("查询引擎错误:{}",.0)]
+    Polars(#[from] polars::error::PolarsError),
     #[error("文件系统错误:{}",.0)]
     Fs(#[from] std::io::Error),
     #[error("请求头构造错误:{}",.0)]
