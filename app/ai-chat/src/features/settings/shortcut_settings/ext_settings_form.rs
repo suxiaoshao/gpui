@@ -3,9 +3,9 @@ use crate::{
     foundation::i18n::I18n,
     llm::{ExtSettingControl, ExtSettingItem, ExtSettingOption},
 };
-use gpui::{prelude::FluentBuilder as _, *};
+use gpui::*;
 use gpui_component::{
-    ElementExt, IndexPath, Sizable, StyledExt, h_flex,
+    IndexPath, Sizable, StyledExt, h_flex,
     label::Label,
     select::{Select, SelectEvent, SelectItem, SelectState},
     switch::Switch,
@@ -59,8 +59,6 @@ enum ExtSettingState {
 
 pub(super) struct ShortcutExtSettingsForm {
     settings: Vec<ExtSettingState>,
-    help_open_index: Option<usize>,
-    help_positions: Vec<Point<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,16 +66,12 @@ impl ShortcutExtSettingsForm {
     pub(super) fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
             settings: Vec::new(),
-            help_open_index: None,
-            help_positions: Vec::new(),
             _subscriptions: Vec::new(),
         }
     }
 
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.settings.clear();
-        self.help_open_index = None;
-        self.help_positions.clear();
         self._subscriptions.clear();
         cx.notify();
     }
@@ -101,9 +95,6 @@ impl ShortcutExtSettingsForm {
                 self.setting_state_from_item(item, previous_state, window, cx)
             })
             .collect();
-        self.help_open_index = None;
-        self.help_positions
-            .resize(self.settings.len(), Point::default());
         self.bind_subscriptions(window, cx);
         cx.notify();
     }
@@ -208,30 +199,10 @@ impl ShortcutExtSettingsForm {
         item.tooltip.is_some()
     }
 
-    fn set_help_position(&mut self, index: usize, bounds: Bounds<Pixels>) {
-        if self.help_positions.len() <= index {
-            self.help_positions.resize(index + 1, Point::default());
-        }
-        self.help_positions[index] = ext_setting_help::help_position(bounds);
-    }
-
-    fn show_help(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.help_open_index = Some(index);
-        cx.notify();
-    }
-
-    fn hide_help(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.help_open_index == Some(index) {
-            self.help_open_index = None;
-            cx.notify();
-        }
-    }
-
     fn render_label(
         &self,
         item: &ExtSettingItem,
         index: usize,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let label = h_flex().items_center().gap_1().child(
@@ -243,44 +214,12 @@ impl ShortcutExtSettingsForm {
             return label.into_any_element();
         };
 
-        let state = cx.entity();
-        let icon = ext_setting_help::help_icon(
-            SharedString::from(format!("shortcut-ext-setting-help-trigger-{index}")),
-            cx,
-        )
-        .on_hover(cx.listener(move |settings, hovered: &bool, _window, cx| {
-            if *hovered {
-                settings.show_help(index, cx);
-            }
-        }))
-        .on_prepaint(move |bounds, _window, cx| {
-            state.update(cx, |settings, _cx| {
-                settings.set_help_position(index, bounds);
-            });
-        });
-        let position = self.help_positions.get(index).copied().unwrap_or_default();
-
         label
-            .child(
-                div()
-                    .child(icon)
-                    .when(self.help_open_index == Some(index), |this| {
-                        this.child(ext_setting_help::help_panel(
-                            SharedString::from(format!("shortcut-ext-setting-help-panel-{index}")),
-                            tooltip_key,
-                            position,
-                            cx.listener(move |settings, hovered: &bool, _window, cx| {
-                                if *hovered {
-                                    settings.show_help(index, cx);
-                                } else {
-                                    settings.hide_help(index, cx);
-                                }
-                            }),
-                            window,
-                            cx,
-                        ))
-                    }),
-            )
+            .child(ext_setting_help::help_card(
+                SharedString::from(format!("shortcut-ext-setting-help-{index}")),
+                tooltip_key,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -288,7 +227,7 @@ impl ShortcutExtSettingsForm {
         &self,
         setting: &ExtSettingItem,
         index: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ExtSettingControl::Boolean(value) = setting.control else {
@@ -299,7 +238,7 @@ impl ShortcutExtSettingsForm {
             .w_full()
             .min_w_0()
             .gap_2()
-            .child(self.render_label(setting, index, window, cx))
+            .child(self.render_label(setting, index, cx))
             .child(
                 h_flex().w_full().justify_start().child(
                     Switch::new(setting.key)
@@ -320,14 +259,14 @@ impl ShortcutExtSettingsForm {
         &self,
         setting: &SelectSettingState,
         index: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         v_flex()
             .w_full()
             .min_w_0()
             .gap_2()
-            .child(self.render_label(&setting.item, index, window, cx))
+            .child(self.render_label(&setting.item, index, cx))
             .child(Select::new(&setting.select).w_full())
             .into_any_element()
     }

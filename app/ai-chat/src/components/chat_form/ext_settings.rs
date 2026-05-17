@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ElementExt, Selectable, Sizable,
+    Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     list::ListState,
@@ -85,23 +85,17 @@ enum ExtSettingState {
 
 pub(crate) struct ExtSettings {
     settings: Vec<ExtSettingState>,
-    help_open_index: Option<usize>,
-    help_positions: Vec<Point<Pixels>>,
 }
 
 impl ExtSettings {
     pub(crate) fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
             settings: Vec::new(),
-            help_open_index: None,
-            help_positions: Vec::new(),
         }
     }
 
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         self.settings.clear();
-        self.help_open_index = None;
-        self.help_positions.clear();
         cx.notify();
     }
 
@@ -120,9 +114,6 @@ impl ExtSettings {
                 self.setting_state_from_item(item, previous_state, window, cx)
             })
             .collect();
-        self.help_open_index = None;
-        self.help_positions
-            .resize(self.settings.len(), Point::default());
         cx.notify();
     }
 
@@ -278,67 +269,26 @@ impl ExtSettings {
         item.tooltip.is_some()
     }
 
-    fn set_help_position(&mut self, index: usize, bounds: Bounds<Pixels>) {
-        if self.help_positions.len() <= index {
-            self.help_positions.resize(index + 1, Point::default());
-        }
-        self.help_positions[index] = ext_setting_help::help_position(bounds);
-    }
-
-    fn show_help(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.help_open_index = Some(index);
-        cx.notify();
-    }
-
-    fn hide_help(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.help_open_index == Some(index) {
-            self.help_open_index = None;
-            cx.notify();
-        }
-    }
-
     fn attach_help(
         &self,
         item: &ExtSettingItem,
         index: usize,
         trigger: Stateful<Div>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(tooltip_key) = item.tooltip else {
             return trigger.into_any_element();
         };
-        let state = cx.entity();
-        let positioned_trigger = trigger
-            .on_hover(cx.listener(move |settings, hovered: &bool, _window, cx| {
-                if *hovered {
-                    settings.show_help(index, cx);
-                }
-            }))
-            .on_prepaint(move |bounds, _window, cx| {
-                state.update(cx, |settings, _cx| {
-                    settings.set_help_position(index, bounds);
-                });
-            });
-        let position = self.help_positions.get(index).copied().unwrap_or_default();
 
-        positioned_trigger
-            .when(self.help_open_index == Some(index), |this| {
-                this.child(ext_setting_help::help_panel(
-                    SharedString::from(format!("ext-setting-help-panel-{index}")),
-                    tooltip_key,
-                    position,
-                    cx.listener(move |settings, hovered: &bool, _window, cx| {
-                        if *hovered {
-                            settings.show_help(index, cx);
-                        } else {
-                            settings.hide_help(index, cx);
-                        }
-                    }),
-                    window,
-                    cx,
-                ))
-            })
+        h_flex()
+            .items_center()
+            .gap_0p5()
+            .child(trigger)
+            .child(ext_setting_help::help_card(
+                SharedString::from(format!("ext-setting-help-{index}")),
+                tooltip_key,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -346,7 +296,7 @@ impl ExtSettings {
         &self,
         setting: &ExtSettingItem,
         index: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ExtSettingControl::Boolean(value) = setting.control else {
@@ -369,15 +319,14 @@ impl ExtSettings {
                 "ext-setting-boolean-wrapper-{index}"
             )))
             .child(button);
-        let _ = window;
-        self.attach_help(setting, index, container, window, cx)
+        self.attach_help(setting, index, container, cx)
     }
 
     fn render_select_compact(
         &self,
         setting: &SelectSettingState,
         index: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let SelectTriggerParts {
@@ -405,8 +354,7 @@ impl ExtSettings {
                 cx,
             ))
         });
-        let _ = window;
-        self.attach_help(&setting.item, index, container, window, cx)
+        self.attach_help(&setting.item, index, container, cx)
     }
 
     fn select_trigger(
