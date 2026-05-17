@@ -1,6 +1,9 @@
 use crate::{
     components::{
-        add_conversation::open_add_conversation_dialog,
+        add_conversation::{
+            AddConversationDialogRequest, InitialConversationFields,
+            open_add_conversation_dialog_with_options,
+        },
         chat_form::ChatFormSnapshot,
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
@@ -20,7 +23,7 @@ use crate::{
     foundation::i18n::I18n,
     llm::{FetchRunner, FetchUpdate, provider_by_name},
     platform::gpui_ext::WeakEntityResultExt,
-    state::{AddConversationMessage, AiChatConfig},
+    state::{AddConversationMessage, AiChatConfig, ChatData},
 };
 use async_compat::CompatExt;
 use futures::pin_mut;
@@ -37,6 +40,8 @@ use time::OffsetDateTime;
 use tracing::{Instrument, Level, event, span};
 
 const CONTEXT: &str = "template-detail";
+const DEFAULT_TEMPORARY_SAVE_ICON: &str = "💬";
+const TEMPORARY_SAVE_TITLE_MAX_CHARS: usize = 40;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", DetailEscape, Some(CONTEXT))]);
@@ -304,6 +309,18 @@ impl TemporaryDetailState {
         self.messages.clear();
         self.autoincrement_id = 0;
     }
+
+    fn save_fields(&self, cx: &App) -> InitialConversationFields {
+        let i18n = cx.global::<I18n>();
+        InitialConversationFields {
+            name: Some(temporary_save_title(
+                &self.messages,
+                &i18n.t("temporary-chat-save-default-name"),
+            )),
+            icon: Some(DEFAULT_TEMPORARY_SAVE_ICON.to_string()),
+            info: Some(i18n.t("temporary-chat-save-default-info")),
+        }
+    }
 }
 
 struct NewTemporaryMessage {
@@ -522,21 +539,91 @@ impl ConversationDetailViewExt for TemporaryDetailState {
         window: &mut Window,
         cx: &mut Context<ConversationDetailView<Self>>,
     ) {
-        let initial_messages = view
-            .detail
-            .messages
-            .iter()
-            .cloned()
-            .map(|message| AddConversationMessage {
-                provider: message.provider,
-                role: message.role,
-                content: message.content,
-                send_content: (*message.send_content).clone(),
-                status: message.status,
-                error: message.error,
-            })
-            .collect::<Vec<_>>();
-        open_add_conversation_dialog(None, Some(initial_messages), window, cx);
+        let initial_fields = view.detail.save_fields(cx);
+        let initial_messages =
+            temporary_messages_to_add_conversation_messages(&view.detail.messages);
+        let (title, failure_title, success_title) = {
+            let i18n = cx.global::<I18n>();
+            (
+                i18n.t("dialog-save-temporary-conversation-title"),
+                i18n.t("notify-save-temporary-conversation-failed"),
+                i18n.t("notify-save-temporary-conversation-success"),
+            )
+        };
+        open_add_conversation_dialog_with_options(
+            AddConversationDialogRequest {
+                parent_id: None,
+                initial_fields,
+                initial_messages: Some(initial_messages),
+                title: title.into(),
+                failure_title: failure_title.clone().into(),
+                success_title: Some(success_title.into()),
+                on_submit: Rc::new(move |submission, parent_id, initial_messages, window, cx| {
+                    let result = ChatData::save_conversation(
+                        &submission.name,
+                        &submission.icon,
+                        submission.info.as_deref(),
+                        parent_id,
+                        initial_messages.as_deref(),
+                        cx,
+                    );
+                    match result {
+                        Ok(()) => true,
+                        Err(err) => {
+                            window.push_notification(
+                                Notification::new()
+                                    .title(failure_title.clone())
+                                    .message(SharedString::from(err.to_string()))
+                                    .with_type(NotificationType::Error),
+                                cx,
+                            );
+                            false
+                        }
+                    }
+                }),
+            },
+            window,
+            cx,
+        );
+    }
+}
+
+fn temporary_messages_to_add_conversation_messages(
+    messages: &[TemporaryMessage],
+) -> Vec<AddConversationMessage> {
+    messages
+        .iter()
+        .cloned()
+        .map(|message| AddConversationMessage {
+            provider: message.provider,
+            role: message.role,
+            content: message.content,
+            send_content: (*message.send_content).clone(),
+            status: message.status,
+            error: message.error,
+        })
+        .collect()
+}
+
+fn temporary_save_title(messages: &[TemporaryMessage], default_name: &str) -> String {
+    let title = messages
+        .iter()
+        .find(|message| message.role == Role::User)
+        .and_then(|message| {
+            let text = message.content.text.trim();
+            (!text.is_empty()).then_some(text)
+        })
+        .unwrap_or(default_name);
+    truncate_title(title, TEMPORARY_SAVE_TITLE_MAX_CHARS)
+}
+
+fn truncate_title(title: &str, max_chars: usize) -> String {
+    let mut chars = title.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }
 

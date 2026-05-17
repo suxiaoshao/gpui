@@ -1,4 +1,5 @@
 use crate::{
+    components::chat_form::notify_templates_changed,
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
     foundation::{assets::IconName, i18n::I18n},
@@ -219,6 +220,7 @@ impl TemplateSettingsPage {
             return false;
         }
 
+        notify_templates_changed(cx);
         let _ = self.reload_templates(window, cx);
         window.push_notification(
             Notification::new()

@@ -186,6 +186,8 @@ temporary-chat-title = Temporary Chat
 temporary-chat-description = Start a temporary conversation and choose a template from the chat form when needed.
 temporary-chat-empty-title = Start a temporary conversation
 temporary-chat-empty-description = Choose a template or ask a question to begin.
+temporary-chat-save-default-name = Temporary Conversation
+temporary-chat-save-default-info = Saved from temporary chat
 
 field-id = ID
 field-name = Name
@@ -245,6 +247,7 @@ field-actions = Actions
 
 dialog-add-folder-title = Add Folder
 dialog-add-conversation-title = Add Conversation
+dialog-save-temporary-conversation-title = Save Temporary Conversation
 dialog-search-conversation-title = Search Conversations
 dialog-view-template-title = Template
 dialog-edit-template-title = Edit Template
@@ -275,6 +278,8 @@ dialog-delete-shortcut-message = Delete this shortcut binding? This action canno
 notify-get-templates-failed = Get Templates Failed
 notify-select-template = Please select a template
 notify-add-conversation-failed = Add Conversation Failed
+notify-save-temporary-conversation-success = Temporary conversation saved
+notify-save-temporary-conversation-failed = Save temporary conversation failed
 notify-add-folder-failed = Add Folder Failed
 notify-move-conversation-failed = Move Conversation Failed
 notify-move-folder-failed = Move Folder Failed
@@ -347,6 +352,8 @@ button-reasoning-summary-thinking = Thinking
 template-error-select-role = Please select role for prompt
 template-error-prompt-empty = Prompt cannot be empty:
 template-error-name-icon-required = Name and icon are required
+folder-error-name-required = Folder name is required
+conversation-error-name-icon-required = Conversation name and icon are required
 
 field-raw = Raw
 shortcut-models-loading = Loading models...

@@ -34,6 +34,10 @@ impl SelectItem for TemplateChoice {
         self.label.clone()
     }
 
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(self.label.clone().into_any_element())
+    }
+
     fn matches(&self, query: &str) -> bool {
         self.template.as_ref().map_or_else(
             || self.label.to_lowercase().contains(&query.to_lowercase()),
@@ -83,31 +87,8 @@ impl SelectItem for ModelChoice {
         self.title.clone()
     }
 
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct ExtSettingChoice {
-    pub(super) value: String,
-    pub(super) label: SharedString,
-}
-
-impl SelectItem for ExtSettingChoice {
-    type Value = String;
-
-    fn title(&self) -> SharedString {
-        self.value.clone().into()
-    }
-
     fn display_title(&self) -> Option<AnyElement> {
-        Some(div().child(self.label.clone()).into_any_element())
-    }
-
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let _ = cx;
-        div().child(self.label.clone())
+        Some(self.title.clone().into_any_element())
     }
 
     fn value(&self) -> &Self::Value {

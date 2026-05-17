@@ -1,4 +1,4 @@
-mod ext_settings;
+pub(crate) mod ext_settings;
 mod mode_select;
 mod model_select;
 mod picker;
@@ -15,11 +15,12 @@ use crate::{
 use ext_settings::{ExtSettings, ExtSettingsEvent};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable,
+    ActiveTheme, Disableable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Position},
     list::ListState,
+    notification::{Notification, NotificationType},
     tag::Tag,
     v_flex,
 };
@@ -29,7 +30,22 @@ use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
 use std::rc::Rc;
 use template_picker::{TemplateOption, template_sections};
 
-pub(crate) fn init(_cx: &mut App) {}
+#[derive(Default)]
+pub(crate) struct TemplateChangeState {
+    _version: u64,
+}
+
+impl Global for TemplateChangeState {}
+
+pub(crate) fn init(cx: &mut App) {
+    cx.set_global(TemplateChangeState::default());
+}
+
+pub(crate) fn notify_templates_changed(cx: &mut App) {
+    cx.update_global::<TemplateChangeState, _>(|state, _cx| {
+        state._version = state._version.wrapping_add(1);
+    });
+}
 
 #[derive(Clone)]
 pub(crate) enum ChatFormEvent {
@@ -110,6 +126,7 @@ impl ChatForm {
         this.bind_model_select_events(window, cx);
         this.bind_mode_select_events(window, cx);
         this.bind_ext_settings_events(window, cx);
+        this.bind_template_change_events(window, cx);
         this
     }
 
@@ -216,6 +233,55 @@ impl ChatForm {
         self._subscriptions.push(subscription);
     }
 
+    fn bind_template_change_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let subscription =
+            cx.observe_global_in::<TemplateChangeState>(window, |this, window, cx| {
+                this.reload_templates(window, cx);
+                cx.notify();
+            });
+        self._subscriptions.push(subscription);
+    }
+
+    fn reload_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut conn = match cx.global::<Db>().get() {
+            Ok(conn) => conn,
+            Err(err) => {
+                self.notify_template_load_error(err.to_string(), window, cx);
+                return;
+            }
+        };
+        let templates = match ConversationTemplate::all(&mut conn) {
+            Ok(templates) => templates,
+            Err(err) => {
+                self.notify_template_load_error(err.to_string(), window, cx);
+                return;
+            }
+        };
+
+        let (selected_template, selected_template_removed) =
+            reconcile_selected_template(self.selected_template.take(), &templates);
+        self.selected_template = selected_template;
+        self.templates = templates;
+        if selected_template_removed {
+            cx.emit(ChatFormEvent::StateChanged);
+        }
+    }
+
+    fn notify_template_load_error(
+        &self,
+        message: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.push_notification(
+            Notification::new()
+                .title(cx.global::<I18n>().t("notify-load-templates-failed"))
+                .message(message)
+                .with_type(NotificationType::Error),
+            cx,
+        );
+    }
+
     fn sync_ext_settings(
         &mut self,
         model: &crate::llm::ProviderModel,
@@ -268,6 +334,7 @@ impl ChatForm {
             return;
         };
         self.last_input_text = next.clone();
+        self.reload_templates(window, cx);
         self.template_picker_open = true;
         self.slash_restore_position = Some(slash_restore_position);
         self.rebuild_template_picker(window, cx);
@@ -285,6 +352,7 @@ impl ChatForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reload_templates(window, cx);
         self.template_picker_open = true;
         self.slash_restore_position = slash_restore_position;
         self.rebuild_template_picker(window, cx);
@@ -659,10 +727,44 @@ fn detect_template_trigger(
     ))
 }
 
+fn reconcile_selected_template(
+    selected_template: Option<ConversationTemplate>,
+    templates: &[ConversationTemplate],
+) -> (Option<ConversationTemplate>, bool) {
+    let Some(selected_template) = selected_template else {
+        return (None, false);
+    };
+    let Some(template) = templates
+        .iter()
+        .find(|template| template.id == selected_template.id)
+        .cloned()
+    else {
+        return (None, true);
+    };
+    (Some(template), false)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::detect_template_trigger;
+    use super::{detect_template_trigger, reconcile_selected_template};
+    use crate::database::{ConversationTemplate, ConversationTemplatePrompt, Role};
     use gpui_component::input::Position;
+    use time::OffsetDateTime;
+
+    fn template(id: i32, name: &str, prompt: &str) -> ConversationTemplate {
+        ConversationTemplate {
+            id,
+            name: name.to_string(),
+            icon: "🧩".to_string(),
+            description: None,
+            prompts: vec![ConversationTemplatePrompt {
+                prompt: prompt.to_string(),
+                role: Role::User,
+            }],
+            created_time: OffsetDateTime::UNIX_EPOCH,
+            updated_time: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
 
     #[test]
     fn detect_template_trigger_supports_middle_cursor_insertions() {
@@ -716,5 +818,40 @@ mod tests {
         );
 
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn reconcile_selected_template_refreshes_existing_selection() {
+        let selected = template(1, "Old Template", "old prompt");
+        let refreshed = template(1, "QA Single Prompt Template", "new prompt");
+
+        let (selected_template, removed) =
+            reconcile_selected_template(Some(selected), &[refreshed]);
+
+        assert!(!removed);
+        let selected_template = selected_template.expect("selected template should be refreshed");
+        assert_eq!(selected_template.name, "QA Single Prompt Template");
+        assert_eq!(selected_template.prompts[0].prompt, "new prompt");
+    }
+
+    #[test]
+    fn reconcile_selected_template_clears_removed_selection() {
+        let selected = template(1, "Deleted Template", "prompt");
+        let other = template(2, "Other Template", "other prompt");
+
+        let (selected_template, removed) = reconcile_selected_template(Some(selected), &[other]);
+
+        assert!(removed);
+        assert!(selected_template.is_none());
+    }
+
+    #[test]
+    fn reconcile_selected_template_keeps_empty_selection_empty() {
+        let refreshed = template(1, "QA Single Prompt Template", "prompt");
+
+        let (selected_template, removed) = reconcile_selected_template(None, &[refreshed]);
+
+        assert!(!removed);
+        assert!(selected_template.is_none());
     }
 }

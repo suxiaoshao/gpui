@@ -4,6 +4,7 @@ pub mod add_conversation;
 pub mod add_folder;
 pub mod chat_form;
 pub mod delete_confirm;
+pub(crate) mod ext_setting_help;
 pub mod hotkey_input;
 pub mod message;
 pub(crate) mod title_bar_menu;
