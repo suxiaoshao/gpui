@@ -4,10 +4,7 @@ use crate::{
     store::{Db, service::Novel},
 };
 use async_compat::Compat;
-use diesel::{
-    SqliteConnection,
-    r2d2::{ConnectionManager, PooledConnection},
-};
+use duckdb::DuckdbConnectionManager;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt,
@@ -17,6 +14,7 @@ use gpui_component::{
     label::Label,
     table::{Column, DataTable, TableDelegate, TableState},
 };
+use r2d2::PooledConnection;
 use regex::Regex;
 use reqwest::Client;
 use std::time::Instant;
@@ -370,7 +368,7 @@ impl FetchTaskState {
 struct Runner<'a> {
     request: FetchRequest,
     task_state: WeakEntity<FetchTaskState>,
-    conn: PooledConnection<ConnectionManager<SqliteConnection>>,
+    conn: PooledConnection<DuckdbConnectionManager>,
     cx: &'a mut AsyncApp,
 }
 
@@ -383,7 +381,7 @@ impl Runner<'_> {
             has_cookie = !self.request.cookie.is_empty(),
             "fetch runner started"
         );
-        let mut total = match Novel::count(&mut self.conn) {
+        let mut total = match Novel::count(&self.conn) {
             Ok(total) => total,
             Err(err) => {
                 event!(
@@ -443,7 +441,7 @@ impl Runner<'_> {
                 }
             }
 
-            match Novel::count(&mut self.conn) {
+            match Novel::count(&self.conn) {
                 Ok(next_total) => total = next_total,
                 Err(err) => {
                     event!(

@@ -6,7 +6,7 @@ use crate::{
         service::Tag,
     },
 };
-use diesel::{QueryableByName, RunQueryDsl, SqliteConnection, sql_types};
+use duckdb::Connection;
 use gpui::{AnyElement, IntoElement, SharedString};
 use gpui_component::select::{SearchableVec, SelectItem};
 use std::collections::HashMap;
@@ -194,16 +194,13 @@ pub(crate) struct QueryOptions {
     pub(super) authors: Vec<AuthorOption>,
 }
 
-#[derive(QueryableByName)]
 struct AuthorOptionRow {
-    #[diesel(sql_type = sql_types::Nullable<sql_types::Integer>)]
     author_id: Option<i32>,
-    #[diesel(sql_type = sql_types::Text)]
     author_name: String,
 }
 
 impl QueryOptions {
-    pub(crate) fn load(conn: &mut SqliteConnection) -> FeiwenResult<Self> {
+    pub(crate) fn load(conn: &Connection) -> FeiwenResult<Self> {
         let tags = Tag::tags_with_id(conn)?
             .into_iter()
             .map(|tag| TagOption {
@@ -230,14 +227,20 @@ impl QueryOptions {
     }
 }
 
-fn load_author_rows(conn: &mut SqliteConnection) -> FeiwenResult<Vec<AuthorOptionRow>> {
-    Ok(diesel::sql_query(
+fn load_author_rows(conn: &Connection) -> FeiwenResult<Vec<AuthorOptionRow>> {
+    let mut stmt = conn.prepare(
         "\
         SELECT author_id, author_name \
         FROM novel \
         GROUP BY author_id, author_name",
-    )
-    .load::<AuthorOptionRow>(conn)?)
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AuthorOptionRow {
+            author_id: row.get(0)?,
+            author_name: row.get(1)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 #[derive(Clone)]
@@ -399,26 +402,16 @@ pub(super) fn sort_direction_items() -> Vec<SelectChoice<SortDirectionChoice>> {
 mod query_options_load_tests {
     use super::*;
     use crate::store::{
+        initialize_schema,
         service::{Novel, Tag},
         types::{Author, NovelCount, Title},
     };
-    use diesel::{Connection, connection::SimpleConnection};
+    use duckdb::Connection;
     use std::collections::HashSet;
 
-    fn connection() -> SqliteConnection {
-        let mut conn = SqliteConnection::establish(":memory:").unwrap();
-        conn.batch_execute(include_str!(
-            "../../../../migrations/2022-05-15-162950_novel/up.sql"
-        ))
-        .unwrap();
-        conn.batch_execute(include_str!(
-            "../../../../migrations/2022-05-15-163112_tag/up.sql"
-        ))
-        .unwrap();
-        conn.batch_execute(include_str!(
-            "../../../../migrations/2022-05-16-064913_novel_tag/up.sql"
-        ))
-        .unwrap();
+    fn connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
         conn
     }
 
@@ -481,7 +474,7 @@ mod query_options_load_tests {
         .save(&mut conn)
         .unwrap();
 
-        let options = QueryOptions::load(&mut conn).unwrap();
+        let options = QueryOptions::load(&conn).unwrap();
 
         assert_eq!(
             options

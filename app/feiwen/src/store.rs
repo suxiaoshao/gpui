@@ -1,28 +1,26 @@
-use std::{ops::Deref, path::PathBuf};
+use std::{
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     APP_NAME,
     errors::{FeiwenError, FeiwenResult},
 };
-use diesel::{
-    RunQueryDsl, SqliteConnection,
-    connection::SimpleConnection,
-    r2d2::{ConnectionManager, Pool},
-};
+use duckdb::DuckdbConnectionManager;
 use gpui::App;
+use r2d2::Pool;
 use tracing::{Level, event};
 
-pub(crate) mod model;
 pub(crate) mod query;
-pub(crate) mod schema;
 pub(crate) mod service;
 pub(crate) mod types;
 
-pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
+pub(crate) type DbConn = Pool<DuckdbConnectionManager>;
 
 pub(crate) struct Db(DbConn);
 
-static DATABASE_FILE: &str = "data.sqlite";
+static DATABASE_FILE: &str = "data.duckdb";
 
 impl gpui::Global for Db {}
 
@@ -58,7 +56,7 @@ fn establish_connection() -> FeiwenResult<DbConn> {
     event!(Level::INFO, db_path = %url_path.display(), "opening feiwen database");
     let not_exists = check_data_file(&url_path)?;
     let url = url_path.to_str().ok_or(FeiwenError::DbPath)?;
-    let manager = ConnectionManager::<SqliteConnection>::new(url);
+    let manager = DuckdbConnectionManager::file(url)?;
     let pool = Pool::builder().test_on_check_out(true).build(manager)?;
     event!(
         Level::INFO,
@@ -66,10 +64,8 @@ fn establish_connection() -> FeiwenResult<DbConn> {
         created = not_exists,
         "database connection pool created"
     );
-    if not_exists {
-        create_tables(&pool)?;
-    }
-    migrate_tables(&pool)?;
+    let conn = pool.get()?;
+    initialize_schema(&conn)?;
     event!(Level::INFO, db_path = %url_path.display(), "database ready");
     Ok(pool)
 }
@@ -82,62 +78,49 @@ fn get_data_url() -> FeiwenResult<PathBuf> {
     Ok(data_path)
 }
 
-fn check_data_file(url: &PathBuf) -> FeiwenResult<bool> {
-    use std::fs::File;
+fn check_data_file(url: &Path) -> FeiwenResult<bool> {
     if !url.exists() {
-        event!(Level::INFO, db_path = %url.display(), "creating database file");
+        event!(Level::INFO, db_path = %url.display(), "database file does not exist");
         std::fs::create_dir_all(url.parent().ok_or(FeiwenError::DbPath)?)?;
-        File::create(url)?;
         return Ok(true);
     }
     Ok(false)
 }
-fn create_tables(conn: &DbConn) -> FeiwenResult<()> {
-    event!(Level::INFO, "creating initial database tables");
-    let conn = &mut conn.get()?;
-    conn.batch_execute(include_str!("../migrations/2022-05-15-162950_novel/up.sql"))?;
-    conn.batch_execute(include_str!("../migrations/2022-05-15-163112_tag/up.sql"))?;
-    conn.batch_execute(include_str!(
-        "../migrations/2022-05-16-064913_novel_tag/up.sql"
-    ))?;
-    event!(Level::INFO, "initial database tables created");
+
+pub(crate) fn initialize_schema(conn: &duckdb::Connection) -> FeiwenResult<()> {
+    event!(Level::INFO, "ensuring feiwen duckdb schema");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS novel (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            "desc" VARCHAR NOT NULL,
+            is_limit BOOLEAN NOT NULL,
+            latest_chapter_name VARCHAR NOT NULL,
+            latest_chapter_id INTEGER NOT NULL,
+            word_count INTEGER NOT NULL,
+            read_count INTEGER,
+            reply_count INTEGER,
+            author_id INTEGER,
+            author_name VARCHAR NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tag (
+            id INTEGER,
+            name VARCHAR PRIMARY KEY
+        );
+
+        CREATE TABLE IF NOT EXISTS novel_tag (
+            novel_id INTEGER NOT NULL,
+            tag_id VARCHAR NOT NULL,
+            PRIMARY KEY (novel_id, tag_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_novel_is_limit ON novel(is_limit);
+        CREATE INDEX IF NOT EXISTS idx_novel_reply_count ON novel(reply_count);
+        CREATE INDEX IF NOT EXISTS idx_novel_tag_tag_id_novel_id ON novel_tag(tag_id, novel_id);
+        "#,
+    )?;
+    event!(Level::INFO, "feiwen duckdb schema ready");
     Ok(())
-}
-
-fn migrate_tables(conn: &DbConn) -> FeiwenResult<()> {
-    let conn = &mut conn.get()?;
-    let needs_nullable_counts_migration = novel_counts_are_not_null(conn)?;
-    event!(
-        Level::INFO,
-        needs_nullable_counts_migration,
-        "checked database migrations"
-    );
-    if needs_nullable_counts_migration {
-        event!(Level::INFO, "running nullable novel counts migration");
-        conn.batch_execute(include_str!(
-            "../migrations/2026-05-06-000001_nullable_novel_counts/up.sql"
-        ))?;
-        event!(Level::INFO, "nullable novel counts migration completed");
-    }
-    event!(Level::INFO, "ensuring feiwen query indexes");
-    conn.batch_execute(include_str!(
-        "../migrations/2026-05-13-000001_query_indexes/up.sql"
-    ))?;
-    event!(Level::INFO, "feiwen query indexes ready");
-    Ok(())
-}
-
-fn novel_counts_are_not_null(conn: &mut SqliteConnection) -> FeiwenResult<bool> {
-    #[derive(diesel::QueryableByName)]
-    struct TableColumn {
-        #[diesel(sql_type = diesel::sql_types::Text)]
-        name: String,
-        #[diesel(sql_type = diesel::sql_types::Integer)]
-        notnull: i32,
-    }
-
-    let columns = diesel::sql_query("PRAGMA table_info(novel)").load::<TableColumn>(conn)?;
-    Ok(columns.iter().any(|column| {
-        matches!(column.name.as_str(), "read_count" | "reply_count") && column.notnull != 0
-    }))
 }

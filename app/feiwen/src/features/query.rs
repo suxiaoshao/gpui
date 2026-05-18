@@ -106,7 +106,7 @@ impl QueryView {
             }),
         ];
         let (options, search) = match cx.global::<Db>().get() {
-            Ok(mut conn) => match QueryOptions::load(&mut conn) {
+            Ok(conn) => match QueryOptions::load(&conn) {
                 Ok(options) => (options, SearchState::Init),
                 Err(err) => (
                     QueryOptions::default(),
@@ -175,7 +175,7 @@ impl QueryView {
                     return;
                 }
                 let options = match cx.global::<Db>().get() {
-                    Ok(mut conn) => QueryOptions::load(&mut conn),
+                    Ok(conn) => QueryOptions::load(&conn),
                     Err(err) => Err(err.into()),
                 };
                 match options {
@@ -270,9 +270,9 @@ impl QueryView {
                         sort_count = spec.sort_count(),
                         "running feiwen query in background"
                     );
-                    let mut conn = pool.get()?;
                     let query_started_at = Instant::now();
-                    let novels = Novel::query(&spec, &mut conn)?;
+                    let conn = pool.get()?;
+                    let novels = Novel::query(&spec, &conn)?;
                     let query_elapsed_ms = query_started_at.elapsed().as_millis();
                     event!(
                         Level::INFO,

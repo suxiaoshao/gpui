@@ -46,8 +46,9 @@ regex = "1.12.3"
 url = "2.5.8"
 
 # database
-diesel = { version = "2.3.9", features = ["sqlite", "r2d2"] }
+duckdb = { version = "1.10502.0", features = ["bundled", "parquet", "r2d2"] }
 dirs-next = "2.0.0"
+r2d2 = "0.8.10"
 
 # log
 tracing = "0.1.44"

@@ -57,10 +57,7 @@ impl FetchPageError {
 
 pub(crate) fn classify_error(error: &FeiwenError) -> FetchErrorKind {
     match error {
-        FeiwenError::Sqlite(_)
-        | FeiwenError::Connection(_)
-        | FeiwenError::Pool(_)
-        | FeiwenError::GetConnection(_) => FetchErrorKind::Database,
+        FeiwenError::DuckDb(_) | FeiwenError::Pool(_) => FetchErrorKind::Database,
         FeiwenError::HeaderParse(_) | FeiwenError::Request(_) => FetchErrorKind::Network,
         FeiwenError::DescParse
         | FeiwenError::FetchBlocked
