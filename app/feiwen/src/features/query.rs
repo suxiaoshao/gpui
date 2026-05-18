@@ -3,7 +3,7 @@ use crate::app::{RouterType, Workspace, WorkspaceEvent};
 use crate::{
     errors::{FeiwenError, FeiwenResult},
     foundation::I18n,
-    store::{Db, query::NovelQueryDataset, service::Novel},
+    store::{Db, service::Novel},
 };
 use advanced::{AdvancedQueryState, QueryOptions};
 use fluent_bundle::FluentArgs;
@@ -64,7 +64,6 @@ impl std::fmt::Display for QueryError {
 
 struct SearchResult {
     novels: Vec<Novel>,
-    dataset: Option<NovelQueryDataset>,
 }
 
 enum QueryEvent {
@@ -87,7 +86,6 @@ pub(crate) struct QueryView {
     fetch_task: Entity<FetchTaskState>,
     advanced: AdvancedQueryState,
     results_table: Entity<TableState<ResultsTableDelegate>>,
-    query_dataset: Option<NovelQueryDataset>,
     search: SearchState,
     _subscriptions: Vec<Subscription>,
     query: Entity<Query>,
@@ -103,13 +101,12 @@ impl QueryView {
         let query = cx.new(|_cx| Query::new());
         let _subscriptions = vec![
             cx.subscribe_in(&query, window, Self::subscribe_in),
-            cx.observe(&fetch_task, |this, _, cx| {
-                this.query_dataset = None;
+            cx.observe(&fetch_task, |_, _, cx| {
                 cx.notify();
             }),
         ];
         let (options, search) = match cx.global::<Db>().get() {
-            Ok(mut conn) => match QueryOptions::load(&mut conn) {
+            Ok(conn) => match QueryOptions::load(&conn) {
                 Ok(options) => (options, SearchState::Init),
                 Err(err) => (
                     QueryOptions::default(),
@@ -131,7 +128,6 @@ impl QueryView {
                     .col_movable(true)
                     .row_selectable(true)
             }),
-            query_dataset: None,
             search,
             _subscriptions,
             query,
@@ -179,13 +175,12 @@ impl QueryView {
                     return;
                 }
                 let options = match cx.global::<Db>().get() {
-                    Ok(mut conn) => QueryOptions::load(&mut conn),
+                    Ok(conn) => QueryOptions::load(&conn),
                     Err(err) => Err(err.into()),
                 };
                 match options {
                     Ok(options) => {
                         self.advanced = AdvancedQueryState::new(options, window, cx);
-                        self.query_dataset = None;
                         self.set_results_table(Vec::new(), false, cx);
                         self.search = SearchState::Init;
                     }
@@ -260,7 +255,6 @@ impl QueryView {
             "starting feiwen query"
         );
         let pool = cx.global::<Db>().pool();
-        let dataset = self.query_dataset.clone();
         let this = cx.entity().downgrade();
 
         self.advanced.set_disabled(true, cx);
@@ -277,27 +271,17 @@ impl QueryView {
                         "running feiwen query in background"
                     );
                     let query_started_at = Instant::now();
-                    let (dataset, loaded_dataset) = match dataset {
-                        Some(dataset) => (dataset, false),
-                        None => {
-                            let mut conn = pool.get()?;
-                            (Novel::query_dataset(&mut conn)?, true)
-                        }
-                    };
-                    let novels = Novel::query_in_dataset(&spec, &dataset)?;
+                    let conn = pool.get()?;
+                    let novels = Novel::query(&spec, &conn)?;
                     let query_elapsed_ms = query_started_at.elapsed().as_millis();
                     event!(
                         Level::INFO,
                         result_count = novels.len(),
-                        loaded_dataset,
                         query_elapsed_ms,
                         total_elapsed_ms = started_at.elapsed().as_millis(),
                         "feiwen query completed in background"
                     );
-                    Ok(SearchResult {
-                        novels,
-                        dataset: loaded_dataset.then_some(dataset),
-                    })
+                    Ok(SearchResult { novels })
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -318,9 +302,6 @@ impl QueryView {
         match result {
             Ok(result) => {
                 let count = result.novels.len();
-                if let Some(dataset) = result.dataset {
-                    self.query_dataset = Some(dataset);
-                }
                 let table_started_at = Instant::now();
                 self.set_results_table(result.novels, false, cx);
                 event!(

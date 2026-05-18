@@ -3,15 +3,9 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub(crate) enum FeiwenError {
     #[error("数据库错误:{}",.0)]
-    Sqlite(#[from] diesel::result::Error),
-    #[error("数据库连接错误:{}",.0)]
-    Connection(#[from] diesel::ConnectionError),
+    DuckDb(#[from] duckdb::Error),
     #[error("数据库连接池错误:{}",.0)]
-    Pool(#[from] diesel::r2d2::PoolError),
-    #[error("数据库连接池获取链接错误:{}",.0)]
-    GetConnection(#[from] diesel::r2d2::Error),
-    #[error("查询引擎错误:{}",.0)]
-    Polars(#[from] polars::error::PolarsError),
+    Pool(#[from] r2d2::Error),
     #[error("文件系统错误:{}",.0)]
     Fs(#[from] std::io::Error),
     #[error("请求头构造错误:{}",.0)]

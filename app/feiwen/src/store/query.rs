@@ -1,10 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::HashMap, io};
 
-use polars::prelude::*;
+use duckdb::{
+    Connection, Error as DuckdbError, params_from_iter,
+    types::{Type, Value},
+};
+
+use crate::errors::FeiwenResult;
 
 const ID: &str = "id";
 const TITLE: &str = "name";
-const DESCRIPTION: &str = "desc";
+const DESCRIPTION: &str = "\"desc\"";
 const IS_LIMIT: &str = "is_limit";
 const LATEST_CHAPTER_NAME: &str = "latest_chapter_name";
 const LATEST_CHAPTER_ID: &str = "latest_chapter_id";
@@ -13,7 +18,6 @@ const READ_COUNT: &str = "read_count";
 const REPLY_COUNT: &str = "reply_count";
 const AUTHOR_ID: &str = "author_id";
 const AUTHOR_NAME: &str = "author_name";
-const TAGS: &str = "tags";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct QuerySpec {
@@ -98,10 +102,10 @@ pub(crate) enum BoolField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TagsPredicate {
-    Intersects(HashSet<String>),
-    ContainsAll(HashSet<String>),
-    ContainedBy(HashSet<String>),
-    Equals(HashSet<String>),
+    Intersects(std::collections::HashSet<String>),
+    ContainsAll(std::collections::HashSet<String>),
+    ContainedBy(std::collections::HashSet<String>),
+    Equals(std::collections::HashSet<String>),
     IsEmpty,
     IsNotEmpty,
 }
@@ -155,105 +159,13 @@ pub(crate) struct NovelRecord {
     pub(crate) tag_ids: HashMap<String, Option<i32>>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct NovelQueryDataset {
-    frame: DataFrame,
-    records: HashMap<i32, NovelRecord>,
+struct QueryStatement {
+    sql: String,
+    params: Vec<Value>,
 }
 
-impl NovelQueryDataset {
-    pub(crate) fn new(records: Vec<NovelRecord>) -> PolarsResult<Self> {
-        let mut ids = Vec::with_capacity(records.len());
-        let mut titles = Vec::with_capacity(records.len());
-        let mut descriptions = Vec::with_capacity(records.len());
-        let mut is_limits = Vec::with_capacity(records.len());
-        let mut latest_chapter_names = Vec::with_capacity(records.len());
-        let mut latest_chapter_ids = Vec::with_capacity(records.len());
-        let mut word_counts = Vec::with_capacity(records.len());
-        let mut read_counts = Vec::with_capacity(records.len());
-        let mut reply_counts = Vec::with_capacity(records.len());
-        let mut author_ids = Vec::with_capacity(records.len());
-        let mut author_names = Vec::with_capacity(records.len());
-        let mut tag_lists = Vec::with_capacity(records.len());
-        let mut by_id = HashMap::with_capacity(records.len());
-
-        for record in records {
-            ids.push(record.id);
-            titles.push(record.title.clone());
-            descriptions.push(record.desc.clone());
-            is_limits.push(record.is_limit);
-            latest_chapter_names.push(record.latest_chapter_name.clone());
-            latest_chapter_ids.push(record.latest_chapter_id);
-            word_counts.push(record.word_count);
-            read_counts.push(record.read_count);
-            reply_counts.push(record.reply_count);
-            author_ids.push(record.author_id);
-            author_names.push(record.author_name.clone());
-            tag_lists.push(Series::new(PlSmallStr::EMPTY, record.tags.as_slice()));
-            by_id.insert(record.id, record);
-        }
-
-        let tags: ListChunked = tag_lists.into_iter().map(Some).collect();
-        let mut tags = tags.into_series();
-        tags.rename(TAGS.into());
-
-        let height = by_id.len();
-        let frame = DataFrame::new(
-            height,
-            vec![
-                Series::new(ID.into(), ids).into(),
-                Series::new(TITLE.into(), titles).into(),
-                Series::new(DESCRIPTION.into(), descriptions).into(),
-                Series::new(IS_LIMIT.into(), is_limits).into(),
-                Series::new(LATEST_CHAPTER_NAME.into(), latest_chapter_names).into(),
-                Series::new(LATEST_CHAPTER_ID.into(), latest_chapter_ids).into(),
-                Series::new(WORD_COUNT.into(), word_counts).into(),
-                Series::new(READ_COUNT.into(), read_counts).into(),
-                Series::new(REPLY_COUNT.into(), reply_counts).into(),
-                Series::new(AUTHOR_ID.into(), author_ids).into(),
-                Series::new(AUTHOR_NAME.into(), author_names).into(),
-                tags.into(),
-            ],
-        )?;
-
-        Ok(Self {
-            frame,
-            records: by_id,
-        })
-    }
-
-    pub(crate) fn query(&self, spec: &QuerySpec) -> PolarsResult<Vec<NovelRecord>> {
-        let mut frame = self.frame.clone().lazy().filter(spec.filter.expr()?);
-        if !spec.sorts.is_empty() {
-            let sort_exprs = spec
-                .sorts
-                .iter()
-                .map(|sort| sort.expr.expr())
-                .collect::<Vec<_>>();
-            let descending = spec
-                .sorts
-                .iter()
-                .map(|sort| matches!(sort.direction, SortDirection::Desc))
-                .collect::<Vec<_>>();
-            frame = frame.sort_by_exprs(
-                sort_exprs,
-                SortMultipleOptions::default()
-                    .with_order_descending_multi(descending)
-                    .with_nulls_last(true)
-                    .with_maintain_order(true),
-            );
-        }
-
-        let ids = frame.select([col(ID)]).collect()?;
-        let ids = ids.column(ID)?.i32()?;
-        let mut records = Vec::with_capacity(ids.len());
-        for id in ids.into_no_null_iter() {
-            if let Some(record) = self.records.get(&id) {
-                records.push(record.clone());
-            }
-        }
-        Ok(records)
-    }
+struct QueryBuilder {
+    params: Vec<Value>,
 }
 
 impl QuerySpec {
@@ -263,6 +175,105 @@ impl QuerySpec {
 
     pub(crate) fn sort_count(&self) -> usize {
         self.sorts.len()
+    }
+}
+
+pub(crate) fn query_records(conn: &Connection, spec: &QuerySpec) -> FeiwenResult<Vec<NovelRecord>> {
+    let statement = build_query(spec);
+    let mut prepared = conn.prepare(&statement.sql)?;
+    let rows = prepared.query_map(params_from_iter(statement.params.iter()), |row| {
+        let tags = string_list(row.get(11)?, 11)?;
+        let tag_ids = optional_i32_list(row.get(12)?, 12)?;
+        let tag_ids = tags
+            .iter()
+            .enumerate()
+            .map(|(index, tag)| (tag.clone(), tag_ids.get(index).copied().flatten()))
+            .collect::<HashMap<_, _>>();
+
+        Ok(NovelRecord {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            desc: row.get(2)?,
+            is_limit: row.get(3)?,
+            latest_chapter_name: row.get(4)?,
+            latest_chapter_id: row.get(5)?,
+            word_count: row.get(6)?,
+            read_count: row.get(7)?,
+            reply_count: row.get(8)?,
+            author_id: row.get(9)?,
+            author_name: row.get(10)?,
+            tags,
+            tag_ids,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn build_query(spec: &QuerySpec) -> QueryStatement {
+    let mut builder = QueryBuilder { params: Vec::new() };
+    let filter = builder.filter(&spec.filter);
+    let order_by = builder.order_by(&spec.sorts);
+    QueryStatement {
+        sql: format!(
+            r#"
+            WITH novel_query AS (
+                SELECT
+                    n.id,
+                    n.name,
+                    n."desc",
+                    n.is_limit,
+                    n.latest_chapter_name,
+                    n.latest_chapter_id,
+                    n.word_count,
+                    n.read_count,
+                    n.reply_count,
+                    n.author_id,
+                    n.author_name,
+                    COALESCE(
+                        list(nt.tag_id ORDER BY nt.tag_id) FILTER (WHERE nt.tag_id IS NOT NULL),
+                        []::VARCHAR[]
+                    ) AS tags,
+                    COALESCE(
+                        list(tag.id ORDER BY nt.tag_id) FILTER (WHERE nt.tag_id IS NOT NULL),
+                        []::INTEGER[]
+                    ) AS tag_ids
+                FROM novel n
+                LEFT JOIN novel_tag nt ON nt.novel_id = n.id
+                LEFT JOIN tag ON tag.name = nt.tag_id
+                GROUP BY
+                    n.id,
+                    n.name,
+                    n."desc",
+                    n.is_limit,
+                    n.latest_chapter_name,
+                    n.latest_chapter_id,
+                    n.word_count,
+                    n.read_count,
+                    n.reply_count,
+                    n.author_id,
+                    n.author_name
+            )
+            SELECT
+                id,
+                name,
+                "desc",
+                is_limit,
+                latest_chapter_name,
+                latest_chapter_id,
+                word_count,
+                read_count,
+                reply_count,
+                author_id,
+                author_name,
+                tags,
+                tag_ids
+            FROM novel_query
+            WHERE {filter}
+            {order_by}
+            "#,
+        ),
+        params: builder.params,
     }
 }
 
@@ -276,114 +287,184 @@ impl FilterExpr {
             FilterExpr::Predicate(_) => 1,
         }
     }
-
-    fn expr(&self) -> PolarsResult<Expr> {
-        match self {
-            FilterExpr::All(filters) => combine_filters(filters, true),
-            FilterExpr::Any(filters) => combine_filters(filters, false),
-            FilterExpr::Not(filter) => Ok(filter.expr()?.not()),
-            FilterExpr::Predicate(predicate) => predicate.expr(),
-        }
-    }
 }
 
-impl Predicate {
-    fn expr(&self) -> PolarsResult<Expr> {
-        match self {
-            Predicate::Text { field, op, value } => {
-                let field = col(field.column());
-                let value = lit(value.as_str());
-                Ok(match op {
-                    TextOp::Contains => field.str().contains_literal(value),
-                    TextOp::StartsWith => field.str().starts_with(value),
-                    TextOp::EndsWith => field.str().ends_with(value),
-                    TextOp::Equals => field.eq(value),
-                })
+impl QueryBuilder {
+    fn filter(&mut self, filter: &FilterExpr) -> String {
+        match filter {
+            FilterExpr::All(filters) => self.combine(filters, "AND", true),
+            FilterExpr::Any(filters) => self.combine(filters, "OR", false),
+            FilterExpr::Not(filter) => format!("NOT ({})", self.filter(filter)),
+            FilterExpr::Predicate(predicate) => self.predicate(predicate),
+        }
+    }
+
+    fn combine(&mut self, filters: &[FilterExpr], operator: &str, empty_value: bool) -> String {
+        if filters.is_empty() {
+            return bool_sql(empty_value).to_owned();
+        }
+        filters
+            .iter()
+            .map(|filter| format!("({})", self.filter(filter)))
+            .collect::<Vec<_>>()
+            .join(&format!(" {operator} "))
+    }
+
+    fn predicate(&mut self, predicate: &Predicate) -> String {
+        match predicate {
+            Predicate::Text { field, op, value } => self.text(*field, *op, value),
+            Predicate::Number { field, op } => self.number(*field, *op),
+            Predicate::Bool { field, value } => {
+                let param = self.push_bool(*value);
+                format!("{} = {param}", field.column())
             }
-            Predicate::Number { field, op } => {
-                let field = col(field.column());
-                Ok(match op {
-                    NumberOp::Eq(value) => field.eq(lit(*value)),
-                    NumberOp::Ne(value) => field.neq(lit(*value)),
-                    NumberOp::Lt(value) => field.lt(lit(*value)),
-                    NumberOp::Lte(value) => field.lt_eq(lit(*value)),
-                    NumberOp::Gt(value) => field.gt(lit(*value)),
-                    NumberOp::Gte(value) => field.gt_eq(lit(*value)),
-                    NumberOp::Between { min, max } => {
-                        field.clone().gt_eq(lit(*min)).and(field.lt_eq(lit(*max)))
+            Predicate::Tags(predicate) => self.tags(predicate),
+            Predicate::Author(predicate) => self.author(predicate),
+        }
+    }
+
+    fn text(&mut self, field: TextField, op: TextOp, value: &str) -> String {
+        let column = field.column();
+        let param = self.push_text(value);
+        match op {
+            TextOp::Contains => format!("contains({column}, {param})"),
+            TextOp::StartsWith => format!("starts_with({column}, {param})"),
+            TextOp::EndsWith => format!("ends_with({column}, {param})"),
+            TextOp::Equals => format!("{column} = {param}"),
+        }
+    }
+
+    fn number(&mut self, field: NumberField, op: NumberOp) -> String {
+        let column = field.column();
+        match op {
+            NumberOp::Eq(value) => format!("{column} = {}", self.push_i32(value)),
+            NumberOp::Ne(value) => format!("{column} <> {}", self.push_i32(value)),
+            NumberOp::Lt(value) => format!("{column} < {}", self.push_i32(value)),
+            NumberOp::Lte(value) => format!("{column} <= {}", self.push_i32(value)),
+            NumberOp::Gt(value) => format!("{column} > {}", self.push_i32(value)),
+            NumberOp::Gte(value) => format!("{column} >= {}", self.push_i32(value)),
+            NumberOp::Between { min, max } => {
+                let min = self.push_i32(min);
+                let max = self.push_i32(max);
+                format!("{column} BETWEEN {min} AND {max}")
+            }
+        }
+    }
+
+    fn tags(&mut self, predicate: &TagsPredicate) -> String {
+        match predicate {
+            TagsPredicate::Intersects(values) if values.is_empty() => "FALSE".to_owned(),
+            TagsPredicate::ContainsAll(values) if values.is_empty() => "TRUE".to_owned(),
+            TagsPredicate::ContainedBy(values) if values.is_empty() => {
+                "length(tags) = 0".to_owned()
+            }
+            TagsPredicate::Equals(values) if values.is_empty() => "length(tags) = 0".to_owned(),
+            TagsPredicate::Intersects(values) => {
+                let values = self.string_list(values);
+                format!("list_has_any(tags, {values})")
+            }
+            TagsPredicate::ContainsAll(values) => {
+                let values = self.string_list(values);
+                format!("list_has_all(tags, {values})")
+            }
+            TagsPredicate::ContainedBy(values) => {
+                let values = self.string_list(values);
+                format!("list_has_all({values}, tags)")
+            }
+            TagsPredicate::Equals(values) => {
+                let left = self.string_list(values);
+                let right = self.string_list(values);
+                format!("list_has_all(tags, {left}) AND list_has_all({right}, tags)")
+            }
+            TagsPredicate::IsEmpty => "length(tags) = 0".to_owned(),
+            TagsPredicate::IsNotEmpty => "length(tags) > 0".to_owned(),
+        }
+    }
+
+    fn author(&mut self, predicate: &AuthorPredicate) -> String {
+        match predicate {
+            AuthorPredicate::Is(author) => self.author_ref(author),
+            AuthorPredicate::In(authors) => self.combine_authors(authors, false),
+            AuthorPredicate::NotIn(authors) => {
+                format!("NOT ({})", self.combine_authors(authors, false))
+            }
+        }
+    }
+
+    fn combine_authors(&mut self, authors: &[AuthorRef], empty_value: bool) -> String {
+        if authors.is_empty() {
+            return bool_sql(empty_value).to_owned();
+        }
+        authors
+            .iter()
+            .map(|author| format!("({})", self.author_ref(author)))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    }
+
+    fn author_ref(&mut self, author: &AuthorRef) -> String {
+        match author {
+            AuthorRef::Id(id) => {
+                let id = self.push_i32(*id);
+                format!("{AUTHOR_ID} IS NOT NULL AND {AUTHOR_ID} = {id}")
+            }
+            AuthorRef::Name(name) => {
+                let name = self.push_text(name);
+                format!("{AUTHOR_ID} IS NULL AND {AUTHOR_NAME} = {name}")
+            }
+        }
+    }
+
+    fn order_by(&mut self, sorts: &[SortSpec]) -> String {
+        if sorts.is_empty() {
+            return "ORDER BY id ASC".to_owned();
+        }
+        let mut sort_sql = sorts
+            .iter()
+            .map(|sort| {
+                format!(
+                    "{} {} NULLS LAST",
+                    sort.expr.column(),
+                    match sort.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
                     }
-                })
-            }
-            Predicate::Bool { field, value } => Ok(col(field.column()).eq(lit(*value))),
-            Predicate::Tags(predicate) => predicate.expr(),
-            Predicate::Author(predicate) => predicate.expr(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !sorts
+            .iter()
+            .any(|sort| matches!(sort.expr, SortExpr::Number(NumberField::NovelId)))
+        {
+            sort_sql.push("id ASC".to_owned());
         }
+        format!("ORDER BY {}", sort_sql.join(", "))
     }
-}
 
-impl TagsPredicate {
-    fn expr(&self) -> PolarsResult<Expr> {
-        let tags = col(TAGS);
-        Ok(match self {
-            TagsPredicate::Intersects(values) => tags
-                .list()
-                .set_intersection(string_list_lit(values)?)
-                .list()
-                .len()
-                .gt(lit(0u32)),
-            TagsPredicate::ContainsAll(values) => string_list_lit(values)?
-                .list()
-                .set_difference(tags)
-                .list()
-                .len()
-                .eq(lit(0u32)),
-            TagsPredicate::ContainedBy(values) => tags
-                .list()
-                .set_difference(string_list_lit(values)?)
-                .list()
-                .len()
-                .eq(lit(0u32)),
-            TagsPredicate::Equals(values) => tags
-                .clone()
-                .list()
-                .set_difference(string_list_lit(values)?)
-                .list()
-                .len()
-                .eq(lit(0u32))
-                .and(
-                    string_list_lit(values)?
-                        .list()
-                        .set_difference(tags)
-                        .list()
-                        .len()
-                        .eq(lit(0u32)),
-                ),
-            TagsPredicate::IsEmpty => tags.list().len().eq(lit(0u32)),
-            TagsPredicate::IsNotEmpty => tags.list().len().gt(lit(0u32)),
-        })
+    fn string_list(&mut self, values: &std::collections::HashSet<String>) -> String {
+        let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
+        values.sort();
+        let params = values
+            .into_iter()
+            .map(|value| self.push_text(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("list_value({params})")
     }
-}
 
-impl AuthorPredicate {
-    fn expr(&self) -> PolarsResult<Expr> {
-        match self {
-            AuthorPredicate::Is(author) => author.expr(),
-            AuthorPredicate::In(authors) => combine_authors(authors, false),
-            AuthorPredicate::NotIn(authors) => Ok(combine_authors(authors, false)?.not()),
-        }
+    fn push_i32(&mut self, value: i32) -> String {
+        self.params.push(Value::Int(value));
+        "?".to_owned()
     }
-}
 
-impl AuthorRef {
-    fn expr(&self) -> PolarsResult<Expr> {
-        Ok(match self {
-            AuthorRef::Id(id) => col(AUTHOR_ID)
-                .is_not_null()
-                .and(col(AUTHOR_ID).eq(lit(*id))),
-            AuthorRef::Name(name) => col(AUTHOR_ID)
-                .is_null()
-                .and(col(AUTHOR_NAME).eq(lit(name.as_str()))),
-        })
+    fn push_bool(&mut self, value: bool) -> String {
+        self.params.push(Value::Boolean(value));
+        "?".to_owned()
+    }
+
+    fn push_text(&mut self, value: &str) -> String {
+        self.params.push(Value::Text(value.to_owned()));
+        "?".to_owned()
     }
 }
 
@@ -420,56 +501,99 @@ impl BoolField {
 }
 
 impl SortExpr {
-    fn expr(&self) -> Expr {
+    fn column(&self) -> &'static str {
         match self {
-            SortExpr::Number(field) => col(field.column()),
-            SortExpr::Text(field) => col(field.column()),
-            SortExpr::Bool(field) => col(field.column()),
+            SortExpr::Number(field) => field.column(),
+            SortExpr::Text(field) => field.column(),
+            SortExpr::Bool(field) => field.column(),
         }
     }
 }
 
-fn combine_filters(filters: &[FilterExpr], all: bool) -> PolarsResult<Expr> {
-    let mut filters = filters.iter();
-    let Some(first) = filters.next() else {
-        return Ok(lit(all));
-    };
-    let mut expr = first.expr()?;
-    for filter in filters {
-        expr = if all {
-            expr.and(filter.expr()?)
-        } else {
-            expr.or(filter.expr()?)
-        };
-    }
-    Ok(expr)
+fn bool_sql(value: bool) -> &'static str {
+    if value { "TRUE" } else { "FALSE" }
 }
 
-fn combine_authors(authors: &[AuthorRef], all: bool) -> PolarsResult<Expr> {
-    let mut authors = authors.iter();
-    let Some(first) = authors.next() else {
-        return Ok(lit(all));
+fn string_list(value: Value, index: usize) -> duckdb::Result<Vec<String>> {
+    let values = match value {
+        Value::List(values) | Value::Array(values) => values,
+        Value::Null => return Ok(Vec::new()),
+        value => {
+            return Err(conversion_error(
+                index,
+                format!("expected string list: {value:?}"),
+            ));
+        }
     };
-    let mut expr = first.expr()?;
-    for author in authors {
-        expr = expr.or(author.expr()?);
-    }
-    Ok(expr)
+    values
+        .into_iter()
+        .map(|value| match value {
+            Value::Text(value) => Ok(value),
+            Value::Null => Err(conversion_error(index, "unexpected null tag name")),
+            value => Err(conversion_error(
+                index,
+                format!("expected string list item: {value:?}"),
+            )),
+        })
+        .collect()
 }
 
-fn string_list_lit(values: &HashSet<String>) -> PolarsResult<Expr> {
-    let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
-    values.sort();
-    let series = Series::new(PlSmallStr::EMPTY, values);
-    Ok(lit(series.implode()?.into_series()))
+fn optional_i32_list(value: Value, index: usize) -> duckdb::Result<Vec<Option<i32>>> {
+    let values = match value {
+        Value::List(values) | Value::Array(values) => values,
+        Value::Null => return Ok(Vec::new()),
+        value => {
+            return Err(conversion_error(
+                index,
+                format!("expected int list: {value:?}"),
+            ));
+        }
+    };
+    values
+        .into_iter()
+        .map(|value| optional_i32(value, index))
+        .collect()
+}
+
+fn optional_i32(value: Value, index: usize) -> duckdb::Result<Option<i32>> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Int(value) => Ok(Some(value)),
+        Value::BigInt(value) => i32::try_from(value)
+            .map(Some)
+            .map_err(|err| conversion_error(index, err.to_string())),
+        value => Err(conversion_error(
+            index,
+            format!("expected int list item: {value:?}"),
+        )),
+    }
+}
+
+fn conversion_error(index: usize, message: impl Into<String>) -> DuckdbError {
+    DuckdbError::FromSqlConversionFailure(
+        index,
+        Type::List(Box::new(Type::Any)),
+        Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into())),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use duckdb::params;
+
     use super::*;
+    use crate::store::initialize_schema;
 
     fn set(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        conn
     }
 
     fn record(id: i32) -> NovelRecord {
@@ -493,10 +617,61 @@ mod tests {
         }
     }
 
+    fn insert_records(conn: &Connection, records: &[NovelRecord]) {
+        for record in records {
+            conn.execute(
+                r#"
+                INSERT INTO novel (
+                    id,
+                    name,
+                    "desc",
+                    is_limit,
+                    latest_chapter_name,
+                    latest_chapter_id,
+                    word_count,
+                    read_count,
+                    reply_count,
+                    author_id,
+                    author_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.desc,
+                    record.is_limit,
+                    record.latest_chapter_name,
+                    record.latest_chapter_id,
+                    record.word_count,
+                    record.read_count,
+                    record.reply_count,
+                    record.author_id,
+                    record.author_name,
+                ],
+            )
+            .unwrap();
+
+            for tag in &record.tags {
+                let tag_id = record.tag_ids.get(tag).copied().flatten();
+                conn.execute(
+                    "INSERT INTO tag (id, name) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    params![tag_id, tag],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO novel_tag (novel_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    params![record.id, tag],
+                )
+                .unwrap();
+            }
+        }
+    }
+
     fn query_ids(spec: QuerySpec, records: Vec<NovelRecord>) -> Vec<i32> {
-        NovelQueryDataset::new(records)
-            .unwrap()
-            .query(&spec)
+        let conn = connection();
+        insert_records(&conn, &records);
+        query_records(&conn, &spec)
             .unwrap()
             .into_iter()
             .map(|record| record.id)
@@ -611,19 +786,22 @@ mod tests {
     }
 
     #[test]
-    fn tags_predicates_use_polars_list_set_semantics() {
+    fn tags_predicates_use_duckdb_list_set_semantics() {
         let empty = NovelRecord {
             tags: Vec::new(),
+            tag_ids: HashMap::new(),
             ..record(1)
         };
         let rust = NovelRecord {
             id: 2,
             tags: vec!["rust".to_owned()],
+            tag_ids: HashMap::from([("rust".to_owned(), Some(1))]),
             ..record(2)
         };
         let rust_gpui = NovelRecord {
             id: 3,
             tags: vec!["rust".to_owned(), "gpui".to_owned()],
+            tag_ids: HashMap::from([("rust".to_owned(), Some(1)), ("gpui".to_owned(), Some(3))]),
             ..record(3)
         };
         let records = vec![empty, rust, rust_gpui];
@@ -720,5 +898,53 @@ mod tests {
         };
 
         assert_eq!(query_ids(spec, vec![one, two, three]), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn injection_shaped_strings_are_plain_values() {
+        let injection = "' OR 1=1 --";
+        let plain = record(1);
+        let mut injected_title = record(2);
+        injected_title.title = injection.to_owned();
+        injected_title.tags = vec!["tag', 1) --".to_owned()];
+        injected_title.tag_ids = HashMap::from([("tag', 1) --".to_owned(), Some(9))]);
+        let mut anonymous = record(3);
+        anonymous.author_id = None;
+        anonymous.author_name = "author' OR 1=1 --".to_owned();
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Text {
+                field: TextField::Title,
+                op: TextOp::Equals,
+                value: injection.to_owned(),
+            }),
+            sorts: Vec::new(),
+        };
+        assert_eq!(
+            query_ids(
+                spec,
+                vec![plain.clone(), injected_title.clone(), anonymous.clone()]
+            ),
+            vec![2]
+        );
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Tags(TagsPredicate::Intersects(set(&[
+                "tag', 1) --",
+            ])))),
+            sorts: Vec::new(),
+        };
+        assert_eq!(
+            query_ids(spec, vec![plain.clone(), injected_title, anonymous.clone()]),
+            vec![2]
+        );
+
+        let spec = QuerySpec {
+            filter: FilterExpr::Predicate(Predicate::Author(AuthorPredicate::Is(AuthorRef::Name(
+                "author' OR 1=1 --".to_owned(),
+            )))),
+            sorts: Vec::new(),
+        };
+        assert_eq!(query_ids(spec, vec![plain, anonymous]), vec![3]);
     }
 }
