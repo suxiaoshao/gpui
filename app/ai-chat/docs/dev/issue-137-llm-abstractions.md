@@ -19,7 +19,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #137 | `codex/issue-137-llm-abstractions` | Parent integration work | Active |
 | #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Merged to integration via PR #147; GitHub issue still open |
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Merged to integration via PR #148; GitHub issue still open |
-| #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Implemented on child branch; not merged to integration |
+| #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Pending |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Pending |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
@@ -32,7 +32,7 @@ Last synchronized: 2026-05-20.
 - #137 remains open and is the parent tracking issue. Its comments record the child issue list and the integration branch/document workflow.
 - #138 remains open on GitHub, but PR #147 merged `codex/issue-138-model-capabilities` into `codex/issue-137-llm-abstractions`.
 - #142 remains open on GitHub, but PR #148 merged `codex/issue-142-llm-items` into `codex/issue-137-llm-abstractions`.
-- #139 remains open on GitHub. The local child branch `codex/issue-139-provider-runtime` has implemented the first-stage runtime abstraction and still needs review/merge into the integration branch.
+- #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
 - #141, #143, #144, and #140 remain open and pending behind the typed item and run/event model.
 
 ## Current Architecture Facts
@@ -169,6 +169,6 @@ The current implementation keeps request persistence additive: existing provider
 
 ## Next Child Issue Constraints
 
-Next child issue after #139 is merged is #141.
+Next child issue is #141.
 
 #141 should persist the runtime state introduced by #139 without breaking old conversations. It should preserve `messages.content` and `messages.send_content` compatibility, add storage for provider run state/output items/tool calls/attachments as additive data, and avoid storing binary attachment data directly inside message text.
