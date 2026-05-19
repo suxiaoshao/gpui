@@ -21,7 +21,10 @@ use crate::{
         temporary::TemporaryView,
     },
     foundation::i18n::I18n,
-    llm::{FetchRunner, FetchUpdate, LlmHistoryMessage, build_input_items, provider_by_name},
+    llm::{
+        LlmHistoryMessage, ProviderRunEvent, ProviderRunRequest, ProviderRunRunner,
+        build_input_items, provider_by_name,
+    },
     platform::gpui_ext::WeakEntityResultExt,
     state::{AddConversationMessage, AiChatConfig, ChatData},
 };
@@ -835,7 +838,7 @@ impl TemplateDetailView {
             content.send_content().to_string(),
             cx,
         )?;
-        let send_content = runner.request_body.clone();
+        let send_content = Rc::new(runner.request_body().clone());
         let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
             this.chat_form
                 .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
@@ -879,7 +882,7 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         state.read_with_result(cx, |this, _cx| {
-            let request_body = build_request_body(
+            let run_request = build_run_request(
                 &composer_snapshot.provider_name,
                 &composer_snapshot.request_template,
                 &composer_snapshot.prompts,
@@ -891,7 +894,7 @@ impl TemplateDetailView {
             Ok(Runner {
                 config,
                 provider_name: composer_snapshot.provider_name.clone(),
-                request_body: Rc::new(request_body),
+                run_request: Rc::new(run_request),
             })
         })?
     }
@@ -905,29 +908,43 @@ impl TemplateDetailView {
         assistant_message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let stream = runner.fetch();
+        let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_thinking(assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_reasoning_summary(&delta, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::TextDelta(message)) => {
+                Ok(ProviderRunEvent::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed { content, .. }) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
+                }
+                Ok(
+                    ProviderRunEvent::OutputItemAdded(_)
+                    | ProviderRunEvent::OutputItemDone(_)
+                    | ProviderRunEvent::ToolCallRequested(_)
+                    | ProviderRunEvent::ToolResultReceived(_)
+                    | ProviderRunEvent::McpApprovalRequested(_)
+                    | ProviderRunEvent::UsageUpdated(_),
+                ) => {}
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(assistant_message_id, message, cx);
+                    })?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -959,29 +976,45 @@ impl TemplateDetailView {
                 provider.name().to_string(),
             ))?
             .clone();
-        let stream = provider.fetch_by_request_body(config, settings, request_body.as_ref());
+        let request =
+            ProviderRunRequest::from_request_body(provider.name(), request_body.as_ref().clone());
+        let stream = provider.run(config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_thinking(assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_reasoning_summary(&delta, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::TextDelta(message)) => {
+                Ok(ProviderRunEvent::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed { content, .. }) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
+                }
+                Ok(
+                    ProviderRunEvent::OutputItemAdded(_)
+                    | ProviderRunEvent::OutputItemDone(_)
+                    | ProviderRunEvent::ToolCallRequested(_)
+                    | ProviderRunEvent::ToolResultReceived(_)
+                    | ProviderRunEvent::McpApprovalRequested(_)
+                    | ProviderRunEvent::UsageUpdated(_),
+                ) => {}
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(assistant_message_id, message, cx);
+                    })?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -1013,10 +1046,10 @@ struct TemporaryFetchContext {
 struct Runner {
     config: AiChatConfig,
     provider_name: String,
-    request_body: Rc<serde_json::Value>,
+    run_request: Rc<ProviderRunRequest>,
 }
 
-impl FetchRunner for Runner {
+impl ProviderRunRunner for Runner {
     fn get_provider(&self) -> &str {
         &self.provider_name
     }
@@ -1025,8 +1058,8 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn request_body(&self) -> &serde_json::Value {
-        self.request_body.as_ref()
+    fn run_request(&self) -> &ProviderRunRequest {
+        self.run_request.as_ref()
     }
 }
 
@@ -1049,6 +1082,26 @@ fn build_history_messages(
     )
 }
 
+fn build_run_request(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> AiChatResult<ProviderRunRequest> {
+    let history = build_history_messages(
+        prompts,
+        mode,
+        messages,
+        user_message_role,
+        user_message_content,
+    );
+    provider_by_name(provider_name)?.build_run_request(template, history)
+}
+
+#[cfg(test)]
 fn build_request_body(
     provider_name: &str,
     template: &serde_json::Value,
@@ -1058,14 +1111,16 @@ fn build_request_body(
     user_message_role: Role,
     user_message_content: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let history = build_history_messages(
+    Ok(build_run_request(
+        provider_name,
+        template,
         prompts,
         mode,
         messages,
         user_message_role,
         user_message_content,
-    );
-    provider_by_name(provider_name)?.request_body(template, history)
+    )?
+    .request_body)
 }
 
 #[cfg(test)]

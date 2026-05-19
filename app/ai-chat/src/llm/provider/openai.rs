@@ -1,5 +1,5 @@
 use super::{
-    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, ModelCapabilities,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, ModelCapabilities,
     OpenAIModelCapabilities, Provider, ProviderModel, ProviderSettingsFieldKind,
     ProviderSettingsFieldSpec, ProviderSettingsSpec, ReasoningCapability, ReasoningEffort,
     normalized_or_default, optional_setting_value,
@@ -7,7 +7,10 @@ use super::{
 use crate::{
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    llm::LlmInputItem,
+    llm::{
+        LlmHostedToolCall, LlmInputItem, LlmOutputItem, ProviderRunEvent, ProviderRunRequest,
+        ProviderRunState, ProviderUsage,
+    },
     state::AiChatConfig,
 };
 use eventsource_stream::Eventsource;
@@ -165,14 +168,22 @@ struct OpenAIInputMessage {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum OpenAIResponseStreamEvent {
+    #[serde(rename = "response.created")]
+    ResponseCreated { response: OpenAIResponseSnapshot },
+    #[serde(rename = "response.in_progress")]
+    ResponseInProgress { response: OpenAIResponseSnapshot },
     #[serde(rename = "response.output_item.added")]
     ResponseOutputItemAdded { item: OpenAIOutputItemEvent },
+    #[serde(rename = "response.output_item.done")]
+    ResponseOutputItemDone { item: OpenAIOutputItemEvent },
     #[serde(rename = "response.reasoning_summary_text.delta")]
     ResponseReasoningSummaryTextDelta { delta: String },
     #[serde(rename = "response.output_text.delta")]
     ResponseOutputTextDelta { delta: String },
     #[serde(rename = "response.completed")]
-    ResponseCompleted { response: serde_json::Value },
+    ResponseCompleted { response: ResponsesCreateResponse },
+    #[serde(rename = "response.incomplete")]
+    ResponseIncomplete { response: OpenAIResponse },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "response.failed")]
@@ -183,7 +194,9 @@ enum OpenAIResponseStreamEvent {
 
 #[derive(Debug, Deserialize)]
 struct OpenAIResponse {
-    error: OpenAIResponseError,
+    id: Option<String>,
+    error: Option<OpenAIResponseError>,
+    incomplete_details: Option<OpenAIIncompleteDetails>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,9 +205,24 @@ struct OpenAIResponseError {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAIIncompleteDetails {
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenAIOutputItemEvent {
+    id: Option<String>,
     #[serde(rename = "type")]
     item_type: String,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponseSnapshot {
+    id: Option<String>,
+    #[serde(default)]
+    output: Vec<OpenAIOutputItemEvent>,
+    usage: Option<OpenAIUsage>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -230,11 +258,14 @@ struct ModelListItem {
 
 #[derive(Debug, Deserialize)]
 struct ResponsesCreateResponse {
+    id: Option<String>,
     output: Vec<OutputItem>,
+    usage: Option<OpenAIUsage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OutputItem {
+    id: Option<String>,
     #[serde(rename = "type")]
     item_type: Option<String>,
     content: Option<Vec<OutputContent>>,
@@ -268,6 +299,13 @@ struct ReasoningSummaryPart {
     text: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAIUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
 impl OutputAnnotation {
     fn into_citation(self) -> Option<UrlCitation> {
         if self.annotation_type != "url_citation" {
@@ -282,7 +320,40 @@ impl OutputAnnotation {
     }
 }
 
+impl OpenAIOutputItemEvent {
+    fn output_item(&self) -> Option<LlmOutputItem> {
+        match self.item_type.as_str() {
+            "reasoning" => Some(LlmOutputItem::Reasoning { summary: None }),
+            "web_search_call" | "file_search_call" | "image_generation_call" => {
+                Some(LlmOutputItem::HostedToolCall(LlmHostedToolCall {
+                    call_id: self.id.clone().unwrap_or_default(),
+                    tool_type: self.item_type.clone(),
+                    status: self.status.clone(),
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl OpenAIUsage {
+    fn provider_usage(&self) -> ProviderUsage {
+        ProviderUsage::new(self.input_tokens, self.output_tokens, self.total_tokens)
+    }
+}
+
 impl ResponsesCreateResponse {
+    fn output_item_ids(&self) -> Vec<String> {
+        self.output
+            .iter()
+            .filter_map(|item| item.id.clone())
+            .collect()
+    }
+
+    fn usage(&self) -> Option<ProviderUsage> {
+        self.usage.as_ref().map(OpenAIUsage::provider_usage)
+    }
+
     fn into_content(self) -> Content {
         let mut content = Content::default();
         let mut citations = Vec::new();
@@ -352,10 +423,15 @@ struct ReasoningProfile {
 
 const REASONING_EFFORT_KEY: &str = "reasoning.effort";
 const REASONING_SUMMARY_AUTO: &str = "auto";
+#[cfg(test)]
 const REASONING_NONE: &str = "none";
+#[cfg(test)]
 const REASONING_LOW: &str = "low";
+#[cfg(test)]
 const REASONING_MEDIUM: &str = "medium";
+#[cfg(test)]
 const REASONING_HIGH: &str = "high";
+#[cfg(test)]
 const REASONING_XHIGH: &str = "xhigh";
 const O_SERIES_REASONING_OPTIONS: &[ReasoningEffort] = &[
     ReasoningEffort::Low,
@@ -483,28 +559,64 @@ fn classify_model(id: &str) -> Option<ModelCapabilities> {
     Some(capabilities)
 }
 
-fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate>> {
+fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRunEvent>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
     match event {
+        OpenAIResponseStreamEvent::ResponseCreated { response }
+        | OpenAIResponseStreamEvent::ResponseInProgress { response } => {
+            let _ = response.id;
+            let _ = response.output;
+            Ok(response
+                .usage
+                .map(|usage| ProviderRunEvent::UsageUpdated(usage.provider_usage())))
+        }
         OpenAIResponseStreamEvent::ResponseOutputItemAdded { item }
             if item.item_type == "reasoning" =>
         {
-            Ok(Some(FetchUpdate::ThinkingStarted))
+            Ok(Some(ProviderRunEvent::ThinkingStarted))
         }
-        OpenAIResponseStreamEvent::ResponseOutputItemAdded { .. } => Ok(None),
+        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item } => {
+            Ok(item.output_item().map(ProviderRunEvent::OutputItemAdded))
+        }
+        OpenAIResponseStreamEvent::ResponseOutputItemDone { item } => {
+            Ok(item.output_item().map(ProviderRunEvent::OutputItemDone))
+        }
         OpenAIResponseStreamEvent::ResponseReasoningSummaryTextDelta { delta } => {
-            Ok(Some(FetchUpdate::ReasoningSummaryDelta(delta)))
+            Ok(Some(ProviderRunEvent::ReasoningSummaryDelta(delta)))
         }
         OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => {
-            Ok(Some(FetchUpdate::TextDelta(delta)))
+            Ok(Some(ProviderRunEvent::TextDelta(delta)))
         }
         OpenAIResponseStreamEvent::ResponseCompleted { response } => {
-            let response = serde_json::from_value::<ResponsesCreateResponse>(response)?;
-            Ok(Some(FetchUpdate::Complete(response.into_content())))
+            let state = ProviderRunState::new(
+                OpenAIProvider.name(),
+                response.id.clone(),
+                response.output_item_ids(),
+                serde_json::Value::Null,
+            );
+            let usage = response.usage();
+            Ok(Some(ProviderRunEvent::Completed {
+                content: response.into_content(),
+                state: Some(state),
+                usage,
+            }))
         }
         OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
         OpenAIResponseStreamEvent::ResponseFailed { response } => {
-            Err(AiChatError::StreamError(response.error.message))
+            let message = response
+                .error
+                .map(|error| error.message)
+                .unwrap_or_else(|| "OpenAI response failed".to_string());
+            Err(AiChatError::StreamError(message))
+        }
+        OpenAIResponseStreamEvent::ResponseIncomplete { response } => {
+            let message = response
+                .incomplete_details
+                .map(|details| format!("OpenAI response incomplete: {}", details.reason))
+                .or_else(|| response.error.map(|error| error.message))
+                .unwrap_or_else(|| "OpenAI response incomplete".to_string());
+            let _ = response.id;
+            Ok(Some(ProviderRunEvent::Failed { message }))
         }
         OpenAIResponseStreamEvent::Other => Ok(None),
     }
@@ -704,36 +816,38 @@ impl Provider for OpenAIProvider {
         })?)
     }
 
-    fn request_body(
+    fn build_run_request(
         &self,
         template: &serde_json::Value,
         input_items: Vec<LlmInputItem>,
-    ) -> AiChatResult<serde_json::Value> {
+    ) -> AiChatResult<ProviderRunRequest> {
         let template = OpenAIRequestTemplate::deserialize(template)?;
-        Ok(serde_json::to_value(Self::get_body(
-            &template,
+        let request_body = serde_json::to_value(Self::get_body(&template, input_items.clone())?)?;
+        Ok(ProviderRunRequest::new(
+            self.name(),
+            request_body,
             input_items,
-        )?)?)
+        ))
     }
 
-    fn fetch_by_request_body<'a>(
-        &self,
+    fn run<'a>(
+        &'a self,
         config: AiChatConfig,
         settings: toml::Value,
-        request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<FetchUpdate>> {
+        request: &'a ProviderRunRequest,
+    ) -> BoxStream<'a, AiChatResult<ProviderRunEvent>> {
         async_stream::try_stream! {
             let settings: OpenAISettings = settings.try_into()?;
             let settings = settings.normalized();
             let client = Self::get_reqwest_client(&config, &settings)?;
-            let stream = request_body
+            let stream = request.request_body
                 .get("stream")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             if stream {
                 let response = client
                     .post(responses_url(&settings.base_url))
-                    .json(&request_body)
+                    .json(&request.request_body)
                     .send()
                     .await?;
                 let response = response.error_for_status()?;
@@ -744,8 +858,11 @@ impl Provider for OpenAIProvider {
                             let message = message.data;
                             if message == "[DONE]" {
                                 break;
-                            } else if let Some(content) = parse_response_stream_event(&message)? {
-                                yield content;
+                            } else if let Some(mut event) = parse_response_stream_event(&message)? {
+                                if let ProviderRunEvent::Completed { state: Some(state), .. } = &mut event {
+                                    state.request_body = request.request_body.clone();
+                                }
+                                yield event;
                             }
                         }
                         Err(err) => {
@@ -756,13 +873,24 @@ impl Provider for OpenAIProvider {
             } else {
                 let response = client
                     .post(responses_url(&settings.base_url))
-                    .json(&request_body)
+                    .json(&request.request_body)
                     .send()
                     .await?;
                 let response = response
                     .json::<ResponsesCreateResponse>()
                     .await?;
-                yield FetchUpdate::Complete(response.into_content());
+                let state = ProviderRunState::new(
+                    self.name(),
+                    response.id.clone(),
+                    response.output_item_ids(),
+                    request.request_body.clone(),
+                );
+                let usage = response.usage();
+                yield ProviderRunEvent::Completed {
+                    content: response.into_content(),
+                    state: Some(state),
+                    usage,
+                };
             }
         }
         .boxed()

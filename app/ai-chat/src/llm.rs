@@ -8,19 +8,20 @@ pub(crate) use preset::{
 };
 #[cfg(test)]
 pub(crate) use provider::ProviderModelsSuccess;
+#[allow(unused_imports)]
 pub(crate) use provider::{
-    AvailableModelsBatch, ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate,
-    ModelCapabilities, OllamaModelCapabilities, OllamaProvider, OllamaSettings,
-    OllamaThinkingCapability, OpenAIModelCapabilities, OpenAIProvider, OpenAISettings, Provider,
-    ProviderCapabilityExtension, ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind,
-    ProviderSettingsFieldSpec, ProviderSettingsSpec, ReasoningCapability, ReasoningEffort,
-    available_models, provider_by_name, provider_is_configured, provider_names,
-    provider_settings_specs,
+    AvailableModelsBatch, ExtSettingControl, ExtSettingItem, ExtSettingOption, ModelCapabilities,
+    OllamaModelCapabilities, OllamaProvider, OllamaSettings, OllamaThinkingCapability,
+    OpenAIModelCapabilities, OpenAIProvider, OpenAISettings, Provider, ProviderCapabilityExtension,
+    ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
+    ProviderSettingsSpec, ReasoningCapability, ReasoningEffort, available_models, provider_by_name,
+    provider_is_configured, provider_names, provider_settings_specs,
 };
-pub(crate) use runner::FetchRunner;
+pub(crate) use runner::ProviderRunRunner;
 // Re-export the full provider-neutral item vocabulary for staged follow-up issues.
 #[allow(unused_imports)]
 pub(crate) use types::{
     LlmAttachmentRef, LlmContentPart, LlmHistoryMessage, LlmHostedToolCall, LlmInputItem,
-    LlmMcpApprovalRequest, LlmOutputItem, LlmToolCall, LlmToolResult, build_input_items,
+    LlmMcpApprovalRequest, LlmOutputItem, LlmToolCall, LlmToolResult, ProviderRunEvent,
+    ProviderRunRequest, ProviderRunState, ProviderUsage, build_input_items,
 };

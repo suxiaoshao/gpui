@@ -1,6 +1,5 @@
-use super::LlmInputItem;
+use super::{LlmInputItem, ProviderRunEvent, ProviderRunRequest};
 use crate::{
-    database::Content,
     errors::{AiChatError, AiChatResult},
     state::AiChatConfig,
 };
@@ -100,17 +99,12 @@ pub(crate) struct OllamaModelCapabilities {
     pub(crate) local_web_tools: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum ProviderCapabilityExtension {
+    #[default]
     None,
     OpenAI(OpenAIModelCapabilities),
     Ollama(OllamaModelCapabilities),
-}
-
-impl Default for ProviderCapabilityExtension {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,17 +259,24 @@ pub(crate) trait Provider: Sync {
     fn name(&self) -> &'static str;
     fn is_configured(&self, settings: &serde_json::Value) -> bool;
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value>;
+    fn build_run_request(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+    ) -> AiChatResult<ProviderRunRequest>;
+    fn run<'a>(
+        &'a self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        request: &'a ProviderRunRequest,
+    ) -> BoxStream<'a, AiChatResult<ProviderRunEvent>>;
     fn request_body(
         &self,
         template: &serde_json::Value,
         input_items: Vec<LlmInputItem>,
-    ) -> AiChatResult<serde_json::Value>;
-    fn fetch_by_request_body<'a>(
-        &self,
-        config: AiChatConfig,
-        settings: toml::Value,
-        request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<FetchUpdate>>;
+    ) -> AiChatResult<serde_json::Value> {
+        Ok(self.build_run_request(template, input_items)?.request_body)
+    }
     fn list_models(
         &self,
         config: AiChatConfig,
@@ -322,14 +323,6 @@ pub(crate) fn normalized_or_default(
 
 pub(crate) use ollama::{OllamaProvider, OllamaSettings};
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FetchUpdate {
-    ThinkingStarted,
-    ReasoningSummaryDelta(String),
-    TextDelta(String),
-    Complete(Content),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderModelsSuccess {
@@ -491,9 +484,9 @@ pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBat
 #[cfg(test)]
 mod tests {
     use super::{
-        AvailableModelsBatch, ExtSettingItem, FetchUpdate, LlmInputItem, ModelCapabilities,
-        Provider, ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind,
-        ProviderSettingsSpec, available_models_from_providers,
+        AvailableModelsBatch, ExtSettingItem, LlmInputItem, ModelCapabilities, Provider,
+        ProviderModel, ProviderModelsFailure, ProviderRunEvent, ProviderRunRequest,
+        ProviderSettingsFieldKind, ProviderSettingsSpec, available_models_from_providers,
         available_models_from_providers_with_timeout, provider_settings_specs,
     };
     use crate::{
@@ -527,20 +520,24 @@ mod tests {
             unreachable!()
         }
 
-        fn request_body(
+        fn build_run_request(
             &self,
             _template: &serde_json::Value,
-            _input_items: Vec<LlmInputItem>,
-        ) -> crate::errors::AiChatResult<serde_json::Value> {
-            unreachable!()
+            input_items: Vec<LlmInputItem>,
+        ) -> crate::errors::AiChatResult<ProviderRunRequest> {
+            Ok(ProviderRunRequest::new(
+                self.name(),
+                serde_json::json!({}),
+                input_items,
+            ))
         }
 
-        fn fetch_by_request_body<'a>(
-            &self,
+        fn run<'a>(
+            &'a self,
             _config: AiChatConfig,
             _settings: toml::Value,
-            _request_body: &'a serde_json::Value,
-        ) -> BoxStream<'a, crate::errors::AiChatResult<FetchUpdate>> {
+            _request: &'a ProviderRunRequest,
+        ) -> BoxStream<'a, crate::errors::AiChatResult<ProviderRunEvent>> {
             futures::stream::empty().boxed()
         }
 

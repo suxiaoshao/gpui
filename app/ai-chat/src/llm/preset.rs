@@ -92,7 +92,7 @@ mod tests {
         let thinking = raw_capabilities
             .iter()
             .any(|capability| capability == "thinking")
-            .then(|| {
+            .then_some({
                 if matches!(family, "gptoss" | "gpt-oss") {
                     OllamaThinkingCapability::Levels
                 } else {

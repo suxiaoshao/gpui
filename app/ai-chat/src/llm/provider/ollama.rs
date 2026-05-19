@@ -1,5 +1,5 @@
 use super::{
-    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, ModelCapabilities,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, ModelCapabilities,
     OllamaModelCapabilities, OllamaThinkingCapability, Provider, ProviderCapabilityExtension,
     ProviderModel, ProviderSettingsFieldKind, ProviderSettingsFieldSpec, ProviderSettingsSpec,
     normalized_or_default,
@@ -7,7 +7,10 @@ use super::{
 use crate::{
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    llm::LlmInputItem,
+    llm::{
+        LlmContentPart, LlmInputItem, LlmToolCall, LlmToolResult, ProviderRunEvent,
+        ProviderRunRequest, ProviderRunState,
+    },
     state::AiChatConfig,
 };
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
@@ -344,6 +347,14 @@ struct RoundResult {
 }
 
 impl OllamaProvider {
+    fn provider_tool_call(tool_call: &OllamaToolCall) -> LlmToolCall {
+        LlmToolCall {
+            call_id: tool_call.id.clone(),
+            name: tool_call.function.name.clone(),
+            arguments: tool_call.function.arguments.clone(),
+        }
+    }
+
     fn extension(model: &ProviderModel) -> Option<&OllamaModelCapabilities> {
         match &model.capabilities.extension {
             ProviderCapabilityExtension::Ollama(extension) => Some(extension),
@@ -700,15 +711,16 @@ impl Provider for OllamaProvider {
         })?)
     }
 
-    fn request_body(
+    fn build_run_request(
         &self,
         template: &serde_json::Value,
         input_items: Vec<LlmInputItem>,
-    ) -> AiChatResult<serde_json::Value> {
+    ) -> AiChatResult<ProviderRunRequest> {
         let template = OllamaRequestTemplate::deserialize(template)?;
         let request = OllamaStoredRequest {
             model: template.model,
             messages: input_items
+                .clone()
                 .into_iter()
                 .map(Self::to_ollama_message)
                 .collect::<AiChatResult<_>>()?,
@@ -716,20 +728,25 @@ impl Provider for OllamaProvider {
             think: template.think,
             web_search: template.web_search,
         };
-        Ok(serde_json::to_value(request)?)
+        Ok(ProviderRunRequest::new(
+            self.name(),
+            serde_json::to_value(request)?,
+            input_items,
+        ))
     }
 
-    fn fetch_by_request_body<'a>(
-        &self,
+    fn run<'a>(
+        &'a self,
         config: AiChatConfig,
         settings: toml::Value,
-        request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<FetchUpdate>> {
+        request: &'a ProviderRunRequest,
+    ) -> BoxStream<'a, AiChatResult<ProviderRunEvent>> {
         async_stream::try_stream! {
             let settings: OllamaSettings = settings.try_into()?;
             let settings = settings.normalized();
             let client = Self::client(&config, &settings.base_url)?;
-            let mut request = OllamaStoredRequest::deserialize(request_body)?;
+            let request_body = request.request_body.clone();
+            let mut request = OllamaStoredRequest::deserialize(&request.request_body)?;
             let mut final_citations = Vec::new();
             let mut accumulated_reasoning = String::new();
 
@@ -781,19 +798,22 @@ impl Provider for OllamaProvider {
                             let event = serde_json::from_str::<OllamaChatResponse>(line)?;
                             if !event.message.thinking.is_empty() {
                                 if !emitted_thinking_started {
-                                    yield FetchUpdate::ThinkingStarted;
+                                    yield ProviderRunEvent::ThinkingStarted;
                                     emitted_thinking_started = true;
                                 }
                                 accumulated_reasoning.push_str(&event.message.thinking);
-                                yield FetchUpdate::ReasoningSummaryDelta(event.message.thinking.clone());
+                                yield ProviderRunEvent::ReasoningSummaryDelta(event.message.thinking.clone());
                                 round_message.thinking.push_str(&event.message.thinking);
                             }
                             if !event.message.content.is_empty() {
-                                yield FetchUpdate::TextDelta(event.message.content.clone());
+                                yield ProviderRunEvent::TextDelta(event.message.content.clone());
                                 round_message.content.push_str(&event.message.content);
                             }
                             if !event.message.tool_calls.is_empty() {
                                 round_message.tool_calls = event.message.tool_calls.clone();
+                                for tool_call in &round_message.tool_calls {
+                                    yield ProviderRunEvent::ToolCallRequested(Self::provider_tool_call(tool_call));
+                                }
                             }
                             if !event.message.role.is_empty() {
                                 round_message.role = event.message.role;
@@ -812,9 +832,20 @@ impl Provider for OllamaProvider {
 
                 if request.web_search && !round.message.tool_calls.is_empty() {
                     let mut tool_calls = round.message.tool_calls.clone();
+                    if !request.stream {
+                        for tool_call in &tool_calls {
+                            yield ProviderRunEvent::ToolCallRequested(Self::provider_tool_call(tool_call));
+                        }
+                    }
                     let (tool_messages, citations) =
                         Self::execute_tools(&client, &settings.base_url, &mut tool_calls).await?;
                     final_citations.extend(citations);
+                    for message in &tool_messages {
+                        yield ProviderRunEvent::ToolResultReceived(LlmToolResult {
+                            call_id: message.tool_call_id.clone(),
+                            content: vec![LlmContentPart::text(message.content.clone())],
+                        });
+                    }
                     request.messages.push(OllamaChatMessage {
                         role: "assistant".to_string(),
                         content: round.message.content.clone(),
@@ -831,7 +862,11 @@ impl Provider for OllamaProvider {
                     final_citations,
                     (!accumulated_reasoning.is_empty()).then_some(accumulated_reasoning),
                 );
-                yield FetchUpdate::Complete(content);
+                yield ProviderRunEvent::Completed {
+                    content,
+                    state: Some(ProviderRunState::new(self.name(), None, Vec::new(), request_body.clone())),
+                    usage: None,
+                };
                 break;
             }
         }
