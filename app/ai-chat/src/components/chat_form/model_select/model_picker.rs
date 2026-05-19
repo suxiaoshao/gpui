@@ -66,7 +66,7 @@ mod tests {
     use super::model_sections;
     use crate::{
         components::chat_form::picker::PickerListDelegate,
-        llm::{ProviderModel, ProviderModelCapability},
+        llm::{ModelCapabilities, ProviderModel},
     };
 
     #[test]
@@ -74,11 +74,11 @@ mod tests {
         let sections = model_sections(&[ProviderModel::new(
             "OpenAI",
             "gpt-4o",
-            ProviderModelCapability::Streaming,
+            ModelCapabilities::text_streaming(),
         )]);
 
         let missing_model =
-            ProviderModel::new("OpenAI", "gpt-5", ProviderModelCapability::Streaming);
+            ProviderModel::new("OpenAI", "gpt-5", ModelCapabilities::text_streaming());
         assert_eq!(
             PickerListDelegate::selected_index_for(&sections, Some(&missing_model)),
             None

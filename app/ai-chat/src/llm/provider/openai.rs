@@ -1,7 +1,8 @@
 use super::{
-    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
-    ProviderModelCapability, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
-    ProviderSettingsSpec, normalized_or_default, optional_setting_value,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, ModelCapabilities,
+    OpenAIModelCapabilities, Provider, ProviderModel, ProviderSettingsFieldKind,
+    ProviderSettingsFieldSpec, ProviderSettingsSpec, ReasoningCapability, ReasoningEffort,
+    normalized_or_default, optional_setting_value,
 };
 use crate::{
     database::{Content, UrlCitation},
@@ -339,41 +340,47 @@ enum OpenAIModelFamily {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReasoningProfile {
-    default_effort: &'static str,
-    options: &'static [&'static str],
+    default_effort: ReasoningEffort,
+    options: &'static [ReasoningEffort],
 }
 
 const REASONING_EFFORT_KEY: &str = "reasoning.effort";
 const REASONING_SUMMARY_AUTO: &str = "auto";
 const REASONING_NONE: &str = "none";
-const REASONING_MINIMAL: &str = "minimal";
 const REASONING_LOW: &str = "low";
 const REASONING_MEDIUM: &str = "medium";
 const REASONING_HIGH: &str = "high";
 const REASONING_XHIGH: &str = "xhigh";
-const O_SERIES_REASONING_OPTIONS: &[&str] = &[REASONING_LOW, REASONING_MEDIUM, REASONING_HIGH];
-const GPT_5_REASONING_OPTIONS: &[&str] = &[
-    REASONING_MINIMAL,
-    REASONING_LOW,
-    REASONING_MEDIUM,
-    REASONING_HIGH,
+const O_SERIES_REASONING_OPTIONS: &[ReasoningEffort] = &[
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
 ];
-const GPT_5_1_REASONING_OPTIONS: &[&str] = &[
-    REASONING_NONE,
-    REASONING_LOW,
-    REASONING_MEDIUM,
-    REASONING_HIGH,
+const GPT_5_REASONING_OPTIONS: &[ReasoningEffort] = &[
+    ReasoningEffort::Minimal,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
 ];
-const GPT_5_2_PLUS_REASONING_OPTIONS: &[&str] = &[
-    REASONING_NONE,
-    REASONING_LOW,
-    REASONING_MEDIUM,
-    REASONING_HIGH,
-    REASONING_XHIGH,
+const GPT_5_1_REASONING_OPTIONS: &[ReasoningEffort] = &[
+    ReasoningEffort::None,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
 ];
-const GPT_5_PRO_REASONING_OPTIONS: &[&str] = &[REASONING_HIGH];
-const GPT_5_2_PLUS_PRO_REASONING_OPTIONS: &[&str] =
-    &[REASONING_MEDIUM, REASONING_HIGH, REASONING_XHIGH];
+const GPT_5_2_PLUS_REASONING_OPTIONS: &[ReasoningEffort] = &[
+    ReasoningEffort::None,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+];
+const GPT_5_PRO_REASONING_OPTIONS: &[ReasoningEffort] = &[ReasoningEffort::High];
+const GPT_5_2_PLUS_PRO_REASONING_OPTIONS: &[ReasoningEffort] = &[
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedOpenAIModel<'a> {
@@ -433,7 +440,7 @@ fn parse_openai_model(input: &str) -> IResult<&str, ParsedOpenAIModel<'_>> {
     ))
 }
 
-fn classify_model(id: &str) -> Option<ProviderModelCapability> {
+fn classify_model(id: &str) -> Option<ModelCapabilities> {
     if id.strip_prefix("ft:").unwrap_or(id).starts_with("fp") {
         return None;
     }
@@ -449,10 +456,25 @@ fn classify_model(id: &str) -> Option<ProviderModelCapability> {
     if parsed.has_date_suffix || has_short_numeric_suffix || has_preview_suffix {
         return None;
     }
-    Some(match parsed.family {
-        OpenAIModelFamily::OSeries => ProviderModelCapability::NonStreaming,
-        OpenAIModelFamily::Gpt | OpenAIModelFamily::ChatGpt => ProviderModelCapability::Streaming,
-    })
+    let mut capabilities = match parsed.family {
+        OpenAIModelFamily::OSeries => ModelCapabilities::text_non_streaming(),
+        OpenAIModelFamily::Gpt | OpenAIModelFamily::ChatGpt => ModelCapabilities::text_streaming(),
+    };
+    capabilities.reasoning =
+        OpenAIProvider::reasoning_profile(id).map(|profile| ReasoningCapability {
+            default_effort: profile.default_effort,
+            efforts: profile.options.to_vec(),
+            summaries: true,
+        });
+    capabilities.structured_output = true;
+    let reasoning_summaries = capabilities.supports_reasoning();
+    capabilities = capabilities.with_openai_extension(OpenAIModelCapabilities {
+        responses_api: true,
+        reasoning_summaries,
+        hosted_web_search: OpenAIProvider::supports_web_search(id),
+        stateful_response_continuation: true,
+    });
+    Some(capabilities)
 }
 
 fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate>> {
@@ -483,15 +505,14 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<FetchUpdate
 }
 
 impl OpenAIProvider {
-    fn reasoning_effort_label_key(effort: &str) -> &'static str {
+    fn reasoning_effort_label_key(effort: ReasoningEffort) -> &'static str {
         match effort {
-            REASONING_NONE => "reasoning-effort-none",
-            REASONING_MINIMAL => "reasoning-effort-minimal",
-            REASONING_LOW => "reasoning-effort-low",
-            REASONING_MEDIUM => "reasoning-effort-medium",
-            REASONING_HIGH => "reasoning-effort-high",
-            REASONING_XHIGH => "reasoning-effort-xhigh",
-            _ => "field-reasoning-effort",
+            ReasoningEffort::None => "reasoning-effort-none",
+            ReasoningEffort::Minimal => "reasoning-effort-minimal",
+            ReasoningEffort::Low => "reasoning-effort-low",
+            ReasoningEffort::Medium => "reasoning-effort-medium",
+            ReasoningEffort::High => "reasoning-effort-high",
+            ReasoningEffort::XHigh => "reasoning-effort-xhigh",
         }
     }
 
@@ -510,7 +531,7 @@ impl OpenAIProvider {
         let parsed = all_consuming(parse_openai_model).parse(model).ok()?.1;
         if parsed.family == OpenAIModelFamily::OSeries {
             return Some(ReasoningProfile {
-                default_effort: REASONING_MEDIUM,
+                default_effort: ReasoningEffort::Medium,
                 options: O_SERIES_REASONING_OPTIONS,
             });
         }
@@ -522,29 +543,29 @@ impl OpenAIProvider {
         if is_pro {
             return Some(if minor >= 2 {
                 ReasoningProfile {
-                    default_effort: REASONING_MEDIUM,
+                    default_effort: ReasoningEffort::Medium,
                     options: GPT_5_2_PLUS_PRO_REASONING_OPTIONS,
                 }
             } else {
                 ReasoningProfile {
-                    default_effort: REASONING_HIGH,
+                    default_effort: ReasoningEffort::High,
                     options: GPT_5_PRO_REASONING_OPTIONS,
                 }
             });
         }
         Some(if minor >= 2 {
             ReasoningProfile {
-                default_effort: REASONING_NONE,
+                default_effort: ReasoningEffort::None,
                 options: GPT_5_2_PLUS_REASONING_OPTIONS,
             }
         } else if minor == 1 {
             ReasoningProfile {
-                default_effort: REASONING_NONE,
+                default_effort: ReasoningEffort::None,
                 options: GPT_5_1_REASONING_OPTIONS,
             }
         } else {
             ReasoningProfile {
-                default_effort: REASONING_MEDIUM,
+                default_effort: ReasoningEffort::Medium,
                 options: GPT_5_REASONING_OPTIONS,
             }
         })
@@ -556,14 +577,12 @@ impl OpenAIProvider {
     ) -> Option<ReasoningConfig> {
         let profile = Self::reasoning_profile(model)?;
         let mut reasoning = reasoning.unwrap_or_else(|| ReasoningConfig {
-            effort: profile.default_effort.to_string(),
+            effort: profile.default_effort.as_str().to_string(),
             summary: None,
         });
-        profile
-            .options
-            .iter()
-            .any(|option| *option == reasoning.effort)
-            .then(|| {
+        ReasoningEffort::from_str(&reasoning.effort)
+            .filter(|effort| profile.options.contains(effort))
+            .map(|_| {
                 reasoning.summary = Some(REASONING_SUMMARY_AUTO.to_string());
                 reasoning
             })
@@ -597,8 +616,11 @@ impl OpenAIProvider {
         }
     }
 
-    fn default_tools(model: &str) -> Option<Vec<HostedTool>> {
-        Self::supports_web_search(model).then(|| vec![Self::web_search_tool()])
+    fn default_tools_for_model(model: &ProviderModel) -> Option<Vec<HostedTool>> {
+        model
+            .capabilities
+            .supports_hosted_web_search()
+            .then(|| vec![Self::web_search_tool()])
     }
 
     fn sanitize_tools(model: &str, tools: Vec<HostedTool>) -> Option<Vec<HostedTool>> {
@@ -659,8 +681,8 @@ impl Provider for OpenAIProvider {
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value> {
         Ok(serde_json::to_value(OpenAIRequestTemplate {
             model: model.id.clone(),
-            stream: model.capability.stream_flag(),
-            tools: Self::default_tools(&model.id),
+            stream: model.capabilities.supports_streaming(),
+            tools: Self::default_tools_for_model(model),
             reasoning: None,
         })?)
     }
@@ -748,8 +770,8 @@ impl Provider for OpenAIProvider {
                 .data
                 .into_iter()
                 .filter_map(|model| {
-                    let capability = classify_model(&model.id)?;
-                    ProviderModel::new(OpenAIProvider.name(), model.id.clone(), capability).into()
+                    let capabilities = classify_model(&model.id)?;
+                    ProviderModel::new(OpenAIProvider.name(), model.id.clone(), capabilities).into()
                 })
                 .collect::<Vec<_>>();
             models.sort_by(|left, right| left.id.cmp(&right.id));
@@ -805,12 +827,14 @@ impl Provider for OpenAIProvider {
         model: &ProviderModel,
         template: &serde_json::Value,
     ) -> AiChatResult<Vec<ExtSettingItem>> {
-        let Some(profile) = Self::reasoning_profile(&model.id) else {
+        let Some(reasoning) = model.capabilities.reasoning.as_ref() else {
             return Ok(Vec::new());
         };
         let value = Self::reasoning_effort_from_template(template)
-            .filter(|effort| profile.options.contains(effort))
-            .unwrap_or(profile.default_effort)
+            .and_then(ReasoningEffort::from_str)
+            .filter(|effort| reasoning.supports_effort(*effort))
+            .unwrap_or(reasoning.default_effort)
+            .as_str()
             .to_string();
         Ok(vec![ExtSettingItem {
             key: REASONING_EFFORT_KEY,
@@ -818,12 +842,12 @@ impl Provider for OpenAIProvider {
             tooltip: None,
             control: ExtSettingControl::Select {
                 value,
-                options: profile
-                    .options
+                options: reasoning
+                    .efforts
                     .iter()
                     .copied()
                     .map(|effort| ExtSettingOption {
-                        value: effort,
+                        value: effort.as_str(),
                         label_key: Self::reasoning_effort_label_key(effort),
                     })
                     .collect(),
@@ -848,11 +872,17 @@ impl Provider for OpenAIProvider {
                 "reasoning.effort must use select control".to_string(),
             ));
         };
-        let Some(profile) = Self::reasoning_profile(&model.id) else {
+        let Some(reasoning) = model.capabilities.reasoning.as_ref() else {
             Self::remove_reasoning(template);
             return Ok(());
         };
-        if !profile.options.contains(&value.as_str()) {
+        let Some(effort) = ReasoningEffort::from_str(value) else {
+            return Err(AiChatError::StreamError(format!(
+                "unsupported reasoning.effort '{value}' for model '{}'",
+                model.id
+            )));
+        };
+        if !reasoning.supports_effort(effort) {
             return Err(AiChatError::StreamError(format!(
                 "unsupported reasoning.effort '{value}' for model '{}'",
                 model.id
@@ -863,7 +893,7 @@ impl Provider for OpenAIProvider {
                 "request template must be a JSON object".to_string(),
             ));
         };
-        if value == profile.default_effort {
+        if effort == reasoning.default_effort {
             template_object.remove("reasoning");
             return Ok(());
         }

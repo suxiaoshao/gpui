@@ -1,7 +1,7 @@
 use super::{
-    ExtSettingControl, HostedTool, OpenAIProvider, OpenAIRequestTemplate, Provider, ProviderModel,
-    ProviderModelCapability, REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM,
-    REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH, ReasoningConfig,
+    ExtSettingControl, HostedTool, ModelCapabilities, OpenAIProvider, OpenAIRequestTemplate,
+    Provider, ProviderModel, REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM,
+    REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH, ReasoningConfig, ReasoningEffort,
     ResponsesCreateResponse, classify_model, normalize_base_url, parse_response_stream_event,
 };
 use crate::{
@@ -9,6 +9,14 @@ use crate::{
     llm::{ExtSettingOption, FetchUpdate},
 };
 use serde_json::json;
+
+fn openai_model(id: &str) -> ProviderModel {
+    ProviderModel::new(
+        "OpenAI",
+        id,
+        classify_model(id).unwrap_or_else(ModelCapabilities::text_streaming),
+    )
+}
 
 #[test]
 fn normalize_base_url_strips_terminal_api_paths() {
@@ -37,7 +45,7 @@ fn openai_provider_requires_non_empty_api_key() {
 
 #[test]
 fn default_template_uses_model_stream_capability() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5");
     let template = serde_json::from_value::<OpenAIRequestTemplate>(
         OpenAIProvider.default_template_for_model(&model)?,
     )?;
@@ -54,7 +62,7 @@ fn default_template_uses_model_stream_capability() -> anyhow::Result<()> {
 
 #[test]
 fn unsupported_models_default_to_no_tools() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-4o");
     let template = serde_json::from_value::<OpenAIRequestTemplate>(
         OpenAIProvider.default_template_for_model(&model)?,
     )?;
@@ -64,7 +72,7 @@ fn unsupported_models_default_to_no_tools() -> anyhow::Result<()> {
 
 #[test]
 fn default_template_contains_only_runtime_fields() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-4o");
     let template = OpenAIProvider.default_template_for_model(&model)?;
     let object = template.as_object().expect("template object");
     assert_eq!(object.len(), 2);
@@ -75,26 +83,39 @@ fn default_template_contains_only_runtime_fields() -> anyhow::Result<()> {
 
 #[test]
 fn classify_model_marks_o_series_as_non_streaming() {
-    assert_eq!(
-        classify_model("o3-mini"),
-        Some(ProviderModelCapability::NonStreaming)
-    );
-    assert_eq!(
-        classify_model("o4-mini"),
-        Some(ProviderModelCapability::NonStreaming)
-    );
+    assert!(!classify_model("o3-mini").unwrap().supports_streaming());
+    assert!(!classify_model("o4-mini").unwrap().supports_streaming());
 }
 
 #[test]
 fn classify_model_marks_gpt_series_as_streaming() {
-    assert_eq!(
-        classify_model("gpt-5"),
-        Some(ProviderModelCapability::Streaming)
+    assert!(classify_model("gpt-5").unwrap().supports_streaming());
+    assert!(
+        classify_model("chatgpt-4o-latest")
+            .unwrap()
+            .supports_streaming()
     );
+}
+
+#[test]
+fn classify_model_exposes_openai_typed_capabilities() {
+    let capabilities = classify_model("gpt-5.2-pro").expect("classified model");
+    assert!(capabilities.supports_streaming());
+    assert!(capabilities.supports_hosted_web_search());
+    assert!(capabilities.structured_output);
+    assert!(capabilities.stateful_response_continuation);
+
+    let reasoning = capabilities.reasoning.expect("reasoning capability");
+    assert_eq!(reasoning.default_effort, ReasoningEffort::Medium);
     assert_eq!(
-        classify_model("chatgpt-4o-latest"),
-        Some(ProviderModelCapability::Streaming)
+        reasoning.efforts,
+        vec![
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+        ]
     );
+    assert!(reasoning.summaries);
 }
 
 #[test]
@@ -135,7 +156,7 @@ fn request_body_omits_web_search_for_unsupported_models() -> anyhow::Result<()> 
 
 #[test]
 fn ext_settings_omit_reasoning_for_unsupported_models() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-4o", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-4o");
     let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
     assert!(settings.is_empty());
     Ok(())
@@ -143,7 +164,7 @@ fn ext_settings_omit_reasoning_for_unsupported_models() -> anyhow::Result<()> {
 
 #[test]
 fn ext_settings_use_medium_default_for_gpt_5_2_pro() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5.2-pro");
     let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
     assert_eq!(settings.len(), 1);
     assert_eq!(settings[0].key, REASONING_EFFORT_KEY);
@@ -172,7 +193,7 @@ fn ext_settings_use_medium_default_for_gpt_5_2_pro() -> anyhow::Result<()> {
 
 #[test]
 fn ext_settings_use_none_default_for_gpt_5_1() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5.1", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5.1");
     let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
     assert_eq!(
         settings[0].control,
@@ -203,7 +224,7 @@ fn ext_settings_use_none_default_for_gpt_5_1() -> anyhow::Result<()> {
 
 #[test]
 fn ext_settings_use_high_only_for_gpt_5_pro() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5-pro", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5-pro");
     let settings = OpenAIProvider.ext_settings(&model, &json!({}))?;
     assert_eq!(
         settings[0].control,
@@ -220,7 +241,7 @@ fn ext_settings_use_high_only_for_gpt_5_pro() -> anyhow::Result<()> {
 
 #[test]
 fn apply_ext_setting_removes_default_reasoning() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5.2-pro");
     let mut template = OpenAIProvider.default_template_for_model(&model)?;
     OpenAIProvider.apply_ext_setting(
         &model,
@@ -241,7 +262,7 @@ fn apply_ext_setting_removes_default_reasoning() -> anyhow::Result<()> {
 
 #[test]
 fn apply_ext_setting_writes_non_default_reasoning() -> anyhow::Result<()> {
-    let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5.2-pro");
     let mut template = OpenAIProvider.default_template_for_model(&model)?;
     OpenAIProvider.apply_ext_setting(
         &model,
@@ -268,7 +289,7 @@ fn apply_ext_setting_writes_non_default_reasoning() -> anyhow::Result<()> {
 
 #[test]
 fn apply_ext_setting_rejects_unsupported_reasoning_values() {
-    let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+    let model = openai_model("gpt-5.2-pro");
     let mut template = json!({});
     let err = OpenAIProvider
         .apply_ext_setting(
