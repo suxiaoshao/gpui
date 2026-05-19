@@ -17,22 +17,34 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | Issue | Branch | Purpose | Status |
 | --- | --- | --- | --- |
 | #137 | `codex/issue-137-llm-abstractions` | Parent integration work | Active |
-| #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Implemented locally; PR pending |
-| #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Pending |
+| #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Merged to integration via PR #147; GitHub issue still open |
+| #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Implemented locally; PR pending |
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Pending |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Pending |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Pending |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
 
+## Issue Sync Snapshot
+
+Last synchronized: 2026-05-20.
+
+- #137 remains open and is the parent tracking issue. Its comments record the child issue list and the integration branch/document workflow.
+- #138 remains open on GitHub, but PR #147 merged `codex/issue-138-model-capabilities` into `codex/issue-137-llm-abstractions`.
+- #142 remains open and is implemented locally on `codex/issue-142-llm-items`. PR is still pending.
+- #139, #141, #143, #144, and #140 remain open and pending behind the typed item model.
+
 ## Current Architecture Facts
 
-- `llm::Message` is currently text-only: role plus `String` content.
+- `llm::Message` has been replaced by provider-neutral typed input/output item vocabulary.
+- `LlmInputItem` and `LlmContentPart` now represent request-side LLM data before provider wire conversion.
+- `LlmOutputItem` now reserves provider-neutral output vocabulary for follow-up runtime and persistence work.
+- Conversation panel and temporary/shortcut flows now share the same typed history builder.
 - `ProviderModel` now holds provider-neutral `ModelCapabilities` instead of the old streaming-only `ProviderModelCapability`.
 - `ModelCapabilities` covers text input/output, streaming, image/file/audio input, image generation, tool calling, hosted web search, remote MCP, reasoning, structured output, stateful response continuation, and provider-specific typed extensions.
 - OpenAI model classification now emits typed capabilities for Responses API usage, reasoning effort options, hosted web search, structured output, and stateful response continuation.
 - Ollama `/api/show` metadata now maps into typed capabilities and an `OllamaModelCapabilities` extension for raw capabilities, family data, thinking mode, and local web tools.
-- `Provider` currently builds provider request JSON and fetches a single response stream.
+- `Provider` currently builds provider request JSON from typed input items and fetches a single response stream.
 - `FetchUpdate` currently only covers thinking start, reasoning summary delta, text delta, and complete content.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
 - OpenAI already uses `/v1/responses`, reasoning effort, reasoning summaries, and hosted web search citations.
@@ -104,8 +116,24 @@ The current implementation keeps request execution behavior unchanged: OpenAI an
   - `cargo test -p ai-chat components::chat_form::model_select`
   - `cargo test -p ai-chat features::settings::shortcut_settings`
 
+### #142 Provider-Neutral Typed Input And Output Items
+
+- Replaced the public LLM request item shape with provider-neutral `LlmInputItem` and `LlmContentPart` types.
+- Added provider-neutral output vocabulary for message, reasoning, tool call/result, MCP approval, and hosted tool call items.
+- Added a shared history builder for conversation panel and temporary/shortcut flows.
+- Migrated OpenAI and Ollama provider request construction to accept typed input items and translate them inside each adapter.
+- Preserved existing pure-text OpenAI Responses request bodies, Ollama chat request bodies, template replay, resend, and shortcut behavior.
+- Non-text input parts now fail explicitly in current adapters instead of being silently dropped or coerced into text.
+- Left full multimodal, tool output, MCP, stateful continuation, provider run events, and persistence changes to #139, #141, #143, and #144.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::types`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel`
+  - `cargo test -p ai-chat features::temporary::detail`
+
 ## Next Child Issue Constraints
 
-Next child issue is #142.
-It should introduce typed input, content, and output items on top of the `ModelCapabilities` foundation without forcing OpenAI Responses output items onto every provider.
-It must keep existing text-only conversations, templates, shortcuts, resend behavior, OpenAI, and Ollama working while the new item model is added.
+Next child issue is #139 after #142 is merged.
+
+#139 should build on the typed item model and introduce run-based provider events without pushing OpenAI Responses event names into the core runtime. It should preserve the #142 adapter boundary: generic code owns provider-neutral input/output items, while OpenAI and Ollama keep their own wire/event conversion.

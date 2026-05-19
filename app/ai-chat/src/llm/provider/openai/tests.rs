@@ -5,8 +5,8 @@ use super::{
     ResponsesCreateResponse, classify_model, normalize_base_url, parse_response_stream_event,
 };
 use crate::{
-    database::Content,
-    llm::{ExtSettingOption, FetchUpdate},
+    database::{Content, Role},
+    llm::{ExtSettingOption, FetchUpdate, LlmAttachmentRef, LlmContentPart, LlmInputItem},
 };
 use serde_json::json;
 
@@ -138,6 +138,50 @@ fn request_body_includes_web_search_tool_for_supported_models() -> anyhow::Resul
     )?;
     assert_eq!(request_body["tools"][0]["type"], "web_search");
     Ok(())
+}
+
+#[test]
+fn request_body_maps_text_input_items() -> anyhow::Result<()> {
+    let request_body = OpenAIProvider.request_body(
+        &json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        vec![
+            LlmInputItem::from_role_text(Role::Developer, "system prompt"),
+            LlmInputItem::from_role_text(Role::User, "hello"),
+            LlmInputItem::from_role_text(Role::Assistant, "previous answer"),
+        ],
+    )?;
+
+    assert_eq!(request_body["input"][0]["role"], "developer");
+    assert_eq!(request_body["input"][0]["content"], "system prompt");
+    assert_eq!(request_body["input"][1]["role"], "user");
+    assert_eq!(request_body["input"][1]["content"], "hello");
+    assert_eq!(request_body["input"][2]["role"], "assistant");
+    assert_eq!(request_body["input"][2]["content"], "previous answer");
+    Ok(())
+}
+
+#[test]
+fn request_body_rejects_non_text_input_parts() {
+    let err = OpenAIProvider
+        .request_body(
+            &json!({
+                "model": "gpt-4o",
+                "stream": false
+            }),
+            vec![LlmInputItem::User {
+                content: vec![LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "image-1".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: None,
+                })],
+            }],
+        )
+        .expect_err("non-text input should be rejected");
+
+    assert!(err.to_string().contains("unsupported LLM input item"));
 }
 
 #[test]

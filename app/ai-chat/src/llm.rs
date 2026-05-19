@@ -18,4 +18,9 @@ pub(crate) use provider::{
     provider_settings_specs,
 };
 pub(crate) use runner::FetchRunner;
-pub(crate) use types::Message;
+// Re-export the full provider-neutral item vocabulary for staged follow-up issues.
+#[allow(unused_imports)]
+pub(crate) use types::{
+    LlmAttachmentRef, LlmContentPart, LlmHistoryMessage, LlmHostedToolCall, LlmInputItem,
+    LlmMcpApprovalRequest, LlmOutputItem, LlmToolCall, LlmToolResult, build_input_items,
+};

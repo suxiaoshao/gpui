@@ -4,7 +4,10 @@ use super::{
     THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM, WEB_SEARCH_KEY, WEB_SEARCH_TOOLTIP_KEY,
     should_bypass_proxy,
 };
-use crate::{database::Role, llm::ExtSettingItem};
+use crate::{
+    database::Role,
+    llm::{ExtSettingItem, LlmInputItem},
+};
 use serde_json::json;
 
 fn model_with_metadata(
@@ -176,7 +179,7 @@ fn request_body_preserves_default_false_think() -> anyhow::Result<()> {
     let template = OllamaProvider.default_template_for_model(&model)?;
     let request = OllamaProvider.request_body(
         &template,
-        vec![crate::llm::Message::new(Role::User, "hello".to_string())],
+        vec![LlmInputItem::from_role_text(Role::User, "hello")],
     )?;
     assert_eq!(request["think"], false);
     Ok(())
@@ -276,9 +279,9 @@ fn request_body_maps_developer_role_to_system() -> anyhow::Result<()> {
             "stream": true,
             "web_search": true
         }),
-        vec![crate::llm::Message::new(
+        vec![LlmInputItem::from_role_text(
             Role::Developer,
-            "system prompt".to_string(),
+            "system prompt",
         )],
     )?;
     let request = serde_json::from_value::<OllamaStoredRequest>(request)?;
@@ -287,6 +290,47 @@ fn request_body_maps_developer_role_to_system() -> anyhow::Result<()> {
     assert_eq!(request.messages[0].content, "system prompt");
     assert!(request.web_search);
     Ok(())
+}
+
+#[test]
+fn request_body_maps_system_item_to_system() -> anyhow::Result<()> {
+    let request = OllamaProvider.request_body(
+        &json!({
+            "model": "qwen3",
+            "stream": true
+        }),
+        vec![LlmInputItem::System {
+            content: vec![crate::llm::LlmContentPart::text("system prompt")],
+        }],
+    )?;
+    let request = serde_json::from_value::<OllamaStoredRequest>(request)?;
+    assert_eq!(request.messages.len(), 1);
+    assert_eq!(request.messages[0].role, "system");
+    assert_eq!(request.messages[0].content, "system prompt");
+    Ok(())
+}
+
+#[test]
+fn request_body_rejects_non_text_input_parts() {
+    let err = OllamaProvider
+        .request_body(
+            &json!({
+                "model": "qwen3",
+                "stream": true
+            }),
+            vec![LlmInputItem::User {
+                content: vec![crate::llm::LlmContentPart::ImageRef(
+                    crate::llm::LlmAttachmentRef {
+                        id: "image-1".to_string(),
+                        mime_type: Some("image/png".to_string()),
+                        name: None,
+                    },
+                )],
+            }],
+        )
+        .expect_err("non-text input should be rejected");
+
+    assert!(err.to_string().contains("unsupported LLM input item"));
 }
 
 #[test]

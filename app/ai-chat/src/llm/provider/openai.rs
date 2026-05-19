@@ -7,7 +7,7 @@ use super::{
 use crate::{
     database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    llm::Message,
+    llm::LlmInputItem,
     state::AiChatConfig,
 };
 use eventsource_stream::Eventsource;
@@ -148,12 +148,18 @@ struct ReasoningConfig {
 #[derive(Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    input: Vec<Message>,
+    input: Vec<OpenAIInputMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<HostedTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIInputMessage {
+    role: &'static str,
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,10 +639,13 @@ impl OpenAIProvider {
 
     fn get_body(
         template: &OpenAIRequestTemplate,
-        history_messages: Vec<Message>,
-    ) -> ChatRequest<'_> {
-        ChatRequest {
-            input: history_messages,
+        input_items: Vec<LlmInputItem>,
+    ) -> AiChatResult<ChatRequest<'_>> {
+        Ok(ChatRequest {
+            input: input_items
+                .into_iter()
+                .map(Self::to_openai_input_message)
+                .collect::<AiChatResult<_>>()?,
             model: template.model.as_str(),
             stream: template.stream,
             tools: template
@@ -644,7 +653,15 @@ impl OpenAIProvider {
                 .clone()
                 .and_then(|tools| Self::sanitize_tools(&template.model, tools)),
             reasoning: Self::sanitize_reasoning(&template.model, template.reasoning.clone()),
-        }
+        })
+    }
+
+    fn to_openai_input_message(item: LlmInputItem) -> AiChatResult<OpenAIInputMessage> {
+        let (role, content) = item.single_text()?;
+        Ok(OpenAIInputMessage {
+            role,
+            content: content.to_string(),
+        })
     }
 
     fn get_reqwest_client(
@@ -690,13 +707,13 @@ impl Provider for OpenAIProvider {
     fn request_body(
         &self,
         template: &serde_json::Value,
-        history_messages: Vec<Message>,
+        input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<serde_json::Value> {
         let template = OpenAIRequestTemplate::deserialize(template)?;
         Ok(serde_json::to_value(Self::get_body(
             &template,
-            history_messages,
-        ))?)
+            input_items,
+        )?)?)
     }
 
     fn fetch_by_request_body<'a>(

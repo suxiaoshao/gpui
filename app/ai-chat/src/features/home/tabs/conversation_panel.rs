@@ -12,7 +12,7 @@ use crate::{
     features::home::conversation_export_menu,
     foundation::assets::IconName,
     foundation::i18n::I18n,
-    llm::{FetchRunner, FetchUpdate, provider_by_name},
+    llm::{FetchRunner, FetchUpdate, LlmHistoryMessage, build_input_items, provider_by_name},
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
         AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
@@ -1117,32 +1117,17 @@ fn build_history_messages(
     history_messages: &[Message],
     user_message_role: Role,
     user_message_content: &str,
-) -> Vec<crate::llm::Message> {
-    use crate::llm::Message as FetchMessage;
-
-    let mut request_messages = prompts
-        .into_iter()
-        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
-        .collect::<Vec<_>>();
-
-    request_messages.extend(
-        history_messages
-            .iter()
-            .filter(|message| message.status == Status::Normal)
-            .filter(|message| match mode {
-                Mode::Contextual => true,
-                Mode::Single => false,
-                Mode::AssistantOnly => message.role == Role::Assistant,
-            })
-            .map(|message| {
-                FetchMessage::new(message.role, message.content.send_content().to_string())
-            }),
-    );
-    request_messages.push(FetchMessage::new(
+) -> Vec<crate::llm::LlmInputItem> {
+    let history = history_messages
+        .iter()
+        .map(|message| LlmHistoryMessage::new(message.role, message.status, &message.content));
+    build_input_items(
+        &prompts,
+        mode,
+        history,
         user_message_role,
-        user_message_content.to_string(),
-    ));
-    request_messages
+        user_message_content,
+    )
 }
 
 fn build_request_body(

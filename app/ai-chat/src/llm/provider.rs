@@ -1,4 +1,4 @@
-use super::Message;
+use super::LlmInputItem;
 use crate::{
     database::Content,
     errors::{AiChatError, AiChatResult},
@@ -268,7 +268,7 @@ pub(crate) trait Provider: Sync {
     fn request_body(
         &self,
         template: &serde_json::Value,
-        history_messages: Vec<Message>,
+        input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<serde_json::Value>;
     fn fetch_by_request_body<'a>(
         &self,
@@ -491,10 +491,10 @@ pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBat
 #[cfg(test)]
 mod tests {
     use super::{
-        AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, ModelCapabilities, Provider,
-        ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind, ProviderSettingsSpec,
-        available_models_from_providers, available_models_from_providers_with_timeout,
-        provider_settings_specs,
+        AvailableModelsBatch, ExtSettingItem, FetchUpdate, LlmInputItem, ModelCapabilities,
+        Provider, ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind,
+        ProviderSettingsSpec, available_models_from_providers,
+        available_models_from_providers_with_timeout, provider_settings_specs,
     };
     use crate::{
         errors::{AiChatError, AiChatResult},
@@ -530,7 +530,7 @@ mod tests {
         fn request_body(
             &self,
             _template: &serde_json::Value,
-            _history_messages: Vec<Message>,
+            _input_items: Vec<LlmInputItem>,
         ) -> crate::errors::AiChatResult<serde_json::Value> {
             unreachable!()
         }

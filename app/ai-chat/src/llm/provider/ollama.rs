@@ -5,9 +5,9 @@ use super::{
     normalized_or_default,
 };
 use crate::{
-    database::{Content, Role, UrlCitation},
+    database::{Content, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    llm::Message,
+    llm::LlmInputItem,
     state::AiChatConfig,
 };
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
@@ -493,17 +493,19 @@ impl OllamaProvider {
         Ok(())
     }
 
-    fn to_ollama_message(message: Message) -> OllamaChatMessage {
-        OllamaChatMessage {
-            role: match message.role {
-                Role::Developer => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
+    fn to_ollama_message(item: LlmInputItem) -> AiChatResult<OllamaChatMessage> {
+        let (role, content) = item.single_text()?;
+        Ok(OllamaChatMessage {
+            role: match role {
+                "system" | "developer" => "system",
+                "user" => "user",
+                "assistant" => "assistant",
+                role => role,
             }
             .to_string(),
-            content: message.content,
+            content: content.to_string(),
             ..Default::default()
-        }
+        })
     }
 
     fn tool_definitions() -> Vec<OllamaToolDefinition> {
@@ -701,15 +703,15 @@ impl Provider for OllamaProvider {
     fn request_body(
         &self,
         template: &serde_json::Value,
-        history_messages: Vec<Message>,
+        input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<serde_json::Value> {
         let template = OllamaRequestTemplate::deserialize(template)?;
         let request = OllamaStoredRequest {
             model: template.model,
-            messages: history_messages
+            messages: input_items
                 .into_iter()
                 .map(Self::to_ollama_message)
-                .collect(),
+                .collect::<AiChatResult<_>>()?,
             stream: template.stream,
             think: template.think,
             web_search: template.web_search,

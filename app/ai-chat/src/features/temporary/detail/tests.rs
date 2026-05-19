@@ -7,6 +7,16 @@ use crate::features::conversation::detail::ConversationDetailViewExt;
 use std::rc::Rc;
 use time::OffsetDateTime;
 
+fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, String)> {
+    items
+        .into_iter()
+        .map(|item| {
+            let (role, text) = item.single_text().expect("text input item");
+            (role, text.to_string())
+        })
+        .collect()
+}
+
 fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
     let now = OffsetDateTime::now_utc();
     TemporaryMessage {
@@ -62,17 +72,15 @@ fn runner_history_appends_current_user_message() {
         ],
         Role::User,
         "latest",
-    )
-    .into_iter()
-    .map(|message| (message.role, message.content))
-    .collect::<Vec<_>>();
+    );
+    let history = input_texts(history);
 
     assert_eq!(
         history,
         vec![
-            (Role::Developer, "system".to_string()),
-            (Role::Assistant, "a1".to_string()),
-            (Role::User, "latest".to_string()),
+            ("developer", "system".to_string()),
+            ("assistant", "a1".to_string()),
+            ("user", "latest".to_string()),
         ]
     );
 }
