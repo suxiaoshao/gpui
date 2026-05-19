@@ -1,7 +1,8 @@
 use super::{
-    ExtSettingControl, OllamaChatMessage, OllamaProvider, OllamaStoredRequest, Provider,
-    ProviderModel, ProviderModelCapability, THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM,
-    WEB_SEARCH_KEY, WEB_SEARCH_TOOLTIP_KEY, should_bypass_proxy,
+    ExtSettingControl, ModelCapabilities, OllamaChatMessage, OllamaModelCapabilities,
+    OllamaProvider, OllamaStoredRequest, OllamaThinkingCapability, Provider, ProviderModel,
+    THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM, WEB_SEARCH_KEY, WEB_SEARCH_TOOLTIP_KEY,
+    should_bypass_proxy,
 };
 use crate::{database::Role, llm::ExtSettingItem};
 use serde_json::json;
@@ -12,7 +13,43 @@ fn model_with_metadata(
     family: &str,
     families: &[&str],
 ) -> ProviderModel {
-    ProviderModel::new("Ollama", id, ProviderModelCapability::Streaming).with_metadata(json!({
+    let capabilities = capabilities
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect::<Vec<_>>();
+    let families = families
+        .iter()
+        .map(|family| (*family).to_string())
+        .collect::<Vec<_>>();
+    let thinking = if capabilities
+        .iter()
+        .any(|capability| capability == "thinking")
+    {
+        let uses_levels = matches!(family, "gptoss" | "gpt-oss")
+            || families
+                .iter()
+                .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"));
+        Some(if uses_levels {
+            OllamaThinkingCapability::Levels
+        } else {
+            OllamaThinkingCapability::Boolean
+        })
+    } else {
+        None
+    };
+    let local_web_tools = capabilities.iter().any(|capability| capability == "tools");
+    ProviderModel::new(
+        "Ollama",
+        id,
+        ModelCapabilities::text_streaming().with_ollama_extension(OllamaModelCapabilities {
+            raw_capabilities: capabilities.clone(),
+            family: family.to_string(),
+            families: families.clone(),
+            thinking,
+            local_web_tools,
+        }),
+    )
+    .with_metadata(json!({
         "capabilities": capabilities,
         "family": family,
         "families": families,
@@ -62,6 +99,45 @@ fn ext_settings_use_select_for_gptoss_models() -> anyhow::Result<()> {
     assert_eq!(settings[1].key, WEB_SEARCH_KEY);
     assert_eq!(settings[1].tooltip, Some(WEB_SEARCH_TOOLTIP_KEY));
     assert_eq!(settings[1].control, ExtSettingControl::Boolean(true));
+    Ok(())
+}
+
+#[test]
+fn show_response_maps_to_typed_capabilities() -> anyhow::Result<()> {
+    let show = serde_json::from_value::<super::OllamaShowResponse>(json!({
+        "details": {
+            "family": "gptoss",
+            "families": ["gptoss"]
+        },
+        "capabilities": ["completion", "thinking", "tools"]
+    }))?;
+    let capabilities = OllamaProvider::capabilities_from_show(&show);
+
+    assert!(capabilities.supports_streaming());
+    assert!(capabilities.tool_calling.is_some());
+    let reasoning = capabilities.reasoning.expect("reasoning capability");
+    assert!(reasoning.summaries);
+    assert_eq!(
+        reasoning.efforts,
+        vec![
+            crate::llm::ReasoningEffort::Low,
+            crate::llm::ReasoningEffort::Medium,
+            crate::llm::ReasoningEffort::High,
+        ]
+    );
+    let crate::llm::ProviderCapabilityExtension::Ollama(extension) = capabilities.extension else {
+        panic!("expected Ollama extension");
+    };
+    assert_eq!(extension.thinking, Some(OllamaThinkingCapability::Levels));
+    assert!(extension.local_web_tools);
+    assert_eq!(
+        extension.raw_capabilities,
+        vec![
+            "completion".to_string(),
+            "thinking".to_string(),
+            "tools".to_string(),
+        ]
+    );
     Ok(())
 }
 

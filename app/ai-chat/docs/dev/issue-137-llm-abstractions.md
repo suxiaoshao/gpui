@@ -17,7 +17,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | Issue | Branch | Purpose | Status |
 | --- | --- | --- | --- |
 | #137 | `codex/issue-137-llm-abstractions` | Parent integration work | Active |
-| #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Pending |
+| #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Implemented locally; PR pending |
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Pending |
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Pending |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Pending |
@@ -28,7 +28,10 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 ## Current Architecture Facts
 
 - `llm::Message` is currently text-only: role plus `String` content.
-- `ProviderModelCapability` currently only differentiates streaming from non-streaming.
+- `ProviderModel` now holds provider-neutral `ModelCapabilities` instead of the old streaming-only `ProviderModelCapability`.
+- `ModelCapabilities` covers text input/output, streaming, image/file/audio input, image generation, tool calling, hosted web search, remote MCP, reasoning, structured output, stateful response continuation, and provider-specific typed extensions.
+- OpenAI model classification now emits typed capabilities for Responses API usage, reasoning effort options, hosted web search, structured output, and stateful response continuation.
+- Ollama `/api/show` metadata now maps into typed capabilities and an `OllamaModelCapabilities` extension for raw capabilities, family data, thinking mode, and local web tools.
 - `Provider` currently builds provider request JSON and fetches a single response stream.
 - `FetchUpdate` currently only covers thinking start, reasoning summary delta, text delta, and complete content.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
@@ -43,24 +46,22 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 - The UI, templates, and shortcut flows should ask the generic capability model whether a feature is available.
 - Existing pure-text conversations, templates, shortcuts, resend behavior, OpenAI, and Ollama must keep working during the migration.
 
-## Planned Capability Vocabulary
+## Implemented Capability Vocabulary
 
-The first child issue should establish the exact Rust names, but the shared vocabulary is:
+Issue #138 established these Rust capability types:
 
-- Text input and text output
-- Streaming
-- Image input
-- File input
-- Audio input
-- Image generation
-- Tool calling
-- Hosted web search
-- Remote MCP
-- Reasoning
-- Structured output
-- Stateful response continuation
+- `ModelCapabilities`
+- `ReasoningCapability`
+- `ReasoningEffort`
+- `ImageInputCapability`
+- `FileInputCapability`
+- `ToolCallingCapability`
+- `ProviderCapabilityExtension`
+- `OpenAIModelCapabilities`
+- `OllamaModelCapabilities`
+- `OllamaThinkingCapability`
 
-Capability parameters should cover reasoning effort options, image limits, parallel tool calls, and stateful continuation support where applicable.
+The current implementation keeps request execution behavior unchanged: OpenAI and Ollama still produce the same provider request JSON shape, but capability gating inside provider/template code now reads typed model capabilities instead of ad hoc JSON metadata or streaming-only enum state.
 
 ## Provider Extension Rules
 
@@ -86,8 +87,25 @@ Capability parameters should cover reasoning effort options, image limits, paral
   - `cargo clippy --all-targets --all-features -- -D warnings`
 - UI or shortcut stages must include manual verification notes for old text chat, OpenAI, Ollama, resend, and shortcut flows.
 
+## Completed Child Issue Notes
+
+### #138 Provider-Neutral Model Capability Types
+
+- Replaced `ProviderModelCapability` with `ModelCapabilities`.
+- Re-exported the new capability vocabulary from `llm.rs` for downstream stages.
+- Migrated OpenAI reasoning/web-search capability checks to typed capabilities.
+- Migrated Ollama thinking/tool capability checks to typed `OllamaModelCapabilities`.
+- Preserved existing OpenAI Responses request body, Ollama chat request body, template replay, streaming, and ext-setting behavior.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat llm::preset`
+  - `cargo test -p ai-chat state::chat::models`
+  - `cargo test -p ai-chat components::chat_form::model_select`
+  - `cargo test -p ai-chat features::settings::shortcut_settings`
+
 ## Next Child Issue Constraints
 
-Start with #138.
-It should introduce provider-neutral capability types without changing request execution behavior yet.
-It should migrate existing OpenAI and Ollama model metadata enough for current ext settings to continue working.
+Next child issue is #142.
+It should introduce typed input, content, and output items on top of the `ModelCapabilities` foundation without forcing OpenAI Responses output items onto every provider.
+It must keep existing text-only conversations, templates, shortcuts, resend behavior, OpenAI, and Ollama working while the new item model is added.

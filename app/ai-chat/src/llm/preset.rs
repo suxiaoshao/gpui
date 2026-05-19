@@ -46,12 +46,78 @@ pub(crate) fn apply_ext_setting(
 #[cfg(test)]
 mod tests {
     use super::build_request_template;
-    use crate::llm::{ProviderModel, ProviderModelCapability};
+    use crate::llm::{
+        ModelCapabilities, OllamaModelCapabilities, OllamaThinkingCapability,
+        OpenAIModelCapabilities, ProviderModel, ReasoningCapability, ReasoningEffort,
+    };
     use serde_json::json;
+
+    fn openai_reasoning_model(id: &str) -> ProviderModel {
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.reasoning = Some(ReasoningCapability {
+            default_effort: ReasoningEffort::Medium,
+            efforts: vec![
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
+            summaries: true,
+        });
+        ProviderModel::new(
+            "OpenAI",
+            id,
+            capabilities.with_openai_extension(OpenAIModelCapabilities {
+                responses_api: true,
+                reasoning_summaries: true,
+                hosted_web_search: true,
+                stateful_response_continuation: true,
+            }),
+        )
+    }
+
+    fn ollama_model(
+        id: &str,
+        raw_capabilities: &[&str],
+        family: &str,
+        families: &[&str],
+    ) -> ProviderModel {
+        let raw_capabilities = raw_capabilities
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect::<Vec<_>>();
+        let families = families
+            .iter()
+            .map(|family| (*family).to_string())
+            .collect::<Vec<_>>();
+        let thinking = raw_capabilities
+            .iter()
+            .any(|capability| capability == "thinking")
+            .then(|| {
+                if matches!(family, "gptoss" | "gpt-oss") {
+                    OllamaThinkingCapability::Levels
+                } else {
+                    OllamaThinkingCapability::Boolean
+                }
+            });
+        let local_web_tools = raw_capabilities
+            .iter()
+            .any(|capability| capability == "tools");
+        ProviderModel::new(
+            "Ollama",
+            id,
+            ModelCapabilities::text_streaming().with_ollama_extension(OllamaModelCapabilities {
+                raw_capabilities,
+                family: family.to_string(),
+                families,
+                thinking,
+                local_web_tools,
+            }),
+        )
+    }
 
     #[test]
     fn build_request_template_replays_openai_reasoning_settings() -> anyhow::Result<()> {
-        let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+        let model = openai_reasoning_model("gpt-5.2-pro");
         let template = build_request_template(
             &model,
             Some(&json!({
@@ -66,12 +132,12 @@ mod tests {
 
     #[test]
     fn build_request_template_replays_ollama_ext_settings() -> anyhow::Result<()> {
-        let model = ProviderModel::new("Ollama", "gpt-oss", ProviderModelCapability::Streaming)
-            .with_metadata(json!({
-                "capabilities": ["completion", "thinking", "tools"],
-                "family": "gptoss",
-                "families": ["gptoss"]
-            }));
+        let model = ollama_model(
+            "gpt-oss",
+            &["completion", "thinking", "tools"],
+            "gptoss",
+            &["gptoss"],
+        );
         let template = build_request_template(
             &model,
             Some(&json!({
@@ -87,12 +153,7 @@ mod tests {
 
     #[test]
     fn build_request_template_defaults_ollama_boolean_thinking_to_false() -> anyhow::Result<()> {
-        let model = ProviderModel::new("Ollama", "qwen3", ProviderModelCapability::Streaming)
-            .with_metadata(json!({
-                "capabilities": ["completion", "thinking"],
-                "family": "qwen3",
-                "families": ["qwen3"]
-            }));
+        let model = ollama_model("qwen3", &["completion", "thinking"], "qwen3", &["qwen3"]);
         let template = build_request_template(
             &model,
             Some(&json!({
@@ -107,7 +168,7 @@ mod tests {
 
     #[test]
     fn build_request_template_skips_invalid_saved_ext_settings() -> anyhow::Result<()> {
-        let model = ProviderModel::new("OpenAI", "gpt-5.2-pro", ProviderModelCapability::Streaming);
+        let model = openai_reasoning_model("gpt-5.2-pro");
         let template = build_request_template(
             &model,
             Some(&json!({

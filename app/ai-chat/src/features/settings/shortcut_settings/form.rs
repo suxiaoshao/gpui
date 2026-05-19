@@ -1102,14 +1102,59 @@ mod tests {
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
     use crate::{
         features::settings::shortcut_settings::choices::ModelChoice,
-        llm::{ProviderModel, ProviderModelCapability, build_request_template},
+        llm::{
+            ModelCapabilities, OllamaModelCapabilities, OllamaThinkingCapability,
+            OpenAIModelCapabilities, ProviderModel, ReasoningCapability, ReasoningEffort,
+            build_request_template,
+        },
         state::ModelStoreStatus,
     };
     use serde_json::json;
     use time::OffsetDateTime;
 
     fn model(provider_name: &str, model_id: &str) -> ProviderModel {
-        ProviderModel::new(provider_name, model_id, ProviderModelCapability::Streaming)
+        ProviderModel::new(provider_name, model_id, ModelCapabilities::text_streaming())
+    }
+
+    fn openai_reasoning_model(model_id: &str) -> ProviderModel {
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.reasoning = Some(ReasoningCapability {
+            default_effort: ReasoningEffort::Medium,
+            efforts: vec![
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
+            summaries: true,
+        });
+        ProviderModel::new(
+            "OpenAI",
+            model_id,
+            capabilities.with_openai_extension(OpenAIModelCapabilities {
+                responses_api: true,
+                reasoning_summaries: true,
+                hosted_web_search: true,
+                stateful_response_continuation: true,
+            }),
+        )
+    }
+
+    fn ollama_gptoss_model(model_id: &str) -> ProviderModel {
+        ProviderModel::new(
+            "Ollama",
+            model_id,
+            ModelCapabilities::text_streaming().with_ollama_extension(OllamaModelCapabilities {
+                raw_capabilities: vec![
+                    "completion".to_string(),
+                    "thinking".to_string(),
+                    "tools".to_string(),
+                ],
+                family: "gptoss".to_string(),
+                families: vec!["gptoss".to_string()],
+                thinking: Some(OllamaThinkingCapability::Levels),
+                local_web_tools: true,
+            }),
+        )
     }
 
     fn shortcut_binding() -> GlobalShortcutBinding {
@@ -1247,7 +1292,7 @@ mod tests {
 
     #[test]
     fn saved_request_template_replays_ext_settings_for_same_model() -> anyhow::Result<()> {
-        let openai_model = model("OpenAI", "gpt-5.2-pro");
+        let openai_model = openai_reasoning_model("gpt-5.2-pro");
         let openai_template = build_request_template(
             &openai_model,
             Some(&json!({
@@ -1257,11 +1302,7 @@ mod tests {
         )?;
         assert_eq!(openai_template["reasoning"]["effort"], "xhigh");
 
-        let ollama_model = model("Ollama", "gpt-oss").with_metadata(json!({
-            "capabilities": ["completion", "thinking", "tools"],
-            "family": "gptoss",
-            "families": ["gptoss"]
-        }));
+        let ollama_model = ollama_gptoss_model("gpt-oss");
         let ollama_template = build_request_template(
             &ollama_model,
             Some(&json!({

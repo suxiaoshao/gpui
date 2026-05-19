@@ -1,7 +1,8 @@
 use super::{
-    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
-    ProviderModelCapability, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
-    ProviderSettingsSpec, normalized_or_default,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, ModelCapabilities,
+    OllamaModelCapabilities, OllamaThinkingCapability, Provider, ProviderCapabilityExtension,
+    ProviderModel, ProviderSettingsFieldKind, ProviderSettingsFieldSpec, ProviderSettingsSpec,
+    normalized_or_default,
 };
 use crate::{
     database::{Content, Role, UrlCitation},
@@ -343,61 +344,77 @@ struct RoundResult {
 }
 
 impl OllamaProvider {
-    fn metadata_capabilities(model: &ProviderModel) -> Vec<String> {
-        model
-            .metadata
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect()
-    }
-
-    fn model_family(model: &ProviderModel) -> String {
-        model
-            .metadata
-            .get("family")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    }
-
-    fn model_families(model: &ProviderModel) -> Vec<String> {
-        model
-            .metadata
-            .get("families")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect()
-    }
-
-    fn supports_capability(model: &ProviderModel, capability: &str) -> bool {
-        Self::metadata_capabilities(model)
-            .iter()
-            .any(|candidate| candidate == capability)
+    fn extension(model: &ProviderModel) -> Option<&OllamaModelCapabilities> {
+        match &model.capabilities.extension {
+            ProviderCapabilityExtension::Ollama(extension) => Some(extension),
+            _ => None,
+        }
     }
 
     fn supports_thinking(model: &ProviderModel) -> bool {
-        Self::supports_capability(model, "thinking")
+        Self::extension(model).is_some_and(|extension| extension.thinking.is_some())
     }
 
     fn supports_tools(model: &ProviderModel) -> bool {
-        Self::supports_capability(model, "tools")
+        Self::extension(model).is_some_and(|extension| extension.local_web_tools)
     }
 
     fn uses_thinking_levels(model: &ProviderModel) -> bool {
-        let family = Self::model_family(model);
-        if matches!(family.as_str(), "gptoss" | "gpt-oss") {
-            return true;
-        }
-        Self::model_families(model)
+        Self::extension(model)
+            .is_some_and(|extension| extension.thinking == Some(OllamaThinkingCapability::Levels))
+    }
+
+    fn thinking_capability(
+        capabilities: &[String],
+        family: &str,
+        families: &[String],
+    ) -> Option<OllamaThinkingCapability> {
+        if !capabilities
             .iter()
-            .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"))
+            .any(|capability| capability == "thinking")
+        {
+            return None;
+        }
+        let uses_levels = matches!(family, "gptoss" | "gpt-oss")
+            || families
+                .iter()
+                .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"));
+        Some(if uses_levels {
+            OllamaThinkingCapability::Levels
+        } else {
+            OllamaThinkingCapability::Boolean
+        })
+    }
+
+    fn capabilities_from_show(show: &OllamaShowResponse) -> ModelCapabilities {
+        let raw_capabilities = show.capabilities.clone();
+        let family = show.details.family.clone();
+        let families = show.details.families.clone();
+        let local_web_tools = raw_capabilities
+            .iter()
+            .any(|capability| capability == "tools");
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.reasoning = Self::thinking_capability(&raw_capabilities, &family, &families)
+            .map(|_| super::ReasoningCapability {
+                default_effort: super::ReasoningEffort::Medium,
+                efforts: vec![
+                    super::ReasoningEffort::Low,
+                    super::ReasoningEffort::Medium,
+                    super::ReasoningEffort::High,
+                ],
+                summaries: true,
+            });
+        capabilities.with_ollama_extension(OllamaModelCapabilities {
+            raw_capabilities,
+            family,
+            families,
+            thinking: Self::thinking_capability(
+                &show.capabilities,
+                &show.details.family,
+                &show.details.families,
+            ),
+            local_web_tools,
+        })
     }
 
     fn default_think_for_model(model: &ProviderModel) -> Option<OllamaThinkValue> {
@@ -675,7 +692,7 @@ impl Provider for OllamaProvider {
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value> {
         Ok(serde_json::to_value(OllamaRequestTemplate {
             model: model.id.clone(),
-            stream: model.capability.stream_flag(),
+            stream: model.capabilities.supports_streaming(),
             think: Self::default_think_for_model(model),
             web_search: false,
         })?)
@@ -861,7 +878,7 @@ impl Provider for OllamaProvider {
                     ProviderModel::new(
                         OllamaProvider.name(),
                         model.name,
-                        ProviderModelCapability::Streaming,
+                        Self::capabilities_from_show(&show),
                     )
                     .with_metadata(json!({
                         "capabilities": show.capabilities,
