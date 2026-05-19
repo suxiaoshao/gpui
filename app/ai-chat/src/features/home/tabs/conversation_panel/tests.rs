@@ -2,6 +2,16 @@ use super::*;
 use crate::database::{Content, ConversationTemplatePrompt, Status};
 use time::OffsetDateTime;
 
+fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, String)> {
+    items
+        .into_iter()
+        .map(|item| {
+            let (role, text) = item.single_text().expect("text input item");
+            (role, text.to_string())
+        })
+        .collect()
+}
+
 fn make_message(id: i32, role: Role, status: Status, content: Content) -> Message {
     let now = OffsetDateTime::now_utc();
     Message {
@@ -56,18 +66,16 @@ fn get_history_contextual_includes_all_normal_messages_and_user() {
         ],
         Role::User,
         "latest",
-    )
-    .into_iter()
-    .map(|message| (message.role, message.content))
-    .collect::<Vec<_>>();
+    );
+    let contents = input_texts(contents);
     assert_eq!(
         contents,
         vec![
-            (Role::Developer, "system".to_string()),
-            (Role::Assistant, "primer".to_string()),
-            (Role::User, "u1".to_string()),
-            (Role::Assistant, "a1".to_string()),
-            (Role::User, "latest".to_string()),
+            ("developer", "system".to_string()),
+            ("assistant", "primer".to_string()),
+            ("user", "u1".to_string()),
+            ("assistant", "a1".to_string()),
+            ("user", "latest".to_string()),
         ]
     );
 }
@@ -94,10 +102,11 @@ fn get_history_single_only_prompts_and_user() {
         )],
         Role::User,
         "latest",
-    )
-    .into_iter()
-    .map(|message| message.content)
-    .collect::<Vec<_>>();
+    );
+    let contents = input_texts(contents)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>();
     assert_eq!(
         contents,
         vec![
@@ -129,17 +138,15 @@ fn get_history_assistant_only_filters_roles() {
         ],
         Role::User,
         "latest",
-    )
-    .into_iter()
-    .map(|message| (message.role, message.content))
-    .collect::<Vec<_>>();
+    );
+    let contents = input_texts(contents);
     assert_eq!(
         contents,
         vec![
-            (Role::Developer, "system".to_string()),
-            (Role::Assistant, "primer".to_string()),
-            (Role::Assistant, "a1".to_string()),
-            (Role::User, "latest".to_string()),
+            ("developer", "system".to_string()),
+            ("assistant", "primer".to_string()),
+            ("assistant", "a1".to_string()),
+            ("user", "latest".to_string()),
         ]
     );
 }

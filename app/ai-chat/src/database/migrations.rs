@@ -4,7 +4,7 @@ use crate::{
         model::{SqlConversation, SqlConversationTemplate, SqlFolder, SqlMessage},
     },
     errors::AiChatResult,
-    llm::{Message as FetchMessage, provider_by_name},
+    llm::{LlmInputItem, provider_by_name},
 };
 use diesel::{SqliteConnection, connection::SimpleConnection};
 use std::collections::HashMap;
@@ -326,7 +326,7 @@ fn build_conversation_messages(
     messages: Vec<LegacyMessageV1>,
 ) -> AiChatResult<Vec<SqlMessage>> {
     let provider = normalize_legacy_provider_name(&template.provider).to_string();
-    let mut history = Vec::<FetchMessage>::new();
+    let mut history = Vec::<LlmInputItem>::new();
     let mut current_round_payload = None::<serde_json::Value>;
     let mut last_payload = None::<serde_json::Value>;
     let mut migrated = Vec::with_capacity(messages.len());
@@ -365,7 +365,7 @@ fn build_conversation_messages(
         });
 
         if status == Status::Normal {
-            history.push(FetchMessage::new(role, send_text));
+            history.push(LlmInputItem::from_role_text(role, send_text));
         }
         if role == Role::Assistant {
             current_round_payload = None;
@@ -445,14 +445,14 @@ fn build_v3_migrated_messages(messages: Vec<v3::SqlMessageV3>) -> AiChatResult<V
 
 fn build_request_payload(
     template: &LegacyTemplate,
-    history_messages: &[FetchMessage],
+    history_messages: &[LlmInputItem],
     role: Role,
     send_text: &str,
 ) -> AiChatResult<serde_json::Value> {
     let prompts =
         serde_json::from_value::<Vec<ConversationTemplatePrompt>>(template.prompts.clone())?
             .into_iter()
-            .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
+            .map(|prompt| LlmInputItem::from_role_text(prompt.role, prompt.prompt))
             .collect::<Vec<_>>();
 
     let history = match template.mode {
@@ -460,14 +460,18 @@ fn build_request_payload(
         Mode::Single => Vec::new(),
         Mode::AssistantOnly => history_messages
             .iter()
-            .filter(|message| message.role == Role::Assistant)
+            .filter(|message| {
+                message
+                    .single_text()
+                    .is_ok_and(|(role, _)| role == "assistant")
+            })
             .cloned()
             .collect(),
     };
 
     let mut request_messages = prompts;
     request_messages.extend(history);
-    request_messages.push(FetchMessage::new(role, send_text.to_string()));
+    request_messages.push(LlmInputItem::from_role_text(role, send_text));
 
     let mut request_template = template.template.clone();
     request_template["stream"] = serde_json::Value::Bool(template.provider == "OpenAI Stream");
