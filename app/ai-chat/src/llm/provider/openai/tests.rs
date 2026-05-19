@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     database::{Content, Role},
-    llm::{ExtSettingOption, FetchUpdate, LlmAttachmentRef, LlmContentPart, LlmInputItem},
+    llm::{ExtSettingOption, LlmAttachmentRef, LlmContentPart, LlmInputItem, ProviderRunEvent},
 };
 use serde_json::json;
 
@@ -16,6 +16,13 @@ fn openai_model(id: &str) -> ProviderModel {
         id,
         classify_model(id).unwrap_or_else(ModelCapabilities::text_streaming),
     )
+}
+
+fn completed_content(update: Option<ProviderRunEvent>) -> Option<Content> {
+    match update {
+        Some(ProviderRunEvent::Completed { content, .. }) => Some(content),
+        _ => None,
+    }
 }
 
 #[test]
@@ -446,8 +453,8 @@ fn response_completed_event_yields_complete_update() -> anyhow::Result<()> {
         r#"{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"done","annotations":[{"type":"url_citation","title":"Example","url":"https://example.com","start_index":0,"end_index":4}]}]}]}}"#,
     )?;
     assert_eq!(
-        update,
-        Some(FetchUpdate::Complete(Content {
+        completed_content(update),
+        Some(Content {
             text: "done".to_string(),
             reasoning_summary: None,
             citations: vec![crate::database::UrlCitation {
@@ -455,8 +462,8 @@ fn response_completed_event_yields_complete_update() -> anyhow::Result<()> {
                 url: "https://example.com".to_string(),
                 start_index: Some(0),
                 end_index: Some(4),
-            }]
-        }))
+            }],
+        })
     );
     Ok(())
 }
@@ -466,7 +473,7 @@ fn reasoning_output_item_added_starts_thinking() -> anyhow::Result<()> {
     let update = parse_response_stream_event(
         r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[]}}"#,
     )?;
-    assert_eq!(update, Some(FetchUpdate::ThinkingStarted));
+    assert_eq!(update, Some(ProviderRunEvent::ThinkingStarted));
     Ok(())
 }
 
@@ -477,7 +484,41 @@ fn reasoning_summary_text_delta_yields_update() -> anyhow::Result<()> {
     )?;
     assert_eq!(
         update,
-        Some(FetchUpdate::ReasoningSummaryDelta("thinking".to_string()))
+        Some(ProviderRunEvent::ReasoningSummaryDelta(
+            "thinking".to_string()
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn top_level_error_event_returns_stream_error() {
+    let error = parse_response_stream_event(
+        r#"{"type":"error","message":"request failed","sequence_number":1}"#,
+    )
+    .expect_err("error event should fail");
+    assert!(error.to_string().contains("request failed"));
+}
+
+#[test]
+fn response_failed_event_returns_stream_error() {
+    let error = parse_response_stream_event(
+        r#"{"type":"response.failed","response":{"id":"resp_1","error":{"message":"model failed"}}}"#,
+    )
+    .expect_err("failed event should fail");
+    assert!(error.to_string().contains("model failed"));
+}
+
+#[test]
+fn response_incomplete_event_yields_failed_run_event() -> anyhow::Result<()> {
+    let update = parse_response_stream_event(
+        r#"{"type":"response.incomplete","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+    )?;
+    assert_eq!(
+        update,
+        Some(ProviderRunEvent::Failed {
+            message: "OpenAI response incomplete: max_output_tokens".to_string()
+        })
     );
     Ok(())
 }
@@ -488,12 +529,12 @@ fn response_completed_event_extracts_reasoning_summary() -> anyhow::Result<()> {
         r#"{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"summarized"}]},{"type":"message","content":[{"type":"output_text","text":"done","annotations":[]}]}]}}"#,
     )?;
     assert_eq!(
-        update,
-        Some(FetchUpdate::Complete(Content {
+        completed_content(update),
+        Some(Content {
             text: "done".to_string(),
             reasoning_summary: Some("summarized".to_string()),
             citations: vec![],
-        }))
+        })
     );
     Ok(())
 }
@@ -504,12 +545,12 @@ fn response_completed_event_accumulates_reasoning_summaries() -> anyhow::Result<
         r#"{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"first"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"second"}]},{"type":"message","content":[{"type":"output_text","text":"done","annotations":[]}]}]}}"#,
     )?;
     assert_eq!(
-        update,
-        Some(FetchUpdate::Complete(Content {
+        completed_content(update),
+        Some(Content {
             text: "done".to_string(),
             reasoning_summary: Some("first\n\nsecond".to_string()),
             citations: vec![],
-        }))
+        })
     );
     Ok(())
 }

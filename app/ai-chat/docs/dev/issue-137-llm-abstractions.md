@@ -19,7 +19,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #137 | `codex/issue-137-llm-abstractions` | Parent integration work | Active |
 | #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Merged to integration via PR #147; GitHub issue still open |
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Merged to integration via PR #148; GitHub issue still open |
-| #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Pending |
+| #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Implemented on child branch; not merged to integration |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Pending |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Pending |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
@@ -32,7 +32,8 @@ Last synchronized: 2026-05-20.
 - #137 remains open and is the parent tracking issue. Its comments record the child issue list and the integration branch/document workflow.
 - #138 remains open on GitHub, but PR #147 merged `codex/issue-138-model-capabilities` into `codex/issue-137-llm-abstractions`.
 - #142 remains open on GitHub, but PR #148 merged `codex/issue-142-llm-items` into `codex/issue-137-llm-abstractions`.
-- #139, #141, #143, #144, and #140 remain open and pending behind the typed item model.
+- #139 remains open on GitHub. The local child branch `codex/issue-139-provider-runtime` has implemented the first-stage runtime abstraction and still needs review/merge into the integration branch.
+- #141, #143, #144, and #140 remain open and pending behind the typed item and run/event model.
 
 ## Current Architecture Facts
 
@@ -44,8 +45,10 @@ Last synchronized: 2026-05-20.
 - `ModelCapabilities` covers text input/output, streaming, image/file/audio input, image generation, tool calling, hosted web search, remote MCP, reasoning, structured output, stateful response continuation, and provider-specific typed extensions.
 - OpenAI model classification now emits typed capabilities for Responses API usage, reasoning effort options, hosted web search, structured output, and stateful response continuation.
 - Ollama `/api/show` metadata now maps into typed capabilities and an `OllamaModelCapabilities` extension for raw capabilities, family data, thinking mode, and local web tools.
-- `Provider` currently builds provider request JSON from typed input items and fetches a single response stream.
-- `FetchUpdate` currently only covers thinking start, reasoning summary delta, text delta, and complete content.
+- `Provider` now builds `ProviderRunRequest` values from typed input items and streams provider-neutral `ProviderRunEvent` values.
+- `ProviderRunRequest` keeps the provider request JSON snapshot so existing `messages.send_content` resend behavior remains compatible.
+- `ProviderRunEvent` replaces `FetchUpdate` and covers thinking start, reasoning summary delta, text delta, output item added/done, tool call/result, MCP approval request, usage update, completed, and failed states.
+- `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, but database persistence remains a follow-up.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
 - OpenAI already uses `/v1/responses`, reasoning effort, reasoning summaries, and hosted web search citations.
 - Ollama has provider-specific thinking and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
@@ -74,6 +77,17 @@ Issue #138 established these Rust capability types:
 - `OllamaThinkingCapability`
 
 The current implementation keeps request execution behavior unchanged: OpenAI and Ollama still produce the same provider request JSON shape, but capability gating inside provider/template code now reads typed model capabilities instead of ad hoc JSON metadata or streaming-only enum state.
+
+## Implemented Runtime Vocabulary
+
+Issue #139 established these Rust runtime types:
+
+- `ProviderRunRequest`
+- `ProviderRunEvent`
+- `ProviderRunState`
+- `ProviderUsage`
+
+The current implementation keeps request persistence additive: existing provider request JSON remains the compatibility snapshot for `messages.send_content`, while new runtime code uses `ProviderRunRequest` and `ProviderRunEvent` internally. OpenAI and Ollama still own their own wire/request conversion inside provider adapters.
 
 ## Provider Extension Rules
 
@@ -132,8 +146,29 @@ The current implementation keeps request execution behavior unchanged: OpenAI an
   - `cargo test -p ai-chat features::home::tabs::conversation_panel`
   - `cargo test -p ai-chat features::temporary::detail`
 
+### #139 Run-Based Provider Trait And Events
+
+- Replaced the old `FetchUpdate` stream path with provider-neutral `ProviderRunEvent`.
+- Added `ProviderRunRequest`, `ProviderRunState`, and `ProviderUsage` as the first-stage runtime abstraction.
+- Changed the `Provider` trait to build run requests with `build_run_request` and execute them with `run`.
+- Kept `Provider::request_body` as a compatibility helper for persisted `messages.send_content` snapshots.
+- Migrated conversation panel and temporary detail streaming consumers to `ProviderRunRunner`.
+- Migrated OpenAI Responses stream parsing into provider-neutral events without exposing OpenAI event names in the core runtime.
+- Added OpenAI parser coverage for completed, failed, incomplete, and top-level error events.
+- Migrated Ollama chat streaming to the same run event vocabulary while keeping its experimental web search/fetch loop provider-local.
+- Left generic app-level tool execution, MCP approval UI, and run-state database persistence to #141, #143, #144, and #140.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::types`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat llm::provider::openai`
+  - `cargo test -p ai-chat llm::provider::ollama`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel`
+  - `cargo test -p ai-chat features::temporary::detail`
+  - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
+
 ## Next Child Issue Constraints
 
-Next child issue is #139.
+Next child issue after #139 is merged is #141.
 
-#139 should build on the typed item model and introduce run-based provider events without pushing OpenAI Responses event names into the core runtime. It should preserve the #142 adapter boundary: generic code owns provider-neutral input/output items, while OpenAI and Ollama keep their own wire/event conversion.
+#141 should persist the runtime state introduced by #139 without breaking old conversations. It should preserve `messages.content` and `messages.send_content` compatibility, add storage for provider run state/output items/tool calls/attachments as additive data, and avoid storing binary attachment data directly inside message text.

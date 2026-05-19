@@ -12,7 +12,10 @@ use crate::{
     features::home::conversation_export_menu,
     foundation::assets::IconName,
     foundation::i18n::I18n,
-    llm::{FetchRunner, FetchUpdate, LlmHistoryMessage, build_input_items, provider_by_name},
+    llm::{
+        LlmHistoryMessage, ProviderRunEvent, ProviderRunRequest, ProviderRunRunner,
+        build_input_items, provider_by_name,
+    },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
         AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
@@ -544,12 +547,13 @@ impl ConversationPanelView {
                 provider.name().to_string(),
             ))?
             .clone();
-        let stream =
-            provider.fetch_by_request_body(context.config, settings, &context.request_body);
+        let request =
+            ProviderRunRequest::from_request_body(provider.name(), context.request_body.clone());
+        let stream = provider.run(context.config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     Self::set_assistant_message_status_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -558,7 +562,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     Self::append_assistant_reasoning_summary_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -567,7 +571,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::TextDelta(delta)) => {
+                Ok(ProviderRunEvent::TextDelta(delta)) => {
                     Self::append_assistant_message_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -576,7 +580,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed { content, .. }) => {
                     Self::replace_assistant_message_content_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -584,6 +588,25 @@ impl ConversationPanelView {
                         content,
                         cx,
                     )?;
+                }
+                Ok(
+                    ProviderRunEvent::OutputItemAdded(_)
+                    | ProviderRunEvent::OutputItemDone(_)
+                    | ProviderRunEvent::ToolCallRequested(_)
+                    | ProviderRunEvent::ToolResultReceived(_)
+                    | ProviderRunEvent::McpApprovalRequested(_)
+                    | ProviderRunEvent::UsageUpdated(_),
+                ) => {}
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    Self::record_stream_error(
+                        state,
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        message,
+                        cx,
+                    )?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -687,7 +710,7 @@ impl ConversationPanelView {
         let template = context.composer_snapshot.request_template.clone();
         let prompts = context.composer_snapshot.prompts.clone();
         let mode = context.composer_snapshot.mode;
-        let request_body = build_request_body(
+        let run_request = build_run_request(
             &provider_name,
             &template,
             prompts,
@@ -699,7 +722,7 @@ impl ConversationPanelView {
         Ok(Runner {
             config: context.config.clone(),
             provider_name,
-            request_body,
+            run_request,
         })
     }
 
@@ -732,11 +755,11 @@ impl ConversationPanelView {
         assistant_message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let stream = runner.fetch();
+        let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     Self::set_assistant_message_status(
                         context,
                         assistant_message_id,
@@ -744,7 +767,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     Self::append_assistant_reasoning_summary(
                         context,
                         assistant_message_id,
@@ -752,16 +775,35 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::TextDelta(delta)) => {
+                Ok(ProviderRunEvent::TextDelta(delta)) => {
                     Self::append_assistant_message(context, assistant_message_id, delta, cx)?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed { content, .. }) => {
                     Self::replace_assistant_message_content(
                         context,
                         assistant_message_id,
                         content,
                         cx,
                     )?;
+                }
+                Ok(
+                    ProviderRunEvent::OutputItemAdded(_)
+                    | ProviderRunEvent::OutputItemDone(_)
+                    | ProviderRunEvent::ToolCallRequested(_)
+                    | ProviderRunEvent::ToolResultReceived(_)
+                    | ProviderRunEvent::McpApprovalRequested(_)
+                    | ProviderRunEvent::UsageUpdated(_),
+                ) => {}
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    Self::record_stream_error(
+                        state,
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        message,
+                        cx,
+                    )?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -1094,10 +1136,10 @@ struct ExistingMessageFetchContext {
 struct Runner {
     config: AiChatConfig,
     provider_name: String,
-    request_body: serde_json::Value,
+    run_request: ProviderRunRequest,
 }
 
-impl FetchRunner for Runner {
+impl ProviderRunRunner for Runner {
     fn get_provider(&self) -> &str {
         &self.provider_name
     }
@@ -1106,8 +1148,8 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn request_body(&self) -> &serde_json::Value {
-        &self.request_body
+    fn run_request(&self) -> &ProviderRunRequest {
+        &self.run_request
     }
 }
 
@@ -1130,6 +1172,26 @@ fn build_history_messages(
     )
 }
 
+fn build_run_request(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> AiChatResult<ProviderRunRequest> {
+    let history = build_history_messages(
+        prompts,
+        mode,
+        history_messages,
+        user_message_role,
+        user_message_content,
+    );
+    provider_by_name(provider_name)?.build_run_request(template, history)
+}
+
+#[cfg(test)]
 fn build_request_body(
     provider_name: &str,
     template: &serde_json::Value,
@@ -1139,14 +1201,16 @@ fn build_request_body(
     user_message_role: Role,
     user_message_content: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let history = build_history_messages(
+    Ok(build_run_request(
+        provider_name,
+        template,
         prompts,
         mode,
         history_messages,
         user_message_role,
         user_message_content,
-    );
-    provider_by_name(provider_name)?.request_body(template, history)
+    )?
+    .request_body)
 }
 
 #[cfg(test)]
