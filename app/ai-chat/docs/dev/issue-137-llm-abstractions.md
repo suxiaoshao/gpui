@@ -21,7 +21,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Merged to integration via PR #148; GitHub issue still open |
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
-| #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Implemented; pending PR |
+| #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
 
@@ -34,7 +34,7 @@ Last synchronized: 2026-05-21.
 - #142 remains open on GitHub, but PR #148 merged `codex/issue-142-llm-items` into `codex/issue-137-llm-abstractions`.
 - #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
-- #143 remains open on GitHub, but `codex/issue-143-openai-responses-abstraction` implements the OpenAI Responses adapter stage.
+- #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
 - #144 and #140 remain open and pending behind the OpenAI adapter stage.
 
 ## Current Architecture Facts
@@ -210,6 +210,6 @@ The current implementation keeps request persistence additive: existing provider
 
 ## Next Child Issue Constraints
 
-Next child issue after #143 lands is #144.
+Next child issue is #144.
 
 #144 should migrate Ollama onto the shared abstraction and verify the core types are not OpenAI-shaped.
