@@ -1,6 +1,7 @@
-use super::{v1_to_v5, v2_to_v5, v3_to_v5, v4_to_v5};
+use super::{v1_to_v6, v2_to_v6, v3_to_v6, v4_to_v6, v5_to_v6};
 use crate::database::model::{
     SqlConversation, SqlConversationTemplate, SqlGlobalShortcutBinding, SqlMessage,
+    SqlMessageAttachment, SqlMessageOutputItem, SqlMessageRunState,
 };
 use diesel::{Connection, RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query};
 use std::{
@@ -76,6 +77,8 @@ const V3_CREATE_TABLE_SQL: &str =
     include_str!("../../../migrations/2026-03-08-000000_create_tables_v3/up.sql");
 const V4_CREATE_TABLE_SQL: &str =
     include_str!("../../../migrations/2026-03-15-000000_create_tables_v4/up.sql");
+const V5_CREATE_TABLE_SQL: &str =
+    include_str!("../../../migrations/2026-03-20-000000_create_tables_v5/up.sql");
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -89,6 +92,13 @@ fn temp_db_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "gpui-ai-chat-{name}-{pid}-{unique}-{counter}.sqlite3"
     ))
+}
+
+fn assert_run_tables_empty(conn: &mut SqliteConnection) -> anyhow::Result<()> {
+    assert!(SqlMessageRunState::all(conn)?.is_empty());
+    assert!(SqlMessageOutputItem::all(conn)?.is_empty());
+    assert!(SqlMessageAttachment::all(conn)?.is_empty());
+    Ok(())
 }
 
 fn template_json() -> &'static str {
@@ -137,7 +147,7 @@ fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()
     v1_conn.batch_execute(V1_CREATE_TABLE_SQL)?;
     insert_seed_data(&mut v1_conn, false)?;
 
-    v1_to_v5(&mut v1_conn, &mut v5_conn)?;
+    v1_to_v6(&mut v1_conn, &mut v5_conn)?;
 
     let templates = SqlConversationTemplate::all(&mut v5_conn)?;
     assert_eq!(templates.len(), 1);
@@ -156,6 +166,7 @@ fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()
     assert_eq!(first_send_content["model"], "gpt-4o");
     assert_eq!(first_send_content["input"][0]["content"], "hello");
     assert_eq!(second_send_content, first_send_content);
+    assert_run_tables_empty(&mut v5_conn)?;
 
     drop(v1_conn);
     drop(v5_conn);
@@ -174,13 +185,14 @@ fn v2_migration_keeps_send_content_and_adds_provider() -> anyhow::Result<()> {
     v2_conn.batch_execute(V2_CREATE_TABLE_SQL)?;
     insert_seed_data(&mut v2_conn, true)?;
 
-    v2_to_v5(&mut v2_conn, &mut v5_conn)?;
+    v2_to_v6(&mut v2_conn, &mut v5_conn)?;
 
     let messages = SqlMessage::all(&mut v5_conn)?;
     assert_eq!(messages.len(), 2);
     assert!(messages.iter().all(|message| message.provider == "OpenAI"));
     assert_eq!(messages[0].send_content["model"], "gpt-4o");
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
+    assert_run_tables_empty(&mut v5_conn)?;
 
     drop(v2_conn);
     drop(v5_conn);
@@ -213,7 +225,7 @@ fn v3_migration_converts_legacy_content_enum_to_json_struct_in_v5() -> anyhow::R
         )
         .execute(&mut v3_conn)?;
 
-    v3_to_v5(&mut v3_conn, &mut v5_conn)?;
+    v3_to_v6(&mut v3_conn, &mut v5_conn)?;
 
     let messages = SqlMessage::all(&mut v5_conn)?;
     assert_eq!(messages.len(), 1);
@@ -224,6 +236,7 @@ fn v3_migration_converts_legacy_content_enum_to_json_struct_in_v5() -> anyhow::R
         "https://example.com"
     );
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
+    assert_run_tables_empty(&mut v5_conn)?;
 
     drop(v3_conn);
     drop(v5_conn);
@@ -261,16 +274,57 @@ fn v4_migration_creates_empty_global_shortcut_table() -> anyhow::Result<()> {
         )
         .execute(&mut v4_conn)?;
 
-    v4_to_v5(&mut v4_conn, &mut v5_conn)?;
+    v4_to_v6(&mut v4_conn, &mut v5_conn)?;
 
     assert_eq!(SqlConversationTemplate::all(&mut v5_conn)?.len(), 1);
     assert_eq!(SqlConversation::get_all(&mut v5_conn)?.len(), 1);
     assert_eq!(SqlMessage::all(&mut v5_conn)?.len(), 1);
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
+    assert_run_tables_empty(&mut v5_conn)?;
 
     drop(v4_conn);
     drop(v5_conn);
     let _ = fs::remove_file(v4_path);
     let _ = fs::remove_file(v5_path);
+    Ok(())
+}
+
+#[test]
+fn v5_migration_preserves_messages_and_creates_empty_run_tables() -> anyhow::Result<()> {
+    let v5_path = temp_db_path("v5-source");
+    let v6_path = temp_db_path("v6-target");
+    let mut v5_conn = SqliteConnection::establish(v5_path.to_str().expect("v5 path"))?;
+    let mut v6_conn = SqliteConnection::establish(v6_path.to_str().expect("v6 path"))?;
+
+    v5_conn.batch_execute(V5_CREATE_TABLE_SQL)?;
+    sql_query(
+        "insert into conversation_templates (id, name, icon, description, prompts, created_time, updated_time)
+         values (1, 'base', '🤖', null, '[]', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')",
+    )
+    .execute(&mut v5_conn)?;
+    sql_query(
+        "insert into conversations (id, folder_id, path, title, icon, created_time, updated_time, info)
+         values (1, null, '/默认', '默认', '🤖', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+    )
+    .execute(&mut v5_conn)?;
+    sql_query(
+        "insert into messages (id, conversation_id, conversation_path, provider, role, content, send_content, status, created_time, updated_time, start_time, end_time, error)
+         values (1, 1, '/默认', 'OpenAI', 'assistant', '{\"text\":\"hello\",\"reasoningSummary\":\"why\",\"citations\":[{\"url\":\"https://example.com\"}]}', '{\"model\":\"gpt-4o\"}', 'normal', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00', null)",
+    )
+    .execute(&mut v5_conn)?;
+
+    v5_to_v6(&mut v5_conn, &mut v6_conn)?;
+
+    let messages = SqlMessage::all(&mut v6_conn)?;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content["text"], "hello");
+    assert_eq!(messages[0].content["reasoningSummary"], "why");
+    assert_eq!(messages[0].send_content["model"], "gpt-4o");
+    assert_run_tables_empty(&mut v6_conn)?;
+
+    drop(v5_conn);
+    drop(v6_conn);
+    let _ = fs::remove_file(v5_path);
+    let _ = fs::remove_file(v6_path);
     Ok(())
 }

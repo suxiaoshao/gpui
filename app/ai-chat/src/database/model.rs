@@ -9,6 +9,9 @@ mod conversation_templates;
 mod conversations;
 mod folders;
 mod global_shortcut_bindings;
+mod message_attachments;
+mod message_output_items;
+mod message_run_states;
 mod messages;
 pub use conversation_templates::{
     SqlConversationTemplate, SqlNewConversationTemplate, SqlUpdateConversationTemplate,
@@ -18,4 +21,7 @@ pub use folders::{SqlFolder, SqlNewFolder, SqlUpdateFolder};
 pub use global_shortcut_bindings::{
     SqlGlobalShortcutBinding, SqlNewGlobalShortcutBinding, SqlUpdateGlobalShortcutBinding,
 };
+pub use message_attachments::{SqlMessageAttachment, SqlNewMessageAttachment};
+pub use message_output_items::{SqlMessageOutputItem, SqlNewMessageOutputItem};
+pub use message_run_states::{SqlMessageRunState, SqlNewMessageRunState};
 pub use messages::{SqlMessage, SqlNewMessage};

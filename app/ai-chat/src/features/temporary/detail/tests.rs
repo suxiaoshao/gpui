@@ -2,8 +2,12 @@ use super::{
     TEMPORARY_SAVE_TITLE_MAX_CHARS, TemporaryDetailState, TemporaryMessage, build_history_messages,
     build_request_body, temporary_messages_to_add_conversation_messages, temporary_save_title,
 };
-use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
+use crate::database::{
+    Content, ConversationTemplatePrompt, MessageOutputItem, MessageOutputItemStatus,
+    MessageRunPersistence, Mode, Role, Status,
+};
 use crate::features::conversation::detail::ConversationDetailViewExt;
+use crate::llm::LlmOutputItem;
 use std::rc::Rc;
 use time::OffsetDateTime;
 
@@ -27,6 +31,7 @@ fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessag
         send_content: Rc::new(serde_json::json!({})),
         status,
         error: None,
+        run_persistence: MessageRunPersistence::default(),
         created_time: now,
         updated_time: now,
         start_time: now,
@@ -51,6 +56,7 @@ fn make_provider_message(
         send_content: Rc::new(send_content),
         status,
         error,
+        run_persistence: MessageRunPersistence::default(),
         created_time: now,
         updated_time: now,
         start_time: now,
@@ -140,7 +146,7 @@ fn empty_temporary_chat_hides_clear_and_save_actions() {
 #[test]
 fn temporary_messages_convert_to_add_conversation_messages() {
     let send_content = serde_json::json!({"messages": [{"role": "user", "content": "hello"}]});
-    let message = make_provider_message(
+    let mut message = make_provider_message(
         "Ollama",
         Role::Assistant,
         Status::Error,
@@ -148,6 +154,14 @@ fn temporary_messages_convert_to_add_conversation_messages() {
         send_content.clone(),
         Some("network failed".to_string()),
     );
+    message
+        .run_persistence
+        .output_items
+        .push(MessageOutputItem::new(
+            0,
+            LlmOutputItem::Reasoning { summary: None },
+            MessageOutputItemStatus::Added,
+        ));
 
     let messages = temporary_messages_to_add_conversation_messages(&[message]);
 
@@ -158,6 +172,7 @@ fn temporary_messages_convert_to_add_conversation_messages() {
     assert_eq!(messages[0].send_content, send_content);
     assert_eq!(messages[0].status, Status::Error);
     assert_eq!(messages[0].error.as_deref(), Some("network failed"));
+    assert_eq!(messages[0].run_persistence.output_items.len(), 1);
 }
 
 #[test]
