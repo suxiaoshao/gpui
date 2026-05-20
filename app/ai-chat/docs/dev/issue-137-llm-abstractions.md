@@ -22,7 +22,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
-| #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Implemented on child branch; pending integration PR |
+| #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Merged to integration via PR #152; GitHub issue still open |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
 
 ## Issue Sync Snapshot
@@ -35,7 +35,7 @@ Last synchronized: 2026-05-21.
 - #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
 - #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
-- #144 is implemented on `codex/issue-144-ollama-shared-abstraction` and pending integration PR back into `codex/issue-137-llm-abstractions`; GitHub issue still open.
+- #144 remains open on GitHub, but PR #152 merged `codex/issue-144-ollama-shared-abstraction` into `codex/issue-137-llm-abstractions`.
 - #140 remains open and pending behind the Ollama adapter stage.
 
 ## Current Architecture Facts
