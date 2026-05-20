@@ -22,7 +22,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
-| #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
+| #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Implemented on child branch; pending integration PR |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
 
 ## Issue Sync Snapshot
@@ -35,7 +35,8 @@ Last synchronized: 2026-05-21.
 - #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
 - #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
-- #144 and #140 remain open and pending behind the OpenAI adapter stage.
+- #144 is implemented on `codex/issue-144-ollama-shared-abstraction` and pending integration PR back into `codex/issue-137-llm-abstractions`; GitHub issue still open.
+- #140 remains open and pending behind the Ollama adapter stage.
 
 ## Current Architecture Facts
 
@@ -46,7 +47,7 @@ Last synchronized: 2026-05-21.
 - `ProviderModel` now holds provider-neutral `ModelCapabilities` instead of the old streaming-only `ProviderModelCapability`.
 - `ModelCapabilities` covers text input/output, streaming, image/file/audio input, image generation, tool calling, hosted web search, remote MCP, reasoning, structured output, stateful response continuation, and provider-specific typed extensions.
 - OpenAI model classification now emits typed capabilities for Responses API usage, reasoning effort options, hosted web search, structured output, and stateful response continuation.
-- Ollama `/api/show` metadata now maps into typed capabilities and an `OllamaModelCapabilities` extension for raw capabilities, family data, thinking mode, and local web tools.
+- Ollama `/api/show` metadata now maps into typed capabilities and an `OllamaModelCapabilities` extension for raw capabilities, family data, thinking mode, local web tools, and vision image input.
 - `Provider` now builds `ProviderRunRequest` values from typed input items and streams provider-neutral `ProviderRunEvent` values.
 - `ProviderRunRequest` keeps the provider request JSON snapshot so existing `messages.send_content` resend behavior remains compatible.
 - `ProviderRunEvent` replaces `FetchUpdate` and covers thinking start, reasoning summary delta, text delta, output item added/done, tool call/result, MCP approval request, usage update, completed, and failed states.
@@ -55,7 +56,9 @@ Last synchronized: 2026-05-21.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
 - OpenAI uses `/v1/responses`, reasoning effort, reasoning summaries, hosted web search citations, provider-neutral output item events, and persisted `previous_response_id` continuation when compatible run state is available.
 - OpenAI adapter-specific Responses request fields such as `include`, `text`, `tool_choice`, `tools`, and `parallel_tool_calls` remain inside the OpenAI provider schema rather than the generic provider trait.
-- Ollama has provider-specific thinking and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
+- Ollama has provider-specific thinking, image input, and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
+- Ollama image input accepts raw base64 or `data:image/...;base64,...` references only; URL, file-id, local-path, file, audio, and generic attachment inputs remain explicitly unsupported.
+- Ollama run events now emit provider-neutral output item, tool call/result, usage, and completion data while keeping `ProviderRunState.run_id` empty and avoiding OpenAI-style continuation semantics.
 
 ## Shared Design Decisions
 
@@ -208,8 +211,25 @@ The current implementation keeps request persistence additive: existing provider
   - `cargo test -p ai-chat database::migrations -- --nocapture`
   - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
 
+### #144 Ollama Shared Abstraction Migration
+
+- Mapped Ollama `vision` capability to generic `ModelCapabilities.image_input` without exposing OpenAI-only hosted web search, remote MCP, or stateful continuation settings.
+- Kept Ollama thinking and experimental local web search/fetch as provider-specific extension behavior.
+- Migrated Ollama input conversion beyond single-text messages: normal messages support multi-part text joined with blank lines and base64/data-URL image inputs; text-only tool results map to Ollama `role: "tool"` messages.
+- Unsupported URL images, OpenAI file ids, local paths, files, audio, generic attachments, and item references fail explicitly instead of being silently coerced.
+- Ollama stream and non-stream responses now emit provider-neutral output item events, tool call/result events, token usage with Ollama timing metadata, and completed content.
+- Ollama run state remains additive and compatibility-oriented: no provider run id, no output item ids for continuation, and no OpenAI-shaped `previous_response_id` behavior.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::provider::ollama`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat llm::run_persistence`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel`
+  - `cargo test -p ai-chat features::temporary::detail`
+  - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
+
 ## Next Child Issue Constraints
 
-Next child issue is #144.
+Next child issue is #140.
 
-#144 should migrate Ollama onto the shared abstraction and verify the core types are not OpenAI-shaped.
+#140 should add template, shortcut, and UI capability gating on top of the shared OpenAI and Ollama capability model.

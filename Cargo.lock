@@ -142,6 +142,7 @@ dependencies = [
  "app-theme",
  "async-compat",
  "async-stream",
+ "base64 0.22.1",
  "dhat",
  "diesel",
  "dirs-next",

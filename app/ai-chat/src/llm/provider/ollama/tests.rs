@@ -1,12 +1,15 @@
 use super::{
-    ExtSettingControl, ModelCapabilities, OllamaChatMessage, OllamaModelCapabilities,
-    OllamaProvider, OllamaStoredRequest, OllamaThinkingCapability, Provider, ProviderModel,
-    THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM, WEB_SEARCH_KEY, WEB_SEARCH_TOOLTIP_KEY,
-    should_bypass_proxy,
+    ExtSettingControl, ModelCapabilities, OllamaChatMessage, OllamaChatResponse,
+    OllamaModelCapabilities, OllamaProvider, OllamaStoredRequest, OllamaThinkingCapability,
+    Provider, ProviderModel, THINK_HIGH, THINK_KEY, THINK_LOW, THINK_MEDIUM, WEB_SEARCH_KEY,
+    WEB_SEARCH_TOOLTIP_KEY, should_bypass_proxy,
 };
 use crate::{
-    database::Role,
-    llm::{ExtSettingItem, LlmInputItem},
+    database::{Role, UrlCitation},
+    llm::{
+        ExtSettingItem, LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem,
+        LlmToolResult, ProviderRunEvent, ProviderUsage,
+    },
 };
 use serde_json::json;
 
@@ -118,6 +121,10 @@ fn show_response_maps_to_typed_capabilities() -> anyhow::Result<()> {
 
     assert!(capabilities.supports_streaming());
     assert!(capabilities.tool_calling.is_some());
+    assert!(capabilities.image_input.is_none());
+    assert!(!capabilities.hosted_web_search);
+    assert!(!capabilities.remote_mcp);
+    assert!(!capabilities.stateful_response_continuation);
     let reasoning = capabilities.reasoning.expect("reasoning capability");
     assert!(reasoning.summaries);
     assert_eq!(
@@ -141,6 +148,28 @@ fn show_response_maps_to_typed_capabilities() -> anyhow::Result<()> {
             "tools".to_string(),
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn show_response_maps_vision_to_image_input_capability() -> anyhow::Result<()> {
+    let show = serde_json::from_value::<super::OllamaShowResponse>(json!({
+        "details": {
+            "family": "llava",
+            "families": ["llama", "clip"]
+        },
+        "capabilities": ["completion", "vision"]
+    }))?;
+    let capabilities = OllamaProvider::capabilities_from_show(&show);
+
+    assert_eq!(
+        capabilities.image_input,
+        Some(super::super::ImageInputCapability { max_images: None })
+    );
+    assert!(capabilities.tool_calling.is_none());
+    assert!(capabilities.reasoning.is_none());
+    assert!(!capabilities.hosted_web_search);
+    assert!(!capabilities.stateful_response_continuation);
     Ok(())
 }
 
@@ -311,6 +340,74 @@ fn request_body_maps_system_item_to_system() -> anyhow::Result<()> {
 }
 
 #[test]
+fn request_body_maps_multipart_text_and_image_input() -> anyhow::Result<()> {
+    let request = OllamaProvider.request_body(
+        &json!({
+            "model": "llava",
+            "stream": true
+        }),
+        vec![LlmInputItem::User {
+            content: vec![
+                LlmContentPart::text("describe"),
+                LlmContentPart::text("focus on the text"),
+                LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "data:image/png;base64,aGVsbG8=".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: None,
+                }),
+                LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "iVBORw0KGgo=".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: None,
+                }),
+            ],
+        }],
+    )?;
+    let request = serde_json::from_value::<OllamaStoredRequest>(request)?;
+
+    assert_eq!(request.messages.len(), 1);
+    assert_eq!(request.messages[0].role, "user");
+    assert_eq!(request.messages[0].content, "describe\n\nfocus on the text");
+    assert_eq!(
+        request.messages[0].images,
+        vec!["aGVsbG8=".to_string(), "iVBORw0KGgo=".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn request_body_rejects_unsupported_image_refs() {
+    for id in [
+        "https://example.com/image.png",
+        "abc123",
+        "file-img-1",
+        "/tmp/image",
+        "/tmp/image.png",
+    ] {
+        let err = OllamaProvider
+            .request_body(
+                &json!({
+                    "model": "llava",
+                    "stream": true
+                }),
+                vec![LlmInputItem::User {
+                    content: vec![LlmContentPart::ImageRef(LlmAttachmentRef {
+                        id: id.to_string(),
+                        mime_type: Some("image/png".to_string()),
+                        name: None,
+                    })],
+                }],
+            )
+            .expect_err("unsupported image ref should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("unsupported Ollama input item: image input must be raw base64")
+        );
+    }
+}
+
+#[test]
 fn request_body_rejects_non_text_input_parts() {
     let err = OllamaProvider
         .request_body(
@@ -330,7 +427,76 @@ fn request_body_rejects_non_text_input_parts() {
         )
         .expect_err("non-text input should be rejected");
 
-    assert!(err.to_string().contains("unsupported LLM input item"));
+    assert!(
+        err.to_string()
+            .contains("unsupported Ollama input item: image input must be raw base64")
+    );
+}
+
+#[test]
+fn request_body_maps_text_tool_result() -> anyhow::Result<()> {
+    let request = OllamaProvider.request_body(
+        &json!({
+            "model": "qwen3",
+            "stream": true
+        }),
+        vec![LlmInputItem::ToolResult(LlmToolResult {
+            call_id: "call-1".to_string(),
+            content: vec![
+                LlmContentPart::text("first"),
+                LlmContentPart::text("second"),
+            ],
+        })],
+    )?;
+    let request = serde_json::from_value::<OllamaStoredRequest>(request)?;
+
+    assert_eq!(request.messages.len(), 1);
+    assert_eq!(request.messages[0].role, "tool");
+    assert_eq!(request.messages[0].content, "first\n\nsecond");
+    assert_eq!(request.messages[0].tool_call_id, "call-1");
+    Ok(())
+}
+
+#[test]
+fn request_body_rejects_item_reference_and_non_text_tool_result() {
+    let item_reference_error = OllamaProvider
+        .request_body(
+            &json!({
+                "model": "qwen3",
+                "stream": true
+            }),
+            vec![LlmInputItem::ItemReference {
+                item_id: "item-1".to_string(),
+            }],
+        )
+        .expect_err("item references should be rejected");
+    assert!(
+        item_reference_error
+            .to_string()
+            .contains("unsupported Ollama input item: item reference")
+    );
+
+    let tool_result_error = OllamaProvider
+        .request_body(
+            &json!({
+                "model": "qwen3",
+                "stream": true
+            }),
+            vec![LlmInputItem::ToolResult(LlmToolResult {
+                call_id: "call-1".to_string(),
+                content: vec![LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "aGVsbG8=".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: None,
+                })],
+            })],
+        )
+        .expect_err("image tool results should be rejected");
+    assert!(
+        tool_result_error
+            .to_string()
+            .contains("unsupported Ollama input item: image tool result")
+    );
 }
 
 #[test]
@@ -346,6 +512,205 @@ fn merge_content_does_not_duplicate_streamed_reasoning() {
     );
     assert_eq!(content.text, "final answer");
     assert_eq!(content.reasoning_summary.as_deref(), Some("abc"));
+}
+
+#[test]
+fn merge_content_preserves_local_tool_citations() {
+    let content = OllamaProvider::merge_content(
+        &OllamaChatMessage {
+            content: "final answer".to_string(),
+            ..Default::default()
+        },
+        vec![UrlCitation {
+            title: Some("Result".to_string()),
+            url: "https://example.com".to_string(),
+            start_index: None,
+            end_index: None,
+        }],
+        None,
+    );
+
+    assert_eq!(content.text, "final answer");
+    assert_eq!(content.citations.len(), 1);
+    assert_eq!(content.citations[0].url, "https://example.com");
+}
+
+#[test]
+fn stream_response_line_maps_ndjson_events_and_usage() -> anyhow::Result<()> {
+    let mut round_message = OllamaChatMessage {
+        role: "assistant".to_string(),
+        ..Default::default()
+    };
+    let mut reasoning = String::new();
+    let mut emitted_thinking_started = false;
+
+    let (events, usage, done) = OllamaProvider::apply_stream_response_line(
+        r#"{"message":{"thinking":"plan "},"done":false}"#,
+        &mut round_message,
+        &mut reasoning,
+        &mut emitted_thinking_started,
+    )?;
+    assert_eq!(
+        events,
+        vec![
+            ProviderRunEvent::ThinkingStarted,
+            ProviderRunEvent::ReasoningSummaryDelta("plan ".to_string())
+        ]
+    );
+    assert!(usage.is_none());
+    assert!(!done);
+
+    let (events, usage, done) = OllamaProvider::apply_stream_response_line(
+        r#"{"message":{"content":"answer"},"done":false}"#,
+        &mut round_message,
+        &mut reasoning,
+        &mut emitted_thinking_started,
+    )?;
+    assert_eq!(
+        events,
+        vec![ProviderRunEvent::TextDelta("answer".to_string())]
+    );
+    assert!(usage.is_none());
+    assert!(!done);
+
+    let (events, usage, done) = OllamaProvider::apply_stream_response_line(
+        r#"{"message":{"tool_calls":[{"function":{"name":"web_search","arguments":{"query":"rust"}}}]},"done":false}"#,
+        &mut round_message,
+        &mut reasoning,
+        &mut emitted_thinking_started,
+    )?;
+    assert!(matches!(
+        events.as_slice(),
+        [ProviderRunEvent::ToolCallRequested(call)]
+            if call.call_id == "ollama-tool-0"
+                && call.name == "web_search"
+                && call.arguments == json!({"query": "rust"})
+    ));
+    assert!(usage.is_none());
+    assert!(!done);
+
+    let (events, usage, done) = OllamaProvider::apply_stream_response_line(
+        r#"{"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":5,"total_duration":900}"#,
+        &mut round_message,
+        &mut reasoning,
+        &mut emitted_thinking_started,
+    )?;
+    assert!(events.is_empty());
+    let usage = usage.expect("final usage");
+    assert_eq!(usage.input_tokens, Some(3));
+    assert_eq!(usage.output_tokens, Some(5));
+    assert_eq!(usage.total_tokens, Some(8));
+    assert_eq!(usage.metadata["done_reason"], "stop");
+    assert_eq!(usage.metadata["total_duration"], 900);
+    assert!(done);
+
+    let output_events = OllamaProvider::output_item_done_events(&round_message);
+    assert!(matches!(
+        output_events.as_slice(),
+        [
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::Reasoning { summary: Some(summary) }),
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::Message { role: Role::Assistant, content }),
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolCall(call)),
+        ] if summary == "plan "
+            && content == &vec![LlmContentPart::text("answer")]
+            && call.call_id == "ollama-tool-0"
+    ));
+    Ok(())
+}
+
+#[test]
+fn non_stream_response_maps_output_items_and_usage() -> anyhow::Result<()> {
+    let response = serde_json::from_value::<OllamaChatResponse>(json!({
+        "message": {
+            "role": "assistant",
+            "content": "final answer",
+            "thinking": "reasoning summary",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {
+                        "name": "web_fetch",
+                        "arguments": { "url": "https://example.com" }
+                    }
+                }
+            ]
+        },
+        "done": true,
+        "done_reason": "stop",
+        "prompt_eval_count": 4,
+        "prompt_eval_duration": 40,
+        "eval_count": 6,
+        "eval_duration": 60
+    }))?;
+
+    let events = OllamaProvider::output_item_done_events(&response.message);
+    assert!(matches!(
+        events.as_slice(),
+        [
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::Reasoning { summary: Some(summary) }),
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::Message { role: Role::Assistant, content }),
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolCall(call)),
+        ] if summary == "reasoning summary"
+            && content == &vec![LlmContentPart::text("final answer")]
+            && call.call_id == "call-1"
+            && call.name == "web_fetch"
+    ));
+
+    let usage = response.usage().expect("usage");
+    assert_eq!(usage.input_tokens, Some(4));
+    assert_eq!(usage.output_tokens, Some(6));
+    assert_eq!(usage.total_tokens, Some(10));
+    assert_eq!(usage.metadata["prompt_eval_duration"], 40);
+    assert_eq!(usage.metadata["eval_duration"], 60);
+    Ok(())
+}
+
+#[test]
+fn aggregate_usage_sums_multiple_chat_rounds() {
+    let mut first = ProviderUsage::new(Some(3), Some(2), Some(5));
+    first.metadata = json!({
+        "done_reason": "tool_calls",
+        "total_duration": 100,
+        "load_duration": 10,
+        "prompt_eval_duration": 30
+    });
+    let mut second = ProviderUsage::new(Some(7), Some(11), Some(18));
+    second.metadata = json!({
+        "done_reason": "stop",
+        "total_duration": 300,
+        "load_duration": 20,
+        "eval_duration": 90
+    });
+
+    let usage = OllamaProvider::aggregate_usage(Some(first), Some(second)).expect("usage");
+    assert_eq!(usage.input_tokens, Some(10));
+    assert_eq!(usage.output_tokens, Some(13));
+    assert_eq!(usage.total_tokens, Some(23));
+    assert_eq!(usage.metadata["done_reason"], "stop");
+    assert_eq!(usage.metadata["total_duration"], 400);
+    assert_eq!(usage.metadata["load_duration"], 30);
+    assert_eq!(usage.metadata["prompt_eval_duration"], 30);
+    assert_eq!(usage.metadata["eval_duration"], 90);
+}
+
+#[test]
+fn tool_result_output_item_uses_provider_neutral_type() {
+    let message = OllamaChatMessage {
+        role: "tool".to_string(),
+        content: r#"{"results":[]}"#.to_string(),
+        tool_call_id: "call-1".to_string(),
+        ..Default::default()
+    };
+    let tool_result = OllamaProvider::provider_tool_result(&message);
+
+    assert_eq!(tool_result.call_id, "call-1");
+    assert_eq!(
+        ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolResult(tool_result)),
+        ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolResult(LlmToolResult {
+            call_id: "call-1".to_string(),
+            content: vec![LlmContentPart::text(r#"{"results":[]}"#)],
+        }))
+    );
 }
 
 #[test]
