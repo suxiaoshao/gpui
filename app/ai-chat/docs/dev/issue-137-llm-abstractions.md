@@ -194,11 +194,13 @@ The current implementation keeps request persistence additive: existing provider
 
 - Added optional provider run state plumbing so OpenAI can build request bodies with `previous_response_id` while other providers keep existing request construction behavior.
 - Conversation panel and temporary chat now use compatible persisted OpenAI assistant run state in contextual mode, trim history before that response, and fall back to full transcript behavior for non-contextual modes or incompatible state.
+- OpenAI continuation is gated by matching persisted provider/model/run id, non-secret provider settings snapshot, and request context key. The request context key is the Responses request body with `input` and `previous_response_id` removed, so template/tool/reasoning/stream changes prevent stale continuation while input deltas do not.
 - OpenAI request conversion now emits Responses content parts for text, image references, file references, tool results, and item references; unsupported audio or generic attachments fail explicitly.
 - OpenAI stream and response parsing now maps message, reasoning, hosted tool, function-call, and MCP-related output items into provider-neutral events where existing core types can represent them.
 - Function-call argument completion now yields `ToolCallRequested`; this stage intentionally does not add generic tool execution, MCP server configuration, approval UI, or capability-gated controls.
 - Validation run:
   - `cargo fmt`
+  - `cargo test -p ai-chat llm::run_persistence`
   - `cargo test -p ai-chat llm::provider::openai -- --nocapture`
   - `cargo test -p ai-chat features::home::tabs::conversation_panel -- --nocapture`
   - `cargo test -p ai-chat features::temporary::detail -- --nocapture`

@@ -17,7 +17,8 @@ use crate::{
     foundation::i18n::I18n,
     llm::{
         LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
-        ProviderRunRunner, ProviderRunState, build_input_items, provider_by_name,
+        ProviderRunRunner, ProviderRunState, build_input_items,
+        persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
     },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
@@ -726,20 +727,30 @@ impl ConversationPanelView {
         let provider_name = context.composer_snapshot.provider_name.clone();
         let template = context.composer_snapshot.request_template.clone();
         let mode = context.composer_snapshot.mode;
+        let prompts = context.composer_snapshot.prompts.clone();
         let (history_messages, continuation) =
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
                 let conversation = Conversation::find(context.conversation_id, conn)?;
+                let request_context_key = openai_request_context_key(
+                    &provider_name,
+                    &template,
+                    prompts.clone(),
+                    mode,
+                    &conversation.messages,
+                    (user_message_role, &user_message_content),
+                )?;
                 let continuation = openai_continuation_candidate(
                     &provider_name,
                     &template,
                     mode,
                     &conversation.messages,
+                    &context.config,
+                    request_context_key.as_ref(),
                     conn,
                 )?;
                 Ok::<_, AiChatError>((conversation.messages, continuation))
             })??;
-        let prompts = context.composer_snapshot.prompts.clone();
         let run_request = build_run_request_with_continuation(
             &provider_name,
             &template,
@@ -1245,12 +1256,44 @@ fn template_model(template: &serde_json::Value) -> Option<&str> {
 fn compatible_openai_run_state(
     provider_name: &str,
     model: &str,
+    current_settings: &serde_json::Value,
+    current_request_context_key: &serde_json::Value,
     run_state: &MessageRunState,
 ) -> bool {
-    provider_name == "OpenAI"
-        && run_state.provider == provider_name
-        && run_state.run_id.as_ref().is_some_and(|id| !id.is_empty())
-        && run_state.model.as_deref() == Some(model)
+    if provider_name != "OpenAI"
+        || run_state.provider != provider_name
+        || run_state.run_id.as_ref().is_none_or(|id| id.is_empty())
+        || run_state.model.as_deref() != Some(model)
+        || run_state.settings.as_ref() != Some(current_settings)
+    {
+        return false;
+    }
+
+    provider_run_request_context_key(&run_state.request_body) == *current_request_context_key
+}
+
+fn openai_request_context_key(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    current_user_message: (Role, &str),
+) -> AiChatResult<Option<serde_json::Value>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let history = build_history_messages(
+        prompts,
+        mode,
+        history_messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    let request = provider_by_name(provider_name)?.build_run_request(template, history)?;
+    Ok(Some(provider_run_request_context_key(
+        &request.request_body,
+    )))
 }
 
 fn openai_continuation_candidate(
@@ -1258,12 +1301,20 @@ fn openai_continuation_candidate(
     template: &serde_json::Value,
     mode: Mode,
     history_messages: &[Message],
+    config: &AiChatConfig,
+    current_request_context_key: Option<&serde_json::Value>,
     conn: &mut diesel::SqliteConnection,
 ) -> AiChatResult<Option<ContinuationCandidate>> {
     if provider_name != "OpenAI" || mode != Mode::Contextual {
         return Ok(None);
     }
     let Some(model) = template_model(template) else {
+        return Ok(None);
+    };
+    let Some(current_settings) = persisted_provider_settings_snapshot(provider_name, config) else {
+        return Ok(None);
+    };
+    let Some(current_request_context_key) = current_request_context_key else {
         return Ok(None);
     };
 
@@ -1277,7 +1328,13 @@ fn openai_continuation_candidate(
         let Some(run_state) = Message::run_state(message.id, conn)? else {
             continue;
         };
-        if compatible_openai_run_state(provider_name, model, &run_state) {
+        if compatible_openai_run_state(
+            provider_name,
+            model,
+            &current_settings,
+            current_request_context_key,
+            &run_state,
+        ) {
             return Ok(Some(ContinuationCandidate {
                 after_index: index,
                 state: run_state.to_provider_state(),

@@ -2,6 +2,8 @@ use super::*;
 use crate::database::{Content, ConversationTemplatePrompt, Status};
 use time::OffsetDateTime;
 
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+
 fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, String)> {
     items
         .into_iter()
@@ -28,6 +30,26 @@ fn make_message(id: i32, role: Role, status: Status, content: Content) -> Messag
         start_time: now,
         end_time: now,
         error: None,
+    }
+}
+
+fn openai_settings(base_url: &str) -> serde_json::Value {
+    serde_json::json!({ "baseUrl": base_url })
+}
+
+fn message_run_state(
+    settings: Option<serde_json::Value>,
+    request_body: serde_json::Value,
+) -> MessageRunState {
+    MessageRunState {
+        provider: "OpenAI".to_string(),
+        run_id: Some("resp_1".to_string()),
+        output_item_ids: vec!["msg_1".to_string()],
+        continuation_metadata: serde_json::Value::Null,
+        request_body,
+        usage: None,
+        model: Some("gpt-4o".to_string()),
+        settings,
     }
 }
 
@@ -224,6 +246,70 @@ fn build_run_request_with_openai_continuation_trims_prior_history() -> anyhow::R
     assert_eq!(input[2]["role"], "user");
     assert_eq!(input[2]["content"][0]["text"], "latest");
     Ok(())
+}
+
+#[test]
+fn compatible_openai_run_state_requires_settings_and_request_context() {
+    let settings = openai_settings(DEFAULT_OPENAI_BASE_URL);
+    let current_context = provider_run_request_context_key(&serde_json::json!({
+        "model": "gpt-4o",
+        "stream": false,
+        "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "current" }] }]
+    }));
+    let state = message_run_state(
+        Some(settings.clone()),
+        serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false,
+            "previous_response_id": "resp_0",
+            "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "old" }] }]
+        }),
+    );
+
+    assert!(compatible_openai_run_state(
+        "OpenAI",
+        "gpt-4o",
+        &settings,
+        &current_context,
+        &state,
+    ));
+
+    let missing_settings = message_run_state(None, state.request_body.clone());
+    assert!(!compatible_openai_run_state(
+        "OpenAI",
+        "gpt-4o",
+        &settings,
+        &current_context,
+        &missing_settings,
+    ));
+
+    let different_settings = message_run_state(
+        Some(openai_settings("https://proxy.openai.local/v1")),
+        state.request_body.clone(),
+    );
+    assert!(!compatible_openai_run_state(
+        "OpenAI",
+        "gpt-4o",
+        &settings,
+        &current_context,
+        &different_settings,
+    ));
+
+    let different_context = message_run_state(
+        Some(settings.clone()),
+        serde_json::json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "old" }] }]
+        }),
+    );
+    assert!(!compatible_openai_run_state(
+        "OpenAI",
+        "gpt-4o",
+        &settings,
+        &current_context,
+        &different_context,
+    ));
 }
 
 #[test]

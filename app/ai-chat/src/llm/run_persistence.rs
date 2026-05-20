@@ -135,7 +135,7 @@ impl ProviderRunPersistenceAccumulator {
     }
 }
 
-fn persisted_provider_settings_snapshot(
+pub(crate) fn persisted_provider_settings_snapshot(
     provider_name: &str,
     config: &AiChatConfig,
 ) -> Option<serde_json::Value> {
@@ -157,6 +157,17 @@ fn persisted_provider_settings_snapshot(
     }
 
     (!snapshot.is_empty()).then(|| serde_json::Value::Object(snapshot))
+}
+
+pub(crate) fn provider_run_request_context_key(
+    request_body: &serde_json::Value,
+) -> serde_json::Value {
+    let mut context_key = request_body.clone();
+    if let Some(context_key) = context_key.as_object_mut() {
+        context_key.remove("input");
+        context_key.remove("previous_response_id");
+    }
+    context_key
 }
 
 fn safe_provider_setting_value(value: &serde_json::Value) -> serde_json::Value {
@@ -191,7 +202,9 @@ mod tests {
         state::AiChatConfig,
     };
 
-    use super::{ProviderRunPersistenceAccumulator, ProviderRunRequest};
+    use super::{
+        ProviderRunPersistenceAccumulator, ProviderRunRequest, provider_run_request_context_key,
+    };
 
     fn request() -> ProviderRunRequest {
         ProviderRunRequest::new(
@@ -309,5 +322,31 @@ httpProxy = "http://proxy-user:proxy-pass@127.0.0.1:7890"
         assert!(!serialized.contains("proxy-user"));
         assert!(!serialized.contains("proxy-pass"));
         Ok(())
+    }
+
+    #[test]
+    fn request_context_key_ignores_input_and_previous_response_id() {
+        let left = provider_run_request_context_key(&serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false,
+            "previous_response_id": "resp_1",
+            "input": [{ "role": "user", "content": "old" }],
+            "tools": [{ "type": "web_search_preview" }]
+        }));
+        let right = provider_run_request_context_key(&serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false,
+            "input": [{ "role": "user", "content": "new" }],
+            "tools": [{ "type": "web_search_preview" }]
+        }));
+        let different = provider_run_request_context_key(&serde_json::json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "input": [{ "role": "user", "content": "old" }],
+            "tools": [{ "type": "web_search_preview" }]
+        }));
+
+        assert_eq!(left, right);
+        assert_ne!(left, different);
     }
 }
