@@ -6,7 +6,8 @@ use crate::{
 };
 
 use super::{
-    LlmOutputItem, LlmToolCall, LlmToolResult, ProviderRunRequest, ProviderRunState, ProviderUsage,
+    LlmOutputItem, LlmToolCall, LlmToolResult, ProviderRunRequest, ProviderRunState,
+    ProviderSettingsFieldKind, ProviderUsage, provider_settings_specs,
 };
 
 #[derive(Debug, Clone)]
@@ -23,9 +24,7 @@ pub(crate) struct ProviderRunPersistenceAccumulator {
 
 impl ProviderRunPersistenceAccumulator {
     pub(crate) fn new(request: &ProviderRunRequest, config: &AiChatConfig) -> Self {
-        let settings = config
-            .get_provider_settings(&request.provider_name)
-            .and_then(|settings| serde_json::to_value(settings).ok());
+        let settings = persisted_provider_settings_snapshot(&request.provider_name, config);
         Self {
             provider_name: request.provider_name.clone(),
             request_body: request.request_body.clone(),
@@ -136,6 +135,54 @@ impl ProviderRunPersistenceAccumulator {
     }
 }
 
+fn persisted_provider_settings_snapshot(
+    provider_name: &str,
+    config: &AiChatConfig,
+) -> Option<serde_json::Value> {
+    let settings = config.get_provider_settings(provider_name)?;
+    let settings = serde_json::to_value(settings).ok()?;
+    let settings = settings.as_object()?;
+    let spec = provider_settings_specs()
+        .into_iter()
+        .find(|spec| spec.provider_name == provider_name)?;
+
+    let mut snapshot = serde_json::Map::new();
+    for field in spec.fields {
+        if field.kind == ProviderSettingsFieldKind::SecretText {
+            continue;
+        }
+        if let Some(value) = settings.get(field.key) {
+            snapshot.insert(field.key.to_string(), safe_provider_setting_value(value));
+        }
+    }
+
+    (!snapshot.is_empty()).then(|| serde_json::Value::Object(snapshot))
+}
+
+fn safe_provider_setting_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(redact_url_credentials(value))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return value.to_string();
+    };
+    if url.username().is_empty() && url.password().is_none() {
+        return value.to_string();
+    }
+
+    if !url.username().is_empty() {
+        let _ = url.set_username("redacted");
+    }
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -229,5 +276,38 @@ mod tests {
                 .and_then(|usage| usage.input_tokens),
             Some(1)
         );
+    }
+
+    #[test]
+    fn persisted_settings_exclude_secret_provider_fields() -> anyhow::Result<()> {
+        let request = request();
+        let mut config = AiChatConfig::default();
+        config.set_provider_settings(
+            "OpenAI",
+            toml::from_str(
+                r#"
+apiKey = "sk-test-secret"
+baseUrl = "https://api.openai.com/v1"
+httpProxy = "http://proxy-user:proxy-pass@127.0.0.1:7890"
+"#,
+            )?,
+        );
+        let mut accumulator = ProviderRunPersistenceAccumulator::new(&request, &config);
+        accumulator.record_usage(ProviderUsage::new(Some(1), None, Some(1)));
+
+        let persistence = accumulator.persistence().expect("persistence");
+        let settings = persistence
+            .run_state
+            .expect("run state")
+            .settings
+            .expect("settings snapshot");
+        assert_eq!(settings["baseUrl"], "https://api.openai.com/v1");
+        assert_eq!(settings["httpProxy"], "http://redacted@127.0.0.1:7890/");
+        assert!(settings.get("apiKey").is_none());
+        let serialized = serde_json::to_string(&settings)?;
+        assert!(!serialized.contains("sk-test-secret"));
+        assert!(!serialized.contains("proxy-user"));
+        assert!(!serialized.contains("proxy-pass"));
+        Ok(())
     }
 }
