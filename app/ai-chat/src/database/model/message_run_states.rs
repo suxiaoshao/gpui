@@ -44,7 +44,6 @@ pub struct SqlMessageRunState {
 }
 
 impl SqlMessageRunState {
-    #[cfg(test)]
     pub fn find_by_message_id(
         message_id: i32,
         conn: &mut SqliteConnection,

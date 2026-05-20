@@ -164,7 +164,10 @@ fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()
     let first_send_content = &messages[0].send_content;
     let second_send_content = &messages[1].send_content;
     assert_eq!(first_send_content["model"], "gpt-4o");
-    assert_eq!(first_send_content["input"][0]["content"], "hello");
+    assert_eq!(
+        first_send_content["input"][0]["content"][0]["text"],
+        "hello"
+    );
     assert_eq!(second_send_content, first_send_content);
     assert_run_tables_empty(&mut v5_conn)?;
 

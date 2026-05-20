@@ -1,4 +1,4 @@
-use super::{LlmInputItem, ProviderRunEvent, ProviderRunRequest};
+use super::{LlmInputItem, ProviderRunEvent, ProviderRunRequest, ProviderRunState};
 use crate::{
     errors::{AiChatError, AiChatResult},
     state::AiChatConfig,
@@ -264,6 +264,14 @@ pub(crate) trait Provider: Sync {
         template: &serde_json::Value,
         input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<ProviderRunRequest>;
+    fn build_run_request_with_state(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+        _state: Option<ProviderRunState>,
+    ) -> AiChatResult<ProviderRunRequest> {
+        self.build_run_request(template, input_items)
+    }
     fn run<'a>(
         &'a self,
         config: AiChatConfig,
@@ -276,6 +284,17 @@ pub(crate) trait Provider: Sync {
         input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<serde_json::Value> {
         Ok(self.build_run_request(template, input_items)?.request_body)
+    }
+    #[cfg(test)]
+    fn request_body_with_state(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+        state: Option<ProviderRunState>,
+    ) -> AiChatResult<serde_json::Value> {
+        Ok(self
+            .build_run_request_with_state(template, input_items, state)?
+            .request_body)
     }
     fn list_models(
         &self,

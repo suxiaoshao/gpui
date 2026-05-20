@@ -5,11 +5,11 @@ use super::{
     normalized_or_default, optional_setting_value,
 };
 use crate::{
-    database::{Content, UrlCitation},
+    database::{Content, Role, UrlCitation},
     errors::{AiChatError, AiChatResult},
     llm::{
-        LlmHostedToolCall, LlmInputItem, LlmOutputItem, ProviderRunEvent, ProviderRunRequest,
-        ProviderRunState, ProviderUsage,
+        LlmContentPart, LlmHostedToolCall, LlmInputItem, LlmMcpApprovalRequest, LlmOutputItem,
+        LlmToolCall, ProviderRunEvent, ProviderRunRequest, ProviderRunState, ProviderUsage,
     },
     state::AiChatConfig,
 };
@@ -26,6 +26,7 @@ use nom::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value as JsonValue};
 use toml::Value;
 use tracing::{Level, event};
 
@@ -135,10 +136,21 @@ fn save_openai_settings(settings: OpenAISettings, cx: &mut App) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct HostedTool {
     #[serde(rename = "type")]
     tool_type: String,
+    #[serde(default, flatten)]
+    extra: Map<String, JsonValue>,
+}
+
+impl HostedTool {
+    fn new(tool_type: impl Into<String>) -> Self {
+        Self {
+            tool_type: tool_type.into(),
+            extra: Map::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,18 +163,68 @@ struct ReasoningConfig {
 #[derive(Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    input: Vec<OpenAIInputMessage>,
+    input: Vec<OpenAIInputItem>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<HostedTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum OpenAIInputItem {
+    Message(OpenAIInputMessage),
+    ToolResult(OpenAIToolResultInput),
+    ItemReference(OpenAIItemReferenceInput),
 }
 
 #[derive(Debug, Serialize)]
 struct OpenAIInputMessage {
     role: &'static str,
-    content: String,
+    content: Vec<OpenAIInputContentPart>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum OpenAIInputContentPart {
+    #[serde(rename = "input_text")]
+    Text { text: String },
+    #[serde(rename = "input_image")]
+    Image {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image_url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_id: Option<String>,
+        detail: &'static str,
+    },
+    #[serde(rename = "input_file")]
+    File { file_id: String },
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIToolResultInput {
+    #[serde(rename = "type")]
+    item_type: &'static str,
+    call_id: String,
+    output: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIItemReferenceInput {
+    #[serde(rename = "type")]
+    item_type: &'static str,
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,13 +235,19 @@ enum OpenAIResponseStreamEvent {
     #[serde(rename = "response.in_progress")]
     ResponseInProgress { response: OpenAIResponseSnapshot },
     #[serde(rename = "response.output_item.added")]
-    ResponseOutputItemAdded { item: OpenAIOutputItemEvent },
+    ResponseOutputItemAdded { item: OpenAIOutputItem },
     #[serde(rename = "response.output_item.done")]
-    ResponseOutputItemDone { item: OpenAIOutputItemEvent },
+    ResponseOutputItemDone { item: OpenAIOutputItem },
     #[serde(rename = "response.reasoning_summary_text.delta")]
     ResponseReasoningSummaryTextDelta { delta: String },
     #[serde(rename = "response.output_text.delta")]
     ResponseOutputTextDelta { delta: String },
+    #[serde(rename = "response.function_call_arguments.done")]
+    ResponseFunctionCallArgumentsDone {
+        item_id: String,
+        name: String,
+        arguments: String,
+    },
     #[serde(rename = "response.completed")]
     ResponseCompleted { response: ResponsesCreateResponse },
     #[serde(rename = "response.incomplete")]
@@ -210,18 +278,10 @@ struct OpenAIIncompleteDetails {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIOutputItemEvent {
-    id: Option<String>,
-    #[serde(rename = "type")]
-    item_type: String,
-    status: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct OpenAIResponseSnapshot {
     id: Option<String>,
     #[serde(default)]
-    output: Vec<OpenAIOutputItemEvent>,
+    output: Vec<OpenAIOutputItem>,
     usage: Option<OpenAIUsage>,
 }
 
@@ -230,9 +290,17 @@ pub(crate) struct OpenAIRequestTemplate {
     model: String,
     stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<HostedTool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 impl Default for OpenAIRequestTemplate {
@@ -240,8 +308,12 @@ impl Default for OpenAIRequestTemplate {
         Self {
             model: "gpt-4o".to_string(),
             stream: true,
+            include: None,
             tools: None,
             reasoning: None,
+            text: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 }
@@ -259,18 +331,24 @@ struct ModelListItem {
 #[derive(Debug, Deserialize)]
 struct ResponsesCreateResponse {
     id: Option<String>,
-    output: Vec<OutputItem>,
+    output: Vec<OpenAIOutputItem>,
     usage: Option<OpenAIUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OutputItem {
+struct OpenAIOutputItem {
     id: Option<String>,
     #[serde(rename = "type")]
     item_type: Option<String>,
+    status: Option<String>,
+    role: Option<String>,
     content: Option<Vec<OutputContent>>,
     #[serde(default)]
     summary: Vec<ReasoningSummaryPart>,
+    call_id: Option<String>,
+    name: Option<String>,
+    arguments: Option<JsonValue>,
+    server_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,20 +398,121 @@ impl OutputAnnotation {
     }
 }
 
-impl OpenAIOutputItemEvent {
+impl OpenAIOutputItem {
+    fn output_item_id(&self) -> Option<String> {
+        self.id.clone().or_else(|| self.call_id.clone())
+    }
+
+    fn call_id(&self) -> Option<String> {
+        self.call_id.clone().or_else(|| self.id.clone())
+    }
+
     fn output_item(&self) -> Option<LlmOutputItem> {
-        match self.item_type.as_str() {
-            "reasoning" => Some(LlmOutputItem::Reasoning { summary: None }),
-            "web_search_call" | "file_search_call" | "image_generation_call" => {
-                Some(LlmOutputItem::HostedToolCall(LlmHostedToolCall {
-                    call_id: self.id.clone().unwrap_or_default(),
-                    tool_type: self.item_type.clone(),
-                    status: self.status.clone(),
-                }))
-            }
+        let item_type = self.item_type.as_deref()?;
+        match item_type {
+            "message" => Some(LlmOutputItem::Message {
+                role: openai_output_role(self.role.as_deref()),
+                content: self.output_content_parts(),
+            }),
+            "reasoning" => Some(LlmOutputItem::Reasoning {
+                summary: self.reasoning_summary(),
+            }),
+            "function_call" | "custom_tool_call" => Some(LlmOutputItem::ToolCall(
+                self.tool_call(item_type.to_string()),
+            )),
+            "mcp_approval_request" => Some(LlmOutputItem::McpApproval(self.mcp_approval_request())),
+            "web_search_call"
+            | "file_search_call"
+            | "image_generation_call"
+            | "code_interpreter_call"
+            | "computer_call"
+            | "computer_call_output"
+            | "mcp_call"
+            | "mcp_list_tools" => Some(LlmOutputItem::HostedToolCall(LlmHostedToolCall {
+                call_id: self.output_item_id().unwrap_or_default(),
+                tool_type: item_type.to_string(),
+                status: self.status.clone(),
+            })),
             _ => None,
         }
     }
+
+    fn output_content_parts(&self) -> Vec<LlmContentPart> {
+        self.content
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|part| part.text_content_part())
+            .collect()
+    }
+
+    fn reasoning_summary(&self) -> Option<String> {
+        let summary = self
+            .summary
+            .iter()
+            .filter(|part| part.part_type == "summary_text")
+            .filter_map(|part| part.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        (!summary.trim().is_empty()).then_some(summary)
+    }
+
+    fn tool_call(&self, fallback_name: String) -> LlmToolCall {
+        LlmToolCall {
+            call_id: self.call_id().unwrap_or_default(),
+            name: self.name.clone().unwrap_or(fallback_name),
+            arguments: parse_openai_arguments(self.arguments.as_ref()),
+        }
+    }
+
+    fn mcp_approval_request(&self) -> LlmMcpApprovalRequest {
+        LlmMcpApprovalRequest {
+            request_id: self.call_id().unwrap_or_default(),
+            server_label: self.server_label.clone().unwrap_or_default(),
+            tool_name: self.name.clone().unwrap_or_default(),
+            arguments: parse_openai_arguments(self.arguments.as_ref()),
+        }
+    }
+}
+
+impl OutputContent {
+    fn text_content_part(&self) -> Option<LlmContentPart> {
+        match self.content_type.as_str() {
+            "output_text" | "refusal" => self.text.clone().map(LlmContentPart::Text),
+            _ => None,
+        }
+    }
+}
+
+fn parse_openai_arguments(arguments: Option<&JsonValue>) -> JsonValue {
+    match arguments {
+        Some(JsonValue::String(arguments)) => {
+            serde_json::from_str(arguments).unwrap_or_else(|_| JsonValue::String(arguments.clone()))
+        }
+        Some(arguments) => arguments.clone(),
+        None => serde_json::json!({}),
+    }
+}
+
+fn parse_openai_argument_string(arguments: &str) -> JsonValue {
+    serde_json::from_str(arguments).unwrap_or_else(|_| JsonValue::String(arguments.to_string()))
+}
+
+fn openai_output_role(role: Option<&str>) -> Role {
+    match role {
+        Some("developer") | Some("system") => Role::Developer,
+        Some("user") => Role::User,
+        Some("assistant") | None => Role::Assistant,
+        Some(_) => Role::Assistant,
+    }
+}
+
+fn continuation_metadata(request_body: &serde_json::Value) -> serde_json::Value {
+    request_body
+        .get("previous_response_id")
+        .cloned()
+        .map(|previous_response_id| serde_json::json!({ "previous_response_id": previous_response_id }))
+        .unwrap_or(serde_json::Value::Null)
 }
 
 impl OpenAIUsage {
@@ -346,7 +525,14 @@ impl ResponsesCreateResponse {
     fn output_item_ids(&self) -> Vec<String> {
         self.output
             .iter()
-            .filter_map(|item| item.id.clone())
+            .filter_map(OpenAIOutputItem::output_item_id)
+            .collect()
+    }
+
+    fn output_items(&self) -> Vec<LlmOutputItem> {
+        self.output
+            .iter()
+            .filter_map(OpenAIOutputItem::output_item)
             .collect()
     }
 
@@ -359,14 +545,7 @@ impl ResponsesCreateResponse {
         let mut citations = Vec::new();
         for item in self.output {
             if item.item_type.as_deref() == Some("reasoning") {
-                let summary = item
-                    .summary
-                    .into_iter()
-                    .filter(|part| part.part_type == "summary_text")
-                    .filter_map(|part| part.text)
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if !summary.trim().is_empty() {
+                if let Some(summary) = item.reasoning_summary() {
                     append_reasoning_summary_block(&mut content, &summary);
                 }
                 continue;
@@ -559,7 +738,12 @@ fn classify_model(id: &str) -> Option<ModelCapabilities> {
     Some(capabilities)
 }
 
+#[cfg(test)]
 fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRunEvent>> {
+    Ok(parse_response_stream_events(message)?.into_iter().next())
+}
+
+fn parse_response_stream_events(message: &str) -> AiChatResult<Vec<ProviderRunEvent>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
     match event {
         OpenAIResponseStreamEvent::ResponseCreated { response }
@@ -568,25 +752,41 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRun
             let _ = response.output;
             Ok(response
                 .usage
-                .map(|usage| ProviderRunEvent::UsageUpdated(usage.provider_usage())))
+                .map(|usage| vec![ProviderRunEvent::UsageUpdated(usage.provider_usage())])
+                .unwrap_or_default())
         }
         OpenAIResponseStreamEvent::ResponseOutputItemAdded { item }
-            if item.item_type == "reasoning" =>
+            if item.item_type.as_deref() == Some("reasoning") =>
         {
-            Ok(Some(ProviderRunEvent::ThinkingStarted))
+            let mut events = vec![ProviderRunEvent::ThinkingStarted];
+            if let Some(item) = item.output_item() {
+                events.push(ProviderRunEvent::OutputItemAdded(item));
+            }
+            Ok(events)
         }
-        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item } => {
-            Ok(item.output_item().map(ProviderRunEvent::OutputItemAdded))
-        }
-        OpenAIResponseStreamEvent::ResponseOutputItemDone { item } => {
-            Ok(item.output_item().map(ProviderRunEvent::OutputItemDone))
-        }
+        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item } => Ok(item
+            .output_item()
+            .map(|item| vec![ProviderRunEvent::OutputItemAdded(item)])
+            .unwrap_or_default()),
+        OpenAIResponseStreamEvent::ResponseOutputItemDone { item } => Ok(item
+            .output_item()
+            .map(|item| vec![ProviderRunEvent::OutputItemDone(item)])
+            .unwrap_or_default()),
         OpenAIResponseStreamEvent::ResponseReasoningSummaryTextDelta { delta } => {
-            Ok(Some(ProviderRunEvent::ReasoningSummaryDelta(delta)))
+            Ok(vec![ProviderRunEvent::ReasoningSummaryDelta(delta)])
         }
         OpenAIResponseStreamEvent::ResponseOutputTextDelta { delta } => {
-            Ok(Some(ProviderRunEvent::TextDelta(delta)))
+            Ok(vec![ProviderRunEvent::TextDelta(delta)])
         }
+        OpenAIResponseStreamEvent::ResponseFunctionCallArgumentsDone {
+            item_id,
+            name,
+            arguments,
+        } => Ok(vec![ProviderRunEvent::ToolCallRequested(LlmToolCall {
+            call_id: item_id,
+            name,
+            arguments: parse_openai_argument_string(&arguments),
+        })]),
         OpenAIResponseStreamEvent::ResponseCompleted { response } => {
             let state = ProviderRunState::new(
                 OpenAIProvider.name(),
@@ -595,11 +795,11 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRun
                 serde_json::Value::Null,
             );
             let usage = response.usage();
-            Ok(Some(ProviderRunEvent::Completed {
+            Ok(vec![ProviderRunEvent::Completed {
                 content: response.into_content(),
                 state: Some(state),
                 usage,
-            }))
+            }])
         }
         OpenAIResponseStreamEvent::Error { message, .. } => Err(AiChatError::StreamError(message)),
         OpenAIResponseStreamEvent::ResponseFailed { response } => {
@@ -616,9 +816,9 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRun
                 .or_else(|| response.error.map(|error| error.message))
                 .unwrap_or_else(|| "OpenAI response incomplete".to_string());
             let _ = response.id;
-            Ok(Some(ProviderRunEvent::Failed { message }))
+            Ok(vec![ProviderRunEvent::Failed { message }])
         }
-        OpenAIResponseStreamEvent::Other => Ok(None),
+        OpenAIResponseStreamEvent::Other => Ok(Vec::new()),
     }
 }
 
@@ -729,9 +929,7 @@ impl OpenAIProvider {
     }
 
     fn web_search_tool() -> HostedTool {
-        HostedTool {
-            tool_type: "web_search".to_string(),
-        }
+        HostedTool::new("web_search")
     }
 
     fn default_tools_for_model(model: &ProviderModel) -> Option<Vec<HostedTool>> {
@@ -749,31 +947,135 @@ impl OpenAIProvider {
         (!tools.is_empty()).then_some(tools)
     }
 
-    fn get_body(
-        template: &OpenAIRequestTemplate,
+    fn get_body<'a>(
+        template: &'a OpenAIRequestTemplate,
         input_items: Vec<LlmInputItem>,
-    ) -> AiChatResult<ChatRequest<'_>> {
+        previous_state: Option<&ProviderRunState>,
+    ) -> AiChatResult<ChatRequest<'a>> {
         Ok(ChatRequest {
             input: input_items
                 .into_iter()
-                .map(Self::to_openai_input_message)
+                .map(Self::to_openai_input_item)
                 .collect::<AiChatResult<_>>()?,
             model: template.model.as_str(),
             stream: template.stream,
+            previous_response_id: previous_state
+                .filter(|state| state.provider_name == OpenAIProvider.name())
+                .and_then(|state| state.run_id.clone()),
+            include: template.include.clone(),
             tools: template
                 .tools
                 .clone()
                 .and_then(|tools| Self::sanitize_tools(&template.model, tools)),
             reasoning: Self::sanitize_reasoning(&template.model, template.reasoning.clone()),
+            text: template.text.clone(),
+            tool_choice: template.tool_choice.clone(),
+            parallel_tool_calls: template.parallel_tool_calls,
         })
     }
 
-    fn to_openai_input_message(item: LlmInputItem) -> AiChatResult<OpenAIInputMessage> {
-        let (role, content) = item.single_text()?;
-        Ok(OpenAIInputMessage {
-            role,
-            content: content.to_string(),
+    fn to_openai_input_item(item: LlmInputItem) -> AiChatResult<OpenAIInputItem> {
+        Ok(match item {
+            LlmInputItem::System { content } => OpenAIInputItem::Message(OpenAIInputMessage {
+                role: "system",
+                content: Self::to_openai_content_parts(content)?,
+            }),
+            LlmInputItem::Developer { content } => OpenAIInputItem::Message(OpenAIInputMessage {
+                role: "developer",
+                content: Self::to_openai_content_parts(content)?,
+            }),
+            LlmInputItem::User { content } => OpenAIInputItem::Message(OpenAIInputMessage {
+                role: "user",
+                content: Self::to_openai_content_parts(content)?,
+            }),
+            LlmInputItem::Assistant { content } => OpenAIInputItem::Message(OpenAIInputMessage {
+                role: "assistant",
+                content: Self::to_openai_content_parts(content)?,
+            }),
+            LlmInputItem::ToolResult(result) => {
+                OpenAIInputItem::ToolResult(OpenAIToolResultInput {
+                    item_type: "function_call_output",
+                    call_id: result.call_id,
+                    output: Self::tool_result_output(result.content)?,
+                })
+            }
+            LlmInputItem::ItemReference { item_id } => {
+                OpenAIInputItem::ItemReference(OpenAIItemReferenceInput {
+                    item_type: "item_reference",
+                    id: item_id,
+                })
+            }
         })
+    }
+
+    fn to_openai_content_parts(
+        content: Vec<LlmContentPart>,
+    ) -> AiChatResult<Vec<OpenAIInputContentPart>> {
+        if content.is_empty() {
+            return Err(Self::unsupported_input("empty content"));
+        }
+        content
+            .into_iter()
+            .map(Self::to_openai_content_part)
+            .collect()
+    }
+
+    fn to_openai_content_part(part: LlmContentPart) -> AiChatResult<OpenAIInputContentPart> {
+        Ok(match part {
+            LlmContentPart::Text(text) => OpenAIInputContentPart::Text { text },
+            LlmContentPart::ImageRef(attachment) if Self::is_image_url(&attachment.id) => {
+                OpenAIInputContentPart::Image {
+                    image_url: Some(attachment.id),
+                    file_id: None,
+                    detail: "auto",
+                }
+            }
+            LlmContentPart::ImageRef(attachment) => OpenAIInputContentPart::Image {
+                image_url: None,
+                file_id: Some(attachment.id),
+                detail: "auto",
+            },
+            LlmContentPart::FileRef(attachment) => OpenAIInputContentPart::File {
+                file_id: attachment.id,
+            },
+            LlmContentPart::AudioRef(_) => return Err(Self::unsupported_input("audio content")),
+            LlmContentPart::AttachmentRef(_) => {
+                return Err(Self::unsupported_input("generic attachment content"));
+            }
+        })
+    }
+
+    fn tool_result_output(content: Vec<LlmContentPart>) -> AiChatResult<String> {
+        if content.is_empty() {
+            return Err(Self::unsupported_input("empty tool result"));
+        }
+        let mut output = String::new();
+        for part in content {
+            match part {
+                LlmContentPart::Text(text) => output.push_str(&text),
+                LlmContentPart::ImageRef(_) => {
+                    return Err(Self::unsupported_input("image tool result"));
+                }
+                LlmContentPart::FileRef(_) => {
+                    return Err(Self::unsupported_input("file tool result"));
+                }
+                LlmContentPart::AudioRef(_) => {
+                    return Err(Self::unsupported_input("audio tool result"));
+                }
+                LlmContentPart::AttachmentRef(_) => {
+                    return Err(Self::unsupported_input("generic attachment tool result"));
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    fn is_image_url(id: &str) -> bool {
+        id.starts_with("http://") || id.starts_with("https://") || id.starts_with("data:")
+    }
+
+    fn unsupported_input(kind: &str) -> AiChatError {
+        AiChatError::StreamError(format!("unsupported OpenAI Responses input item: {kind}"))
     }
 
     fn get_reqwest_client(
@@ -811,8 +1113,12 @@ impl Provider for OpenAIProvider {
         Ok(serde_json::to_value(OpenAIRequestTemplate {
             model: model.id.clone(),
             stream: model.capabilities.supports_streaming(),
+            include: None,
             tools: Self::default_tools_for_model(model),
             reasoning: None,
+            text: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
         })?)
     }
 
@@ -821,13 +1127,27 @@ impl Provider for OpenAIProvider {
         template: &serde_json::Value,
         input_items: Vec<LlmInputItem>,
     ) -> AiChatResult<ProviderRunRequest> {
+        self.build_run_request_with_state(template, input_items, None)
+    }
+
+    fn build_run_request_with_state(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+        state: Option<ProviderRunState>,
+    ) -> AiChatResult<ProviderRunRequest> {
         let template = OpenAIRequestTemplate::deserialize(template)?;
-        let request_body = serde_json::to_value(Self::get_body(&template, input_items.clone())?)?;
-        Ok(ProviderRunRequest::new(
-            self.name(),
+        let request_body = serde_json::to_value(Self::get_body(
+            &template,
+            input_items.clone(),
+            state.as_ref(),
+        )?)?;
+        Ok(ProviderRunRequest {
+            provider_name: self.name().to_string(),
             request_body,
             input_items,
-        ))
+            state,
+        })
     }
 
     fn run<'a>(
@@ -858,11 +1178,15 @@ impl Provider for OpenAIProvider {
                             let message = message.data;
                             if message == "[DONE]" {
                                 break;
-                            } else if let Some(mut event) = parse_response_stream_event(&message)? {
-                                if let ProviderRunEvent::Completed { state: Some(state), .. } = &mut event {
-                                    state.request_body = request.request_body.clone();
+                            } else {
+                                for mut event in parse_response_stream_events(&message)? {
+                                    if let ProviderRunEvent::Completed { state: Some(state), .. } = &mut event {
+                                        state.request_body = request.request_body.clone();
+                                        state.continuation_metadata =
+                                            continuation_metadata(&request.request_body);
+                                    }
+                                    yield event;
                                 }
-                                yield event;
                             }
                         }
                         Err(err) => {
@@ -879,13 +1203,19 @@ impl Provider for OpenAIProvider {
                 let response = response
                     .json::<ResponsesCreateResponse>()
                     .await?;
+                let output_items = response.output_items();
                 let state = ProviderRunState::new(
                     self.name(),
                     response.id.clone(),
                     response.output_item_ids(),
                     request.request_body.clone(),
                 );
+                let mut state = state;
+                state.continuation_metadata = continuation_metadata(&request.request_body);
                 let usage = response.usage();
+                for item in output_items {
+                    yield ProviderRunEvent::OutputItemDone(item);
+                }
                 yield ProviderRunEvent::Completed {
                     content: response.into_content(),
                     state: Some(state),

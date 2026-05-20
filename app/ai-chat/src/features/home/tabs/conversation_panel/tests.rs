@@ -172,6 +172,61 @@ fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
 }
 
 #[test]
+fn build_run_request_with_openai_continuation_trims_prior_history() -> anyhow::Result<()> {
+    let template = serde_json::json!({
+        "model": "gpt-4o",
+        "stream": false
+    });
+    let request = build_run_request_with_continuation(
+        "OpenAI",
+        &template,
+        vec![ConversationTemplatePrompt {
+            prompt: "system".to_string(),
+            role: Role::Developer,
+        }],
+        Mode::Contextual,
+        &[
+            make_message(1, Role::User, Status::Normal, Content::new("old user")),
+            make_message(
+                2,
+                Role::Assistant,
+                Status::Normal,
+                Content::new("old answer"),
+            ),
+            make_message(
+                3,
+                Role::User,
+                Status::Normal,
+                Content::new("after continuation"),
+            ),
+        ],
+        (Role::User, "latest"),
+        Some(ContinuationCandidate {
+            after_index: 1,
+            state: ProviderRunState::new(
+                "OpenAI",
+                Some("resp_1".to_string()),
+                vec!["msg_1".to_string()],
+                serde_json::json!({ "model": "gpt-4o" }),
+            ),
+        }),
+    )?;
+
+    assert_eq!(request.request_body["previous_response_id"], "resp_1");
+    let input = request.request_body["input"]
+        .as_array()
+        .expect("input array");
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["role"], "developer");
+    assert_eq!(input[0]["content"][0]["text"], "system");
+    assert_eq!(input[1]["role"], "user");
+    assert_eq!(input[1]["content"][0]["text"], "after continuation");
+    assert_eq!(input[2]["role"], "user");
+    assert_eq!(input[2]["content"][0]["text"], "latest");
+    Ok(())
+}
+
+#[test]
 fn pause_message_snapshot_updates_loading_messages() {
     let now = OffsetDateTime::now_utc();
     let mut message = make_message(1, Role::Assistant, Status::Loading, Content::new("a1"));

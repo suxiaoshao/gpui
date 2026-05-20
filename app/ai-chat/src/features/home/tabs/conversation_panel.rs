@@ -5,7 +5,8 @@ use crate::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     },
     database::{
-        Content, Conversation, Db, Message, MessageRunPersistence, Mode, NewMessage, Role, Status,
+        Content, Conversation, Db, Message, MessageRunPersistence, MessageRunState, Mode,
+        NewMessage, Role, Status,
     },
     errors::{AiChatError, AiChatResult},
     features::conversation::detail::{
@@ -16,7 +17,7 @@ use crate::{
     foundation::i18n::I18n,
     llm::{
         LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
-        ProviderRunRunner, build_input_items, provider_by_name,
+        ProviderRunRunner, ProviderRunState, build_input_items, provider_by_name,
     },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
@@ -722,23 +723,31 @@ impl ConversationPanelView {
         user_message_content: String,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
-        let history_messages = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            let conversation = Conversation::find(context.conversation_id, conn)?;
-            Ok::<_, AiChatError>(conversation.messages)
-        })??;
         let provider_name = context.composer_snapshot.provider_name.clone();
         let template = context.composer_snapshot.request_template.clone();
-        let prompts = context.composer_snapshot.prompts.clone();
         let mode = context.composer_snapshot.mode;
-        let run_request = build_run_request(
+        let (history_messages, continuation) =
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                let conversation = Conversation::find(context.conversation_id, conn)?;
+                let continuation = openai_continuation_candidate(
+                    &provider_name,
+                    &template,
+                    mode,
+                    &conversation.messages,
+                    conn,
+                )?;
+                Ok::<_, AiChatError>((conversation.messages, continuation))
+            })??;
+        let prompts = context.composer_snapshot.prompts.clone();
+        let run_request = build_run_request_with_continuation(
             &provider_name,
             &template,
             prompts,
             mode,
             &history_messages,
-            user_message_role,
-            &user_message_content,
+            (user_message_role, &user_message_content),
+            continuation,
         )?;
         Ok(Runner {
             config: context.config.clone(),
@@ -1204,6 +1213,12 @@ impl ProviderRunRunner for Runner {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct ContinuationCandidate {
+    after_index: usize,
+    state: ProviderRunState,
+}
+
 fn build_history_messages(
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
@@ -1223,6 +1238,56 @@ fn build_history_messages(
     )
 }
 
+fn template_model(template: &serde_json::Value) -> Option<&str> {
+    template.get("model").and_then(serde_json::Value::as_str)
+}
+
+fn compatible_openai_run_state(
+    provider_name: &str,
+    model: &str,
+    run_state: &MessageRunState,
+) -> bool {
+    provider_name == "OpenAI"
+        && run_state.provider == provider_name
+        && run_state.run_id.as_ref().is_some_and(|id| !id.is_empty())
+        && run_state.model.as_deref() == Some(model)
+}
+
+fn openai_continuation_candidate(
+    provider_name: &str,
+    template: &serde_json::Value,
+    mode: Mode,
+    history_messages: &[Message],
+    conn: &mut diesel::SqliteConnection,
+) -> AiChatResult<Option<ContinuationCandidate>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let Some(model) = template_model(template) else {
+        return Ok(None);
+    };
+
+    for (index, message) in history_messages.iter().enumerate().rev() {
+        if message.role != Role::Assistant
+            || message.status != Status::Normal
+            || message.provider != provider_name
+        {
+            continue;
+        }
+        let Some(run_state) = Message::run_state(message.id, conn)? else {
+            continue;
+        };
+        if compatible_openai_run_state(provider_name, model, &run_state) {
+            return Ok(Some(ContinuationCandidate {
+                after_index: index,
+                state: run_state.to_provider_state(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
 fn build_run_request(
     provider_name: &str,
     template: &serde_json::Value,
@@ -1232,14 +1297,41 @@ fn build_run_request(
     user_message_role: Role,
     user_message_content: &str,
 ) -> AiChatResult<ProviderRunRequest> {
+    build_run_request_with_continuation(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        history_messages,
+        (user_message_role, user_message_content),
+        None,
+    )
+}
+
+fn build_run_request_with_continuation(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    current_user_message: (Role, &str),
+    continuation: Option<ContinuationCandidate>,
+) -> AiChatResult<ProviderRunRequest> {
+    let state = continuation
+        .as_ref()
+        .map(|continuation| continuation.state.clone());
+    let history_messages = continuation
+        .as_ref()
+        .map(|continuation| &history_messages[(continuation.after_index + 1)..])
+        .unwrap_or(history_messages);
     let history = build_history_messages(
         prompts,
         mode,
         history_messages,
-        user_message_role,
-        user_message_content,
+        current_user_message.0,
+        current_user_message.1,
     );
-    provider_by_name(provider_name)?.build_run_request(template, history)
+    provider_by_name(provider_name)?.build_run_request_with_state(template, history, state)
 }
 
 #[cfg(test)]
