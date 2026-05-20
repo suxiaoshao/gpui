@@ -4,12 +4,15 @@ use super::{
 };
 use crate::database::{
     Content, ConversationTemplatePrompt, MessageOutputItem, MessageOutputItemStatus,
-    MessageRunPersistence, Mode, Role, Status,
+    MessageRunPersistence, MessageRunState, Mode, Role, Status,
 };
 use crate::features::conversation::detail::ConversationDetailViewExt;
 use crate::llm::LlmOutputItem;
+use crate::state::AiChatConfig;
 use std::rc::Rc;
 use time::OffsetDateTime;
+
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, String)> {
     items
@@ -64,6 +67,58 @@ fn make_provider_message(
     }
 }
 
+fn openai_config(base_url: &str) -> anyhow::Result<AiChatConfig> {
+    let mut config = AiChatConfig::default();
+    config.set_provider_settings(
+        "OpenAI",
+        toml::from_str(&format!("baseUrl = \"{base_url}\"\n"))?,
+    );
+    Ok(config)
+}
+
+fn openai_settings(base_url: &str) -> serde_json::Value {
+    serde_json::json!({ "baseUrl": base_url })
+}
+
+fn openai_request_body(model: &str, stream: bool) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "stream": stream,
+        "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "old input" }] }]
+    })
+}
+
+fn openai_run_persistence(run_id: &str, model: &str) -> MessageRunPersistence {
+    openai_run_persistence_with_request(
+        run_id,
+        model,
+        openai_settings(DEFAULT_OPENAI_BASE_URL),
+        openai_request_body(model, false),
+    )
+}
+
+fn openai_run_persistence_with_request(
+    run_id: &str,
+    model: &str,
+    settings: serde_json::Value,
+    request_body: serde_json::Value,
+) -> MessageRunPersistence {
+    MessageRunPersistence {
+        run_state: Some(MessageRunState {
+            provider: "OpenAI".to_string(),
+            run_id: Some(run_id.to_string()),
+            output_item_ids: vec!["msg_1".to_string()],
+            continuation_metadata: serde_json::Value::Null,
+            request_body,
+            usage: None,
+            model: Some(model.to_string()),
+            settings: Some(settings),
+        }),
+        output_items: Vec::new(),
+        attachments: Vec::new(),
+    }
+}
+
 #[test]
 fn runner_history_appends_current_user_message() {
     let history = build_history_messages(
@@ -104,10 +159,198 @@ fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         &[],
         Mode::Contextual,
         &[],
-        Role::User,
-        "hello",
+        &AiChatConfig::default(),
+        (Role::User, "hello"),
     )?;
     assert_eq!(request_body["model"], serde_json::json!("override-model"));
+    Ok(())
+}
+
+#[test]
+fn contextual_openai_request_uses_latest_compatible_run_state() -> anyhow::Result<()> {
+    let config = openai_config(DEFAULT_OPENAI_BASE_URL)?;
+    let mut assistant = make_message(Role::Assistant, Status::Normal, Content::new("old answer"));
+    assistant.run_persistence = openai_run_persistence("resp_1", "gpt-4o");
+    let request_body = build_request_body(
+        "OpenAI",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        &[ConversationTemplatePrompt {
+            prompt: "system".to_string(),
+            role: Role::Developer,
+        }],
+        Mode::Contextual,
+        &[
+            make_message(Role::User, Status::Normal, Content::new("old user")),
+            assistant,
+            make_message(
+                Role::User,
+                Status::Normal,
+                Content::new("after continuation"),
+            ),
+        ],
+        &config,
+        (Role::User, "latest"),
+    )?;
+
+    assert_eq!(request_body["previous_response_id"], "resp_1");
+    let input = request_body["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["content"][0]["text"], "system");
+    assert_eq!(input[1]["content"][0]["text"], "after continuation");
+    assert_eq!(input[2]["content"][0]["text"], "latest");
+    Ok(())
+}
+
+#[test]
+fn contextual_openai_request_falls_back_when_settings_differ() -> anyhow::Result<()> {
+    let config = openai_config(DEFAULT_OPENAI_BASE_URL)?;
+    let mut assistant = make_message(Role::Assistant, Status::Normal, Content::new("old answer"));
+    assistant.run_persistence = openai_run_persistence_with_request(
+        "resp_1",
+        "gpt-4o",
+        openai_settings("https://proxy.openai.local/v1"),
+        openai_request_body("gpt-4o", false),
+    );
+    let request_body = build_request_body(
+        "OpenAI",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        &[ConversationTemplatePrompt {
+            prompt: "system".to_string(),
+            role: Role::Developer,
+        }],
+        Mode::Contextual,
+        &[
+            make_message(Role::User, Status::Normal, Content::new("old user")),
+            assistant,
+            make_message(
+                Role::User,
+                Status::Normal,
+                Content::new("after continuation"),
+            ),
+        ],
+        &config,
+        (Role::User, "latest"),
+    )?;
+
+    assert!(request_body.get("previous_response_id").is_none());
+    let input = request_body["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 5);
+    assert_eq!(input[1]["content"][0]["text"], "old user");
+    assert_eq!(input[2]["content"][0]["text"], "old answer");
+    Ok(())
+}
+
+#[test]
+fn contextual_openai_request_falls_back_when_request_context_differs() -> anyhow::Result<()> {
+    let config = openai_config(DEFAULT_OPENAI_BASE_URL)?;
+    let mut assistant = make_message(Role::Assistant, Status::Normal, Content::new("old answer"));
+    assistant.run_persistence = openai_run_persistence_with_request(
+        "resp_1",
+        "gpt-4o",
+        openai_settings(DEFAULT_OPENAI_BASE_URL),
+        openai_request_body("gpt-4o", true),
+    );
+    let request_body = build_request_body(
+        "OpenAI",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        &[ConversationTemplatePrompt {
+            prompt: "system".to_string(),
+            role: Role::Developer,
+        }],
+        Mode::Contextual,
+        &[
+            make_message(Role::User, Status::Normal, Content::new("old user")),
+            assistant,
+            make_message(
+                Role::User,
+                Status::Normal,
+                Content::new("after continuation"),
+            ),
+        ],
+        &config,
+        (Role::User, "latest"),
+    )?;
+
+    assert!(request_body.get("previous_response_id").is_none());
+    let input = request_body["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn contextual_openai_request_ignores_prior_previous_response_id_in_context_key()
+-> anyhow::Result<()> {
+    let config = openai_config(DEFAULT_OPENAI_BASE_URL)?;
+    let mut assistant = make_message(Role::Assistant, Status::Normal, Content::new("old answer"));
+    let mut request_body = openai_request_body("gpt-4o", false);
+    request_body["previous_response_id"] = serde_json::json!("resp_0");
+    assistant.run_persistence = openai_run_persistence_with_request(
+        "resp_1",
+        "gpt-4o",
+        openai_settings(DEFAULT_OPENAI_BASE_URL),
+        request_body,
+    );
+    let request_body = build_request_body(
+        "OpenAI",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        &[ConversationTemplatePrompt {
+            prompt: "system".to_string(),
+            role: Role::Developer,
+        }],
+        Mode::Contextual,
+        &[
+            make_message(Role::User, Status::Normal, Content::new("old user")),
+            assistant,
+            make_message(
+                Role::User,
+                Status::Normal,
+                Content::new("after continuation"),
+            ),
+        ],
+        &config,
+        (Role::User, "latest"),
+    )?;
+
+    assert_eq!(request_body["previous_response_id"], "resp_1");
+    let input = request_body["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn non_contextual_openai_request_ignores_run_state_continuation() -> anyhow::Result<()> {
+    let mut assistant = make_message(Role::Assistant, Status::Normal, Content::new("old answer"));
+    assistant.run_persistence = openai_run_persistence("resp_1", "gpt-4o");
+    let request_body = build_request_body(
+        "OpenAI",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "stream": false
+        }),
+        &[],
+        Mode::AssistantOnly,
+        &[assistant],
+        &AiChatConfig::default(),
+        (Role::User, "latest"),
+    )?;
+
+    assert!(request_body.get("previous_response_id").is_none());
+    let input = request_body["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0]["content"][0]["text"], "old answer");
+    assert_eq!(input[1]["content"][0]["text"], "latest");
     Ok(())
 }
 

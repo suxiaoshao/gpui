@@ -18,7 +18,10 @@ pub(crate) use provider::{
     ProviderSettingsSpec, ReasoningCapability, ReasoningEffort, available_models, provider_by_name,
     provider_is_configured, provider_names, provider_settings_specs,
 };
-pub(crate) use run_persistence::ProviderRunPersistenceAccumulator;
+pub(crate) use run_persistence::{
+    ProviderRunPersistenceAccumulator, persisted_provider_settings_snapshot,
+    provider_run_request_context_key,
+};
 pub(crate) use runner::ProviderRunRunner;
 // Re-export the full provider-neutral item vocabulary for staged follow-up issues.
 #[allow(unused_imports)]

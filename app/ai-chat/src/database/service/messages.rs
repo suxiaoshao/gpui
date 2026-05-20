@@ -254,6 +254,16 @@ impl MessageRunState {
             settings,
         }
     }
+
+    pub(crate) fn to_provider_state(&self) -> ProviderRunState {
+        ProviderRunState {
+            provider_name: self.provider.clone(),
+            run_id: self.run_id.clone(),
+            output_item_ids: self.output_item_ids.clone(),
+            continuation_metadata: self.continuation_metadata.clone(),
+            request_body: self.request_body.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -763,6 +773,14 @@ impl Message {
     pub fn find(id: i32, conn: &mut SqliteConnection) -> AiChatResult<Message> {
         let message = SqlMessage::find(id, conn)?;
         Message::try_from(message)
+    }
+    pub(crate) fn run_state(
+        id: i32,
+        conn: &mut SqliteConnection,
+    ) -> AiChatResult<Option<MessageRunState>> {
+        SqlMessageRunState::find_by_message_id(id, conn)?
+            .map(TryFrom::try_from)
+            .transpose()
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
         SqlMessage::delete(id, conn)?;

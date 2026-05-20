@@ -8,7 +8,7 @@ use crate::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
     },
-    database::{Content, MessageRunPersistence, Mode, Role, Status},
+    database::{Content, MessageRunPersistence, MessageRunState, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     features::hotkey::GlobalHotkeyState,
     features::{
@@ -23,7 +23,8 @@ use crate::{
     foundation::i18n::I18n,
     llm::{
         LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
-        ProviderRunRunner, build_input_items, provider_by_name,
+        ProviderRunRunner, ProviderRunState, build_input_items,
+        persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
     },
     platform::gpui_ext::WeakEntityResultExt,
     state::{AddConversationMessage, AiChatConfig, ChatData},
@@ -912,8 +913,8 @@ impl TemplateDetailView {
                 &composer_snapshot.prompts,
                 composer_snapshot.mode,
                 &this.detail.messages,
-                user_message_role,
-                &user_message_content,
+                &config,
+                (user_message_role, &user_message_content),
             )?;
             Ok(Runner {
                 config,
@@ -1140,6 +1141,12 @@ impl ProviderRunRunner for Runner {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct ContinuationCandidate {
+    after_index: usize,
+    state: ProviderRunState,
+}
+
 fn build_history_messages(
     prompts: &[crate::database::ConversationTemplatePrompt],
     mode: Mode,
@@ -1159,23 +1166,153 @@ fn build_history_messages(
     )
 }
 
+fn template_model(template: &serde_json::Value) -> Option<&str> {
+    template.get("model").and_then(serde_json::Value::as_str)
+}
+
+fn compatible_openai_run_state(
+    provider_name: &str,
+    model: &str,
+    current_settings: &serde_json::Value,
+    current_request_context_key: &serde_json::Value,
+    run_state: &MessageRunState,
+) -> bool {
+    if provider_name != "OpenAI"
+        || run_state.provider != provider_name
+        || run_state.run_id.as_ref().is_none_or(|id| id.is_empty())
+        || run_state.model.as_deref() != Some(model)
+        || run_state.settings.as_ref() != Some(current_settings)
+    {
+        return false;
+    }
+
+    provider_run_request_context_key(&run_state.request_body) == *current_request_context_key
+}
+
+fn openai_request_context_key(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    current_user_message: (Role, &str),
+) -> AiChatResult<Option<serde_json::Value>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let history = build_history_messages(
+        prompts,
+        mode,
+        messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    let request = provider_by_name(provider_name)?.build_run_request(template, history)?;
+    Ok(Some(provider_run_request_context_key(
+        &request.request_body,
+    )))
+}
+
+fn openai_continuation_candidate(
+    provider_name: &str,
+    template: &serde_json::Value,
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    config: &AiChatConfig,
+    current_request_context_key: Option<&serde_json::Value>,
+) -> Option<ContinuationCandidate> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return None;
+    }
+    let model = template_model(template)?;
+    let current_settings = persisted_provider_settings_snapshot(provider_name, config)?;
+    let current_request_context_key = current_request_context_key?;
+    for (index, message) in messages.iter().enumerate().rev() {
+        if message.role != Role::Assistant
+            || message.status != Status::Normal
+            || message.provider != provider_name
+        {
+            continue;
+        }
+        let Some(run_state) = message.run_persistence.run_state.as_ref() else {
+            continue;
+        };
+        if compatible_openai_run_state(
+            provider_name,
+            model,
+            &current_settings,
+            current_request_context_key,
+            run_state,
+        ) {
+            return Some(ContinuationCandidate {
+                after_index: index,
+                state: run_state.to_provider_state(),
+            });
+        }
+    }
+    None
+}
+
 fn build_run_request(
     provider_name: &str,
     template: &serde_json::Value,
     prompts: &[crate::database::ConversationTemplatePrompt],
     mode: Mode,
     messages: &[TemporaryMessage],
-    user_message_role: Role,
-    user_message_content: &str,
+    config: &AiChatConfig,
+    current_user_message: (Role, &str),
 ) -> AiChatResult<ProviderRunRequest> {
+    let request_context_key = openai_request_context_key(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        messages,
+        current_user_message,
+    )?;
+    let continuation = openai_continuation_candidate(
+        provider_name,
+        template,
+        mode,
+        messages,
+        config,
+        request_context_key.as_ref(),
+    );
+    build_run_request_with_continuation(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        messages,
+        current_user_message,
+        continuation,
+    )
+}
+
+fn build_run_request_with_continuation(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    current_user_message: (Role, &str),
+    continuation: Option<ContinuationCandidate>,
+) -> AiChatResult<ProviderRunRequest> {
+    let state = continuation
+        .as_ref()
+        .map(|continuation| continuation.state.clone());
+    let messages = continuation
+        .as_ref()
+        .map(|continuation| &messages[(continuation.after_index + 1)..])
+        .unwrap_or(messages);
     let history = build_history_messages(
         prompts,
         mode,
         messages,
-        user_message_role,
-        user_message_content,
+        current_user_message.0,
+        current_user_message.1,
     );
-    provider_by_name(provider_name)?.build_run_request(template, history)
+    provider_by_name(provider_name)?.build_run_request_with_state(template, history, state)
 }
 
 #[cfg(test)]
@@ -1185,8 +1322,8 @@ fn build_request_body(
     prompts: &[crate::database::ConversationTemplatePrompt],
     mode: Mode,
     messages: &[TemporaryMessage],
-    user_message_role: Role,
-    user_message_content: &str,
+    config: &AiChatConfig,
+    current_user_message: (Role, &str),
 ) -> AiChatResult<serde_json::Value> {
     Ok(build_run_request(
         provider_name,
@@ -1194,8 +1331,8 @@ fn build_request_body(
         prompts,
         mode,
         messages,
-        user_message_role,
-        user_message_content,
+        config,
+        current_user_message,
     )?
     .request_body)
 }

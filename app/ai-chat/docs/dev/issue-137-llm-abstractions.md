@@ -21,7 +21,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Merged to integration via PR #148; GitHub issue still open |
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
-| #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Pending |
+| #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Implemented; pending PR |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
 
@@ -34,7 +34,8 @@ Last synchronized: 2026-05-21.
 - #142 remains open on GitHub, but PR #148 merged `codex/issue-142-llm-items` into `codex/issue-137-llm-abstractions`.
 - #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
-- #143, #144, and #140 remain open and pending behind the persistence layer.
+- #143 remains open on GitHub, but `codex/issue-143-openai-responses-abstraction` implements the OpenAI Responses adapter stage.
+- #144 and #140 remain open and pending behind the OpenAI adapter stage.
 
 ## Current Architecture Facts
 
@@ -52,7 +53,8 @@ Last synchronized: 2026-05-21.
 - `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, and #141 persists them additively for assistant messages.
 - `message_run_states`, `message_output_items`, and `message_attachments` now persist provider run state, output item events, usage, and attachment metadata additively without changing `messages.content` or `messages.send_content`.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
-- OpenAI already uses `/v1/responses`, reasoning effort, reasoning summaries, and hosted web search citations.
+- OpenAI uses `/v1/responses`, reasoning effort, reasoning summaries, hosted web search citations, provider-neutral output item events, and persisted `previous_response_id` continuation when compatible run state is available.
+- OpenAI adapter-specific Responses request fields such as `include`, `text`, `tool_choice`, `tools`, and `parallel_tool_calls` remain inside the OpenAI provider schema rather than the generic provider trait.
 - Ollama has provider-specific thinking and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
 
 ## Shared Design Decisions
@@ -188,8 +190,26 @@ The current implementation keeps request persistence additive: existing provider
   - `cargo test -p ai-chat`
   - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
 
+### #143 OpenAI Responses Adapter Migration
+
+- Added optional provider run state plumbing so OpenAI can build request bodies with `previous_response_id` while other providers keep existing request construction behavior.
+- Conversation panel and temporary chat now use compatible persisted OpenAI assistant run state in contextual mode, trim history before that response, and fall back to full transcript behavior for non-contextual modes or incompatible state.
+- OpenAI continuation is gated by matching persisted provider/model/run id, non-secret provider settings snapshot, and request context key. The request context key is the Responses request body with `input` and `previous_response_id` removed, so template/tool/reasoning/stream changes prevent stale continuation while input deltas do not.
+- OpenAI request conversion now emits Responses content parts for text, image references, file references, tool results, and item references; unsupported audio or generic attachments fail explicitly.
+- OpenAI stream and response parsing now maps message, reasoning, hosted tool, function-call, and MCP-related output items into provider-neutral events where existing core types can represent them.
+- Function-call argument completion now yields `ToolCallRequested`; this stage intentionally does not add generic tool execution, MCP server configuration, approval UI, or capability-gated controls.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::run_persistence`
+  - `cargo test -p ai-chat llm::provider::openai -- --nocapture`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel -- --nocapture`
+  - `cargo test -p ai-chat features::temporary::detail -- --nocapture`
+  - `cargo test -p ai-chat database::service -- --nocapture`
+  - `cargo test -p ai-chat database::migrations -- --nocapture`
+  - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
+
 ## Next Child Issue Constraints
 
-Next child issue is #143.
+Next child issue after #143 lands is #144.
 
-#143 should use the persisted run state from #141 for OpenAI Responses continuation and richer Responses output item handling without leaking OpenAI-specific schema into the provider-neutral core.
+#144 should migrate Ollama onto the shared abstraction and verify the core types are not OpenAI-shaped.
