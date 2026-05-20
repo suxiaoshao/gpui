@@ -1,9 +1,10 @@
 use super::{
     ExtSettingControl, HostedTool, ModelCapabilities, OpenAIProvider, OpenAIRequestTemplate,
-    Provider, ProviderModel, REASONING_EFFORT_KEY, REASONING_HIGH, REASONING_LOW, REASONING_MEDIUM,
-    REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH, ReasoningConfig, ReasoningEffort,
-    ResponsesCreateResponse, classify_model, normalize_base_url, parse_response_stream_event,
-    parse_response_stream_events,
+    OpenAIResponseStreamState, Provider, ProviderModel, REASONING_EFFORT_KEY, REASONING_HIGH,
+    REASONING_LOW, REASONING_MEDIUM, REASONING_NONE, REASONING_SUMMARY_AUTO, REASONING_XHIGH,
+    ReasoningConfig, ReasoningEffort, ResponsesCreateResponse, classify_model, normalize_base_url,
+    parse_response_stream_event, parse_response_stream_events,
+    parse_response_stream_events_with_state,
 };
 use crate::{
     database::{Content, Role},
@@ -658,15 +659,47 @@ fn reasoning_output_item_added_starts_thinking() -> anyhow::Result<()> {
 
 #[test]
 fn function_call_arguments_done_yields_tool_call() -> anyhow::Result<()> {
-    let update = parse_response_stream_event(
-        r#"{"type":"response.function_call_arguments.done","item_id":"call_1","name":"lookup","arguments":"{\"q\":\"rust\"}"}"#,
+    let mut state = OpenAIResponseStreamState::default();
+    parse_response_stream_events_with_state(
+        r#"{"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":"","status":"in_progress"}}"#,
+        &mut state,
+    )?;
+    let updates = parse_response_stream_events_with_state(
+        r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","name":"lookup","arguments":"{\"q\":\"rust\"}"}"#,
+        &mut state,
     )?;
     assert!(matches!(
-        update,
+        updates.first(),
         Some(ProviderRunEvent::ToolCallRequested(call))
             if call.call_id == "call_1"
                 && call.name == "lookup"
                 && call.arguments == json!({ "q": "rust" })
+    ));
+    Ok(())
+}
+
+#[test]
+fn function_call_arguments_done_waits_for_call_id_mapping() -> anyhow::Result<()> {
+    let mut state = OpenAIResponseStreamState::default();
+    let updates = parse_response_stream_events_with_state(
+        r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","name":"lookup","arguments":"{\"q\":\"rust\"}"}"#,
+        &mut state,
+    )?;
+    assert!(updates.is_empty());
+
+    let updates = parse_response_stream_events_with_state(
+        r#"{"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"rust\"}","status":"completed"}}"#,
+        &mut state,
+    )?;
+    assert!(matches!(
+        updates.as_slice(),
+        [
+            ProviderRunEvent::ToolCallRequested(requested),
+            ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolCall(done)),
+        ] if requested.call_id == "call_1"
+            && requested.name == "lookup"
+            && requested.arguments == json!({ "q": "rust" })
+            && done.call_id == "call_1"
     ));
     Ok(())
 }

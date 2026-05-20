@@ -27,6 +27,7 @@ use nom::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
+use std::collections::HashMap;
 use toml::Value;
 use tracing::{Level, event};
 
@@ -384,6 +385,17 @@ struct OpenAIUsage {
     total_tokens: Option<u64>,
 }
 
+#[derive(Default)]
+struct OpenAIResponseStreamState {
+    call_ids_by_item_id: HashMap<String, String>,
+    pending_tool_calls_by_item_id: HashMap<String, PendingOpenAIToolCall>,
+}
+
+struct PendingOpenAIToolCall {
+    name: String,
+    arguments: serde_json::Value,
+}
+
 impl OutputAnnotation {
     fn into_citation(self) -> Option<UrlCitation> {
         if self.annotation_type != "url_citation" {
@@ -405,6 +417,17 @@ impl OpenAIOutputItem {
 
     fn call_id(&self) -> Option<String> {
         self.call_id.clone().or_else(|| self.id.clone())
+    }
+
+    fn explicit_call_id(&self) -> Option<&str> {
+        self.call_id.as_deref()
+    }
+
+    fn is_function_call(&self) -> bool {
+        matches!(
+            self.item_type.as_deref(),
+            Some("function_call" | "custom_tool_call")
+        )
     }
 
     fn output_item(&self) -> Option<LlmOutputItem> {
@@ -472,6 +495,50 @@ impl OpenAIOutputItem {
             tool_name: self.name.clone().unwrap_or_default(),
             arguments: parse_openai_arguments(self.arguments.as_ref()),
         }
+    }
+}
+
+impl OpenAIResponseStreamState {
+    fn record_output_item(&mut self, item: &OpenAIOutputItem) -> Vec<ProviderRunEvent> {
+        if !item.is_function_call() {
+            return Vec::new();
+        }
+        let (Some(item_id), Some(call_id)) = (item.id.as_deref(), item.explicit_call_id()) else {
+            return Vec::new();
+        };
+
+        self.call_ids_by_item_id
+            .insert(item_id.to_string(), call_id.to_string());
+        self.pending_tool_calls_by_item_id
+            .remove(item_id)
+            .map(|pending| {
+                vec![ProviderRunEvent::ToolCallRequested(LlmToolCall {
+                    call_id: call_id.to_string(),
+                    name: pending.name,
+                    arguments: pending.arguments,
+                })]
+            })
+            .unwrap_or_default()
+    }
+
+    fn tool_call_requested(
+        &mut self,
+        item_id: String,
+        name: String,
+        arguments: String,
+    ) -> Vec<ProviderRunEvent> {
+        let arguments = parse_openai_argument_string(&arguments);
+        if let Some(call_id) = self.call_ids_by_item_id.get(&item_id) {
+            return vec![ProviderRunEvent::ToolCallRequested(LlmToolCall {
+                call_id: call_id.clone(),
+                name,
+                arguments,
+            })];
+        }
+
+        self.pending_tool_calls_by_item_id
+            .insert(item_id, PendingOpenAIToolCall { name, arguments });
+        Vec::new()
     }
 }
 
@@ -743,7 +810,16 @@ fn parse_response_stream_event(message: &str) -> AiChatResult<Option<ProviderRun
     Ok(parse_response_stream_events(message)?.into_iter().next())
 }
 
+#[cfg(test)]
 fn parse_response_stream_events(message: &str) -> AiChatResult<Vec<ProviderRunEvent>> {
+    let mut state = OpenAIResponseStreamState::default();
+    parse_response_stream_events_with_state(message, &mut state)
+}
+
+fn parse_response_stream_events_with_state(
+    message: &str,
+    state: &mut OpenAIResponseStreamState,
+) -> AiChatResult<Vec<ProviderRunEvent>> {
     let event = serde_json::from_str::<OpenAIResponseStreamEvent>(message)?;
     match event {
         OpenAIResponseStreamEvent::ResponseCreated { response }
@@ -758,20 +834,27 @@ fn parse_response_stream_events(message: &str) -> AiChatResult<Vec<ProviderRunEv
         OpenAIResponseStreamEvent::ResponseOutputItemAdded { item }
             if item.item_type.as_deref() == Some("reasoning") =>
         {
-            let mut events = vec![ProviderRunEvent::ThinkingStarted];
+            let mut events = state.record_output_item(&item);
+            events.push(ProviderRunEvent::ThinkingStarted);
             if let Some(item) = item.output_item() {
                 events.push(ProviderRunEvent::OutputItemAdded(item));
             }
             Ok(events)
         }
-        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item } => Ok(item
-            .output_item()
-            .map(|item| vec![ProviderRunEvent::OutputItemAdded(item)])
-            .unwrap_or_default()),
-        OpenAIResponseStreamEvent::ResponseOutputItemDone { item } => Ok(item
-            .output_item()
-            .map(|item| vec![ProviderRunEvent::OutputItemDone(item)])
-            .unwrap_or_default()),
+        OpenAIResponseStreamEvent::ResponseOutputItemAdded { item } => {
+            let mut events = state.record_output_item(&item);
+            if let Some(item) = item.output_item() {
+                events.push(ProviderRunEvent::OutputItemAdded(item));
+            }
+            Ok(events)
+        }
+        OpenAIResponseStreamEvent::ResponseOutputItemDone { item } => {
+            let mut events = state.record_output_item(&item);
+            if let Some(item) = item.output_item() {
+                events.push(ProviderRunEvent::OutputItemDone(item));
+            }
+            Ok(events)
+        }
         OpenAIResponseStreamEvent::ResponseReasoningSummaryTextDelta { delta } => {
             Ok(vec![ProviderRunEvent::ReasoningSummaryDelta(delta)])
         }
@@ -782,11 +865,7 @@ fn parse_response_stream_events(message: &str) -> AiChatResult<Vec<ProviderRunEv
             item_id,
             name,
             arguments,
-        } => Ok(vec![ProviderRunEvent::ToolCallRequested(LlmToolCall {
-            call_id: item_id,
-            name,
-            arguments: parse_openai_argument_string(&arguments),
-        })]),
+        } => Ok(state.tool_call_requested(item_id, name, arguments)),
         OpenAIResponseStreamEvent::ResponseCompleted { response } => {
             let state = ProviderRunState::new(
                 OpenAIProvider.name(),
@@ -1172,6 +1251,7 @@ impl Provider for OpenAIProvider {
                     .await?;
                 let response = response.error_for_status()?;
                 let mut es = response.bytes_stream().eventsource();
+                let mut stream_state = OpenAIResponseStreamState::default();
                 while let Some(event) = es.next().await {
                     match event {
                         Ok(message) => {
@@ -1179,7 +1259,10 @@ impl Provider for OpenAIProvider {
                             if message == "[DONE]" {
                                 break;
                             } else {
-                                for mut event in parse_response_stream_events(&message)? {
+                                for mut event in parse_response_stream_events_with_state(
+                                    &message,
+                                    &mut stream_state,
+                                )? {
                                     if let ProviderRunEvent::Completed { state: Some(state), .. } = &mut event {
                                         state.request_body = request.request_body.clone();
                                         state.continuation_metadata =
