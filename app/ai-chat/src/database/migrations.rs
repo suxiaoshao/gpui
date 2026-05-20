@@ -1,7 +1,10 @@
 use crate::{
     database::{
         CREATE_TABLE_SQL, Content, ConversationTemplatePrompt, Mode, Role, Status,
-        model::{SqlConversation, SqlConversationTemplate, SqlFolder, SqlMessage},
+        model::{
+            SqlConversation, SqlConversationTemplate, SqlFolder, SqlGlobalShortcutBinding,
+            SqlMessage,
+        },
     },
     errors::AiChatResult,
     llm::{LlmInputItem, provider_by_name},
@@ -36,7 +39,7 @@ pub(super) fn v1_to_v3(
     )
 }
 
-pub(super) fn v1_to_v5(
+pub(super) fn v1_to_v6(
     v1_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -69,14 +72,14 @@ pub(super) fn v2_to_v3(
     )
 }
 
-pub(super) fn v2_to_v5(
+pub(super) fn v2_to_v6(
     v2_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
     v2_to_v3(v2_conn, target_conn)
 }
 
-pub(super) fn v3_to_v5(
+pub(super) fn v3_to_v6(
     v3_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -96,7 +99,7 @@ pub(super) fn v3_to_v5(
     })
 }
 
-pub(super) fn v4_to_v5(
+pub(super) fn v4_to_v6(
     v4_conn: &mut SqliteConnection,
     target_conn: &mut SqliteConnection,
 ) -> AiChatResult<()> {
@@ -109,6 +112,27 @@ pub(super) fn v4_to_v5(
         )?;
         SqlConversation::migration_save(SqlConversation::get_all(v4_conn)?, target_conn)?;
         SqlMessage::migration_save(SqlMessage::all(v4_conn)?, target_conn)?;
+        Ok(())
+    })
+}
+
+pub(super) fn v5_to_v6(
+    v5_conn: &mut SqliteConnection,
+    target_conn: &mut SqliteConnection,
+) -> AiChatResult<()> {
+    target_conn.immediate_transaction(|target_conn| {
+        target_conn.batch_execute(CREATE_TABLE_SQL)?;
+        SqlFolder::migration_save(SqlFolder::all(v5_conn)?, target_conn)?;
+        SqlConversationTemplate::migration_save(
+            SqlConversationTemplate::all(v5_conn)?,
+            target_conn,
+        )?;
+        SqlConversation::migration_save(SqlConversation::get_all(v5_conn)?, target_conn)?;
+        SqlMessage::migration_save(SqlMessage::all(v5_conn)?, target_conn)?;
+        SqlGlobalShortcutBinding::migration_save(
+            SqlGlobalShortcutBinding::all(v5_conn)?,
+            target_conn,
+        )?;
         Ok(())
     })
 }

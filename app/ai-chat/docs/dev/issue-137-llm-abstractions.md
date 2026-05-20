@@ -20,7 +20,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #138 | `codex/issue-138-model-capabilities` | Provider-neutral model capability types | Merged to integration via PR #147; GitHub issue still open |
 | #142 | `codex/issue-142-llm-items` | Typed input, content, and output items | Merged to integration via PR #148; GitHub issue still open |
 | #139 | `codex/issue-139-provider-runtime` | Run-based provider trait and events | Merged to integration via PR #149; GitHub issue still open |
-| #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Pending |
+| #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Implemented and pushed; pending PR |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Pending |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Pending |
 | #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
@@ -33,7 +33,8 @@ Last synchronized: 2026-05-20.
 - #138 remains open on GitHub, but PR #147 merged `codex/issue-138-model-capabilities` into `codex/issue-137-llm-abstractions`.
 - #142 remains open on GitHub, but PR #148 merged `codex/issue-142-llm-items` into `codex/issue-137-llm-abstractions`.
 - #139 remains open on GitHub, but PR #149 merged `codex/issue-139-provider-runtime` into `codex/issue-137-llm-abstractions`.
-- #141, #143, #144, and #140 remain open and pending behind the typed item and run/event model.
+- #141 remains open on GitHub, with `codex/issue-141-llm-persistence` pushed and carrying the first additive persistence implementation.
+- #143, #144, and #140 remain open and pending behind the persistence layer.
 
 ## Current Architecture Facts
 
@@ -48,7 +49,8 @@ Last synchronized: 2026-05-20.
 - `Provider` now builds `ProviderRunRequest` values from typed input items and streams provider-neutral `ProviderRunEvent` values.
 - `ProviderRunRequest` keeps the provider request JSON snapshot so existing `messages.send_content` resend behavior remains compatible.
 - `ProviderRunEvent` replaces `FetchUpdate` and covers thinking start, reasoning summary delta, text delta, output item added/done, tool call/result, MCP approval request, usage update, completed, and failed states.
-- `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, but database persistence remains a follow-up.
+- `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, and #141 persists them additively for assistant messages.
+- `message_run_states`, `message_output_items`, and `message_attachments` now persist provider run state, output item events, usage, and attachment metadata additively without changing `messages.content` or `messages.send_content`.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
 - OpenAI already uses `/v1/responses`, reasoning effort, reasoning summaries, and hosted web search citations.
 - Ollama has provider-specific thinking and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
@@ -167,8 +169,27 @@ The current implementation keeps request persistence additive: existing provider
   - `cargo test -p ai-chat features::temporary::detail`
   - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
 
+### #141 LLM Run State, Output Item, Tool, And Attachment Persistence
+
+- Added database v6 and migrates legacy v1-v5 stores into `history_v6.sqlite3`.
+- Preserved `messages.content` and `messages.send_content` as the compatibility surface for display, export, and resend.
+- Added additive run persistence tables for assistant message run state, ordered output item events, and attachment metadata.
+- Added typed message persistence wrappers around `ProviderRunState`, `ProviderUsage`, `LlmOutputItem`, and attachment refs.
+- Conversation streaming now accumulates output item events, tool/MCP events, usage, and completed run state, then persists them with terminal message state.
+- Temporary chat remains in-memory but carries run persistence when saved into a normal conversation.
+- Resending an assistant message clears old run persistence while keeping the existing request body snapshot behavior.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat database::migrations`
+  - `cargo test -p ai-chat database::service`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel`
+  - `cargo test -p ai-chat features::temporary::detail`
+  - `cargo test -p ai-chat`
+  - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
+
 ## Next Child Issue Constraints
 
-Next child issue is #141.
+Next child issue is #143 unless #141 needs PR review follow-up first.
 
-#141 should persist the runtime state introduced by #139 without breaking old conversations. It should preserve `messages.content` and `messages.send_content` compatibility, add storage for provider run state/output items/tool calls/attachments as additive data, and avoid storing binary attachment data directly inside message text.
+#143 should use the persisted run state from #141 for OpenAI Responses continuation and richer Responses output item handling without leaking OpenAI-specific schema into the provider-neutral core.

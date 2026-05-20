@@ -8,7 +8,7 @@ use crate::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
     },
-    database::{Content, Mode, Role, Status},
+    database::{Content, MessageRunPersistence, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     features::hotkey::GlobalHotkeyState,
     features::{
@@ -22,8 +22,8 @@ use crate::{
     },
     foundation::i18n::I18n,
     llm::{
-        LlmHistoryMessage, ProviderRunEvent, ProviderRunRequest, ProviderRunRunner,
-        build_input_items, provider_by_name,
+        LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
+        ProviderRunRunner, build_input_items, provider_by_name,
     },
     platform::gpui_ext::WeakEntityResultExt,
     state::{AddConversationMessage, AiChatConfig, ChatData},
@@ -52,7 +52,7 @@ pub fn init(cx: &mut App) {
 
 pub(crate) type TemplateDetailView = ConversationDetailView<TemporaryDetailState>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TemporaryMessage {
     pub id: usize,
     pub provider: String,
@@ -61,6 +61,7 @@ pub struct TemporaryMessage {
     pub send_content: Rc<serde_json::Value>,
     pub status: Status,
     pub error: Option<String>,
+    pub run_persistence: MessageRunPersistence,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
@@ -285,6 +286,7 @@ impl TemporaryMessage {
         self.content = Content::default();
         self.status = Status::Loading;
         self.error = None;
+        self.run_persistence = MessageRunPersistence::default();
         self.updated_time = now;
         self.start_time = now;
         self.end_time = now;
@@ -334,6 +336,7 @@ struct NewTemporaryMessage {
     send_content: Rc<serde_json::Value>,
     status: Status,
     error: Option<String>,
+    run_persistence: MessageRunPersistence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -604,6 +607,7 @@ fn temporary_messages_to_add_conversation_messages(
             send_content: (*message.send_content).clone(),
             status: message.status,
             error: message.error,
+            run_persistence: message.run_persistence.clone(),
         })
         .collect()
 }
@@ -693,6 +697,7 @@ impl TemplateDetailView {
             send_content: input.send_content,
             status: input.status,
             error: input.error,
+            run_persistence: input.run_persistence,
             created_time: input.now,
             updated_time: input.now,
             start_time: input.now,
@@ -724,15 +729,32 @@ impl TemplateDetailView {
             last.update_status(Status::Thinking);
         }
     }
-    fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
+    fn on_error(
+        &mut self,
+        message_id: usize,
+        error: String,
+        run_persistence: Option<MessageRunPersistence>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
+            if let Some(run_persistence) = run_persistence {
+                last.run_persistence = run_persistence;
+            }
         }
         self.clear_running_task_for_message(Some(message_id), cx);
     }
-    fn on_success(&mut self, message_id: usize, cx: &mut Context<Self>) {
+    fn on_success(
+        &mut self,
+        message_id: usize,
+        run_persistence: Option<MessageRunPersistence>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
+            if let Some(run_persistence) = run_persistence {
+                last.run_persistence = run_persistence;
+            }
         }
         self.clear_running_task_for_message(Some(message_id), cx);
     }
@@ -851,6 +873,7 @@ impl TemplateDetailView {
                     send_content: send_content.clone(),
                     status: Status::Normal,
                     error: None,
+                    run_persistence: MessageRunPersistence::default(),
                 })
                 .id;
             let assistant_message_id = this
@@ -862,6 +885,7 @@ impl TemplateDetailView {
                     send_content: send_content.clone(),
                     status: Status::Loading,
                     error: None,
+                    run_persistence: MessageRunPersistence::default(),
                 })
                 .id;
             this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
@@ -908,6 +932,8 @@ impl TemplateDetailView {
         assistant_message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
+        let mut run_persistence =
+            ProviderRunPersistenceAccumulator::new(runner.run_request(), runner.get_config());
         let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
@@ -927,36 +953,61 @@ impl TemplateDetailView {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(ProviderRunEvent::Completed { content, .. }) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state: run_state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(run_state, usage);
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
-                Ok(
-                    ProviderRunEvent::OutputItemAdded(_)
-                    | ProviderRunEvent::OutputItemDone(_)
-                    | ProviderRunEvent::ToolCallRequested(_)
-                    | ProviderRunEvent::ToolResultReceived(_)
-                    | ProviderRunEvent::McpApprovalRequested(_)
-                    | ProviderRunEvent::UsageUpdated(_),
-                ) => {}
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
                 Ok(ProviderRunEvent::Failed { message }) => {
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, message, cx);
+                        this.on_error(
+                            assistant_message_id,
+                            message,
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, error.to_string(), cx);
+                        this.on_error(
+                            assistant_message_id,
+                            error.to_string(),
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
             }
         }
         state.update_result(cx, |this, cx| {
-            this.on_success(assistant_message_id, cx);
+            this.on_success(assistant_message_id, run_persistence.persistence(), cx);
         })?;
         Ok(())
     }
@@ -978,6 +1029,7 @@ impl TemplateDetailView {
             .clone();
         let request =
             ProviderRunRequest::from_request_body(provider.name(), request_body.as_ref().clone());
+        let mut run_persistence = ProviderRunPersistenceAccumulator::new(&request, &config);
         let stream = provider.run(config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
@@ -997,36 +1049,61 @@ impl TemplateDetailView {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(ProviderRunEvent::Completed { content, .. }) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state: run_state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(run_state, usage);
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
-                Ok(
-                    ProviderRunEvent::OutputItemAdded(_)
-                    | ProviderRunEvent::OutputItemDone(_)
-                    | ProviderRunEvent::ToolCallRequested(_)
-                    | ProviderRunEvent::ToolResultReceived(_)
-                    | ProviderRunEvent::McpApprovalRequested(_)
-                    | ProviderRunEvent::UsageUpdated(_),
-                ) => {}
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
                 Ok(ProviderRunEvent::Failed { message }) => {
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, message, cx);
+                        this.on_error(
+                            assistant_message_id,
+                            message,
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, error.to_string(), cx);
+                        this.on_error(
+                            assistant_message_id,
+                            error.to_string(),
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
             }
         }
         state.update_result(cx, |this, cx| {
-            this.on_success(assistant_message_id, cx);
+            this.on_success(assistant_message_id, run_persistence.persistence(), cx);
         })?;
         Ok(())
     }

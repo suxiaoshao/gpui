@@ -4,7 +4,9 @@ use crate::{
         chat_form::ChatFormSnapshot,
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     },
-    database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
+    database::{
+        Content, Conversation, Db, Message, MessageRunPersistence, Mode, NewMessage, Role, Status,
+    },
     errors::{AiChatError, AiChatResult},
     features::conversation::detail::{
         ConversationDetailView, ConversationDetailViewExt, MessageRevisionExt,
@@ -13,8 +15,8 @@ use crate::{
     foundation::assets::IconName,
     foundation::i18n::I18n,
     llm::{
-        LlmHistoryMessage, ProviderRunEvent, ProviderRunRequest, ProviderRunRunner,
-        build_input_items, provider_by_name,
+        LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
+        ProviderRunRunner, build_input_items, provider_by_name,
     },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
@@ -378,7 +380,7 @@ impl ConversationPanelView {
         });
         let conn = &mut cx.global::<Db>().get()?;
         for message in &paused_messages {
-            Self::persist_message_snapshot(message, conn)?;
+            Self::persist_message_snapshot(message, None, conn)?;
         }
         self.set_chat_form_running(false, cx);
         cx.notify();
@@ -406,7 +408,7 @@ impl ConversationPanelView {
         };
 
         let conn = &mut cx.global::<Db>().get()?;
-        Self::persist_message_snapshot(&message, conn)?;
+        Self::persist_message_snapshot(&message, None, conn)?;
         self.set_chat_form_running(false, cx);
         cx.notify();
         Ok(())
@@ -549,6 +551,7 @@ impl ConversationPanelView {
             .clone();
         let request =
             ProviderRunRequest::from_request_body(provider.name(), context.request_body.clone());
+        let mut run_persistence = ProviderRunPersistenceAccumulator::new(&request, &context.config);
         let stream = provider.run(context.config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
@@ -580,7 +583,12 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(ProviderRunEvent::Completed { content, .. }) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(state, usage);
                     Self::replace_assistant_message_content_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -589,14 +597,24 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(
-                    ProviderRunEvent::OutputItemAdded(_)
-                    | ProviderRunEvent::OutputItemDone(_)
-                    | ProviderRunEvent::ToolCallRequested(_)
-                    | ProviderRunEvent::ToolResultReceived(_)
-                    | ProviderRunEvent::McpApprovalRequested(_)
-                    | ProviderRunEvent::UsageUpdated(_),
-                ) => {}
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
                 Ok(ProviderRunEvent::Failed { message }) => {
                     Self::record_stream_error(
                         state,
@@ -604,6 +622,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         message,
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -616,6 +635,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         error.to_string(),
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -627,6 +647,7 @@ impl ConversationPanelView {
             &context.chat_data,
             context.conversation_id,
             assistant_message_id,
+            run_persistence.persistence(),
             cx,
         )?;
         Ok(())
@@ -755,6 +776,8 @@ impl ConversationPanelView {
         assistant_message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
+        let mut run_persistence =
+            ProviderRunPersistenceAccumulator::new(runner.run_request(), runner.get_config());
         let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
@@ -778,7 +801,12 @@ impl ConversationPanelView {
                 Ok(ProviderRunEvent::TextDelta(delta)) => {
                     Self::append_assistant_message(context, assistant_message_id, delta, cx)?;
                 }
-                Ok(ProviderRunEvent::Completed { content, .. }) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(state, usage);
                     Self::replace_assistant_message_content(
                         context,
                         assistant_message_id,
@@ -786,14 +814,24 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(
-                    ProviderRunEvent::OutputItemAdded(_)
-                    | ProviderRunEvent::OutputItemDone(_)
-                    | ProviderRunEvent::ToolCallRequested(_)
-                    | ProviderRunEvent::ToolResultReceived(_)
-                    | ProviderRunEvent::McpApprovalRequested(_)
-                    | ProviderRunEvent::UsageUpdated(_),
-                ) => {}
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
                 Ok(ProviderRunEvent::Failed { message }) => {
                     Self::record_stream_error(
                         state,
@@ -801,6 +839,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         message,
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -813,6 +852,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         error.to_string(),
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -824,6 +864,7 @@ impl ConversationPanelView {
             &context.chat_data,
             context.conversation_id,
             assistant_message_id,
+            run_persistence.persistence(),
             cx,
         )?;
         Ok(())
@@ -995,6 +1036,7 @@ impl ConversationPanelView {
         conversation_id: i32,
         assistant_message_id: i32,
         error: String,
+        run_persistence: Option<MessageRunPersistence>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         let now = OffsetDateTime::now_utc();
@@ -1013,7 +1055,7 @@ impl ConversationPanelView {
         if let Some(message) = message {
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
-                Self::persist_message_snapshot(&message, conn)
+                Self::persist_message_snapshot(&message, run_persistence.as_ref(), conn)
             })??;
         }
         state.update_result(cx, |this, cx| {
@@ -1027,6 +1069,7 @@ impl ConversationPanelView {
         chat_data: &Entity<AiChatResult<ChatDataInner>>,
         conversation_id: i32,
         assistant_message_id: i32,
+        run_persistence: Option<MessageRunPersistence>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         let now = OffsetDateTime::now_utc();
@@ -1045,7 +1088,7 @@ impl ConversationPanelView {
         if let Some(message) = message {
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
-                Self::persist_message_snapshot(&message, conn)
+                Self::persist_message_snapshot(&message, run_persistence.as_ref(), conn)
             })??;
         }
         state.update_result(cx, |this, cx| {
@@ -1080,16 +1123,24 @@ impl ConversationPanelView {
 
     fn persist_message_snapshot(
         message: &Message,
+        run_persistence: Option<&MessageRunPersistence>,
         conn: &mut diesel::SqliteConnection,
     ) -> AiChatResult<()> {
-        Message::update_content(message.id, &message.content, conn)?;
-        match message.status {
-            Status::Error => {
-                Message::record_error(message.id, message.error.clone().unwrap_or_default(), conn)?
+        conn.immediate_transaction(|conn| {
+            Message::update_content(message.id, &message.content, conn)?;
+            match message.status {
+                Status::Error => Message::record_error(
+                    message.id,
+                    message.error.clone().unwrap_or_default(),
+                    conn,
+                )?,
+                status => Message::update_status(message.id, status, conn)?,
             }
-            status => Message::update_status(message.id, status, conn)?,
-        }
-        Ok(())
+            if let Some(run_persistence) = run_persistence {
+                Message::replace_run_persistence(message.id, run_persistence, conn)?;
+            }
+            Ok(())
+        })
     }
 
     fn replace_chat_message_by_id(

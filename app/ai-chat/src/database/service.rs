@@ -22,3 +22,7 @@ pub use global_shortcut_bindings::{
     GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding,
 };
 pub use messages::{Content, Message, NewMessage, UrlCitation};
+pub(crate) use messages::{
+    MessageAttachment, MessageAttachmentKind, MessageOutputItem, MessageOutputItemStatus,
+    MessageRunPersistence, MessageRunState,
+};
