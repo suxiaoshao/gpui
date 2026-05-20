@@ -8,7 +8,7 @@ use crate::{
     database::{Role, UrlCitation},
     llm::{
         ExtSettingItem, LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem,
-        LlmToolResult, ProviderRunEvent,
+        LlmToolResult, ProviderRunEvent, ProviderUsage,
     },
 };
 use serde_json::json;
@@ -663,6 +663,34 @@ fn non_stream_response_maps_output_items_and_usage() -> anyhow::Result<()> {
     assert_eq!(usage.metadata["prompt_eval_duration"], 40);
     assert_eq!(usage.metadata["eval_duration"], 60);
     Ok(())
+}
+
+#[test]
+fn aggregate_usage_sums_multiple_chat_rounds() {
+    let mut first = ProviderUsage::new(Some(3), Some(2), Some(5));
+    first.metadata = json!({
+        "done_reason": "tool_calls",
+        "total_duration": 100,
+        "load_duration": 10,
+        "prompt_eval_duration": 30
+    });
+    let mut second = ProviderUsage::new(Some(7), Some(11), Some(18));
+    second.metadata = json!({
+        "done_reason": "stop",
+        "total_duration": 300,
+        "load_duration": 20,
+        "eval_duration": 90
+    });
+
+    let usage = OllamaProvider::aggregate_usage(Some(first), Some(second)).expect("usage");
+    assert_eq!(usage.input_tokens, Some(10));
+    assert_eq!(usage.output_tokens, Some(13));
+    assert_eq!(usage.total_tokens, Some(23));
+    assert_eq!(usage.metadata["done_reason"], "stop");
+    assert_eq!(usage.metadata["total_duration"], 400);
+    assert_eq!(usage.metadata["load_duration"], 30);
+    assert_eq!(usage.metadata["prompt_eval_duration"], 30);
+    assert_eq!(usage.metadata["eval_duration"], 90);
 }
 
 #[test]

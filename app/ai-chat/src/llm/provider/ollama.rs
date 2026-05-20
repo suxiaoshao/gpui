@@ -43,6 +43,12 @@ const THINK_MEDIUM: &str = "medium";
 const THINK_HIGH: &str = "high";
 const THINKING_OPTIONS: &[&str] = &[THINK_LOW, THINK_MEDIUM, THINK_HIGH];
 const WEB_SEARCH_TOOLTIP_KEY: &str = "tooltip-ollama-web-search-help";
+const USAGE_DURATION_METADATA_KEYS: &[&str] = &[
+    "total_duration",
+    "load_duration",
+    "prompt_eval_duration",
+    "eval_duration",
+];
 
 fn default_base_url() -> String {
     "http://localhost:11434".to_string()
@@ -831,6 +837,75 @@ impl OllamaProvider {
         content
     }
 
+    fn aggregate_usage(
+        accumulated: Option<ProviderUsage>,
+        round: Option<ProviderUsage>,
+    ) -> Option<ProviderUsage> {
+        match (accumulated, round) {
+            (None, None) => None,
+            (Some(usage), None) | (None, Some(usage)) => Some(usage),
+            (Some(accumulated), Some(round)) => {
+                let input_tokens =
+                    Self::sum_optional_u64(accumulated.input_tokens, round.input_tokens);
+                let output_tokens =
+                    Self::sum_optional_u64(accumulated.output_tokens, round.output_tokens);
+                let total_tokens = Self::sum_optional_u64(
+                    accumulated.total_tokens,
+                    round.total_tokens.or_else(|| {
+                        match (round.input_tokens, round.output_tokens) {
+                            (Some(input), Some(output)) => Some(input + output),
+                            _ => None,
+                        }
+                    }),
+                )
+                .or_else(|| match (input_tokens, output_tokens) {
+                    (Some(input), Some(output)) => Some(input + output),
+                    _ => None,
+                });
+                let mut usage = ProviderUsage::new(input_tokens, output_tokens, total_tokens);
+                usage.metadata =
+                    Self::aggregate_usage_metadata(&accumulated.metadata, &round.metadata);
+                Some(usage)
+            }
+        }
+    }
+
+    fn sum_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+        match (left, right) {
+            (Some(left), Some(right)) => Some(left + right),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+    }
+
+    fn aggregate_usage_metadata(
+        accumulated: &serde_json::Value,
+        round: &serde_json::Value,
+    ) -> serde_json::Value {
+        let mut metadata = serde_json::Map::new();
+        if let Some(done_reason) = round
+            .get("done_reason")
+            .or_else(|| accumulated.get("done_reason"))
+            .cloned()
+        {
+            metadata.insert("done_reason".to_string(), done_reason);
+        }
+        for key in USAGE_DURATION_METADATA_KEYS {
+            if let Some(value) = Self::sum_optional_u64(
+                accumulated.get(key).and_then(serde_json::Value::as_u64),
+                round.get(key).and_then(serde_json::Value::as_u64),
+            ) {
+                metadata.insert((*key).to_string(), json!(value));
+            }
+        }
+
+        if metadata.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(metadata)
+        }
+    }
+
     fn ensure_tool_call_ids(tool_calls: &mut [OllamaToolCall]) {
         for (index, tool_call) in tool_calls.iter_mut().enumerate() {
             if tool_call.id.trim().is_empty() {
@@ -992,6 +1067,7 @@ impl Provider for OllamaProvider {
             let mut request = OllamaStoredRequest::deserialize(&request.request_body)?;
             let mut final_citations = Vec::new();
             let mut accumulated_reasoning = String::new();
+            let mut accumulated_usage = None;
 
             loop {
                 let chat_request = OllamaChatRequest {
@@ -1070,8 +1146,11 @@ impl Provider for OllamaProvider {
                 for event in Self::output_item_done_events(&round.message) {
                     yield event;
                 }
-                if let Some(usage) = round.usage.clone() {
-                    yield ProviderRunEvent::UsageUpdated(usage);
+                if round.usage.is_some() {
+                    accumulated_usage = Self::aggregate_usage(accumulated_usage, round.usage.clone());
+                    if let Some(usage) = accumulated_usage.clone() {
+                        yield ProviderRunEvent::UsageUpdated(usage);
+                    }
                 }
 
                 if request.web_search && !round.message.tool_calls.is_empty() {
@@ -1108,7 +1187,7 @@ impl Provider for OllamaProvider {
                 yield ProviderRunEvent::Completed {
                     content,
                     state: Some(ProviderRunState::new(self.name(), None, Vec::new(), request_body.clone())),
-                    usage: round.usage,
+                    usage: accumulated_usage,
                 };
                 break;
             }
