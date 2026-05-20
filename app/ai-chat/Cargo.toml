@@ -64,6 +64,7 @@ window-ext = { workspace = true }
 platform-ext = { workspace = true }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 anyhow = "1.0.102"
+base64 = "0.22.1"
 tray-icon = { version = "0.24.0", default-features = false, features = [
   "common-controls-v6",
 ] }

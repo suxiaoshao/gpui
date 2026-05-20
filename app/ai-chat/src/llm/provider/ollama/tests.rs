@@ -379,7 +379,9 @@ fn request_body_maps_multipart_text_and_image_input() -> anyhow::Result<()> {
 fn request_body_rejects_unsupported_image_refs() {
     for id in [
         "https://example.com/image.png",
+        "abc123",
         "file-img-1",
+        "/tmp/image",
         "/tmp/image.png",
     ] {
         let err = OllamaProvider

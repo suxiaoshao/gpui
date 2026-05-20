@@ -13,6 +13,7 @@ use crate::{
     },
     state::AiChatConfig,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::App;
 use reqwest::Client;
@@ -652,10 +653,8 @@ impl OllamaProvider {
         if value.is_empty() {
             return None;
         }
-        value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
-            .then_some(value)
+        STANDARD.decode(value.as_bytes()).ok()?;
+        Some(value)
     }
 
     fn unsupported_input(kind: &str) -> AiChatError {
