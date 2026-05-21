@@ -13,7 +13,7 @@ use gpui_component::{h_flex, label::Label, select::SelectItem, tag::Tag, v_flex}
 #[derive(Clone)]
 pub(crate) struct TemplateOption {
     template: ConversationTemplate,
-    missing_requirements: Vec<CapabilityRequirement>,
+    missing_requirements: Option<Vec<CapabilityRequirement>>,
 }
 
 impl TemplateOption {
@@ -21,13 +21,11 @@ impl TemplateOption {
         template: ConversationTemplate,
         selected_model: Option<&ProviderModel>,
     ) -> Self {
-        let missing_requirements = selected_model
-            .map(|model| {
-                model
-                    .capabilities
-                    .missing_requirements(&template.required_capabilities)
-            })
-            .unwrap_or_default();
+        let missing_requirements = selected_model.map(|model| {
+            model
+                .capabilities
+                .missing_requirements(&template.required_capabilities)
+        });
         Self {
             template,
             missing_requirements,
@@ -55,16 +53,24 @@ impl SelectItem for TemplateOption {
             Label::new(self.template.name.clone()).text_sm()
         };
 
-        let compatibility_label = if self.missing_requirements.is_empty() {
-            cx.global::<I18n>().t("template-compatibility-compatible")
-        } else {
-            cx.global::<I18n>().t("template-compatibility-incompatible")
-        };
-        let compatibility = if self.missing_requirements.is_empty() {
-            Tag::success().outline().child(compatibility_label)
-        } else {
-            Tag::warning().outline().child(compatibility_label)
-        };
+        let compatibility = self.missing_requirements.as_ref().map(|requirements| {
+            let compatibility_label = if requirements.is_empty() {
+                cx.global::<I18n>().t("template-compatibility-compatible")
+            } else {
+                cx.global::<I18n>().t("template-compatibility-incompatible")
+            };
+            if requirements.is_empty() {
+                Tag::success()
+                    .outline()
+                    .child(compatibility_label)
+                    .into_any_element()
+            } else {
+                Tag::warning()
+                    .outline()
+                    .child(compatibility_label)
+                    .into_any_element()
+            }
+        });
 
         h_flex()
             .w_full()
@@ -82,16 +88,17 @@ impl SelectItem for TemplateOption {
                             .min_w_0()
                             .gap_1()
                             .child(label)
-                            .child(compatibility)
-                            .when(!self.missing_requirements.is_empty(), |this| {
-                                this.child(
-                                    Label::new(capability_labels_text(
-                                        &self.missing_requirements,
-                                        cx,
-                                    ))
-                                    .text_xs()
-                                    .truncate(),
-                                )
+                            .when_some(compatibility, |this, compatibility| {
+                                this.child(compatibility)
+                            })
+                            .when_some(self.missing_requirements.as_ref(), |this, requirements| {
+                                this.when(!requirements.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(capability_labels_text(requirements, cx))
+                                            .text_xs()
+                                            .truncate(),
+                                    )
+                                })
                             }),
                     ),
             )
