@@ -59,6 +59,7 @@ pub struct TemporaryMessage {
     pub provider: String,
     pub role: Role,
     pub content: Content,
+    pub input_content_parts: Option<Vec<LlmContentPart>>,
     pub send_content: Rc<serde_json::Value>,
     pub status: Status,
     pub error: Option<String>,
@@ -334,6 +335,7 @@ struct NewTemporaryMessage {
     provider: String,
     role: Role,
     content: Content,
+    input_content_parts: Option<Vec<LlmContentPart>>,
     send_content: Rc<serde_json::Value>,
     status: Status,
     error: Option<String>,
@@ -695,6 +697,7 @@ impl TemplateDetailView {
             provider: input.provider,
             role: input.role,
             content: input.content,
+            input_content_parts: input.input_content_parts,
             send_content: input.send_content,
             status: input.status,
             error: input.error,
@@ -871,6 +874,7 @@ impl TemplateDetailView {
                     provider: context.composer_snapshot.provider_name.clone(),
                     role: Role::User,
                     content,
+                    input_content_parts: Some(context.composer_snapshot.content_parts.clone()),
                     send_content: send_content.clone(),
                     status: Status::Normal,
                     error: None,
@@ -883,6 +887,7 @@ impl TemplateDetailView {
                     provider: context.composer_snapshot.provider_name.clone(),
                     role: Role::Assistant,
                     content: Content::default(),
+                    input_content_parts: None,
                     send_content: send_content.clone(),
                     status: Status::Loading,
                     error: None,
@@ -1154,9 +1159,14 @@ fn build_history_messages(
     user_message_role: Role,
     user_message_content: Vec<LlmContentPart>,
 ) -> Vec<crate::llm::LlmInputItem> {
-    let history = messages
-        .iter()
-        .map(|message| LlmHistoryMessage::new(message.role, message.status, &message.content));
+    let history = messages.iter().map(|message| {
+        let history = LlmHistoryMessage::new(message.role, message.status, &message.content);
+        if let Some(parts) = message.input_content_parts.as_deref() {
+            history.with_content_parts(parts)
+        } else {
+            history
+        }
+    });
     build_input_items(
         prompts,
         mode,

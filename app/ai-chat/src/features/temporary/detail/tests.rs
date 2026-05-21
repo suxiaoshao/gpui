@@ -7,7 +7,7 @@ use crate::database::{
     MessageRunPersistence, MessageRunState, Mode, Role, Status,
 };
 use crate::features::conversation::detail::ConversationDetailViewExt;
-use crate::llm::{LlmContentPart, LlmOutputItem};
+use crate::llm::{LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem};
 use crate::state::AiChatConfig;
 use std::rc::Rc;
 use time::OffsetDateTime;
@@ -35,6 +35,7 @@ fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessag
         provider: "OpenAI".to_string(),
         role,
         content,
+        input_content_parts: None,
         send_content: Rc::new(serde_json::json!({})),
         status,
         error: None,
@@ -60,6 +61,7 @@ fn make_provider_message(
         provider: provider.to_string(),
         role,
         content,
+        input_content_parts: None,
         send_content: Rc::new(send_content),
         status,
         error,
@@ -147,6 +149,37 @@ fn runner_history_appends_current_user_message() {
             ("assistant", "a1".to_string()),
             ("user", "latest".to_string()),
         ]
+    );
+}
+
+#[test]
+fn runner_history_preserves_temporary_user_content_parts() {
+    let mut image_message = make_message(Role::User, Status::Normal, Content::new("Screenshot"));
+    let image_parts = vec![
+        LlmContentPart::text("Screenshot"),
+        LlmContentPart::ImageRef(LlmAttachmentRef {
+            id: "data:image/png;base64,abc".to_string(),
+            mime_type: Some("image/png".to_string()),
+            name: Some("screenshot.png".to_string()),
+        }),
+    ];
+    image_message.input_content_parts = Some(image_parts.clone());
+
+    let history = build_history_messages(
+        &[],
+        Mode::Contextual,
+        &[image_message],
+        Role::User,
+        current_text("latest"),
+    );
+
+    assert!(
+        matches!(&history[0], LlmInputItem::User { content } if content == &image_parts),
+        "previous user history should preserve the image input parts"
+    );
+    assert_eq!(
+        history[1].single_text().expect("latest text input item"),
+        ("user", "latest")
     );
 }
 

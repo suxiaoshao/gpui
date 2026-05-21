@@ -7,6 +7,7 @@ pub(crate) struct LlmHistoryMessage<'a> {
     pub(crate) role: Role,
     pub(crate) status: Status,
     pub(crate) content: &'a Content,
+    pub(crate) content_parts: Option<&'a [LlmContentPart]>,
 }
 
 impl<'a> LlmHistoryMessage<'a> {
@@ -15,7 +16,19 @@ impl<'a> LlmHistoryMessage<'a> {
             role,
             status,
             content,
+            content_parts: None,
         }
+    }
+
+    pub(crate) fn with_content_parts(mut self, content_parts: &'a [LlmContentPart]) -> Self {
+        self.content_parts = Some(content_parts);
+        self
+    }
+
+    fn request_content(&self) -> Vec<LlmContentPart> {
+        self.content_parts
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| vec![LlmContentPart::text(self.content.send_content())])
     }
 }
 
@@ -41,7 +54,7 @@ pub(crate) fn build_input_items<'a>(
                 Mode::AssistantOnly => message.role == Role::Assistant,
             })
             .map(|message| {
-                LlmInputItem::from_role_text(message.role, message.content.send_content())
+                LlmInputItem::from_role_content(message.role, message.request_content())
             }),
     );
     request_messages.push(LlmInputItem::from_role_content(
@@ -148,5 +161,29 @@ mod tests {
         );
 
         assert!(matches!(&items[0], LlmInputItem::User { content } if content.len() == 2));
+    }
+
+    #[test]
+    fn history_message_can_use_content_parts() {
+        let content = Content::new("fallback");
+        let parts = vec![
+            LlmContentPart::text("describe"),
+            LlmContentPart::ImageRef(LlmAttachmentRef {
+                id: "data:image/png;base64,abc".to_string(),
+                mime_type: Some("image/png".to_string()),
+                name: Some("screenshot.png".to_string()),
+            }),
+        ];
+
+        let items = build_input_items(
+            &[],
+            Mode::Contextual,
+            [LlmHistoryMessage::new(Role::User, Status::Normal, &content)
+                .with_content_parts(&parts)],
+            Role::User,
+            vec![LlmContentPart::text("latest")],
+        );
+
+        assert!(matches!(&items[0], LlmInputItem::User { content } if content == &parts));
     }
 }
