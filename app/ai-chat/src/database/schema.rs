@@ -7,6 +7,7 @@ diesel::table! {
         icon -> Text,
         description -> Nullable<Text>,
         prompts -> Json,
+        required_capabilities -> Json,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
     }

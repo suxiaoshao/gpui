@@ -7,7 +7,7 @@ use crate::database::{
     MessageRunPersistence, MessageRunState, Mode, Role, Status,
 };
 use crate::features::conversation::detail::ConversationDetailViewExt;
-use crate::llm::LlmOutputItem;
+use crate::llm::{LlmContentPart, LlmOutputItem};
 use crate::state::AiChatConfig;
 use std::rc::Rc;
 use time::OffsetDateTime;
@@ -22,6 +22,10 @@ fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, Strin
             (role, text.to_string())
         })
         .collect()
+}
+
+fn current_text(text: &str) -> Vec<LlmContentPart> {
+    vec![LlmContentPart::text(text)]
 }
 
 fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
@@ -132,7 +136,7 @@ fn runner_history_appends_current_user_message() {
             make_message(Role::User, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let history = input_texts(history);
 
@@ -160,7 +164,7 @@ fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         Mode::Contextual,
         &[],
         &AiChatConfig::default(),
-        (Role::User, "hello"),
+        (Role::User, current_text("hello")),
     )?;
     assert_eq!(request_body["model"], serde_json::json!("override-model"));
     Ok(())
@@ -192,7 +196,7 @@ fn contextual_openai_request_uses_latest_compatible_run_state() -> anyhow::Resul
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert_eq!(request_body["previous_response_id"], "resp_1");
@@ -235,7 +239,7 @@ fn contextual_openai_request_falls_back_when_settings_differ() -> anyhow::Result
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());
@@ -277,7 +281,7 @@ fn contextual_openai_request_falls_back_when_request_context_differs() -> anyhow
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());
@@ -320,7 +324,7 @@ fn contextual_openai_request_ignores_prior_previous_response_id_in_context_key()
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert_eq!(request_body["previous_response_id"], "resp_1");
@@ -343,7 +347,7 @@ fn non_contextual_openai_request_ignores_run_state_continuation() -> anyhow::Res
         Mode::AssistantOnly,
         &[assistant],
         &AiChatConfig::default(),
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());

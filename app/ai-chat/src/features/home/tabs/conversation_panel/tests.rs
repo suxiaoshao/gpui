@@ -14,6 +14,10 @@ fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, Strin
         .collect()
 }
 
+fn current_text(text: &str) -> Vec<LlmContentPart> {
+    vec![LlmContentPart::text(text)]
+}
+
 fn make_message(id: i32, role: Role, status: Status, content: Content) -> Message {
     let now = OffsetDateTime::now_utc();
     Message {
@@ -87,7 +91,7 @@ fn get_history_contextual_includes_all_normal_messages_and_user() {
             make_message(3, Role::User, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents);
     assert_eq!(
@@ -123,7 +127,7 @@ fn get_history_single_only_prompts_and_user() {
             Content::new("a1"),
         )],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents)
         .into_iter()
@@ -159,7 +163,7 @@ fn get_history_assistant_only_filters_roles() {
             make_message(3, Role::Assistant, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents);
     assert_eq!(
@@ -222,7 +226,7 @@ fn build_run_request_with_openai_continuation_trims_prior_history() -> anyhow::R
                 Content::new("after continuation"),
             ),
         ],
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
         Some(ContinuationCandidate {
             after_index: 1,
             state: ProviderRunState::new(

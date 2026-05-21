@@ -13,13 +13,14 @@ create table folders
 
 CREATE TABLE conversation_templates
 (
-    id           Integer PRIMARY KEY AUTOINCREMENT not null,
-    name         TEXT                              NOT NULL,
-    icon         TEXT                              not null,
-    description  TEXT,
-    prompts      JSON                              NOT NULL,
-    created_time DateTime                          not null,
-    updated_time DateTime                          not null
+    id                    Integer PRIMARY KEY AUTOINCREMENT not null,
+    name                  TEXT                              NOT NULL,
+    icon                  TEXT                              not null,
+    description           TEXT,
+    prompts               JSON                              NOT NULL,
+    required_capabilities JSON                              NOT NULL default '[]',
+    created_time          DateTime                          not null,
+    updated_time          DateTime                          not null
 );
 
 create table conversations

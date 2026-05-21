@@ -87,7 +87,7 @@ pub(super) fn v3_to_v6(
         target_conn.batch_execute(CREATE_TABLE_SQL)?;
         SqlFolder::migration_save(SqlFolder::all(v3_conn)?, target_conn)?;
         SqlConversationTemplate::migration_save(
-            SqlConversationTemplate::all(v3_conn)?,
+            templates_without_requirements(v3_conn)?,
             target_conn,
         )?;
         SqlConversation::migration_save(SqlConversation::get_all(v3_conn)?, target_conn)?;
@@ -107,7 +107,7 @@ pub(super) fn v4_to_v6(
         target_conn.batch_execute(CREATE_TABLE_SQL)?;
         SqlFolder::migration_save(SqlFolder::all(v4_conn)?, target_conn)?;
         SqlConversationTemplate::migration_save(
-            SqlConversationTemplate::all(v4_conn)?,
+            templates_without_requirements(v4_conn)?,
             target_conn,
         )?;
         SqlConversation::migration_save(SqlConversation::get_all(v4_conn)?, target_conn)?;
@@ -124,7 +124,7 @@ pub(super) fn v5_to_v6(
         target_conn.batch_execute(CREATE_TABLE_SQL)?;
         SqlFolder::migration_save(SqlFolder::all(v5_conn)?, target_conn)?;
         SqlConversationTemplate::migration_save(
-            SqlConversationTemplate::all(v5_conn)?,
+            templates_without_requirements(v5_conn)?,
             target_conn,
         )?;
         SqlConversation::migration_save(SqlConversation::get_all(v5_conn)?, target_conn)?;
@@ -135,6 +135,13 @@ pub(super) fn v5_to_v6(
         )?;
         Ok(())
     })
+}
+
+fn templates_without_requirements(
+    conn: &mut SqliteConnection,
+) -> AiChatResult<Vec<SqlConversationTemplate>> {
+    v3::SqlConversationTemplateV3::all(conn)
+        .map(|templates| templates.into_iter().map(Into::into).collect())
 }
 
 fn migrate_legacy_store(data: LegacyData, target_conn: &mut SqliteConnection) -> AiChatResult<()> {
@@ -225,6 +232,7 @@ impl From<LegacyTemplate> for SqlConversationTemplate {
             icon: value.icon,
             description: value.description,
             prompts: value.prompts,
+            required_capabilities: serde_json::json!([]),
             created_time: value.created_time,
             updated_time: value.updated_time,
         }
@@ -704,6 +712,18 @@ pub(super) mod v3 {
     use time::OffsetDateTime;
 
     diesel::table! {
+        conversation_templates (id) {
+            id -> Integer,
+            name -> Text,
+            icon -> Text,
+            description -> Nullable<Text>,
+            prompts -> Json,
+            created_time -> TimestamptzSqlite,
+            updated_time -> TimestamptzSqlite,
+        }
+    }
+
+    diesel::table! {
         messages (id) {
             id -> Integer,
             conversation_id -> Integer,
@@ -718,6 +738,25 @@ pub(super) mod v3 {
             start_time -> TimestamptzSqlite,
             end_time -> TimestamptzSqlite,
             error -> Nullable<Text>,
+        }
+    }
+
+    #[derive(Debug, Queryable)]
+    pub(crate) struct SqlConversationTemplateV3 {
+        pub id: i32,
+        pub name: String,
+        pub icon: String,
+        pub description: Option<String>,
+        pub prompts: serde_json::Value,
+        pub created_time: OffsetDateTime,
+        pub updated_time: OffsetDateTime,
+    }
+
+    impl SqlConversationTemplateV3 {
+        pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
+            conversation_templates::table
+                .load::<Self>(conn)
+                .map_err(|e| e.into())
         }
     }
 
@@ -775,6 +814,21 @@ impl From<v2::SqlConversationTemplateV2> for LegacyTemplate {
             provider: value.adapter,
             template: value.template,
             prompts: value.prompts,
+            created_time: value.created_time,
+            updated_time: value.updated_time,
+        }
+    }
+}
+
+impl From<v3::SqlConversationTemplateV3> for SqlConversationTemplate {
+    fn from(value: v3::SqlConversationTemplateV3) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            icon: value.icon,
+            description: value.description,
+            prompts: value.prompts,
+            required_capabilities: serde_json::json!([]),
             created_time: value.created_time,
             updated_time: value.updated_time,
         }

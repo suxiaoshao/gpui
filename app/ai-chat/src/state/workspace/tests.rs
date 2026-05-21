@@ -21,6 +21,7 @@ fn sample_draft() -> ConversationDraft {
         mode: Mode::Single,
         selected_template_id: Some(42),
         request_template: sample_request_template(),
+        input_parts: None,
     }
 }
 
@@ -57,6 +58,7 @@ fn latest_model_preset_seeds_blank_contextual_draft() {
     assert_eq!(draft.mode, Mode::Contextual);
     assert_eq!(draft.selected_template_id, None);
     assert_eq!(draft.request_template, sample_request_template());
+    assert_eq!(draft.input_parts, None);
 }
 
 #[test]

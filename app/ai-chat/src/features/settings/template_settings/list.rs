@@ -2,7 +2,9 @@ use crate::{
     components::chat_form::notify_templates_changed,
     database::{ConversationTemplate, Db},
     errors::AiChatResult,
-    foundation::{assets::IconName, i18n::I18n},
+    foundation::{assets::IconName, capability_labels_text, i18n::I18n},
+    llm::ProviderModel,
+    state::{ModelStore, WorkspaceStore},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -12,6 +14,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
+    tag::Tag,
     v_flex,
 };
 use std::rc::Rc;
@@ -54,6 +57,19 @@ impl TemplateSettingsPage {
     fn filtered_templates(&self, cx: &App) -> Vec<ConversationTemplate> {
         let query = self.current_query(cx);
         filter_templates(self.templates.as_deref().unwrap_or_default(), &query)
+    }
+
+    fn current_model(cx: &App) -> Option<ProviderModel> {
+        let (provider_name, model_id) = cx
+            .has_global::<WorkspaceStore>()
+            .then(|| cx.global::<WorkspaceStore>().read(cx).latest_model_key())
+            .flatten()?;
+        cx.global::<ModelStore>()
+            .read(cx)
+            .snapshot()
+            .models
+            .into_iter()
+            .find(|model| model.provider_name == provider_name && model.id == model_id)
     }
 
     fn on_search_input_event(
@@ -272,17 +288,60 @@ impl TemplateSettingsPage {
         template: ConversationTemplate,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (prompts_label, view_label, edit_label, delete_label) = {
+        let (
+            prompts_label,
+            compatible_label,
+            incompatible_label,
+            view_label,
+            edit_label,
+            delete_label,
+        ) = {
             let i18n = cx.global::<I18n>();
             (
                 i18n.t("field-prompts"),
+                i18n.t("template-compatibility-compatible"),
+                i18n.t("template-compatibility-incompatible"),
                 i18n.t("button-view"),
                 i18n.t("button-edit"),
                 i18n.t("button-delete"),
             )
         };
         let template_id = template.id;
+        let current_model = Self::current_model(cx);
+        let missing_requirements = current_model
+            .as_ref()
+            .map(|model| {
+                model
+                    .capabilities
+                    .missing_requirements(&template.required_capabilities)
+            })
+            .unwrap_or_default();
+        let compatibility_tag = current_model.map(|_| {
+            if missing_requirements.is_empty() {
+                Tag::success()
+                    .outline()
+                    .child(compatible_label)
+                    .into_any_element()
+            } else {
+                Tag::warning()
+                    .outline()
+                    .child(incompatible_label)
+                    .into_any_element()
+            }
+        });
+        let capability_summary = if template.required_capabilities.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{}: {}",
+                cx.global::<I18n>().t("field-required-capabilities"),
+                capability_labels_text(&template.required_capabilities, cx)
+            ))
+        };
         let prompt_count = format!("{} {}", template.prompts.len(), prompts_label);
+        let icon = template.icon;
+        let name = template.name;
+        let description = template.description;
 
         h_flex()
             .id(("template-settings-row", template_id as u64))
@@ -305,17 +364,25 @@ impl TemplateSettingsPage {
                     .justify_center()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().border.opacity(0.35))
-                    .child(Label::new(template.icon).text_base()),
+                    .child(Label::new(icon).text_base()),
             )
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
                     .gap_1()
-                    .child(Label::new(template.name).text_sm().truncate())
-                    .when_some(template.description, |this, description| {
+                    .child(Label::new(name).text_sm().truncate())
+                    .when_some(description, |this, description| {
                         this.child(
                             Label::new(description)
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate(),
+                        )
+                    })
+                    .when_some(capability_summary, |this, summary| {
+                        this.child(
+                            Label::new(summary)
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .truncate(),
@@ -323,9 +390,16 @@ impl TemplateSettingsPage {
                     }),
             )
             .child(
-                Label::new(prompt_count)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground),
+                v_flex()
+                    .flex_none()
+                    .items_end()
+                    .gap_1()
+                    .child(
+                        Label::new(prompt_count)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .when_some(compatibility_tag, |this, tag| this.child(tag)),
             )
             .child(
                 h_flex()

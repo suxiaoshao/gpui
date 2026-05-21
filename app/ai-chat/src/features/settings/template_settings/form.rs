@@ -6,11 +6,13 @@ use crate::{
     features::settings::template_settings::{
         TEMPLATE_DIALOG_MARGIN_TOP, TEMPLATE_DIALOG_MAX_HEIGHT, TEMPLATE_DIALOG_WIDTH,
     },
+    foundation::capability_label,
     foundation::{assets::IconName, i18n::I18n},
+    llm::CapabilityRequirement,
 };
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, WindowExt,
+    ActiveTheme, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogFooter,
     form::{field, v_form},
@@ -38,6 +40,7 @@ struct TemplateDialogLabels {
     name_label: SharedString,
     icon_label: SharedString,
     description_label: SharedString,
+    required_capabilities_label: SharedString,
     cancel_label: SharedString,
     required_template_message: SharedString,
     required_prompt_role_message: SharedString,
@@ -49,6 +52,7 @@ struct TemplateDialogFields {
     name_input: Entity<InputState>,
     icon_input: Entity<InputState>,
     description_input: Entity<InputState>,
+    required_capabilities_input: Entity<CapabilityRequirementsForm>,
     prompt_form_input: Entity<PromptListForm>,
 }
 
@@ -59,6 +63,16 @@ struct PromptEditorRow {
 
 struct PromptListForm {
     prompt_rows: Vec<PromptEditorRow>,
+}
+
+struct CapabilityRequirementsForm {
+    selected: Vec<CapabilityRequirement>,
+}
+
+struct TemplateValidationMessages<'a> {
+    required_template: &'a str,
+    required_prompt_role: &'a str,
+    required_prompt_content: &'a str,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +92,7 @@ pub(super) fn open_add_template_dialog(on_saved: OnSaved, window: &mut Window, c
             role: Role::Developer,
             prompt: "You are a helpful assistant.".to_string(),
         }],
+        required_capabilities: Vec::new(),
         created_time: now,
         updated_time: now,
     };
@@ -138,6 +153,7 @@ impl DialogMode {
             name_label: i18n.t("field-name").into(),
             icon_label: i18n.t("field-icon").into(),
             description_label: i18n.t("field-description").into(),
+            required_capabilities_label: i18n.t("field-required-capabilities").into(),
             cancel_label: i18n.t("button-cancel").into(),
             required_template_message: i18n.t("template-error-name-icon-required").into(),
             required_prompt_role_message: i18n.t("template-error-select-role").into(),
@@ -192,6 +208,11 @@ fn open_template_form_dialog(
                             field()
                                 .label(labels.description_label.clone())
                                 .child(Input::new(&fields.description_input).w_full().min_w_0()),
+                        )
+                        .child(
+                            field()
+                                .label(labels.required_capabilities_label.clone())
+                                .child(fields.required_capabilities_input.clone()),
                         )
                         .child(field().child(fields.prompt_form_input.clone())),
                 ),
@@ -264,10 +285,13 @@ fn dialog_fields(
         input.set_value(template.description.clone().unwrap_or_default(), window, cx)
     });
     let prompt_form_input = cx.new(|cx| PromptListForm::new(template, window, cx));
+    let required_capabilities_input =
+        cx.new(|cx| CapabilityRequirementsForm::new(template.required_capabilities.clone(), cx));
     TemplateDialogFields {
         name_input,
         icon_input,
         description_input,
+        required_capabilities_input,
         prompt_form_input,
     }
 }
@@ -281,14 +305,18 @@ fn collect_submission(
     let name = fields.name_input.read(cx).value();
     let icon = fields.icon_input.read(cx).value();
     let description = fields.description_input.read(cx).value();
+    let required_capabilities = fields.required_capabilities_input.read(cx).selected();
     build_template_submission(
         name.as_ref(),
         icon.as_ref(),
         description.as_ref(),
         prompts,
-        labels.required_template_message.as_ref(),
-        labels.required_prompt_role_message.as_ref(),
-        labels.required_prompt_content_message.as_ref(),
+        required_capabilities,
+        TemplateValidationMessages {
+            required_template: labels.required_template_message.as_ref(),
+            required_prompt_role: labels.required_prompt_role_message.as_ref(),
+            required_prompt_content: labels.required_prompt_content_message.as_ref(),
+        },
     )
 }
 
@@ -297,24 +325,27 @@ fn build_template_submission(
     icon: &str,
     description: &str,
     prompts: Vec<PromptFormValue>,
-    required_template_message: &str,
-    required_prompt_role_message: &str,
-    required_prompt_content_message: &str,
+    required_capabilities: Vec<CapabilityRequirement>,
+    messages: TemplateValidationMessages<'_>,
 ) -> Result<NewConversationTemplate, String> {
     let name = name.trim().to_string();
     let icon = icon.trim().to_string();
     if name.is_empty() || icon.is_empty() {
-        return Err(required_template_message.to_string());
+        return Err(messages.required_template.to_string());
     }
 
     let mut collected_prompts = Vec::with_capacity(prompts.len());
     for (index, prompt) in prompts.into_iter().enumerate() {
         let role = prompt
             .role
-            .ok_or_else(|| format!("{} {}", required_prompt_role_message, index + 1))?;
+            .ok_or_else(|| format!("{} {}", messages.required_prompt_role, index + 1))?;
         let prompt = prompt.prompt.trim().to_string();
         if prompt.is_empty() {
-            return Err(format!("{} {}", required_prompt_content_message, index + 1));
+            return Err(format!(
+                "{} {}",
+                messages.required_prompt_content,
+                index + 1
+            ));
         }
         collected_prompts.push(ConversationTemplatePrompt { role, prompt });
     }
@@ -329,6 +360,7 @@ fn build_template_submission(
             Some(description)
         },
         prompts: collected_prompts,
+        required_capabilities,
     })
 }
 
@@ -385,6 +417,60 @@ fn notify_error(
             .with_type(NotificationType::Error),
         cx,
     );
+}
+
+impl CapabilityRequirementsForm {
+    fn new(selected: Vec<CapabilityRequirement>, _cx: &mut Context<Self>) -> Self {
+        let mut selected = selected;
+        selected.sort();
+        selected.dedup();
+        Self { selected }
+    }
+
+    fn selected(&self) -> Vec<CapabilityRequirement> {
+        self.selected.clone()
+    }
+
+    fn toggle(&mut self, requirement: CapabilityRequirement, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .selected
+            .iter()
+            .position(|selected| *selected == requirement)
+        {
+            self.selected.remove(index);
+        } else {
+            self.selected.push(requirement);
+            self.selected.sort();
+        }
+        cx.notify();
+    }
+}
+
+impl Render for CapabilityRequirementsForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity().downgrade();
+        div().flex().flex_wrap().gap_2().children(
+            CapabilityRequirement::all()
+                .into_iter()
+                .enumerate()
+                .map(|(index, requirement)| {
+                    let checked = self.selected.contains(&requirement);
+                    let this = this.clone();
+                    Button::new(("template-required-capability", index as u64))
+                        .small()
+                        .outline()
+                        .selected(checked)
+                        .label(capability_label(requirement, cx))
+                        .on_click(move |_, _window, cx| {
+                            let _ = this.update(cx, |form, cx| {
+                                form.toggle(requirement, cx);
+                            });
+                        })
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 impl PromptListForm {

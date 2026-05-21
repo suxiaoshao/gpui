@@ -16,8 +16,8 @@ use crate::{
     foundation::assets::IconName,
     foundation::i18n::I18n,
     llm::{
-        LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
-        ProviderRunRunner, ProviderRunState, build_input_items,
+        LlmContentPart, LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator,
+        ProviderRunRequest, ProviderRunRunner, ProviderRunState, build_input_items,
         persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
     },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
@@ -680,7 +680,7 @@ impl ConversationPanelView {
         let runner = Self::build_runner(
             context,
             Role::User,
-            user_content.send_content().to_string(),
+            context.composer_snapshot.content_parts.clone(),
             cx,
         )?;
         let send_content = runner.request_body();
@@ -721,7 +721,7 @@ impl ConversationPanelView {
     fn build_runner(
         context: &FetchContext,
         user_message_role: Role,
-        user_message_content: String,
+        user_message_content: Vec<LlmContentPart>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         let provider_name = context.composer_snapshot.provider_name.clone();
@@ -738,7 +738,7 @@ impl ConversationPanelView {
                     prompts.clone(),
                     mode,
                     &conversation.messages,
-                    (user_message_role, &user_message_content),
+                    (user_message_role, user_message_content.clone()),
                 )?;
                 let continuation = openai_continuation_candidate(
                     &provider_name,
@@ -757,7 +757,7 @@ impl ConversationPanelView {
             prompts,
             mode,
             &history_messages,
-            (user_message_role, &user_message_content),
+            (user_message_role, user_message_content),
             continuation,
         )?;
         Ok(Runner {
@@ -1235,7 +1235,7 @@ fn build_history_messages(
     mode: Mode,
     history_messages: &[Message],
     user_message_role: Role,
-    user_message_content: &str,
+    user_message_content: Vec<LlmContentPart>,
 ) -> Vec<crate::llm::LlmInputItem> {
     let history = history_messages
         .iter()
@@ -1278,7 +1278,7 @@ fn openai_request_context_key(
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
     history_messages: &[Message],
-    current_user_message: (Role, &str),
+    current_user_message: (Role, Vec<LlmContentPart>),
 ) -> AiChatResult<Option<serde_json::Value>> {
     if provider_name != "OpenAI" || mode != Mode::Contextual {
         return Ok(None);
@@ -1360,7 +1360,10 @@ fn build_run_request(
         prompts,
         mode,
         history_messages,
-        (user_message_role, user_message_content),
+        (
+            user_message_role,
+            vec![LlmContentPart::text(user_message_content)],
+        ),
         None,
     )
 }
@@ -1371,7 +1374,7 @@ fn build_run_request_with_continuation(
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
     history_messages: &[Message],
-    current_user_message: (Role, &str),
+    current_user_message: (Role, Vec<LlmContentPart>),
     continuation: Option<ContinuationCandidate>,
 ) -> AiChatResult<ProviderRunRequest> {
     let state = continuation

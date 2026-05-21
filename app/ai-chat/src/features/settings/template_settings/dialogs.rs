@@ -4,7 +4,7 @@ use crate::{
     features::settings::template_settings::{
         TEMPLATE_DIALOG_MARGIN_TOP, TEMPLATE_DIALOG_MAX_HEIGHT, TEMPLATE_DIALOG_WIDTH,
     },
-    foundation::{assets::IconName, i18n::I18n},
+    foundation::{assets::IconName, capability_labels_text, i18n::I18n},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -29,11 +29,19 @@ pub(super) fn open_template_view_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let (dialog_title, edit_label, delete_label, id_label, prompts_label): (
+    let (
+        dialog_title,
+        edit_label,
+        delete_label,
+        id_label,
+        required_capabilities_label,
+        prompts_label,
+    ): (
         String,
         SharedString,
         SharedString,
         SharedString,
+        String,
         String,
     ) = {
         let i18n = cx.global::<I18n>();
@@ -42,6 +50,7 @@ pub(super) fn open_template_view_dialog(
             i18n.t("button-edit").into(),
             i18n.t("button-delete").into(),
             i18n.t("field-id").into(),
+            i18n.t("field-required-capabilities"),
             i18n.t("field-prompts"),
         )
     };
@@ -65,6 +74,11 @@ pub(super) fn open_template_view_dialog(
                         delete_label.clone(),
                         edit_action,
                         delete_action,
+                        cx,
+                    ))
+                    .child(render_required_capabilities(
+                        &template,
+                        required_capabilities_label.clone(),
                         cx,
                     ))
                     .child(
@@ -212,6 +226,30 @@ fn render_template_dialog_header(
                             on_delete(template_id, window, cx);
                         }),
                 ),
+        )
+        .into_any_element()
+}
+
+fn render_required_capabilities(
+    template: &ConversationTemplate,
+    label: String,
+    cx: &mut App,
+) -> AnyElement {
+    let value = if template.required_capabilities.is_empty() {
+        cx.global::<I18n>().t("template-required-capabilities-none")
+    } else {
+        capability_labels_text(&template.required_capabilities, cx)
+    };
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .child(Label::new(label).text_sm().font_medium())
+        .child(
+            Label::new(value)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .truncate(),
         )
         .into_any_element()
 }

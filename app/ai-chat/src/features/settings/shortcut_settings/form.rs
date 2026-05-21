@@ -14,8 +14,11 @@ use crate::{
             validation::{ShortcutValidationError, validate_hotkey},
         },
     },
-    foundation::{assets::IconName, i18n::I18n},
-    llm::{ProviderModel, apply_ext_setting, build_request_template, preset_ext_settings},
+    foundation::{assets::IconName, capability_labels_text, i18n::I18n},
+    llm::{
+        CapabilityRequirement, ProviderModel, apply_ext_setting, build_request_template,
+        preset_ext_settings,
+    },
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
@@ -672,6 +675,25 @@ impl ShortcutFormState {
             .cloned()
     }
 
+    fn selected_template(&self) -> Option<&ConversationTemplate> {
+        let template_id = self.draft.template_id?;
+        self.templates
+            .iter()
+            .find(|template| template.id == template_id)
+    }
+
+    fn missing_template_requirements(&self, cx: &App) -> Vec<CapabilityRequirement> {
+        let Some(template) = self.selected_template() else {
+            return Vec::new();
+        };
+        let Some(model) = Self::current_model_from(self, &self.model_store_models, cx) else {
+            return Vec::new();
+        };
+        model
+            .capabilities
+            .missing_requirements(&template.required_capabilities)
+    }
+
     fn refresh_request_template_with_models(
         form: &mut ShortcutFormState,
         available_models: &[ProviderModel],
@@ -857,6 +879,7 @@ impl Render for ShortcutFormState {
         } else {
             empty_model_picker
         };
+        let missing_requirements = self.missing_template_requirements(cx);
 
         v_flex()
             .w_full()
@@ -907,12 +930,30 @@ impl Render for ShortcutFormState {
                     )
                     .child(
                         field().label(field_model.clone()).child(
-                            Select::new(&self.model_select)
-                                .placeholder(field_model.clone())
-                                .empty(move |_window, _cx| {
-                                    Label::new(model_empty_label.clone()).text_sm()
-                                })
-                                .w_full(),
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    Select::new(&self.model_select)
+                                        .placeholder(field_model.clone())
+                                        .empty(move |_window, _cx| {
+                                            Label::new(model_empty_label.clone()).text_sm()
+                                        })
+                                        .w_full(),
+                                )
+                                .when(!missing_requirements.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(format!(
+                                            "{}: {}",
+                                            cx.global::<I18n>()
+                                                .t("shortcut-form-capability-warning"),
+                                            capability_labels_text(&missing_requirements, cx)
+                                        ))
+                                        .text_xs()
+                                        .text_color(cx.theme().warning),
+                                    )
+                                }),
                         ),
                     )
                     .child(

@@ -3,6 +3,7 @@ use crate::{
     app::APP_NAME,
     database::Mode,
     errors::{AiChatError, AiChatResult},
+    llm::LlmContentPart,
 };
 use gpui::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -31,6 +32,8 @@ pub(crate) struct ConversationDraft {
         deserialize_with = "deserialize_request_template"
     )]
     pub(crate) request_template: serde_json::Value,
+    #[serde(skip)]
+    pub(crate) input_parts: Option<Vec<LlmContentPart>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -263,6 +266,7 @@ impl ConversationDraft {
             mode: Mode::Contextual,
             selected_template_id: None,
             request_template: preset.request_template.clone(),
+            input_parts: None,
         }
     }
 }

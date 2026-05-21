@@ -16,8 +16,10 @@ use crate::{
             validation::validate_hotkey,
         },
     },
-    foundation::{assets::IconName, i18n::I18n, search::field_matches_query},
-    llm::{ExtSettingControl, ProviderModel, preset_ext_settings},
+    foundation::{
+        assets::IconName, capability_labels_text, i18n::I18n, search::field_matches_query,
+    },
+    llm::{CapabilityRequirement, ExtSettingControl, ProviderModel, preset_ext_settings},
     state::ModelStore,
 };
 use gpui::{AppContext as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
@@ -92,6 +94,7 @@ pub(super) enum ShortcutStatus {
     ModelUnavailable,
     HotkeyInvalid,
     HotkeyConflict,
+    CapabilityMismatch,
     RegistrationFailed,
 }
 
@@ -102,6 +105,7 @@ impl ShortcutStatus {
             Self::ModelUnavailable
                 | Self::HotkeyInvalid
                 | Self::HotkeyConflict
+                | Self::CapabilityMismatch
                 | Self::RegistrationFailed
         )
     }
@@ -113,6 +117,7 @@ impl ShortcutStatus {
             Self::ModelUnavailable => "shortcut-status-model-unavailable",
             Self::HotkeyInvalid => "shortcut-status-hotkey-invalid",
             Self::HotkeyConflict => "shortcut-status-hotkey-conflict",
+            Self::CapabilityMismatch => "shortcut-status-capability-mismatch",
             Self::RegistrationFailed => "shortcut-status-registration-failed",
         }
     }
@@ -129,6 +134,7 @@ struct ShortcutListItem {
     preset_summary: String,
     status: ShortcutStatus,
     status_message: SharedString,
+    missing_requirements: Vec<CapabilityRequirement>,
     search_text: String,
     model_resolved: bool,
     registration: SharedString,
@@ -295,8 +301,9 @@ impl ShortcutSettingsPage {
             model.provider_name == binding.provider_name && model.id == binding.model_id
         });
         let preset_summary = preset_summary(binding, models, cx);
-        let (status, status_message) = resolve_status(
+        let (status, status_message, missing_requirements) = resolve_status(
             binding,
+            template.as_ref(),
             models,
             diagnostics,
             &self.bindings_for_status(),
@@ -327,6 +334,7 @@ impl ShortcutSettingsPage {
             preset_summary,
             status,
             status_message,
+            missing_requirements,
             search_text,
             model_resolved,
             registration,
@@ -993,7 +1001,16 @@ impl ShortcutListItem {
                 cx.global::<I18n>().t("shortcut-runtime-waiting").into()
             },
             preset_state: if self.model_resolved {
-                self.preset_summary.clone().into()
+                if self.missing_requirements.is_empty() {
+                    self.preset_summary.clone().into()
+                } else {
+                    format!(
+                        "{}: {}",
+                        cx.global::<I18n>().t("template-missing-capabilities"),
+                        capability_labels_text(&self.missing_requirements, cx)
+                    )
+                    .into()
+                }
             } else {
                 cx.global::<I18n>()
                     .t("shortcut-ext-settings-unavailable")
@@ -1005,17 +1022,19 @@ impl ShortcutListItem {
 
 fn resolve_status(
     binding: &GlobalShortcutBinding,
+    template: Option<&ConversationTemplate>,
     models: &[ProviderModel],
     diagnostics: &ShortcutRuntimeDiagnostics,
     existing_bindings: &[GlobalShortcutBinding],
     cx: &App,
-) -> (ShortcutStatus, SharedString) {
+) -> (ShortcutStatus, SharedString, Vec<CapabilityRequirement>) {
     if !binding.enabled {
         return (
             ShortcutStatus::Disabled,
             cx.global::<I18n>()
                 .t("shortcut-status-message-disabled")
                 .into(),
+            Vec::new(),
         );
     }
 
@@ -1031,11 +1050,15 @@ fn resolve_status(
         } else {
             ShortcutStatus::HotkeyInvalid
         };
-        return (status, err.message(cx));
+        return (status, err.message(cx), Vec::new());
     }
 
     if let Some(err) = diagnostics.registration_errors.get(&binding.id) {
-        return (ShortcutStatus::RegistrationFailed, err.clone().into());
+        return (
+            ShortcutStatus::RegistrationFailed,
+            err.clone().into(),
+            Vec::new(),
+        );
     }
     if !diagnostics.registered_bindings.contains_key(&binding.id) {
         return (
@@ -1043,18 +1066,41 @@ fn resolve_status(
             cx.global::<I18n>()
                 .t("shortcut-status-message-not-registered")
                 .into(),
+            Vec::new(),
         );
     }
 
-    let model_available = models
+    let model = models
         .iter()
-        .any(|model| model.provider_name == binding.provider_name && model.id == binding.model_id);
-    if !model_available {
+        .find(|model| model.provider_name == binding.provider_name && model.id == binding.model_id);
+    let Some(model) = model else {
         return (
             ShortcutStatus::ModelUnavailable,
             cx.global::<I18n>()
                 .t("shortcut-status-message-model-unavailable")
                 .into(),
+            Vec::new(),
+        );
+    };
+
+    let missing_requirements = template
+        .map(|template| {
+            model
+                .capabilities
+                .missing_requirements(&template.required_capabilities)
+        })
+        .unwrap_or_default();
+    if !missing_requirements.is_empty() {
+        return (
+            ShortcutStatus::CapabilityMismatch,
+            format!(
+                "{}: {}",
+                cx.global::<I18n>()
+                    .t("shortcut-status-message-capability-mismatch"),
+                capability_labels_text(&missing_requirements, cx)
+            )
+            .into(),
+            missing_requirements,
         );
     }
 
@@ -1063,6 +1109,7 @@ fn resolve_status(
         cx.global::<I18n>()
             .t("shortcut-status-message-enabled")
             .into(),
+        Vec::new(),
     )
 }
 
@@ -1100,7 +1147,10 @@ fn status_colors(status: ShortcutStatus, cx: &App) -> (Hsla, Hsla) {
         ),
         ShortcutStatus::ModelUnavailable
         | ShortcutStatus::HotkeyConflict
-        | ShortcutStatus::HotkeyInvalid => (cx.theme().warning, cx.theme().warning.opacity(0.12)),
+        | ShortcutStatus::HotkeyInvalid
+        | ShortcutStatus::CapabilityMismatch => {
+            (cx.theme().warning, cx.theme().warning.opacity(0.12))
+        }
         ShortcutStatus::RegistrationFailed => (cx.theme().danger, cx.theme().danger.opacity(0.12)),
     }
 }

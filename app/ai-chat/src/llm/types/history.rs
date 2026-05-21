@@ -1,6 +1,6 @@
 use crate::{
     database::{Content, ConversationTemplatePrompt, Mode, Role, Status},
-    llm::LlmInputItem,
+    llm::{LlmContentPart, LlmInputItem},
 };
 
 pub(crate) struct LlmHistoryMessage<'a> {
@@ -24,7 +24,7 @@ pub(crate) fn build_input_items<'a>(
     mode: Mode,
     history_messages: impl IntoIterator<Item = LlmHistoryMessage<'a>>,
     user_message_role: Role,
-    user_message_content: &str,
+    user_message_content: Vec<LlmContentPart>,
 ) -> Vec<LlmInputItem> {
     let mut request_messages = prompts
         .iter()
@@ -44,7 +44,7 @@ pub(crate) fn build_input_items<'a>(
                 LlmInputItem::from_role_text(message.role, message.content.send_content())
             }),
     );
-    request_messages.push(LlmInputItem::from_role_text(
+    request_messages.push(LlmInputItem::from_role_content(
         user_message_role,
         user_message_content,
     ));
@@ -54,7 +54,10 @@ pub(crate) fn build_input_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::{LlmHistoryMessage, build_input_items};
-    use crate::database::{Content, ConversationTemplatePrompt, Mode, Role, Status};
+    use crate::{
+        database::{Content, ConversationTemplatePrompt, Mode, Role, Status},
+        llm::{LlmAttachmentRef, LlmContentPart, LlmInputItem},
+    };
 
     #[test]
     fn contextual_history_includes_normal_messages_and_user() {
@@ -75,7 +78,7 @@ mod tests {
                 LlmHistoryMessage::new(Role::User, Status::Error, &failed),
             ],
             Role::User,
-            "latest",
+            vec![LlmContentPart::text("latest")],
         )
         .into_iter()
         .map(|item| {
@@ -109,7 +112,7 @@ mod tests {
                 LlmHistoryMessage::new(Role::Assistant, Status::Normal, &assistant),
             ],
             Role::User,
-            "latest",
+            vec![LlmContentPart::text("latest")],
         )
         .into_iter()
         .map(|item| {
@@ -125,5 +128,25 @@ mod tests {
                 ("user", "latest".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn current_user_message_can_use_content_parts() {
+        let items = build_input_items(
+            &[],
+            Mode::Single,
+            [],
+            Role::User,
+            vec![
+                LlmContentPart::text("describe"),
+                LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "data:image/png;base64,abc".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: Some("screenshot.png".to_string()),
+                }),
+            ],
+        );
+
+        assert!(matches!(&items[0], LlmInputItem::User { content } if content.len() == 2));
     }
 }

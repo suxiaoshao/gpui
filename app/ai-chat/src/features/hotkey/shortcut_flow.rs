@@ -107,6 +107,66 @@ impl GlobalHotkeyState {
         );
     }
 
+    fn handle_capability_mismatch(
+        &self,
+        binding: &GlobalShortcutBinding,
+        missing_requirements: &[CapabilityRequirement],
+        cx: &mut App,
+    ) {
+        event!(
+            Level::ERROR,
+            binding_id = binding.id,
+            provider_name = %binding.provider_name,
+            model_id = %binding.model_id,
+            missing_capabilities = %capability_labels_text(missing_requirements, cx),
+            "Shortcut binding capability mismatch"
+        );
+        self.push_notification(
+            "notify-shortcut-trigger-capability-mismatch-title",
+            format!(
+                "{}: {}",
+                cx.global::<I18n>()
+                    .t("notify-shortcut-trigger-capability-mismatch-message"),
+                capability_labels_text(missing_requirements, cx)
+            ),
+            NotificationType::Error,
+            cx,
+        );
+    }
+
+    fn binding_model(binding: &GlobalShortcutBinding, cx: &App) -> Option<ProviderModel> {
+        cx.global::<ModelStore>()
+            .read(cx)
+            .snapshot()
+            .models
+            .into_iter()
+            .find(|model| {
+                model.provider_name == binding.provider_name && model.id == binding.model_id
+            })
+    }
+
+    fn binding_missing_requirements(
+        binding: &GlobalShortcutBinding,
+        model: &ProviderModel,
+        cx: &App,
+    ) -> Vec<CapabilityRequirement> {
+        let Some(template_id) = binding.template_id else {
+            return Vec::new();
+        };
+        let template = cx
+            .global::<Db>()
+            .get()
+            .ok()
+            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok());
+        template
+            .map(|template| {
+                model
+                    .capabilities
+                    .missing_requirements(&template.required_capabilities)
+            })
+            .unwrap_or_default()
+    }
+
     fn resolve_clipboard_fallback(
         &self,
         selected_text: Option<String>,
@@ -143,9 +203,21 @@ impl GlobalHotkeyState {
         text: String,
         cx: &mut App,
     ) {
+        let content_parts = vec![LlmContentPart::text(text.clone())];
+        self.trigger_shortcut_with_input_parts(binding, text, content_parts, cx);
+    }
+
+    fn trigger_shortcut_with_input_parts(
+        &mut self,
+        binding: GlobalShortcutBinding,
+        text: String,
+        content_parts: Vec<LlmContentPart>,
+        cx: &mut App,
+    ) {
         self.trigger_shortcut_with_input_with_restore_target(
             binding,
             text,
+            content_parts,
             cx,
             super::temporary_window::FocusRestoreTarget::ExistingOrRecordCurrent,
         );
@@ -155,16 +227,19 @@ impl GlobalHotkeyState {
         &mut self,
         binding: GlobalShortcutBinding,
         text: String,
+        content_parts: Vec<LlmContentPart>,
         cx: &mut App,
         restore_target: super::temporary_window::FocusRestoreTarget,
     ) {
-        let models = cx.global::<ModelStore>().read(cx).snapshot().models;
-        let model_available = models.iter().any(|model| {
-            model.provider_name == binding.provider_name && model.id == binding.model_id
-        });
-        if !model_available {
+        let Some(model) = Self::binding_model(&binding, cx) else {
             restore_target.restore_if_override();
             self.handle_unavailable_model(&binding, cx);
+            return;
+        };
+        let missing_requirements = Self::binding_missing_requirements(&binding, &model, cx);
+        if !missing_requirements.is_empty() {
+            restore_target.restore_if_override();
+            self.handle_capability_mismatch(&binding, &missing_requirements, cx);
             return;
         }
 
@@ -180,6 +255,7 @@ impl GlobalHotkeyState {
             mode: binding.mode,
             selected_template_id: binding.template_id,
             request_template: binding.request_template.clone(),
+            input_parts: Some(content_parts),
         };
 
         let binding_for_notification = binding.clone();
@@ -286,6 +362,15 @@ impl GlobalHotkeyState {
             self.handle_busy_shortcut(cx);
             return;
         }
+        let Some(model) = Self::binding_model(&binding, cx) else {
+            self.handle_unavailable_model(&binding, cx);
+            return;
+        };
+        let missing_requirements = Self::binding_missing_requirements(&binding, &model, cx);
+        if !missing_requirements.is_empty() {
+            self.handle_capability_mismatch(&binding, &missing_requirements, cx);
+            return;
+        }
 
         event!(
             Level::INFO,
@@ -311,6 +396,65 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) {
+        let model_supports_image = Self::binding_model(&binding, cx).is_some_and(|model| {
+            model
+                .capabilities
+                .supports_requirement(CapabilityRequirement::ImageInput)
+        });
+        if model_supports_image {
+            let screenshot_label = cx.global::<I18n>().t("shortcut-screenshot-input-label");
+            cx.spawn(async move |cx| {
+                let encoded = smol::unblock(move || {
+                    let encoded = screenshot_image_content_parts(&image, screenshot_label);
+                    (encoded, image)
+                })
+                .await;
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match encoded {
+                    (Ok((text, content_parts)), _) => {
+                        event!(
+                            Level::INFO,
+                            binding_id = binding.id,
+                            "Screenshot encoded as image input"
+                        );
+                        #[cfg(target_os = "macos")]
+                        {
+                            let front_app = hotkeys.take_front_app_for_screenshot();
+                            hotkeys.trigger_shortcut_with_input_with_restore_target(
+                                binding,
+                                text,
+                                content_parts,
+                                cx,
+                                super::temporary_window::FocusRestoreTarget::Override(front_app),
+                            );
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            hotkeys.trigger_shortcut_with_input_parts(
+                                binding,
+                                text,
+                                content_parts,
+                                cx,
+                            );
+                        }
+                    }
+                    (Err(err), image) => {
+                        event!(
+                            Level::ERROR,
+                            error = %err,
+                            binding_id = binding.id,
+                            "Screenshot image input encoding failed; falling back to OCR"
+                        );
+                        GlobalHotkeyState::process_screenshot_ocr(binding, image, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
+        Self::process_screenshot_ocr(binding, image, cx);
+    }
+
+    fn process_screenshot_ocr(binding: GlobalShortcutBinding, image: ImageFrame, cx: &mut App) {
         cx.spawn(async move |cx| {
             let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image)).await;
             cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
@@ -327,9 +471,11 @@ impl GlobalHotkeyState {
                             #[cfg(target_os = "macos")]
                             {
                                 let front_app = hotkeys.take_front_app_for_screenshot();
+                                let content_parts = vec![LlmContentPart::text(text.clone())];
                                 hotkeys.trigger_shortcut_with_input_with_restore_target(
                                     binding,
                                     text,
+                                    content_parts,
                                     cx,
                                     super::temporary_window::FocusRestoreTarget::Override(
                                         front_app,
@@ -353,6 +499,38 @@ impl GlobalHotkeyState {
     }
 }
 
+fn screenshot_image_content_parts(
+    image: &ImageFrame,
+    text: String,
+) -> Result<(String, Vec<LlmContentPart>), String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use image::ImageEncoder as _;
+
+    let raw = image::RgbaImage::from_raw(image.width, image.height, image.bytes_rgba8.clone())
+        .ok_or_else(|| "invalid screenshot image buffer".to_string())?;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            raw.as_raw(),
+            image.width,
+            image.height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|err| err.to_string())?;
+    let data_url = format!("data:image/png;base64,{}", STANDARD.encode(png));
+    Ok((
+        text.clone(),
+        vec![
+            LlmContentPart::text(text),
+            LlmContentPart::ImageRef(LlmAttachmentRef {
+                id: data_url,
+                mime_type: Some("image/png".to_string()),
+                name: Some("screenshot.png".to_string()),
+            }),
+        ],
+    ))
+}
+
 fn normalized_text(text: Option<String>) -> Option<String> {
     text.map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
@@ -371,9 +549,13 @@ fn screenshot_ocr_error_message(error: &OcrError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_text, screenshot_capture_error_message, screenshot_ocr_error_message};
+    use super::{
+        normalized_text, screenshot_capture_error_message, screenshot_image_content_parts,
+        screenshot_ocr_error_message,
+    };
+    use crate::llm::LlmContentPart;
     use crate::platform::capture::CaptureError;
-    use platform_ext::OcrError;
+    use platform_ext::{OcrError, ocr::ImageFrame};
 
     #[test]
     fn normalized_text_rejects_empty_and_whitespace_only_values() {
@@ -416,5 +598,27 @@ mod tests {
             screenshot_ocr_error_message(&OcrError::SystemFailure("vision failed".to_string())),
             "ocr failed: vision failed".to_string()
         );
+    }
+
+    #[test]
+    fn screenshot_image_content_parts_encodes_png_data_url() {
+        let image = ImageFrame {
+            width: 1,
+            height: 1,
+            scale_factor: 1.0,
+            bytes_rgba8: vec![255, 0, 0, 255],
+        };
+
+        let (text, parts) =
+            screenshot_image_content_parts(&image, "Screenshot".to_string()).unwrap();
+
+        assert_eq!(text, "Screenshot");
+        assert!(matches!(&parts[0], LlmContentPart::Text(text) if text == "Screenshot"));
+        let LlmContentPart::ImageRef(image_ref) = &parts[1] else {
+            panic!("expected image ref part");
+        };
+        assert!(image_ref.id.starts_with("data:image/png;base64,"));
+        assert_eq!(image_ref.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(image_ref.name.as_deref(), Some("screenshot.png"));
     }
 }

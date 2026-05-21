@@ -11,12 +11,13 @@ pub(crate) use preset::{
 pub(crate) use provider::ProviderModelsSuccess;
 #[allow(unused_imports)]
 pub(crate) use provider::{
-    AvailableModelsBatch, ExtSettingControl, ExtSettingItem, ExtSettingOption, ModelCapabilities,
-    OllamaModelCapabilities, OllamaProvider, OllamaSettings, OllamaThinkingCapability,
-    OpenAIModelCapabilities, OpenAIProvider, OpenAISettings, Provider, ProviderCapabilityExtension,
-    ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
-    ProviderSettingsSpec, ReasoningCapability, ReasoningEffort, available_models, provider_by_name,
-    provider_is_configured, provider_names, provider_settings_specs,
+    AvailableModelsBatch, CapabilityRequirement, ExtSettingControl, ExtSettingItem,
+    ExtSettingOption, ModelCapabilities, OllamaModelCapabilities, OllamaProvider, OllamaSettings,
+    OllamaThinkingCapability, OpenAIModelCapabilities, OpenAIProvider, OpenAISettings, Provider,
+    ProviderCapabilityExtension, ProviderModel, ProviderModelsFailure, ProviderSettingsFieldKind,
+    ProviderSettingsFieldSpec, ProviderSettingsSpec, ReasoningCapability, ReasoningEffort,
+    available_models, provider_by_name, provider_is_configured, provider_names,
+    provider_settings_specs,
 };
 pub(crate) use run_persistence::{
     ProviderRunPersistenceAccumulator, persisted_provider_settings_snapshot,

@@ -18,6 +18,7 @@ pub struct SqlNewConversationTemplate {
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
     pub(in super::super) prompts: serde_json::Value,
+    pub(in super::super) required_capabilities: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
 }
@@ -30,6 +31,7 @@ impl SqlNewConversationTemplate {
             icon: "🤖".to_string(),
             description: None,
             prompts: serde_json::to_value(Vec::<ConversationTemplatePrompt>::new())?,
+            required_capabilities: serde_json::json!([]),
             created_time: now,
             updated_time: now,
         })
@@ -50,6 +52,7 @@ pub struct SqlConversationTemplate {
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
     pub(in super::super) prompts: serde_json::Value,
+    pub(in super::super) required_capabilities: serde_json::Value,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
 }
@@ -86,6 +89,7 @@ pub struct SqlUpdateConversationTemplate {
     pub(in super::super) icon: String,
     pub(in super::super) description: Option<String>,
     pub(in super::super) prompts: serde_json::Value,
+    pub(in super::super) required_capabilities: serde_json::Value,
     pub(in super::super) updated_time: OffsetDateTime,
 }
 

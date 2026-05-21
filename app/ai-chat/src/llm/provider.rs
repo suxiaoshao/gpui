@@ -13,6 +13,55 @@ use std::time::Duration;
 mod ollama;
 mod openai;
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CapabilityRequirement {
+    ImageInput,
+    ImageGeneration,
+    FileInput,
+    AudioInput,
+    ToolCalling,
+    HostedWebSearch,
+    RemoteMcp,
+    Reasoning,
+    StructuredOutput,
+    StatefulResponseContinuation,
+}
+
+impl CapabilityRequirement {
+    pub(crate) const fn all() -> [Self; 10] {
+        [
+            Self::ImageInput,
+            Self::ImageGeneration,
+            Self::FileInput,
+            Self::AudioInput,
+            Self::ToolCalling,
+            Self::HostedWebSearch,
+            Self::RemoteMcp,
+            Self::Reasoning,
+            Self::StructuredOutput,
+            Self::StatefulResponseContinuation,
+        ]
+    }
+
+    pub(crate) const fn label_key(self) -> &'static str {
+        match self {
+            Self::ImageInput => "capability-image-input",
+            Self::ImageGeneration => "capability-image-generation",
+            Self::FileInput => "capability-file-input",
+            Self::AudioInput => "capability-audio-input",
+            Self::ToolCalling => "capability-tool-calling",
+            Self::HostedWebSearch => "capability-hosted-web-search",
+            Self::RemoteMcp => "capability-remote-mcp",
+            Self::Reasoning => "capability-reasoning",
+            Self::StructuredOutput => "capability-structured-output",
+            Self::StatefulResponseContinuation => "capability-stateful-response-continuation",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningEffort {
     None,
@@ -163,6 +212,34 @@ impl ModelCapabilities {
 
     pub(crate) fn supports_hosted_web_search(&self) -> bool {
         self.hosted_web_search
+    }
+
+    pub(crate) fn supports_requirement(&self, requirement: CapabilityRequirement) -> bool {
+        match requirement {
+            CapabilityRequirement::ImageInput => self.image_input.is_some(),
+            CapabilityRequirement::ImageGeneration => self.image_generation,
+            CapabilityRequirement::FileInput => self.file_input.is_some(),
+            CapabilityRequirement::AudioInput => self.audio_input,
+            CapabilityRequirement::ToolCalling => self.tool_calling.is_some(),
+            CapabilityRequirement::HostedWebSearch => self.hosted_web_search,
+            CapabilityRequirement::RemoteMcp => self.remote_mcp,
+            CapabilityRequirement::Reasoning => self.reasoning.is_some(),
+            CapabilityRequirement::StructuredOutput => self.structured_output,
+            CapabilityRequirement::StatefulResponseContinuation => {
+                self.stateful_response_continuation
+            }
+        }
+    }
+
+    pub(crate) fn missing_requirements(
+        &self,
+        requirements: &[CapabilityRequirement],
+    ) -> Vec<CapabilityRequirement> {
+        requirements
+            .iter()
+            .copied()
+            .filter(|requirement| !self.supports_requirement(*requirement))
+            .collect()
     }
 
     pub(crate) fn with_openai_extension(mut self, extension: OpenAIModelCapabilities) -> Self {
@@ -503,10 +580,11 @@ pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBat
 #[cfg(test)]
 mod tests {
     use super::{
-        AvailableModelsBatch, ExtSettingItem, LlmInputItem, ModelCapabilities, Provider,
-        ProviderModel, ProviderModelsFailure, ProviderRunEvent, ProviderRunRequest,
-        ProviderSettingsFieldKind, ProviderSettingsSpec, available_models_from_providers,
-        available_models_from_providers_with_timeout, provider_settings_specs,
+        AvailableModelsBatch, CapabilityRequirement, ExtSettingItem, ImageInputCapability,
+        LlmInputItem, ModelCapabilities, Provider, ProviderModel, ProviderModelsFailure,
+        ProviderRunEvent, ProviderRunRequest, ProviderSettingsFieldKind, ProviderSettingsSpec,
+        available_models_from_providers, available_models_from_providers_with_timeout,
+        provider_settings_specs,
     };
     use crate::{
         errors::{AiChatError, AiChatResult},
@@ -611,6 +689,26 @@ mod tests {
 
     fn model(provider: &str, id: &str) -> ProviderModel {
         ProviderModel::new(provider, id, ModelCapabilities::text_streaming())
+    }
+
+    #[test]
+    fn model_capabilities_report_missing_requirements() {
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.image_input = Some(ImageInputCapability {
+            max_images: Some(1),
+        });
+        capabilities.structured_output = true;
+
+        assert!(capabilities.supports_requirement(CapabilityRequirement::ImageInput));
+        assert!(capabilities.supports_requirement(CapabilityRequirement::StructuredOutput));
+        assert_eq!(
+            capabilities.missing_requirements(&[
+                CapabilityRequirement::ImageInput,
+                CapabilityRequirement::ToolCalling,
+                CapabilityRequirement::StructuredOutput,
+            ]),
+            vec![CapabilityRequirement::ToolCalling]
+        );
     }
 
     #[tokio::test]

@@ -308,6 +308,13 @@ impl WorkspaceState {
         self.active_tab.map(TabKind::key)
     }
 
+    pub(crate) fn latest_model_key(&self) -> Option<(String, String)> {
+        self.persisted
+            .latest_model_preset
+            .as_ref()
+            .map(|preset| (preset.provider_name.clone(), preset.model_id.clone()))
+    }
+
     pub(crate) fn active_tab_title(&self) -> Option<SharedString> {
         self.tabs
             .iter()
