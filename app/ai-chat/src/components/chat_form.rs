@@ -30,7 +30,7 @@ use gpui_component::{
 };
 use mode_select::{ModeSelect, ModeSelectEvent};
 use model_select::{ModelSelect, ModelSelectEvent};
-use picker::{PickerListDelegate, PickerPopoverOptions, PickerSection, render_picker_popover};
+use picker::{PickerListDelegate, PickerPopoverOptions, render_picker_popover};
 use std::rc::Rc;
 use template_picker::{TemplateOption, template_sections};
 
@@ -163,7 +163,6 @@ impl ChatForm {
             window,
             |this, _state, event: &ModelSelectEvent, window, cx| match event {
                 ModelSelectEvent::Change(Some(model)) => {
-                    this.sync_template_picker_sections(window, cx);
                     let provider = match provider_by_name(&model.provider_name) {
                         Ok(provider) => provider,
                         Err(_) => {
@@ -194,13 +193,11 @@ impl ChatForm {
                     this.request_template = None;
                     this.ext_settings
                         .update(cx, |settings, cx| settings.clear(cx));
-                    this.sync_template_picker_sections(window, cx);
                     cx.emit(ChatFormEvent::StateChanged);
                     cx.notify();
                 }
                 ModelSelectEvent::ModelsChanged => {
                     this.try_restore_pending_draft(window, cx);
-                    this.sync_template_picker_sections(window, cx);
                 }
             },
         );
@@ -688,27 +685,9 @@ impl Render for ChatForm {
 }
 
 impl ChatForm {
-    fn current_template_sections(&self, cx: &App) -> Vec<PickerSection<TemplateOption>> {
-        let selected_model = self.model_select.read(cx).selected_model();
-        template_sections(self.templates.clone(), selected_model.as_ref())
-    }
-
-    fn sync_template_picker_sections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(template_picker) = self.template_picker.clone() else {
-            return;
-        };
-        let sections = self.current_template_sections(cx);
-        let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
-        let selected_ix =
-            PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
-        template_picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_sections(sections);
-            picker.set_selected_index(selected_ix, window, cx);
-        });
-    }
-
     fn rebuild_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sections = self.current_template_sections(cx);
+        let selected_model = self.model_select.read(cx).selected_model();
+        let sections = template_sections(self.templates.clone(), selected_model.as_ref());
         let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
         let initial_ix =
             PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
