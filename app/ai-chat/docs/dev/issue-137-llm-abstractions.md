@@ -23,11 +23,12 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Merged to integration via PR #152; GitHub issue still open |
-| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | PR #153 opened to integration |
+| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Merged to integration via PR #153; GitHub issue still open |
+| #154 | `codex/issue-154-typed-message-content` | Consolidate typed message content model | Pending |
 
 ## Issue Sync Snapshot
 
-Last synchronized: 2026-05-21.
+Last synchronized: 2026-05-22.
 
 - #137 remains open and is the parent tracking issue. Its comments record the child issue list and the integration branch/document workflow.
 - #138 remains open on GitHub, but PR #147 merged `codex/issue-138-model-capabilities` into `codex/issue-137-llm-abstractions`.
@@ -36,7 +37,8 @@ Last synchronized: 2026-05-21.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
 - #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
 - #144 remains open on GitHub, but PR #152 merged `codex/issue-144-ollama-shared-abstraction` into `codex/issue-137-llm-abstractions`.
-- #140 remains open on GitHub. PR #153 targets `codex/issue-137-llm-abstractions` from `codex/issue-140-capability-gating`.
+- #140 remains open on GitHub, but PR #153 merged `codex/issue-140-capability-gating` into `codex/issue-137-llm-abstractions`.
+- #154 is a new follow-up from PR #153 review. It remains open and should consolidate typed message content so rendered content, edited content, sent content, export, resend, and contextual history derive from one provider-neutral source of truth.
 
 ## Current Architecture Facts
 
@@ -55,6 +57,7 @@ Last synchronized: 2026-05-21.
 - `message_run_states`, `message_output_items`, and `message_attachments` now persist provider run state, output item events, usage, and attachment metadata additively without changing `messages.content` or `messages.send_content`.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
 - `messages.input_content_parts` stores provider-neutral user input parts for future contextual history; old migrated messages default to an empty list and fall back to rendered text.
+- The coexistence of `messages.content` and `messages.input_content_parts` is now tracked by #154 as a temporary double-source model that should be consolidated.
 - OpenAI uses `/v1/responses`, reasoning effort, reasoning summaries, hosted web search citations, provider-neutral output item events, and persisted `previous_response_id` continuation when compatible run state is available.
 - OpenAI adapter-specific Responses request fields such as `include`, `text`, `tool_choice`, `tools`, and `parallel_tool_calls` remain inside the OpenAI provider schema rather than the generic provider trait.
 - Ollama has provider-specific thinking, image input, and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
@@ -262,6 +265,6 @@ The current implementation keeps request persistence additive: existing provider
 
 ## Next Child Issue Constraints
 
-No remaining child issue is queued after #140 in this local plan.
+Next child issue is #154.
 
-#140 / PR #153 should be reviewed and merged into `codex/issue-137-llm-abstractions`; after that, refresh this coordination document from GitHub issue/PR state before preparing the integration branch for `main`.
+#154 should consolidate message content so displayed content, edited content, sent content, exported content, resend behavior, and contextual history all derive from one provider-neutral source of truth. It should keep `messages.send_content` as a provider request snapshot/debug compatibility surface only, not the generic history source.
