@@ -92,6 +92,7 @@ pub(super) enum ShortcutStatus {
     Enabled,
     Disabled,
     ModelUnavailable,
+    TemplateUnavailable,
     HotkeyInvalid,
     HotkeyConflict,
     CapabilityMismatch,
@@ -103,6 +104,7 @@ impl ShortcutStatus {
         matches!(
             self,
             Self::ModelUnavailable
+                | Self::TemplateUnavailable
                 | Self::HotkeyInvalid
                 | Self::HotkeyConflict
                 | Self::CapabilityMismatch
@@ -115,6 +117,7 @@ impl ShortcutStatus {
             Self::Enabled => "shortcut-status-enabled",
             Self::Disabled => "shortcut-status-disabled",
             Self::ModelUnavailable => "shortcut-status-model-unavailable",
+            Self::TemplateUnavailable => "shortcut-status-template-unavailable",
             Self::HotkeyInvalid => "shortcut-status-hotkey-invalid",
             Self::HotkeyConflict => "shortcut-status-hotkey-conflict",
             Self::CapabilityMismatch => "shortcut-status-capability-mismatch",
@@ -1083,6 +1086,21 @@ fn resolve_status(
         );
     };
 
+    if let Some(template_id) = binding.template_id
+        && template.is_none()
+    {
+        return (
+            ShortcutStatus::TemplateUnavailable,
+            format!(
+                "{}: {template_id}",
+                cx.global::<I18n>()
+                    .t("shortcut-status-message-template-unavailable")
+            )
+            .into(),
+            Vec::new(),
+        );
+    }
+
     let missing_requirements = template
         .map(|template| {
             model
@@ -1146,6 +1164,7 @@ fn status_colors(status: ShortcutStatus, cx: &App) -> (Hsla, Hsla) {
             cx.theme().muted_foreground.opacity(0.1),
         ),
         ShortcutStatus::ModelUnavailable
+        | ShortcutStatus::TemplateUnavailable
         | ShortcutStatus::HotkeyConflict
         | ShortcutStatus::HotkeyInvalid
         | ShortcutStatus::CapabilityMismatch => {
@@ -1263,7 +1282,7 @@ fn notify_success(title: impl Into<SharedString>, window: &mut Window, cx: &mut 
 #[cfg(test)]
 mod tests {
     use super::{
-        SHORTCUT_TABLE_MIN_CELL_WIDTH, ShortcutSearchParts, shortcut_search_text,
+        SHORTCUT_TABLE_MIN_CELL_WIDTH, ShortcutSearchParts, ShortcutStatus, shortcut_search_text,
         shortcut_table_column_specs, shortcut_table_height, shortcut_table_width,
     };
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
@@ -1320,6 +1339,15 @@ mod tests {
     #[test]
     fn shortcut_table_height_includes_header_rows_and_scrollbar() {
         assert!(shortcut_table_height(2) > shortcut_table_height(1));
+    }
+
+    #[test]
+    fn template_unavailable_status_is_actionable() {
+        assert!(ShortcutStatus::TemplateUnavailable.requires_action());
+        assert_eq!(
+            ShortcutStatus::TemplateUnavailable.label_key(),
+            "shortcut-status-template-unavailable"
+        );
     }
 
     #[test]

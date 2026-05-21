@@ -134,6 +134,27 @@ impl GlobalHotkeyState {
         );
     }
 
+    fn handle_template_lookup_failure(
+        &self,
+        binding: &GlobalShortcutBinding,
+        error: &dyn std::fmt::Display,
+        cx: &mut App,
+    ) {
+        event!(
+            Level::ERROR,
+            binding_id = binding.id,
+            template_id = ?binding.template_id,
+            error = %error,
+            "Shortcut binding template lookup failed"
+        );
+        self.push_notification(
+            "notify-shortcut-trigger-template-unavailable-title",
+            error.to_string(),
+            NotificationType::Error,
+            cx,
+        );
+    }
+
     fn binding_model(binding: &GlobalShortcutBinding, cx: &App) -> Option<ProviderModel> {
         cx.global::<ModelStore>()
             .read(cx)
@@ -149,22 +170,15 @@ impl GlobalHotkeyState {
         binding: &GlobalShortcutBinding,
         model: &ProviderModel,
         cx: &App,
-    ) -> Vec<CapabilityRequirement> {
+    ) -> AiChatResult<Vec<CapabilityRequirement>> {
         let Some(template_id) = binding.template_id else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let template = cx
-            .global::<Db>()
-            .get()
-            .ok()
-            .and_then(|mut conn| ConversationTemplate::find(template_id, &mut conn).ok());
-        template
-            .map(|template| {
-                model
-                    .capabilities
-                    .missing_requirements(&template.required_capabilities)
-            })
-            .unwrap_or_default()
+        let mut conn = cx.global::<Db>().get()?;
+        let template = ConversationTemplate::find(template_id, &mut conn)?;
+        Ok(model
+            .capabilities
+            .missing_requirements(&template.required_capabilities))
     }
 
     fn resolve_clipboard_fallback(
@@ -236,7 +250,14 @@ impl GlobalHotkeyState {
             self.handle_unavailable_model(&binding, cx);
             return;
         };
-        let missing_requirements = Self::binding_missing_requirements(&binding, &model, cx);
+        let missing_requirements = match Self::binding_missing_requirements(&binding, &model, cx) {
+            Ok(missing_requirements) => missing_requirements,
+            Err(err) => {
+                restore_target.restore_if_override();
+                self.handle_template_lookup_failure(&binding, &err, cx);
+                return;
+            }
+        };
         if !missing_requirements.is_empty() {
             restore_target.restore_if_override();
             self.handle_capability_mismatch(&binding, &missing_requirements, cx);
@@ -366,7 +387,13 @@ impl GlobalHotkeyState {
             self.handle_unavailable_model(&binding, cx);
             return;
         };
-        let missing_requirements = Self::binding_missing_requirements(&binding, &model, cx);
+        let missing_requirements = match Self::binding_missing_requirements(&binding, &model, cx) {
+            Ok(missing_requirements) => missing_requirements,
+            Err(err) => {
+                self.handle_template_lookup_failure(&binding, &err, cx);
+                return;
+            }
+        };
         if !missing_requirements.is_empty() {
             self.handle_capability_mismatch(&binding, &missing_requirements, cx);
             return;
