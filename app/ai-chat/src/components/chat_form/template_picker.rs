@@ -123,3 +123,65 @@ pub(crate) fn template_sections(
             .map(|template| TemplateOption::new(template, selected_model)),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::template_sections;
+    use crate::{
+        database::ConversationTemplate,
+        llm::{CapabilityRequirement, ModelCapabilities, ProviderModel},
+    };
+    use time::OffsetDateTime;
+
+    fn template(required_capabilities: Vec<CapabilityRequirement>) -> ConversationTemplate {
+        let now = OffsetDateTime::now_utc();
+        ConversationTemplate {
+            id: 1,
+            name: "Vision".to_string(),
+            icon: "eye".to_string(),
+            description: None,
+            prompts: Vec::new(),
+            required_capabilities,
+            created_time: now,
+            updated_time: now,
+        }
+    }
+
+    fn model(id: &str, capabilities: ModelCapabilities) -> ProviderModel {
+        ProviderModel::new("Test", id, capabilities)
+    }
+
+    #[test]
+    fn template_sections_recompute_compatibility_for_selected_model() {
+        let template = template(vec![CapabilityRequirement::StructuredOutput]);
+        let text_model = model("text", ModelCapabilities::text_streaming());
+        let mut structured_capabilities = ModelCapabilities::text_streaming();
+        structured_capabilities.structured_output = true;
+        let structured_model = model("structured", structured_capabilities);
+
+        let text_sections = template_sections(vec![template.clone()], Some(&text_model));
+        assert_eq!(
+            text_sections[0].items[0]
+                .as_ref()
+                .missing_requirements
+                .clone(),
+            Some(vec![CapabilityRequirement::StructuredOutput])
+        );
+
+        let structured_sections =
+            template_sections(vec![template.clone()], Some(&structured_model));
+        assert_eq!(
+            structured_sections[0].items[0]
+                .as_ref()
+                .missing_requirements
+                .clone(),
+            Some(Vec::new())
+        );
+
+        let unknown_sections = template_sections(vec![template], None);
+        assert_eq!(
+            unknown_sections[0].items[0].as_ref().missing_requirements,
+            None
+        );
+    }
+}
