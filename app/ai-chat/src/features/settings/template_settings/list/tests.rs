@@ -19,6 +19,7 @@ fn template(
                 role: Role::User,
             })
             .collect(),
+        required_capabilities: Vec::new(),
         created_time: OffsetDateTime::UNIX_EPOCH,
         updated_time: OffsetDateTime::UNIX_EPOCH,
     }

@@ -7,7 +7,7 @@ use crate::database::{
     MessageRunPersistence, MessageRunState, Mode, Role, Status,
 };
 use crate::features::conversation::detail::ConversationDetailViewExt;
-use crate::llm::LlmOutputItem;
+use crate::llm::{LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem};
 use crate::state::AiChatConfig;
 use std::rc::Rc;
 use time::OffsetDateTime;
@@ -24,6 +24,21 @@ fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, Strin
         .collect()
 }
 
+fn current_text(text: &str) -> Vec<LlmContentPart> {
+    vec![LlmContentPart::text(text)]
+}
+
+fn image_input_parts(text: &str) -> Vec<LlmContentPart> {
+    vec![
+        LlmContentPart::text(text),
+        LlmContentPart::ImageRef(LlmAttachmentRef {
+            id: "data:image/png;base64,abc".to_string(),
+            mime_type: Some("image/png".to_string()),
+            name: Some("screenshot.png".to_string()),
+        }),
+    ]
+}
+
 fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
     let now = OffsetDateTime::now_utc();
     TemporaryMessage {
@@ -32,6 +47,7 @@ fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessag
         role,
         content,
         send_content: Rc::new(serde_json::json!({})),
+        input_content_parts: Vec::new(),
         status,
         error: None,
         run_persistence: MessageRunPersistence::default(),
@@ -57,6 +73,7 @@ fn make_provider_message(
         role,
         content,
         send_content: Rc::new(send_content),
+        input_content_parts: Vec::new(),
         status,
         error,
         run_persistence: MessageRunPersistence::default(),
@@ -132,7 +149,7 @@ fn runner_history_appends_current_user_message() {
             make_message(Role::User, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let history = input_texts(history);
 
@@ -144,6 +161,23 @@ fn runner_history_appends_current_user_message() {
             ("user", "latest".to_string()),
         ]
     );
+}
+
+#[test]
+fn runner_history_preserves_persisted_input_content_parts() {
+    let input_parts = image_input_parts("describe");
+    let mut message = make_message(Role::User, Status::Normal, Content::new("display text"));
+    message.input_content_parts = input_parts.clone();
+
+    let history = build_history_messages(
+        &[],
+        Mode::Contextual,
+        &[message],
+        Role::User,
+        current_text("latest"),
+    );
+
+    assert!(matches!(&history[0], LlmInputItem::User { content } if content == &input_parts));
 }
 
 #[test]
@@ -160,7 +194,7 @@ fn build_request_body_uses_override_template_model() -> anyhow::Result<()> {
         Mode::Contextual,
         &[],
         &AiChatConfig::default(),
-        (Role::User, "hello"),
+        (Role::User, current_text("hello")),
     )?;
     assert_eq!(request_body["model"], serde_json::json!("override-model"));
     Ok(())
@@ -192,7 +226,7 @@ fn contextual_openai_request_uses_latest_compatible_run_state() -> anyhow::Resul
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert_eq!(request_body["previous_response_id"], "resp_1");
@@ -235,7 +269,7 @@ fn contextual_openai_request_falls_back_when_settings_differ() -> anyhow::Result
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());
@@ -277,7 +311,7 @@ fn contextual_openai_request_falls_back_when_request_context_differs() -> anyhow
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());
@@ -320,7 +354,7 @@ fn contextual_openai_request_ignores_prior_previous_response_id_in_context_key()
             ),
         ],
         &config,
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert_eq!(request_body["previous_response_id"], "resp_1");
@@ -343,7 +377,7 @@ fn non_contextual_openai_request_ignores_run_state_continuation() -> anyhow::Res
         Mode::AssistantOnly,
         &[assistant],
         &AiChatConfig::default(),
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
     )?;
 
     assert!(request_body.get("previous_response_id").is_none());
@@ -416,6 +450,24 @@ fn temporary_messages_convert_to_add_conversation_messages() {
     assert_eq!(messages[0].status, Status::Error);
     assert_eq!(messages[0].error.as_deref(), Some("network failed"));
     assert_eq!(messages[0].run_persistence.output_items.len(), 1);
+}
+
+#[test]
+fn temporary_messages_convert_preserves_input_content_parts() {
+    let input_parts = image_input_parts("describe");
+    let mut message = make_provider_message(
+        "OpenAI",
+        Role::User,
+        Status::Normal,
+        Content::new("display text"),
+        serde_json::json!({"model": "gpt-4o"}),
+        None,
+    );
+    message.input_content_parts = input_parts.clone();
+
+    let messages = temporary_messages_to_add_conversation_messages(&[message]);
+
+    assert_eq!(messages[0].input_content_parts, input_parts);
 }
 
 #[test]

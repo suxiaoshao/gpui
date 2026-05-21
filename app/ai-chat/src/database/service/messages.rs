@@ -462,6 +462,8 @@ pub struct Message {
     pub content: Content,
     #[serde(rename = "sendContent")]
     pub send_content: serde_json::Value,
+    #[serde(default, rename = "inputContentParts")]
+    pub input_content_parts: Vec<LlmContentPart>,
     pub status: Status,
     #[serde(
         rename = "createdTime",
@@ -502,6 +504,7 @@ impl TryFrom<SqlMessage> for Message {
             role: value.role.parse()?,
             content: serde_json::from_value(value.content)?,
             send_content: value.send_content,
+            input_content_parts: serde_json::from_value(value.input_content_parts)?,
             status: value.status.parse()?,
             created_time: value.created_time,
             updated_time: value.updated_time,
@@ -519,6 +522,7 @@ pub struct NewMessage<'a> {
     pub role: Role,
     pub content: &'a Content,
     pub send_content: &'a serde_json::Value,
+    pub input_content_parts: &'a [LlmContentPart],
     pub status: Status,
     pub error: Option<&'a str>,
     pub(crate) run_persistence: Option<&'a MessageRunPersistence>,
@@ -539,10 +543,19 @@ impl<'a> NewMessage<'a> {
             role,
             content,
             send_content,
+            input_content_parts: &[],
             status,
             error: None,
             run_persistence: None,
         }
+    }
+
+    pub(crate) fn with_input_content_parts(
+        mut self,
+        input_content_parts: &'a [LlmContentPart],
+    ) -> Self {
+        self.input_content_parts = input_content_parts;
+        self
     }
 
     pub fn with_error(mut self, error: &'a str) -> Self {
@@ -712,6 +725,7 @@ impl Message {
             role,
             content,
             send_content,
+            input_content_parts,
             status,
             error,
             run_persistence,
@@ -723,6 +737,7 @@ impl Message {
             let SqlConversation { path, .. } = SqlConversation::find(conversation_id, conn)?;
             let role = role.to_string();
             let content = serde_json::to_value(content)?;
+            let input_content_parts = serde_json::to_value(input_content_parts)?;
             let status = status.to_string();
 
             let new_message = SqlNewMessage {
@@ -732,6 +747,7 @@ impl Message {
                 role: &role,
                 content: &content,
                 send_content,
+                input_content_parts: &input_content_parts,
                 status: &status,
                 created_time: time,
                 updated_time: time,
@@ -858,7 +874,10 @@ mod run_persistence_tests {
             CREATE_TABLE_SQL, NewConversation, Role, Status,
             model::{SqlMessageAttachment, SqlMessageOutputItem, SqlMessageRunState},
         },
-        llm::{LlmHostedToolCall, LlmOutputItem, ProviderRunState, ProviderUsage},
+        llm::{
+            LlmAttachmentRef, LlmContentPart, LlmHostedToolCall, LlmOutputItem, ProviderRunState,
+            ProviderUsage,
+        },
     };
     use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
 
@@ -898,6 +917,38 @@ mod run_persistence_tests {
             ),
             conn,
         )?)
+    }
+
+    #[test]
+    fn message_input_content_parts_round_trip() -> anyhow::Result<()> {
+        let mut conn = conn()?;
+        let conversation_id = insert_conversation(&mut conn)?;
+        let content = Content::new("describe screenshot");
+        let input_content_parts = vec![
+            LlmContentPart::text("describe screenshot"),
+            LlmContentPart::ImageRef(LlmAttachmentRef {
+                id: "data:image/png;base64,abc".to_string(),
+                mime_type: Some("image/png".to_string()),
+                name: Some("screenshot.png".to_string()),
+            }),
+        ];
+
+        let message = Message::insert(
+            NewMessage::new(
+                conversation_id,
+                "OpenAI",
+                Role::User,
+                &content,
+                &serde_json::json!({"model": "gpt-4o"}),
+                Status::Normal,
+            )
+            .with_input_content_parts(&input_content_parts),
+            &mut conn,
+        )?;
+
+        let reloaded = Message::find(message.id, &mut conn)?;
+        assert_eq!(reloaded.input_content_parts, input_content_parts);
+        Ok(())
     }
 
     fn sample_persistence() -> MessageRunPersistence {

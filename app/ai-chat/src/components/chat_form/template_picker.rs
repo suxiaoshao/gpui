@@ -1,16 +1,35 @@
 use super::picker::PickerSection;
-use crate::database::ConversationTemplate;
-use gpui::{App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div};
-use gpui_component::{h_flex, label::Label, select::SelectItem};
+use crate::{
+    database::ConversationTemplate,
+    foundation::{capability_labels_text, i18n::I18n},
+    llm::{CapabilityRequirement, ProviderModel},
+};
+use gpui::{
+    App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
+};
+use gpui_component::{h_flex, label::Label, select::SelectItem, tag::Tag, v_flex};
 
 #[derive(Clone)]
 pub(crate) struct TemplateOption {
     template: ConversationTemplate,
+    missing_requirements: Option<Vec<CapabilityRequirement>>,
 }
 
 impl TemplateOption {
-    pub(crate) fn new(template: ConversationTemplate) -> Self {
-        Self { template }
+    pub(crate) fn new(
+        template: ConversationTemplate,
+        selected_model: Option<&ProviderModel>,
+    ) -> Self {
+        let missing_requirements = selected_model.map(|model| {
+            model
+                .capabilities
+                .missing_requirements(&template.required_capabilities)
+        });
+        Self {
+            template,
+            missing_requirements,
+        }
     }
 
     pub(crate) fn into_template(self) -> ConversationTemplate {
@@ -25,7 +44,7 @@ impl SelectItem for TemplateOption {
         self.template.name.clone().into()
     }
 
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let label = if let Some(description) = self.template.description.clone() {
             Label::new(self.template.name.clone())
                 .text_sm()
@@ -33,6 +52,25 @@ impl SelectItem for TemplateOption {
         } else {
             Label::new(self.template.name.clone()).text_sm()
         };
+
+        let compatibility = self.missing_requirements.as_ref().map(|requirements| {
+            let compatibility_label = if requirements.is_empty() {
+                cx.global::<I18n>().t("template-compatibility-compatible")
+            } else {
+                cx.global::<I18n>().t("template-compatibility-incompatible")
+            };
+            if requirements.is_empty() {
+                Tag::success()
+                    .outline()
+                    .child(compatibility_label)
+                    .into_any_element()
+            } else {
+                Tag::warning()
+                    .outline()
+                    .child(compatibility_label)
+                    .into_any_element()
+            }
+        });
 
         h_flex()
             .w_full()
@@ -45,7 +83,24 @@ impl SelectItem for TemplateOption {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .truncate()
-                    .child(label),
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(label)
+                            .when_some(compatibility, |this, compatibility| {
+                                this.child(compatibility)
+                            })
+                            .when_some(self.missing_requirements.as_ref(), |this, requirements| {
+                                this.when(!requirements.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(capability_labels_text(requirements, cx))
+                                            .text_xs()
+                                            .truncate(),
+                                    )
+                                })
+                            }),
+                    ),
             )
     }
 
@@ -60,6 +115,11 @@ impl SelectItem for TemplateOption {
 
 pub(crate) fn template_sections(
     templates: impl IntoIterator<Item = ConversationTemplate>,
+    selected_model: Option<&ProviderModel>,
 ) -> Vec<PickerSection<TemplateOption>> {
-    PickerSection::flat(templates.into_iter().map(TemplateOption::new))
+    PickerSection::flat(
+        templates
+            .into_iter()
+            .map(|template| TemplateOption::new(template, selected_model)),
+    )
 }

@@ -323,7 +323,8 @@ fn insert_conversation(
                 &initial_message.content,
                 &initial_message.send_content,
                 initial_message.status,
-            );
+            )
+            .with_input_content_parts(&initial_message.input_content_parts);
             if let Some(error) = initial_message.error.as_ref() {
                 new_message = new_message.with_error(error);
             }

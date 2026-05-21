@@ -4,10 +4,14 @@ mod shortcut_flow;
 mod temporary_window;
 
 use crate::{
-    database::{Db, GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding},
+    database::{
+        ConversationTemplate, Db, GlobalShortcutBinding, NewGlobalShortcutBinding,
+        UpdateGlobalShortcutBinding,
+    },
     errors::AiChatResult,
     features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryView},
-    foundation::i18n::I18n,
+    foundation::{capability_labels_text, i18n::I18n},
+    llm::{CapabilityRequirement, LlmAttachmentRef, LlmContentPart, ProviderModel},
     platform::{
         capture::CaptureError,
         display::{TEMPORARY_WINDOW_SIZE, recentered_bounds_for_display, target_display_id},

@@ -101,6 +101,14 @@ fn assert_run_tables_empty(conn: &mut SqliteConnection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn assert_input_content_parts_empty(messages: &[SqlMessage]) {
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.input_content_parts == serde_json::json!([]))
+    );
+}
+
 fn template_json() -> &'static str {
     r#"{"model":"gpt-4o","stream":false,"temperature":1.0,"top_p":1.0,"n":1,"max_completion_tokens":null,"presence_penalty":0.0,"frequency_penalty":0.0}"#
 }
@@ -152,12 +160,14 @@ fn v1_migration_backfills_send_content_from_request_logic() -> anyhow::Result<()
     let templates = SqlConversationTemplate::all(&mut v5_conn)?;
     assert_eq!(templates.len(), 1);
     assert_eq!(templates[0].prompts, serde_json::json!([]));
+    assert_eq!(templates[0].required_capabilities, serde_json::json!([]));
 
     let conversations = SqlConversation::get_all(&mut v5_conn)?;
     assert_eq!(conversations.len(), 1);
 
     let messages = SqlMessage::all(&mut v5_conn)?;
     assert_eq!(messages.len(), 2);
+    assert_input_content_parts_empty(&messages);
     assert!(messages.iter().all(|message| message.error.is_none()));
     assert!(messages.iter().all(|message| message.provider == "OpenAI"));
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
@@ -190,8 +200,11 @@ fn v2_migration_keeps_send_content_and_adds_provider() -> anyhow::Result<()> {
 
     v2_to_v6(&mut v2_conn, &mut v5_conn)?;
 
+    let templates = SqlConversationTemplate::all(&mut v5_conn)?;
+    assert_eq!(templates[0].required_capabilities, serde_json::json!([]));
     let messages = SqlMessage::all(&mut v5_conn)?;
     assert_eq!(messages.len(), 2);
+    assert_input_content_parts_empty(&messages);
     assert!(messages.iter().all(|message| message.provider == "OpenAI"));
     assert_eq!(messages[0].send_content["model"], "gpt-4o");
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
@@ -230,8 +243,11 @@ fn v3_migration_converts_legacy_content_enum_to_json_struct_in_v5() -> anyhow::R
 
     v3_to_v6(&mut v3_conn, &mut v5_conn)?;
 
+    let templates = SqlConversationTemplate::all(&mut v5_conn)?;
+    assert_eq!(templates[0].required_capabilities, serde_json::json!([]));
     let messages = SqlMessage::all(&mut v5_conn)?;
     assert_eq!(messages.len(), 1);
+    assert_input_content_parts_empty(&messages);
     assert_eq!(messages[0].content["text"], "hello");
     assert!(messages[0].content.get("reasoningSummary").is_none());
     assert_eq!(
@@ -279,9 +295,13 @@ fn v4_migration_creates_empty_global_shortcut_table() -> anyhow::Result<()> {
 
     v4_to_v6(&mut v4_conn, &mut v5_conn)?;
 
-    assert_eq!(SqlConversationTemplate::all(&mut v5_conn)?.len(), 1);
+    let templates = SqlConversationTemplate::all(&mut v5_conn)?;
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].required_capabilities, serde_json::json!([]));
     assert_eq!(SqlConversation::get_all(&mut v5_conn)?.len(), 1);
-    assert_eq!(SqlMessage::all(&mut v5_conn)?.len(), 1);
+    let messages = SqlMessage::all(&mut v5_conn)?;
+    assert_eq!(messages.len(), 1);
+    assert_input_content_parts_empty(&messages);
     assert!(SqlGlobalShortcutBinding::all(&mut v5_conn)?.is_empty());
     assert_run_tables_empty(&mut v5_conn)?;
 
@@ -318,8 +338,11 @@ fn v5_migration_preserves_messages_and_creates_empty_run_tables() -> anyhow::Res
 
     v5_to_v6(&mut v5_conn, &mut v6_conn)?;
 
+    let templates = SqlConversationTemplate::all(&mut v6_conn)?;
+    assert_eq!(templates[0].required_capabilities, serde_json::json!([]));
     let messages = SqlMessage::all(&mut v6_conn)?;
     assert_eq!(messages.len(), 1);
+    assert_input_content_parts_empty(&messages);
     assert_eq!(messages[0].content["text"], "hello");
     assert_eq!(messages[0].content["reasoningSummary"], "why");
     assert_eq!(messages[0].send_content["model"], "gpt-4o");

@@ -49,6 +49,10 @@ pub(crate) enum LlmInputItem {
 impl LlmInputItem {
     pub(crate) fn from_role_text(role: Role, text: impl Into<String>) -> Self {
         let content = vec![LlmContentPart::text(text)];
+        Self::from_role_content(role, content)
+    }
+
+    pub(crate) fn from_role_content(role: Role, content: Vec<LlmContentPart>) -> Self {
         match role {
             Role::Developer => Self::Developer { content },
             Role::User => Self::User { content },
@@ -151,6 +155,23 @@ mod tests {
             ("assistant", "answer")
         );
         Ok(())
+    }
+
+    #[test]
+    fn from_role_content_preserves_multi_part_user_input() {
+        let item = LlmInputItem::from_role_content(
+            Role::User,
+            vec![
+                LlmContentPart::text("describe"),
+                LlmContentPart::ImageRef(LlmAttachmentRef {
+                    id: "data:image/png;base64,abc".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    name: Some("screenshot.png".to_string()),
+                }),
+            ],
+        );
+
+        assert!(matches!(item, LlmInputItem::User { content } if content.len() == 2));
     }
 
     #[test]

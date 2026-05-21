@@ -23,7 +23,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Merged to integration via PR #152; GitHub issue still open |
-| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Pending |
+| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | PR #153 opened to integration |
 
 ## Issue Sync Snapshot
 
@@ -36,7 +36,7 @@ Last synchronized: 2026-05-21.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
 - #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
 - #144 remains open on GitHub, but PR #152 merged `codex/issue-144-ollama-shared-abstraction` into `codex/issue-137-llm-abstractions`.
-- #140 remains open and pending behind the Ollama adapter stage.
+- #140 remains open on GitHub. PR #153 targets `codex/issue-137-llm-abstractions` from `codex/issue-140-capability-gating`.
 
 ## Current Architecture Facts
 
@@ -54,11 +54,16 @@ Last synchronized: 2026-05-21.
 - `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, and #141 persists them additively for assistant messages.
 - `message_run_states`, `message_output_items`, and `message_attachments` now persist provider run state, output item events, usage, and attachment metadata additively without changing `messages.content` or `messages.send_content`.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
+- `messages.input_content_parts` stores provider-neutral user input parts for future contextual history; old migrated messages default to an empty list and fall back to rendered text.
 - OpenAI uses `/v1/responses`, reasoning effort, reasoning summaries, hosted web search citations, provider-neutral output item events, and persisted `previous_response_id` continuation when compatible run state is available.
 - OpenAI adapter-specific Responses request fields such as `include`, `text`, `tool_choice`, `tools`, and `parallel_tool_calls` remain inside the OpenAI provider schema rather than the generic provider trait.
 - Ollama has provider-specific thinking, image input, and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
 - Ollama image input accepts raw base64 or `data:image/...;base64,...` references only; URL, file-id, local-path, file, audio, and generic attachment inputs remain explicitly unsupported.
 - Ollama run events now emit provider-neutral output item, tool call/result, usage, and completion data while keeping `ProviderRunState.run_id` empty and avoiding OpenAI-style continuation semantics.
+- `CapabilityRequirement` records provider-neutral feature requirements for templates and UI gating.
+- `conversation_templates.required_capabilities` lives in the unmerged v6 schema and defaults old migrated templates to an empty list.
+- Chat and shortcut UI now surface template/model compatibility through `ModelCapabilities::missing_requirements` rather than provider metadata or ad hoc JSON.
+- Screenshot shortcuts send PNG data URL image input when the selected model supports `image_input`; otherwise they keep the existing OCR text fallback.
 
 ## Shared Design Decisions
 
@@ -228,8 +233,35 @@ The current implementation keeps request persistence additive: existing provider
   - `cargo test -p ai-chat features::temporary::detail`
   - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
 
+### #140 Capability Gating
+
+- Added `CapabilityRequirement` and `ModelCapabilities::{supports_requirement, missing_requirements}` as the typed compatibility surface for templates, chat UI, and shortcuts.
+- Extended the existing unmerged v6 template schema with `conversation_templates.required_capabilities JSON NOT NULL DEFAULT '[]'`; v1-v5 migrations backfill old templates with an empty list.
+- Added template create/edit controls for required capabilities and shows compatibility/missing-capability status in template lists, template view dialogs, and the chat template picker.
+- Chat keeps an incompatible selected template visible but disables send and shows the missing capabilities.
+- Shortcut settings show `CapabilityMismatch`, warn during editing when a selected template/model pair is incompatible, and block normal shortcut execution when required capabilities are missing.
+- Shortcut screenshots now send typed `LlmContentPart::ImageRef` PNG data URLs for image-capable models and fall back to the existing OCR text path otherwise.
+- Conversation panel, temporary detail, and chat form now pass the current user input as content parts while preserving ordinary text input as a single text part.
+- Persisted normal and temporary conversation history now carries `input_content_parts` instead of reconstructing context from rendered text or provider-specific request bodies.
+- Validation run:
+  - `cargo fmt`
+  - `cargo test -p ai-chat llm::types`
+  - `cargo test -p ai-chat llm::provider`
+  - `cargo test -p ai-chat llm::preset`
+  - `cargo test -p ai-chat database::migrations`
+  - `cargo test -p ai-chat database::service`
+  - `cargo test -p ai-chat components::chat_form`
+  - `cargo test -p ai-chat features::settings::template_settings`
+  - `cargo test -p ai-chat features::settings::shortcut_settings`
+  - `cargo test -p ai-chat features::hotkey`
+  - `cargo test -p ai-chat features::conversation::preview`
+  - `cargo test -p ai-chat features::temporary::detail`
+  - `cargo test -p ai-chat features::home::tabs::conversation_panel`
+  - `cargo test -p ai-chat state::workspace`
+  - `cargo clippy -p ai-chat --all-targets --all-features -- -D warnings`
+
 ## Next Child Issue Constraints
 
-Next child issue is #140.
+No remaining child issue is queued after #140 in this local plan.
 
-#140 should add template, shortcut, and UI capability gating on top of the shared OpenAI and Ollama capability model.
+#140 / PR #153 should be reviewed and merged into `codex/issue-137-llm-abstractions`; after that, refresh this coordination document from GitHub issue/PR state before preparing the integration branch for `main`.

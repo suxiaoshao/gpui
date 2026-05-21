@@ -16,8 +16,8 @@ use crate::{
     foundation::assets::IconName,
     foundation::i18n::I18n,
     llm::{
-        LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator, ProviderRunRequest,
-        ProviderRunRunner, ProviderRunState, build_input_items,
+        LlmContentPart, LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator,
+        ProviderRunRequest, ProviderRunRunner, ProviderRunState, build_input_items,
         persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
     },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
@@ -677,12 +677,8 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedFetch> {
         let user_content = Content::new(request_text);
-        let runner = Self::build_runner(
-            context,
-            Role::User,
-            user_content.send_content().to_string(),
-            cx,
-        )?;
+        let user_input_content_parts = context.composer_snapshot.content_parts.clone();
+        let runner = Self::build_runner(context, Role::User, user_input_content_parts.clone(), cx)?;
         let send_content = runner.request_body();
         let (user_message, assistant_message) =
             cx.read_global_result(|db: &Db, _window, _cx| {
@@ -695,7 +691,8 @@ impl ConversationPanelView {
                         &user_content,
                         send_content,
                         Status::Normal,
-                    ),
+                    )
+                    .with_input_content_parts(&user_input_content_parts),
                     conn,
                 )?;
                 let assistant_message = Message::insert(
@@ -721,7 +718,7 @@ impl ConversationPanelView {
     fn build_runner(
         context: &FetchContext,
         user_message_role: Role,
-        user_message_content: String,
+        user_message_content: Vec<LlmContentPart>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         let provider_name = context.composer_snapshot.provider_name.clone();
@@ -738,7 +735,7 @@ impl ConversationPanelView {
                     prompts.clone(),
                     mode,
                     &conversation.messages,
-                    (user_message_role, &user_message_content),
+                    (user_message_role, user_message_content.clone()),
                 )?;
                 let continuation = openai_continuation_candidate(
                     &provider_name,
@@ -757,7 +754,7 @@ impl ConversationPanelView {
             prompts,
             mode,
             &history_messages,
-            (user_message_role, &user_message_content),
+            (user_message_role, user_message_content),
             continuation,
         )?;
         Ok(Runner {
@@ -1235,11 +1232,16 @@ fn build_history_messages(
     mode: Mode,
     history_messages: &[Message],
     user_message_role: Role,
-    user_message_content: &str,
+    user_message_content: Vec<LlmContentPart>,
 ) -> Vec<crate::llm::LlmInputItem> {
-    let history = history_messages
-        .iter()
-        .map(|message| LlmHistoryMessage::new(message.role, message.status, &message.content));
+    let history = history_messages.iter().map(|message| {
+        LlmHistoryMessage::with_input_content_parts(
+            message.role,
+            message.status,
+            &message.content,
+            &message.input_content_parts,
+        )
+    });
     build_input_items(
         &prompts,
         mode,
@@ -1278,7 +1280,7 @@ fn openai_request_context_key(
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
     history_messages: &[Message],
-    current_user_message: (Role, &str),
+    current_user_message: (Role, Vec<LlmContentPart>),
 ) -> AiChatResult<Option<serde_json::Value>> {
     if provider_name != "OpenAI" || mode != Mode::Contextual {
         return Ok(None);
@@ -1360,7 +1362,10 @@ fn build_run_request(
         prompts,
         mode,
         history_messages,
-        (user_message_role, user_message_content),
+        (
+            user_message_role,
+            vec![LlmContentPart::text(user_message_content)],
+        ),
         None,
     )
 }
@@ -1371,7 +1376,7 @@ fn build_run_request_with_continuation(
     prompts: Vec<crate::database::ConversationTemplatePrompt>,
     mode: Mode,
     history_messages: &[Message],
-    current_user_message: (Role, &str),
+    current_user_message: (Role, Vec<LlmContentPart>),
     continuation: Option<ContinuationCandidate>,
 ) -> AiChatResult<ProviderRunRequest> {
     let state = continuation

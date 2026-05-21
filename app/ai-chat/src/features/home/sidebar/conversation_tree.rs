@@ -538,6 +538,7 @@ mod tests {
             role: Role::User,
             content: Content::new(format!("message-{id}")),
             send_content: serde_json::json!({ "message_id": id }),
+            input_content_parts: Vec::new(),
             status: Status::Normal,
             error: None,
             created_time: now(),

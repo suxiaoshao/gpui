@@ -1,5 +1,6 @@
 use super::*;
 use crate::database::{Content, ConversationTemplatePrompt, Status};
+use crate::llm::{LlmAttachmentRef, LlmInputItem};
 use time::OffsetDateTime;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -14,6 +15,21 @@ fn input_texts(items: Vec<crate::llm::LlmInputItem>) -> Vec<(&'static str, Strin
         .collect()
 }
 
+fn current_text(text: &str) -> Vec<LlmContentPart> {
+    vec![LlmContentPart::text(text)]
+}
+
+fn image_input_parts(text: &str) -> Vec<LlmContentPart> {
+    vec![
+        LlmContentPart::text(text),
+        LlmContentPart::ImageRef(LlmAttachmentRef {
+            id: "data:image/png;base64,abc".to_string(),
+            mime_type: Some("image/png".to_string()),
+            name: Some("screenshot.png".to_string()),
+        }),
+    ]
+}
+
 fn make_message(id: i32, role: Role, status: Status, content: Content) -> Message {
     let now = OffsetDateTime::now_utc();
     Message {
@@ -24,6 +40,7 @@ fn make_message(id: i32, role: Role, status: Status, content: Content) -> Messag
         role,
         content,
         send_content: serde_json::json!({}),
+        input_content_parts: Vec::new(),
         status,
         created_time: now,
         updated_time: now,
@@ -87,7 +104,7 @@ fn get_history_contextual_includes_all_normal_messages_and_user() {
             make_message(3, Role::User, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents);
     assert_eq!(
@@ -100,6 +117,23 @@ fn get_history_contextual_includes_all_normal_messages_and_user() {
             ("user", "latest".to_string()),
         ]
     );
+}
+
+#[test]
+fn get_history_contextual_preserves_persisted_input_content_parts() {
+    let input_parts = image_input_parts("describe");
+    let mut message = make_message(1, Role::User, Status::Normal, Content::new("display text"));
+    message.input_content_parts = input_parts.clone();
+
+    let items = build_history_messages(
+        vec![],
+        Mode::Contextual,
+        &[message],
+        Role::User,
+        current_text("latest"),
+    );
+
+    assert!(matches!(&items[0], LlmInputItem::User { content } if content == &input_parts));
 }
 
 #[test]
@@ -123,7 +157,7 @@ fn get_history_single_only_prompts_and_user() {
             Content::new("a1"),
         )],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents)
         .into_iter()
@@ -159,7 +193,7 @@ fn get_history_assistant_only_filters_roles() {
             make_message(3, Role::Assistant, Status::Error, Content::new("bad")),
         ],
         Role::User,
-        "latest",
+        current_text("latest"),
     );
     let contents = input_texts(contents);
     assert_eq!(
@@ -222,7 +256,7 @@ fn build_run_request_with_openai_continuation_trims_prior_history() -> anyhow::R
                 Content::new("after continuation"),
             ),
         ],
-        (Role::User, "latest"),
+        (Role::User, current_text("latest")),
         Some(ContinuationCandidate {
             after_index: 1,
             state: ProviderRunState::new(

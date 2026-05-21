@@ -13,6 +13,7 @@ fn make_message(role: Role) -> Message {
         role,
         content: Content::new("hello"),
         send_content: serde_json::json!({}),
+        input_content_parts: Vec::new(),
         status: Status::Normal,
         created_time: now,
         updated_time: now,

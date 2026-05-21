@@ -13,13 +13,14 @@ create table folders
 
 CREATE TABLE conversation_templates
 (
-    id           Integer PRIMARY KEY AUTOINCREMENT not null,
-    name         TEXT                              NOT NULL,
-    icon         TEXT                              not null,
-    description  TEXT,
-    prompts      JSON                              NOT NULL,
-    created_time DateTime                          not null,
-    updated_time DateTime                          not null
+    id                    Integer PRIMARY KEY AUTOINCREMENT not null,
+    name                  TEXT                              NOT NULL,
+    icon                  TEXT                              not null,
+    description           TEXT,
+    prompts               JSON                              NOT NULL,
+    required_capabilities JSON                              NOT NULL default '[]',
+    created_time          DateTime                          not null,
+    updated_time          DateTime                          not null
 );
 
 create table conversations
@@ -45,6 +46,7 @@ create table messages
     role              TEXT                              not null check ( role in ('developer', 'user', 'assistant') ),
     content           JSON                              not null,
     send_content      JSON                              not null,
+    input_content_parts JSON                            not null default '[]',
     status            TEXT                              not null check ( status in ('normal', 'hidden', 'loading', 'thinking', 'paused', 'error') ),
     created_time      DateTime                          not null,
     updated_time      DateTime                          not null,

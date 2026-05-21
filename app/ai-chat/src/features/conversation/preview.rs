@@ -7,6 +7,7 @@ use crate::{
     errors::{AiChatError, AiChatResult},
     foundation::assets::IconName,
     foundation::i18n::I18n,
+    llm::LlmContentPart,
     state::{ChatData, ChatDataEvent, WorkspaceStore},
 };
 use fluent_bundle::FluentArgs;
@@ -47,6 +48,7 @@ struct MessageInputs {
     text: Entity<InputState>,
     reasoning_summary: Entity<InputState>,
     citations: Entity<InputState>,
+    input_content_parts: Entity<InputState>,
     send_content: Entity<InputState>,
 }
 
@@ -76,6 +78,13 @@ impl MessageInputs {
             ),
             citations: build_editor(
                 serde_json::to_string_pretty(&message.content().citations)
+                    .unwrap_or_else(|_| "[]".to_string()),
+                "json",
+                window,
+                cx,
+            ),
+            input_content_parts: build_editor(
+                serde_json::to_string_pretty(message.input_content_parts())
                     .unwrap_or_else(|_| "[]".to_string()),
                 "json",
                 window,
@@ -522,6 +531,7 @@ pub trait MessagePreviewExt: MessageViewExt {
     fn updated_time(&self) -> OffsetDateTime;
     fn start_time(&self) -> OffsetDateTime;
     fn end_time(&self) -> OffsetDateTime;
+    fn input_content_parts(&self) -> &[LlmContentPart];
 
     fn on_update_content(
         &self,
@@ -686,6 +696,10 @@ impl MessagePreviewExt for Message {
         self.end_time
     }
 
+    fn input_content_parts(&self) -> &[LlmContentPart] {
+        &self.input_content_parts
+    }
+
     fn on_update_content(
         &self,
         content: Content,
@@ -721,6 +735,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
             field_text,
             field_reasoning_summary,
             field_citations,
+            field_input_content_parts,
             field_send_content,
             button_preview,
             button_edit,
@@ -735,6 +750,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                 i18n.t("field-text"),
                 i18n.t("field-reasoning-summary"),
                 i18n.t("field-citations"),
+                i18n.t("field-input-content-parts"),
                 i18n.t("field-send-content"),
                 i18n.t("button-preview"),
                 i18n.t("button-edit"),
@@ -747,6 +763,7 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
         let text_value = self.input.text.read(cx).value().to_string();
         let reasoning_value = self.input.reasoning_summary.read(cx).value().to_string();
         let citations_value = self.input.citations.read(cx).value().to_string();
+        let input_content_parts_value = self.input.input_content_parts.read(cx).value().to_string();
         let send_content_value = self.input.send_content.read(cx).value().to_string();
 
         v_flex()
@@ -888,6 +905,12 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                                                 px(132.),
                                             ))
                                             .child(render_preview_json(
+                                                "message-preview-input-content-parts-preview",
+                                                field_input_content_parts.into(),
+                                                input_content_parts_value,
+                                                cx,
+                                            ))
+                                            .child(render_preview_json(
                                                 "message-preview-send-content-preview",
                                                 field_send_content.into(),
                                                 send_content_value,
@@ -910,6 +933,12 @@ impl<T: MessagePreviewExt> Render for MessagePreview<T> {
                                                 "message-preview-citations-preview",
                                                 field_citations.into(),
                                                 citations_value,
+                                                cx,
+                                            ))
+                                            .child(render_preview_json(
+                                                "message-preview-input-content-parts-preview",
+                                                field_input_content_parts.into(),
+                                                input_content_parts_value,
                                                 cx,
                                             ))
                                             .child(render_preview_json(
