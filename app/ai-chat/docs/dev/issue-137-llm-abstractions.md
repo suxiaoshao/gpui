@@ -23,7 +23,7 @@ Delete it before the final merge to `main`, unless the remaining content is prom
 | #141 | `codex/issue-141-llm-persistence` | Run state, output items, tools, attachments persistence | Merged to integration via PR #150; GitHub issue still open |
 | #143 | `codex/issue-143-openai-responses-abstraction` | OpenAI Responses migration on shared abstraction | Merged to integration via PR #151; GitHub issue still open |
 | #144 | `codex/issue-144-ollama-shared-abstraction` | Ollama migration on shared abstraction | Merged to integration via PR #152; GitHub issue still open |
-| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | Implemented locally; pending PR to integration |
+| #140 | `codex/issue-140-capability-gating` | Template, shortcut, and UI capability gating | PR #153 opened to integration |
 
 ## Issue Sync Snapshot
 
@@ -36,7 +36,7 @@ Last synchronized: 2026-05-21.
 - #141 remains open on GitHub, but PR #150 merged `codex/issue-141-llm-persistence` into `codex/issue-137-llm-abstractions`.
 - #143 remains open on GitHub, but PR #151 merged `codex/issue-143-openai-responses-abstraction` into `codex/issue-137-llm-abstractions`.
 - #144 remains open on GitHub, but PR #152 merged `codex/issue-144-ollama-shared-abstraction` into `codex/issue-137-llm-abstractions`.
-- #140 remains open on GitHub. Local branch `codex/issue-140-capability-gating` implements capability gating and targets `codex/issue-137-llm-abstractions`.
+- #140 remains open on GitHub. PR #153 targets `codex/issue-137-llm-abstractions` from `codex/issue-140-capability-gating`.
 
 ## Current Architecture Facts
 
@@ -261,4 +261,4 @@ The current implementation keeps request persistence additive: existing provider
 
 No remaining child issue is queued after #140 in this local plan.
 
-#140 should be reviewed and merged into `codex/issue-137-llm-abstractions`; after that, refresh this coordination document from GitHub issue/PR state before preparing the integration branch for `main`.
+#140 / PR #153 should be reviewed and merged into `codex/issue-137-llm-abstractions`; after that, refresh this coordination document from GitHub issue/PR state before preparing the integration branch for `main`.
