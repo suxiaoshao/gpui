@@ -7,14 +7,29 @@ pub(crate) struct LlmHistoryMessage<'a> {
     pub(crate) role: Role,
     pub(crate) status: Status,
     pub(crate) content: &'a Content,
+    pub(crate) input_content_parts: &'a [LlmContentPart],
 }
 
 impl<'a> LlmHistoryMessage<'a> {
-    pub(crate) fn new(role: Role, status: Status, content: &'a Content) -> Self {
+    pub(crate) fn with_input_content_parts(
+        role: Role,
+        status: Status,
+        content: &'a Content,
+        input_content_parts: &'a [LlmContentPart],
+    ) -> Self {
         Self {
             role,
             status,
             content,
+            input_content_parts,
+        }
+    }
+
+    fn content_parts(&self) -> Vec<LlmContentPart> {
+        if self.input_content_parts.is_empty() {
+            vec![LlmContentPart::text(self.content.send_content())]
+        } else {
+            self.input_content_parts.to_vec()
         }
     }
 }
@@ -40,9 +55,7 @@ pub(crate) fn build_input_items<'a>(
                 Mode::Single => false,
                 Mode::AssistantOnly => message.role == Role::Assistant,
             })
-            .map(|message| {
-                LlmInputItem::from_role_text(message.role, message.content.send_content())
-            }),
+            .map(|message| LlmInputItem::from_role_content(message.role, message.content_parts())),
     );
     request_messages.push(LlmInputItem::from_role_content(
         user_message_role,
@@ -73,9 +86,19 @@ mod tests {
             &prompts,
             Mode::Contextual,
             [
-                LlmHistoryMessage::new(Role::User, Status::Normal, &user),
-                LlmHistoryMessage::new(Role::Assistant, Status::Normal, &assistant),
-                LlmHistoryMessage::new(Role::User, Status::Error, &failed),
+                LlmHistoryMessage::with_input_content_parts(Role::User, Status::Normal, &user, &[]),
+                LlmHistoryMessage::with_input_content_parts(
+                    Role::Assistant,
+                    Status::Normal,
+                    &assistant,
+                    &[],
+                ),
+                LlmHistoryMessage::with_input_content_parts(
+                    Role::User,
+                    Status::Error,
+                    &failed,
+                    &[],
+                ),
             ],
             Role::User,
             vec![LlmContentPart::text("latest")],
@@ -108,8 +131,13 @@ mod tests {
             &prompts,
             Mode::AssistantOnly,
             [
-                LlmHistoryMessage::new(Role::User, Status::Normal, &user),
-                LlmHistoryMessage::new(Role::Assistant, Status::Normal, &assistant),
+                LlmHistoryMessage::with_input_content_parts(Role::User, Status::Normal, &user, &[]),
+                LlmHistoryMessage::with_input_content_parts(
+                    Role::Assistant,
+                    Status::Normal,
+                    &assistant,
+                    &[],
+                ),
             ],
             Role::User,
             vec![LlmContentPart::text("latest")],
@@ -148,5 +176,33 @@ mod tests {
         );
 
         assert!(matches!(&items[0], LlmInputItem::User { content } if content.len() == 2));
+    }
+
+    #[test]
+    fn history_message_prefers_persisted_content_parts() {
+        let display_content = Content::new("display only");
+        let input_parts = vec![
+            LlmContentPart::text("describe"),
+            LlmContentPart::ImageRef(LlmAttachmentRef {
+                id: "data:image/png;base64,abc".to_string(),
+                mime_type: Some("image/png".to_string()),
+                name: Some("screenshot.png".to_string()),
+            }),
+        ];
+
+        let items = build_input_items(
+            &[],
+            Mode::Contextual,
+            [LlmHistoryMessage::with_input_content_parts(
+                Role::User,
+                Status::Normal,
+                &display_content,
+                &input_parts,
+            )],
+            Role::User,
+            vec![LlmContentPart::text("latest")],
+        );
+
+        assert!(matches!(&items[0], LlmInputItem::User { content } if content == &input_parts));
     }
 }

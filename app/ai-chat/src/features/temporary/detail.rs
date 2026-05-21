@@ -60,6 +60,7 @@ pub struct TemporaryMessage {
     pub role: Role,
     pub content: Content,
     pub send_content: Rc<serde_json::Value>,
+    pub input_content_parts: Vec<LlmContentPart>,
     pub status: Status,
     pub error: Option<String>,
     pub run_persistence: MessageRunPersistence,
@@ -226,6 +227,10 @@ impl MessagePreviewExt for TemporaryMessage {
         self.end_time
     }
 
+    fn input_content_parts(&self) -> &[LlmContentPart] {
+        &self.input_content_parts
+    }
+
     fn on_update_content(
         &self,
         content: Content,
@@ -335,6 +340,7 @@ struct NewTemporaryMessage {
     role: Role,
     content: Content,
     send_content: Rc<serde_json::Value>,
+    input_content_parts: Vec<LlmContentPart>,
     status: Status,
     error: Option<String>,
     run_persistence: MessageRunPersistence,
@@ -606,6 +612,7 @@ fn temporary_messages_to_add_conversation_messages(
             role: message.role,
             content: message.content,
             send_content: (*message.send_content).clone(),
+            input_content_parts: message.input_content_parts,
             status: message.status,
             error: message.error,
             run_persistence: message.run_persistence.clone(),
@@ -696,6 +703,7 @@ impl TemplateDetailView {
             role: input.role,
             content: input.content,
             send_content: input.send_content,
+            input_content_parts: input.input_content_parts,
             status: input.status,
             error: input.error,
             run_persistence: input.run_persistence,
@@ -853,12 +861,13 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedTemporaryFetch> {
         let content = Content::new(context.composer_snapshot.text.clone());
+        let user_input_content_parts = context.composer_snapshot.content_parts.clone();
         let runner = Self::build_runner(
             state.clone(),
             context.config.clone(),
             context.composer_snapshot.clone(),
             Role::User,
-            context.composer_snapshot.content_parts.clone(),
+            user_input_content_parts.clone(),
             cx,
         )?;
         let send_content = Rc::new(runner.request_body().clone());
@@ -872,6 +881,7 @@ impl TemplateDetailView {
                     role: Role::User,
                     content,
                     send_content: send_content.clone(),
+                    input_content_parts: user_input_content_parts.clone(),
                     status: Status::Normal,
                     error: None,
                     run_persistence: MessageRunPersistence::default(),
@@ -884,6 +894,7 @@ impl TemplateDetailView {
                     role: Role::Assistant,
                     content: Content::default(),
                     send_content: send_content.clone(),
+                    input_content_parts: Vec::new(),
                     status: Status::Loading,
                     error: None,
                     run_persistence: MessageRunPersistence::default(),
@@ -1154,9 +1165,14 @@ fn build_history_messages(
     user_message_role: Role,
     user_message_content: Vec<LlmContentPart>,
 ) -> Vec<crate::llm::LlmInputItem> {
-    let history = messages
-        .iter()
-        .map(|message| LlmHistoryMessage::new(message.role, message.status, &message.content));
+    let history = messages.iter().map(|message| {
+        LlmHistoryMessage::with_input_content_parts(
+            message.role,
+            message.status,
+            &message.content,
+            &message.input_content_parts,
+        )
+    });
     build_input_items(
         prompts,
         mode,

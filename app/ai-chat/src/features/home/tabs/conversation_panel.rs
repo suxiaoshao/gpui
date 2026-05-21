@@ -677,12 +677,8 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedFetch> {
         let user_content = Content::new(request_text);
-        let runner = Self::build_runner(
-            context,
-            Role::User,
-            context.composer_snapshot.content_parts.clone(),
-            cx,
-        )?;
+        let user_input_content_parts = context.composer_snapshot.content_parts.clone();
+        let runner = Self::build_runner(context, Role::User, user_input_content_parts.clone(), cx)?;
         let send_content = runner.request_body();
         let (user_message, assistant_message) =
             cx.read_global_result(|db: &Db, _window, _cx| {
@@ -695,7 +691,8 @@ impl ConversationPanelView {
                         &user_content,
                         send_content,
                         Status::Normal,
-                    ),
+                    )
+                    .with_input_content_parts(&user_input_content_parts),
                     conn,
                 )?;
                 let assistant_message = Message::insert(
@@ -1237,9 +1234,14 @@ fn build_history_messages(
     user_message_role: Role,
     user_message_content: Vec<LlmContentPart>,
 ) -> Vec<crate::llm::LlmInputItem> {
-    let history = history_messages
-        .iter()
-        .map(|message| LlmHistoryMessage::new(message.role, message.status, &message.content));
+    let history = history_messages.iter().map(|message| {
+        LlmHistoryMessage::with_input_content_parts(
+            message.role,
+            message.status,
+            &message.content,
+            &message.input_content_parts,
+        )
+    });
     build_input_items(
         &prompts,
         mode,

@@ -54,6 +54,7 @@ Last synchronized: 2026-05-21.
 - `ProviderRunState` and `ProviderUsage` are available for provider response/run metadata, output item ids, continuation metadata, and token usage, and #141 persists them additively for assistant messages.
 - `message_run_states`, `message_output_items`, and `message_attachments` now persist provider run state, output item events, usage, and attachment metadata additively without changing `messages.content` or `messages.send_content`.
 - `messages.content` stores rendered message content; `messages.send_content` stores the request body snapshot used for resend.
+- `messages.input_content_parts` stores provider-neutral user input parts for future contextual history; old migrated messages default to an empty list and fall back to rendered text.
 - OpenAI uses `/v1/responses`, reasoning effort, reasoning summaries, hosted web search citations, provider-neutral output item events, and persisted `previous_response_id` continuation when compatible run state is available.
 - OpenAI adapter-specific Responses request fields such as `include`, `text`, `tool_choice`, `tools`, and `parallel_tool_calls` remain inside the OpenAI provider schema rather than the generic provider trait.
 - Ollama has provider-specific thinking, image input, and experimental web search/fetch behavior that must not be forced into OpenAI-shaped types.
@@ -241,6 +242,7 @@ The current implementation keeps request persistence additive: existing provider
 - Shortcut settings show `CapabilityMismatch`, warn during editing when a selected template/model pair is incompatible, and block normal shortcut execution when required capabilities are missing.
 - Shortcut screenshots now send typed `LlmContentPart::ImageRef` PNG data URLs for image-capable models and fall back to the existing OCR text path otherwise.
 - Conversation panel, temporary detail, and chat form now pass the current user input as content parts while preserving ordinary text input as a single text part.
+- Persisted normal and temporary conversation history now carries `input_content_parts` instead of reconstructing context from rendered text or provider-specific request bodies.
 - Validation run:
   - `cargo fmt`
   - `cargo test -p ai-chat llm::types`
@@ -252,6 +254,7 @@ The current implementation keeps request persistence additive: existing provider
   - `cargo test -p ai-chat features::settings::template_settings`
   - `cargo test -p ai-chat features::settings::shortcut_settings`
   - `cargo test -p ai-chat features::hotkey`
+  - `cargo test -p ai-chat features::conversation::preview`
   - `cargo test -p ai-chat features::temporary::detail`
   - `cargo test -p ai-chat features::home::tabs::conversation_panel`
   - `cargo test -p ai-chat state::workspace`

@@ -243,6 +243,7 @@ field-status = 状态
 field-error = 错误
 field-text = 文本
 field-citations = 引用
+field-input-content-parts = 输入内容片段
 field-send-content = 发送内容
 field-actions = 操作
 

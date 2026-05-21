@@ -62,6 +62,7 @@ diesel::table! {
         role -> Text,
         content -> Json,
         send_content -> Json,
+        input_content_parts -> Json,
         status -> Text,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,

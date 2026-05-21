@@ -243,6 +243,7 @@ field-status = Status
 field-error = Error
 field-text = Text
 field-citations = Citations
+field-input-content-parts = Input Content Parts
 field-send-content = Send Content
 field-actions = Actions
 

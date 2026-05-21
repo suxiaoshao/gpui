@@ -7,7 +7,7 @@ use crate::database::{
     MessageRunPersistence, MessageRunState, Mode, Role, Status,
 };
 use crate::features::conversation::detail::ConversationDetailViewExt;
-use crate::llm::{LlmContentPart, LlmOutputItem};
+use crate::llm::{LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem};
 use crate::state::AiChatConfig;
 use std::rc::Rc;
 use time::OffsetDateTime;
@@ -28,6 +28,17 @@ fn current_text(text: &str) -> Vec<LlmContentPart> {
     vec![LlmContentPart::text(text)]
 }
 
+fn image_input_parts(text: &str) -> Vec<LlmContentPart> {
+    vec![
+        LlmContentPart::text(text),
+        LlmContentPart::ImageRef(LlmAttachmentRef {
+            id: "data:image/png;base64,abc".to_string(),
+            mime_type: Some("image/png".to_string()),
+            name: Some("screenshot.png".to_string()),
+        }),
+    ]
+}
+
 fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessage {
     let now = OffsetDateTime::now_utc();
     TemporaryMessage {
@@ -36,6 +47,7 @@ fn make_message(role: Role, status: Status, content: Content) -> TemporaryMessag
         role,
         content,
         send_content: Rc::new(serde_json::json!({})),
+        input_content_parts: Vec::new(),
         status,
         error: None,
         run_persistence: MessageRunPersistence::default(),
@@ -61,6 +73,7 @@ fn make_provider_message(
         role,
         content,
         send_content: Rc::new(send_content),
+        input_content_parts: Vec::new(),
         status,
         error,
         run_persistence: MessageRunPersistence::default(),
@@ -148,6 +161,23 @@ fn runner_history_appends_current_user_message() {
             ("user", "latest".to_string()),
         ]
     );
+}
+
+#[test]
+fn runner_history_preserves_persisted_input_content_parts() {
+    let input_parts = image_input_parts("describe");
+    let mut message = make_message(Role::User, Status::Normal, Content::new("display text"));
+    message.input_content_parts = input_parts.clone();
+
+    let history = build_history_messages(
+        &[],
+        Mode::Contextual,
+        &[message],
+        Role::User,
+        current_text("latest"),
+    );
+
+    assert!(matches!(&history[0], LlmInputItem::User { content } if content == &input_parts));
 }
 
 #[test]
@@ -420,6 +450,24 @@ fn temporary_messages_convert_to_add_conversation_messages() {
     assert_eq!(messages[0].status, Status::Error);
     assert_eq!(messages[0].error.as_deref(), Some("network failed"));
     assert_eq!(messages[0].run_persistence.output_items.len(), 1);
+}
+
+#[test]
+fn temporary_messages_convert_preserves_input_content_parts() {
+    let input_parts = image_input_parts("describe");
+    let mut message = make_provider_message(
+        "OpenAI",
+        Role::User,
+        Status::Normal,
+        Content::new("display text"),
+        serde_json::json!({"model": "gpt-4o"}),
+        None,
+    );
+    message.input_content_parts = input_parts.clone();
+
+    let messages = temporary_messages_to_add_conversation_messages(&[message]);
+
+    assert_eq!(messages[0].input_content_parts, input_parts);
 }
 
 #[test]
