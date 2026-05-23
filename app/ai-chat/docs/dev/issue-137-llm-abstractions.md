@@ -26,14 +26,14 @@
 | #140 | `codex/issue-140-capability-gating` | template、shortcut、UI capability gating | 已通过 PR #153 合入集成分支；GitHub issue 仍未关闭 |
 | #154 | `codex/issue-154-typed-message-content` | 合并 typed message content model | 已被 fresh database 方向取代；除非重新定义 scope，否则只保留为上下文 |
 | #155 | `codex/issue-155-ai-chat2-crate-split` | 固定 `ai-chat2` 并行重构、crate 拆分、fresh database 和 typed data model | 设计文档已通过 PR #160 合入集成分支；GitHub issue 仍未关闭 |
-| #156 | `codex/issue-156-fresh-db-bootstrap` | scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories | 待处理 |
+| #156 | `codex/issue-156-fresh-db-bootstrap` | scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories | 已在本分支实现；待 PR review |
 | #157 | `codex/issue-157-provider-runtime-crate` | 抽出 `ai-chat-provider`，沉淀 provider-neutral trait、capabilities 和 adapter 边界 | 待处理 |
-| #158 | `codex/issue-158-agent-runtime-persistence` | 建立 `ai-chat-agent`，实现 agent loop、tool/approval runtime 和持久化写入 | 待处理 |
+| #158 | `codex/issue-158-agent-runtime-persistence` | 建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool/approval runtime 和持久化写入 | 待处理 |
 | #159 | `codex/issue-159-ai-chat2-ui` | 在 `app/ai-chat2` 渲染项目、对话、多步 reasoning、tool、approval、多模态 timeline | 待处理 |
 
 ## Issue 同步快照
 
-最后同步时间：2026-05-23。
+最后同步时间：2026-05-24。
 
 - #137 仍未关闭，是父级跟踪 issue。它的评论记录了子 issue 列表、集成分支和文档工作流。
 - #138 仍未关闭，但 PR #147 已把 `codex/issue-138-model-capabilities` 合入 `codex/issue-137-llm-abstractions`。
@@ -46,11 +46,13 @@
 - #154 来自 PR #153 review follow-up。它原本想在当前 `messages` schema 内合并 typed message content，但这个方向对 agent/multimodal 路线太受限。
 - 当前首选方向是设计 fresh ai-chat database schema，不再继续在旧 `messages.content` / `send_content` / `input_content_parts` 模型上叠 migration 和兼容逻辑。
 - #155 已通过 PR #160 把 `ai-chat2` 并行重构、crate 拆分、fresh database schema 和 typed data model 设计合入集成分支；GitHub issue 仍未关闭。
-- #156 已更新为：先 scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories；可建最小 `app/ai-chat2` 壳，不迁移 UI。
+- #156 已在 `codex/issue-156-fresh-db-bootstrap` 实现：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、FTS、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳。
 - #157 已更新为：抽出 `ai-chat-provider`，把 provider-neutral trait、capabilities、OpenAI/Ollama adapter 边界从旧 app 债务中隔离出来。
-- #158 已更新为：建立 `ai-chat-agent`，实现 agent loop、tool registry、approval、continuation、cancel/retry，并写入 fresh persistence。
+- #158 已更新为：建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool registry、approval、continuation、cancel/retry，并写入 fresh persistence。
 - #159 已更新为：让 `app/ai-chat2` 使用新 crates 渲染项目、对话、timeline、tool、approval 和多模态内容。
 - 2026-05-23 已读取并更新 GitHub #137、#155-#159。#137 正文已指向 `ai-chat2` 并行重构和新的子 issue 序列；#155-#159 title/body 已按“后续 Issue 调整提案”同步；PR #160 已把 #155 设计文档合入集成分支。
+- 2026-05-24 已同步 GitHub #137、#156、#158：agent runtime 采用 Rig + rmcp；skills 和 MCP server 配置从文件/配置读取，不作为 fresh database source tables。现有 fresh DB 结构支持 Rig execution persistence，只需补充 runtime snapshot、skill activation transcript item 和 runtime tool name 映射。
+- 2026-05-24 已完成 #156 本地实现和验证：`cargo test -p ai-chat-core`、`cargo test -p ai-chat-db`、`cargo clippy -p ai-chat-core --all-targets --all-features -- -D warnings`、`cargo clippy -p ai-chat-db --all-targets --all-features -- -D warnings` 和 `git diff --check` 均通过。
 
 ## 当前架构事实
 
@@ -152,6 +154,9 @@ Issue #139 建立了以下 Rust 运行时类型：
 - fresh model 移除 folders、templates、conversation modes。保存的指令是 `prompts`；所有 conversations 都是 contextual。
 - `ProviderRunRequest`、`ProviderRunEvent`、`ProviderRunState` 保持为低层 provider-step adapter boundary。持久化 canonical transcript 是 `conversation_items`；`agent_runs`、`provider_steps`、`tool_invocations`、approvals、usage 是执行、恢复、统计或调试索引。
 - Provider request JSON 只保存在 `provider_steps`，作为 debug/replay snapshot，不作为 chat history。
+- Rig 是 #158 的首选 agent runtime adapter，但不能成为数据库模型的 source of truth。`conversation_items` 重建上下文后转换成 Rig messages；`agent_runs`、`provider_steps`、`tool_invocations`、approvals、usage 记录 Rig loop 的执行事实。
+- Skills 采用 Zed 风格 `SKILL.md` 文件模型。Catalog 只包含 name、description、path；body 在调用时从文件读取。已加载进对话的 rendered skill content 作为 `conversation_items` 快照保存，用于历史重放和 debug。
+- MCP server 配置采用 Codex/Zed 风格 app/user/project config，不写入 chat database。运行时通过 rmcp 连接并把 tools 注册到 Rig `ToolServerHandle`；数据库只记录实际 tool invocation。
 - Provider models 在 settings 中手动刷新，启动时读取 cached `provider_models` rows。
 - Legacy v1-v6 stores 必须保持 intact。Legacy access 必须显式实现，不能要求完整自动迁移。
 
@@ -173,7 +178,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 - `ai-chat-core` 不能依赖 GPUI、Diesel、HTTP client 或具体 provider。
 - `ai-chat-db` 依赖 `ai-chat-core`，负责 SQL `JSON` typed roundtrip、migration、transaction 和 FTS。
 - `ai-chat-provider` 依赖 `ai-chat-core`，负责 provider wire conversion 和 provider-step events。
-- `ai-chat-agent` 依赖 core/provider/repository traits，负责多步 agent loop 和 canonical item 写入。
+- `ai-chat-agent` 依赖 core/provider/repository traits，负责 Rig + rmcp 多步 agent loop、tool registry、file-backed skills、MCP runtime、approval 和 canonical item 写入。
 - `app/ai-chat2` 只依赖这些 crates，不重新拥有长期业务模型。
 - 旧 `app/ai-chat` 不在 #156-#159 中被强制迁移；它可以继续承载 legacy UI 和旧数据库访问，直到有明确替代策略。
 
@@ -185,6 +190,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 - Codex 的 canonical session 是 append-only rollout JSONL；SQLite `threads` 只保存 `rollout_path`、`cwd`、title、preview、tokens、git、archive 等索引字段，dynamic tools 和 spawn edges 这类独立查询关系才单独建表。可借鉴的是：canonical log 和 metadata index 分层，thread 归属真实 cwd。
 - pi 的 session 按 cwd 组织到 `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl`；session header 后面是 append-only entries，每个 entry 有 `id`、`parentId`、`type`，context 通过当前 leaf 回溯构建。可借鉴的是：项目/目录组织对话、append-only typed entries、compaction/model change/label/custom entry 一等化。
 - Alma 的价值在于把 provider/model cache、usage、MCP/OAuth、agent execution、memory/observability 与 transcript 分离。不能把 Alma 的 JSON-like text 列、chat message payload shape 或过度规范化表设计搬进 ai-chat。
+- Zed 和 Codex 的 skills 都是文件驱动：catalog 暴露 metadata/path，body 在需要时读取 `SKILL.md`；MCP 都来自 settings/config。ai-chat 应复用这个边界，不把 skills/MCP 定义表放进 fresh database。
 
 最终取舍：ai-chat 继续 SQLite-first，但采用“typed transcript log + metadata/execution indexes”模型。`conversation_items.payload_json` 是 canonical append-only transcript document；执行表只用于恢复、debug、统计和设置索引，不能成为 UI/context 主路径的 join 依赖。
 
@@ -222,6 +228,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 - 可新增最小 `app/ai-chat2` shell 以验证 workspace wiring，但不迁移旧 UI。
 - 增加 fresh database bootstrap path，且不覆盖 legacy v1-v6 stores。
 - Bootstrap 时打开 fresh database，读取 `schema_metadata` 和 `schema_migrations`，再在事务内应用缺失 migrations。
+- 数据库 schema 不新增 skills/MCP source tables。#156 只定义 Rig runtime 所需的 typed payload：`AgentRuntimeSnapshot`、`SkillActivationItem`、`runtime_tool_name`、provider step snapshot kind 等。
 - 实现 typed repository/service APIs，覆盖 projects、conversations、conversation items、attachments、runs、provider steps、tools、approvals、usage、prompts、shortcuts、providers、provider models、app settings。
 - SQL schema 中 app 自有结构化 payload 使用 `JSON` 列，不使用 `TEXT` 保存 JSON 字符串。
 - 保持旧 database code 隔离为 legacy compatibility code，直到它可以被移除或替换为 read-only/export path。
@@ -242,17 +249,20 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 
 ### #158 agent runtime 和持久化
 
-标题建议：`[tech] ai-chat: implement agent runtime and persistence for ai-chat2`
+标题建议：`[tech] ai-chat: implement Rig/rmcp agent runtime and persistence for ai-chat2`
 
 范围：
 
-- 新增 `crates/ai-chat-agent`，承载 `AgentRunRequest`、`AgentRunEvent`、`AgentRunState`、`AgentStep`、`ToolRegistry`、`ToolDefinition`、`ToolInvocation`、`ToolExecutionPolicy`、`ToolApprovalPolicy`。
-- 实现 multi-step loop、tool execution、MCP/provider-hosted tool reporting、approval、continuation、retry、cancel 和 max-step guard。
+- 新增 `crates/ai-chat-agent`，承载 `AgentRunRequest`、`AgentRunEvent`、`AgentRunState`、`AgentStep`、`ToolRegistry`、`ToolDefinition`、`ToolInvocation`、`ToolExecutionPolicy`、`ToolApprovalPolicy`，并把 Rig 作为第一版 runtime adapter。
+- 使用 Rig agent loop 执行 multi-step prompt；通过 `PromptHook` 和 `PersistingCompletionModel<M>` 写入 provider step、tool invocation、usage、terminal state。
+- 使用 rmcp 连接 MCP servers，并把 MCP tools 注册到 Rig `ToolServerHandle`。MCP server 配置来自 app/user/project config，不进入 chat database。
+- 实现 Zed 风格 file-backed skills：扫描 `SKILL.md` catalog，按需读取 body，已加载内容作为 `SkillActivation` transcript 快照写入 `conversation_items`。
+- 实现 tool execution、MCP/provider-hosted tool reporting、approval、continuation、retry、cancel 和 max-step guard。
 - 持久化每个 agent run、provider step、tool invocation、tool result、approval decision、usage update、retry、cancellation、terminal state。
 - 保存每个 provider step 的 provider request/response snapshots 和 continuation metadata。
 - 同步写入 `conversation_items`，保证 timeline/context/export/resend 不依赖 execution tables join。
 - 让 crash recovery 和 debug inspection 不依赖 rendered message text 重建状态。
-- 增加 tests，覆盖 multi-step tool runs、failed tools、denied approvals、paused/canceled runs、resend/retry behavior。
+- 增加 tests，覆盖 Rig multi-step tool runs、MCP tool runs、tool name collision、failed tools、denied approvals、paused/canceled runs、resend/retry behavior，以及 skill body 修改后旧 transcript 仍可复现。
 
 ### #159 ai-chat2 agent 和多模态时间线 UI
 
@@ -416,13 +426,15 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 
 ## 下一个子 Issue 约束
 
-下一个实现子 issue 是 #156。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
+#156 已完成 fresh core/db bootstrap 的本地实现和验证。下一步实现子 issue 是 #157，用于抽出 provider runtime crate。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
 
 - GitHub #155-#159 的 title/body 已与“后续 Issue 调整提案”保持一致；后续修改必须先更新文档再同步线上 issue，避免实现继续沿旧 `app/ai-chat` 原地改造路线推进。
-- #156 应从 `crates/ai-chat-core` 和 `crates/ai-chat-db` 开始，不应先改旧 app UI。
+- #156 已从 `crates/ai-chat-core` 和 `crates/ai-chat-db` 落地；没有先改旧 app UI，也没有新增 `app/ai-chat2` shell。
 - 从新的 canonical transcript schema 开始，不要继续迁移旧 `messages.content` / `send_content` / `input_content_parts` 模型。
 - 保持 legacy ai-chat databases 完整。不要覆盖它们，也不要要求完整自动迁移。
 - 实现前先决定 legacy access strategy：backup-only retention、read-only legacy viewer、manual export/import，或分阶段组合。
 - fresh schema version 和 migration ledger 必须存在数据库内部。文件名可以识别 fresh store，但 schema compatibility 必须从 database metadata 判断。
 - 新数据库必须保持 provider-neutral。OpenAI Responses continuation、Ollama local web tools、MCP calls、hosted tools、未来 provider-specific metadata 应通过 typed provider/tool extension points 附加。
 - `Provider` 只负责一次 provider run。Multi-step agent loops、tool execution、approvals、retries、continuation 属于 `AgentRuntime` 和 fresh persistence model。
+- Skills 和 MCP server 定义必须保持 file/config-backed。#156 不应创建 reusable skill/MCP source tables；#158 只把已加载 skill 快照和实际 MCP tool invocation 写入 transcript/execution tables。
+- Rig 只能作为 runtime adapter。数据库真相仍是 `conversation_items` 和 execution indexes，不持久化 Rig 内部 `PromptResponse.messages` 或把 Rig `ConversationMemory` 作为主写入路径。
