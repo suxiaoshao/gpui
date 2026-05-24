@@ -1,14 +1,23 @@
-use crate::{DbPool, Result, error::DbError, records::*};
+use crate::{
+    DbPool, Result,
+    error::DbError,
+    models::*,
+    records::*,
+    schema::{
+        agent_runs, app_settings, approval_decisions, attachments, conversation_items,
+        conversations, projects, prompts, provider_models, provider_steps, providers, shortcuts,
+        tool_invocations, usage_events,
+    },
+};
 use ai_chat_core::*;
 use diesel::{
-    RunQueryDsl, SqliteConnection,
     connection::SimpleConnection,
+    prelude::*,
     r2d2::{ConnectionManager, PooledConnection},
     sql_query,
-    sql_types::{BigInt, Bool, Integer, Json, Nullable, Text},
+    sql_types::Text,
+    upsert::excluded,
 };
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Clone)]
@@ -23,15 +32,9 @@ impl FreshRepository {
 
     pub fn metadata(&self) -> Result<SchemaMetadataRecord> {
         let mut conn = self.conn()?;
-        let row = sql_query(
-            "SELECT schema_version, created_app_version, last_opened_app_version, payload_json, created_at, updated_at
-             FROM schema_metadata WHERE id = 'default'",
-        )
-        .load::<SqlSchemaMetadataRow>(&mut conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("schema metadata row is missing".to_string()))?;
-        row.try_into()
+        schema_metadata_row(&mut conn)?
+            .ok_or_else(|| DbError::Invariant("schema metadata row is missing".to_string()))?
+            .try_into()
     }
 
     pub fn table_names(&self) -> Result<Vec<String>> {
@@ -49,88 +52,93 @@ impl FreshRepository {
 
     pub fn insert_project(&self, input: NewProject) -> Result<ProjectRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO projects (id, path, display_name, kind, metadata_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.path)
-        .bind::<Text, _>(&input.display_name)
-        .bind::<Text, _>(&db_label(&input.kind)?)
-        .bind::<Json, _>(&to_json(&input.metadata)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_project(&id)?
-            .ok_or_else(|| DbError::Invariant("inserted project is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewProjectRow {
+                id: new_id(),
+                path: input.path,
+                display_name: input.display_name,
+                kind: db_label(&input.kind)?,
+                metadata_json: to_json(&input.metadata)?,
+                created_at: now.clone(),
+                updated_at: now,
+                last_opened_at: None,
+            };
+            diesel::insert_into(projects::table)
+                .values(&row)
+                .returning(SqlProjectRow::as_returning())
+                .get_result::<SqlProjectRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>> {
         let mut conn = self.conn()?;
-        let rows = sql_query("SELECT * FROM projects WHERE id = ?")
-            .bind::<Text, _>(id)
-            .load::<SqlProjectRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        project_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO providers (id, kind, display_name, enabled, settings_json, secret_refs_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.kind)
-        .bind::<Text, _>(&input.display_name)
-        .bind::<Bool, _>(input.enabled)
-        .bind::<Json, _>(&to_json(&input.settings)?)
-        .bind::<Json, _>(&to_json(&input.secret_refs)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_provider(&id)?
-            .ok_or_else(|| DbError::Invariant("inserted provider is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewProviderRow {
+                id: new_id(),
+                kind: input.kind,
+                display_name: input.display_name,
+                enabled: input.enabled,
+                settings_json: to_json(&input.settings)?,
+                secret_refs_json: to_json(&input.secret_refs)?,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(providers::table)
+                .values(&row)
+                .returning(SqlProviderRow::as_returning())
+                .get_result::<SqlProviderRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_provider(&self, id: &str) -> Result<Option<ProviderRecord>> {
         let mut conn = self.conn()?;
-        let rows = sql_query("SELECT * FROM providers WHERE id = ?")
-            .bind::<Text, _>(id)
-            .load::<SqlProviderRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        provider_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     pub fn upsert_provider_model(&self, input: NewProviderModel) -> Result<ProviderModelRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO provider_models (
-                id, provider_id, model_id, display_name, capabilities_json, metadata_json, fetched_at, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(provider_id, model_id) DO UPDATE SET
-                display_name = excluded.display_name,
-                capabilities_json = excluded.capabilities_json,
-                metadata_json = excluded.metadata_json,
-                fetched_at = excluded.fetched_at,
-                updated_at = excluded.updated_at",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.provider_id)
-        .bind::<Text, _>(&input.model_id)
-        .bind::<Nullable<Text>, _>(&input.display_name)
-        .bind::<Json, _>(&to_json(&input.capabilities)?)
-        .bind::<Json, _>(&to_json(&input.metadata)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_provider_model(&input.provider_id, &input.model_id)?
-            .ok_or_else(|| DbError::Invariant("upserted provider model is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewProviderModelRow {
+                id: new_id(),
+                provider_id: input.provider_id,
+                model_id: input.model_id,
+                display_name: input.display_name,
+                capabilities_json: to_json(&input.capabilities)?,
+                metadata_json: to_json(&input.metadata)?,
+                fetched_at: now.clone(),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(provider_models::table)
+                .values(&row)
+                .on_conflict((provider_models::provider_id, provider_models::model_id))
+                .do_update()
+                .set((
+                    provider_models::display_name.eq(excluded(provider_models::display_name)),
+                    provider_models::capabilities_json
+                        .eq(excluded(provider_models::capabilities_json)),
+                    provider_models::metadata_json.eq(excluded(provider_models::metadata_json)),
+                    provider_models::fetched_at.eq(excluded(provider_models::fetched_at)),
+                    provider_models::updated_at.eq(excluded(provider_models::updated_at)),
+                ))
+                .returning(SqlProviderModelRow::as_returning())
+                .get_result::<SqlProviderModelRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_provider_model(
@@ -139,74 +147,72 @@ impl FreshRepository {
         model_id: &str,
     ) -> Result<Option<ProviderModelRecord>> {
         let mut conn = self.conn()?;
-        let rows =
-            sql_query("SELECT * FROM provider_models WHERE provider_id = ? AND model_id = ?")
-                .bind::<Text, _>(provider_id)
-                .bind::<Text, _>(model_id)
-                .load::<SqlProviderModelRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        provider_model_row(&mut conn, provider_id, model_id)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     pub fn insert_prompt(&self, input: NewPrompt) -> Result<PromptRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO prompts (id, name, content_json, enabled, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.name)
-        .bind::<Json, _>(&to_json(&input.content)?)
-        .bind::<Bool, _>(input.enabled)
-        .bind::<Integer, _>(input.sort_order)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_prompt(&id)?
-            .ok_or_else(|| DbError::Invariant("inserted prompt is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewPromptRow {
+                id: new_id(),
+                name: input.name,
+                content_json: to_json(&input.content)?,
+                enabled: input.enabled,
+                sort_order: input.sort_order,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(prompts::table)
+                .values(&row)
+                .returning(SqlPromptRow::as_returning())
+                .get_result::<SqlPromptRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_prompt(&self, id: &str) -> Result<Option<PromptRecord>> {
         let mut conn = self.conn()?;
-        let rows = sql_query("SELECT * FROM prompts WHERE id = ?")
-            .bind::<Text, _>(id)
-            .load::<SqlPromptRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        prompt_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     pub fn insert_conversation(&self, input: NewConversation) -> Result<ConversationRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO conversations (
-                id, project_id, title, status, prompt_id, default_provider_id, default_model_id,
-                metadata_json, settings_snapshot_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.project_id)
-        .bind::<Text, _>(&input.title)
-        .bind::<Text, _>(&db_label(&ConversationStatus::Active)?)
-        .bind::<Nullable<Text>, _>(&input.prompt_id)
-        .bind::<Nullable<Text>, _>(&input.default_provider_id)
-        .bind::<Nullable<Text>, _>(&input.default_model_id)
-        .bind::<Json, _>(&to_json(&input.metadata)?)
-        .bind::<Json, _>(&to_json(&input.settings_snapshot)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_conversation(&id)?
-            .ok_or_else(|| DbError::Invariant("inserted conversation is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewConversationRow {
+                id: new_id(),
+                project_id: input.project_id,
+                title: input.title,
+                status: db_label(&ConversationStatus::Active)?,
+                prompt_id: input.prompt_id,
+                default_provider_id: input.default_provider_id,
+                default_model_id: input.default_model_id,
+                last_item_seq: 0,
+                metadata_json: to_json(&input.metadata)?,
+                settings_snapshot_json: to_json(&input.settings_snapshot)?,
+                created_at: now.clone(),
+                updated_at: now,
+                archived_at: None,
+                deleted_at: None,
+            };
+            diesel::insert_into(conversations::table)
+                .values(&row)
+                .returning(SqlConversationRow::as_returning())
+                .get_result::<SqlConversationRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRecord>> {
         let mut conn = self.conn()?;
-        let rows = sql_query("SELECT * FROM conversations WHERE id = ?")
-            .bind::<Text, _>(id)
-            .load::<SqlConversationRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        conversation_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     pub fn append_conversation_item(
@@ -215,54 +221,51 @@ impl FreshRepository {
     ) -> Result<ConversationItemRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let current_seq = sql_query("SELECT last_item_seq AS value FROM conversations WHERE id = ?")
-                .bind::<Text, _>(&input.conversation_id)
-                .load::<IntValueRow>(conn)?
-                .into_iter()
-                .next()
-                .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
-                .value;
-            let seq = current_seq + 1;
-            let id = new_id();
+            let conversation = conversation_row(conn, &input.conversation_id)?
+                .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?;
+            validate_execution_links(conn, &input.conversation_id, &input)?;
+
+            let seq = conversation.last_item_seq + 1;
             let now = now_string()?;
-            let payload_json = to_json(&input.payload)?;
-            let search_text = input.payload.search_text();
-            sql_query(
-                "INSERT INTO conversation_items (
-                    id, conversation_id, seq, kind, status, agent_run_id, provider_step_id,
-                    tool_invocation_id, provider_item_id, payload_json, search_text, created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind::<Text, _>(&id)
-            .bind::<Text, _>(&input.conversation_id)
-            .bind::<Integer, _>(seq)
-            .bind::<Text, _>(&db_label(&input.payload.kind())?)
-            .bind::<Text, _>(&db_label(&input.status)?)
-            .bind::<Nullable<Text>, _>(&input.agent_run_id)
-            .bind::<Nullable<Text>, _>(&input.provider_step_id)
-            .bind::<Nullable<Text>, _>(&input.tool_invocation_id)
-            .bind::<Nullable<Text>, _>(&input.provider_item_id)
-            .bind::<Json, _>(&payload_json)
-            .bind::<Text, _>(&search_text)
-            .bind::<Text, _>(&now)
-            .bind::<Text, _>(&now)
-            .execute(conn)?;
-            sql_query("UPDATE conversations SET last_item_seq = ?, updated_at = ? WHERE id = ?")
-                .bind::<Integer, _>(seq)
-                .bind::<Text, _>(&now)
-                .bind::<Text, _>(&input.conversation_id)
+            let row = SqlNewConversationItemRow {
+                id: new_id(),
+                conversation_id: input.conversation_id.clone(),
+                seq,
+                kind: db_label(&input.payload.kind())?,
+                status: db_label(&input.status)?,
+                agent_run_id: input.agent_run_id,
+                provider_step_id: input.provider_step_id,
+                tool_invocation_id: input.tool_invocation_id,
+                provider_item_id: input.provider_item_id,
+                payload_json: to_json(&input.payload)?,
+                search_text: input.payload.search_text(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            let item = diesel::insert_into(conversation_items::table)
+                .values(&row)
+                .returning(SqlConversationItemRow::as_returning())
+                .get_result::<SqlConversationItemRow>(conn)?;
+            diesel::update(conversations::table.find(&row.conversation_id))
+                .set((
+                    conversations::last_item_seq.eq(seq),
+                    conversations::updated_at.eq(now),
+                ))
                 .execute(conn)?;
-            load_conversation_item(conn, &id)
+            item.try_into()
         })
     }
 
     pub fn conversation_items(&self, conversation_id: &str) -> Result<Vec<ConversationItemRecord>> {
         let mut conn = self.conn()?;
-        let rows =
-            sql_query("SELECT * FROM conversation_items WHERE conversation_id = ? ORDER BY seq")
-                .bind::<Text, _>(conversation_id)
-                .load::<SqlConversationItemRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).collect()
+        conversation_items::table
+            .filter(conversation_items::conversation_id.eq(conversation_id))
+            .order(conversation_items::seq.asc())
+            .select(SqlConversationItemRow::as_select())
+            .load::<SqlConversationItemRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
     }
 
     pub fn update_conversation_item_payload(
@@ -274,135 +277,151 @@ impl FreshRepository {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
-            let search_text = payload.search_text();
-            sql_query(
-                "UPDATE conversation_items
-                 SET kind = ?, status = ?, payload_json = ?, search_text = ?, updated_at = ?
-                 WHERE id = ?",
-            )
-            .bind::<Text, _>(&db_label(&payload.kind())?)
-            .bind::<Text, _>(&db_label(&status)?)
-            .bind::<Json, _>(&to_json(&payload)?)
-            .bind::<Text, _>(&search_text)
-            .bind::<Text, _>(&now)
-            .bind::<Text, _>(item_id)
-            .execute(conn)?;
-            load_conversation_item(conn, item_id)
+            let changes = SqlConversationItemPayloadChanges {
+                kind: db_label(&payload.kind())?,
+                status: db_label(&status)?,
+                payload_json: to_json(&payload)?,
+                search_text: payload.search_text(),
+                updated_at: now.clone(),
+            };
+            let item = diesel::update(conversation_items::table.find(item_id))
+                .set(&changes)
+                .returning(SqlConversationItemRow::as_returning())
+                .get_result::<SqlConversationItemRow>(conn)?;
+            diesel::update(conversations::table.find(&item.conversation_id))
+                .set(conversations::updated_at.eq(now))
+                .execute(conn)?;
+            item.try_into()
         })
     }
 
     pub fn delete_conversation_item(&self, item_id: &str) -> Result<usize> {
         let mut conn = self.conn()?;
-        Ok(sql_query("DELETE FROM conversation_items WHERE id = ?")
-            .bind::<Text, _>(item_id)
-            .execute(&mut conn)?)
+        conn.immediate_transaction(|conn| {
+            let item = conversation_item_row(conn, item_id)?;
+            let Some(item) = item else {
+                return Ok(0);
+            };
+            let deleted = diesel::delete(conversation_items::table.find(item_id)).execute(conn)?;
+            diesel::update(conversations::table.find(&item.conversation_id))
+                .set(conversations::updated_at.eq(now_string()?))
+                .execute(conn)?;
+            Ok(deleted)
+        })
     }
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO attachments (
-                id, conversation_id, kind, storage_kind, mime_type, name, path, external_uri,
-                provider_id, provider_file_id, sha256, size_bytes, metadata_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.conversation_id)
-        .bind::<Text, _>(&db_label(&input.kind)?)
-        .bind::<Text, _>(&db_label(&input.storage_kind)?)
-        .bind::<Nullable<Text>, _>(&input.mime_type)
-        .bind::<Nullable<Text>, _>(&input.name)
-        .bind::<Nullable<Text>, _>(&input.path)
-        .bind::<Nullable<Text>, _>(&input.external_uri)
-        .bind::<Nullable<Text>, _>(&input.provider_id)
-        .bind::<Nullable<Text>, _>(&input.provider_file_id)
-        .bind::<Nullable<Text>, _>(&input.sha256)
-        .bind::<Nullable<BigInt>, _>(&input.size_bytes)
-        .bind::<Json, _>(&to_json(&input.metadata)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_attachment(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewAttachmentRow {
+                id: new_id(),
+                conversation_id: input.conversation_id,
+                kind: db_label(&input.kind)?,
+                storage_kind: db_label(&input.storage_kind)?,
+                mime_type: input.mime_type,
+                name: input.name,
+                path: input.path,
+                external_uri: input.external_uri,
+                provider_id: input.provider_id,
+                provider_file_id: input.provider_file_id,
+                sha256: input.sha256,
+                size_bytes: input.size_bytes,
+                metadata_json: to_json(&input.metadata)?,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(attachments::table)
+                .values(&row)
+                .returning(SqlAttachmentRow::as_returning())
+                .get_result::<SqlAttachmentRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO agent_runs (
-                id, conversation_id, trigger_kind, status, input_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.conversation_id)
-        .bind::<Text, _>(&db_label(&input.trigger_kind)?)
-        .bind::<Text, _>(&db_label(&input.status)?)
-        .bind::<Json, _>(&to_json(&input.input)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_agent_run(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewAgentRunRow {
+                id: new_id(),
+                conversation_id: input.conversation_id,
+                trigger_kind: db_label(&input.trigger_kind)?,
+                status: db_label(&input.status)?,
+                input_json: to_json(&input.input)?,
+                output_json: None,
+                error_json: None,
+                created_at: now.clone(),
+                started_at: None,
+                completed_at: None,
+                updated_at: now,
+            };
+            diesel::insert_into(agent_runs::table)
+                .values(&row)
+                .returning(SqlAgentRunRow::as_returning())
+                .get_result::<SqlAgentRunRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_provider_step(&self, input: NewProviderStep) -> Result<ProviderStepRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO provider_steps (
-                id, agent_run_id, seq, provider_id, model_id, status, request_snapshot_json,
-                response_snapshot_json, state_snapshot_json, settings_snapshot_json, error_json,
-                created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.agent_run_id)
-        .bind::<Integer, _>(input.seq)
-        .bind::<Text, _>(&input.provider_id)
-        .bind::<Text, _>(&input.model_id)
-        .bind::<Text, _>(&db_label(&input.status)?)
-        .bind::<Json, _>(&to_json(&input.request_snapshot)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.response_snapshot)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.state_snapshot)?)
-        .bind::<Json, _>(&to_json(&input.settings_snapshot)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.error)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_provider_step(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewProviderStepRow {
+                id: new_id(),
+                agent_run_id: input.agent_run_id,
+                seq: input.seq,
+                provider_id: input.provider_id,
+                model_id: input.model_id,
+                status: db_label(&input.status)?,
+                request_snapshot_json: to_json(&input.request_snapshot)?,
+                response_snapshot_json: to_json_opt(&input.response_snapshot)?,
+                state_snapshot_json: to_json_opt(&input.state_snapshot)?,
+                settings_snapshot_json: to_json(&input.settings_snapshot)?,
+                error_json: to_json_opt(&input.error)?,
+                created_at: now.clone(),
+                started_at: None,
+                completed_at: None,
+                updated_at: now,
+            };
+            diesel::insert_into(provider_steps::table)
+                .values(&row)
+                .returning(SqlProviderStepRow::as_returning())
+                .get_result::<SqlProviderStepRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_tool_invocation(&self, input: NewToolInvocation) -> Result<ToolInvocationRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO tool_invocations (
-                id, agent_run_id, provider_step_id, call_id, source, namespace, server_id,
-                tool_name, runtime_tool_name, status, input_json, output_json, error_json,
-                created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.agent_run_id)
-        .bind::<Nullable<Text>, _>(&input.provider_step_id)
-        .bind::<Text, _>(&input.input.call_id)
-        .bind::<Text, _>(&tool_source_label(&input.input.source))
-        .bind::<Nullable<Text>, _>(&input.input.namespace)
-        .bind::<Nullable<Text>, _>(&tool_source_server_id(&input.input.source))
-        .bind::<Text, _>(&input.input.tool_name)
-        .bind::<Text, _>(&input.input.runtime_tool_name)
-        .bind::<Text, _>(&db_label(&input.status)?)
-        .bind::<Json, _>(&to_json(&input.input)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.output)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.error)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_tool_invocation(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewToolInvocationRow {
+                id: new_id(),
+                agent_run_id: input.agent_run_id,
+                provider_step_id: input.provider_step_id,
+                call_id: input.input.call_id.clone(),
+                source: tool_source_label(&input.input.source),
+                namespace: input.input.namespace.clone(),
+                server_id: tool_source_server_id(&input.input.source),
+                tool_name: input.input.tool_name.clone(),
+                runtime_tool_name: input.input.runtime_tool_name.clone(),
+                status: db_label(&input.status)?,
+                input_json: to_json(&input.input)?,
+                output_json: to_json_opt(&input.output)?,
+                error_json: to_json_opt(&input.error)?,
+                created_at: now.clone(),
+                started_at: None,
+                completed_at: None,
+                updated_at: now,
+            };
+            diesel::insert_into(tool_invocations::table)
+                .values(&row)
+                .returning(SqlToolInvocationRow::as_returning())
+                .get_result::<SqlToolInvocationRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_approval_decision(
@@ -410,105 +429,110 @@ impl FreshRepository {
         input: NewApprovalDecision,
     ) -> Result<ApprovalDecisionRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        let decided_at = input.decision.as_ref().map(|_| now.clone());
-        let expires_at = format_time_opt(input.expires_at.as_ref())?;
-        sql_query(
-            "INSERT INTO approval_decisions (
-                id, tool_invocation_id, status, request_json, decision_json,
-                requested_at, decided_at, expires_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.tool_invocation_id)
-        .bind::<Text, _>(&db_label(&input.status)?)
-        .bind::<Json, _>(&to_json(&input.request)?)
-        .bind::<Nullable<Json>, _>(&to_json_opt(&input.decision)?)
-        .bind::<Text, _>(&now)
-        .bind::<Nullable<Text>, _>(&decided_at)
-        .bind::<Nullable<Text>, _>(&expires_at)
-        .execute(&mut conn)?;
-        load_approval_decision(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewApprovalDecisionRow {
+                id: new_id(),
+                tool_invocation_id: input.tool_invocation_id,
+                status: db_label(&input.status)?,
+                request_json: to_json(&input.request)?,
+                decision_json: to_json_opt(&input.decision)?,
+                requested_at: now.clone(),
+                decided_at: input.decision.as_ref().map(|_| now.clone()),
+                expires_at: format_time_opt(input.expires_at.as_ref())?,
+            };
+            diesel::insert_into(approval_decisions::table)
+                .values(&row)
+                .returning(SqlApprovalDecisionRow::as_returning())
+                .get_result::<SqlApprovalDecisionRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_usage_event(&self, input: NewUsageEvent) -> Result<UsageEventRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO usage_events (
-                id, provider_step_id, conversation_id, provider_id, model_id, date_key,
-                input_tokens, output_tokens, cached_input_tokens, cache_write_input_tokens,
-                reasoning_tokens, total_tokens, usage_json, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.provider_step_id)
-        .bind::<Text, _>(&input.conversation_id)
-        .bind::<Text, _>(&input.provider_id)
-        .bind::<Text, _>(&input.model_id)
-        .bind::<Text, _>(&input.date_key)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.input_tokens)?)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.output_tokens)?)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.cached_input_tokens)?)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.cache_write_input_tokens)?)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.reasoning_tokens)?)
-        .bind::<BigInt, _>(u64_to_i64(input.usage.total_tokens)?)
-        .bind::<Json, _>(&to_json(&input.usage)?)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_usage_event(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let provider_step = load_provider_step_row(conn, &input.provider_step_id)?;
+            let agent_run = load_agent_run_row(conn, &provider_step.agent_run_id)?;
+            let now = now_string()?;
+            let row = SqlNewUsageEventRow {
+                id: new_id(),
+                provider_step_id: provider_step.id,
+                conversation_id: agent_run.conversation_id,
+                provider_id: provider_step.provider_id,
+                model_id: provider_step.model_id,
+                date_key: input.date_key,
+                input_tokens: u64_to_i64(input.usage.input_tokens)?,
+                output_tokens: u64_to_i64(input.usage.output_tokens)?,
+                cached_input_tokens: u64_to_i64(input.usage.cached_input_tokens)?,
+                cache_write_input_tokens: u64_to_i64(input.usage.cache_write_input_tokens)?,
+                reasoning_tokens: u64_to_i64(input.usage.reasoning_tokens)?,
+                total_tokens: u64_to_i64(input.usage.total_tokens)?,
+                usage_json: to_json(&input.usage)?,
+                created_at: now,
+            };
+            diesel::insert_into(usage_events::table)
+                .values(&row)
+                .returning(SqlUsageEventRow::as_returning())
+                .get_result::<SqlUsageEventRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn insert_shortcut(&self, input: NewShortcut) -> Result<ShortcutRecord> {
         let mut conn = self.conn()?;
-        let id = new_id();
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO shortcuts (
-                id, hotkey, enabled, prompt_id, provider_id, model_id, input_source,
-                action_json, settings_snapshot_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind::<Text, _>(&id)
-        .bind::<Text, _>(&input.hotkey)
-        .bind::<Bool, _>(input.enabled)
-        .bind::<Nullable<Text>, _>(&input.prompt_id)
-        .bind::<Nullable<Text>, _>(&input.provider_id)
-        .bind::<Nullable<Text>, _>(&input.model_id)
-        .bind::<Text, _>(&db_label(&input.input_source)?)
-        .bind::<Json, _>(&to_json(&input.action)?)
-        .bind::<Json, _>(&to_json(&input.settings_snapshot)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        load_shortcut(&mut conn, &id)
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewShortcutRow {
+                id: new_id(),
+                hotkey: input.hotkey,
+                enabled: input.enabled,
+                prompt_id: input.prompt_id,
+                provider_id: input.provider_id,
+                model_id: input.model_id,
+                input_source: db_label(&input.input_source)?,
+                action_json: to_json(&input.action)?,
+                settings_snapshot_json: to_json(&input.settings_snapshot)?,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(shortcuts::table)
+                .values(&row)
+                .returning(SqlShortcutRow::as_returning())
+                .get_result::<SqlShortcutRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn set_app_settings(&self, settings: AppSettingsPayload) -> Result<AppSettingsRecord> {
         let mut conn = self.conn()?;
-        let now = now_string()?;
-        sql_query(
-            "INSERT INTO app_settings (id, settings_json, created_at, updated_at)
-             VALUES ('default', ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-                settings_json = excluded.settings_json,
-                updated_at = excluded.updated_at",
-        )
-        .bind::<Json, _>(&to_json(&settings)?)
-        .bind::<Text, _>(&now)
-        .bind::<Text, _>(&now)
-        .execute(&mut conn)?;
-        self.get_app_settings()?
-            .ok_or_else(|| DbError::Invariant("app settings row is missing".to_string()))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let row = SqlNewAppSettingsRow {
+                id: "default".to_string(),
+                settings_json: to_json(&settings)?,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            diesel::insert_into(app_settings::table)
+                .values(&row)
+                .on_conflict(app_settings::id)
+                .do_update()
+                .set((
+                    app_settings::settings_json.eq(excluded(app_settings::settings_json)),
+                    app_settings::updated_at.eq(excluded(app_settings::updated_at)),
+                ))
+                .returning(SqlAppSettingsRow::as_returning())
+                .get_result::<SqlAppSettingsRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn get_app_settings(&self) -> Result<Option<AppSettingsRecord>> {
         let mut conn = self.conn()?;
-        let rows = sql_query("SELECT * FROM app_settings WHERE id = 'default'")
-            .load::<SqlAppSettingsRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).next().transpose()
+        app_settings_row(&mut conn)?
+            .map(TryInto::try_into)
+            .transpose()
     }
 
     fn conn(&self) -> Result<PooledConnection<ConnectionManager<SqliteConnection>>> {
@@ -518,856 +542,225 @@ impl FreshRepository {
     }
 }
 
-fn load_conversation_item(
+fn schema_metadata_row(conn: &mut SqliteConnection) -> Result<Option<SqlSchemaMetadataRow>> {
+    Ok(crate::schema::schema_metadata::table
+        .find("default")
+        .select(SqlSchemaMetadataRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn project_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlProjectRow>> {
+    Ok(projects::table
+        .find(id)
+        .select(SqlProjectRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn provider_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlProviderRow>> {
+    Ok(providers::table
+        .find(id)
+        .select(SqlProviderRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn provider_model_row(
     conn: &mut SqliteConnection,
-    item_id: &str,
-) -> Result<ConversationItemRecord> {
-    sql_query("SELECT * FROM conversation_items WHERE id = ?")
-        .bind::<Text, _>(item_id)
-        .load::<SqlConversationItemRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("conversation item is missing".to_string()))?
-        .try_into()
+    provider_id: &str,
+    model_id: &str,
+) -> Result<Option<SqlProviderModelRow>> {
+    Ok(provider_models::table
+        .filter(provider_models::provider_id.eq(provider_id))
+        .filter(provider_models::model_id.eq(model_id))
+        .select(SqlProviderModelRow::as_select())
+        .first(conn)
+        .optional()?)
 }
 
-fn load_attachment(conn: &mut SqliteConnection, id: &str) -> Result<AttachmentRecord> {
-    sql_query("SELECT * FROM attachments WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlAttachmentRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("attachment is missing".to_string()))?
-        .try_into()
+fn prompt_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlPromptRow>> {
+    Ok(prompts::table
+        .find(id)
+        .select(SqlPromptRow::as_select())
+        .first(conn)
+        .optional()?)
 }
 
-fn load_agent_run(conn: &mut SqliteConnection, id: &str) -> Result<AgentRunRecord> {
-    sql_query("SELECT * FROM agent_runs WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlAgentRunRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("agent run is missing".to_string()))?
-        .try_into()
+fn conversation_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlConversationRow>> {
+    Ok(conversations::table
+        .find(id)
+        .select(SqlConversationRow::as_select())
+        .first(conn)
+        .optional()?)
 }
 
-fn load_provider_step(conn: &mut SqliteConnection, id: &str) -> Result<ProviderStepRecord> {
-    sql_query("SELECT * FROM provider_steps WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlProviderStepRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("provider step is missing".to_string()))?
-        .try_into()
+fn conversation_item_row(
+    conn: &mut SqliteConnection,
+    id: &str,
+) -> Result<Option<SqlConversationItemRow>> {
+    Ok(conversation_items::table
+        .find(id)
+        .select(SqlConversationItemRow::as_select())
+        .first(conn)
+        .optional()?)
 }
 
-fn load_tool_invocation(conn: &mut SqliteConnection, id: &str) -> Result<ToolInvocationRecord> {
-    sql_query("SELECT * FROM tool_invocations WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlToolInvocationRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("tool invocation is missing".to_string()))?
-        .try_into()
+fn app_settings_row(conn: &mut SqliteConnection) -> Result<Option<SqlAppSettingsRow>> {
+    Ok(app_settings::table
+        .find("default")
+        .select(SqlAppSettingsRow::as_select())
+        .first(conn)
+        .optional()?)
 }
 
-fn load_approval_decision(conn: &mut SqliteConnection, id: &str) -> Result<ApprovalDecisionRecord> {
-    sql_query("SELECT * FROM approval_decisions WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlApprovalDecisionRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("approval decision is missing".to_string()))?
-        .try_into()
+fn load_agent_run_row(conn: &mut SqliteConnection, id: &str) -> Result<SqlAgentRunRow> {
+    agent_runs::table
+        .find(id)
+        .select(SqlAgentRunRow::as_select())
+        .first(conn)
+        .optional()?
+        .ok_or_else(|| DbError::Invariant(format!("agent run {id} is missing")))
 }
 
-fn load_usage_event(conn: &mut SqliteConnection, id: &str) -> Result<UsageEventRecord> {
-    sql_query("SELECT * FROM usage_events WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlUsageEventRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("usage event is missing".to_string()))?
-        .try_into()
+fn load_provider_step_row(conn: &mut SqliteConnection, id: &str) -> Result<SqlProviderStepRow> {
+    provider_steps::table
+        .find(id)
+        .select(SqlProviderStepRow::as_select())
+        .first(conn)
+        .optional()?
+        .ok_or_else(|| DbError::Invariant(format!("provider step {id} is missing")))
 }
 
-fn load_shortcut(conn: &mut SqliteConnection, id: &str) -> Result<ShortcutRecord> {
-    sql_query("SELECT * FROM shortcuts WHERE id = ?")
-        .bind::<Text, _>(id)
-        .load::<SqlShortcutRow>(conn)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| DbError::Invariant("shortcut is missing".to_string()))?
-        .try_into()
+fn load_tool_invocation_row(conn: &mut SqliteConnection, id: &str) -> Result<SqlToolInvocationRow> {
+    tool_invocations::table
+        .find(id)
+        .select(SqlToolInvocationRow::as_select())
+        .first(conn)
+        .optional()?
+        .ok_or_else(|| DbError::Invariant(format!("tool invocation {id} is missing")))
+}
+
+fn validate_execution_links(
+    conn: &mut SqliteConnection,
+    conversation_id: &str,
+    item: &NewConversationItem,
+) -> Result<()> {
+    let mut expected_agent_run_id = match item.agent_run_id.as_deref() {
+        Some(agent_run_id) => {
+            let agent_run = load_agent_run_row(conn, agent_run_id)?;
+            ensure_conversation_owner(
+                "agent run",
+                agent_run_id,
+                &agent_run.conversation_id,
+                conversation_id,
+            )?;
+            Some(agent_run.id)
+        }
+        None => None,
+    };
+
+    if let Some(provider_step_id) = item.provider_step_id.as_deref() {
+        let provider_step = load_provider_step_row(conn, provider_step_id)?;
+        let agent_run = load_agent_run_row(conn, &provider_step.agent_run_id)?;
+        ensure_conversation_owner(
+            "provider step",
+            provider_step_id,
+            &agent_run.conversation_id,
+            conversation_id,
+        )?;
+        ensure_agent_link(
+            "provider step",
+            provider_step_id,
+            &provider_step.agent_run_id,
+            expected_agent_run_id.as_deref(),
+        )?;
+        expected_agent_run_id.get_or_insert(provider_step.agent_run_id);
+    }
+
+    if let Some(tool_invocation_id) = item.tool_invocation_id.as_deref() {
+        let tool_invocation = load_tool_invocation_row(conn, tool_invocation_id)?;
+        let agent_run = load_agent_run_row(conn, &tool_invocation.agent_run_id)?;
+        ensure_conversation_owner(
+            "tool invocation",
+            tool_invocation_id,
+            &agent_run.conversation_id,
+            conversation_id,
+        )?;
+        ensure_agent_link(
+            "tool invocation",
+            tool_invocation_id,
+            &tool_invocation.agent_run_id,
+            expected_agent_run_id.as_deref(),
+        )?;
+
+        if let Some(tool_provider_step_id) = tool_invocation.provider_step_id.as_deref() {
+            let provider_step = load_provider_step_row(conn, tool_provider_step_id)?;
+            ensure_agent_link(
+                "tool invocation provider step",
+                tool_provider_step_id,
+                &provider_step.agent_run_id,
+                Some(&tool_invocation.agent_run_id),
+            )?;
+            let provider_step_agent_run = load_agent_run_row(conn, &provider_step.agent_run_id)?;
+            ensure_conversation_owner(
+                "tool invocation provider step",
+                tool_provider_step_id,
+                &provider_step_agent_run.conversation_id,
+                conversation_id,
+            )?;
+        }
+
+        if item.provider_step_id.as_deref() != tool_invocation.provider_step_id.as_deref()
+            && item.provider_step_id.is_some()
+        {
+            return Err(DbError::Invariant(
+                "tool invocation does not belong to the linked provider step".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_conversation_owner(
+    entity: &str,
+    entity_id: &str,
+    actual_conversation_id: &str,
+    expected_conversation_id: &str,
+) -> Result<()> {
+    if actual_conversation_id == expected_conversation_id {
+        return Ok(());
+    }
+    Err(DbError::Invariant(format!(
+        "{entity} {entity_id} belongs to conversation {actual_conversation_id}, not {expected_conversation_id}"
+    )))
+}
+
+fn ensure_agent_link(
+    entity: &str,
+    entity_id: &str,
+    actual_agent_run_id: &str,
+    expected_agent_run_id: Option<&str>,
+) -> Result<()> {
+    match expected_agent_run_id {
+        Some(expected_agent_run_id) if actual_agent_run_id != expected_agent_run_id => {
+            Err(DbError::Invariant(format!(
+                "{entity} {entity_id} belongs to agent run {actual_agent_run_id}, not {expected_agent_run_id}"
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn now_string() -> Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
 }
 
-fn parse_time(value: String) -> Result<OffsetDateTime> {
-    Ok(OffsetDateTime::parse(&value, &Rfc3339)?)
-}
-
-fn parse_time_opt(value: Option<String>) -> Result<Option<OffsetDateTime>> {
-    value.map(parse_time).transpose()
-}
-
-fn format_time_opt(value: Option<&OffsetDateTime>) -> Result<Option<String>> {
-    value.map(|time| Ok(time.format(&Rfc3339)?)).transpose()
-}
-
-fn db_label<T: Serialize>(value: &T) -> Result<String> {
-    match serde_json::to_value(value)? {
-        Value::String(value) => Ok(value),
-        _ => Err(DbError::Invariant(
-            "database enum labels must serialize to strings".to_string(),
-        )),
-    }
-}
-
-fn db_label_parse<T: DeserializeOwned>(value: String) -> Result<T> {
-    Ok(serde_json::from_value(Value::String(value))?)
-}
-
-fn to_json<T: Serialize>(value: &T) -> Result<Value> {
-    Ok(serde_json::to_value(value)?)
-}
-
-fn to_json_opt<T: Serialize>(value: &Option<T>) -> Result<Option<Value>> {
-    value.as_ref().map(to_json).transpose()
-}
-
-fn from_json<T: DeserializeOwned>(value: Value) -> Result<T> {
-    Ok(serde_json::from_value(value)?)
-}
-
-fn from_json_opt<T: DeserializeOwned>(value: Option<Value>) -> Result<Option<T>> {
-    value.map(from_json).transpose()
-}
-
-fn tool_source_label(source: &ToolSource) -> String {
-    match source {
-        ToolSource::Local => "local".to_string(),
-        ToolSource::Mcp { .. } => "mcp".to_string(),
-        ToolSource::ProviderHosted { .. } => "provider_hosted".to_string(),
-    }
-}
-
-fn tool_source_server_id(source: &ToolSource) -> Option<String> {
-    match source {
-        ToolSource::Mcp { server_id } => Some(server_id.clone()),
-        ToolSource::Local | ToolSource::ProviderHosted { .. } => None,
-    }
-}
-
-fn u64_to_i64(value: u64) -> Result<i64> {
-    i64::try_from(value)
-        .map_err(|_| DbError::Invariant("usage token count exceeds i64".to_string()))
-}
-
 #[derive(diesel::QueryableByName)]
 struct TextValueRow {
     #[diesel(sql_type = Text)]
     value: String,
-}
-
-#[derive(diesel::QueryableByName)]
-struct IntValueRow {
-    #[diesel(sql_type = Integer)]
-    value: i32,
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlSchemaMetadataRow {
-    #[diesel(sql_type = Integer)]
-    schema_version: i32,
-    #[diesel(sql_type = Nullable<Text>)]
-    created_app_version: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    last_opened_app_version: Option<String>,
-    #[diesel(sql_type = Json)]
-    payload_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlSchemaMetadataRow> for SchemaMetadataRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlSchemaMetadataRow) -> Result<Self> {
-        Ok(Self {
-            schema_version: row.schema_version,
-            created_app_version: row.created_app_version,
-            last_opened_app_version: row.last_opened_app_version,
-            payload: from_json(row.payload_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlProjectRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    path: String,
-    #[diesel(sql_type = Text)]
-    display_name: String,
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Json)]
-    metadata_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    last_opened_at: Option<String>,
-}
-
-impl TryFrom<SqlProjectRow> for ProjectRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlProjectRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            path: row.path,
-            display_name: row.display_name,
-            kind: db_label_parse(row.kind)?,
-            metadata: from_json(row.metadata_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-            last_opened_at: parse_time_opt(row.last_opened_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlConversationRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    project_id: String,
-    #[diesel(sql_type = Text)]
-    title: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    prompt_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    default_provider_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    default_model_id: Option<String>,
-    #[diesel(sql_type = Integer)]
-    last_item_seq: i32,
-    #[diesel(sql_type = Json)]
-    metadata_json: Value,
-    #[diesel(sql_type = Json)]
-    settings_snapshot_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    archived_at: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    deleted_at: Option<String>,
-}
-
-impl TryFrom<SqlConversationRow> for ConversationRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlConversationRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            project_id: row.project_id,
-            title: row.title,
-            status: db_label_parse(row.status)?,
-            prompt_id: row.prompt_id,
-            default_provider_id: row.default_provider_id,
-            default_model_id: row.default_model_id,
-            last_item_seq: row.last_item_seq,
-            metadata: from_json(row.metadata_json)?,
-            settings_snapshot: from_json(row.settings_snapshot_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-            archived_at: parse_time_opt(row.archived_at)?,
-            deleted_at: parse_time_opt(row.deleted_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlConversationItemRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    conversation_id: String,
-    #[diesel(sql_type = Integer)]
-    seq: i32,
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    agent_run_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_step_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    tool_invocation_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_item_id: Option<String>,
-    #[diesel(sql_type = Json)]
-    payload_json: Value,
-    #[diesel(sql_type = Text)]
-    search_text: String,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlConversationItemRow> for ConversationItemRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlConversationItemRow) -> Result<Self> {
-        let payload: ConversationItemPayload = from_json(row.payload_json)?;
-        let kind = db_label_parse(row.kind)?;
-        if payload.kind() != kind {
-            return Err(DbError::Invariant(
-                "conversation item kind does not match payload".to_string(),
-            ));
-        }
-        Ok(Self {
-            id: row.id,
-            conversation_id: row.conversation_id,
-            seq: row.seq,
-            kind,
-            status: db_label_parse(row.status)?,
-            agent_run_id: row.agent_run_id,
-            provider_step_id: row.provider_step_id,
-            tool_invocation_id: row.tool_invocation_id,
-            provider_item_id: row.provider_item_id,
-            payload,
-            search_text: row.search_text,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlAttachmentRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    conversation_id: String,
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Text)]
-    storage_kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    mime_type: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    name: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    path: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    external_uri: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_file_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    sha256: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    size_bytes: Option<i64>,
-    #[diesel(sql_type = Json)]
-    metadata_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlAttachmentRow> for AttachmentRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlAttachmentRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            conversation_id: row.conversation_id,
-            kind: db_label_parse(row.kind)?,
-            storage_kind: db_label_parse(row.storage_kind)?,
-            mime_type: row.mime_type,
-            name: row.name,
-            path: row.path,
-            external_uri: row.external_uri,
-            provider_id: row.provider_id,
-            provider_file_id: row.provider_file_id,
-            sha256: row.sha256,
-            size_bytes: row.size_bytes,
-            metadata: from_json(row.metadata_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlAgentRunRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    conversation_id: String,
-    #[diesel(sql_type = Text)]
-    trigger_kind: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Json)]
-    input_json: Value,
-    #[diesel(sql_type = Nullable<Json>)]
-    output_json: Option<Value>,
-    #[diesel(sql_type = Nullable<Json>)]
-    error_json: Option<Value>,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    started_at: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    completed_at: Option<String>,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlAgentRunRow> for AgentRunRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlAgentRunRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            conversation_id: row.conversation_id,
-            trigger_kind: db_label_parse(row.trigger_kind)?,
-            status: db_label_parse(row.status)?,
-            input: from_json(row.input_json)?,
-            output: from_json_opt(row.output_json)?,
-            error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlProviderStepRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    agent_run_id: String,
-    #[diesel(sql_type = Integer)]
-    seq: i32,
-    #[diesel(sql_type = Text)]
-    provider_id: String,
-    #[diesel(sql_type = Text)]
-    model_id: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Json)]
-    request_snapshot_json: Value,
-    #[diesel(sql_type = Nullable<Json>)]
-    response_snapshot_json: Option<Value>,
-    #[diesel(sql_type = Nullable<Json>)]
-    state_snapshot_json: Option<Value>,
-    #[diesel(sql_type = Json)]
-    settings_snapshot_json: Value,
-    #[diesel(sql_type = Nullable<Json>)]
-    error_json: Option<Value>,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    started_at: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    completed_at: Option<String>,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlProviderStepRow> for ProviderStepRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlProviderStepRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            agent_run_id: row.agent_run_id,
-            seq: row.seq,
-            provider_id: row.provider_id,
-            model_id: row.model_id,
-            status: db_label_parse(row.status)?,
-            request_snapshot: from_json(row.request_snapshot_json)?,
-            response_snapshot: from_json_opt(row.response_snapshot_json)?,
-            state_snapshot: from_json_opt(row.state_snapshot_json)?,
-            settings_snapshot: from_json(row.settings_snapshot_json)?,
-            error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlToolInvocationRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    agent_run_id: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_step_id: Option<String>,
-    #[diesel(sql_type = Text)]
-    call_id: String,
-    #[diesel(sql_type = Text)]
-    source: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    namespace: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    server_id: Option<String>,
-    #[diesel(sql_type = Text)]
-    tool_name: String,
-    #[diesel(sql_type = Text)]
-    runtime_tool_name: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Json)]
-    input_json: Value,
-    #[diesel(sql_type = Nullable<Json>)]
-    output_json: Option<Value>,
-    #[diesel(sql_type = Nullable<Json>)]
-    error_json: Option<Value>,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    started_at: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    completed_at: Option<String>,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlToolInvocationRow> for ToolInvocationRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlToolInvocationRow) -> Result<Self> {
-        let input: ToolInvocationInput = from_json(row.input_json)?;
-        if input.call_id != row.call_id
-            || input.tool_name != row.tool_name
-            || input.runtime_tool_name != row.runtime_tool_name
-            || tool_source_label(&input.source) != row.source
-        {
-            return Err(DbError::Invariant(
-                "tool invocation indexes do not match input payload".to_string(),
-            ));
-        }
-        Ok(Self {
-            id: row.id,
-            agent_run_id: row.agent_run_id,
-            provider_step_id: row.provider_step_id,
-            call_id: row.call_id,
-            source: input.source.clone(),
-            namespace: row.namespace,
-            server_id: row.server_id,
-            tool_name: row.tool_name,
-            runtime_tool_name: row.runtime_tool_name,
-            status: db_label_parse(row.status)?,
-            input,
-            output: from_json_opt(row.output_json)?,
-            error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlApprovalDecisionRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    tool_invocation_id: String,
-    #[diesel(sql_type = Text)]
-    status: String,
-    #[diesel(sql_type = Json)]
-    request_json: Value,
-    #[diesel(sql_type = Nullable<Json>)]
-    decision_json: Option<Value>,
-    #[diesel(sql_type = Text)]
-    requested_at: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    decided_at: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    expires_at: Option<String>,
-}
-
-impl TryFrom<SqlApprovalDecisionRow> for ApprovalDecisionRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlApprovalDecisionRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            tool_invocation_id: row.tool_invocation_id,
-            status: db_label_parse(row.status)?,
-            request: from_json(row.request_json)?,
-            decision: from_json_opt(row.decision_json)?,
-            requested_at: parse_time(row.requested_at)?,
-            decided_at: parse_time_opt(row.decided_at)?,
-            expires_at: parse_time_opt(row.expires_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlUsageEventRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    provider_step_id: String,
-    #[diesel(sql_type = Text)]
-    conversation_id: String,
-    #[diesel(sql_type = Text)]
-    provider_id: String,
-    #[diesel(sql_type = Text)]
-    model_id: String,
-    #[diesel(sql_type = Text)]
-    date_key: String,
-    #[diesel(sql_type = BigInt)]
-    input_tokens: i64,
-    #[diesel(sql_type = BigInt)]
-    output_tokens: i64,
-    #[diesel(sql_type = BigInt)]
-    cached_input_tokens: i64,
-    #[diesel(sql_type = BigInt)]
-    cache_write_input_tokens: i64,
-    #[diesel(sql_type = BigInt)]
-    reasoning_tokens: i64,
-    #[diesel(sql_type = BigInt)]
-    total_tokens: i64,
-    #[diesel(sql_type = Json)]
-    usage_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-}
-
-impl TryFrom<SqlUsageEventRow> for UsageEventRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlUsageEventRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            provider_step_id: row.provider_step_id,
-            conversation_id: row.conversation_id,
-            provider_id: row.provider_id,
-            model_id: row.model_id,
-            date_key: row.date_key,
-            input_tokens: row.input_tokens,
-            output_tokens: row.output_tokens,
-            cached_input_tokens: row.cached_input_tokens,
-            cache_write_input_tokens: row.cache_write_input_tokens,
-            reasoning_tokens: row.reasoning_tokens,
-            total_tokens: row.total_tokens,
-            usage: from_json(row.usage_json)?,
-            created_at: parse_time(row.created_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlPromptRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    name: String,
-    #[diesel(sql_type = Json)]
-    content_json: Value,
-    #[diesel(sql_type = Bool)]
-    enabled: bool,
-    #[diesel(sql_type = Integer)]
-    sort_order: i32,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlPromptRow> for PromptRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlPromptRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            name: row.name,
-            content: from_json(row.content_json)?,
-            enabled: row.enabled,
-            sort_order: row.sort_order,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlShortcutRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    hotkey: String,
-    #[diesel(sql_type = Bool)]
-    enabled: bool,
-    #[diesel(sql_type = Nullable<Text>)]
-    prompt_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    provider_id: Option<String>,
-    #[diesel(sql_type = Nullable<Text>)]
-    model_id: Option<String>,
-    #[diesel(sql_type = Text)]
-    input_source: String,
-    #[diesel(sql_type = Json)]
-    action_json: Value,
-    #[diesel(sql_type = Json)]
-    settings_snapshot_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlShortcutRow> for ShortcutRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlShortcutRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            hotkey: row.hotkey,
-            enabled: row.enabled,
-            prompt_id: row.prompt_id,
-            provider_id: row.provider_id,
-            model_id: row.model_id,
-            input_source: db_label_parse(row.input_source)?,
-            action: from_json(row.action_json)?,
-            settings_snapshot: from_json(row.settings_snapshot_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlProviderRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Text)]
-    display_name: String,
-    #[diesel(sql_type = Bool)]
-    enabled: bool,
-    #[diesel(sql_type = Json)]
-    settings_json: Value,
-    #[diesel(sql_type = Json)]
-    secret_refs_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlProviderRow> for ProviderRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlProviderRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            kind: row.kind,
-            display_name: row.display_name,
-            enabled: row.enabled,
-            settings: from_json(row.settings_json)?,
-            secret_refs: from_json(row.secret_refs_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlProviderModelRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Text)]
-    provider_id: String,
-    #[diesel(sql_type = Text)]
-    model_id: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    display_name: Option<String>,
-    #[diesel(sql_type = Json)]
-    capabilities_json: Value,
-    #[diesel(sql_type = Json)]
-    metadata_json: Value,
-    #[diesel(sql_type = Text)]
-    fetched_at: String,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlProviderModelRow> for ProviderModelRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlProviderModelRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            provider_id: row.provider_id,
-            model_id: row.model_id,
-            display_name: row.display_name,
-            capabilities: from_json(row.capabilities_json)?,
-            metadata: from_json(row.metadata_json)?,
-            fetched_at: parse_time(row.fetched_at)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
-}
-
-#[derive(diesel::QueryableByName)]
-struct SqlAppSettingsRow {
-    #[diesel(sql_type = Text)]
-    id: String,
-    #[diesel(sql_type = Json)]
-    settings_json: Value,
-    #[diesel(sql_type = Text)]
-    created_at: String,
-    #[diesel(sql_type = Text)]
-    updated_at: String,
-}
-
-impl TryFrom<SqlAppSettingsRow> for AppSettingsRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlAppSettingsRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            settings: from_json(row.settings_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-        })
-    }
 }
 
 #[cfg(test)]

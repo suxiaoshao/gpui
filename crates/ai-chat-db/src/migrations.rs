@@ -1,6 +1,11 @@
-use crate::{Result, error::DbError};
+use crate::{
+    Result,
+    error::DbError,
+    models::{SqlNewSchemaMetadataRow, SqlNewSchemaMigrationRow},
+    schema::{schema_metadata, schema_migrations},
+};
 use diesel::{
-    RunQueryDsl, SqliteConnection, connection::SimpleConnection, sql_query, sql_types::Text,
+    connection::SimpleConnection, prelude::*, sql_query, sql_types::Text, upsert::excluded,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -262,9 +267,11 @@ pub(crate) fn bootstrap_with_migrations(
         conn.immediate_transaction(|conn| {
             conn.batch_execute(migration.sql)?;
             let executed_at = now_string()?;
-            sql_query("INSERT INTO schema_migrations (name, executed_at) VALUES (?, ?)")
-                .bind::<Text, _>(migration.name)
-                .bind::<Text, _>(&executed_at)
+            diesel::insert_into(schema_migrations::table)
+                .values(&SqlNewSchemaMigrationRow {
+                    name: migration.name.to_string(),
+                    executed_at,
+                })
                 .execute(conn)?;
             Ok::<_, DbError>(())
         })?;
@@ -276,9 +283,10 @@ fn applied_migration_names(conn: &mut SqliteConnection) -> Result<Vec<String>> {
     if !table_exists(conn, "schema_migrations")? {
         return Ok(Vec::new());
     }
-    let rows = sql_query("SELECT name AS value FROM schema_migrations ORDER BY name")
-        .load::<TextRow>(conn)?;
-    Ok(rows.into_iter().map(|row| row.value).collect())
+    Ok(schema_migrations::table
+        .order(schema_migrations::name.asc())
+        .select(schema_migrations::name)
+        .load::<String>(conn)?)
 }
 
 fn table_exists(conn: &mut SqliteConnection, table_name: &str) -> Result<bool> {
@@ -287,7 +295,7 @@ fn table_exists(conn: &mut SqliteConnection, table_name: &str) -> Result<bool> {
     )
     .bind::<Text, _>(table_name)
     .load::<TextRow>(conn)?;
-    Ok(!rows.is_empty())
+    Ok(rows.into_iter().any(|row| row.value == table_name))
 }
 
 fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
@@ -302,27 +310,27 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
         "legacyPolicy": "ignore",
         "featureFlags": []
     });
-    sql_query(
-        "INSERT INTO schema_metadata (
-            id,
-            schema_version,
-            created_app_version,
-            last_opened_app_version,
-            payload_json,
-            created_at,
-            updated_at
-        ) VALUES ('default', ?, NULL, NULL, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            schema_version = excluded.schema_version,
-            last_opened_app_version = excluded.last_opened_app_version,
-            payload_json = excluded.payload_json,
-            updated_at = excluded.updated_at",
-    )
-    .bind::<diesel::sql_types::Integer, _>(SCHEMA_VERSION)
-    .bind::<diesel::sql_types::Json, _>(&payload)
-    .bind::<Text, _>(&now)
-    .bind::<Text, _>(&now)
-    .execute(conn)?;
+    let row = SqlNewSchemaMetadataRow {
+        id: "default".to_string(),
+        schema_version: SCHEMA_VERSION,
+        created_app_version: None,
+        last_opened_app_version: None,
+        payload_json: payload,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    diesel::insert_into(schema_metadata::table)
+        .values(&row)
+        .on_conflict(schema_metadata::id)
+        .do_update()
+        .set((
+            schema_metadata::schema_version.eq(excluded(schema_metadata::schema_version)),
+            schema_metadata::last_opened_app_version
+                .eq(excluded(schema_metadata::last_opened_app_version)),
+            schema_metadata::payload_json.eq(excluded(schema_metadata::payload_json)),
+            schema_metadata::updated_at.eq(excluded(schema_metadata::updated_at)),
+        ))
+        .execute(conn)?;
     Ok(())
 }
 

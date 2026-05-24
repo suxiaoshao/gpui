@@ -159,6 +159,165 @@ fn append_items_updates_order_last_seq_and_search_text() {
 }
 
 #[test]
+fn update_item_payload_bumps_parent_conversation_timestamp() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("item-update")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let item = repo
+        .append_conversation_item(message_item(&conversation.id, "before"))
+        .unwrap();
+
+    let updated = repo
+        .update_conversation_item_payload(
+            &item.id,
+            ConversationItemStatus::Completed,
+            ConversationItemPayload::Message {
+                role: TranscriptRole::Assistant,
+                content: vec![ContentPart::Text {
+                    text: "after".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+    let parent = repo.get_conversation(&conversation.id).unwrap().unwrap();
+
+    assert!(updated.updated_at >= item.updated_at);
+    assert_eq!(parent.updated_at, updated.updated_at);
+}
+
+#[test]
+fn append_item_rejects_cross_conversation_execution_links() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("execution-links")).unwrap();
+    let conversation_a = repo.insert_conversation(conversation(&project)).unwrap();
+    let conversation_b = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation_a.id, "run input"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation_a.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            provider_id: provider.id.clone(),
+            model_id: model.model_id.clone(),
+            status: ProviderStepStatus::Completed,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id.clone()),
+            status: ToolInvocationStatus::Succeeded,
+            input: tool_input(),
+            output: Some(tool_output()),
+            error: None,
+        })
+        .unwrap();
+
+    let mut same_conversation = message_item(&conversation_a.id, "linked ok");
+    same_conversation.agent_run_id = Some(agent_run.id.clone());
+    same_conversation.provider_step_id = Some(provider_step.id.clone());
+    same_conversation.tool_invocation_id = Some(tool.id.clone());
+    repo.append_conversation_item(same_conversation).unwrap();
+
+    let mut cross_agent = message_item(&conversation_b.id, "cross agent");
+    cross_agent.agent_run_id = Some(agent_run.id.clone());
+    assert!(repo.append_conversation_item(cross_agent).is_err());
+
+    let mut cross_step = message_item(&conversation_b.id, "cross step");
+    cross_step.provider_step_id = Some(provider_step.id.clone());
+    assert!(repo.append_conversation_item(cross_step).is_err());
+
+    let mut cross_tool = message_item(&conversation_b.id, "cross tool");
+    cross_tool.tool_invocation_id = Some(tool.id.clone());
+    assert!(repo.append_conversation_item(cross_tool).is_err());
+
+    let second_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation_a.id.clone(),
+            trigger_kind: AgentRunTriggerKind::Retry,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let mut mismatched_chain = message_item(&conversation_a.id, "mismatched chain");
+    mismatched_chain.agent_run_id = Some(second_run.id);
+    mismatched_chain.provider_step_id = Some(provider_step.id);
+    assert!(repo.append_conversation_item(mismatched_chain).is_err());
+}
+
+#[test]
+fn usage_event_derives_dimensions_from_provider_step() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("usage-dimensions")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "usage input"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id,
+            seq: 1,
+            provider_id: provider.id.clone(),
+            model_id: model.model_id.clone(),
+            status: ProviderStepStatus::Completed,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+
+    let usage = repo
+        .insert_usage_event(NewUsageEvent {
+            provider_step_id: provider_step.id,
+            date_key: "2026-05-24".to_string(),
+            usage: usage_snapshot(),
+        })
+        .unwrap();
+
+    assert_eq!(usage.conversation_id, conversation.id);
+    assert_eq!(usage.provider_id, provider.id);
+    assert_eq!(usage.model_id, model.model_id);
+}
+
+#[test]
 fn typed_json_roundtrips_for_repository_records() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -284,14 +443,14 @@ fn typed_json_roundtrips_for_repository_records() {
     let usage = repo
         .insert_usage_event(NewUsageEvent {
             provider_step_id: provider_step.id.clone(),
-            conversation_id: conversation.id.clone(),
-            provider_id: provider.id.clone(),
-            model_id: model.model_id.clone(),
             date_key: "2026-05-24".to_string(),
             usage: usage_snapshot(),
         })
         .unwrap();
     assert_eq!(usage.usage, usage_snapshot());
+    assert_eq!(usage.conversation_id, conversation.id);
+    assert_eq!(usage.provider_id.as_str(), provider.id.as_str());
+    assert_eq!(usage.model_id.as_str(), model.model_id.as_str());
 
     let shortcut = repo
         .insert_shortcut(NewShortcut {

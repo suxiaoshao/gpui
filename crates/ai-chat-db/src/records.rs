@@ -252,9 +252,6 @@ pub struct UsageEventRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewUsageEvent {
     pub provider_step_id: ProviderStepId,
-    pub conversation_id: ConversationId,
-    pub provider_id: ProviderId,
-    pub model_id: ProviderModelId,
     pub date_key: String,
     pub usage: ProviderUsageSnapshot,
 }

@@ -1,5 +1,6 @@
 mod error;
 mod migrations;
+mod models;
 mod records;
 mod repository;
 mod schema;
