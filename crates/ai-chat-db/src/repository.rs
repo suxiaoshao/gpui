@@ -252,7 +252,6 @@ impl FreshRepository {
                 .bind::<Text, _>(&now)
                 .bind::<Text, _>(&input.conversation_id)
                 .execute(conn)?;
-            insert_fts(conn, &id, &input.conversation_id, &search_text)?;
             load_conversation_item(conn, &id)
         })
     }
@@ -266,20 +265,6 @@ impl FreshRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
-    pub fn search_conversation_items(&self, query: &str) -> Result<Vec<ConversationItemRecord>> {
-        let mut conn = self.conn()?;
-        let rows = sql_query(
-            "SELECT conversation_items.*
-             FROM conversation_item_fts
-             JOIN conversation_items ON conversation_items.id = conversation_item_fts.item_id
-             WHERE conversation_item_fts.content MATCH ?
-             ORDER BY conversation_items.seq",
-        )
-        .bind::<Text, _>(query)
-        .load::<SqlConversationItemRow>(&mut conn)?;
-        rows.into_iter().map(TryInto::try_into).collect()
-    }
-
     pub fn update_conversation_item_payload(
         &self,
         item_id: &str,
@@ -288,7 +273,6 @@ impl FreshRepository {
     ) -> Result<ConversationItemRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let existing = load_conversation_item(conn, item_id)?;
             let now = now_string()?;
             let search_text = payload.search_text();
             sql_query(
@@ -303,21 +287,15 @@ impl FreshRepository {
             .bind::<Text, _>(&now)
             .bind::<Text, _>(item_id)
             .execute(conn)?;
-            delete_fts(conn, item_id)?;
-            insert_fts(conn, item_id, &existing.conversation_id, &search_text)?;
             load_conversation_item(conn, item_id)
         })
     }
 
     pub fn delete_conversation_item(&self, item_id: &str) -> Result<usize> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            delete_fts(conn, item_id)?;
-            let deleted = sql_query("DELETE FROM conversation_items WHERE id = ?")
-                .bind::<Text, _>(item_id)
-                .execute(conn)?;
-            Ok::<_, DbError>(deleted)
-        })
+        Ok(sql_query("DELETE FROM conversation_items WHERE id = ?")
+            .bind::<Text, _>(item_id)
+            .execute(&mut conn)?)
     }
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
@@ -621,29 +599,6 @@ fn load_shortcut(conn: &mut SqliteConnection, id: &str) -> Result<ShortcutRecord
         .next()
         .ok_or_else(|| DbError::Invariant("shortcut is missing".to_string()))?
         .try_into()
-}
-
-fn insert_fts(
-    conn: &mut SqliteConnection,
-    item_id: &str,
-    conversation_id: &str,
-    content: &str,
-) -> Result<()> {
-    sql_query(
-        "INSERT INTO conversation_item_fts (item_id, conversation_id, content) VALUES (?, ?, ?)",
-    )
-    .bind::<Text, _>(item_id)
-    .bind::<Text, _>(conversation_id)
-    .bind::<Text, _>(content)
-    .execute(conn)?;
-    Ok(())
-}
-
-fn delete_fts(conn: &mut SqliteConnection, item_id: &str) -> Result<()> {
-    sql_query("DELETE FROM conversation_item_fts WHERE item_id = ?")
-        .bind::<Text, _>(item_id)
-        .execute(conn)?;
-    Ok(())
 }
 
 fn now_string() -> Result<String> {

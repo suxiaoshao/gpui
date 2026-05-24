@@ -46,7 +46,7 @@
 - #154 来自 PR #153 review follow-up。它原本想在当前 `messages` schema 内合并 typed message content，但这个方向对 agent/multimodal 路线太受限。
 - 当前首选方向是设计 fresh ai-chat database schema，不再继续在旧 `messages.content` / `send_content` / `input_content_parts` 模型上叠 migration 和兼容逻辑。
 - #155 已通过 PR #160 把 `ai-chat2` 并行重构、crate 拆分、fresh database schema 和 typed data model 设计合入集成分支；GitHub issue 仍未关闭。
-- #156 已在 `codex/issue-156-fresh-db-bootstrap` 实现：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、FTS、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳。
+- #156 已在 `codex/issue-156-fresh-db-bootstrap` 实现：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳，全文搜索/FTS 暂未实现。
 - #157 已更新为：抽出 `ai-chat-provider`，把 provider-neutral trait、capabilities、OpenAI/Ollama adapter 边界从旧 app 债务中隔离出来。
 - #158 已更新为：建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool registry、approval、continuation、cancel/retry，并写入 fresh persistence。
 - #159 已更新为：让 `app/ai-chat2` 使用新 crates 渲染项目、对话、timeline、tool、approval 和多模态内容。
@@ -176,7 +176,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 边界约束：
 
 - `ai-chat-core` 不能依赖 GPUI、Diesel、HTTP client 或具体 provider。
-- `ai-chat-db` 依赖 `ai-chat-core`，负责 SQL `JSON` typed roundtrip、migration、transaction 和 FTS。
+- `ai-chat-db` 依赖 `ai-chat-core`，负责 SQL `JSON` typed roundtrip、migration 和 repository transaction。全文搜索/FTS 暂未实现，是否需要单独搜索索引留给后续 issue 决定。
 - `ai-chat-provider` 依赖 `ai-chat-core`，负责 provider wire conversion 和 provider-step events。
 - `ai-chat-agent` 依赖 core/provider/repository traits，负责 Rig + rmcp 多步 agent loop、tool registry、file-backed skills、MCP runtime、approval 和 canonical item 写入。
 - `app/ai-chat2` 只依赖这些 crates，不重新拥有长期业务模型。
@@ -232,7 +232,8 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 - 实现 typed repository/service APIs，覆盖 projects、conversations、conversation items、attachments、runs、provider steps、tools、approvals、usage、prompts、shortcuts、providers、provider models、app settings。
 - SQL schema 中 app 自有结构化 payload 使用 `JSON` 列，不使用 `TEXT` 保存 JSON 字符串。
 - 保持旧 database code 隔离为 legacy compatibility code，直到它可以被移除或替换为 read-only/export path。
-- 增加 tests，覆盖 new database creation、internal version detection、repeated idempotent bootstrap、empty first run、transaction boundaries、cascade deletes、item ordering、typed JSON roundtrip、FTS indexing、provider model cache persistence、legacy-store coexistence。
+- 增加 tests，覆盖 new database creation、internal version detection、repeated idempotent bootstrap、empty first run、transaction boundaries、cascade deletes、item ordering、typed JSON roundtrip、provider model cache persistence、legacy-store coexistence。
+- 全文搜索/FTS 不在 #156 实现。`conversation_items.search_text` 仅作为普通派生文本字段保留，后续如果确认需要搜索，再单独设计 FTS、external-content FTS 或其他索引方案。
 
 ### #157 provider runtime crate
 

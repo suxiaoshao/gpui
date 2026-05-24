@@ -65,7 +65,13 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
         .unwrap()
         .into_iter()
         .collect();
-    for disallowed in ["skills", "skill_roots", "mcp_servers", "mcp_tools"] {
+    for disallowed in [
+        "skills",
+        "skill_roots",
+        "mcp_servers",
+        "mcp_tools",
+        "conversation_item_fts",
+    ] {
         assert!(!tables.contains(disallowed));
     }
 }
@@ -102,7 +108,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
 }
 
 #[test]
-fn append_items_updates_order_last_seq_and_fts() {
+fn append_items_updates_order_last_seq_and_search_text() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -125,9 +131,7 @@ fn append_items_updates_order_last_seq_and_fts() {
         [1, 2]
     );
 
-    let matches = repo.search_conversation_items("alpha").unwrap();
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].id, first.id);
+    assert_eq!(first.search_text, "hello alpha");
 
     repo.update_conversation_item_payload(
         &first.id,
@@ -140,11 +144,18 @@ fn append_items_updates_order_last_seq_and_fts() {
         },
     )
     .unwrap();
-    assert!(repo.search_conversation_items("alpha").unwrap().is_empty());
-    assert_eq!(repo.search_conversation_items("gamma").unwrap().len(), 1);
+    let updated = repo.conversation_items(&conversation.id).unwrap();
+    assert_eq!(updated[0].search_text, "gamma");
 
     repo.delete_conversation_item(&second.id).unwrap();
-    assert!(repo.search_conversation_items("beta").unwrap().is_empty());
+    let remaining = repo.conversation_items(&conversation.id).unwrap();
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        [first.id.as_str()]
+    );
 }
 
 #[test]

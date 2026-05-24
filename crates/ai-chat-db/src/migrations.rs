@@ -182,12 +182,6 @@ CREATE TABLE conversation_items (
     UNIQUE(conversation_id, seq)
 );
 
-CREATE VIRTUAL TABLE conversation_item_fts USING fts5(
-    item_id UNINDEXED,
-    conversation_id UNINDEXED,
-    content
-);
-
 CREATE TABLE approval_decisions (
     id TEXT PRIMARY KEY,
     tool_invocation_id TEXT NOT NULL UNIQUE REFERENCES tool_invocations(id) ON DELETE CASCADE,
