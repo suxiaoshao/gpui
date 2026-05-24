@@ -268,6 +268,106 @@ fn append_item_rejects_cross_conversation_execution_links() {
 }
 
 #[test]
+fn insert_agent_run_rejects_missing_or_cross_conversation_user_item() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("agent-run-input")).unwrap();
+    let conversation_a = repo.insert_conversation(conversation(&project)).unwrap();
+    let conversation_b = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation_a.id, "run input"))
+        .unwrap();
+
+    let valid = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation_a.id.clone(),
+        trigger_kind: AgentRunTriggerKind::User,
+        status: AgentRunStatus::Running,
+        input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+    });
+    assert!(valid.is_ok());
+
+    let cross_conversation = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation_b.id,
+        trigger_kind: AgentRunTriggerKind::User,
+        status: AgentRunStatus::Running,
+        input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+    });
+    assert!(cross_conversation.is_err());
+
+    let missing_item = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation_a.id,
+        trigger_kind: AgentRunTriggerKind::User,
+        status: AgentRunStatus::Running,
+        input: agent_run_input("missing-item", &provider.id, &model.model_id),
+    });
+    assert!(missing_item.is_err());
+}
+
+#[test]
+fn insert_tool_invocation_rejects_provider_step_from_other_run() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("tool-step-link")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let first_item = repo
+        .append_conversation_item(message_item(&conversation.id, "first run"))
+        .unwrap();
+    let second_item = repo
+        .append_conversation_item(message_item(&conversation.id, "second run"))
+        .unwrap();
+    let first_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&first_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let second_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id,
+            trigger_kind: AgentRunTriggerKind::Retry,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&second_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let first_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: first_run.id.clone(),
+            seq: 1,
+            provider_id: provider.id.clone(),
+            model_id: model.model_id.clone(),
+            status: ProviderStepStatus::Completed,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &first_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+
+    let mismatched = repo.insert_tool_invocation(NewToolInvocation {
+        agent_run_id: second_run.id,
+        provider_step_id: Some(first_step.id),
+        status: ToolInvocationStatus::Succeeded,
+        input: tool_input(),
+        output: Some(tool_output()),
+        error: None,
+    });
+    assert!(mismatched.is_err());
+}
+
+#[test]
 fn usage_event_derives_dimensions_from_provider_step() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();

@@ -342,6 +342,7 @@ impl FreshRepository {
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            validate_agent_run_input(conn, &input.conversation_id, &input.input.user_item_id)?;
             let now = now_string()?;
             let row = SqlNewAgentRunRow {
                 id: new_id(),
@@ -396,6 +397,15 @@ impl FreshRepository {
     pub fn insert_tool_invocation(&self, input: NewToolInvocation) -> Result<ToolInvocationRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            if let Some(provider_step_id) = input.provider_step_id.as_deref() {
+                let provider_step = load_provider_step_row(conn, provider_step_id)?;
+                ensure_agent_link(
+                    "tool invocation provider step",
+                    provider_step_id,
+                    &provider_step.agent_run_id,
+                    Some(&input.agent_run_id),
+                )?;
+            }
             let now = now_string()?;
             let row = SqlNewToolInvocationRow {
                 id: new_id(),
@@ -721,6 +731,21 @@ fn validate_execution_links(
     }
 
     Ok(())
+}
+
+fn validate_agent_run_input(
+    conn: &mut SqliteConnection,
+    conversation_id: &str,
+    user_item_id: &str,
+) -> Result<()> {
+    let item = conversation_item_row(conn, user_item_id)?
+        .ok_or_else(|| DbError::Invariant(format!("user item {user_item_id} is missing")))?;
+    ensure_conversation_owner(
+        "user item",
+        user_item_id,
+        &item.conversation_id,
+        conversation_id,
+    )
 }
 
 fn ensure_conversation_owner(
