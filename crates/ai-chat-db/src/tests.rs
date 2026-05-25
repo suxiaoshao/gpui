@@ -4,7 +4,10 @@ use crate::{
     NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent,
 };
 use ai_chat_core::*;
-use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query, sql_types::BigInt};
+use diesel::{
+    Connection, RunQueryDsl, SqliteConnection, sql_query,
+    sql_types::{BigInt, Integer},
+};
 use serde_json::json;
 use std::{collections::HashSet, fs};
 use tempfile::tempdir;
@@ -35,6 +38,30 @@ fn bootstrap_is_idempotent() {
 
     let mut conn = second.pool().get().unwrap();
     assert_eq!(count(&mut conn, "schema_migrations"), 1);
+}
+
+#[test]
+fn bootstrap_rejects_newer_schema_without_downgrading_metadata() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(crate::DATABASE_FILE);
+    FreshStore::open(&path).unwrap();
+
+    let newer_version = crate::repository::schema_version() + 1;
+    let mut conn = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+    sql_query("UPDATE schema_metadata SET schema_version = ? WHERE id = 'default'")
+        .bind::<Integer, _>(newer_version)
+        .execute(&mut conn)
+        .unwrap();
+
+    let err = FreshStore::open(&path).unwrap_err();
+    assert!(err.to_string().contains("newer than supported"));
+
+    let stored_version =
+        sql_query("SELECT schema_version AS value FROM schema_metadata WHERE id = 'default'")
+            .load::<IntRow>(&mut conn)
+            .unwrap()[0]
+            .value;
+    assert_eq!(stored_version, newer_version);
 }
 
 #[test]
@@ -791,6 +818,12 @@ fn count(conn: &mut SqliteConnection, table: &str) -> i64 {
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     value: i64,
+}
+
+#[derive(diesel::QueryableByName)]
+struct IntRow {
+    #[diesel(sql_type = Integer)]
+    value: i32,
 }
 
 fn project(suffix: &str) -> NewProject {

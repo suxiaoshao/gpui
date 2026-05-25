@@ -304,6 +304,14 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
             "schema_metadata was not created by migrations".to_string(),
         ));
     }
+    if let Some(database_version) = existing_schema_version(conn)?
+        && database_version > SCHEMA_VERSION
+    {
+        return Err(DbError::UnsupportedSchemaVersion {
+            database_version,
+            supported_version: SCHEMA_VERSION,
+        });
+    }
     let now = now_string()?;
     let payload = serde_json::json!({
         "storeKind": "fresh",
@@ -332,6 +340,14 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
         ))
         .execute(conn)?;
     Ok(())
+}
+
+fn existing_schema_version(conn: &mut SqliteConnection) -> Result<Option<i32>> {
+    Ok(schema_metadata::table
+        .find("default")
+        .select(schema_metadata::schema_version)
+        .first(conn)
+        .optional()?)
 }
 
 fn now_string() -> Result<String> {
