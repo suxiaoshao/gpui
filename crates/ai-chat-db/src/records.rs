@@ -222,10 +222,25 @@ pub struct ApprovalDecisionRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewApprovalDecision {
     pub tool_invocation_id: ToolInvocationId,
-    pub status: ApprovalStatus,
     pub request: ApprovalRequestPayload,
-    pub decision: Option<ApprovalDecisionPayload>,
-    pub expires_at: Option<OffsetDateTime>,
+    pub outcome: NewApprovalDecisionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewApprovalDecisionOutcome {
+    Pending {
+        expires_at: Option<OffsetDateTime>,
+    },
+    Approved {
+        decided_by: String,
+        reason: Option<String>,
+    },
+    Denied {
+        decided_by: String,
+        reason: Option<String>,
+    },
+    Expired,
+    Canceled,
 }
 
 #[derive(Debug, Clone, PartialEq)]

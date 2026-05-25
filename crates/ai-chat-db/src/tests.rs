@@ -1,7 +1,7 @@
 use crate::{
-    FreshStore, NewAgentRun, NewApprovalDecision, NewAttachment, NewConversation,
-    NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel, NewProviderStep,
-    NewShortcut, NewToolInvocation, NewUsageEvent,
+    FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
+    NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
+    NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent,
 };
 use ai_chat_core::*;
 use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query, sql_types::BigInt};
@@ -147,14 +147,13 @@ fn append_items_updates_order_last_seq_and_search_text() {
     let updated = repo.conversation_items(&conversation.id).unwrap();
     assert_eq!(updated[0].search_text, "gamma");
 
-    repo.delete_conversation_item(&second.id).unwrap();
     let remaining = repo.conversation_items(&conversation.id).unwrap();
     assert_eq!(
         remaining
             .iter()
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>(),
-        [first.id.as_str()]
+        [first.id.as_str(), second.id.as_str()]
     );
 }
 
@@ -486,6 +485,93 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
 }
 
 #[test]
+fn approval_outcome_derives_status_and_decision_columns() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("approval-outcome")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "approval input"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Completed,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let pending_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id.clone()),
+            status: ToolInvocationStatus::Running,
+            input: tool_input(),
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    let denied_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id,
+            provider_step_id: Some(provider_step.id),
+            status: ToolInvocationStatus::Denied,
+            input: tool_input(),
+            output: None,
+            error: None,
+        })
+        .unwrap();
+
+    let pending = repo
+        .insert_approval_decision(NewApprovalDecision {
+            tool_invocation_id: pending_tool.id,
+            request: approval_request(),
+            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
+        })
+        .unwrap();
+    assert_eq!(pending.status, ApprovalStatus::Pending);
+    assert!(pending.decision.is_none());
+    assert!(pending.decided_at.is_none());
+
+    let denied = repo
+        .insert_approval_decision(NewApprovalDecision {
+            tool_invocation_id: denied_tool.id,
+            request: approval_request(),
+            outcome: NewApprovalDecisionOutcome::Denied {
+                decided_by: "user".to_string(),
+                reason: Some("no".to_string()),
+            },
+        })
+        .unwrap();
+    assert_eq!(denied.status, ApprovalStatus::Denied);
+    assert_eq!(
+        denied.decision,
+        Some(ApprovalDecisionPayload {
+            approved: false,
+            decided_by: "user".to_string(),
+            reason: Some("no".to_string()),
+        })
+    );
+    assert!(denied.decided_at.is_some());
+}
+
+#[test]
 fn typed_json_roundtrips_for_repository_records() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -596,13 +682,15 @@ fn typed_json_roundtrips_for_repository_records() {
     let approval = repo
         .insert_approval_decision(NewApprovalDecision {
             tool_invocation_id: tool.id.clone(),
-            status: ApprovalStatus::Approved,
             request: approval_request(),
-            decision: Some(approval_decision()),
-            expires_at: None,
+            outcome: NewApprovalDecisionOutcome::Approved {
+                decided_by: "user".to_string(),
+                reason: Some("ok".to_string()),
+            },
         })
         .unwrap();
     assert_eq!(approval.request, approval_request());
+    assert_eq!(approval.status, ApprovalStatus::Approved);
     assert_eq!(approval.decision, Some(approval_decision()));
 
     let usage = repo

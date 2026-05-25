@@ -295,21 +295,6 @@ impl FreshRepository {
         })
     }
 
-    pub fn delete_conversation_item(&self, item_id: &str) -> Result<usize> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let item = conversation_item_row(conn, item_id)?;
-            let Some(item) = item else {
-                return Ok(0);
-            };
-            let deleted = diesel::delete(conversation_items::table.find(item_id)).execute(conn)?;
-            diesel::update(conversations::table.find(&item.conversation_id))
-                .set(conversations::updated_at.eq(now_string()?))
-                .execute(conn)?;
-            Ok(deleted)
-        })
-    }
-
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
@@ -445,15 +430,16 @@ impl FreshRepository {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
+            let outcome = approval_outcome_columns(input.outcome, &now)?;
             let row = SqlNewApprovalDecisionRow {
                 id: new_id(),
                 tool_invocation_id: input.tool_invocation_id,
-                status: db_label(&input.status)?,
+                status: db_label(&outcome.status)?,
                 request_json: to_json(&input.request)?,
-                decision_json: to_json_opt(&input.decision)?,
+                decision_json: to_json_opt(&outcome.decision)?,
                 requested_at: now.clone(),
-                decided_at: input.decision.as_ref().map(|_| now.clone()),
-                expires_at: format_time_opt(input.expires_at.as_ref())?,
+                decided_at: outcome.decided_at,
+                expires_at: outcome.expires_at,
             };
             diesel::insert_into(approval_decisions::table)
                 .values(&row)
@@ -774,6 +760,59 @@ fn validate_provider_step_snapshots(input: &NewProviderStep) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn approval_outcome_columns(
+    outcome: NewApprovalDecisionOutcome,
+    now: &str,
+) -> Result<ApprovalOutcomeColumns> {
+    Ok(match outcome {
+        NewApprovalDecisionOutcome::Pending { expires_at } => ApprovalOutcomeColumns {
+            status: ApprovalStatus::Pending,
+            decision: None,
+            decided_at: None,
+            expires_at: format_time_opt(expires_at.as_ref())?,
+        },
+        NewApprovalDecisionOutcome::Approved { decided_by, reason } => ApprovalOutcomeColumns {
+            status: ApprovalStatus::Approved,
+            decision: Some(ApprovalDecisionPayload {
+                approved: true,
+                decided_by,
+                reason,
+            }),
+            decided_at: Some(now.to_string()),
+            expires_at: None,
+        },
+        NewApprovalDecisionOutcome::Denied { decided_by, reason } => ApprovalOutcomeColumns {
+            status: ApprovalStatus::Denied,
+            decision: Some(ApprovalDecisionPayload {
+                approved: false,
+                decided_by,
+                reason,
+            }),
+            decided_at: Some(now.to_string()),
+            expires_at: None,
+        },
+        NewApprovalDecisionOutcome::Expired => ApprovalOutcomeColumns {
+            status: ApprovalStatus::Expired,
+            decision: None,
+            decided_at: Some(now.to_string()),
+            expires_at: None,
+        },
+        NewApprovalDecisionOutcome::Canceled => ApprovalOutcomeColumns {
+            status: ApprovalStatus::Canceled,
+            decision: None,
+            decided_at: Some(now.to_string()),
+            expires_at: None,
+        },
+    })
+}
+
+struct ApprovalOutcomeColumns {
+    status: ApprovalStatus,
+    decision: Option<ApprovalDecisionPayload>,
+    decided_at: Option<String>,
+    expires_at: Option<String>,
 }
 
 fn ensure_equal(entity: &str, actual: &str, expected: &str) -> Result<()> {
