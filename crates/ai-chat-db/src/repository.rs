@@ -355,6 +355,8 @@ impl FreshRepository {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             validate_provider_step_snapshots(&input)?;
+            let agent_run = load_agent_run_row(conn, &input.agent_run_id)?;
+            validate_provider_step_input_items(conn, &agent_run.conversation_id, &input)?;
             let now = now_string()?;
             let provider_id = input.request_snapshot.provider_id.clone();
             let model_id = input.request_snapshot.model_id.clone();
@@ -757,6 +759,25 @@ fn validate_provider_step_snapshots(input: &NewProviderStep) -> Result<()> {
             "provider step state provider",
             &state_snapshot.provider_id,
             &input.request_snapshot.provider_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_provider_step_input_items(
+    conn: &mut SqliteConnection,
+    conversation_id: &str,
+    input: &NewProviderStep,
+) -> Result<()> {
+    for item_id in &input.request_snapshot.input_item_ids {
+        let item = conversation_item_row(conn, item_id)?.ok_or_else(|| {
+            DbError::Invariant(format!("provider step input item {item_id} is missing"))
+        })?;
+        ensure_conversation_owner(
+            "provider step input item",
+            item_id,
+            &item.conversation_id,
+            conversation_id,
         )?;
     }
     Ok(())

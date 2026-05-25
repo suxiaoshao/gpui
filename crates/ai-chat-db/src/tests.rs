@@ -512,6 +512,92 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
 }
 
 #[test]
+fn provider_step_validates_input_item_ownership() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("provider-step-input-items"))
+        .unwrap();
+    let primary_conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let other_conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&primary_conversation.id, "step input"))
+        .unwrap();
+    let context_item = repo
+        .append_conversation_item(message_item(
+            &primary_conversation.id,
+            "same conversation context",
+        ))
+        .unwrap();
+    let other_item = repo
+        .append_conversation_item(message_item(&other_conversation.id, "other context"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let mut same_conversation_request =
+        provider_step_request(&provider.id, &model.model_id, &user_item.id);
+    same_conversation_request
+        .input_item_ids
+        .push(context_item.id.clone());
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Completed,
+            request_snapshot: same_conversation_request,
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(
+        provider_step.request_snapshot.input_item_ids,
+        [user_item.id.clone(), context_item.id]
+    );
+
+    let mut missing_request = provider_step_request(&provider.id, &model.model_id, &user_item.id);
+    missing_request.input_item_ids = vec!["missing-item".to_string()];
+    let missing_item = repo.insert_provider_step(NewProviderStep {
+        agent_run_id: agent_run.id.clone(),
+        seq: 2,
+        status: ProviderStepStatus::Completed,
+        request_snapshot: missing_request,
+        response_snapshot: None,
+        state_snapshot: None,
+        settings_snapshot: run_settings(&provider.id, &model.model_id),
+        error: None,
+    });
+    assert!(missing_item.is_err());
+
+    let mut cross_conversation_request =
+        provider_step_request(&provider.id, &model.model_id, &user_item.id);
+    cross_conversation_request.input_item_ids = vec![other_item.id];
+    let cross_conversation = repo.insert_provider_step(NewProviderStep {
+        agent_run_id: agent_run.id,
+        seq: 2,
+        status: ProviderStepStatus::Completed,
+        request_snapshot: cross_conversation_request,
+        response_snapshot: None,
+        state_snapshot: None,
+        settings_snapshot: run_settings(&provider.id, &model.model_id),
+        error: None,
+    });
+    assert!(cross_conversation.is_err());
+}
+
+#[test]
 fn approval_outcome_derives_status_and_decision_columns() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
