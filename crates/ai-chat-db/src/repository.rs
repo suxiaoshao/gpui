@@ -342,11 +342,12 @@ impl FreshRepository {
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            validate_agent_run_input(conn, &input.conversation_id, &input.input.user_item_id)?;
+            let conversation_id =
+                derive_agent_run_conversation_id(conn, &input.input.user_item_id)?;
             let now = now_string()?;
             let row = SqlNewAgentRunRow {
                 id: new_id(),
-                conversation_id: input.conversation_id,
+                conversation_id,
                 trigger_kind: db_label(&input.trigger_kind)?,
                 status: db_label(&input.status)?,
                 input_json: to_json(&input.input)?,
@@ -368,13 +369,16 @@ impl FreshRepository {
     pub fn insert_provider_step(&self, input: NewProviderStep) -> Result<ProviderStepRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            validate_provider_step_snapshots(&input)?;
             let now = now_string()?;
+            let provider_id = input.request_snapshot.provider_id.clone();
+            let model_id = input.request_snapshot.model_id.clone();
             let row = SqlNewProviderStepRow {
                 id: new_id(),
                 agent_run_id: input.agent_run_id,
                 seq: input.seq,
-                provider_id: input.provider_id,
-                model_id: input.model_id,
+                provider_id,
+                model_id,
                 status: db_label(&input.status)?,
                 request_snapshot_json: to_json(&input.request_snapshot)?,
                 response_snapshot_json: to_json_opt(&input.response_snapshot)?,
@@ -733,19 +737,52 @@ fn validate_execution_links(
     Ok(())
 }
 
-fn validate_agent_run_input(
+fn derive_agent_run_conversation_id(
     conn: &mut SqliteConnection,
-    conversation_id: &str,
     user_item_id: &str,
-) -> Result<()> {
+) -> Result<ConversationId> {
     let item = conversation_item_row(conn, user_item_id)?
         .ok_or_else(|| DbError::Invariant(format!("user item {user_item_id} is missing")))?;
-    ensure_conversation_owner(
-        "user item",
-        user_item_id,
-        &item.conversation_id,
-        conversation_id,
-    )
+    let item: ConversationItemRecord = item.try_into()?;
+    match item.payload {
+        ConversationItemPayload::Message {
+            role: TranscriptRole::User,
+            ..
+        } => Ok(item.conversation_id),
+        _ => Err(DbError::Invariant(format!(
+            "user item {user_item_id} must be a user message"
+        ))),
+    }
+}
+
+fn validate_provider_step_snapshots(input: &NewProviderStep) -> Result<()> {
+    ensure_equal(
+        "provider step settings provider",
+        &input.settings_snapshot.provider_id,
+        &input.request_snapshot.provider_id,
+    )?;
+    ensure_equal(
+        "provider step settings model",
+        &input.settings_snapshot.model_id,
+        &input.request_snapshot.model_id,
+    )?;
+    if let Some(state_snapshot) = input.state_snapshot.as_ref() {
+        ensure_equal(
+            "provider step state provider",
+            &state_snapshot.provider_id,
+            &input.request_snapshot.provider_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_equal(entity: &str, actual: &str, expected: &str) -> Result<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(DbError::Invariant(format!(
+        "{entity} is {actual}, not {expected}"
+    )))
 }
 
 fn ensure_conversation_owner(

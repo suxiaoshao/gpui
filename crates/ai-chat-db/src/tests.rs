@@ -204,7 +204,6 @@ fn append_item_rejects_cross_conversation_execution_links() {
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
@@ -214,8 +213,6 @@ fn append_item_rejects_cross_conversation_execution_links() {
         .insert_provider_step(NewProviderStep {
             agent_run_id: agent_run.id.clone(),
             seq: 1,
-            provider_id: provider.id.clone(),
-            model_id: model.model_id.clone(),
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
             response_snapshot: None,
@@ -255,7 +252,6 @@ fn append_item_rejects_cross_conversation_execution_links() {
 
     let second_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::Retry,
             status: AgentRunStatus::Running,
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
@@ -268,44 +264,47 @@ fn append_item_rejects_cross_conversation_execution_links() {
 }
 
 #[test]
-fn insert_agent_run_rejects_missing_or_cross_conversation_user_item() {
+fn insert_agent_run_derives_conversation_and_rejects_invalid_user_item() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("agent-run-input")).unwrap();
-    let conversation_a = repo.insert_conversation(conversation(&project)).unwrap();
-    let conversation_b = repo.insert_conversation(conversation(&project)).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let provider = repo.insert_provider(provider()).unwrap();
     let model = repo
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation_a.id, "run input"))
+        .append_conversation_item(message_item(&conversation.id, "run input"))
+        .unwrap();
+    let assistant_item = repo
+        .append_conversation_item(message_item_with_role(
+            &conversation.id,
+            TranscriptRole::Assistant,
+            "assistant output",
+        ))
         .unwrap();
 
     let valid = repo.insert_agent_run(NewAgentRun {
-        conversation_id: conversation_a.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
         status: AgentRunStatus::Running,
         input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
     });
-    assert!(valid.is_ok());
-
-    let cross_conversation = repo.insert_agent_run(NewAgentRun {
-        conversation_id: conversation_b.id,
-        trigger_kind: AgentRunTriggerKind::User,
-        status: AgentRunStatus::Running,
-        input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
-    });
-    assert!(cross_conversation.is_err());
+    assert_eq!(valid.unwrap().conversation_id, conversation.id);
 
     let missing_item = repo.insert_agent_run(NewAgentRun {
-        conversation_id: conversation_a.id,
         trigger_kind: AgentRunTriggerKind::User,
         status: AgentRunStatus::Running,
         input: agent_run_input("missing-item", &provider.id, &model.model_id),
     });
     assert!(missing_item.is_err());
+
+    let non_user_item = repo.insert_agent_run(NewAgentRun {
+        trigger_kind: AgentRunTriggerKind::User,
+        status: AgentRunStatus::Running,
+        input: agent_run_input(&assistant_item.id, &provider.id, &model.model_id),
+    });
+    assert!(non_user_item.is_err());
 }
 
 #[test]
@@ -327,7 +326,6 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .unwrap();
     let first_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
             input: agent_run_input(&first_item.id, &provider.id, &model.model_id),
@@ -335,7 +333,6 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .unwrap();
     let second_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation.id,
             trigger_kind: AgentRunTriggerKind::Retry,
             status: AgentRunStatus::Running,
             input: agent_run_input(&second_item.id, &provider.id, &model.model_id),
@@ -345,8 +342,6 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .insert_provider_step(NewProviderStep {
             agent_run_id: first_run.id.clone(),
             seq: 1,
-            provider_id: provider.id.clone(),
-            model_id: model.model_id.clone(),
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &first_item.id),
             response_snapshot: None,
@@ -383,7 +378,6 @@ fn usage_event_derives_dimensions_from_provider_step() {
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
@@ -393,8 +387,6 @@ fn usage_event_derives_dimensions_from_provider_step() {
         .insert_provider_step(NewProviderStep {
             agent_run_id: agent_run.id,
             seq: 1,
-            provider_id: provider.id.clone(),
-            model_id: model.model_id.clone(),
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
             response_snapshot: None,
@@ -415,6 +407,82 @@ fn usage_event_derives_dimensions_from_provider_step() {
     assert_eq!(usage.conversation_id, conversation.id);
     assert_eq!(usage.provider_id, provider.id);
     assert_eq!(usage.model_id, model.model_id);
+}
+
+#[test]
+fn provider_step_derives_dimensions_from_request_snapshot() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("provider-step-dimensions"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "step input"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Completed,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(provider_step.provider_id, provider.id);
+    assert_eq!(provider_step.model_id, model.model_id);
+
+    let bad_settings = repo.insert_provider_step(NewProviderStep {
+        agent_run_id: agent_run.id.clone(),
+        seq: 2,
+        status: ProviderStepStatus::Completed,
+        request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+        response_snapshot: None,
+        state_snapshot: None,
+        settings_snapshot: run_settings("other-provider", &model.model_id),
+        error: None,
+    });
+    assert!(bad_settings.is_err());
+
+    let bad_settings_model = repo.insert_provider_step(NewProviderStep {
+        agent_run_id: agent_run.id.clone(),
+        seq: 2,
+        status: ProviderStepStatus::Completed,
+        request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+        response_snapshot: None,
+        state_snapshot: None,
+        settings_snapshot: run_settings(&provider.id, "other-model"),
+        error: None,
+    });
+    assert!(bad_settings_model.is_err());
+
+    let bad_state = repo.insert_provider_step(NewProviderStep {
+        agent_run_id: agent_run.id,
+        seq: 2,
+        status: ProviderStepStatus::Completed,
+        request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+        response_snapshot: None,
+        state_snapshot: Some(provider_run_state("other-provider")),
+        settings_snapshot: run_settings(&provider.id, &model.model_id),
+        error: None,
+    });
+    assert!(bad_state.is_err());
 }
 
 #[test]
@@ -484,7 +552,6 @@ fn typed_json_roundtrips_for_repository_records() {
 
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
-            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
@@ -499,8 +566,6 @@ fn typed_json_roundtrips_for_repository_records() {
         .insert_provider_step(NewProviderStep {
             agent_run_id: agent_run.id.clone(),
             seq: 1,
-            provider_id: provider.id.clone(),
-            model_id: model.model_id.clone(),
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
             response_snapshot: Some(provider_step_response()),
@@ -688,6 +753,14 @@ fn conversation_settings() -> ConversationSettingsSnapshot {
 }
 
 fn message_item(conversation_id: &str, text: &str) -> NewConversationItem {
+    message_item_with_role(conversation_id, TranscriptRole::User, text)
+}
+
+fn message_item_with_role(
+    conversation_id: &str,
+    role: TranscriptRole,
+    text: &str,
+) -> NewConversationItem {
     NewConversationItem {
         conversation_id: conversation_id.to_string(),
         status: ConversationItemStatus::Completed,
@@ -696,7 +769,7 @@ fn message_item(conversation_id: &str, text: &str) -> NewConversationItem {
         tool_invocation_id: None,
         provider_item_id: None,
         payload: ConversationItemPayload::Message {
-            role: TranscriptRole::User,
+            role,
             content: vec![ContentPart::Text {
                 text: text.to_string(),
             }],

@@ -140,7 +140,6 @@ pub struct AgentRunRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAgentRun {
-    pub conversation_id: ConversationId,
     pub trigger_kind: AgentRunTriggerKind,
     pub status: AgentRunStatus,
     pub input: AgentRunInput,
@@ -169,8 +168,6 @@ pub struct ProviderStepRecord {
 pub struct NewProviderStep {
     pub agent_run_id: AgentRunId,
     pub seq: i32,
-    pub provider_id: ProviderId,
-    pub model_id: ProviderModelId,
     pub status: ProviderStepStatus,
     pub request_snapshot: ProviderStepRequestSnapshot,
     pub response_snapshot: Option<ProviderStepResponseSnapshot>,
