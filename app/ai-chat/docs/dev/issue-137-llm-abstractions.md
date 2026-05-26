@@ -26,14 +26,14 @@
 | #140 | `codex/issue-140-capability-gating` | template、shortcut、UI capability gating | 已通过 PR #153 合入集成分支；GitHub issue 仍未关闭 |
 | #154 | `codex/issue-154-typed-message-content` | 合并 typed message content model | 已被 fresh database 方向取代；除非重新定义 scope，否则只保留为上下文 |
 | #155 | `codex/issue-155-ai-chat2-crate-split` | 固定 `ai-chat2` 并行重构、crate 拆分、fresh database 和 typed data model | 设计文档已通过 PR #160 合入集成分支；GitHub issue 仍未关闭 |
-| #156 | `codex/issue-156-fresh-db-bootstrap` | scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories | 已在本分支实现；待 PR review |
+| #156 | `codex/issue-156-fresh-db-bootstrap` | scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories | 已通过 PR #161 合入集成分支；GitHub issue 仍未关闭 |
 | #157 | `codex/issue-157-provider-runtime-crate` | 抽出 `ai-chat-provider`，沉淀 provider-neutral trait、capabilities 和 adapter 边界 | 待处理 |
 | #158 | `codex/issue-158-agent-runtime-persistence` | 建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool/approval runtime 和持久化写入 | 待处理 |
 | #159 | `codex/issue-159-ai-chat2-ui` | 在 `app/ai-chat2` 渲染项目、对话、多步 reasoning、tool、approval、多模态 timeline | 待处理 |
 
 ## Issue 同步快照
 
-最后同步时间：2026-05-24。
+最后同步时间：2026-05-26。
 
 - #137 仍未关闭，是父级跟踪 issue。它的评论记录了子 issue 列表、集成分支和文档工作流。
 - #138 仍未关闭，但 PR #147 已把 `codex/issue-138-model-capabilities` 合入 `codex/issue-137-llm-abstractions`。
@@ -46,13 +46,14 @@
 - #154 来自 PR #153 review follow-up。它原本想在当前 `messages` schema 内合并 typed message content，但这个方向对 agent/multimodal 路线太受限。
 - 当前首选方向是设计 fresh ai-chat database schema，不再继续在旧 `messages.content` / `send_content` / `input_content_parts` 模型上叠 migration 和兼容逻辑。
 - #155 已通过 PR #160 把 `ai-chat2` 并行重构、crate 拆分、fresh database schema 和 typed data model 设计合入集成分支；GitHub issue 仍未关闭。
-- #156 已在 `codex/issue-156-fresh-db-bootstrap` 实现：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳，全文搜索/FTS 暂未实现。
+- #156 已通过 PR #161 把 `codex/issue-156-fresh-db-bootstrap` 合入 `codex/issue-137-llm-abstractions`：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳，全文搜索/FTS 暂未实现。GitHub issue 仍未关闭。
 - #157 已更新为：抽出 `ai-chat-provider`，把 provider-neutral trait、capabilities、OpenAI/Ollama adapter 边界从旧 app 债务中隔离出来。
 - #158 已更新为：建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool registry、approval、continuation、cancel/retry，并写入 fresh persistence。
 - #159 已更新为：让 `app/ai-chat2` 使用新 crates 渲染项目、对话、timeline、tool、approval 和多模态内容。
 - 2026-05-23 已读取并更新 GitHub #137、#155-#159。#137 正文已指向 `ai-chat2` 并行重构和新的子 issue 序列；#155-#159 title/body 已按“后续 Issue 调整提案”同步；PR #160 已把 #155 设计文档合入集成分支。
 - 2026-05-24 已同步 GitHub #137、#156、#158：agent runtime 采用 Rig + rmcp；skills 和 MCP server 配置从文件/配置读取，不作为 fresh database source tables。现有 fresh DB 结构支持 Rig execution persistence，只需补充 runtime snapshot、skill activation transcript item 和 runtime tool name 映射。
 - 2026-05-24 已完成 #156 本地实现和验证：`cargo test -p ai-chat-core`、`cargo test -p ai-chat-db`、`cargo clippy -p ai-chat-core --all-targets --all-features -- -D warnings`、`cargo clippy -p ai-chat-db --all-targets --all-features -- -D warnings` 和 `git diff --check` 均通过。
+- 2026-05-26 已同步 GitHub #137、#156-#159 和 PR 状态：PR #161 已合入集成分支；#156-#159 仍为 open issues；下一步实现子 issue 是 #157。
 
 ## 当前架构事实
 
@@ -427,7 +428,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 
 ## 下一个子 Issue 约束
 
-#156 已完成 fresh core/db bootstrap 的本地实现和验证。下一步实现子 issue 是 #157，用于抽出 provider runtime crate。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
+#156 已通过 PR #161 完成 fresh core/db bootstrap 并合入集成分支。下一步实现子 issue 是 #157，用于抽出 provider runtime crate。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
 
 - GitHub #155-#159 的 title/body 已与“后续 Issue 调整提案”保持一致；后续修改必须先更新文档再同步线上 issue，避免实现继续沿旧 `app/ai-chat` 原地改造路线推进。
 - #156 已从 `crates/ai-chat-core` 和 `crates/ai-chat-db` 落地；没有先改旧 app UI，也没有新增 `app/ai-chat2` shell。
