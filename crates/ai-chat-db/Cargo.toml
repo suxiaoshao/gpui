@@ -8,6 +8,7 @@ ai-chat-core.workspace = true
 diesel = { version = "2.3.9", features = [
   "sqlite",
   "r2d2",
+  "time",
   "returning_clauses_for_sqlite_3_35",
   "serde_json",
 ] }

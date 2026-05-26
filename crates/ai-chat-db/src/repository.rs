@@ -18,7 +18,7 @@ use diesel::{
     sql_types::Text,
     upsert::excluded,
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct FreshRepository {
@@ -785,14 +785,14 @@ fn validate_provider_step_input_items(
 
 fn approval_outcome_columns(
     outcome: NewApprovalDecisionOutcome,
-    now: &str,
+    now: &OffsetDateTime,
 ) -> Result<ApprovalOutcomeColumns> {
     Ok(match outcome {
         NewApprovalDecisionOutcome::Pending { expires_at } => ApprovalOutcomeColumns {
             status: ApprovalStatus::Pending,
             decision: None,
             decided_at: None,
-            expires_at: format_time_opt(expires_at.as_ref())?,
+            expires_at,
         },
         NewApprovalDecisionOutcome::Approved { decided_by, reason } => ApprovalOutcomeColumns {
             status: ApprovalStatus::Approved,
@@ -801,7 +801,7 @@ fn approval_outcome_columns(
                 decided_by,
                 reason,
             }),
-            decided_at: Some(now.to_string()),
+            decided_at: Some(*now),
             expires_at: None,
         },
         NewApprovalDecisionOutcome::Denied { decided_by, reason } => ApprovalOutcomeColumns {
@@ -811,19 +811,19 @@ fn approval_outcome_columns(
                 decided_by,
                 reason,
             }),
-            decided_at: Some(now.to_string()),
+            decided_at: Some(*now),
             expires_at: None,
         },
         NewApprovalDecisionOutcome::Expired => ApprovalOutcomeColumns {
             status: ApprovalStatus::Expired,
             decision: None,
-            decided_at: Some(now.to_string()),
+            decided_at: Some(*now),
             expires_at: None,
         },
         NewApprovalDecisionOutcome::Canceled => ApprovalOutcomeColumns {
             status: ApprovalStatus::Canceled,
             decision: None,
-            decided_at: Some(now.to_string()),
+            decided_at: Some(*now),
             expires_at: None,
         },
     })
@@ -832,8 +832,8 @@ fn approval_outcome_columns(
 struct ApprovalOutcomeColumns {
     status: ApprovalStatus,
     decision: Option<ApprovalDecisionPayload>,
-    decided_at: Option<String>,
-    expires_at: Option<String>,
+    decided_at: Option<OffsetDateTime>,
+    expires_at: Option<OffsetDateTime>,
 }
 
 fn ensure_equal(entity: &str, actual: &str, expected: &str) -> Result<()> {
@@ -875,8 +875,8 @@ fn ensure_agent_link(
     }
 }
 
-fn now_string() -> Result<String> {
-    Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
+fn now_string() -> Result<OffsetDateTime> {
+    Ok(OffsetDateTime::now_utc())
 }
 
 #[derive(diesel::QueryableByName)]

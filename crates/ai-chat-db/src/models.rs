@@ -3,13 +3,13 @@ use ai_chat_core::*;
 use diesel::prelude::*;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Insertable)]
 #[diesel(table_name = schema_migrations)]
 pub(crate) struct SqlNewSchemaMigrationRow {
     pub(crate) name: String,
-    pub(crate) executed_at: String,
+    pub(crate) executed_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -21,8 +21,8 @@ pub(crate) struct SqlSchemaMetadataRow {
     pub(crate) created_app_version: Option<String>,
     pub(crate) last_opened_app_version: Option<String>,
     pub(crate) payload_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -33,8 +33,8 @@ pub(crate) struct SqlNewSchemaMetadataRow {
     pub(crate) created_app_version: Option<String>,
     pub(crate) last_opened_app_version: Option<String>,
     pub(crate) payload_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -46,9 +46,9 @@ pub(crate) struct SqlProjectRow {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) metadata_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-    pub(crate) last_opened_at: Option<String>,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
+    pub(crate) last_opened_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -59,9 +59,9 @@ pub(crate) struct SqlNewProjectRow {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) metadata_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-    pub(crate) last_opened_at: Option<String>,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
+    pub(crate) last_opened_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -78,10 +78,10 @@ pub(crate) struct SqlConversationRow {
     pub(crate) last_item_seq: i32,
     pub(crate) metadata_json: Value,
     pub(crate) settings_snapshot_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-    pub(crate) archived_at: Option<String>,
-    pub(crate) deleted_at: Option<String>,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
+    pub(crate) archived_at: Option<OffsetDateTime>,
+    pub(crate) deleted_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -97,10 +97,10 @@ pub(crate) struct SqlNewConversationRow {
     pub(crate) last_item_seq: i32,
     pub(crate) metadata_json: Value,
     pub(crate) settings_snapshot_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-    pub(crate) archived_at: Option<String>,
-    pub(crate) deleted_at: Option<String>,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
+    pub(crate) archived_at: Option<OffsetDateTime>,
+    pub(crate) deleted_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -118,8 +118,8 @@ pub(crate) struct SqlConversationItemRow {
     pub(crate) provider_item_id: Option<String>,
     pub(crate) payload_json: Value,
     pub(crate) search_text: String,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -136,8 +136,8 @@ pub(crate) struct SqlNewConversationItemRow {
     pub(crate) provider_item_id: Option<String>,
     pub(crate) payload_json: Value,
     pub(crate) search_text: String,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, AsChangeset)]
@@ -147,7 +147,7 @@ pub(crate) struct SqlConversationItemPayloadChanges {
     pub(crate) status: String,
     pub(crate) payload_json: Value,
     pub(crate) search_text: String,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -167,8 +167,8 @@ pub(crate) struct SqlAttachmentRow {
     pub(crate) sha256: Option<String>,
     pub(crate) size_bytes: Option<i64>,
     pub(crate) metadata_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -187,8 +187,8 @@ pub(crate) struct SqlNewAttachmentRow {
     pub(crate) sha256: Option<String>,
     pub(crate) size_bytes: Option<i64>,
     pub(crate) metadata_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -202,10 +202,10 @@ pub(crate) struct SqlAgentRunRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -218,10 +218,10 @@ pub(crate) struct SqlNewAgentRunRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -239,10 +239,10 @@ pub(crate) struct SqlProviderStepRow {
     pub(crate) state_snapshot_json: Option<Value>,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -259,10 +259,10 @@ pub(crate) struct SqlNewProviderStepRow {
     pub(crate) state_snapshot_json: Option<Value>,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -282,10 +282,10 @@ pub(crate) struct SqlToolInvocationRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -304,10 +304,10 @@ pub(crate) struct SqlNewToolInvocationRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) completed_at: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -319,9 +319,9 @@ pub(crate) struct SqlApprovalDecisionRow {
     pub(crate) status: String,
     pub(crate) request_json: Value,
     pub(crate) decision_json: Option<Value>,
-    pub(crate) requested_at: String,
-    pub(crate) decided_at: Option<String>,
-    pub(crate) expires_at: Option<String>,
+    pub(crate) requested_at: OffsetDateTime,
+    pub(crate) decided_at: Option<OffsetDateTime>,
+    pub(crate) expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -332,9 +332,9 @@ pub(crate) struct SqlNewApprovalDecisionRow {
     pub(crate) status: String,
     pub(crate) request_json: Value,
     pub(crate) decision_json: Option<Value>,
-    pub(crate) requested_at: String,
-    pub(crate) decided_at: Option<String>,
-    pub(crate) expires_at: Option<String>,
+    pub(crate) requested_at: OffsetDateTime,
+    pub(crate) decided_at: Option<OffsetDateTime>,
+    pub(crate) expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -354,7 +354,7 @@ pub(crate) struct SqlUsageEventRow {
     pub(crate) reasoning_tokens: i64,
     pub(crate) total_tokens: i64,
     pub(crate) usage_json: Value,
-    pub(crate) created_at: String,
+    pub(crate) created_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -373,7 +373,7 @@ pub(crate) struct SqlNewUsageEventRow {
     pub(crate) reasoning_tokens: i64,
     pub(crate) total_tokens: i64,
     pub(crate) usage_json: Value,
-    pub(crate) created_at: String,
+    pub(crate) created_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -385,8 +385,8 @@ pub(crate) struct SqlPromptRow {
     pub(crate) content_json: Value,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -397,8 +397,8 @@ pub(crate) struct SqlNewPromptRow {
     pub(crate) content_json: Value,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -414,8 +414,8 @@ pub(crate) struct SqlShortcutRow {
     pub(crate) input_source: String,
     pub(crate) action_json: Value,
     pub(crate) settings_snapshot_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -430,8 +430,8 @@ pub(crate) struct SqlNewShortcutRow {
     pub(crate) input_source: String,
     pub(crate) action_json: Value,
     pub(crate) settings_snapshot_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -444,8 +444,8 @@ pub(crate) struct SqlProviderRow {
     pub(crate) enabled: bool,
     pub(crate) settings_json: Value,
     pub(crate) secret_refs_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -457,8 +457,8 @@ pub(crate) struct SqlNewProviderRow {
     pub(crate) enabled: bool,
     pub(crate) settings_json: Value,
     pub(crate) secret_refs_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -471,9 +471,9 @@ pub(crate) struct SqlProviderModelRow {
     pub(crate) display_name: Option<String>,
     pub(crate) capabilities_json: Value,
     pub(crate) metadata_json: Value,
-    pub(crate) fetched_at: String,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) fetched_at: OffsetDateTime,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -485,9 +485,9 @@ pub(crate) struct SqlNewProviderModelRow {
     pub(crate) display_name: Option<String>,
     pub(crate) capabilities_json: Value,
     pub(crate) metadata_json: Value,
-    pub(crate) fetched_at: String,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) fetched_at: OffsetDateTime,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -496,8 +496,8 @@ pub(crate) struct SqlNewProviderModelRow {
 pub(crate) struct SqlAppSettingsRow {
     pub(crate) id: String,
     pub(crate) settings_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -505,8 +505,8 @@ pub(crate) struct SqlAppSettingsRow {
 pub(crate) struct SqlNewAppSettingsRow {
     pub(crate) id: String,
     pub(crate) settings_json: Value,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 impl TryFrom<SqlSchemaMetadataRow> for SchemaMetadataRecord {
@@ -524,8 +524,8 @@ impl TryFrom<SqlSchemaMetadataRow> for SchemaMetadataRecord {
             created_app_version: row.created_app_version,
             last_opened_app_version: row.last_opened_app_version,
             payload: from_json(row.payload_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -540,9 +540,9 @@ impl TryFrom<SqlProjectRow> for ProjectRecord {
             display_name: row.display_name,
             kind: db_label_parse(row.kind)?,
             metadata: from_json(row.metadata_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-            last_opened_at: parse_time_opt(row.last_opened_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            last_opened_at: row.last_opened_at,
         })
     }
 }
@@ -562,10 +562,10 @@ impl TryFrom<SqlConversationRow> for ConversationRecord {
             last_item_seq: row.last_item_seq,
             metadata: from_json(row.metadata_json)?,
             settings_snapshot: from_json(row.settings_snapshot_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
-            archived_at: parse_time_opt(row.archived_at)?,
-            deleted_at: parse_time_opt(row.deleted_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            archived_at: row.archived_at,
+            deleted_at: row.deleted_at,
         })
     }
 }
@@ -593,8 +593,8 @@ impl TryFrom<SqlConversationItemRow> for ConversationItemRecord {
             provider_item_id: row.provider_item_id,
             payload,
             search_text: row.search_text,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -617,8 +617,8 @@ impl TryFrom<SqlAttachmentRow> for AttachmentRecord {
             sha256: row.sha256,
             size_bytes: row.size_bytes,
             metadata: from_json(row.metadata_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -635,10 +635,10 @@ impl TryFrom<SqlAgentRunRow> for AgentRunRecord {
             input: from_json(row.input_json)?,
             output: from_json_opt(row.output_json)?,
             error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -659,10 +659,10 @@ impl TryFrom<SqlProviderStepRow> for ProviderStepRecord {
             state_snapshot: from_json_opt(row.state_snapshot_json)?,
             settings_snapshot: from_json(row.settings_snapshot_json)?,
             error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -695,10 +695,10 @@ impl TryFrom<SqlToolInvocationRow> for ToolInvocationRecord {
             input,
             output: from_json_opt(row.output_json)?,
             error: from_json_opt(row.error_json)?,
-            created_at: parse_time(row.created_at)?,
-            started_at: parse_time_opt(row.started_at)?,
-            completed_at: parse_time_opt(row.completed_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -713,9 +713,9 @@ impl TryFrom<SqlApprovalDecisionRow> for ApprovalDecisionRecord {
             status: db_label_parse(row.status)?,
             request: from_json(row.request_json)?,
             decision: from_json_opt(row.decision_json)?,
-            requested_at: parse_time(row.requested_at)?,
-            decided_at: parse_time_opt(row.decided_at)?,
-            expires_at: parse_time_opt(row.expires_at)?,
+            requested_at: row.requested_at,
+            decided_at: row.decided_at,
+            expires_at: row.expires_at,
         })
     }
 }
@@ -738,7 +738,7 @@ impl TryFrom<SqlUsageEventRow> for UsageEventRecord {
             reasoning_tokens: row.reasoning_tokens,
             total_tokens: row.total_tokens,
             usage: from_json(row.usage_json)?,
-            created_at: parse_time(row.created_at)?,
+            created_at: row.created_at,
         })
     }
 }
@@ -753,8 +753,8 @@ impl TryFrom<SqlPromptRow> for PromptRecord {
             content: from_json(row.content_json)?,
             enabled: row.enabled,
             sort_order: row.sort_order,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -773,8 +773,8 @@ impl TryFrom<SqlShortcutRow> for ShortcutRecord {
             input_source: db_label_parse(row.input_source)?,
             action: from_json(row.action_json)?,
             settings_snapshot: from_json(row.settings_snapshot_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -790,8 +790,8 @@ impl TryFrom<SqlProviderRow> for ProviderRecord {
             enabled: row.enabled,
             settings: from_json(row.settings_json)?,
             secret_refs: from_json(row.secret_refs_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -807,9 +807,9 @@ impl TryFrom<SqlProviderModelRow> for ProviderModelRecord {
             display_name: row.display_name,
             capabilities: from_json(row.capabilities_json)?,
             metadata: from_json(row.metadata_json)?,
-            fetched_at: parse_time(row.fetched_at)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            fetched_at: row.fetched_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 }
@@ -821,22 +821,10 @@ impl TryFrom<SqlAppSettingsRow> for AppSettingsRecord {
         Ok(Self {
             id: row.id,
             settings: from_json(row.settings_json)?,
-            created_at: parse_time(row.created_at)?,
-            updated_at: parse_time(row.updated_at)?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
-}
-
-pub(crate) fn parse_time(value: String) -> Result<OffsetDateTime> {
-    Ok(OffsetDateTime::parse(&value, &Rfc3339)?)
-}
-
-pub(crate) fn parse_time_opt(value: Option<String>) -> Result<Option<OffsetDateTime>> {
-    value.map(parse_time).transpose()
-}
-
-pub(crate) fn format_time_opt(value: Option<&OffsetDateTime>) -> Result<Option<String>> {
-    value.map(|time| Ok(time.format(&Rfc3339)?)).transpose()
 }
 
 pub(crate) fn db_label<T: Serialize>(value: &T) -> Result<String> {

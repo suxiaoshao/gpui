@@ -7,7 +7,7 @@ use crate::{
 use diesel::{
     connection::SimpleConnection, prelude::*, sql_query, sql_types::Text, upsert::excluded,
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 
 pub(crate) const SCHEMA_VERSION: i32 = 1;
 
@@ -24,7 +24,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
 const CREATE_FRESH_SCHEMA_SQL: &str = r#"
 CREATE TABLE schema_migrations (
     name TEXT PRIMARY KEY,
-    executed_at TEXT NOT NULL
+    executed_at DateTime NOT NULL
 );
 
 CREATE TABLE schema_metadata (
@@ -33,8 +33,8 @@ CREATE TABLE schema_metadata (
     created_app_version TEXT,
     last_opened_app_version TEXT,
     payload_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE projects (
@@ -43,30 +43,30 @@ CREATE TABLE projects (
     display_name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('normal', 'scratch')),
     metadata_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    last_opened_at TEXT
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL,
+    last_opened_at DateTime
 );
 
 CREATE TABLE providers (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     settings_json JSON NOT NULL DEFAULT '{}',
     secret_refs_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE prompts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     content_json JSON NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE provider_models (
@@ -76,9 +76,9 @@ CREATE TABLE provider_models (
     display_name TEXT,
     capabilities_json JSON NOT NULL,
     metadata_json JSON NOT NULL DEFAULT '{}',
-    fetched_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    fetched_at DateTime NOT NULL,
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL,
     UNIQUE(provider_id, model_id)
 );
 
@@ -93,10 +93,10 @@ CREATE TABLE conversations (
     last_item_seq INTEGER NOT NULL DEFAULT 0,
     metadata_json JSON NOT NULL DEFAULT '{}',
     settings_snapshot_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    archived_at TEXT,
-    deleted_at TEXT
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL,
+    archived_at DateTime,
+    deleted_at DateTime
 );
 
 CREATE TABLE attachments (
@@ -113,22 +113,22 @@ CREATE TABLE attachments (
     sha256 TEXT,
     size_bytes INTEGER,
     metadata_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'resume', 'retry')),
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
     output_json JSON,
     error_json JSON,
-    created_at TEXT NOT NULL,
-    started_at TEXT,
-    completed_at TEXT,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    started_at DateTime,
+    completed_at DateTime,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE provider_steps (
@@ -137,16 +137,16 @@ CREATE TABLE provider_steps (
     seq INTEGER NOT NULL,
     provider_id TEXT NOT NULL REFERENCES providers(id),
     model_id TEXT NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
     request_snapshot_json JSON NOT NULL,
     response_snapshot_json JSON,
     state_snapshot_json JSON,
     settings_snapshot_json JSON NOT NULL,
     error_json JSON,
-    created_at TEXT NOT NULL,
-    started_at TEXT,
-    completed_at TEXT,
-    updated_at TEXT NOT NULL,
+    created_at DateTime NOT NULL,
+    started_at DateTime,
+    completed_at DateTime,
+    updated_at DateTime NOT NULL,
     UNIQUE(agent_run_id, seq)
 );
 
@@ -160,30 +160,30 @@ CREATE TABLE tool_invocations (
     server_id TEXT,
     tool_name TEXT NOT NULL,
     runtime_tool_name TEXT NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('requested', 'awaiting_approval', 'running', 'succeeded', 'failed', 'denied', 'canceled')),
     input_json JSON NOT NULL,
     output_json JSON,
     error_json JSON,
-    created_at TEXT NOT NULL,
-    started_at TEXT,
-    completed_at TEXT,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    started_at DateTime,
+    completed_at DateTime,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE conversation_items (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval')),
     agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
     provider_step_id TEXT REFERENCES provider_steps(id) ON DELETE SET NULL,
     tool_invocation_id TEXT REFERENCES tool_invocations(id) ON DELETE SET NULL,
     provider_item_id TEXT,
     payload_json JSON NOT NULL,
     search_text TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL,
     UNIQUE(conversation_id, seq)
 );
 
@@ -193,9 +193,9 @@ CREATE TABLE approval_decisions (
     status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'canceled')),
     request_json JSON NOT NULL,
     decision_json JSON,
-    requested_at TEXT NOT NULL,
-    decided_at TEXT,
-    expires_at TEXT
+    requested_at DateTime NOT NULL,
+    decided_at DateTime,
+    expires_at DateTime
 );
 
 CREATE TABLE usage_events (
@@ -212,28 +212,28 @@ CREATE TABLE usage_events (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     usage_json JSON NOT NULL,
-    created_at TEXT NOT NULL
+    created_at DateTime NOT NULL
 );
 
 CREATE TABLE shortcuts (
     id TEXT PRIMARY KEY,
     hotkey TEXT NOT NULL UNIQUE,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     prompt_id TEXT REFERENCES prompts(id) ON DELETE SET NULL,
     provider_id TEXT REFERENCES providers(id) ON DELETE SET NULL,
     model_id TEXT,
     input_source TEXT NOT NULL CHECK (input_source IN ('selection_or_clipboard', 'screenshot')),
     action_json JSON NOT NULL,
     settings_snapshot_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE TABLE app_settings (
     id TEXT PRIMARY KEY DEFAULT 'default',
     settings_json JSON NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at DateTime NOT NULL,
+    updated_at DateTime NOT NULL
 );
 
 CREATE INDEX idx_conversations_project_id ON conversations(project_id);
@@ -350,8 +350,8 @@ fn existing_schema_version(conn: &mut SqliteConnection) -> Result<Option<i32>> {
         .optional()?)
 }
 
-fn now_string() -> Result<String> {
-    Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
+fn now_string() -> Result<OffsetDateTime> {
+    Ok(OffsetDateTime::now_utc())
 }
 
 #[cfg(test)]

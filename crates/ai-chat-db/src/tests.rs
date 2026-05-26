@@ -6,7 +6,7 @@ use crate::{
 use ai_chat_core::*;
 use diesel::{
     Connection, RunQueryDsl, SqliteConnection, sql_query,
-    sql_types::{BigInt, Integer},
+    sql_types::{BigInt, Integer, Text},
 };
 use serde_json::json;
 use std::{collections::HashSet, fs};
@@ -113,6 +113,124 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
     ] {
         assert!(!tables.contains(disallowed));
     }
+}
+
+#[test]
+fn fresh_schema_declares_structured_sqlite_types_and_checks() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let mut conn = store.pool().get().unwrap();
+
+    let schema_migrations_sql = table_sql(&mut conn, "schema_migrations");
+    assert!(schema_migrations_sql.contains("executed_at DateTime NOT NULL"));
+
+    let providers_sql = table_sql(&mut conn, "providers");
+    assert!(providers_sql.contains("enabled BOOLEAN NOT NULL DEFAULT 1"));
+    assert!(providers_sql.contains("CHECK (enabled IN (0, 1))"));
+    assert!(providers_sql.contains("created_at DateTime NOT NULL"));
+    assert!(providers_sql.contains("updated_at DateTime NOT NULL"));
+
+    let agent_runs_sql = table_sql(&mut conn, "agent_runs");
+    assert!(agent_runs_sql.contains(
+        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'canceled'))"
+    ));
+    assert!(agent_runs_sql.contains("started_at DateTime"));
+    assert!(agent_runs_sql.contains("completed_at DateTime"));
+
+    let conversation_items_sql = table_sql(&mut conn, "conversation_items");
+    assert!(conversation_items_sql.contains(
+        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error'))"
+    ));
+    assert!(conversation_items_sql.contains(
+        "status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval'))"
+    ));
+
+    let tool_invocations_sql = table_sql(&mut conn, "tool_invocations");
+    assert!(tool_invocations_sql.contains(
+        "status TEXT NOT NULL CHECK (status IN ('requested', 'awaiting_approval', 'running', 'succeeded', 'failed', 'denied', 'canceled'))"
+    ));
+}
+
+#[test]
+fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("checks")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "hello"))
+        .unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, "gpt-5"),
+        })
+        .unwrap();
+
+    let mut conn = store.pool().get().unwrap();
+    assert!(
+        sql_query(
+            "INSERT INTO providers \
+             (id, kind, display_name, enabled, settings_json, secret_refs_json, created_at, updated_at) \
+             VALUES ('bad_provider', 'openai', 'Bad', 2, '{}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .execute(&mut conn)
+        .is_err()
+    );
+    assert!(
+        sql_query(
+            "INSERT INTO agent_runs \
+             (id, conversation_id, trigger_kind, status, input_json, created_at, updated_at) \
+             VALUES ('bad_run', ?, 'user', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .bind::<Text, _>(&conversation.id)
+        .execute(&mut conn)
+        .is_err()
+    );
+    assert!(
+        sql_query(
+            "INSERT INTO provider_steps \
+             (id, agent_run_id, seq, provider_id, model_id, status, request_snapshot_json, settings_snapshot_json, created_at, updated_at) \
+             VALUES ('bad_step', ?, 99, ?, 'gpt-5', 'bogus', '{}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .bind::<Text, _>(&agent_run.id)
+        .bind::<Text, _>(&provider.id)
+        .execute(&mut conn)
+        .is_err()
+    );
+    assert!(
+        sql_query(
+            "INSERT INTO tool_invocations \
+             (id, agent_run_id, call_id, source, tool_name, runtime_tool_name, status, input_json, created_at, updated_at) \
+             VALUES ('bad_tool', ?, 'call_bad', 'local', 'read_file', 'read_file', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .bind::<Text, _>(&agent_run.id)
+        .execute(&mut conn)
+        .is_err()
+    );
+    assert!(
+        sql_query(
+            "INSERT INTO conversation_items \
+             (id, conversation_id, seq, kind, status, payload_json, created_at, updated_at) \
+             VALUES ('bad_item_kind', ?, 99, 'bogus', 'completed', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .bind::<Text, _>(&conversation.id)
+        .execute(&mut conn)
+        .is_err()
+    );
+    assert!(
+        sql_query(
+            "INSERT INTO conversation_items \
+             (id, conversation_id, seq, kind, status, payload_json, created_at, updated_at) \
+             VALUES ('bad_item_status', ?, 100, 'message', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        .bind::<Text, _>(&conversation.id)
+        .execute(&mut conn)
+        .is_err()
+    );
 }
 
 #[test]
@@ -919,6 +1037,15 @@ fn busy_timeout(conn: &mut SqliteConnection) -> i32 {
         .timeout
 }
 
+fn table_sql(conn: &mut SqliteConnection, table: &str) -> String {
+    sql_query("SELECT sql AS value FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .bind::<Text, _>(table)
+        .load::<TextRow>(conn)
+        .unwrap()[0]
+        .value
+        .clone()
+}
+
 #[derive(diesel::QueryableByName)]
 struct CountRow {
     #[diesel(sql_type = BigInt)]
@@ -935,6 +1062,12 @@ struct BusyTimeoutRow {
 struct IntRow {
     #[diesel(sql_type = Integer)]
     value: i32,
+}
+
+#[derive(diesel::QueryableByName)]
+struct TextRow {
+    #[diesel(sql_type = Text)]
+    value: String,
 }
 
 fn project(suffix: &str) -> NewProject {
