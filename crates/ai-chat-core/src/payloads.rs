@@ -324,6 +324,8 @@ pub struct StructuredOutput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunInput {
     pub user_item_id: ConversationItemId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_run_id: Option<AgentRunId>,
     pub prompt_snapshot: Option<PromptContent>,
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,

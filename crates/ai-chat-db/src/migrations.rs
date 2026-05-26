@@ -324,7 +324,7 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
         created_app_version: None,
         last_opened_app_version: None,
         payload_json: payload,
-        created_at: now.clone(),
+        created_at: now,
         updated_at: now,
     };
     diesel::insert_into(schema_metadata::table)

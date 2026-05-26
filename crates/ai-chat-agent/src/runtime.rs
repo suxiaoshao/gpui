@@ -1,0 +1,870 @@
+use crate::{
+    AgentRunHandle, AgentRunRequest, AgentRuntimeError, Result, SkillCatalog, SkillLoader,
+    history::build_prompt_history,
+    persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
+};
+use ai_chat_core::*;
+use ai_chat_db::{
+    AgentRunRecord, ApprovalDecisionRecord, FreshRepository, NewApprovalDecisionOutcome,
+    NewConversationItem, UpdateAgentRunStatus, UpdateToolInvocationStatus,
+};
+use rig_core::{
+    agent::AgentBuilder,
+    completion::{CompletionModel, Prompt},
+    tool::{ToolSet, server::ToolServer},
+};
+
+#[derive(Clone)]
+pub struct AgentRuntime {
+    repo: FreshRepository,
+    skill_loader: SkillLoader,
+}
+
+impl AgentRuntime {
+    pub fn new(repo: FreshRepository) -> Self {
+        Self {
+            repo,
+            skill_loader: SkillLoader::new(),
+        }
+    }
+
+    pub fn with_skill_loader(mut self, skill_loader: SkillLoader) -> Self {
+        self.skill_loader = skill_loader;
+        self
+    }
+
+    pub async fn run_with_model<M>(
+        &self,
+        mut request: AgentRunRequest,
+        model: M,
+    ) -> Result<AgentRunHandle>
+    where
+        M: CompletionModel + 'static,
+        M::Response: serde::Serialize + serde::de::DeserializeOwned,
+        M::StreamingResponse: Clone
+            + Unpin
+            + Send
+            + Sync
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + rig_core::completion::GetTokenUsage,
+    {
+        if request.cancellation_token.is_cancelled() {
+            return Err(AgentRuntimeError::Canceled);
+        }
+
+        request.tool_registry.finalize_names();
+        let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(&request))?;
+        agent_run = self.repo.update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Running,
+                output: None,
+                error: None,
+            },
+        )?;
+
+        self.activate_skills(&request, &agent_run.id)?;
+
+        let items = self.repo.conversation_items(&request.conversation_id)?;
+        let prompt_history = build_prompt_history(&items, &request.user_item_id)?;
+
+        let tool_server = ToolServer::new().run();
+        let mut toolset = ToolSet::default();
+        for tool in request
+            .tool_registry
+            .clone()
+            .into_rig_tools(request.guards.tool_timeout)
+        {
+            toolset.add_tool_boxed(tool);
+        }
+        tool_server.append_toolset(toolset).await?;
+
+        let context = PersistenceContext::new(
+            self.repo.clone(),
+            agent_run.id.clone(),
+            request.conversation_id.clone(),
+            request.provider_id.clone(),
+            request.model_id.clone(),
+            request.settings_snapshot.clone(),
+            prompt_history.input_item_ids,
+            request.tool_registry.registered_definitions(),
+            request.guards.max_tool_calls,
+            request.guards.repeated_tool_call_limit,
+            request.cancellation_token.clone(),
+        );
+        let model = PersistingCompletionModel::new(model, context.clone());
+        let hook = context.hook();
+
+        let mut builder = AgentBuilder::new(model)
+            .name("ai-chat-agent")
+            .hook(hook)
+            .tool_server_handle(tool_server)
+            .default_max_turns(request.guards.max_steps as usize);
+        if let Some(prompt) = prompt_preamble(request.prompt_snapshot.as_ref()) {
+            builder = builder.preamble(&prompt);
+        }
+        if !request.provider_tools.is_empty() {
+            builder = builder.additional_params(serde_json::json!({
+                "tools": request.provider_tools,
+            }));
+        }
+        let agent = builder.build();
+
+        let response = agent
+            .prompt(prompt_history.prompt)
+            .with_history(prompt_history.history)
+            .with_tool_concurrency(request.guards.tool_concurrency)
+            .without_memory()
+            .extended_details()
+            .await;
+
+        match response {
+            Ok(_response) => {
+                let output = AgentRunOutput {
+                    final_item_id: context.final_item_id(),
+                    stopped_reason: AgentStoppedReason::Completed,
+                };
+                let agent_run = self.repo.update_agent_run_status(
+                    &agent_run.id,
+                    UpdateAgentRunStatus {
+                        status: AgentRunStatus::Completed,
+                        output: Some(output.clone()),
+                        error: None,
+                    },
+                )?;
+                let mut events = context.events();
+                events.push(AgentRunEvent::Completed {
+                    output: output.clone(),
+                });
+                Ok(AgentRunHandle {
+                    agent_run,
+                    output: Some(output),
+                    events,
+                    steps: context.steps(),
+                })
+            }
+            Err(error) => {
+                let status = self
+                    .repo
+                    .get_agent_run(&agent_run.id)?
+                    .map(|run| run.status)
+                    .unwrap_or(AgentRunStatus::Failed);
+                if status == AgentRunStatus::WaitingForApproval {
+                    let mut events = context.events();
+                    events.push(AgentRunEvent::Failed {
+                        error: run_error("waiting_for_approval", error.to_string(), true, None),
+                    });
+                    let agent_run = self.repo.get_agent_run(&agent_run.id)?.ok_or_else(|| {
+                        AgentRuntimeError::Invariant("agent run disappeared".to_string())
+                    })?;
+                    return Ok(AgentRunHandle {
+                        agent_run,
+                        output: None,
+                        events,
+                        steps: context.steps(),
+                    });
+                }
+
+                let payload = if request.cancellation_token.is_cancelled() {
+                    run_error("canceled", "runtime canceled", false, None)
+                } else {
+                    run_error("prompt_error", error.to_string(), true, None)
+                };
+                let final_status = if request.cancellation_token.is_cancelled() {
+                    AgentRunStatus::Canceled
+                } else {
+                    AgentRunStatus::Failed
+                };
+                let output = (final_status == AgentRunStatus::Canceled).then_some(AgentRunOutput {
+                    final_item_id: context.final_item_id(),
+                    stopped_reason: AgentStoppedReason::Canceled,
+                });
+                let agent_run = self.repo.update_agent_run_status(
+                    &agent_run.id,
+                    UpdateAgentRunStatus {
+                        status: final_status,
+                        output: output.clone(),
+                        error: (final_status == AgentRunStatus::Failed).then_some(payload.clone()),
+                    },
+                )?;
+                let mut events = context.events();
+                if final_status == AgentRunStatus::Canceled {
+                    events.push(AgentRunEvent::Canceled);
+                } else {
+                    events.push(AgentRunEvent::Failed { error: payload });
+                }
+                Ok(AgentRunHandle {
+                    agent_run,
+                    output,
+                    events,
+                    steps: context.steps(),
+                })
+            }
+        }
+    }
+
+    pub fn decide_approval(
+        &self,
+        approval_decision_id: &str,
+        outcome: NewApprovalDecisionOutcome,
+    ) -> Result<ApprovalDecisionRecord> {
+        let approval = self
+            .repo
+            .get_approval_decision(approval_decision_id)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "approval decision {approval_decision_id} is missing"
+                ))
+            })?;
+        let invocation = self
+            .repo
+            .get_tool_invocation(&approval.tool_invocation_id)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "tool invocation {} is missing",
+                    approval.tool_invocation_id
+                ))
+            })?;
+        let updated = self
+            .repo
+            .update_approval_decision(approval_decision_id, outcome)?;
+        if let Some(decision) = updated.decision.as_ref() {
+            let payload = ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
+                approval_decision_id: updated.id.clone(),
+                decision: decision.clone(),
+            });
+            self.repo.append_conversation_item(NewConversationItem {
+                conversation_id: self
+                    .repo
+                    .get_agent_run(&invocation.agent_run_id)?
+                    .ok_or_else(|| {
+                        AgentRuntimeError::Invariant(format!(
+                            "agent run {} is missing",
+                            invocation.agent_run_id
+                        ))
+                    })?
+                    .conversation_id,
+                status: ConversationItemStatus::Completed,
+                agent_run_id: Some(invocation.agent_run_id.clone()),
+                provider_step_id: invocation.provider_step_id.clone(),
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload,
+            })?;
+            if !decision.approved {
+                let output = ToolInvocationOutput {
+                    content: vec![ContentPart::Text {
+                        text: decision
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| "Tool call denied by user".to_string()),
+                    }],
+                    structured_output: None,
+                    raw_output: None,
+                    is_error: true,
+                };
+                self.repo.update_tool_invocation_status(
+                    &invocation.id,
+                    UpdateToolInvocationStatus {
+                        status: ToolInvocationStatus::Denied,
+                        output: Some(output.clone()),
+                        error: None,
+                    },
+                )?;
+                self.repo.append_conversation_item(NewConversationItem {
+                    conversation_id: self
+                        .repo
+                        .get_agent_run(&invocation.agent_run_id)?
+                        .ok_or_else(|| {
+                            AgentRuntimeError::Invariant(format!(
+                                "agent run {} is missing",
+                                invocation.agent_run_id
+                            ))
+                        })?
+                        .conversation_id,
+                    status: ConversationItemStatus::Completed,
+                    agent_run_id: Some(invocation.agent_run_id.clone()),
+                    provider_step_id: invocation.provider_step_id,
+                    tool_invocation_id: Some(invocation.id.clone()),
+                    provider_item_id: None,
+                    payload: ConversationItemPayload::ToolResult(ToolResultItem {
+                        tool_invocation_id: Some(invocation.id),
+                        call_id: invocation.call_id,
+                        content: output.content,
+                        is_error: true,
+                        structured_output: None,
+                    }),
+                })?;
+            }
+        }
+        Ok(updated)
+    }
+
+    pub fn recover_interrupted_runs(&self) -> Result<Vec<AgentRunRecord>> {
+        let mut recovered = Vec::new();
+        for status in [AgentRunStatus::Queued, AgentRunStatus::Running] {
+            for run in self.repo.agent_runs_by_status(status)? {
+                let error = run_error(
+                    "interrupted",
+                    "agent run was interrupted before reaching a terminal state",
+                    true,
+                    None,
+                );
+                recovered.push(self.repo.update_agent_run_status(
+                    &run.id,
+                    UpdateAgentRunStatus {
+                        status: AgentRunStatus::Failed,
+                        output: None,
+                        error: Some(error),
+                    },
+                )?);
+            }
+        }
+        Ok(recovered)
+    }
+
+    fn activate_skills(&self, request: &AgentRunRequest, agent_run_id: &str) -> Result<()> {
+        if request.skill_requests.is_empty() {
+            return Ok(());
+        }
+        let catalog = SkillCatalog::scan(request.project_root.as_deref())?;
+        for skill_request in &request.skill_requests {
+            let entry = catalog.get(&skill_request.name).ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!("skill {} is missing", skill_request.name))
+            })?;
+            let activation = self.skill_loader.load(entry)?;
+            self.repo.append_conversation_item(NewConversationItem {
+                conversation_id: request.conversation_id.clone(),
+                status: ConversationItemStatus::Completed,
+                agent_run_id: Some(agent_run_id.to_string()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationItemPayload::SkillActivation(activation),
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn prompt_preamble(prompt: Option<&PromptContent>) -> Option<String> {
+    let prompt = prompt?;
+    let text = prompt
+        .messages
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.role,
+                TranscriptRole::System | TranscriptRole::Developer
+            )
+        })
+        .flat_map(|message| message.content.iter().filter_map(ContentPart::search_text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LocalTool, McpConnector, ToolDefinition, ToolExecutor, ToolRunPolicy};
+    use ai_chat_db::{
+        ConversationItemRecord, ConversationRecord, FreshStore, NewConversation,
+        NewConversationItem, NewProject, NewProvider, NewProviderModel, ProviderModelRecord,
+        ProviderRecord,
+    };
+    use async_trait::async_trait;
+    use rig_core::test_utils::{MockCompletionModel, MockTurn};
+    use rmcp::{
+        RoleServer, ServerHandler, ServiceExt,
+        model::{
+            CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation,
+            ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+            ServerInfo, Tool,
+        },
+        service::RequestContext,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn no_tool_run_persists_provider_step_and_final_message() {
+        let fixture = Fixture::new("no-tool");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let model = MockCompletionModel::text("hello from model");
+        let handle = runtime
+            .run_with_model(fixture.request(), model)
+            .await
+            .unwrap();
+
+        assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+        assert_eq!(
+            handle.output.unwrap().stopped_reason,
+            AgentStoppedReason::Completed
+        );
+        assert_eq!(
+            fixture
+                .repo
+                .provider_steps_for_run(&handle.agent_run.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        let items = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap();
+        assert!(items.iter().any(|item| matches!(
+            &item.payload,
+            ConversationItemPayload::Message {
+                role: TranscriptRole::Assistant,
+                content,
+            } if content[0].search_text() == Some("hello from model")
+        )));
+    }
+
+    #[tokio::test]
+    async fn rig_tool_call_persists_tool_call_and_result() {
+        let fixture = Fixture::new("tool-run");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request
+            .tool_registry
+            .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
+            .unwrap();
+        let model = MockCompletionModel::new([
+            MockTurn::tool_call("call_1", "echo", json!({"text": "hi"})),
+            MockTurn::text("done"),
+        ]);
+
+        let handle = runtime.run_with_model(request, model).await.unwrap();
+        assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+        let invocations = fixture
+            .repo
+            .tool_invocations_for_run(&handle.agent_run.id)
+            .unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].status, ToolInvocationStatus::Succeeded);
+        assert_eq!(invocations[0].runtime_tool_name, "echo");
+
+        let items = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.payload, ConversationItemPayload::ToolCall(_)))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn rmcp_tool_call_is_registered_and_persisted_with_source_server() {
+        let fixture = Fixture::new("mcp-tool-run");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mcp_service = start_mcp_server(vec![make_mcp_tool("mcp_echo", "Echo over MCP")]).await;
+        let tools = mcp_service.peer().list_all_tools().await.unwrap();
+
+        let mut request = fixture.request();
+        McpConnector::new()
+            .register_rmcp_tools(
+                &mut request.tool_registry,
+                "test-server",
+                tools,
+                mcp_service.peer().clone(),
+                ToolApprovalPolicy::Never,
+                ToolExecutionPolicy::Foreground,
+            )
+            .unwrap();
+        let model = MockCompletionModel::new([
+            MockTurn::tool_call("call_1", "mcp_echo", json!({"text": "hi"})),
+            MockTurn::text("done"),
+        ]);
+
+        let handle = runtime.run_with_model(request, model).await.unwrap();
+        let invocations = fixture
+            .repo
+            .tool_invocations_for_run(&handle.agent_run.id)
+            .unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(
+            invocations[0].source,
+            ToolSource::Mcp {
+                server_id: "test-server".to_string(),
+            }
+        );
+        assert_eq!(invocations[0].tool_name, "mcp_echo");
+        assert_eq!(invocations[0].runtime_tool_name, "mcp_echo");
+        assert_eq!(invocations[0].status, ToolInvocationStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn approval_policy_pauses_run_with_pending_decision() {
+        let fixture = Fixture::new("approval");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request
+            .tool_registry
+            .register_local_tool(EchoTool::new(ToolApprovalPolicy::OnRequest))
+            .unwrap();
+        let model = MockCompletionModel::new([MockTurn::tool_call(
+            "call_1",
+            "echo",
+            json!({"text": "hi"}),
+        )]);
+
+        let handle = runtime.run_with_model(request, model).await.unwrap();
+        assert_eq!(handle.agent_run.status, AgentRunStatus::WaitingForApproval);
+        let pending = fixture.repo.pending_approval_decisions().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(
+            handle
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentRunEvent::ApprovalRequested { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_activation_is_persisted_as_snapshot() {
+        let fixture = Fixture::new("skills");
+        let skill_dir = fixture.dir.path().join(".agents/skills/rust");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_file,
+            "---\nname: rust\ndescription: Rust workflow\n---\nUse cargo test.\n",
+        )
+        .unwrap();
+
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request.project_root = Some(fixture.dir.path().to_path_buf());
+        request.skill_requests = vec![crate::SkillActivationRequest::new("rust")];
+        runtime
+            .run_with_model(request, MockCompletionModel::text("ok"))
+            .await
+            .unwrap();
+        std::fs::write(&skill_file, "---\nname: rust\n---\nUse cargo clippy.\n").unwrap();
+
+        let items = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap();
+        let skill = items
+            .iter()
+            .find_map(|item| match &item.payload {
+                ConversationItemPayload::SkillActivation(skill) => Some(skill),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(skill.name, "rust");
+        assert_eq!(
+            skill.content,
+            vec![ContentPart::Text {
+                text: "---\nname: rust\ndescription: Rust workflow\n---\nUse cargo test.\n"
+                    .to_string(),
+            }]
+        );
+    }
+
+    struct Fixture {
+        dir: TempDir,
+        repo: FreshRepository,
+        conversation: ConversationRecord,
+        provider: ProviderRecord,
+        model: ProviderModelRecord,
+        user_item: ConversationItemRecord,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FreshStore::open_in_dir(dir.path()).unwrap();
+            let repo = store.repository();
+            let project = repo
+                .insert_project(NewProject {
+                    path: dir.path().to_string_lossy().to_string(),
+                    display_name: name.to_string(),
+                    kind: ProjectKind::Normal,
+                    metadata: ProjectMetadata {
+                        scratch_reason: None,
+                        git_root: Some(dir.path().to_string_lossy().to_string()),
+                        last_active_conversation_id: None,
+                    },
+                })
+                .unwrap();
+            let provider = repo
+                .insert_provider(NewProvider {
+                    kind: "openai".to_string(),
+                    display_name: "OpenAI".to_string(),
+                    enabled: true,
+                    settings: provider_settings(),
+                    secret_refs: ProviderSecretRefs { refs: Vec::new() },
+                })
+                .unwrap();
+            let model = repo
+                .upsert_provider_model(NewProviderModel {
+                    provider_id: provider.id.clone(),
+                    model_id: "gpt-5.2".to_string(),
+                    display_name: Some("GPT-5.2".to_string()),
+                    capabilities: model_capabilities(),
+                    metadata: ProviderModelMetadata {
+                        display_name: Some("GPT-5.2".to_string()),
+                        family: Some("gpt".to_string()),
+                        raw: None,
+                    },
+                })
+                .unwrap();
+            let conversation = repo
+                .insert_conversation(NewConversation {
+                    project_id: project.id,
+                    title: name.to_string(),
+                    prompt_id: None,
+                    default_provider_id: Some(provider.id.clone()),
+                    default_model_id: Some(model.model_id.clone()),
+                    metadata: ConversationMetadata {
+                        summary: None,
+                        tags: Vec::new(),
+                        pinned: false,
+                    },
+                    settings_snapshot: ConversationSettingsSnapshot {
+                        prompt: None,
+                        provider_id: Some(provider.id.clone()),
+                        model_id: Some(model.model_id.clone()),
+                        model_capabilities: Some(model_capabilities()),
+                        tool_policy: ToolPolicySnapshot {
+                            approval_policy: ToolApprovalPolicy::Never,
+                            enabled_sources: vec![ToolSource::Local],
+                            max_steps: 8,
+                        },
+                    },
+                })
+                .unwrap();
+            let user_item = repo
+                .append_conversation_item(NewConversationItem {
+                    conversation_id: conversation.id.clone(),
+                    status: ConversationItemStatus::Completed,
+                    agent_run_id: None,
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationItemPayload::Message {
+                        role: TranscriptRole::User,
+                        content: vec![ContentPart::Text {
+                            text: "hello".to_string(),
+                        }],
+                    },
+                })
+                .unwrap();
+            Self {
+                dir,
+                repo,
+                conversation,
+                provider,
+                model,
+                user_item,
+            }
+        }
+
+        fn request(&self) -> AgentRunRequest {
+            AgentRunRequest::new(
+                self.conversation.id.clone(),
+                self.user_item.id.clone(),
+                self.provider.id.clone(),
+                self.model.model_id.clone(),
+                run_settings(&self.provider.id, &self.model.model_id),
+                AgentRuntimeSnapshot {
+                    engine: AgentEngineKind::Rig,
+                    engine_version: "0.37.0".to_string(),
+                    skill_catalog_hash: None,
+                    mcp_config_hash: None,
+                    tool_name_strategy: ToolNameStrategy::Namespaced,
+                },
+            )
+        }
+    }
+
+    #[derive(Clone)]
+    struct EchoTool {
+        approval_policy: ToolApprovalPolicy,
+    }
+
+    impl EchoTool {
+        fn new(approval_policy: ToolApprovalPolicy) -> Self {
+            Self { approval_policy }
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for EchoTool {
+        async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
+            Ok(ToolInvocationOutput {
+                content: vec![ContentPart::Text {
+                    text: arguments
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                }],
+                structured_output: Some(StructuredOutput { value: arguments }),
+                raw_output: None,
+                is_error: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl LocalTool for EchoTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                source: ToolSource::Local,
+                namespace: None,
+                name: "echo".to_string(),
+                description: "Echo text".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string" }
+                    }
+                }),
+                policy: ToolRunPolicy {
+                    approval_policy: self.approval_policy,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                    timeout_ms: None,
+                },
+            }
+        }
+    }
+
+    fn run_settings(provider_id: &str, model_id: &str) -> RunSettingsSnapshot {
+        RunSettingsSnapshot {
+            prompt: Some(PromptContent {
+                messages: vec![PromptMessage {
+                    role: TranscriptRole::System,
+                    content: vec![ContentPart::Text {
+                        text: "You are useful.".to_string(),
+                    }],
+                }],
+            }),
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            model_capabilities: model_capabilities(),
+            provider_settings: provider_settings(),
+            tool_policy: ToolPolicySnapshot {
+                approval_policy: ToolApprovalPolicy::Never,
+                enabled_sources: vec![ToolSource::Local],
+                max_steps: 8,
+            },
+        }
+    }
+
+    fn provider_settings() -> ProviderSettingsPayload {
+        ProviderSettingsPayload {
+            provider_kind: "openai".to_string(),
+            fields: Vec::new(),
+        }
+    }
+
+    fn model_capabilities() -> ModelCapabilitiesSnapshot {
+        ModelCapabilitiesSnapshot {
+            text_input: true,
+            text_output: true,
+            streaming: true,
+            image_input: None,
+            file_input: None,
+            audio_input: false,
+            image_generation: false,
+            tool_calling: Some(ToolCallingCapabilitySnapshot {
+                parallel_tool_calls: true,
+            }),
+            hosted_web_search: true,
+            remote_mcp: false,
+            reasoning: None,
+            structured_output: true,
+            stateful_response_continuation: true,
+            extension: ProviderCapabilityExtensionSnapshot::OpenAi {
+                responses_api: true,
+                raw: None,
+            },
+        }
+    }
+
+    #[derive(Clone)]
+    struct DynamicMcpServer {
+        tools: Arc<RwLock<Vec<Tool>>>,
+    }
+
+    impl DynamicMcpServer {
+        fn new(tools: Vec<Tool>) -> Self {
+            Self {
+                tools: Arc::new(RwLock::new(tools)),
+            }
+        }
+    }
+
+    impl ServerHandler for DynamicMcpServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+                .with_protocol_version(ProtocolVersion::LATEST)
+                .with_server_info(Implementation::new("ai-chat-agent-test", "0.1.0"))
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> std::result::Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(
+                self.tools.read().await.clone(),
+            ))
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> std::result::Result<CallToolResult, ErrorData> {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "called {}",
+                request.name
+            ))]))
+        }
+    }
+
+    fn make_mcp_tool(name: &str, description: &str) -> Tool {
+        Tool::new(
+            name.to_string(),
+            description.to_string(),
+            Arc::new(serde_json::Map::new()),
+        )
+    }
+
+    async fn start_mcp_server(
+        tools: Vec<Tool>,
+    ) -> rmcp::service::RunningService<rmcp::service::RoleClient, ()> {
+        let server = DynamicMcpServer::new(tools);
+        let (client_to_server, server_from_client) = tokio::io::duplex(8192);
+        let (server_to_client, client_from_server) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            let service = server
+                .serve((server_from_client, server_to_client))
+                .await
+                .expect("server failed to start");
+            service.waiting().await.expect("server error");
+        });
+
+        ().serve((client_from_server, client_to_server))
+            .await
+            .expect("client failed to connect")
+    }
+}

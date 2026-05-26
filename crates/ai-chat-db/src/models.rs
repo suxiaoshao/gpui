@@ -224,6 +224,18 @@ pub(crate) struct SqlNewAgentRunRow {
     pub(crate) updated_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = agent_runs)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlAgentRunStatusChanges {
+    pub(crate) status: String,
+    pub(crate) output_json: Option<Value>,
+    pub(crate) error_json: Option<Value>,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = provider_steps)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -260,6 +272,19 @@ pub(crate) struct SqlNewProviderStepRow {
     pub(crate) settings_snapshot_json: Value,
     pub(crate) error_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = provider_steps)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlProviderStepStatusChanges {
+    pub(crate) status: String,
+    pub(crate) response_snapshot_json: Option<Value>,
+    pub(crate) state_snapshot_json: Option<Value>,
+    pub(crate) error_json: Option<Value>,
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
     pub(crate) updated_at: OffsetDateTime,
@@ -310,6 +335,18 @@ pub(crate) struct SqlNewToolInvocationRow {
     pub(crate) updated_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = tool_invocations)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlToolInvocationStatusChanges {
+    pub(crate) status: String,
+    pub(crate) output_json: Option<Value>,
+    pub(crate) error_json: Option<Value>,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = approval_decisions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -333,6 +370,16 @@ pub(crate) struct SqlNewApprovalDecisionRow {
     pub(crate) request_json: Value,
     pub(crate) decision_json: Option<Value>,
     pub(crate) requested_at: OffsetDateTime,
+    pub(crate) decided_at: Option<OffsetDateTime>,
+    pub(crate) expires_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = approval_decisions)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlApprovalDecisionChanges {
+    pub(crate) status: String,
+    pub(crate) decision_json: Option<Value>,
     pub(crate) decided_at: Option<OffsetDateTime>,
     pub(crate) expires_at: Option<OffsetDateTime>,
 }

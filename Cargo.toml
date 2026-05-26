@@ -6,6 +6,7 @@ members = [
   "app/novel-download",
   "crates/app-assets",
   "crates/app-theme",
+  "crates/ai-chat-agent",
   "crates/ai-chat-core",
   "crates/ai-chat-db",
   "crates/platform-ext",
@@ -23,10 +24,18 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
 ai-chat-core = { path = "./crates/ai-chat-core" }
 ai-chat-db = { path = "./crates/ai-chat-db" }
+ai-chat-agent = { path = "./crates/ai-chat-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
+rig-core = { version = "0.37.0", features = ["rmcp"] }
+rmcp = { version = "1.7.0", features = [
+  "client",
+  "macros",
+  "transport-child-process",
+  "transport-streamable-http-client-reqwest",
+] }
 
 [patch.crates-io]
 gpui = { git = "https://github.com/zed-industries/zed" }
