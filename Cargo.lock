@@ -181,6 +181,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-chat-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "ai-chat-db"
+version = "0.1.0"
+dependencies = [
+ "ai-chat-core",
+ "diesel",
+ "libsqlite3-sys",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tracing",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

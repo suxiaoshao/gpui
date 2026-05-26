@@ -6,6 +6,8 @@ members = [
   "app/novel-download",
   "crates/app-assets",
   "crates/app-theme",
+  "crates/ai-chat-core",
+  "crates/ai-chat-db",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
@@ -19,6 +21,8 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
+ai-chat-core = { path = "./crates/ai-chat-core" }
+ai-chat-db = { path = "./crates/ai-chat-db" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
 window-ext = { path = "./crates/window-ext" }
