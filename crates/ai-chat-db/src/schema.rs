@@ -1,7 +1,7 @@
 diesel::table! {
     schema_migrations (name) {
         name -> Text,
-        executed_at -> Text,
+        executed_at -> TimestamptzSqlite,
     }
 }
 
@@ -12,8 +12,8 @@ diesel::table! {
         created_app_version -> Nullable<Text>,
         last_opened_app_version -> Nullable<Text>,
         payload_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -24,9 +24,9 @@ diesel::table! {
         display_name -> Text,
         kind -> Text,
         metadata_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
-        last_opened_at -> Nullable<Text>,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
+        last_opened_at -> Nullable<TimestamptzSqlite>,
     }
 }
 
@@ -42,10 +42,10 @@ diesel::table! {
         last_item_seq -> Integer,
         metadata_json -> Json,
         settings_snapshot_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
-        archived_at -> Nullable<Text>,
-        deleted_at -> Nullable<Text>,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
+        archived_at -> Nullable<TimestamptzSqlite>,
+        deleted_at -> Nullable<TimestamptzSqlite>,
     }
 }
 
@@ -62,8 +62,8 @@ diesel::table! {
         provider_item_id -> Nullable<Text>,
         payload_json -> Json,
         search_text -> Text,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -82,8 +82,8 @@ diesel::table! {
         sha256 -> Nullable<Text>,
         size_bytes -> Nullable<BigInt>,
         metadata_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -96,10 +96,10 @@ diesel::table! {
         input_json -> Json,
         output_json -> Nullable<Json>,
         error_json -> Nullable<Json>,
-        created_at -> Text,
-        started_at -> Nullable<Text>,
-        completed_at -> Nullable<Text>,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        started_at -> Nullable<TimestamptzSqlite>,
+        completed_at -> Nullable<TimestamptzSqlite>,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -116,10 +116,10 @@ diesel::table! {
         state_snapshot_json -> Nullable<Json>,
         settings_snapshot_json -> Json,
         error_json -> Nullable<Json>,
-        created_at -> Text,
-        started_at -> Nullable<Text>,
-        completed_at -> Nullable<Text>,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        started_at -> Nullable<TimestamptzSqlite>,
+        completed_at -> Nullable<TimestamptzSqlite>,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -138,10 +138,10 @@ diesel::table! {
         input_json -> Json,
         output_json -> Nullable<Json>,
         error_json -> Nullable<Json>,
-        created_at -> Text,
-        started_at -> Nullable<Text>,
-        completed_at -> Nullable<Text>,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        started_at -> Nullable<TimestamptzSqlite>,
+        completed_at -> Nullable<TimestamptzSqlite>,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -152,9 +152,9 @@ diesel::table! {
         status -> Text,
         request_json -> Json,
         decision_json -> Nullable<Json>,
-        requested_at -> Text,
-        decided_at -> Nullable<Text>,
-        expires_at -> Nullable<Text>,
+        requested_at -> TimestamptzSqlite,
+        decided_at -> Nullable<TimestamptzSqlite>,
+        expires_at -> Nullable<TimestamptzSqlite>,
     }
 }
 
@@ -173,7 +173,7 @@ diesel::table! {
         reasoning_tokens -> BigInt,
         total_tokens -> BigInt,
         usage_json -> Json,
-        created_at -> Text,
+        created_at -> TimestamptzSqlite,
     }
 }
 
@@ -184,8 +184,8 @@ diesel::table! {
         content_json -> Json,
         enabled -> Bool,
         sort_order -> Integer,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -200,8 +200,8 @@ diesel::table! {
         input_source -> Text,
         action_json -> Json,
         settings_snapshot_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -213,8 +213,8 @@ diesel::table! {
         enabled -> Bool,
         settings_json -> Json,
         secret_refs_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -226,9 +226,9 @@ diesel::table! {
         display_name -> Nullable<Text>,
         capabilities_json -> Json,
         metadata_json -> Json,
-        fetched_at -> Text,
-        created_at -> Text,
-        updated_at -> Text,
+        fetched_at -> TimestamptzSqlite,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 
@@ -236,8 +236,8 @@ diesel::table! {
     app_settings (id) {
         id -> Text,
         settings_json -> Json,
-        created_at -> Text,
-        updated_at -> Text,
+        created_at -> TimestamptzSqlite,
+        updated_at -> TimestamptzSqlite,
     }
 }
 

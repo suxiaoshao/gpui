@@ -47,24 +47,22 @@ app/ai-chat/              # 现有应用，保持可运行和可回退
 app/ai-chat2/             # 新应用，薄 GPUI shell，只做窗口、路由、UI 状态组合
 crates/ai-chat-core/      # 领域数据契约：project、conversation item、content、prompt、run/tool 类型
 crates/ai-chat-db/        # fresh SQLite schema、migrations、typed repositories
-crates/ai-chat-provider/  # provider-neutral trait、capabilities、OpenAI/Ollama 等 adapter
-crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation、cancel/retry
+crates/ai-chat-agent/     # Rig adapter、agent loop、tool registry、approval、continuation、cancel/retry
 ```
 
 拆分边界：
 
 - `ai-chat-core` 不依赖 GPUI、Diesel、HTTP client 或具体 provider。它只定义可序列化的数据契约和核心不变量。
 - `ai-chat-db` 依赖 `ai-chat-core`，负责 SQL `JSON` typed roundtrip、migration 和 repository transaction。全文搜索/FTS 暂未实现。
-- `ai-chat-provider` 依赖 `ai-chat-core`，负责把 canonical context 转换到 provider wire format，并把 provider stream 转回 provider-neutral events。
-- `ai-chat-agent` 依赖 `ai-chat-core`、`ai-chat-provider` 和 repository traits，负责多步 loop、tool execution、approval 和写入 canonical items。
+- `ai-chat-agent` 依赖 `ai-chat-core` 和 repository traits，负责把 canonical context 转换为 Rig messages、观测 provider step、执行多步 loop、tool execution、approval 和写入 canonical items。
 - `app/ai-chat2` 依赖这些 crates，但不拥有长期业务模型。UI 只消费 repository/agent API 和 `ai-chat-core` 类型。
 
 迁移策略：
 
 - #155 只固定文档、schema、Rust 数据契约和 issue 重排。
 - #156 先 scaffold `ai-chat-core` 和 `ai-chat-db`，并让 fresh database bootstrap 和 repository tests 可以独立通过；可同时创建最小 `app/ai-chat2` 壳，但不要求迁移 UI。
-- #157 把 provider-neutral trait、capabilities、adapter 边界沉淀到 `ai-chat-provider`。
-- #158 在 `ai-chat-agent` 中实现 agent loop 和持久化写入。
+- #157 清理 `ai-chat-db` fresh schema 的 SQLite 时间、布尔和 closed enum/status 类型约束。
+- #158 在 `ai-chat-agent` 中实现 Rig adapter、agent loop 和持久化写入。
 - #159 再让 `app/ai-chat2` 使用新 crates 渲染项目、对话、timeline、tool、approval 和多模态内容。
 - 旧 `app/ai-chat` 在迁移期间作为 legacy app 保持可用。legacy database 的读取、导出、导入或只读浏览策略必须显式实现，不能默默接入 fresh store。
 - 不预设“全部迁完后必须合并回 `app/ai-chat`”。如果拆出的 crates 是清晰边界，应保留它们；最终可以让 `app/ai-chat2` 替换旧 app，也可以让旧 app 逐步改为使用这些 crates。

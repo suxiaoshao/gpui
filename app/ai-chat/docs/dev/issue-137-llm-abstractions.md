@@ -27,7 +27,7 @@
 | #154 | `codex/issue-154-typed-message-content` | 合并 typed message content model | 已被 fresh database 方向取代；除非重新定义 scope，否则只保留为上下文 |
 | #155 | `codex/issue-155-ai-chat2-crate-split` | 固定 `ai-chat2` 并行重构、crate 拆分、fresh database 和 typed data model | 设计文档已通过 PR #160 合入集成分支；GitHub issue 仍未关闭 |
 | #156 | `codex/issue-156-fresh-db-bootstrap` | scaffold `ai-chat-core` / `ai-chat-db`，实现 fresh database bootstrap 和 typed repositories | 已通过 PR #161 合入集成分支；GitHub issue 仍未关闭 |
-| #157 | `codex/issue-157-provider-runtime-crate` | 抽出 `ai-chat-provider`，沉淀 provider-neutral trait、capabilities 和 adapter 边界 | 待处理 |
+| #157 | `codex/issue-157-provider-runtime-crate` | 清理 `ai-chat-db` SQLite 时间、布尔和 closed enum/status 类型约束 | 进行中 |
 | #158 | `codex/issue-158-agent-runtime-persistence` | 建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool/approval runtime 和持久化写入 | 待处理 |
 | #159 | `codex/issue-159-ai-chat2-ui` | 在 `app/ai-chat2` 渲染项目、对话、多步 reasoning、tool、approval、多模态 timeline | 待处理 |
 
@@ -47,13 +47,14 @@
 - 当前首选方向是设计 fresh ai-chat database schema，不再继续在旧 `messages.content` / `send_content` / `input_content_parts` 模型上叠 migration 和兼容逻辑。
 - #155 已通过 PR #160 把 `ai-chat2` 并行重构、crate 拆分、fresh database schema 和 typed data model 设计合入集成分支；GitHub issue 仍未关闭。
 - #156 已通过 PR #161 把 `codex/issue-156-fresh-db-bootstrap` 合入 `codex/issue-137-llm-abstractions`：新增 `ai-chat-core` / `ai-chat-db`，完成 fresh database bootstrap、typed payload、typed repository、migration ledger 和 legacy-store coexistence tests；未新增 `app/ai-chat2` 壳，全文搜索/FTS 暂未实现。GitHub issue 仍未关闭。
-- #157 已更新为：抽出 `ai-chat-provider`，把 provider-neutral trait、capabilities、OpenAI/Ollama adapter 边界从旧 app 债务中隔离出来。
+- #157 已调整为：清理 `ai-chat-db` fresh schema 的 SQLite 类型表达和约束，包括时间列、布尔列和 closed enum/status `CHECK`。
 - #158 已更新为：建立 `ai-chat-agent`，用 Rig + rmcp 实现 agent loop、file-backed skills、MCP/tool registry、approval、continuation、cancel/retry，并写入 fresh persistence。
 - #159 已更新为：让 `app/ai-chat2` 使用新 crates 渲染项目、对话、timeline、tool、approval 和多模态内容。
 - 2026-05-23 已读取并更新 GitHub #137、#155-#159。#137 正文已指向 `ai-chat2` 并行重构和新的子 issue 序列；#155-#159 title/body 已按“后续 Issue 调整提案”同步；PR #160 已把 #155 设计文档合入集成分支。
 - 2026-05-24 已同步 GitHub #137、#156、#158：agent runtime 采用 Rig + rmcp；skills 和 MCP server 配置从文件/配置读取，不作为 fresh database source tables。现有 fresh DB 结构支持 Rig execution persistence，只需补充 runtime snapshot、skill activation transcript item 和 runtime tool name 映射。
 - 2026-05-24 已完成 #156 本地实现和验证：`cargo test -p ai-chat-core`、`cargo test -p ai-chat-db`、`cargo clippy -p ai-chat-core --all-targets --all-features -- -D warnings`、`cargo clippy -p ai-chat-db --all-targets --all-features -- -D warnings` 和 `git diff --check` 均通过。
 - 2026-05-26 已同步 GitHub #137、#156-#159 和 PR 状态：PR #161 已合入集成分支；#156-#159 仍为 open issues；下一步实现子 issue 是 #157。
+- 2026-05-26 决定不再为 Rig 路线保留独立 `ai-chat-provider` crate。#157 改为数据库类型/约束清理；Rig adapter、provider step 持久化和 provider 观测边界归入 #158 的 `ai-chat-agent`。
 
 ## 当前架构事实
 
@@ -146,7 +147,7 @@ Issue #139 建立了以下 Rust 运行时类型：
 高层决策：
 
 - 新模型通过 `app/ai-chat2` 和独立 crates 落地，不在旧 `app/ai-chat` 内做原地大重构。旧 app 保持可运行，用作 legacy path。
-- `app/ai-chat2` 是薄 GPUI shell。领域模型、fresh database、provider adapter、agent runtime 分别进入 `ai-chat-core`、`ai-chat-db`、`ai-chat-provider`、`ai-chat-agent`。
+- `app/ai-chat2` 是薄 GPUI shell。领域模型、fresh database、agent runtime 分别进入 `ai-chat-core`、`ai-chat-db`、`ai-chat-agent`；Rig provider adapter 和 provider step 观测边界属于 `ai-chat-agent`。
 - #156 优先创建 `ai-chat-core` 和 `ai-chat-db`，让 schema bootstrap 和 typed repository tests 独立通过；UI 迁移留给 #159。
 - 使用 SQLite-first fresh store，typed JSON payload 必须落到 SQL `JSON` 列。每个 app 自有 JSON 列必须映射到一个具名 Rust 类型，并使用严格 serde 解码；不要使用 `TEXT` 列保存 JSON 字符串。
 - 项目就是实际文件夹。scratch 或 no-project chats 必须使用 app 创建的 scratch folder，并写入 `projects` 行。
@@ -170,16 +171,14 @@ app/ai-chat/              # 现有 legacy app，迁移期保持可运行
 app/ai-chat2/             # 新 GPUI app shell，只组合 UI、窗口、路由和状态
 crates/ai-chat-core/      # 领域数据契约和核心不变量
 crates/ai-chat-db/        # fresh SQLite schema、migrations、typed repositories
-crates/ai-chat-provider/  # provider-neutral trait、capabilities、OpenAI/Ollama adapter
-crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation、cancel/retry
+crates/ai-chat-agent/     # Rig adapter、agent loop、tool registry、approval、continuation、cancel/retry
 ```
 
 边界约束：
 
 - `ai-chat-core` 不能依赖 GPUI、Diesel、HTTP client 或具体 provider。
 - `ai-chat-db` 依赖 `ai-chat-core`，负责 SQL `JSON` typed roundtrip、migration 和 repository transaction。全文搜索/FTS 暂未实现，是否需要单独搜索索引留给后续 issue 决定。
-- `ai-chat-provider` 依赖 `ai-chat-core`，负责 provider wire conversion 和 provider-step events。
-- `ai-chat-agent` 依赖 core/provider/repository traits，负责 Rig + rmcp 多步 agent loop、tool registry、file-backed skills、MCP runtime、approval 和 canonical item 写入。
+- `ai-chat-agent` 依赖 core 和 repository traits，负责 Rig + rmcp 多步 agent loop、Rig message conversion、provider step 观测、tool registry、file-backed skills、MCP runtime、approval 和 canonical item 写入。
 - `app/ai-chat2` 只依赖这些 crates，不重新拥有长期业务模型。
 - 旧 `app/ai-chat` 不在 #156-#159 中被强制迁移；它可以继续承载 legacy UI 和旧数据库访问，直到有明确替代策略。
 
@@ -206,7 +205,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 范围：
 
 - 明确采用 `app/ai-chat2` 并行重构，而不是在旧 `app/ai-chat` 中原地替换全部数据层和 UI。
-- 定义 `ai-chat-core`、`ai-chat-db`、`ai-chat-provider`、`ai-chat-agent`、`app/ai-chat2` 的 ownership boundary。
+- 定义 `ai-chat-core`、`ai-chat-db`、`ai-chat-agent`、`app/ai-chat2` 的 ownership boundary。
 - 围绕 projects、canonical conversation items、agent runs、provider steps、tool invocations、approvals、usage events、prompts、shortcuts、providers、provider model caches、app settings、deduplicated attachments 定义新 schema。
 - 在实现前定义每个 app 自有 JSON payload 对应的 Rust 类型。Repository API 中不要留下含糊的 `serde_json::Value` payload。
 - 决定新 database file name 和 bootstrap strategy。新 store 不能覆盖已有 v1-v6 stores。
@@ -236,18 +235,18 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 - 增加 tests，覆盖 new database creation、internal version detection、repeated idempotent bootstrap、empty first run、transaction boundaries、cascade deletes、item ordering、typed JSON roundtrip、provider model cache persistence、legacy-store coexistence。
 - 全文搜索/FTS 不在 #156 实现。`conversation_items.search_text` 仅作为普通派生文本字段保留，后续如果确认需要搜索，再单独设计 FTS、external-content FTS 或其他索引方案。
 
-### #157 provider runtime crate
+### #157 ai-chat-db SQLite 类型清理
 
-标题建议：`[tech] ai-chat: extract provider-neutral runtime crate for ai-chat2`
+标题建议：`[tech] ai-chat-db: clean up SQLite types and constraints`
 
 范围：
 
-- 新增 `crates/ai-chat-provider`，承载 provider-neutral provider trait、provider-step request/event/state、model capability snapshots 和 adapter conversion。
-- 保持 `Provider` 只负责一次 provider run，不执行 local/MCP tools，不拥有 multi-step loop。
-- 把 OpenAI Responses、Ollama chat/show 等 provider-specific request/stream conversion 留在 adapter 内。
-- provider request/response snapshot 只进入 `provider_steps` debug/replay path，不成为 canonical chat history。
-- provider models 采用设置页手动刷新、保存到 `provider_models`、启动读缓存的策略。
-- 增加 tests，覆盖 capability mapping、unsupported content rejection、provider-specific extension roundtrip、request snapshot redaction boundary。
+- 不新增 `ai-chat-provider` crate；未来 Rig provider integration 归入 #158 的 `ai-chat-agent`。
+- 在 `crates/ai-chat-db` fresh schema 中把时间列改为 SQLite `DateTime`，Diesel schema 映射为 `TimestamptzSqlite`，repository row 使用 `OffsetDateTime`。
+- 将 `providers.enabled`、`prompts.enabled`、`shortcuts.enabled` 表达为 `BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))`。
+- 给 `agent_runs.status`、`provider_steps.status`、`tool_invocations.status`、`conversation_items.kind`、`conversation_items.status` 等 closed enum/status 列补充 `CHECK`。
+- 不做 legacy schema 兼容迁移；只修改 fresh schema、typed Diesel schema 和 repository 映射。
+- 增加 tests，覆盖 bootstrap DDL、非法 boolean、非法 enum/status 和 repository `OffsetDateTime` roundtrip。
 
 ### #158 agent runtime 和持久化
 
@@ -428,7 +427,7 @@ crates/ai-chat-agent/     # agent loop、tool registry、approval、continuation
 
 ## 下一个子 Issue 约束
 
-#156 已通过 PR #161 完成 fresh core/db bootstrap 并合入集成分支。下一步实现子 issue 是 #157，用于抽出 provider runtime crate。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
+#156 已通过 PR #161 完成 fresh core/db bootstrap 并合入集成分支。下一步实现子 issue 是 #157，用于清理 fresh SQLite schema 的时间、布尔和 closed enum/status 类型约束。#155 已把 `ai-chat2` 并行重构、crate 拆分和后续 issue 重排固定到设计文档中。除非明确重新定义 scope，否则 #154 不应作为旧 `messages` table 上的窄补丁继续推进。
 
 - GitHub #155-#159 的 title/body 已与“后续 Issue 调整提案”保持一致；后续修改必须先更新文档再同步线上 issue，避免实现继续沿旧 `app/ai-chat` 原地改造路线推进。
 - #156 已从 `crates/ai-chat-core` 和 `crates/ai-chat-db` 落地；没有先改旧 app UI，也没有新增 `app/ai-chat2` shell。
