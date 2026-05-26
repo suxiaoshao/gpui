@@ -16,6 +16,7 @@ pub(crate) struct PromptHistory {
 pub(crate) fn build_prompt_history(
     items: &[ConversationItemRecord],
     user_item_id: &str,
+    agent_run_id: &str,
 ) -> Result<PromptHistory> {
     let user_index = items
         .iter()
@@ -23,17 +24,31 @@ pub(crate) fn build_prompt_history(
         .ok_or_else(|| {
             AgentRuntimeError::Invariant(format!("user item {user_item_id} is missing"))
         })?;
-    let prompt = conversation_item_to_rig_message(&items[user_index])?.ok_or_else(|| {
-        AgentRuntimeError::Invariant(format!("user item {user_item_id} cannot be used as prompt"))
-    })?;
+    let current_run_skill_items = items[user_index + 1..]
+        .iter()
+        .filter(|item| {
+            item.agent_run_id.as_deref() == Some(agent_run_id)
+                && matches!(item.payload, ConversationItemPayload::SkillActivation(_))
+        })
+        .collect::<Vec<_>>();
+    let prompt = if current_run_skill_items.is_empty() {
+        conversation_item_to_rig_message(&items[user_index])?.ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "user item {user_item_id} cannot be used as prompt"
+            ))
+        })?
+    } else {
+        user_prompt_with_skill_context(&items[user_index], &current_run_skill_items)?
+    };
     let history = items[..user_index]
         .iter()
         .filter_map(|item| conversation_item_to_rig_message(item).transpose())
         .collect::<Result<Vec<_>>>()?;
-    let input_item_ids = items[..=user_index]
+    let mut input_item_ids = items[..=user_index]
         .iter()
         .map(|item| item.id.clone())
-        .collect();
+        .collect::<Vec<_>>();
+    input_item_ids.extend(current_run_skill_items.iter().map(|item| item.id.clone()));
     Ok(PromptHistory {
         prompt,
         history,
@@ -57,12 +72,9 @@ pub(crate) fn conversation_item_to_rig_message(
                 TranscriptRole::Tool => Some(RigMessage::user(text)),
             }
         }
-        ConversationItemPayload::SkillActivation(skill) => Some(RigMessage::system(format!(
-            "Loaded skill `{}` from {}:\n{}",
-            skill.name,
-            skill.skill_file_path,
-            content_text(&skill.content)
-        ))),
+        ConversationItemPayload::SkillActivation(skill) => {
+            Some(RigMessage::user(skill_activation_context(skill)))
+        }
         ConversationItemPayload::Reasoning { text, summary } => {
             let reasoning = summary.as_ref().map_or_else(
                 || rig_core::message::Reasoning::new(text),
@@ -98,6 +110,43 @@ pub(crate) fn conversation_item_to_rig_message(
         ))),
         ConversationItemPayload::ApprovalRequest(_) | ConversationItemPayload::Status(_) => None,
     })
+}
+
+fn user_prompt_with_skill_context(
+    user_item: &ConversationItemRecord,
+    skill_items: &[&ConversationItemRecord],
+) -> Result<RigMessage> {
+    let ConversationItemPayload::Message {
+        role: TranscriptRole::User,
+        content,
+    } = &user_item.payload
+    else {
+        return Err(AgentRuntimeError::Invariant(format!(
+            "user item {} cannot be merged with skill context",
+            user_item.id
+        )));
+    };
+
+    let mut text = content_text(content);
+    for item in skill_items {
+        let ConversationItemPayload::SkillActivation(skill) = &item.payload else {
+            continue;
+        };
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&skill_activation_context(skill));
+    }
+    Ok(RigMessage::user(text))
+}
+
+fn skill_activation_context(skill: &SkillActivationItem) -> String {
+    format!(
+        "<skill>\n<name>{}</name>\n<path>{}</path>\n{}\n</skill>",
+        skill.name,
+        skill.skill_file_path,
+        content_text(&skill.content)
+    )
 }
 
 pub(crate) fn content_text(content: &[ContentPart]) -> String {

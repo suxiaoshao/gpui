@@ -67,7 +67,7 @@ impl AgentRuntime {
         self.activate_skills(&request, &agent_run.id)?;
 
         let items = self.repo.conversation_items(&request.conversation_id)?;
-        let prompt_history = build_prompt_history(&items, &request.user_item_id)?;
+        let prompt_history = build_prompt_history(&items, &request.user_item_id, &agent_run.id)?;
 
         let tool_server = ToolServer::new().run();
         let mut toolset = ToolSet::default();
@@ -151,10 +151,7 @@ impl AgentRuntime {
                     .map(|run| run.status)
                     .unwrap_or(AgentRunStatus::Failed);
                 if status == AgentRunStatus::WaitingForApproval {
-                    let mut events = context.events();
-                    events.push(AgentRunEvent::Failed {
-                        error: run_error("waiting_for_approval", error.to_string(), true, None),
-                    });
+                    let events = context.events();
                     let agent_run = self.repo.get_agent_run(&agent_run.id)?.ok_or_else(|| {
                         AgentRuntimeError::Invariant("agent run disappeared".to_string())
                     })?;
@@ -375,7 +372,11 @@ mod tests {
         ProviderRecord,
     };
     use async_trait::async_trait;
-    use rig_core::test_utils::{MockCompletionModel, MockTurn};
+    use rig_core::{
+        completion::Message as RigMessage,
+        message::UserContent,
+        test_utils::{MockCompletionModel, MockTurn},
+    };
     use rmcp::{
         RoleServer, ServerHandler, ServiceExt,
         model::{
@@ -531,6 +532,13 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, AgentRunEvent::ApprovalRequested { .. }))
         );
+        assert!(
+            !handle
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentRunEvent::Failed { .. }))
+        );
+        assert_eq!(handle.agent_run.error, None);
     }
 
     #[tokio::test]
@@ -549,8 +557,9 @@ mod tests {
         let mut request = fixture.request();
         request.project_root = Some(fixture.dir.path().to_path_buf());
         request.skill_requests = vec![crate::SkillActivationRequest::new("rust")];
-        runtime
-            .run_with_model(request, MockCompletionModel::text("ok"))
+        let model = MockCompletionModel::text("ok");
+        let handle = runtime
+            .run_with_model(request, model.clone())
             .await
             .unwrap();
         std::fs::write(&skill_file, "---\nname: rust\n---\nUse cargo clippy.\n").unwrap();
@@ -573,6 +582,31 @@ mod tests {
                 text: "---\nname: rust\ndescription: Rust workflow\n---\nUse cargo test.\n"
                     .to_string(),
             }]
+        );
+        let skill_item = items
+            .iter()
+            .find(|item| matches!(item.payload, ConversationItemPayload::SkillActivation(_)))
+            .unwrap();
+        let provider_steps = fixture
+            .repo
+            .provider_steps_for_run(&handle.agent_run.id)
+            .unwrap();
+        assert_eq!(provider_steps.len(), 1);
+        assert_eq!(
+            provider_steps[0].request_snapshot.input_item_ids,
+            vec![fixture.user_item.id.clone(), skill_item.id.clone()]
+        );
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 1);
+        let messages = requests[0].chat_history.iter().collect::<Vec<_>>();
+        let last_message_text = rig_message_text(messages.last().unwrap());
+        assert!(last_message_text.starts_with("hello\n\n<skill>\n<name>rust</name>"));
+        assert!(last_message_text.contains("Use cargo test."));
+        assert!(
+            messages[..messages.len() - 1]
+                .iter()
+                .all(|message| !rig_message_text(message).contains("<skill>"))
         );
     }
 
@@ -795,6 +829,21 @@ mod tests {
                 responses_api: true,
                 raw: None,
             },
+        }
+    }
+
+    fn rig_message_text(message: &RigMessage) -> String {
+        match message {
+            RigMessage::System { content } => content.clone(),
+            RigMessage::User { content } => content
+                .iter()
+                .filter_map(|content| match content {
+                    UserContent::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            RigMessage::Assistant { .. } => String::new(),
         }
     }
 

@@ -110,25 +110,35 @@ impl ToolRegistry {
     }
 
     pub fn finalize_names(&mut self) {
-        let mut counts = BTreeMap::<String, usize>::new();
-        for entry in &self.entries {
-            *counts.entry(entry.definition.name.clone()).or_default() += 1;
+        let sanitized_names = self
+            .entries
+            .iter()
+            .map(|entry| sanitize_tool_name(&entry.definition.name))
+            .collect::<Vec<_>>();
+
+        let mut name_counts = BTreeMap::<String, usize>::new();
+        for name in &sanitized_names {
+            *name_counts.entry(name.clone()).or_default() += 1;
         }
 
-        for entry in &mut self.entries {
-            entry.runtime_tool_name = if counts[&entry.definition.name] == 1 {
-                sanitize_tool_name(&entry.definition.name)
+        let mut assigned_counts = BTreeMap::<String, usize>::new();
+        for (entry, sanitized_name) in self.entries.iter_mut().zip(sanitized_names) {
+            let candidate = if name_counts[&sanitized_name] == 1 {
+                sanitized_name
             } else {
                 let namespace = entry
                     .definition
                     .namespace
                     .clone()
                     .unwrap_or_else(|| tool_source_namespace(&entry.definition.source));
-                format!(
-                    "{}__{}",
-                    sanitize_tool_name(&namespace),
-                    sanitize_tool_name(&entry.definition.name)
-                )
+                format!("{}__{}", sanitize_tool_name(&namespace), sanitized_name)
+            };
+            let assigned_count = assigned_counts.entry(candidate.clone()).or_default();
+            *assigned_count += 1;
+            entry.runtime_tool_name = if *assigned_count == 1 {
+                candidate
+            } else {
+                format!("{candidate}__{assigned_count}")
             };
         }
         self.finalized = true;
@@ -320,6 +330,17 @@ mod tests {
     struct EchoTool {
         source: ToolSource,
         namespace: Option<String>,
+        name: String,
+    }
+
+    impl EchoTool {
+        fn new(name: &str, source: ToolSource, namespace: Option<&str>) -> Self {
+            Self {
+                source,
+                namespace: namespace.map(ToString::to_string),
+                name: name.to_string(),
+            }
+        }
     }
 
     #[async_trait]
@@ -342,7 +363,7 @@ mod tests {
             ToolDefinition {
                 source: self.source.clone(),
                 namespace: self.namespace.clone(),
-                name: "echo".to_string(),
+                name: self.name.clone(),
                 description: "Echo arguments".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
                 policy: ToolRunPolicy::default(),
@@ -354,20 +375,22 @@ mod tests {
     fn duplicate_tool_names_are_namespaced() {
         let mut registry = ToolRegistry::new();
         registry
-            .register_local_tool(EchoTool {
-                source: ToolSource::Mcp {
+            .register_local_tool(EchoTool::new(
+                "echo",
+                ToolSource::Mcp {
                     server_id: "server-a".to_string(),
                 },
-                namespace: Some("server-a".to_string()),
-            })
+                Some("server-a"),
+            ))
             .unwrap();
         registry
-            .register_local_tool(EchoTool {
-                source: ToolSource::Mcp {
+            .register_local_tool(EchoTool::new(
+                "echo",
+                ToolSource::Mcp {
                     server_id: "server-b".to_string(),
                 },
-                namespace: Some("server-b".to_string()),
-            })
+                Some("server-b"),
+            ))
             .unwrap();
         registry.finalize_names();
         let names = registry
@@ -376,5 +399,77 @@ mod tests {
             .map(|definition| definition.runtime_tool_name)
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["server_a__echo", "server_b__echo"]);
+    }
+
+    #[test]
+    fn sanitized_tool_name_collisions_are_namespaced() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_local_tool(EchoTool::new(
+                "read-file",
+                ToolSource::Mcp {
+                    server_id: "server-a".to_string(),
+                },
+                Some("server-a"),
+            ))
+            .unwrap();
+        registry
+            .register_local_tool(EchoTool::new(
+                "read_file",
+                ToolSource::Mcp {
+                    server_id: "server-b".to_string(),
+                },
+                Some("server-b"),
+            ))
+            .unwrap();
+
+        registry.finalize_names();
+        let names = registry
+            .registered_definitions()
+            .into_iter()
+            .map(|definition| definition.runtime_tool_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["server_a__read_file", "server_b__read_file"]);
+    }
+
+    #[test]
+    fn namespaced_tool_name_collisions_get_stable_suffixes() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_local_tool(EchoTool::new(
+                "read-file",
+                ToolSource::Mcp {
+                    server_id: "server-a".to_string(),
+                },
+                Some("server-a"),
+            ))
+            .unwrap();
+        registry
+            .register_local_tool(EchoTool::new(
+                "read_file",
+                ToolSource::Mcp {
+                    server_id: "server_a".to_string(),
+                },
+                Some("server_a"),
+            ))
+            .unwrap();
+
+        registry.finalize_names();
+        let definitions = registry.registered_definitions();
+        let names = definitions
+            .iter()
+            .map(|definition| definition.runtime_tool_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["server_a__read_file", "server_a__read_file__2"]);
+        assert_eq!(
+            registry.lookup("server_a__read_file").unwrap().tool_name,
+            "read-file"
+        );
+        assert_eq!(
+            registry.lookup("server_a__read_file__2").unwrap().tool_name,
+            "read_file"
+        );
     }
 }
