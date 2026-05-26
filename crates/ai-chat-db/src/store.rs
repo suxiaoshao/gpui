@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub const DATABASE_FILE: &str = "ai_chat_fresh.sqlite3";
 pub type DbPool = Pool<ConnectionManager<SqliteConnection>>;
+pub(crate) const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 
 #[derive(Clone, Debug)]
 pub struct FreshStore {
@@ -82,7 +83,9 @@ impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for SqlitePragma
         &self,
         conn: &mut SqliteConnection,
     ) -> std::result::Result<(), diesel::r2d2::Error> {
-        conn.batch_execute("PRAGMA foreign_keys = ON;")
-            .map_err(diesel::r2d2::Error::QueryError)
+        conn.batch_execute(&format!(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};"
+        ))
+        .map_err(diesel::r2d2::Error::QueryError)
     }
 }

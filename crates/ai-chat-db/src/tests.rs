@@ -41,6 +41,18 @@ fn bootstrap_is_idempotent() {
 }
 
 #[test]
+fn pooled_connections_configure_sqlite_busy_timeout() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let mut conn = store.pool().get().unwrap();
+
+    assert_eq!(
+        busy_timeout(&mut conn),
+        crate::store::SQLITE_BUSY_TIMEOUT_MS
+    );
+}
+
+#[test]
 fn bootstrap_rejects_newer_schema_without_downgrading_metadata() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(crate::DATABASE_FILE);
@@ -900,10 +912,23 @@ fn count(conn: &mut SqliteConnection, table: &str) -> i64 {
     sql_query(sql).load::<CountRow>(conn).unwrap()[0].value
 }
 
+fn busy_timeout(conn: &mut SqliteConnection) -> i32 {
+    sql_query("PRAGMA busy_timeout")
+        .load::<BusyTimeoutRow>(conn)
+        .unwrap()[0]
+        .timeout
+}
+
 #[derive(diesel::QueryableByName)]
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     value: i64,
+}
+
+#[derive(diesel::QueryableByName)]
+struct BusyTimeoutRow {
+    #[diesel(sql_type = Integer)]
+    timeout: i32,
 }
 
 #[derive(diesel::QueryableByName)]
