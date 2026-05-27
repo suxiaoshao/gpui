@@ -35,11 +35,8 @@ pub struct SkillCatalog {
 impl SkillCatalog {
     pub fn scan(project_root: Option<&Path>) -> Result<Self> {
         let mut catalog = Self::default();
-        if let Some(home) = std::env::var_os("HOME") {
-            catalog.scan_root(
-                PathBuf::from(home).join(".agents/skills"),
-                SkillSourceKind::User,
-            )?;
+        if let Some(root) = user_skills_root(dirs::home_dir()) {
+            catalog.scan_root(root, SkillSourceKind::User)?;
         }
         if let Some(project_root) = project_root {
             catalog.scan_root(
@@ -171,6 +168,10 @@ fn parse_frontmatter_metadata(content: &str) -> FrontmatterMetadata {
     metadata
 }
 
+fn user_skills_root(home_dir: Option<PathBuf>) -> Option<PathBuf> {
+    home_dir.map(|home| home.join(".agents").join("skills"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +202,14 @@ mod tests {
                     .to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn user_skills_root_uses_home_directory() {
+        assert_eq!(
+            user_skills_root(Some(PathBuf::from("/home/test"))),
+            Some(PathBuf::from("/home/test/.agents/skills"))
+        );
+        assert_eq!(user_skills_root(None), None);
     }
 }

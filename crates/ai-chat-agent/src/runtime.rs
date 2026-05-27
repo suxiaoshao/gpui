@@ -186,6 +186,16 @@ impl AgentRuntime {
                 } else {
                     AgentRunStatus::Failed
                 };
+                self.finalize_active_tool_invocations(
+                    &agent_run.id,
+                    &request.conversation_id,
+                    if final_status == AgentRunStatus::Canceled {
+                        ToolInvocationStatus::Canceled
+                    } else {
+                        ToolInvocationStatus::Failed
+                    },
+                    payload.clone(),
+                )?;
                 let output = (final_status == AgentRunStatus::Canceled).then_some(AgentRunOutput {
                     final_item_id: context.final_item_id(),
                     stopped_reason: AgentStoppedReason::Canceled,
@@ -212,6 +222,60 @@ impl AgentRuntime {
                 })
             }
         }
+    }
+
+    fn finalize_active_tool_invocations(
+        &self,
+        agent_run_id: &str,
+        conversation_id: &str,
+        status: ToolInvocationStatus,
+        error: RunErrorPayload,
+    ) -> Result<()> {
+        for invocation in self.repo.tool_invocations_for_run(agent_run_id)? {
+            if !matches!(
+                invocation.status,
+                ToolInvocationStatus::Requested
+                    | ToolInvocationStatus::AwaitingApproval
+                    | ToolInvocationStatus::Running
+            ) {
+                continue;
+            }
+
+            let output = ToolInvocationOutput {
+                content: vec![ContentPart::Text {
+                    text: error.message.clone(),
+                }],
+                structured_output: None,
+                raw_output: None,
+                is_error: true,
+            };
+            let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+                tool_invocation_id: Some(invocation.id.clone()),
+                call_id: invocation.call_id.clone(),
+                content: output.content.clone(),
+                is_error: true,
+                structured_output: None,
+            });
+            self.repo
+                .append_conversation_item_and_update_tool_invocation(
+                    NewConversationItem {
+                        conversation_id: conversation_id.to_string(),
+                        status: ConversationItemStatus::Completed,
+                        agent_run_id: Some(agent_run_id.to_string()),
+                        provider_step_id: invocation.provider_step_id.clone(),
+                        tool_invocation_id: Some(invocation.id.clone()),
+                        provider_item_id: None,
+                        payload,
+                    },
+                    &invocation.id,
+                    UpdateToolInvocationStatus {
+                        status,
+                        output: Some(output),
+                        error: Some(error.clone()),
+                    },
+                )?;
+        }
+        Ok(())
     }
 
     fn mark_setup_failed(
@@ -397,8 +461,8 @@ mod tests {
     use crate::{LocalTool, McpConnector, ToolDefinition, ToolExecutor, ToolRunPolicy};
     use ai_chat_db::{
         ConversationItemRecord, ConversationRecord, FreshStore, NewConversation,
-        NewConversationItem, NewProject, NewProvider, NewProviderModel, ProviderModelRecord,
-        ProviderRecord,
+        NewConversationItem, NewProject, NewProvider, NewProviderModel, NewToolInvocation,
+        ProviderModelRecord, ProviderRecord,
     };
     use async_trait::async_trait;
     use rig_core::{
@@ -494,6 +558,76 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_error_fails_active_tool_invocations() {
+        let fixture = Fixture::new("tool-failure");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let agent_run = fixture
+            .repo
+            .insert_agent_run(new_agent_run_input(&fixture.request()))
+            .unwrap();
+        let invocation = fixture
+            .repo
+            .insert_tool_invocation(NewToolInvocation {
+                agent_run_id: agent_run.id.clone(),
+                provider_step_id: None,
+                status: ToolInvocationStatus::Running,
+                input: ToolInvocationInput {
+                    source: ToolSource::Local,
+                    namespace: None,
+                    tool_name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    call_id: "call_1".to_string(),
+                    arguments: ToolArguments {
+                        value: json!({"text": "hi"}),
+                    },
+                    approval_policy: ToolApprovalPolicy::Never,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                },
+                output: None,
+                error: None,
+            })
+            .unwrap();
+
+        runtime
+            .finalize_active_tool_invocations(
+                &agent_run.id,
+                &fixture.conversation.id,
+                ToolInvocationStatus::Failed,
+                run_error("prompt_error", "tool failed", true, None),
+            )
+            .unwrap();
+
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+        let error = invocation.error.as_ref().unwrap();
+        assert_eq!(error.code, "prompt_error");
+        assert_eq!(error.message, "tool failed");
+        let invocations = fixture
+            .repo
+            .tool_invocations_for_run(&agent_run.id)
+            .unwrap();
+        assert_eq!(invocations.len(), 1);
+
+        let tool_results = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|item| match item.payload {
+                ConversationItemPayload::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tool_results.len(), 1);
+        assert_eq!(tool_results[0].call_id, "call_1");
+        assert!(tool_results[0].is_error);
     }
 
     #[tokio::test]
