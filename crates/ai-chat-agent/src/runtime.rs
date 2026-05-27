@@ -6,7 +6,8 @@ use crate::{
 use ai_chat_core::*;
 use ai_chat_db::{
     AgentRunRecord, ApprovalDecisionRecord, FreshRepository, NewApprovalDecisionOutcome,
-    NewConversationItem, UpdateAgentRunStatus, UpdateToolInvocationStatus,
+    NewConversationItem, ToolInvocationRecord, UpdateAgentRunStatus, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::AgentBuilder,
@@ -241,39 +242,78 @@ impl AgentRuntime {
                 continue;
             }
 
-            let output = ToolInvocationOutput {
-                content: vec![ContentPart::Text {
-                    text: error.message.clone(),
-                }],
-                structured_output: None,
-                raw_output: None,
-                is_error: true,
-            };
-            let payload = ConversationItemPayload::ToolResult(ToolResultItem {
-                tool_invocation_id: Some(invocation.id.clone()),
-                call_id: invocation.call_id.clone(),
-                content: output.content.clone(),
-                is_error: true,
-                structured_output: None,
-            });
-            self.repo
-                .append_conversation_item_and_update_tool_invocation(
-                    NewConversationItem {
-                        conversation_id: conversation_id.to_string(),
-                        status: ConversationItemStatus::Completed,
-                        agent_run_id: Some(agent_run_id.to_string()),
-                        provider_step_id: invocation.provider_step_id.clone(),
-                        tool_invocation_id: Some(invocation.id.clone()),
-                        provider_item_id: None,
-                        payload,
-                    },
-                    &invocation.id,
-                    UpdateToolInvocationStatus {
-                        status,
-                        output: Some(output),
-                        error: Some(error.clone()),
-                    },
-                )?;
+            self.append_error_tool_result_and_update_tool_invocation(
+                conversation_id,
+                &invocation,
+                status,
+                error.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn append_error_tool_result_and_update_tool_invocation(
+        &self,
+        conversation_id: &str,
+        invocation: &ToolInvocationRecord,
+        status: ToolInvocationStatus,
+        error: RunErrorPayload,
+    ) -> Result<ConversationItemId> {
+        let output = ToolInvocationOutput {
+            content: vec![ContentPart::Text {
+                text: error.message.clone(),
+            }],
+            structured_output: None,
+            raw_output: None,
+            is_error: true,
+        };
+        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+            tool_invocation_id: Some(invocation.id.clone()),
+            call_id: invocation.call_id.clone(),
+            content: output.content.clone(),
+            is_error: true,
+            structured_output: None,
+        });
+        let (item, _) = self
+            .repo
+            .append_conversation_item_and_update_tool_invocation(
+                NewConversationItem {
+                    conversation_id: conversation_id.to_string(),
+                    status: ConversationItemStatus::Completed,
+                    agent_run_id: Some(invocation.agent_run_id.clone()),
+                    provider_step_id: invocation.provider_step_id.clone(),
+                    tool_invocation_id: Some(invocation.id.clone()),
+                    provider_item_id: None,
+                    payload,
+                },
+                &invocation.id,
+                UpdateToolInvocationStatus {
+                    status,
+                    output: Some(output),
+                    error: Some(error),
+                },
+            )?;
+        Ok(item.id)
+    }
+
+    fn fail_active_provider_steps(&self, agent_run_id: &str, error: RunErrorPayload) -> Result<()> {
+        for step in self.repo.provider_steps_for_run(agent_run_id)? {
+            if !matches!(
+                step.status,
+                ProviderStepStatus::Queued | ProviderStepStatus::Running
+            ) {
+                continue;
+            }
+
+            self.repo.update_provider_step_status(
+                &step.id,
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Failed,
+                    response_snapshot: None,
+                    state_snapshot: None,
+                    error: Some(error.clone()),
+                },
+            )?;
         }
         Ok(())
     }
@@ -299,6 +339,28 @@ impl AgentRuntime {
         approval_decision_id: &str,
         outcome: NewApprovalDecisionOutcome,
     ) -> Result<ApprovalDecisionRecord> {
+        enum TerminalApproval {
+            Denied { message: String },
+            Canceled,
+            Expired,
+            Pending,
+        }
+
+        let terminal = match &outcome {
+            NewApprovalDecisionOutcome::Approved { .. } => {
+                return Err(AgentRuntimeError::Unsupported(
+                    "approved tool resume is not implemented in v1".to_string(),
+                ));
+            }
+            NewApprovalDecisionOutcome::Denied { reason, .. } => TerminalApproval::Denied {
+                message: reason
+                    .clone()
+                    .unwrap_or_else(|| "Tool call denied by user".to_string()),
+            },
+            NewApprovalDecisionOutcome::Canceled => TerminalApproval::Canceled,
+            NewApprovalDecisionOutcome::Expired => TerminalApproval::Expired,
+            NewApprovalDecisionOutcome::Pending { .. } => TerminalApproval::Pending,
+        };
         let approval = self
             .repo
             .get_approval_decision(approval_decision_id)?
@@ -316,6 +378,15 @@ impl AgentRuntime {
                     approval.tool_invocation_id
                 ))
             })?;
+        let agent_run = self
+            .repo
+            .get_agent_run(&invocation.agent_run_id)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "agent run {} is missing",
+                    invocation.agent_run_id
+                ))
+            })?;
         let updated = self
             .repo
             .update_approval_decision(approval_decision_id, outcome)?;
@@ -325,16 +396,7 @@ impl AgentRuntime {
                 decision: decision.clone(),
             });
             self.repo.append_conversation_item(NewConversationItem {
-                conversation_id: self
-                    .repo
-                    .get_agent_run(&invocation.agent_run_id)?
-                    .ok_or_else(|| {
-                        AgentRuntimeError::Invariant(format!(
-                            "agent run {} is missing",
-                            invocation.agent_run_id
-                        ))
-                    })?
-                    .conversation_id,
+                conversation_id: agent_run.conversation_id.clone(),
                 status: ConversationItemStatus::Completed,
                 agent_run_id: Some(invocation.agent_run_id.clone()),
                 provider_step_id: invocation.provider_step_id.clone(),
@@ -342,51 +404,73 @@ impl AgentRuntime {
                 provider_item_id: None,
                 payload,
             })?;
-            if !decision.approved {
-                let output = ToolInvocationOutput {
-                    content: vec![ContentPart::Text {
-                        text: decision
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| "Tool call denied by user".to_string()),
-                    }],
-                    structured_output: None,
-                    raw_output: None,
-                    is_error: true,
+        }
+
+        match terminal {
+            TerminalApproval::Denied { message } => {
+                let error = run_error("approval_denied", message, false, None);
+                let item_id = self.append_error_tool_result_and_update_tool_invocation(
+                    &agent_run.conversation_id,
+                    &invocation,
+                    ToolInvocationStatus::Denied,
+                    error.clone(),
+                )?;
+                let output = AgentRunOutput {
+                    final_item_id: Some(item_id),
+                    stopped_reason: AgentStoppedReason::Failed,
                 };
-                self.repo.update_tool_invocation_status(
-                    &invocation.id,
-                    UpdateToolInvocationStatus {
-                        status: ToolInvocationStatus::Denied,
-                        output: Some(output.clone()),
+                self.repo.update_agent_run_status(
+                    &agent_run.id,
+                    UpdateAgentRunStatus {
+                        status: AgentRunStatus::Failed,
+                        output: Some(output),
+                        error: Some(error),
+                    },
+                )?;
+            }
+            TerminalApproval::Canceled => {
+                let error = run_error("approval_canceled", "Tool approval canceled", false, None);
+                let item_id = self.append_error_tool_result_and_update_tool_invocation(
+                    &agent_run.conversation_id,
+                    &invocation,
+                    ToolInvocationStatus::Canceled,
+                    error,
+                )?;
+                let output = AgentRunOutput {
+                    final_item_id: Some(item_id),
+                    stopped_reason: AgentStoppedReason::Canceled,
+                };
+                self.repo.update_agent_run_status(
+                    &agent_run.id,
+                    UpdateAgentRunStatus {
+                        status: AgentRunStatus::Canceled,
+                        output: Some(output),
                         error: None,
                     },
                 )?;
-                self.repo.append_conversation_item(NewConversationItem {
-                    conversation_id: self
-                        .repo
-                        .get_agent_run(&invocation.agent_run_id)?
-                        .ok_or_else(|| {
-                            AgentRuntimeError::Invariant(format!(
-                                "agent run {} is missing",
-                                invocation.agent_run_id
-                            ))
-                        })?
-                        .conversation_id,
-                    status: ConversationItemStatus::Completed,
-                    agent_run_id: Some(invocation.agent_run_id.clone()),
-                    provider_step_id: invocation.provider_step_id,
-                    tool_invocation_id: Some(invocation.id.clone()),
-                    provider_item_id: None,
-                    payload: ConversationItemPayload::ToolResult(ToolResultItem {
-                        tool_invocation_id: Some(invocation.id),
-                        call_id: invocation.call_id,
-                        content: output.content,
-                        is_error: true,
-                        structured_output: None,
-                    }),
-                })?;
             }
+            TerminalApproval::Expired => {
+                let error = run_error("approval_expired", "Tool approval expired", true, None);
+                let item_id = self.append_error_tool_result_and_update_tool_invocation(
+                    &agent_run.conversation_id,
+                    &invocation,
+                    ToolInvocationStatus::Failed,
+                    error.clone(),
+                )?;
+                let output = AgentRunOutput {
+                    final_item_id: Some(item_id),
+                    stopped_reason: AgentStoppedReason::Failed,
+                };
+                self.repo.update_agent_run_status(
+                    &agent_run.id,
+                    UpdateAgentRunStatus {
+                        status: AgentRunStatus::Failed,
+                        output: Some(output),
+                        error: Some(error),
+                    },
+                )?;
+            }
+            TerminalApproval::Pending => {}
         }
         Ok(updated)
     }
@@ -401,6 +485,13 @@ impl AgentRuntime {
                     true,
                     None,
                 );
+                self.fail_active_provider_steps(&run.id, error.clone())?;
+                self.finalize_active_tool_invocations(
+                    &run.id,
+                    &run.conversation_id,
+                    ToolInvocationStatus::Failed,
+                    error.clone(),
+                )?;
                 recovered.push(self.repo.update_agent_run_status(
                     &run.id,
                     UpdateAgentRunStatus {
@@ -460,9 +551,10 @@ mod tests {
     use super::*;
     use crate::{LocalTool, McpConnector, ToolDefinition, ToolExecutor, ToolRunPolicy};
     use ai_chat_db::{
-        ConversationItemRecord, ConversationRecord, FreshStore, NewConversation,
-        NewConversationItem, NewProject, NewProvider, NewProviderModel, NewToolInvocation,
-        ProviderModelRecord, ProviderRecord,
+        ConversationItemRecord, ConversationRecord, FreshStore, NewApprovalDecision,
+        NewConversation, NewConversationItem, NewProject, NewProvider, NewProviderModel,
+        NewProviderStep, NewToolInvocation, ProviderModelRecord, ProviderRecord,
+        ProviderStepRecord, ToolInvocationRecord,
     };
     use async_trait::async_trait;
     use rig_core::{
@@ -704,6 +796,221 @@ mod tests {
         assert_eq!(handle.agent_run.error, None);
     }
 
+    #[test]
+    fn approved_approval_decision_is_unsupported_without_mutating_state() {
+        let fixture = Fixture::new("approved-unsupported");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+        let error = runtime
+            .decide_approval(
+                &approval.id,
+                NewApprovalDecisionOutcome::Approved {
+                    decided_by: "user".to_string(),
+                    reason: Some("ok".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AgentRuntimeError::Unsupported(message)
+                if message == "approved tool resume is not implemented in v1"
+        ));
+
+        let approval = fixture
+            .repo
+            .get_approval_decision(&approval.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(approval.status, ApprovalStatus::Pending);
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+        let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+        assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+    }
+
+    #[test]
+    fn denied_approval_terminalizes_tool_and_run() {
+        let fixture = Fixture::new("approval-denied");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+        let updated = runtime
+            .decide_approval(
+                &approval.id,
+                NewApprovalDecisionOutcome::Denied {
+                    decided_by: "user".to_string(),
+                    reason: Some("not allowed".to_string()),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.status, ApprovalStatus::Denied);
+
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Denied);
+        assert_eq!(invocation.error.as_ref().unwrap().code, "approval_denied");
+        assert!(invocation.output.as_ref().unwrap().is_error);
+
+        let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+        assert_eq!(agent_run.status, AgentRunStatus::Failed);
+        assert_eq!(agent_run.error.as_ref().unwrap().code, "approval_denied");
+        assert_eq!(
+            agent_run.output.as_ref().unwrap().stopped_reason,
+            AgentStoppedReason::Failed
+        );
+
+        let items = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap();
+        assert!(items.iter().any(|item| {
+            matches!(
+                item.payload,
+                ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem { .. })
+            )
+        }));
+        assert!(items.iter().any(|item| {
+            matches!(
+                &item.payload,
+                ConversationItemPayload::ToolResult(result)
+                    if result.call_id == "call_approval"
+                        && result.is_error
+                        && result.content[0].search_text() == Some("not allowed")
+            )
+        }));
+    }
+
+    #[test]
+    fn canceled_approval_terminalizes_tool_and_run() {
+        let fixture = Fixture::new("approval-canceled");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+        let updated = runtime
+            .decide_approval(&approval.id, NewApprovalDecisionOutcome::Canceled)
+            .unwrap();
+        assert_eq!(updated.status, ApprovalStatus::Canceled);
+
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
+        assert_eq!(invocation.error.as_ref().unwrap().code, "approval_canceled");
+        let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+        assert_eq!(agent_run.status, AgentRunStatus::Canceled);
+        assert_eq!(agent_run.error, None);
+        assert_eq!(
+            agent_run.output.as_ref().unwrap().stopped_reason,
+            AgentStoppedReason::Canceled
+        );
+        assert_eq!(
+            tool_result_texts(&fixture),
+            vec!["Tool approval canceled".to_string()]
+        );
+    }
+
+    #[test]
+    fn expired_approval_terminalizes_tool_and_run() {
+        let fixture = Fixture::new("approval-expired");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+        let updated = runtime
+            .decide_approval(&approval.id, NewApprovalDecisionOutcome::Expired)
+            .unwrap();
+        assert_eq!(updated.status, ApprovalStatus::Expired);
+
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+        assert_eq!(invocation.error.as_ref().unwrap().code, "approval_expired");
+        let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+        assert_eq!(agent_run.status, AgentRunStatus::Failed);
+        assert_eq!(agent_run.error.as_ref().unwrap().code, "approval_expired");
+        assert_eq!(
+            tool_result_texts(&fixture),
+            vec!["Tool approval expired".to_string()]
+        );
+    }
+
+    #[test]
+    fn recovery_fails_active_child_execution_rows() {
+        let fixture = Fixture::new("recovery-children");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
+        let provider_step =
+            insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
+        let invocation = insert_tool_invocation(
+            &fixture,
+            &agent_run.id,
+            Some(provider_step.id.clone()),
+            ToolInvocationStatus::Running,
+        );
+
+        let recovered = runtime.recover_interrupted_runs().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].status, AgentRunStatus::Failed);
+        assert_eq!(recovered[0].error.as_ref().unwrap().code, "interrupted");
+
+        let provider_step = fixture
+            .repo
+            .get_provider_step(&provider_step.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(provider_step.status, ProviderStepStatus::Failed);
+        assert_eq!(provider_step.error.as_ref().unwrap().code, "interrupted");
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+        assert_eq!(invocation.error.as_ref().unwrap().code, "interrupted");
+        assert_eq!(
+            tool_result_texts(&fixture),
+            vec!["agent run was interrupted before reaching a terminal state".to_string()]
+        );
+    }
+
+    #[test]
+    fn recovery_keeps_waiting_for_approval_runs_resumable() {
+        let fixture = Fixture::new("recovery-waiting");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+        let recovered = runtime.recover_interrupted_runs().unwrap();
+        assert!(recovered.is_empty());
+
+        let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+        assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+        let approval = fixture
+            .repo
+            .get_approval_decision(&approval.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(approval.status, ApprovalStatus::Pending);
+        assert!(tool_result_texts(&fixture).is_empty());
+    }
+
     #[tokio::test]
     async fn setup_failure_marks_agent_run_failed() {
         let fixture = Fixture::new("setup-failure");
@@ -906,6 +1213,128 @@ mod tests {
             .unwrap();
         assert_eq!(tool_result.id, "call_previous");
         assert_eq!(tool_result.call_id.as_deref(), Some("call_previous"));
+    }
+
+    fn insert_waiting_approval(
+        fixture: &Fixture,
+    ) -> (AgentRunRecord, ToolInvocationRecord, ApprovalDecisionRecord) {
+        let agent_run = insert_agent_run_with_status(fixture, AgentRunStatus::WaitingForApproval);
+        let invocation = insert_tool_invocation(
+            fixture,
+            &agent_run.id,
+            None,
+            ToolInvocationStatus::AwaitingApproval,
+        );
+        let approval = fixture
+            .repo
+            .insert_approval_decision(NewApprovalDecision {
+                tool_invocation_id: invocation.id.clone(),
+                request: ApprovalRequestPayload {
+                    reason: "approve echo".to_string(),
+                    tool_source: ToolSource::Local,
+                    tool_name: "echo".to_string(),
+                    arguments_preview: "{\"text\":\"hi\"}".to_string(),
+                },
+                outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
+            })
+            .unwrap();
+        (agent_run, invocation, approval)
+    }
+
+    fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> AgentRunRecord {
+        let agent_run = fixture
+            .repo
+            .insert_agent_run(new_agent_run_input(&fixture.request()))
+            .unwrap();
+        fixture
+            .repo
+            .update_agent_run_status(
+                &agent_run.id,
+                UpdateAgentRunStatus {
+                    status,
+                    output: None,
+                    error: None,
+                },
+            )
+            .unwrap()
+    }
+
+    fn insert_provider_step(
+        fixture: &Fixture,
+        agent_run_id: &str,
+        status: ProviderStepStatus,
+    ) -> ProviderStepRecord {
+        fixture
+            .repo
+            .insert_provider_step(NewProviderStep {
+                agent_run_id: agent_run_id.to_string(),
+                seq: fixture.repo.next_provider_step_seq(agent_run_id).unwrap(),
+                status,
+                request_snapshot: ProviderStepRequestSnapshot {
+                    provider_id: fixture.provider.id.clone(),
+                    model_id: fixture.model.model_id.clone(),
+                    input_item_ids: vec![fixture.user_item.id.clone()],
+                    snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+                    request_body: ProviderRawPayload {
+                        provider_kind: "test".to_string(),
+                        value: json!({"messages": ["hello"]}),
+                    },
+                },
+                response_snapshot: None,
+                state_snapshot: None,
+                settings_snapshot: run_settings(&fixture.provider.id, &fixture.model.model_id),
+                error: None,
+            })
+            .unwrap()
+    }
+
+    fn insert_tool_invocation(
+        fixture: &Fixture,
+        agent_run_id: &str,
+        provider_step_id: Option<ProviderStepId>,
+        status: ToolInvocationStatus,
+    ) -> ToolInvocationRecord {
+        fixture
+            .repo
+            .insert_tool_invocation(NewToolInvocation {
+                agent_run_id: agent_run_id.to_string(),
+                provider_step_id,
+                status,
+                input: ToolInvocationInput {
+                    source: ToolSource::Local,
+                    namespace: None,
+                    tool_name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    call_id: "call_approval".to_string(),
+                    arguments: ToolArguments {
+                        value: json!({"text": "hi"}),
+                    },
+                    approval_policy: ToolApprovalPolicy::OnRequest,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                },
+                output: None,
+                error: None,
+            })
+            .unwrap()
+    }
+
+    fn tool_result_texts(fixture: &Fixture) -> Vec<String> {
+        fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|item| match item.payload {
+                ConversationItemPayload::ToolResult(result) => {
+                    Some(result.content.into_iter().filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text),
+                        _ => None,
+                    }))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     struct Fixture {

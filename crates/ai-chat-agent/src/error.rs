@@ -24,6 +24,8 @@ pub enum AgentRuntimeError {
     },
     #[error("runtime canceled")]
     Canceled,
+    #[error("unsupported runtime operation: {0}")]
+    Unsupported(String),
     #[error("runtime invariant failed: {0}")]
     Invariant(String),
 }
