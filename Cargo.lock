@@ -228,6 +228,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-chat2"
+version = "0.1.0"
+dependencies = [
+ "ai-chat-core",
+ "ai-chat-db",
+ "app-assets",
+ "app-theme",
+ "dirs-next",
+ "fluent-bundle",
+ "global-hotkey",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "serde",
+ "smol",
+ "sys-locale",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "unic-langid",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

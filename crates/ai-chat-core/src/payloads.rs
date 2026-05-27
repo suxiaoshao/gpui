@@ -771,12 +771,71 @@ pub struct ProviderModelMetadata {
     pub raw: Option<ProviderRawPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AppLanguage {
+    #[serde(rename = "en-US", alias = "en")]
+    English,
+    #[serde(rename = "zh-CN", alias = "zh")]
+    Chinese,
+    #[default]
+    #[serde(other, rename = "system")]
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppThemeMode {
+    Light,
+    Dark,
+    #[default]
+    #[serde(other)]
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppThemeSettings {
+    #[serde(default)]
+    pub mode: AppThemeMode,
+    pub light_theme: Option<String>,
+    pub dark_theme: Option<String>,
+    #[serde(default)]
+    pub custom_theme_colors: Vec<String>,
+}
+
+impl Default for AppThemeSettings {
+    fn default() -> Self {
+        Self {
+            mode: AppThemeMode::System,
+            light_theme: None,
+            dark_theme: None,
+            custom_theme_colors: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppSettingsPayload {
-    pub language: Option<String>,
-    pub theme: Option<String>,
+    #[serde(default)]
+    pub language: AppLanguage,
+    #[serde(default)]
+    pub theme: AppThemeSettings,
+    #[serde(default)]
+    pub temporary_hotkey: Option<String>,
+    #[serde(default)]
     pub default_project_id: Option<ProjectId>,
+}
+
+impl Default for AppSettingsPayload {
+    fn default() -> Self {
+        Self {
+            language: AppLanguage::System,
+            theme: AppThemeSettings::default(),
+            temporary_hotkey: None,
+            default_project_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -796,6 +855,46 @@ mod tests {
         let id = crate::new_id();
         assert_eq!(id.len(), 36);
         assert_eq!(id.chars().nth(14), Some('7'));
+    }
+
+    #[test]
+    fn app_settings_payload_roundtrips_as_typed_settings() {
+        let payload = AppSettingsPayload {
+            language: AppLanguage::Chinese,
+            theme: AppThemeSettings {
+                mode: AppThemeMode::Dark,
+                light_theme: Some("preset:Default Light".to_string()),
+                dark_theme: Some("material-you:#3271AE".to_string()),
+                custom_theme_colors: vec!["#3271AE".to_string()],
+            },
+            temporary_hotkey: Some("cmd+shift+j".to_string()),
+            default_project_id: Some("project_1".to_string()),
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["language"], "zh-CN");
+        assert_eq!(value["theme"]["mode"], "dark");
+        assert_eq!(value["temporaryHotkey"], "cmd+shift+j");
+        assert_eq!(
+            serde_json::from_value::<AppSettingsPayload>(value).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn app_settings_payload_defaults_unknown_language_and_theme_mode_to_system() {
+        let payload: AppSettingsPayload = serde_json::from_value(json!({
+            "language": "fr-FR",
+            "theme": {
+                "mode": "auto"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.language, AppLanguage::System);
+        assert_eq!(payload.theme.mode, AppThemeMode::System);
+        assert_eq!(payload.temporary_hotkey, None);
+        assert_eq!(payload.default_project_id, None);
     }
 
     #[test]

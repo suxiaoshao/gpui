@@ -1,0 +1,33 @@
+[package]
+name = "ai-chat2"
+version = "0.1.0"
+description = "A minimal GPUI shell for the next AI Chat app."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
+edition = "2024"
+
+[dependencies]
+ai-chat-core.workspace = true
+ai-chat-db.workspace = true
+app-assets.workspace = true
+app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
+dirs-next = "2.0.0"
+fluent-bundle = "0.16.0"
+global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui_platform.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+smol = "2.0.2"
+sys-locale = "0.3.2"
+thiserror = "2.0.18"
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+unic-langid = "0.9.6"
+
+[dev-dependencies]
+tempfile = "3.27.0"

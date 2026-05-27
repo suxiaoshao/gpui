@@ -685,6 +685,24 @@ impl FreshRepository {
         })
     }
 
+    pub fn get_shortcut(&self, id: &str) -> Result<Option<ShortcutRecord>> {
+        let mut conn = self.conn()?;
+        shortcut_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
+    }
+
+    pub fn list_shortcuts(&self) -> Result<Vec<ShortcutRecord>> {
+        let mut conn = self.conn()?;
+        shortcuts::table
+            .order(shortcuts::created_at.asc())
+            .select(SqlShortcutRow::as_select())
+            .load::<SqlShortcutRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
     pub fn set_app_settings(&self, settings: AppSettingsPayload) -> Result<AppSettingsRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
@@ -764,6 +782,14 @@ fn prompt_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlPromptR
     Ok(prompts::table
         .find(id)
         .select(SqlPromptRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn shortcut_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlShortcutRow>> {
+    Ok(shortcuts::table
+        .find(id)
+        .select(SqlShortcutRow::as_select())
         .first(conn)
         .optional()?)
 }

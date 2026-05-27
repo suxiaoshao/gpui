@@ -1212,14 +1212,32 @@ fn typed_json_roundtrips_for_repository_records() {
         })
         .unwrap();
     assert_eq!(shortcut.action, ShortcutAction::OpenTemporaryConversation);
+    assert_eq!(
+        repo.get_shortcut(&shortcut.id).unwrap().unwrap().hotkey,
+        "cmd+shift+j"
+    );
+    let shortcuts = repo.list_shortcuts().unwrap();
+    assert_eq!(shortcuts.len(), 1);
+    assert_eq!(shortcuts[0].id, shortcut.id);
 
     let app_settings = repo
         .set_app_settings(AppSettingsPayload {
-            language: Some("zh-CN".to_string()),
-            theme: Some("system".to_string()),
+            language: AppLanguage::Chinese,
+            theme: AppThemeSettings {
+                mode: AppThemeMode::System,
+                light_theme: Some("preset:Default Light".to_string()),
+                dark_theme: Some("preset:Default Dark".to_string()),
+                custom_theme_colors: vec!["#3271AE".to_string()],
+            },
+            temporary_hotkey: Some("cmd+shift+j".to_string()),
             default_project_id: Some(project.id.clone()),
         })
         .unwrap();
+    assert_eq!(app_settings.settings.language, AppLanguage::Chinese);
+    assert_eq!(
+        app_settings.settings.temporary_hotkey.as_deref(),
+        Some("cmd+shift+j")
+    );
     assert_eq!(app_settings.settings.default_project_id, Some(project.id));
 }
 

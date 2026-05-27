@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "app/ai-chat",
+  "app/ai-chat2",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
