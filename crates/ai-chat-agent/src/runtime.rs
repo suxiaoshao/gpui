@@ -94,6 +94,10 @@ impl AgentRuntime {
             return Err(self.mark_setup_failed(&agent_run.id, AgentRuntimeError::from(error))?);
         }
 
+        let registered_definitions = request.tool_registry.registered_definitions();
+        let runtime_tools = request
+            .tool_registry
+            .runtime_tools(request.guards.tool_timeout);
         let context = PersistenceContext::new(
             self.repo.clone(),
             agent_run.id.clone(),
@@ -102,7 +106,8 @@ impl AgentRuntime {
             request.model_id.clone(),
             request.settings_snapshot.clone(),
             prompt_history.input_item_ids,
-            request.tool_registry.registered_definitions(),
+            registered_definitions,
+            runtime_tools,
             request.guards.max_tool_calls,
             request.guards.repeated_tool_call_limit,
             request.cancellation_token.clone(),
@@ -273,6 +278,7 @@ impl AgentRuntime {
             content: output.content.clone(),
             is_error: true,
             structured_output: None,
+            raw_output: None,
         });
         let (item, _) = self
             .repo
@@ -635,6 +641,17 @@ mod tests {
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].status, ToolInvocationStatus::Succeeded);
         assert_eq!(invocations[0].runtime_tool_name, "echo");
+        let output = invocations[0].output.as_ref().unwrap();
+        assert_eq!(
+            output.content,
+            vec![ContentPart::Text {
+                text: "hi".to_string()
+            }]
+        );
+        assert_eq!(
+            output.structured_output.as_ref().unwrap().value,
+            json!({"text": "hi"})
+        );
 
         let items = fixture
             .repo
@@ -649,6 +666,92 @@ mod tests {
             items
                 .iter()
                 .any(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
+        );
+        let tool_result = items
+            .iter()
+            .find_map(|item| match &item.payload {
+                ConversationItemPayload::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            tool_result.content,
+            vec![ContentPart::Text {
+                text: "hi".to_string()
+            }]
+        );
+        assert_eq!(
+            tool_result.structured_output.as_ref().unwrap().value,
+            json!({"text": "hi"})
+        );
+        assert!(!tool_result.is_error);
+    }
+
+    #[tokio::test]
+    async fn tool_error_output_is_persisted_without_reconstructing_from_model_text() {
+        let fixture = Fixture::new("tool-error-output");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request
+            .tool_registry
+            .register_local_tool(ErrorTool)
+            .unwrap();
+        let model = MockCompletionModel::new([
+            MockTurn::tool_call("call_1", "error_tool", json!({"code": "E_BAD"})),
+            MockTurn::text("handled"),
+        ]);
+
+        let handle = runtime.run_with_model(request, model).await.unwrap();
+        assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+        let invocations = fixture
+            .repo
+            .tool_invocations_for_run(&handle.agent_run.id)
+            .unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].status, ToolInvocationStatus::Failed);
+        assert_eq!(invocations[0].error.as_ref().unwrap().code, "tool_error");
+        let output = invocations[0].output.as_ref().unwrap();
+        assert!(output.is_error);
+        assert_eq!(
+            output.content,
+            vec![ContentPart::Text {
+                text: "human readable error".to_string()
+            }]
+        );
+        assert_eq!(
+            output.structured_output.as_ref().unwrap().value,
+            json!({"code": "E_BAD"})
+        );
+        assert_eq!(
+            output.raw_output.as_ref().unwrap().value,
+            json!({"raw": "details"})
+        );
+
+        let items = fixture
+            .repo
+            .conversation_items(&fixture.conversation.id)
+            .unwrap();
+        let tool_result = items
+            .iter()
+            .find_map(|item| match &item.payload {
+                ConversationItemPayload::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        assert!(tool_result.is_error);
+        assert_eq!(
+            tool_result.content,
+            vec![ContentPart::Text {
+                text: "human readable error".to_string()
+            }]
+        );
+        assert_eq!(
+            tool_result.structured_output.as_ref().unwrap().value,
+            json!({"code": "E_BAD"})
+        );
+        assert_eq!(
+            tool_result.raw_output.as_ref().unwrap().value,
+            json!({"raw": "details"})
         );
     }
 
@@ -1153,6 +1256,7 @@ mod tests {
                     }],
                     is_error: false,
                     structured_output: None,
+                    raw_output: None,
                 }),
             })
             .unwrap();
@@ -1499,6 +1603,49 @@ mod tests {
                 }),
                 policy: ToolRunPolicy {
                     approval_policy: self.approval_policy,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                    timeout_ms: None,
+                },
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct ErrorTool;
+
+    #[async_trait]
+    impl ToolExecutor for ErrorTool {
+        async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
+            Ok(ToolInvocationOutput {
+                content: vec![ContentPart::Text {
+                    text: "human readable error".to_string(),
+                }],
+                structured_output: Some(StructuredOutput { value: arguments }),
+                raw_output: Some(ProviderRawPayload {
+                    provider_kind: "test".to_string(),
+                    value: json!({"raw": "details"}),
+                }),
+                is_error: true,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl LocalTool for ErrorTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                source: ToolSource::Local,
+                namespace: None,
+                name: "error_tool".to_string(),
+                description: "Return an error output".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "code": { "type": "string" }
+                    }
+                }),
+                policy: ToolRunPolicy {
+                    approval_policy: ToolApprovalPolicy::Never,
                     execution_policy: ToolExecutionPolicy::Foreground,
                     timeout_ms: None,
                 },

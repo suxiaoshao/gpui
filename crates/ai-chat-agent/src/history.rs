@@ -99,7 +99,7 @@ pub(crate) fn conversation_item_to_rig_message(
             content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                 id: result.call_id.clone(),
                 call_id: Some(result.call_id.clone()),
-                content: OneOrMany::one(ToolResultContent::text(content_text(&result.content))),
+                content: OneOrMany::one(ToolResultContent::text(tool_result_model_text(result))),
             })),
         }),
         ConversationItemPayload::Error(error) => Some(RigMessage::system(format!(
@@ -113,6 +113,13 @@ pub(crate) fn conversation_item_to_rig_message(
         ))),
         ConversationItemPayload::ApprovalRequest(_) | ConversationItemPayload::Status(_) => None,
     })
+}
+
+fn tool_result_model_text(result: &ToolResultItem) -> String {
+    if let Some(structured) = result.structured_output.as_ref() {
+        return structured.value.to_string();
+    }
+    content_text(&result.content)
 }
 
 fn user_prompt_with_skill_context(

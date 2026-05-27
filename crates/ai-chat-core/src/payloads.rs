@@ -298,6 +298,7 @@ pub struct ToolResultItem {
     pub content: Vec<ContentPart>,
     pub is_error: bool,
     pub structured_output: Option<StructuredOutput>,
+    pub raw_output: Option<ProviderRawPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

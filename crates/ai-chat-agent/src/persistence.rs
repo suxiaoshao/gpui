@@ -1,10 +1,13 @@
-use crate::{AgentRuntimeError, AgentStep, RegisteredToolDefinition, Result};
+use crate::{
+    AgentRuntimeError, AgentStep, RegisteredToolDefinition, Result,
+    tool_registry::{RegisteredRuntimeTool, tool_output_to_model_text},
+};
 use ai_chat_core::*;
 use ai_chat_db::{
     ConversationItemRecord, FreshRepository, NewAgentRun, NewApprovalDecision,
     NewApprovalDecisionOutcome, NewConversationItem, NewProviderStep, NewToolInvocation,
-    NewUsageEvent, ProviderStepRecord, UpdateAgentRunStatus, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus,
+    NewUsageEvent, ProviderStepRecord, ToolInvocationRecord, UpdateAgentRunStatus,
+    UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::{HookAction, PromptHook, ToolCallHookAction},
@@ -16,6 +19,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -134,6 +138,7 @@ pub(crate) struct PersistenceContext {
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
+    runtime_tools: Arc<HashMap<String, RegisteredRuntimeTool>>,
     tool_calls: Arc<Mutex<HashMap<String, ToolInvocationId>>>,
     repeated_tool_calls: Arc<Mutex<HashMap<String, u32>>>,
     max_tool_calls: u32,
@@ -152,6 +157,7 @@ impl PersistenceContext {
         settings_snapshot: RunSettingsSnapshot,
         input_item_ids: Vec<ConversationItemId>,
         tool_definitions: Vec<RegisteredToolDefinition>,
+        runtime_tools: Vec<RegisteredRuntimeTool>,
         max_tool_calls: u32,
         repeated_tool_call_limit: u32,
         cancellation_token: CancellationToken,
@@ -172,6 +178,12 @@ impl PersistenceContext {
                 tool_definitions
                     .into_iter()
                     .map(|definition| (definition.runtime_tool_name.clone(), definition))
+                    .collect(),
+            ),
+            runtime_tools: Arc::new(
+                runtime_tools
+                    .into_iter()
+                    .map(|tool| (tool.definition.runtime_tool_name.clone(), tool))
                     .collect(),
             ),
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
@@ -375,6 +387,78 @@ impl PersistenceContext {
         lock(&self.steps).push(step);
     }
 
+    async fn execute_tool_invocation(
+        &self,
+        tool: RegisteredRuntimeTool,
+        invocation: ToolInvocationRecord,
+        arguments: serde_json::Value,
+    ) -> Result<String> {
+        let execution = timeout(tool.timeout, tool.executor.execute(arguments)).await;
+        let (output, status, error) = match execution {
+            Ok(Ok(output)) => {
+                let error = output.is_error.then(|| {
+                    run_error("tool_error", tool_output_to_model_text(&output), true, None)
+                });
+                let status = if output.is_error {
+                    ToolInvocationStatus::Failed
+                } else {
+                    ToolInvocationStatus::Succeeded
+                };
+                (output, status, error)
+            }
+            Ok(Err(error)) => {
+                let payload = run_error("tool_error", error.to_string(), true, None);
+                (
+                    error_tool_output(payload.message.clone()),
+                    ToolInvocationStatus::Failed,
+                    Some(payload),
+                )
+            }
+            Err(_) => {
+                let payload = run_error("tool_timeout", "tool execution timed out", true, None);
+                (
+                    error_tool_output(payload.message.clone()),
+                    ToolInvocationStatus::Failed,
+                    Some(payload),
+                )
+            }
+        };
+        let model_text = tool_output_to_model_text(&output);
+        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+            tool_invocation_id: Some(invocation.id.clone()),
+            call_id: invocation.call_id.clone(),
+            content: output.content.clone(),
+            is_error: output.is_error,
+            structured_output: output.structured_output.clone(),
+            raw_output: output.raw_output.clone(),
+        });
+        let (item, _) = self
+            .repo
+            .append_conversation_item_and_update_tool_invocation(
+                NewConversationItem {
+                    conversation_id: self.conversation_id.clone(),
+                    status: ConversationItemStatus::Completed,
+                    agent_run_id: Some(self.agent_run_id.clone()),
+                    provider_step_id: invocation.provider_step_id.clone(),
+                    tool_invocation_id: Some(invocation.id.clone()),
+                    provider_item_id: None,
+                    payload,
+                },
+                &invocation.id,
+                UpdateToolInvocationStatus {
+                    status,
+                    output: Some(output),
+                    error,
+                },
+            )?;
+        self.add_input_item_id(item.id.clone());
+        self.push_step(AgentStep::ConversationItem(item.id));
+        self.push_event(AgentRunEvent::ToolInvocationFinished {
+            tool_invocation_id: invocation.id,
+        });
+        Ok(model_text)
+    }
+
     fn check_tool_guard(&self, runtime_tool_name: &str, args: &str) -> ToolCallHookAction {
         let calls = lock(&self.tool_calls);
         if calls.len() as u32 >= self.max_tool_calls {
@@ -483,6 +567,11 @@ where
         let Some(definition) = self.context.tool_definitions.get(tool_name).cloned() else {
             return ToolCallHookAction::terminate(format!("tool {tool_name} is not registered"));
         };
+        let Some(runtime_tool) = self.context.runtime_tools.get(tool_name).cloned() else {
+            return ToolCallHookAction::terminate(format!(
+                "tool {tool_name} has no runtime executor"
+            ));
+        };
         let call_id = tool_call_id.unwrap_or_else(|| internal_call_id.to_string());
         let arguments = serde_json::from_str::<serde_json::Value>(args)
             .unwrap_or_else(|_| serde_json::Value::String(args.to_string()));
@@ -528,7 +617,9 @@ where
             source: definition.source.clone(),
             name: definition.tool_name.clone(),
             runtime_tool_name: definition.runtime_tool_name.clone(),
-            arguments: ToolArguments { value: arguments },
+            arguments: ToolArguments {
+                value: arguments.clone(),
+            },
         });
         if let Err(error) = self
             .context
@@ -584,7 +675,14 @@ where
             return ToolCallHookAction::terminate("tool approval required");
         }
 
-        ToolCallHookAction::cont()
+        match self
+            .context
+            .execute_tool_invocation(runtime_tool, invocation, arguments)
+            .await
+        {
+            Ok(model_text) => ToolCallHookAction::skip(model_text),
+            Err(error) => ToolCallHookAction::terminate(error.to_string()),
+        }
     }
 
     async fn on_tool_result(
@@ -630,6 +728,7 @@ where
             content: output.content.clone(),
             is_error: output.is_error,
             structured_output: output.structured_output.clone(),
+            raw_output: output.raw_output.clone(),
         });
         if let Err(error) = self
             .context
@@ -672,6 +771,17 @@ pub(crate) fn run_error(
         retryable,
         provider: None,
         raw,
+    }
+}
+
+fn error_tool_output(message: impl Into<String>) -> ToolInvocationOutput {
+    ToolInvocationOutput {
+        content: vec![ContentPart::Text {
+            text: message.into(),
+        }],
+        structured_output: None,
+        raw_output: None,
+        is_error: true,
     }
 }
 

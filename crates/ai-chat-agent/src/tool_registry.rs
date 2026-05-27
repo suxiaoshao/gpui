@@ -68,6 +68,13 @@ struct ToolEntry {
     executor: Arc<dyn ToolExecutor>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RegisteredRuntimeTool {
+    pub definition: RegisteredToolDefinition,
+    pub executor: Arc<dyn ToolExecutor>,
+    pub timeout: std::time::Duration,
+}
+
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     entries: Vec<ToolEntry>,
@@ -155,6 +162,41 @@ impl ToolRegistry {
                 description: entry.definition.description.clone(),
                 parameters: entry.definition.parameters.clone(),
                 policy: entry.definition.policy.clone(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn runtime_tools(
+        &self,
+        default_timeout: std::time::Duration,
+    ) -> Vec<RegisteredRuntimeTool> {
+        let mut registry = self.clone();
+        if !registry.finalized {
+            registry.finalize_names();
+        }
+        registry
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let timeout = entry
+                    .definition
+                    .policy
+                    .timeout_ms
+                    .map(std::time::Duration::from_millis)
+                    .unwrap_or(default_timeout);
+                RegisteredRuntimeTool {
+                    definition: RegisteredToolDefinition {
+                        source: entry.definition.source,
+                        namespace: entry.definition.namespace,
+                        tool_name: entry.definition.name,
+                        runtime_tool_name: entry.runtime_tool_name,
+                        description: entry.definition.description,
+                        parameters: entry.definition.parameters,
+                        policy: entry.definition.policy,
+                    },
+                    executor: entry.executor,
+                    timeout,
+                }
             })
             .collect()
     }
