@@ -955,6 +955,117 @@ fn execution_status_updates_and_pending_approval_queries_roundtrip() {
 }
 
 #[test]
+fn active_execution_inserts_stamp_start_times() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("active-starts")).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "run input"))
+        .unwrap();
+
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    assert!(agent_run.started_at.is_some());
+    assert!(agent_run.completed_at.is_none());
+
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert!(provider_step.started_at.is_some());
+    assert!(provider_step.completed_at.is_none());
+    let completed_step = repo
+        .update_provider_step_status(
+            &provider_step.id,
+            UpdateProviderStepStatus {
+                status: ProviderStepStatus::Completed,
+                response_snapshot: Some(provider_step_response()),
+                state_snapshot: Some(provider_run_state(&provider.id)),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_step.started_at, provider_step.started_at);
+    assert!(completed_step.completed_at.is_some());
+
+    let mut running_tool_input = tool_input();
+    running_tool_input.call_id = "call_running".to_string();
+    let running_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id.clone()),
+            status: ToolInvocationStatus::Running,
+            input: running_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(running_tool.started_at.is_some());
+    assert!(running_tool.completed_at.is_none());
+    let succeeded_tool = repo
+        .update_tool_invocation_status(
+            &running_tool.id,
+            UpdateToolInvocationStatus {
+                status: ToolInvocationStatus::Succeeded,
+                output: Some(tool_output()),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(succeeded_tool.started_at, running_tool.started_at);
+    assert!(succeeded_tool.completed_at.is_some());
+
+    let mut awaiting_tool_input = tool_input();
+    awaiting_tool_input.call_id = "call_awaiting".to_string();
+    let awaiting_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id),
+            status: ToolInvocationStatus::AwaitingApproval,
+            input: awaiting_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(awaiting_tool.started_at.is_some());
+    assert!(awaiting_tool.completed_at.is_none());
+
+    let mut requested_tool_input = tool_input();
+    requested_tool_input.call_id = "call_requested".to_string();
+    let requested_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id,
+            provider_step_id: None,
+            status: ToolInvocationStatus::Requested,
+            input: requested_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(requested_tool.started_at.is_none());
+    assert!(requested_tool.completed_at.is_none());
+}
+
+#[test]
 fn typed_json_roundtrips_for_repository_records() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();

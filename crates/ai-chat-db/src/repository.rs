@@ -306,8 +306,8 @@ impl FreshRepository {
                 output_json: None,
                 error_json: None,
                 created_at: now,
-                started_at: None,
-                completed_at: None,
+                started_at: next_started_at(None, input.status, now),
+                completed_at: next_agent_run_completed_at(None, input.status, now),
                 updated_at: now,
             };
             diesel::insert_into(agent_runs::table)
@@ -397,8 +397,8 @@ impl FreshRepository {
                 settings_snapshot_json: to_json(&input.settings_snapshot)?,
                 error_json: to_json_opt(&input.error)?,
                 created_at: now,
-                started_at: None,
-                completed_at: None,
+                started_at: next_started_at(None, input.status, now),
+                completed_at: next_provider_step_completed_at(None, input.status, now),
                 updated_at: now,
             };
             diesel::insert_into(provider_steps::table)
@@ -488,8 +488,8 @@ impl FreshRepository {
                 output_json: to_json_opt(&input.output)?,
                 error_json: to_json_opt(&input.error)?,
                 created_at: now,
-                started_at: None,
-                completed_at: None,
+                started_at: next_started_at(None, input.status, now),
+                completed_at: next_tool_invocation_completed_at(None, input.status, now),
                 updated_at: now,
             };
             diesel::insert_into(tool_invocations::table)
