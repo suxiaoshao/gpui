@@ -64,10 +64,21 @@ impl AgentRuntime {
             },
         )?;
 
-        self.activate_skills(&request, &agent_run.id)?;
+        if let Err(error) = self.activate_skills(&request, &agent_run.id) {
+            return Err(self.mark_setup_failed(&agent_run.id, error)?);
+        }
 
-        let items = self.repo.conversation_items(&request.conversation_id)?;
-        let prompt_history = build_prompt_history(&items, &request.user_item_id, &agent_run.id)?;
+        let items = match self.repo.conversation_items(&request.conversation_id) {
+            Ok(items) => items,
+            Err(error) => {
+                return Err(self.mark_setup_failed(&agent_run.id, AgentRuntimeError::from(error))?);
+            }
+        };
+        let prompt_history =
+            match build_prompt_history(&items, &request.user_item_id, &agent_run.id) {
+                Ok(prompt_history) => prompt_history,
+                Err(error) => return Err(self.mark_setup_failed(&agent_run.id, error)?),
+            };
 
         let tool_server = ToolServer::new().run();
         let mut toolset = ToolSet::default();
@@ -78,7 +89,9 @@ impl AgentRuntime {
         {
             toolset.add_tool_boxed(tool);
         }
-        tool_server.append_toolset(toolset).await?;
+        if let Err(error) = tool_server.append_toolset(toolset).await {
+            return Err(self.mark_setup_failed(&agent_run.id, AgentRuntimeError::from(error))?);
+        }
 
         let context = PersistenceContext::new(
             self.repo.clone(),
@@ -199,6 +212,22 @@ impl AgentRuntime {
                 })
             }
         }
+    }
+
+    fn mark_setup_failed(
+        &self,
+        agent_run_id: &str,
+        error: AgentRuntimeError,
+    ) -> Result<AgentRuntimeError> {
+        self.repo.update_agent_run_status(
+            agent_run_id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Failed,
+                output: None,
+                error: Some(run_error("setup_error", error.to_string(), true, None)),
+            },
+        )?;
+        Ok(error)
     }
 
     pub fn decide_approval(
@@ -373,7 +402,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use rig_core::{
-        completion::Message as RigMessage,
+        completion::{AssistantContent, Message as RigMessage},
         message::UserContent,
         test_utils::{MockCompletionModel, MockTurn},
     };
@@ -542,6 +571,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setup_failure_marks_agent_run_failed() {
+        let fixture = Fixture::new("setup-failure");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request.project_root = Some(fixture.dir.path().to_path_buf());
+        request.skill_requests = vec![crate::SkillActivationRequest::new("missing-skill")];
+
+        let error = runtime
+            .run_with_model(request, MockCompletionModel::text("unused"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("missing-skill"));
+
+        assert!(
+            fixture
+                .repo
+                .agent_runs_by_status(AgentRunStatus::Running)
+                .unwrap()
+                .is_empty()
+        );
+        let failed = fixture
+            .repo
+            .agent_runs_by_status(AgentRunStatus::Failed)
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        let payload = failed[0].error.as_ref().unwrap();
+        assert_eq!(payload.code, "setup_error");
+        assert!(payload.message.contains("missing-skill"));
+        assert!(payload.retryable);
+    }
+
+    #[tokio::test]
     async fn skill_activation_is_persisted_as_snapshot() {
         let fixture = Fixture::new("skills");
         let skill_dir = fixture.dir.path().join(".agents/skills/rust");
@@ -608,6 +669,109 @@ mod tests {
                 .iter()
                 .all(|message| !rig_message_text(message).contains("<skill>"))
         );
+    }
+
+    #[tokio::test]
+    async fn tool_history_replay_preserves_provider_call_ids() {
+        let fixture = Fixture::new("tool-history");
+        fixture
+            .repo
+            .append_conversation_item(NewConversationItem {
+                conversation_id: fixture.conversation.id.clone(),
+                status: ConversationItemStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationItemPayload::ToolCall(ToolCallItem {
+                    tool_invocation_id: None,
+                    call_id: "call_previous".to_string(),
+                    source: ToolSource::Local,
+                    name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    arguments: ToolArguments {
+                        value: json!({"text": "hi"}),
+                    },
+                }),
+            })
+            .unwrap();
+        fixture
+            .repo
+            .append_conversation_item(NewConversationItem {
+                conversation_id: fixture.conversation.id.clone(),
+                status: ConversationItemStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationItemPayload::ToolResult(ToolResultItem {
+                    tool_invocation_id: None,
+                    call_id: "call_previous".to_string(),
+                    content: vec![ContentPart::Text {
+                        text: "hi".to_string(),
+                    }],
+                    is_error: false,
+                    structured_output: None,
+                }),
+            })
+            .unwrap();
+        let next_user_item = fixture
+            .repo
+            .append_conversation_item(NewConversationItem {
+                conversation_id: fixture.conversation.id.clone(),
+                status: ConversationItemStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationItemPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "continue".to_string(),
+                    }],
+                },
+            })
+            .unwrap();
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request.user_item_id = next_user_item.id;
+        let model = MockCompletionModel::text("ok");
+
+        runtime
+            .run_with_model(request, model.clone())
+            .await
+            .unwrap();
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 1);
+        let messages = requests[0].chat_history.iter().collect::<Vec<_>>();
+        let tool_call = messages
+            .iter()
+            .find_map(|message| match message {
+                RigMessage::Assistant { content, .. } => {
+                    content.iter().find_map(|content| match content {
+                        AssistantContent::ToolCall(call) => Some(call),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(tool_call.id, "call_previous");
+        assert_eq!(tool_call.call_id.as_deref(), Some("call_previous"));
+
+        let tool_result = messages
+            .iter()
+            .find_map(|message| match message {
+                RigMessage::User { content } => content.iter().find_map(|content| match content {
+                    UserContent::ToolResult(result) => Some(result),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(tool_result.id, "call_previous");
+        assert_eq!(tool_result.call_id.as_deref(), Some("call_previous"));
     }
 
     struct Fixture {

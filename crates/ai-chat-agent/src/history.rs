@@ -87,15 +87,18 @@ pub(crate) fn conversation_item_to_rig_message(
         }
         ConversationItemPayload::ToolCall(call) => Some(RigMessage::Assistant {
             id: item.provider_item_id.clone(),
-            content: OneOrMany::one(AssistantContent::ToolCall(ToolCall::new(
-                call.call_id.clone(),
-                ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone()),
-            ))),
+            content: OneOrMany::one(AssistantContent::ToolCall(
+                ToolCall::new(
+                    call.call_id.clone(),
+                    ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone()),
+                )
+                .with_call_id(call.call_id.clone()),
+            )),
         }),
         ConversationItemPayload::ToolResult(result) => Some(RigMessage::User {
             content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                 id: result.call_id.clone(),
-                call_id: None,
+                call_id: Some(result.call_id.clone()),
                 content: OneOrMany::one(ToolResultContent::text(content_text(&result.content))),
             })),
         }),
