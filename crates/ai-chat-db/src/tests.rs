@@ -1,7 +1,8 @@
 use crate::{
     FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
     NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
-    NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent,
+    NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
+    UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -815,6 +816,256 @@ fn approval_outcome_derives_status_and_decision_columns() {
 }
 
 #[test]
+fn execution_status_updates_and_pending_approval_queries_roundtrip() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("execution-updates")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "update input"))
+        .unwrap();
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Queued,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let running = repo
+        .update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Running,
+                output: None,
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(running.status, AgentRunStatus::Running);
+    assert!(running.started_at.is_some());
+    assert!(running.completed_at.is_none());
+
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Queued,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let completed_step = repo
+        .update_provider_step_status(
+            &provider_step.id,
+            UpdateProviderStepStatus {
+                status: ProviderStepStatus::Completed,
+                response_snapshot: Some(provider_step_response()),
+                state_snapshot: Some(provider_run_state(&provider.id)),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_step.status, ProviderStepStatus::Completed);
+    assert_eq!(
+        completed_step.response_snapshot,
+        Some(provider_step_response())
+    );
+    assert!(completed_step.started_at.is_some());
+    assert!(completed_step.completed_at.is_some());
+
+    let tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id.clone()),
+            status: ToolInvocationStatus::Requested,
+            input: tool_input(),
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    let approval = repo
+        .insert_approval_decision(NewApprovalDecision {
+            tool_invocation_id: tool.id.clone(),
+            request: approval_request(),
+            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
+        })
+        .unwrap();
+    assert_eq!(
+        repo.pending_approval_decisions().unwrap(),
+        vec![approval.clone()]
+    );
+
+    let approved = repo
+        .update_approval_decision(
+            &approval.id,
+            NewApprovalDecisionOutcome::Approved {
+                decided_by: "user".to_string(),
+                reason: Some("ok".to_string()),
+            },
+        )
+        .unwrap();
+    assert_eq!(approved.status, ApprovalStatus::Approved);
+    assert!(repo.pending_approval_decisions().unwrap().is_empty());
+
+    let succeeded_tool = repo
+        .update_tool_invocation_status(
+            &tool.id,
+            UpdateToolInvocationStatus {
+                status: ToolInvocationStatus::Succeeded,
+                output: Some(tool_output()),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(succeeded_tool.status, ToolInvocationStatus::Succeeded);
+    assert_eq!(succeeded_tool.output, Some(tool_output()));
+    assert!(succeeded_tool.started_at.is_some());
+    assert!(succeeded_tool.completed_at.is_some());
+
+    let output = AgentRunOutput {
+        final_item_id: None,
+        stopped_reason: AgentStoppedReason::Completed,
+    };
+    let completed_run = repo
+        .update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Completed,
+                output: Some(output.clone()),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_run.output, Some(output));
+    assert!(completed_run.completed_at.is_some());
+    assert_eq!(repo.provider_steps_for_run(&agent_run.id).unwrap().len(), 1);
+    assert_eq!(
+        repo.tool_invocations_for_run(&agent_run.id).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn active_execution_inserts_stamp_start_times() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("active-starts")).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let user_item = repo
+        .append_conversation_item(message_item(&conversation.id, "run input"))
+        .unwrap();
+
+    let agent_run = repo
+        .insert_agent_run(NewAgentRun {
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    assert!(agent_run.started_at.is_some());
+    assert!(agent_run.completed_at.is_none());
+
+    let provider_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: agent_run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert!(provider_step.started_at.is_some());
+    assert!(provider_step.completed_at.is_none());
+    let completed_step = repo
+        .update_provider_step_status(
+            &provider_step.id,
+            UpdateProviderStepStatus {
+                status: ProviderStepStatus::Completed,
+                response_snapshot: Some(provider_step_response()),
+                state_snapshot: Some(provider_run_state(&provider.id)),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_step.started_at, provider_step.started_at);
+    assert!(completed_step.completed_at.is_some());
+
+    let mut running_tool_input = tool_input();
+    running_tool_input.call_id = "call_running".to_string();
+    let running_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id.clone()),
+            status: ToolInvocationStatus::Running,
+            input: running_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(running_tool.started_at.is_some());
+    assert!(running_tool.completed_at.is_none());
+    let succeeded_tool = repo
+        .update_tool_invocation_status(
+            &running_tool.id,
+            UpdateToolInvocationStatus {
+                status: ToolInvocationStatus::Succeeded,
+                output: Some(tool_output()),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(succeeded_tool.started_at, running_tool.started_at);
+    assert!(succeeded_tool.completed_at.is_some());
+
+    let mut awaiting_tool_input = tool_input();
+    awaiting_tool_input.call_id = "call_awaiting".to_string();
+    let awaiting_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id.clone(),
+            provider_step_id: Some(provider_step.id),
+            status: ToolInvocationStatus::AwaitingApproval,
+            input: awaiting_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(awaiting_tool.started_at.is_some());
+    assert!(awaiting_tool.completed_at.is_none());
+
+    let mut requested_tool_input = tool_input();
+    requested_tool_input.call_id = "call_requested".to_string();
+    let requested_tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: agent_run.id,
+            provider_step_id: None,
+            status: ToolInvocationStatus::Requested,
+            input: requested_tool_input,
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    assert!(requested_tool.started_at.is_none());
+    assert!(requested_tool.completed_at.is_none());
+}
+
+#[test]
 fn typed_json_roundtrips_for_repository_records() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -1227,6 +1478,7 @@ fn attachment_metadata() -> AttachmentMetadata {
 fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> AgentRunInput {
     AgentRunInput {
         user_item_id: user_item_id.to_string(),
+        parent_agent_run_id: None,
         prompt_snapshot: Some(prompt_content()),
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),

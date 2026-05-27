@@ -146,6 +146,13 @@ pub struct NewAgentRun {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UpdateAgentRunStatus {
+    pub status: AgentRunStatus,
+    pub output: Option<AgentRunOutput>,
+    pub error: Option<RunErrorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderStepRecord {
     pub id: ProviderStepId,
     pub agent_run_id: AgentRunId,
@@ -177,6 +184,14 @@ pub struct NewProviderStep {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UpdateProviderStepStatus {
+    pub status: ProviderStepStatus,
+    pub response_snapshot: Option<ProviderStepResponseSnapshot>,
+    pub state_snapshot: Option<ProviderRunStateSnapshot>,
+    pub error: Option<RunErrorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolInvocationRecord {
     pub id: ToolInvocationId,
     pub agent_run_id: AgentRunId,
@@ -203,6 +218,13 @@ pub struct NewToolInvocation {
     pub provider_step_id: Option<ProviderStepId>,
     pub status: ToolInvocationStatus,
     pub input: ToolInvocationInput,
+    pub output: Option<ToolInvocationOutput>,
+    pub error: Option<RunErrorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateToolInvocationStatus {
+    pub status: ToolInvocationStatus,
     pub output: Option<ToolInvocationOutput>,
     pub error: Option<RunErrorPayload>,
 }
