@@ -182,6 +182,34 @@ impl AgentRuntime {
                     });
                 }
 
+                if matches!(
+                    &error,
+                    rig_core::completion::PromptError::MaxTurnsError { .. }
+                ) {
+                    let output = AgentRunOutput {
+                        final_item_id: context.final_item_id(),
+                        stopped_reason: AgentStoppedReason::MaxSteps,
+                    };
+                    let agent_run = self.repo.update_agent_run_status(
+                        &agent_run.id,
+                        UpdateAgentRunStatus {
+                            status: AgentRunStatus::Completed,
+                            output: Some(output.clone()),
+                            error: None,
+                        },
+                    )?;
+                    let mut events = context.events();
+                    events.push(AgentRunEvent::Completed {
+                        output: output.clone(),
+                    });
+                    return Ok(AgentRunHandle {
+                        agent_run,
+                        output: Some(output),
+                        events,
+                        steps: context.steps(),
+                    });
+                }
+
                 let payload = if request.cancellation_token.is_cancelled() {
                     run_error("canceled", "runtime canceled", false, None)
                 } else {
@@ -752,6 +780,54 @@ mod tests {
         assert_eq!(
             tool_result.raw_output.as_ref().unwrap().value,
             json!({"raw": "details"})
+        );
+    }
+
+    #[tokio::test]
+    async fn max_turns_is_persisted_as_max_steps_stop() {
+        let fixture = Fixture::new("max-steps");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let mut request = fixture.request();
+        request.guards.max_steps = 1;
+        request
+            .tool_registry
+            .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
+            .unwrap();
+        let model = MockCompletionModel::new([
+            MockTurn::tool_call("call_1", "echo", json!({"text": "one"})),
+            MockTurn::tool_call("call_2", "echo", json!({"text": "two"})),
+            MockTurn::tool_call("call_3", "echo", json!({"text": "three"})),
+        ]);
+
+        let handle = runtime.run_with_model(request, model).await.unwrap();
+
+        assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+        assert_eq!(handle.agent_run.error, None);
+        assert_eq!(
+            handle.output.as_ref().unwrap().stopped_reason,
+            AgentStoppedReason::MaxSteps
+        );
+        assert!(
+            handle
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentRunEvent::Completed { output } if output.stopped_reason == AgentStoppedReason::MaxSteps))
+        );
+        assert!(
+            !handle
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentRunEvent::Failed { .. }))
+        );
+        let invocations = fixture
+            .repo
+            .tool_invocations_for_run(&handle.agent_run.id)
+            .unwrap();
+        assert_eq!(invocations.len(), 3);
+        assert!(
+            invocations
+                .iter()
+                .all(|invocation| invocation.status == ToolInvocationStatus::Succeeded)
         );
     }
 
