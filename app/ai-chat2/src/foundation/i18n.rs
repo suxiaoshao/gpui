@@ -44,12 +44,12 @@ impl I18n {
     }
 
     #[cfg(test)]
-    fn for_language(language: AppLanguage) -> Self {
+    pub(crate) fn for_language(language: AppLanguage) -> Self {
         Self::new(locale_for_language(language))
     }
 
     #[cfg(test)]
-    fn for_locale_tag(locale: &str) -> Self {
+    pub(crate) fn for_locale_tag(locale: &str) -> Self {
         let locale = match normalize_locale(locale).filter(|id| id.language.as_str() == "zh") {
             Some(_) => Locale::ZhCn,
             None => Locale::EnUs,
@@ -57,12 +57,16 @@ impl I18n {
         Self::new(locale)
     }
 
+    #[cfg(test)]
+    pub(crate) fn english_for_test() -> Self {
+        Self::new(Locale::EnUs)
+    }
+
     pub(crate) fn t(&self, key: &str) -> String {
         self.translate(key, None)
     }
 
-    #[cfg(test)]
-    fn t_with_args(&self, key: &str, args: &FluentArgs<'_>) -> String {
+    pub(crate) fn t_with_args(&self, key: &str, args: &FluentArgs<'_>) -> String {
         self.translate(key, Some(args))
     }
 

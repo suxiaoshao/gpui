@@ -1,4 +1,9 @@
 use app_assets::define_lucide_icons;
+use gpui::{AssetSource, SharedString};
+use rust_embed::RustEmbed;
+use std::{borrow::Cow, collections::BTreeSet};
+
+pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 
 define_lucide_icons!(
     pub(crate) enum IconName {
@@ -10,11 +15,78 @@ define_lucide_icons!(
     }
 );
 
-pub(crate) type Assets = app_assets::AppAssets<LucideAssets, gpui_component_assets::Assets>;
+#[derive(RustEmbed)]
+#[folder = "."]
+#[include = "build-assets/icon/app-icon.png"]
+struct BuildAssets;
+
+impl AssetSource for BuildAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Self::get(path).map(|file| file.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|item| {
+                let item = item.into_owned();
+                (path.is_empty() || item.starts_with(path)).then(|| item.into())
+            })
+            .collect())
+    }
+}
+
+pub(crate) struct Assets {
+    build_assets: BuildAssets,
+    lucide_assets: LucideAssets,
+    component_assets: gpui_component_assets::Assets,
+}
+
+impl Default for Assets {
+    fn default() -> Self {
+        Self {
+            build_assets: BuildAssets,
+            lucide_assets: LucideAssets,
+            component_assets: gpui_component_assets::Assets,
+        }
+    }
+}
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        for source in [
+            &self.build_assets as &dyn AssetSource,
+            &self.lucide_assets as &dyn AssetSource,
+        ] {
+            if let Some(data) = source.load(path)? {
+                return Ok(Some(data));
+            }
+        }
+
+        self.component_assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        let mut names = BTreeSet::new();
+
+        names.extend(self.build_assets.list(path)?);
+        names.extend(self.lucide_assets.list(path)?);
+        names.extend(self.component_assets.list(path)?);
+
+        Ok(names.into_iter().collect())
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{Assets, IconName};
+    use super::{APP_ICON_ASSET_PATH, Assets, IconName};
     use gpui::{AssetSource, SharedString};
     use gpui_component::IconNamed;
 
@@ -48,5 +120,16 @@ mod tests {
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
+    }
+
+    #[test]
+    fn app_icon_asset_loads() {
+        let assets = Assets::default();
+        let icon = assets
+            .load(APP_ICON_ASSET_PATH)
+            .expect("load app icon")
+            .expect("app icon exists");
+
+        assert!(!icon.is_empty());
     }
 }

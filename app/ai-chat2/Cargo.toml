@@ -7,6 +7,19 @@ license = "MIT"
 repository = "https://github.com/suxiaoshao/gpui"
 homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
+build = "build.rs"
+
+[package.metadata.bundle]
+name = "AI Chat 2"
+identifier = "top.sushao.ai-chat2"
+publisher = "CN=Sushao"
+short_description = "A GPUI shell for the next AI Chat app."
+long_description = """
+AI Chat 2 is the next GPUI-based AI chat application shell, focused on the
+fresh database, configuration, theme, i18n, assets, hotkey, and app chrome
+foundation before the product UI is migrated.
+"""
+category = "DeveloperTool"
 
 [dependencies]
 ai-chat-core.workspace = true
@@ -20,6 +33,8 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui_platform.workspace = true
+platform-ext.workspace = true
+rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
 serde = { version = "1.0.228", features = ["derive"] }
 smol = "2.0.2"
 sys-locale = "0.3.2"
@@ -28,6 +43,11 @@ toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 unic-langid = "0.9.6"
+window-ext.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["ico", "png"] }
+winresource = "0.1"

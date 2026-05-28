@@ -242,6 +242,9 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "image",
+ "platform-ext",
+ "rust-embed",
  "serde",
  "smol",
  "sys-locale",
@@ -251,6 +254,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unic-langid",
+ "window-ext",
+ "winresource",
 ]
 
 [[package]]
