@@ -1,3 +1,4 @@
+pub(crate) mod about;
 pub(crate) mod menus;
 pub(crate) mod placeholder_windows;
 pub(crate) mod title_bar_menu;
@@ -159,6 +160,9 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
     for root in roots {
         let _ = root.update(cx, |root, _window, cx| {
             let _ = with_root_view::<AppRootView, _>(root, cx, |view, cx| {
+                view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
+            });
+            let _ = with_root_view::<about::AboutWindow, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
             let _ = with_root_view::<placeholder_windows::PlaceholderWindow, _>(

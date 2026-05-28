@@ -1,5 +1,5 @@
 use crate::{
-    app::{placeholder_windows, quit_app, show_or_create_main_window},
+    app::{about, placeholder_windows, quit_app, show_or_create_main_window},
     foundation::I18n,
 };
 use fluent_bundle::FluentArgs;
@@ -41,7 +41,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("alt-cmd-h", HideOthers, None),
     ]);
 
-    cx.on_action(|_: &About, cx: &mut App| placeholder_windows::open_about_window(cx));
+    cx.on_action(|_: &About, cx: &mut App| about::open_about_window(cx));
     cx.on_action(|_: &OpenMainWindow, cx: &mut App| show_or_create_main_window(cx));
     cx.on_action(|_: &OpenTemporaryConversation, cx: &mut App| {
         placeholder_windows::open_temporary_window(cx);
