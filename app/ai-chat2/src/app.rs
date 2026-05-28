@@ -5,15 +5,14 @@ pub(crate) mod title_bar_menu;
 
 use crate::features::home::HomeView;
 use crate::{database, errors::AiChat2Error, foundation, state};
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{ActiveTheme, Root, StyledExt, TitleBar, h_flex, label::Label, v_flex};
+use gpui::*;
+use gpui_component::{Root, TitleBar};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::WindowExt;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat2";
 const APP_TITLE: &str = "AI Chat 2";
-const KEY_CONTEXT: &str = "AiChat2Root";
 
 pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
     init_tracing();
@@ -96,7 +95,7 @@ const fn should_hide_main_window_on_close() -> bool {
 
 fn create_main_root(window: &mut Window, cx: &mut App) -> Entity<Root> {
     register_main_window_close_behavior(window, cx);
-    let view = cx.new(|cx| AppRootView::new(window, cx));
+    let view = cx.new(|cx| HomeView::new(window, cx));
     cx.new(|cx| Root::new(view, window, cx))
 }
 
@@ -123,7 +122,7 @@ fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Roo
     }
     window.activate_window();
 
-    let _ = with_root_view::<AppRootView, _>(root, cx, |view, cx| {
+    let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
         view.update(cx, |view, cx| view.focus(window, cx));
     });
 }
@@ -149,7 +148,7 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 }
 
 pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
-    find_window_by_view::<AppRootView>(cx)
+    find_window_by_view::<HomeView>(cx)
 }
 
 pub(crate) fn reload_app_menu_bars(cx: &mut App) {
@@ -161,7 +160,7 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
 
     for root in roots {
         let _ = root.update(cx, |root, _window, cx| {
-            let _ = with_root_view::<AppRootView, _>(root, cx, |view, cx| {
+            let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
             let _ = with_root_view::<about::AboutWindow, _>(root, cx, |view, cx| {
@@ -200,117 +199,6 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
             event!(Level::ERROR, error = ?err, "open ai-chat2 main window failed");
         }
     }
-}
-
-struct AppRootView {
-    focus_handle: FocusHandle,
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
-    home: Entity<HomeView>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl AppRootView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        state::theme::apply_current_theme(window, cx);
-        let focus_handle = cx.focus_handle();
-        focus_handle.focus(window, cx);
-        let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
-        let home = cx.new(HomeView::new);
-
-        Self {
-            focus_handle,
-            app_menu_bar,
-            home,
-            _subscriptions: vec![
-                cx.observe_window_appearance(window, |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    cx.refresh_windows();
-                }),
-                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                    window,
-                    |_state, window, cx| {
-                        state::theme::apply_current_theme(window, cx);
-                        cx.refresh_windows();
-                    },
-                ),
-                cx.observe_global_in::<state::AiChat2AppSettings>(window, |this, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
-                    state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
-                    cx.refresh_windows();
-                }),
-            ],
-        }
-    }
-
-    fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
-        self.app_menu_bar
-            .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
-    }
-
-    fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
-    }
-
-    fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
-        window.minimize_window();
-    }
-
-    fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
-        window.zoom_window();
-    }
-}
-
-impl Render for AppRootView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = cx.global::<foundation::I18n>().t("app-title");
-        window.set_window_title(&title);
-
-        v_flex()
-            .track_focus(&self.focus_handle)
-            .key_context(KEY_CONTEXT)
-            .size_full()
-            .overflow_hidden()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .on_action(cx.listener(Self::minimize))
-            .on_action(cx.listener(Self::zoom))
-            .child(
-                div()
-                    .child(
-                        TitleBar::new().child(title_bar_content(self.app_menu_bar.clone(), title)),
-                    )
-                    .flex_initial(),
-            )
-            .child(div().flex_1().min_h_0().child(self.home.clone()))
-    }
-}
-
-fn title_bar_content(
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
-    title: impl Into<SharedString>,
-) -> impl IntoElement {
-    h_flex()
-        .w_full()
-        .h_full()
-        .min_w_0()
-        .overflow_hidden()
-        .when(menus::should_render_component_menu_bar(), |this| {
-            this.child(title_bar_menu::title_bar_leading(app_menu_bar))
-        })
-        .child(title_bar_title(title))
-}
-
-fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
-    h_flex()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .justify_center()
-        .overflow_hidden()
-        .pr_2()
-        .child(Label::new(title).text_sm().font_medium().truncate())
 }
 
 #[cfg(test)]

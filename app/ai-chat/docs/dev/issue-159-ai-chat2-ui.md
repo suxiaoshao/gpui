@@ -8,14 +8,15 @@
 
 当前分支：`codex/issue-159-ai-chat2-ui`。
 
-当前状态：进行中。基础设施壳、app chrome 和 About 已提交并推送到远程分支，但尚未创建 PR，尚未合入
-`codex/issue-137-llm-abstractions`。Sidebar/home skeleton 是当前本地工作状态，尚未合入集成分支。
+当前状态：进行中。当前分支已包含基础设施壳、app chrome、About、Sidebar/home skeleton 和 Home root/sidebar
+结构修正，但尚未创建 PR，尚未合入 `codex/issue-137-llm-abstractions`。
 
 已完成提交：
 
 - `b749528 feat(ai-chat2): wire infrastructure shell`
 - `0843e15 feat(ai-chat2): add app chrome and bundle shell`
 - `e7077fc feat(ai-chat2): implement about window`
+- `6d4a34f feat(ai-chat2): add sidebar home shell`
 
 ## 状态定义
 
@@ -64,7 +65,8 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | app menu | `app/ai-chat2/src/app/menus.rs` | 已接 `About`、`Open Main`、`Open Temporary Conversation`、`Settings`、`Quit`、Window menu 和 macOS Hide/Show actions。 |
 | About window | `app/ai-chat2/src/app/about.rs` | 已实现精简真实 About：app icon、名称、描述、版本、license 和 GitHub 链接。 |
 | titlebar menu bar | `app/ai-chat2/src/app/title_bar_menu.rs` | 非 macOS 渲染 app icon + component menu bar；macOS 使用系统菜单。 |
-| main window shell | `app/ai-chat2/src/app.rs` / `features/home.rs` | 最小主页骨架：titlebar、可调宽 Sidebar 和空内容区；底部 Settings item 仍打开占位 Settings 窗口。 |
+| main window shell | `app/ai-chat2/src/features/home/shell.rs` | 主窗口 UI root 已移出 `app.rs`：titlebar、可调宽 Sidebar、空内容区和 `gpui-component` sheet/dialog/notification layers 都挂在 Home root。 |
+| home sidebar component | `app/ai-chat2/src/features/home/sidebar.rs` | Sidebar 已拆成独立组件；当前底部只有 Settings item，仍打开占位 Settings 窗口。 |
 | dock/app reopen | `app/ai-chat2/src/app.rs` | app reopen 会 show/create main window。 |
 | close-hide behavior | `app/ai-chat2/src/app.rs` | macOS/Windows 主窗口关闭时隐藏窗口。 |
 | Minimize/Zoom action | `app/ai-chat2/src/app.rs` / `placeholder_windows.rs` | 主窗口和占位窗口已处理 Window menu action。 |
@@ -157,7 +159,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | shortcut form/list/status dialogs | `features/settings/shortcut_settings/{form,list,dialogs,validation}.rs` | 未开始 | 需要按 fresh shortcut schema 重做 CRUD、状态弹窗、冲突/注册失败/capability mismatch 和重注册 UI。 |
 | reusable hotkey input | `components/hotkey_input.rs` | 未开始 | Settings 真实页面需要重做 hotkey 输入、解析、清空和冲突反馈。 |
 | provider ext settings help | `components/ext_setting_help.rs` | 未开始 | provider-specific settings 应由 fresh provider/model config 和 capability UI 重新表达。 |
-| home shell | `features/home.rs` | 已完成 | `ai-chat2` 已有最小主页骨架：可调宽 Sidebar、空内容区和 Settings footer；project/conversation 业务未接。 |
+| home shell | `features/home.rs` / `features/home/shell.rs` | 已完成 | `ai-chat2` 已有最小主页骨架：可调宽 Sidebar、空内容区、titlebar 和 gpui-component overlay layers；project/conversation 业务未接。 |
 | workspace sidebar width | `state/workspace.rs` / `state/workspace/persistence.rs` | 已替代 | 旧 workspace state 的 sidebar width 已由 `ai-chat2` 本机 `state.toml` layout state 承接。 |
 | main/settings window placement | `state/workspace.rs` / `state/workspace/persistence.rs` | 未开始 | 旧 app 保存 main/settings window bounds；`ai-chat2` 当前未保存窗口位置和尺寸。 |
 | workspace tabs and drafts | `state/workspace.rs` / `state/workspace/tabs.rs` | 不照搬 | 旧 tab/draft/open-folder workspace shape 不适合 project-first fresh timeline，需要重新设计。 |
@@ -230,5 +232,15 @@ About 页面实现后已运行：
 - `git diff --check`
 - `cargo run -p xtask -- bundle ai-chat2`
 - bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，确认主窗口左侧 Sidebar、底部仅 Settings item、点击 Settings 打开占位窗口、拖拽分隔条写入 `state.toml`，重启后按保存宽度恢复。
+
+Home root / Sidebar 结构修正后已运行：
+
+- `cargo fmt`
+- `cargo test -p ai-chat2 sidebar`
+- `cargo test -p ai-chat2 home`
+- `cargo check -p ai-chat2`
+- `git diff --check`
+- `cargo run -p xtask -- bundle ai-chat2`
+- bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，确认 Home root 正常显示、Sidebar Settings item 仍打开 Settings 占位窗口、重复打开 app 后主窗口数量仍为 1。`actool` 的 Liquid Glass 图标注入警告不阻塞 bundle，保留普通图标。
 
 文档-only 更新只需运行 `git diff --check`。
