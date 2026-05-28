@@ -6,6 +6,7 @@
 mod app;
 mod database;
 mod errors;
+mod features;
 mod foundation;
 mod state;
 

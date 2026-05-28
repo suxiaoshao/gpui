@@ -3,6 +3,7 @@ pub(crate) mod menus;
 pub(crate) mod placeholder_windows;
 pub(crate) mod title_bar_menu;
 
+use crate::features::home::HomeView;
 use crate::{database, errors::AiChat2Error, foundation, state};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{ActiveTheme, Root, StyledExt, TitleBar, h_flex, label::Label, v_flex};
@@ -42,6 +43,7 @@ fn init_tracing() {
 fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
     gpui_component::init(cx);
     state::config::init(cx)?;
+    state::layout::init(cx)?;
     database::init_store(cx)?;
     state::config::init_app_settings(cx)?;
     state::theme::init(cx);
@@ -203,6 +205,7 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
 struct AppRootView {
     focus_handle: FocusHandle,
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
+    home: Entity<HomeView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -212,10 +215,12 @@ impl AppRootView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
+        let home = cx.new(HomeView::new);
 
         Self {
             focus_handle,
             app_menu_bar,
+            home,
             _subscriptions: vec![
                 cx.observe_window_appearance(window, |_state, window, cx| {
                     state::theme::apply_current_theme(window, cx);
@@ -278,7 +283,7 @@ impl Render for AppRootView {
                     )
                     .flex_initial(),
             )
-            .child(div().flex_1().min_h_0())
+            .child(div().flex_1().min_h_0().child(self.home.clone()))
     }
 }
 
