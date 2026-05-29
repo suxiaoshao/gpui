@@ -1,3 +1,4 @@
+mod blink_cursor;
 mod buffer;
 mod element;
 mod history;
@@ -11,13 +12,14 @@ use std::{collections::BTreeMap, ops::Range, path::Path};
 
 use ai_chat_agent::SkillCatalog;
 use gpui::{
-    App, ClipboardItem, Context, CursorStyle, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, SharedString,
-    Styled as _, UTF16Selection, Window, actions,
+    App, AppContext as _, ClipboardItem, Context, CursorStyle, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+    SharedString, Styled as _, Subscription, UTF16Selection, Window, actions,
 };
 
 use self::{
+    blink_cursor::BlinkCursor,
     buffer::{
         Selection, byte_range_to_utf16_range, byte_to_utf16, clamp_offset, line_start,
         next_char_boundary, next_word_end, offset_for_line_column, previous_char_boundary,
@@ -186,16 +188,38 @@ pub(crate) struct ComposerEditor {
     preferred_column: Option<usize>,
     selecting: bool,
     focus_handle: FocusHandle,
+    blink_cursor: gpui::Entity<BlinkCursor>,
     last_layout: Option<element::LayoutCache>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ComposerEditor {
     pub(crate) const MAX_VISIBLE_LINES: usize = 8;
 
-    pub(crate) fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        placeholder: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let skills = SkillCatalog::scan(None)
             .map(|catalog| skills_from_catalog(&catalog))
             .unwrap_or_default();
+        let focus_handle = cx.focus_handle();
+        let blink_cursor = cx.new(|_| BlinkCursor::new());
+        let _subscriptions = vec![
+            cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
+            cx.observe_window_activation(window, |editor, window, cx| {
+                editor.sync_blink_cursor(window, cx);
+            }),
+            cx.on_focus(&focus_handle, window, |editor, window, cx| {
+                editor.sync_blink_cursor(window, cx);
+                cx.notify();
+            }),
+            cx.on_blur(&focus_handle, window, |editor, window, cx| {
+                editor.sync_blink_cursor(window, cx);
+                cx.notify();
+            }),
+        ];
 
         Self {
             text: String::new(),
@@ -209,8 +233,10 @@ impl ComposerEditor {
             composition_base: None,
             preferred_column: None,
             selecting: false,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
+            blink_cursor,
             last_layout: None,
+            _subscriptions,
         }
     }
 
@@ -264,6 +290,12 @@ impl ComposerEditor {
         &self.focus_handle
     }
 
+    pub(super) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.is_focused(window)
+            && window.is_window_active()
+            && self.blink_cursor.read(cx).visible()
+    }
+
     pub(super) fn display_line_count(&self) -> usize {
         buffer::line_ranges(&self.text).len()
     }
@@ -278,6 +310,7 @@ impl ComposerEditor {
     }
 
     fn restore_state(&mut self, state: EditorState, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         self.text = state.text;
         self.selection = state.selection;
         self.marked_range = state.marked_range;
@@ -292,6 +325,21 @@ impl ComposerEditor {
         self.composition_base = None;
     }
 
+    fn sync_blink_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = window.is_window_active() && self.focus_handle.is_focused(window);
+        self.blink_cursor.update(cx, |cursor, cx| {
+            if active {
+                cursor.start(cx);
+            } else {
+                cursor.stop(cx);
+            }
+        });
+    }
+
+    fn pause_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
+    }
+
     fn refresh_tokens(&mut self) {
         self.tokens = parse_skill_tokens(&self.text, &self.skills, &mut self.next_token_id);
     }
@@ -303,6 +351,7 @@ impl ComposerEditor {
         record_history: bool,
         cx: &mut Context<Self>,
     ) {
+        self.pause_cursor_blink(cx);
         if record_history {
             self.record_before_change();
         }
@@ -327,6 +376,7 @@ impl ComposerEditor {
     }
 
     fn move_to(&mut self, offset: usize, selecting: bool, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         let offset = clamp_offset(&self.text, offset);
         self.selection.move_head(offset, selecting);
         self.preferred_column = None;
@@ -335,6 +385,7 @@ impl ComposerEditor {
     }
 
     fn move_vertically(&mut self, delta: isize, selecting: bool, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         let (line_ix, column) = buffer::line_column(&self.text, self.cursor());
         let preferred_column = self.preferred_column.unwrap_or(column);
         let line_count = buffer::line_ranges(&self.text).len();
@@ -382,6 +433,7 @@ impl ComposerEditor {
     }
 
     fn select_word_at(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         let offset = clamp_offset(&self.text, offset);
         if self.text.is_empty() {
             self.selection.collapse(0);
@@ -398,6 +450,7 @@ impl ComposerEditor {
     }
 
     fn select_line_at(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         let offset = clamp_offset(&self.text, offset);
         self.selection = Selection {
             anchor: line_start(&self.text, offset),
@@ -648,6 +701,7 @@ impl ComposerEditor {
     }
 
     fn on_select_all(&mut self, _: &ComposerSelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.pause_cursor_blink(cx);
         self.selection = Selection {
             anchor: 0,
             head: self.text.len(),
@@ -737,6 +791,7 @@ impl EntityInputHandler for ComposerEditor {
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if self.marked_range.take().is_some() {
+            self.pause_cursor_blink(cx);
             if let Some(base) = self.composition_base.take() {
                 self.history.record_before(base);
                 self.history.clear_redo();
@@ -774,6 +829,7 @@ impl EntityInputHandler for ComposerEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pause_cursor_blink(cx);
         if self.composition_base.is_none() {
             self.composition_base = Some(self.current_state());
         }
@@ -920,8 +976,12 @@ mod tests {
 
     use super::*;
 
-    fn editor_with_skills(names: &[&str], cx: &mut Context<ComposerEditor>) -> ComposerEditor {
-        let mut editor = ComposerEditor::new("placeholder", cx);
+    fn editor_with_skills(
+        names: &[&str],
+        window: &mut Window,
+        cx: &mut Context<ComposerEditor>,
+    ) -> ComposerEditor {
+        let mut editor = ComposerEditor::new("placeholder", window, cx);
         editor.skills = names
             .iter()
             .map(|name| {
@@ -949,9 +1009,9 @@ mod tests {
 
         let window = cx
             .update(|cx| {
-                cx.open_window(Default::default(), |_, cx| {
+                cx.open_window(Default::default(), |window, cx| {
                     cx.new(|cx| {
-                        let mut editor = editor_with_skills(&["rust"], cx);
+                        let mut editor = editor_with_skills(&["rust"], window, cx);
                         editor.replace_range(0..0, "use $rust", true, cx);
                         editor
                     })
@@ -977,9 +1037,9 @@ mod tests {
 
         let window = cx
             .update(|cx| {
-                cx.open_window(Default::default(), |_, cx| {
+                cx.open_window(Default::default(), |window, cx| {
                     cx.new(|cx| {
-                        let mut editor = editor_with_skills(&["rust"], cx);
+                        let mut editor = editor_with_skills(&["rust"], window, cx);
                         editor.replace_range(0..0, "$rust", true, cx);
                         editor
                     })
@@ -1007,8 +1067,8 @@ mod tests {
 
         let window = cx
             .update(|cx| {
-                cx.open_window(Default::default(), |_, cx| {
-                    cx.new(|cx| editor_with_skills(&[], cx))
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| editor_with_skills(&[], window, cx))
                 })
             })
             .unwrap();

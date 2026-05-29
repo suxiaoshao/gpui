@@ -53,7 +53,7 @@ pub(crate) fn init(cx: &mut App) {
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
-        let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), cx));
+        let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
         let selected_model_index = 0;
         let selected_effort = preview_model(selected_model_index).computed_default_effort();
         let state = cx.entity().downgrade();
@@ -275,7 +275,6 @@ impl Render for ChatForm {
                 div()
                     .w_full()
                     .min_h(px(56.))
-                    .px_3()
                     .pt(px(6.))
                     .child(self.composer.clone()),
             )

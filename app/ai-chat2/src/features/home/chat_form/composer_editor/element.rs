@@ -5,7 +5,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 
-use super::{ComposerEditor, buffer, token::ComposerToken};
+use super::{ComposerEditor, blink_cursor::CURSOR_WIDTH, buffer, token::ComposerToken};
 
 pub(super) struct ComposerEditorElement {
     editor: Entity<ComposerEditor>,
@@ -31,7 +31,7 @@ pub(super) struct LayoutCache {
 
 pub(super) struct PrepaintState {
     lines: Vec<LayoutLine>,
-    cursor: Option<PaintQuad>,
+    cursor: Option<Bounds<Pixels>>,
     selections: Vec<PaintQuad>,
 }
 
@@ -89,15 +89,15 @@ impl Element for ComposerEditorElement {
         let marked_range = editor.marked_range().clone();
         let tokens = editor.tokens().to_vec();
         let placeholder = editor.placeholder().clone();
-        let focused = editor.focus_handle().is_focused(window);
+        let show_cursor = editor.show_cursor(window, cx);
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
+        let cursor_height = font_size.min(line_height);
         let base_color = text_style.color;
         let placeholder_color = cx.theme().muted_foreground.opacity(0.72);
         let token_color = cx.theme().blue;
         let selection_color = cx.theme().blue.opacity(0.22);
-        let caret_color = cx.theme().blue;
 
         let ranges = buffer::line_ranges(&text);
         let is_placeholder = text.is_empty();
@@ -155,18 +155,18 @@ impl Element for ComposerEditorElement {
                 }
             }
 
-            if focused && cursor >= range.start && cursor <= range.end {
+            if show_cursor && cursor >= range.start && cursor <= range.end {
                 let cursor_x = if is_placeholder {
                     px(0.)
                 } else {
                     line.x_for_index(cursor.saturating_sub(range.start))
                 };
-                cursor_quad = Some(fill(
-                    Bounds::new(
-                        point(bounds.left() + cursor_x, line_origin.y),
-                        size(px(1.5), line_height),
+                cursor_quad = Some(Bounds::new(
+                    point(
+                        bounds.left() + cursor_x,
+                        line_origin.y + (line_height - cursor_height) / 2.,
                     ),
-                    caret_color,
+                    size(CURSOR_WIDTH, cursor_height),
                 ));
             }
 
@@ -216,7 +216,7 @@ impl Element for ComposerEditorElement {
             }
 
             if let Some(cursor) = prepaint.cursor.take() {
-                window.paint_quad(cursor);
+                window.paint_quad(fill(window.pixel_snap_bounds(cursor), cx.theme().caret));
             }
         });
 
