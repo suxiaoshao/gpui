@@ -1,6 +1,6 @@
 use super::{
     ChatForm,
-    picker::{PickerSection, picker_popover, picker_trigger},
+    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
     preview_models::PreviewModel,
     thinking_effort::ThinkingEffort,
 };
@@ -66,21 +66,23 @@ impl ChatForm {
 
         picker_popover(
             cx,
-            "chat-form-effort-popover",
-            self.effort_picker_open,
-            picker_trigger(
-                "chat-form-effort-trigger",
-                IconName::Lightbulb,
-                label,
-                self.effort_picker_open,
-            ),
-            self.effort_picker.clone(),
-            px(180.),
-            rems(16.).into(),
-            None,
-            cx.listener(|form, open: &bool, window, cx| {
-                form.set_effort_picker_open(*open, window, cx);
-            }),
+            PickerPopoverConfig {
+                id: "chat-form-effort-popover",
+                open: self.effort_picker_open,
+                trigger: picker_trigger(
+                    "chat-form-effort-trigger",
+                    IconName::Lightbulb,
+                    label,
+                    self.effort_picker_open,
+                ),
+                list: self.effort_picker.clone(),
+                width: px(180.),
+                max_height: rems(16.).into(),
+                search_placeholder: None,
+                on_open_change: cx.listener(|form, open: &bool, window, cx| {
+                    form.set_effort_picker_open(*open, window, cx);
+                }),
+            },
         )
     }
 }

@@ -22,6 +22,7 @@ foundation before the product UI is migrated.
 category = "DeveloperTool"
 
 [dependencies]
+ai-chat-agent.workspace = true
 ai-chat-core.workspace = true
 ai-chat-db.workspace = true
 app-assets.workspace = true
@@ -46,6 +47,7 @@ unic-langid = "0.9.6"
 window-ext.workspace = true
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]

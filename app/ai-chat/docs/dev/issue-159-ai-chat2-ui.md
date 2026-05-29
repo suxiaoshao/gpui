@@ -4,12 +4,13 @@
 `app/ai-chat/docs/dev/issue-137-llm-abstractions.md`；本文档负责把
 `app/ai-chat2` UI、壳、本机状态、可观测性和旧 `app/ai-chat` 能力映射拆成可执行事项。
 
-最后同步时间：2026-05-28。
+最后同步时间：2026-05-29。
 
 当前分支：`codex/issue-159-ai-chat2-ui`。
 
-当前状态：进行中。当前分支已包含基础设施壳、app chrome、About、Sidebar/home skeleton 和 Home root/sidebar
-结构修正，但尚未创建 PR，尚未合入 `codex/issue-137-llm-abstractions`。
+当前状态：进行中。当前分支已包含基础设施壳、app chrome、About、Sidebar/home skeleton、Home root/sidebar
+结构修正、ChatForm 视觉预览和 `ComposerEditor` 第一版输入内核，但尚未创建 PR，尚未合入
+`codex/issue-137-llm-abstractions`。
 
 已完成提交：
 
@@ -17,6 +18,7 @@
 - `0843e15 feat(ai-chat2): add app chrome and bundle shell`
 - `e7077fc feat(ai-chat2): implement about window`
 - `6d4a34f feat(ai-chat2): add sidebar home shell`
+- `d7a5751 ai-chat2: add chat form preview`
 
 ## 状态定义
 
@@ -84,6 +86,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | macOS bundle localization | `app/ai-chat2/locales/macos/` | 已有 `en-US` 和 `zh-Hans` InfoPlist strings。 |
 | Windows icon build script | `app/ai-chat2/build.rs` | Windows build 时从 base PNG 派生 multi-frame `.ico`。 |
 | `xtask bundle ai-chat2` | `crates/xtask/src/cli.rs` | `BundleApp::AiChat2` 已加入，CLI parse test 已覆盖。 |
+| ComposerEditor v1 | `app/ai-chat2/src/features/home/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、`$skill-name` token 和 `ComposerSnapshot`。 |
 
 ## 占位
 
@@ -93,6 +96,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Temporary Conversation window | `app/ai-chat2/src/app/placeholder_windows.rs` | 只显示“临时对话运行时暂不接入”。 | 接入真实 temporary chat、prompt/model/provider 和 agent run。 |
 | temporary hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 `last_pressed` 和基础 tracing 事件；当前不写 log 文件。 | 打开/切换真实 temporary conversation。 |
 | shortcut hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 diagnostics 和基础 tracing 事件；当前不写 log 文件。 | 按 shortcut 的 prompt/provider/model/input/action 执行 agent run。 |
+| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | Home 右侧已接 Codex 风格 composer 外框和真实 `ComposerEditor`；`+`、thinking effort picker、model picker 仍是 preview/local event，picker 数据是 `preview_*`。 | 接真实 prompt/provider/model 数据源、附件入口、send/run/cancel/retry 和 agent loop。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 
 ## 基础设施 / 本地状态 / 可观测性
 
@@ -116,15 +120,15 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | canonical timeline | `conversation_items` | 没有按 `seq` 渲染 timeline，也没有 streaming append/update UI。 |
 | attachments | `attachments` + typed payloads | 没有 file/image/audio attach、preview、generated output 或 storage UI。 |
 | agent runs | `ai-chat-agent::AgentRuntime` + `agent_runs` | 没有 run/cancel/retry/resend UI，也没有 active run state display。 |
-| provider steps | `provider_steps` | 没有 provider/model picker、provider step debug surface 或 continuation display。 |
+| provider steps | `provider_steps` | 只有 ChatForm preview model picker；没有接真实 provider/model 数据源、provider step debug surface 或 continuation display。 |
 | tool invocations | `tool_invocations` + `ToolRegistry` | 没有 tool call/progress/result timeline UI。 |
 | approvals | `approval_decisions` + agent runtime | 没有 approval prompt、approve/deny/cancel/expired UI。 |
 | usage | `usage_events` | 没有 token/usage summary 或 rollup UI。 |
 | prompts | `prompts` | 没有 prompt CRUD、selection、snapshot display。 |
 | providers | `providers` | 没有 provider settings UI、secret refs UI 或 enabled/disabled control。 |
-| provider models | `provider_models` | 没有 manual refresh、model cache display 或 capability detail UI。 |
+| provider models | `provider_models` | 只有 preview-only model picker；没有读取 fresh cache、manual refresh、model cache display 或 capability detail UI。 |
 | app settings | `app_settings` | DB 已保存 language/theme/hotkey/default project；没有真实 settings page。 |
-| file-backed skills | `ai-chat-agent::skills` | 没有 skill catalog、activation display 或 skill snapshot timeline UI。 |
+| file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
 | MCP helpers | `ai-chat-agent::mcp` | 没有 MCP config UI、connected server status 或 MCP tool approval UI。 |
 
 ## 未开始 UI 清单
@@ -133,7 +137,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | --- | --- |
 | Project navigation | project-first sidebar、open folder、recent projects、scratch project、default project、project metadata/status。 |
 | Conversation navigation | conversation list、new conversation、archive/delete、search/filter、title edit、status display、last item preview。 |
-| Composer | prompt selector、provider/model selector、capability warning、text input、multi-part input、send/run、cancel、retry、resend。 |
+| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核；真实工作仍包括 prompt selector、多 part input、provider/model data source、capability warning、附件、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Timeline text | user/assistant text item、streaming text delta、multi-block assistant output、copy/export affordance。 |
 | Reasoning | multiple reasoning blocks、reasoning summary、collapsed/expanded state、provider-specific reasoning capability gating。 |
 | Tools | local/MCP/provider-hosted tool call、progress、result、error、structured output、attachment result、tool name collision display。 |
@@ -179,11 +183,11 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | conversation list/search | `features/home/search.rs` / `search_list.rs` | 未开始 | 需要基于 fresh conversations 和 `conversation_items.search_text` 后续设计。 |
 | delete confirmation | `components/delete_confirm.rs` | 未开始 | project/conversation/prompt/provider/shortcut 等 destructive actions 需要新的确认策略。 |
 | conversation export | `features/home/export.rs` | 未开始 | 新 export 应读取 canonical `conversation_items`。 |
-| chat form | `components/chat_form.rs` | 未开始 | 新 composer 不应暴露 conversation mode/template controls。 |
+| chat form | `components/chat_form.rs` | 占位 | `ai-chat2` 已有 ChatForm 视觉外框和真实 `ComposerEditor` 第一版输入内核，但仍不接 prompt selector、attachments、真实 provider/model store 或 agent loop；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 | chat form provider ext settings | `components/chat_form/ext_settings.rs` | 未开始 | 新 composer/provider settings 需要按 provider capability 和 typed extension 重做。 |
 | mode select | `components/chat_form/mode_select.rs` | 不照搬 | 新模型所有 conversation 都 contextual。 |
 | template picker | `components/chat_form/template_picker.rs` | 不照搬 | 新 UI 使用 prompt selector。 |
-| model select | `components/chat_form/model_select.rs` | 未开始 | 需要接 fresh `provider_models` cache 和 capability gating。 |
+| model select | `components/chat_form/model_select.rs` | 占位 | 已有 preview-only model picker 和 thinking effort picker；后续接 fresh `provider_models` cache 和 capability gating。 |
 | message rendering | `components/message.rs` | 未开始 | 新 timeline 要覆盖 reasoning/tool/approval/status/usage/attachments。 |
 | temporary chat | `features/temporary.rs` | 占位 | 只有占位窗口；未接 selected text/screenshot/save flow。 |
 | temporary window runtime | `features/hotkey/temporary_window.rs` | 未开始 | 未实现前台 app restore、显示器定位、延迟隐藏、切换/移动真实 temporary window。 |
@@ -251,5 +255,24 @@ Home root / Sidebar 结构修正后已运行：
 - `git diff --check`
 - `cargo run -p xtask -- bundle ai-chat2`
 - bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，确认 Home root 正常显示、Sidebar Settings item 仍打开 Settings 占位窗口、重复打开 app 后主窗口数量仍为 1。`actool` 的 Liquid Glass 图标注入警告不阻塞 bundle，保留普通图标。
+
+ChatForm 视觉预览实现后已运行：
+
+- `cargo fmt`
+- `cargo test -p ai-chat2 chat_form`
+- `cargo check -p ai-chat2`
+- `git diff --check`
+- 未做 UI 截图或手动验证；本轮按用户要求只做代码级验证，由本地手动查看效果。
+
+ComposerEditor 第一版实现后已运行：
+
+- `cargo fmt`
+- `cargo test -p ai-chat2 composer_editor`
+- `cargo test -p ai-chat2 chat_form`
+- `cargo test -p ai-chat2`
+- `cargo check -p ai-chat2`
+- `cargo clippy -p ai-chat2 --all-targets --all-features -- -D warnings`
+- `git diff --check`
+- 未做手动 macOS 中文输入法、候选框、双击/拖拽或 bundle GUI 验证。
 
 文档-only 更新只需运行 `git diff --check`。

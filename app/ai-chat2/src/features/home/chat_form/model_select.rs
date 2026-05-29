@@ -1,6 +1,6 @@
 use super::{
     ChatForm,
-    picker::{PickerSection, picker_popover, picker_trigger},
+    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
     preview_models::{PreviewModel, preview_models},
 };
 use crate::{foundation, foundation::assets::IconName};
@@ -75,21 +75,23 @@ impl ChatForm {
 
         picker_popover(
             cx,
-            "chat-form-model-popover",
-            self.model_picker_open,
-            picker_trigger(
-                "chat-form-model-trigger",
-                IconName::Sparkles,
-                self.selected_model().name,
-                self.model_picker_open,
-            ),
-            self.model_picker.clone(),
-            px(260.),
-            rems(18.).into(),
-            Some(i18n.t("chat-form-model-search-placeholder").into()),
-            cx.listener(|form, open: &bool, window, cx| {
-                form.set_model_picker_open(*open, window, cx);
-            }),
+            PickerPopoverConfig {
+                id: "chat-form-model-popover",
+                open: self.model_picker_open,
+                trigger: picker_trigger(
+                    "chat-form-model-trigger",
+                    IconName::Sparkles,
+                    self.selected_model().name,
+                    self.model_picker_open,
+                ),
+                list: self.model_picker.clone(),
+                width: px(260.),
+                max_height: rems(18.).into(),
+                search_placeholder: Some(i18n.t("chat-form-model-search-placeholder").into()),
+                on_open_change: cx.listener(|form, open: &bool, window, cx| {
+                    form.set_model_picker_open(*open, window, cx);
+                }),
+            },
         )
     }
 }

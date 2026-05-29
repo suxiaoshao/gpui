@@ -1,3 +1,4 @@
+mod composer_editor;
 mod effort_select;
 mod model_select;
 mod picker;
@@ -5,13 +6,13 @@ mod preview_models;
 mod thinking_effort;
 
 use crate::foundation::{self, assets::IconName};
+use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 use effort_select::{EffortOption, effort_sections};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, box_shadow,
+    ActiveTheme, Disableable, Icon, Sizable, box_shadow,
     button::{Button, ButtonVariants},
     h_flex,
-    label::Label,
     list::ListState,
     v_flex,
 };
@@ -25,26 +26,34 @@ pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
 pub(super) const COMPOSER_BUTTON_ICON_SIZE: f32 = 18.;
 pub(super) const COMPOSER_BUTTON_RADIUS: f32 = 999.;
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) enum ChatFormEvent {
     AddRequested,
-    SendRequested,
+    SendRequested(ComposerSnapshot),
 }
 
 impl EventEmitter<ChatFormEvent> for ChatForm {}
 
 pub(crate) struct ChatForm {
-    draft_text: SharedString,
+    composer: Entity<ComposerEditor>,
     selected_model_index: usize,
     selected_effort: Option<ThinkingEffort>,
     effort_picker_open: bool,
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+pub(crate) fn init(cx: &mut App) {
+    composer_editor::init(cx);
 }
 
 impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
+        let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), cx));
         let selected_model_index = 0;
         let selected_effort = preview_model(selected_model_index).computed_default_effort();
         let state = cx.entity().downgrade();
@@ -130,14 +139,30 @@ impl ChatForm {
             picker
         });
 
+        let composer_subscription = cx.subscribe_in(
+            &composer,
+            window,
+            |_, _composer, event: &ComposerEditorEvent, _window, cx| match event {
+                ComposerEditorEvent::Changed => {
+                    cx.notify();
+                }
+                ComposerEditorEvent::SubmitRequested(snapshot) => {
+                    if !snapshot.is_empty() {
+                        cx.emit(ChatFormEvent::SendRequested(snapshot.clone()));
+                    }
+                }
+            },
+        );
+
         Self {
-            draft_text: SharedString::default(),
+            composer,
             selected_model_index,
             selected_effort,
             effort_picker_open: false,
             effort_picker,
             model_picker_open: false,
             model_picker,
+            _subscriptions: vec![composer_subscription],
         }
     }
 
@@ -222,11 +247,9 @@ impl ChatForm {
 
 impl Render for ChatForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
         let add_tooltip = cx.global::<foundation::I18n>().t("chat-form-add-tooltip");
         let send_tooltip = cx.global::<foundation::I18n>().t("chat-form-send-tooltip");
-        let is_draft_empty = self.draft_text.as_str().trim().is_empty();
-        let draft_text = self.draft_text.clone();
+        let can_submit = self.composer.read(cx).can_submit();
 
         v_flex()
             .id("ai-chat2-chat-form-preview")
@@ -254,16 +277,7 @@ impl Render for ChatForm {
                     .min_h(px(56.))
                     .px_3()
                     .pt(px(6.))
-                    .when(is_draft_empty, |this| {
-                        this.child(
-                            Label::new(placeholder.clone())
-                                .text_base()
-                                .text_color(cx.theme().muted_foreground.opacity(0.72)),
-                        )
-                    })
-                    .when(!is_draft_empty, |this| {
-                        this.child(Label::new(draft_text).text_base())
-                    }),
+                    .child(self.composer.clone()),
             )
             .child(
                 h_flex()
@@ -307,13 +321,17 @@ impl Render for ChatForm {
                                     .size(px(COMPOSER_BUTTON_SIZE))
                                     .p(px(0.))
                                     .rounded(px(COMPOSER_BUTTON_RADIUS))
+                                    .disabled(!can_submit)
                                     .child(
                                         Icon::new(IconName::Send)
                                             .with_size(px(COMPOSER_BUTTON_ICON_SIZE)),
                                     )
                                     .tooltip(send_tooltip)
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        cx.emit(ChatFormEvent::SendRequested);
+                                    .on_click(cx.listener(|form, _, _, cx| {
+                                        let snapshot = form.composer.read(cx).snapshot();
+                                        if !snapshot.is_empty() {
+                                            cx.emit(ChatFormEvent::SendRequested(snapshot));
+                                        }
                                     })),
                             ),
                     ),

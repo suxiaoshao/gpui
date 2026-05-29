@@ -355,29 +355,35 @@ pub(super) fn picker_trigger(
         )
 }
 
-pub(super) fn picker_popover<D>(
-    cx: &App,
-    id: &'static str,
-    open: bool,
-    trigger: Button,
-    list: Entity<ListState<D>>,
-    width: Pixels,
-    max_height: Length,
-    search_placeholder: Option<SharedString>,
-    on_open_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
-) -> impl IntoElement
+pub(super) struct PickerPopoverConfig<D, F>
 where
     D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
 {
-    Popover::new(id)
+    pub(super) id: &'static str,
+    pub(super) open: bool,
+    pub(super) trigger: Button,
+    pub(super) list: Entity<ListState<D>>,
+    pub(super) width: Pixels,
+    pub(super) max_height: Length,
+    pub(super) search_placeholder: Option<SharedString>,
+    pub(super) on_open_change: F,
+}
+
+pub(super) fn picker_popover<D, F>(cx: &App, config: PickerPopoverConfig<D, F>) -> impl IntoElement
+where
+    D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    Popover::new(config.id)
         .anchor(Anchor::BottomLeft)
         .appearance(false)
-        .open(open)
-        .on_open_change(on_open_change)
-        .trigger(trigger)
+        .open(config.open)
+        .on_open_change(config.on_open_change)
+        .trigger(config.trigger)
         .child(
             v_flex()
-                .w(width)
+                .w(config.width)
                 .occlude()
                 .mb_1p5()
                 .rounded(px(12.))
@@ -386,13 +392,13 @@ where
                 .bg(cx.theme().popover)
                 .shadow_lg()
                 .child(
-                    List::new(&list)
-                        .when_some(search_placeholder, |this, placeholder| {
+                    List::new(&config.list)
+                        .when_some(config.search_placeholder, |this, placeholder| {
                             this.search_placeholder(placeholder)
                         })
                         .with_size(Size::Small)
                         .scrollbar_visible(false)
-                        .max_h(max_height)
+                        .max_h(config.max_height)
                         .paddings(Edges::all(px(4.))),
                 ),
         )
