@@ -10,7 +10,7 @@ use gpui_component::{
     v_flex,
 };
 
-use super::sidebar::HomeSidebar;
+use super::{chat_form::ChatForm, sidebar::HomeSidebar};
 
 const KEY_CONTEXT: &str = "AiChat2Home";
 
@@ -19,6 +19,7 @@ pub(crate) struct HomeView {
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::AiChat2LayoutState>,
     sidebar: Entity<HomeSidebar>,
+    chat_form: Entity<ChatForm>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -30,12 +31,14 @@ impl HomeView {
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let sidebar = cx.new(HomeSidebar::new);
+        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
 
         Self {
             focus_handle,
             app_menu_bar,
             layout_state: layout_state.clone(),
             sidebar,
+            chat_form,
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
@@ -129,7 +132,23 @@ impl Render for HomeView {
                                 )
                                 .child(self.sidebar.clone()),
                         )
-                        .child(resizable_panel().child(div().size_full().min_w_0())),
+                        .child(
+                            resizable_panel().child(
+                                div()
+                                    .size_full()
+                                    .min_w_0()
+                                    .p_8()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .max_w(px(780.))
+                                            .child(self.chat_form.clone()),
+                                    ),
+                            ),
+                        ),
                 ),
             )
             .children(sheet_layer)

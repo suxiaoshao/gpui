@@ -48,6 +48,15 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 - Agent loop、tool registry、MCP helper、approval persistence 复用 `ai-chat-agent`，不在 GPUI 层重新实现。
 - 旧 `app/ai-chat` 仍是 legacy app，迁移期必须保持可运行。
 
+## 渐进式 UI 开发约束
+
+`ai-chat2` UI 迁移是分阶段完成的，经常会先做 demo / preview / 简化版中间状态。即使如此，代码也必须按最终功能边界拆分文件和模块：
+
+- 输入框、模型选择、思考程度选择、附件入口、prompt selector、picker/list/popover、timeline item、run controls 等未来会独立演进的 UI 单元，应从第一版预览实现开始就放在对应子模块中。
+- 不能因为“本轮先做简化实现”而把多个最终独立功能堆进单个大文件；简化的是数据源和行为接线，不是模块边界。
+- demo / preview 数据可以临时存在，但必须用清晰命名标识，例如 `preview_*`，并与未来真实 store/provider/db 接口隔离，避免后续替换数据源时重拆 UI 结构。
+- 只有真正一次性、不会进入最终产品结构的占位 UI 才可以保持轻量；这类代码必须在模块名、类型名或状态表中明确标注为 placeholder/preview。
+
 ## 已完成
 
 | 事项 | 当前位置 | 说明 |

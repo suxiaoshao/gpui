@@ -7,11 +7,18 @@ pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 
 define_lucide_icons!(
     pub(crate) enum IconName {
+        Check => "check",
+        ChevronDown => "chevron-down",
+        ChevronUp => "chevron-up",
         Database => "database",
         Keyboard => "keyboard",
         Languages => "languages",
+        Lightbulb => "lightbulb",
         Palette => "palette",
+        Plus => "plus",
+        Send => "send",
         Settings => "settings",
+        Sparkles => "sparkles",
     }
 );
 
@@ -100,6 +107,11 @@ mod tests {
             IconName::Keyboard.path(),
             SharedString::from("icons/keyboard.svg")
         );
+        assert_eq!(
+            IconName::Lightbulb.path(),
+            SharedString::from("icons/lightbulb.svg")
+        );
+        assert_eq!(IconName::Send.path(), SharedString::from("icons/send.svg"));
     }
 
     #[test]
@@ -120,6 +132,8 @@ mod tests {
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
+        assert!(icons.contains(&SharedString::from("icons/lightbulb.svg")));
+        assert!(icons.contains(&SharedString::from("icons/send.svg")));
     }
 
     #[test]
