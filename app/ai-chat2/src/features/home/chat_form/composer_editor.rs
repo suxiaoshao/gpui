@@ -15,8 +15,10 @@ use gpui::{
     App, AppContext as _, ClipboardItem, Context, CursorStyle, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-    SharedString, Styled as _, Subscription, UTF16Selection, Window, actions,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    UTF16Selection, Window, actions, point, px,
 };
+use gpui_component::scroll::ScrollableElement as _;
 
 use self::{
     blink_cursor::BlinkCursor,
@@ -186,14 +188,18 @@ pub(crate) struct ComposerEditor {
     history: EditorHistory,
     composition_base: Option<EditorState>,
     preferred_column: Option<usize>,
+    preferred_x: Option<Pixels>,
     selecting: bool,
+    scroll_cursor_into_view: bool,
     focus_handle: FocusHandle,
     blink_cursor: gpui::Entity<BlinkCursor>,
+    scroll_handle: ScrollHandle,
     last_layout: Option<element::LayoutCache>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ComposerEditor {
+    pub(crate) const MIN_VISIBLE_LINES: usize = 2;
     pub(crate) const MAX_VISIBLE_LINES: usize = 8;
 
     pub(crate) fn new(
@@ -232,9 +238,12 @@ impl ComposerEditor {
             history: EditorHistory::default(),
             composition_base: None,
             preferred_column: None,
+            preferred_x: None,
             selecting: false,
+            scroll_cursor_into_view: false,
             focus_handle,
             blink_cursor,
+            scroll_handle: ScrollHandle::new(),
             last_layout: None,
             _subscriptions,
         }
@@ -300,6 +309,28 @@ impl ComposerEditor {
         buffer::line_ranges(&self.text).len()
     }
 
+    pub(super) fn display_visual_line_count(&self) -> usize {
+        self.last_layout
+            .as_ref()
+            .map(|layout| layout.visual_line_count)
+            .unwrap_or_else(|| self.display_line_count())
+            .max(1)
+    }
+
+    pub(super) fn content_line_count(&self) -> usize {
+        self.display_visual_line_count()
+            .max(Self::MIN_VISIBLE_LINES)
+    }
+
+    pub(super) fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll_handle.offset()
+    }
+
+    fn visible_line_count(&self) -> usize {
+        self.display_visual_line_count()
+            .clamp(Self::MIN_VISIBLE_LINES, Self::MAX_VISIBLE_LINES)
+    }
+
     fn current_state(&self) -> EditorState {
         EditorState {
             text: self.text.clone(),
@@ -316,6 +347,9 @@ impl ComposerEditor {
         self.marked_range = state.marked_range;
         self.tokens = state.tokens;
         self.preferred_column = None;
+        self.preferred_x = None;
+        self.last_layout = None;
+        self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
     }
@@ -340,6 +374,142 @@ impl ComposerEditor {
         self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
     }
 
+    fn invalidate_layout(&mut self) {
+        self.last_layout = None;
+    }
+
+    fn set_layout(&mut self, layout: element::LayoutCache, cx: &mut Context<Self>) {
+        let old_visible_lines = self.visible_line_count();
+        let old_visual_lines = self.display_visual_line_count();
+        let new_visual_lines = layout.visual_line_count;
+        let should_ensure_cursor_visible = self.scroll_cursor_into_view
+            || (Self::layout_overflows(&layout) && old_visual_lines != new_visual_lines);
+        self.last_layout = Some(layout);
+        if should_ensure_cursor_visible {
+            self.scroll_cursor_into_view = true;
+            cx.notify();
+        }
+        if old_visible_lines != self.visible_line_count()
+            || old_visual_lines != self.display_visual_line_count()
+        {
+            cx.notify();
+        }
+    }
+
+    fn clamp_scroll_offset(&mut self, cx: &mut Context<Self>) {
+        let Some(layout) = &self.last_layout else {
+            return;
+        };
+        let viewport = layout.viewport_bounds;
+        if viewport.size.height <= px(0.) {
+            return;
+        }
+
+        if !Self::layout_overflows(layout) {
+            self.scroll_cursor_into_view = false;
+            let old_offset = self.scroll_handle.offset();
+            let new_offset = point(px(0.), px(0.));
+            if old_offset != point(px(0.), px(0.)) {
+                self.scroll_handle.set_offset(new_offset);
+                cx.notify();
+            }
+            return;
+        }
+
+        let min_y = (viewport.size.height - layout.content_height()).min(px(0.));
+        let old_offset = self.scroll_handle.offset();
+        let new_offset = point(px(0.), old_offset.y.max(min_y).min(px(0.)));
+        if new_offset != old_offset {
+            self.scroll_handle.set_offset(new_offset);
+            cx.notify();
+        }
+    }
+
+    fn request_cursor_visible(&mut self, cx: &mut Context<Self>) {
+        self.scroll_cursor_into_view = true;
+        self.ensure_cursor_visible(cx);
+    }
+
+    fn ensure_cursor_visible(&mut self, cx: &mut Context<Self>) {
+        let Some(layout) = &self.last_layout else {
+            return;
+        };
+        if !Self::layout_overflows(layout) {
+            self.scroll_cursor_into_view = false;
+            let old_offset = self.scroll_handle.offset();
+            let new_offset = point(px(0.), px(0.));
+            if old_offset != new_offset {
+                self.scroll_handle.set_offset(new_offset);
+                cx.notify();
+            }
+            return;
+        }
+        let Some(cursor) = layout.bounds_for_offset(&self.text, self.cursor()) else {
+            return;
+        };
+        let viewport = layout.viewport_bounds;
+        if viewport.size.height <= px(0.) {
+            return;
+        }
+        let expected_max_y = (layout.content_height() - viewport.size.height).max(px(0.));
+        let scroll_range_ready = self.scroll_handle.max_offset().y + px(1.) >= expected_max_y;
+
+        let old_offset = self.scroll_handle.offset();
+        let mut next_offset = old_offset;
+        if cursor.top() < viewport.top() {
+            next_offset.y += viewport.top() - cursor.top();
+        } else if cursor.bottom() > viewport.bottom() {
+            next_offset.y -= cursor.bottom() - viewport.bottom();
+        }
+
+        let min_y = (viewport.size.height - layout.content_height()).min(px(0.));
+        next_offset = point(px(0.), next_offset.y.max(min_y).min(px(0.)));
+        let offset_changed = next_offset != old_offset;
+        if offset_changed {
+            self.scroll_handle.set_offset(next_offset);
+            cx.notify();
+        }
+        let cursor_visible = cursor.top() >= viewport.top() - px(1.)
+            && cursor.bottom() <= viewport.bottom() + px(1.);
+        if scroll_range_ready && !offset_changed && cursor_visible {
+            self.scroll_cursor_into_view = false;
+        }
+    }
+
+    fn apply_scroll_before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.last_layout.is_some() {
+            self.clamp_scroll_offset(cx);
+            if self.scroll_cursor_into_view {
+                self.ensure_cursor_visible(cx);
+            }
+            return;
+        }
+
+        if !self.scroll_cursor_into_view {
+            return;
+        }
+
+        let visual_lines = self.display_line_count();
+        let visible_lines = visual_lines.clamp(Self::MIN_VISIBLE_LINES, Self::MAX_VISIBLE_LINES);
+        let viewport_height = window.line_height() * visible_lines as f32;
+        let content_height = window.line_height() * visual_lines.max(1) as f32;
+        let old_offset = self.scroll_handle.offset();
+        let next_offset = if visual_lines > Self::MAX_VISIBLE_LINES {
+            point(px(0.), (viewport_height - content_height).min(px(0.)))
+        } else {
+            point(px(0.), px(0.))
+        };
+
+        if next_offset != old_offset {
+            self.scroll_handle.set_offset(next_offset);
+            cx.notify();
+        }
+    }
+
+    fn layout_overflows(layout: &element::LayoutCache) -> bool {
+        layout.visual_line_count > Self::MAX_VISIBLE_LINES
+    }
+
     fn refresh_tokens(&mut self) {
         self.tokens = parse_skill_tokens(&self.text, &self.skills, &mut self.next_token_id);
     }
@@ -362,7 +532,10 @@ impl ComposerEditor {
         self.selection.collapse(clamp_offset(&self.text, cursor));
         self.marked_range = None;
         self.preferred_column = None;
+        self.preferred_x = None;
+        self.invalidate_layout();
         self.refresh_tokens();
+        self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
     }
@@ -380,12 +553,27 @@ impl ComposerEditor {
         let offset = clamp_offset(&self.text, offset);
         self.selection.move_head(offset, selecting);
         self.preferred_column = None;
+        self.preferred_x = None;
         self.marked_range = None;
+        self.request_cursor_visible(cx);
         cx.notify();
     }
 
     fn move_vertically(&mut self, delta: isize, selecting: bool, cx: &mut Context<Self>) {
         self.pause_cursor_blink(cx);
+        if let Some(layout) = &self.last_layout
+            && let Some((offset, preferred_x)) =
+                layout.offset_for_vertical_move(&self.text, self.cursor(), delta, self.preferred_x)
+        {
+            self.selection.move_head(offset, selecting);
+            self.preferred_column = None;
+            self.preferred_x = Some(preferred_x);
+            self.marked_range = None;
+            self.request_cursor_visible(cx);
+            cx.notify();
+            return;
+        }
+
         let (line_ix, column) = buffer::line_column(&self.text, self.cursor());
         let preferred_column = self.preferred_column.unwrap_or(column);
         let line_count = buffer::line_ranges(&self.text).len();
@@ -397,7 +585,9 @@ impl ComposerEditor {
         let offset = offset_for_line_column(&self.text, next_line_ix, preferred_column);
         self.selection.move_head(offset, selecting);
         self.preferred_column = Some(preferred_column);
+        self.preferred_x = None;
         self.marked_range = None;
+        self.request_cursor_visible(cx);
         cx.notify();
     }
 
@@ -437,6 +627,8 @@ impl ComposerEditor {
         let offset = clamp_offset(&self.text, offset);
         if self.text.is_empty() {
             self.selection.collapse(0);
+            self.preferred_column = None;
+            self.preferred_x = None;
             cx.notify();
             return;
         }
@@ -446,6 +638,9 @@ impl ComposerEditor {
             anchor: start,
             head: end,
         };
+        self.preferred_column = None;
+        self.preferred_x = None;
+        self.request_cursor_visible(cx);
         cx.notify();
     }
 
@@ -456,6 +651,9 @@ impl ComposerEditor {
             anchor: line_start(&self.text, offset),
             head: buffer::line_end(&self.text, offset),
         };
+        self.preferred_column = None;
+        self.preferred_x = None;
+        self.request_cursor_visible(cx);
         cx.notify();
     }
 
@@ -463,20 +661,7 @@ impl ComposerEditor {
         let Some(layout) = &self.last_layout else {
             return self.text.len();
         };
-        if layout.lines.is_empty() {
-            return 0;
-        }
-
-        let local_y = position.y - layout.bounds.top();
-        let mut line_ix = (local_y / layout.line_height).floor() as usize;
-        line_ix = line_ix.min(layout.lines.len().saturating_sub(1));
-        let line = &layout.lines[line_ix];
-        let local_x = position.x - layout.bounds.left();
-        let relative = line.line.closest_index_for_x(local_x);
-        clamp_offset(
-            &self.text,
-            line.range.start + relative.min(line.range.len()),
-        )
+        layout.offset_for_position(&self.text, position)
     }
 
     fn on_mouse_down(
@@ -707,6 +892,8 @@ impl ComposerEditor {
             head: self.text.len(),
         };
         self.preferred_column = None;
+        self.preferred_x = None;
+        self.request_cursor_visible(cx);
         cx.notify();
     }
 
@@ -870,7 +1057,11 @@ impl EntityInputHandler for ComposerEditor {
             anchor: clamp_offset(&self.text, selected.start),
             head: clamp_offset(&self.text, selected.end),
         };
+        self.preferred_column = None;
+        self.preferred_x = None;
+        self.invalidate_layout();
         self.refresh_tokens();
+        self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
     }
@@ -884,16 +1075,10 @@ impl EntityInputHandler for ComposerEditor {
     ) -> Option<gpui::Bounds<Pixels>> {
         let byte = buffer::utf16_to_byte(&self.text, range_utf16.start);
         let layout = self.last_layout.as_ref()?;
-        let line = layout
-            .lines
-            .iter()
-            .find(|line| byte >= line.range.start && byte <= line.range.end)
-            .or_else(|| layout.lines.last())?;
-        let x = line.line.x_for_index(byte.saturating_sub(line.range.start));
-        Some(gpui::Bounds::new(
-            gpui::point(element_bounds.left() + x, element_bounds.top() + line.y),
-            gpui::size(gpui::px(1.), layout.line_height),
-        ))
+        let mut bounds = layout.bounds_for_offset(&self.text, byte)?;
+        let layout_delta = element_bounds.origin - layout.bounds.origin;
+        bounds.origin += layout_delta;
+        Some(bounds)
     }
 
     fn character_index_for_point(
@@ -916,7 +1101,11 @@ impl Focusable for ComposerEditor {
 }
 
 impl Render for ComposerEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_scroll_before_render(window, cx);
+        let height = window.line_height() * self.visible_line_count() as f32;
+        let scroll_handle = self.scroll_handle.clone();
+
         gpui::div()
             .id("ai-chat2-composer-editor")
             .key_context(KEY_CONTEXT)
@@ -961,9 +1150,20 @@ impl Render for ComposerEditor {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .w_full()
+            .h(height)
             .min_w_0()
+            .relative()
+            .overflow_hidden()
             .text_base()
-            .child(ComposerEditorElement::new(cx.entity()))
+            .child(
+                gpui::div()
+                    .id("ai-chat2-composer-scroll-area")
+                    .size_full()
+                    .track_scroll(&scroll_handle)
+                    .overflow_y_scroll()
+                    .child(ComposerEditorElement::new(cx.entity())),
+            )
+            .vertical_scrollbar(&scroll_handle)
     }
 }
 
@@ -972,7 +1172,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use ai_chat_core::SkillSourceKind;
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext};
+    use gpui::{AppContext as _, TestAppContext, VisualTestContext, px, size};
 
     use super::*;
 
@@ -1001,6 +1201,11 @@ mod tests {
 
     fn init_test_app(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
+    }
+
+    fn resize_editor(cx: &mut VisualTestContext, width: f32, height: f32) {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
     }
 
     #[gpui::test]
@@ -1085,6 +1290,196 @@ mod tests {
                 assert_eq!(editor.text, "");
             });
         });
+    }
+
+    #[gpui::test]
+    fn soft_wrap_layout_maps_points_to_utf8_offsets(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let text = "hello 中文🙂 hello 中文🙂 hello 中文🙂".to_string();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = editor_with_skills(&[], window, cx);
+                        editor.replace_range(0..0, &text, true, cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        resize_editor(&mut cx, 80., 400.);
+
+        editor.read_with(&cx, |editor, _| {
+            let layout = editor.last_layout.as_ref().unwrap();
+            assert!(
+                layout.visual_line_count > editor.display_line_count(),
+                "visual={}, hard={}, bounds={:?}, line_width={:?}",
+                layout.visual_line_count,
+                editor.display_line_count(),
+                layout.bounds,
+                layout.lines.first().map(|line| line.line.width())
+            );
+            assert_eq!(
+                layout.offset_for_position(&editor.text, layout.bounds.origin),
+                0
+            );
+            let end_bounds = layout
+                .bounds_for_offset(&editor.text, editor.text.len())
+                .unwrap();
+            assert_eq!(
+                layout.offset_for_position(&editor.text, end_bounds.origin),
+                editor.text.len()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn soft_wrapped_composer_scrolls_cursor_into_view(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let text = "hello 中文🙂 ".repeat(48);
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = editor_with_skills(&[], window, cx);
+                        editor.replace_range(0..0, &text, true, cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        resize_editor(&mut cx, 96., 500.);
+        resize_editor(&mut cx, 96., 500.);
+        resize_editor(&mut cx, 96., 500.);
+
+        editor.read_with(&cx, |editor, _| {
+            let layout = editor.last_layout.as_ref().unwrap();
+            let viewport = editor.scroll_handle.bounds();
+            let cursor = layout
+                .bounds_for_offset(&editor.text, editor.cursor())
+                .unwrap();
+
+            assert!(
+                layout.visual_line_count > ComposerEditor::MAX_VISIBLE_LINES,
+                "visual={}, bounds={:?}, line_width={:?}",
+                layout.visual_line_count,
+                layout.bounds,
+                layout.lines.first().map(|line| line.line.width())
+            );
+            assert_eq!(
+                editor.visible_line_count(),
+                ComposerEditor::MAX_VISIBLE_LINES
+            );
+            assert!(editor.scroll_handle.max_offset().y > px(0.));
+            assert!(
+                editor.scroll_handle.offset().y < px(0.),
+                "offset={:?}, max_offset={:?}, cursor={cursor:?}, viewport={viewport:?}, layout_viewport={:?}, scroll_pending={}",
+                editor.scroll_handle.offset(),
+                editor.scroll_handle.max_offset(),
+                layout.viewport_bounds,
+                editor.scroll_cursor_into_view,
+            );
+            assert!(
+                cursor.top() >= viewport.top() - px(1.),
+                "cursor={cursor:?}, viewport={viewport:?}, offset={:?}",
+                editor.scroll_handle.offset()
+            );
+            assert!(
+                cursor.bottom() <= viewport.bottom() + px(1.),
+                "cursor={cursor:?}, viewport={viewport:?}, offset={:?}",
+                editor.scroll_handle.offset()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn repeated_newlines_do_not_scroll_before_overflow(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| editor_with_skills(&[], window, cx))
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        resize_editor(&mut cx, 320., 500.);
+
+        for expected_lines in 2..=ComposerEditor::MAX_VISIBLE_LINES {
+            cx.update(|_, cx| {
+                editor.update(cx, |editor, cx| {
+                    let cursor = editor.cursor();
+                    editor.replace_range(cursor..cursor, "\n", true, cx);
+                });
+            });
+            resize_editor(&mut cx, 320., 500.);
+
+            editor.read_with(&cx, |editor, _| {
+                assert_eq!(editor.display_visual_line_count(), expected_lines);
+                assert_eq!(editor.visible_line_count(), expected_lines);
+                assert_eq!(editor.scroll_handle.offset().y, px(0.));
+            });
+        }
+
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let cursor = editor.cursor();
+                editor.replace_range(cursor..cursor, "\n", true, cx);
+            });
+        });
+        resize_editor(&mut cx, 320., 500.);
+        resize_editor(&mut cx, 320., 500.);
+
+        editor.read_with(&cx, |editor, _| {
+            let layout = editor.last_layout.as_ref().unwrap();
+            let cursor = layout
+                .bounds_for_offset(&editor.text, editor.cursor())
+                .unwrap();
+            let viewport = layout.viewport_bounds;
+
+            assert_eq!(
+                editor.visible_line_count(),
+                ComposerEditor::MAX_VISIBLE_LINES
+            );
+            assert!(editor.scroll_handle.offset().y < px(0.));
+            assert!(cursor.bottom() <= viewport.bottom() + px(1.));
+        });
+    }
+
+    #[gpui::test]
+    fn soft_wrap_selection_paint_does_not_panic(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let text = "hello 中文🙂 ".repeat(12);
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = editor_with_skills(&[], window, cx);
+                        editor.replace_range(0..0, &text, true, cx);
+                        editor.selection = Selection {
+                            anchor: 0,
+                            head: editor.text.len(),
+                        };
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        resize_editor(&mut cx, 96., 400.);
     }
 
     #[test]
