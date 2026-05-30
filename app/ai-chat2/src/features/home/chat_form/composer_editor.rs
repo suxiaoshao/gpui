@@ -24,8 +24,8 @@ use self::{
     blink_cursor::BlinkCursor,
     buffer::{
         Selection, byte_range_to_utf16_range, byte_to_utf16, clamp_offset, line_start,
-        next_char_boundary, next_word_end, offset_for_line_column, previous_char_boundary,
-        previous_word_start, utf16_range_to_byte_range,
+        next_grapheme_boundary, next_word_end, offset_for_line_column, previous_grapheme_boundary,
+        previous_word_start, utf16_range_to_byte_range, word_range_at,
     },
     element::ComposerEditorElement,
     history::{EditorHistory, EditorState},
@@ -550,7 +550,7 @@ impl ComposerEditor {
 
     fn move_to(&mut self, offset: usize, selecting: bool, cx: &mut Context<Self>) {
         self.pause_cursor_blink(cx);
-        let offset = clamp_offset(&self.text, offset);
+        let offset = buffer::clamp_grapheme_offset(&self.text, offset);
         self.selection.move_head(offset, selecting);
         self.preferred_column = None;
         self.preferred_x = None;
@@ -565,6 +565,7 @@ impl ComposerEditor {
             && let Some((offset, preferred_x)) =
                 layout.offset_for_vertical_move(&self.text, self.cursor(), delta, self.preferred_x)
         {
+            let offset = buffer::clamp_grapheme_offset(&self.text, offset);
             self.selection.move_head(offset, selecting);
             self.preferred_column = None;
             self.preferred_x = Some(preferred_x);
@@ -583,6 +584,7 @@ impl ComposerEditor {
             (line_ix + delta as usize).min(line_count.saturating_sub(1))
         };
         let offset = offset_for_line_column(&self.text, next_line_ix, preferred_column);
+        let offset = buffer::clamp_grapheme_offset(&self.text, offset);
         self.selection.move_head(offset, selecting);
         self.preferred_column = Some(preferred_column);
         self.preferred_x = None;
@@ -596,7 +598,7 @@ impl ComposerEditor {
             return Some(self.selection.range());
         }
         let cursor = self.cursor();
-        (cursor > 0).then(|| previous_char_boundary(&self.text, cursor)..cursor)
+        (cursor > 0).then(|| previous_grapheme_boundary(&self.text, cursor)..cursor)
     }
 
     fn selection_or_next_char(&self) -> Option<Range<usize>> {
@@ -604,7 +606,7 @@ impl ComposerEditor {
             return Some(self.selection.range());
         }
         let cursor = self.cursor();
-        (cursor < self.text.len()).then(|| cursor..next_char_boundary(&self.text, cursor))
+        (cursor < self.text.len()).then(|| cursor..next_grapheme_boundary(&self.text, cursor))
     }
 
     fn delete_range_or_bell(
@@ -624,7 +626,7 @@ impl ComposerEditor {
 
     fn select_word_at(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.pause_cursor_blink(cx);
-        let offset = clamp_offset(&self.text, offset);
+        let offset = buffer::clamp_grapheme_offset(&self.text, offset);
         if self.text.is_empty() {
             self.selection.collapse(0);
             self.preferred_column = None;
@@ -632,12 +634,14 @@ impl ComposerEditor {
             cx.notify();
             return;
         }
-        let start = previous_word_start(&self.text, offset);
-        let end = next_word_end(&self.text, offset);
-        self.selection = Selection {
-            anchor: start,
-            head: end,
-        };
+        if let Some(range) = word_range_at(&self.text, offset) {
+            self.selection = Selection {
+                anchor: range.start,
+                head: range.end,
+            };
+        } else {
+            self.selection.collapse(offset);
+        }
         self.preferred_column = None;
         self.preferred_x = None;
         self.request_cursor_visible(cx);
@@ -661,7 +665,7 @@ impl ComposerEditor {
         let Some(layout) = &self.last_layout else {
             return self.text.len();
         };
-        layout.offset_for_position(&self.text, position)
+        buffer::clamp_grapheme_offset(&self.text, layout.offset_for_position(&self.text, position))
     }
 
     fn on_mouse_down(
@@ -757,7 +761,7 @@ impl ComposerEditor {
 
     fn on_move_left(&mut self, _: &ComposerMoveLeft, _: &mut Window, cx: &mut Context<Self>) {
         let offset = if self.selection.is_empty() {
-            previous_char_boundary(&self.text, self.cursor())
+            previous_grapheme_boundary(&self.text, self.cursor())
         } else {
             self.selection.range().start
         };
@@ -766,7 +770,7 @@ impl ComposerEditor {
 
     fn on_move_right(&mut self, _: &ComposerMoveRight, _: &mut Window, cx: &mut Context<Self>) {
         let offset = if self.selection.is_empty() {
-            next_char_boundary(&self.text, self.cursor())
+            next_grapheme_boundary(&self.text, self.cursor())
         } else {
             self.selection.range().end
         };
@@ -826,11 +830,15 @@ impl ComposerEditor {
     }
 
     fn on_select_left(&mut self, _: &ComposerSelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(previous_char_boundary(&self.text, self.cursor()), true, cx);
+        self.move_to(
+            previous_grapheme_boundary(&self.text, self.cursor()),
+            true,
+            cx,
+        );
     }
 
     fn on_select_right(&mut self, _: &ComposerSelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(next_char_boundary(&self.text, self.cursor()), true, cx);
+        self.move_to(next_grapheme_boundary(&self.text, self.cursor()), true, cx);
     }
 
     fn on_select_up(&mut self, _: &ComposerSelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -1288,6 +1296,104 @@ mod tests {
                 editor.unmark_text(window, cx);
                 editor.on_undo(&ComposerUndo, window, cx);
                 assert_eq!(editor.text, "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn grapheme_actions_do_not_split_clusters(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| editor_with_skills(&[], window, cx))
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let coder = "👩🏽‍💻";
+                editor.replace_range(0..0, coder, true, cx);
+                assert_eq!(editor.cursor(), coder.len());
+
+                editor.on_select_left(&ComposerSelectLeft, window, cx);
+                assert_eq!(editor.selection.range(), 0..coder.len());
+                editor.on_backspace(&ComposerBackspace, window, cx);
+                assert_eq!(editor.text, "");
+
+                editor.replace_range(0..0, coder, true, cx);
+                editor.selection.collapse(0);
+                editor.on_delete(&ComposerDelete, window, cx);
+                assert_eq!(editor.text, "");
+
+                let acute = "e\u{301}";
+                editor.replace_range(0..0, acute, true, cx);
+                editor.on_move_left(&ComposerMoveLeft, window, cx);
+                assert_eq!(editor.cursor(), 0);
+                editor.on_move_right(&ComposerMoveRight, window, cx);
+                assert_eq!(editor.cursor(), acute.len());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn word_actions_select_skill_token_and_unicode_words(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let text = "ask $rust-skill 中文";
+        let skill_start = text.find('$').unwrap();
+        let skill_end = skill_start + "$rust-skill".len();
+        let chinese_start = text.find("中文").unwrap();
+        let chinese_end = chinese_start + "中文".len();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = editor_with_skills(&["rust-skill"], window, cx);
+                        editor.replace_range(0..0, text, true, cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                assert_eq!(editor.tokens.len(), 1);
+
+                editor.select_word_at(skill_start + 1, cx);
+                assert_eq!(editor.selection.range(), skill_start..skill_end);
+                assert_eq!(
+                    editor.snapshot().skill_requests,
+                    vec![ai_chat_agent::SkillActivationRequest::new("rust-skill")]
+                );
+
+                editor.select_word_at("ask".len(), cx);
+                assert!(editor.selection.is_empty());
+                assert_eq!(editor.cursor(), "ask".len());
+
+                editor.selection.collapse(skill_end);
+                editor.on_move_previous_word(&ComposerMovePreviousWord, window, cx);
+                assert_eq!(editor.cursor(), skill_start);
+                editor.on_move_next_word(&ComposerMoveNextWord, window, cx);
+                assert_eq!(editor.cursor(), skill_end);
+
+                editor.selection.collapse(chinese_end);
+                editor.on_delete_previous_word(&ComposerDeletePreviousWord, window, cx);
+                assert_eq!(editor.text, "ask $rust-skill ");
+                assert_eq!(editor.tokens.len(), 1);
+                assert_eq!(editor.tokens[0].range, skill_start..skill_end);
+
+                editor.selection.collapse(skill_start);
+                editor.on_delete_next_word(&ComposerDeleteNextWord, window, cx);
+                assert_eq!(editor.text, "ask  ");
+                assert!(editor.tokens.is_empty());
             });
         });
     }

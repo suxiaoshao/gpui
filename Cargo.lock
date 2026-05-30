@@ -255,6 +255,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unic-langid",
+ "unicode-segmentation",
  "window-ext",
  "winresource",
 ]

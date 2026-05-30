@@ -24,27 +24,46 @@ category = "DeveloperTool"
 [dependencies]
 ai-chat-agent.workspace = true
 ai-chat-core.workspace = true
-ai-chat-db.workspace = true
+
+# ui
 app-assets.workspace = true
 app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
-dirs-next = "2.0.0"
-fluent-bundle = "0.16.0"
-global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
 gpui.workspace = true
+gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
-gpui_platform.workspace = true
 platform-ext.workspace = true
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
-serde = { version = "1.0.228", features = ["derive"] }
-smol = "2.0.2"
+window-ext.workspace = true
+
+# i18n
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
 sys-locale = "0.3.2"
+
+# err
 thiserror = "2.0.18"
-toml = "1.1.2"
+
+# database
+ai-chat-db.workspace = true
+dirs-next = "2.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+
+# log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
-unic-langid = "0.9.6"
-window-ext.workspace = true
+
+# async runtime
+smol = "2.0.2"
+
+# config
+toml = "1.1.2"
+
+# hotkey
+global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
+
+# text
+unicode-segmentation = "1.13.2"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
