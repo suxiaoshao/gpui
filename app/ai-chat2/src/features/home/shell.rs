@@ -32,6 +32,7 @@ impl HomeView {
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let sidebar = cx.new(HomeSidebar::new);
         let chat_form = cx.new(|cx| ChatForm::new(window, cx));
+        let layout_state_for_bounds = layout_state.clone();
 
         Self {
             focus_handle,
@@ -42,6 +43,18 @@ impl HomeView {
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
+                }),
+                cx.observe_window_bounds(window, move |_state, window, cx| {
+                    let window_bounds = window.window_bounds();
+                    let display_id = window.display(cx).map(|display| display.id());
+                    layout_state_for_bounds.update(cx, |layout, cx| {
+                        layout.set_window_bounds(
+                            state::layout::WindowPlacementKind::Main,
+                            window_bounds,
+                            display_id,
+                            cx,
+                        );
+                    });
                 }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
                     state::theme::apply_current_theme(window, cx);
@@ -70,8 +83,9 @@ impl HomeView {
             .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
     }
 
-    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
+    pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {

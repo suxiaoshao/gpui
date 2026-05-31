@@ -54,6 +54,7 @@ impl ChatForm {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
         let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
+        composer.update(cx, |composer, cx| composer.focus(window, cx));
         let selected_model_index = 0;
         let selected_effort = preview_model(selected_model_index).computed_default_effort();
         let state = cx.entity().downgrade();
@@ -168,6 +169,23 @@ impl ChatForm {
 
     fn selected_model(&self) -> &'static PreviewModel {
         preview_model(self.selected_model_index)
+    }
+
+    pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.effort_picker_open {
+            self.effort_picker
+                .update(cx, |picker, cx| picker.focus(window, cx));
+            return;
+        }
+
+        if self.model_picker_open {
+            self.model_picker
+                .update(cx, |picker, cx| picker.focus(window, cx));
+            return;
+        }
+
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx));
     }
 
     fn set_effort_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {

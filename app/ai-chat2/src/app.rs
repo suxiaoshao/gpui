@@ -7,13 +7,15 @@ use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{database, errors::AiChat2Error, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
-use std::{fs::create_dir_all, path::PathBuf};
+use std::{cell::RefCell, fs::create_dir_all, path::PathBuf, rc::Rc};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::WindowExt;
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat2";
+#[cfg(test)]
 const APP_TITLE: &str = "AI Chat 2";
+const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
     init_tracing()?;
@@ -21,16 +23,22 @@ pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
 
     let app = gpui_platform::application().with_assets(foundation::Assets::default());
     app.on_reopen(show_or_create_main_window);
-    app.run(|cx: &mut App| {
+    let startup_error = Rc::new(RefCell::new(None));
+    let startup_error_for_run = Rc::clone(&startup_error);
+    app.run(move |cx: &mut App| {
         if let Err(err) = init(cx) {
             event!(Level::ERROR, error = ?err, "failed to initialize ai-chat2");
-            eprintln!("failed to initialize {APP_TITLE}: {err}");
+            *startup_error_for_run.borrow_mut() = Some(err);
             cx.quit();
             return;
         }
 
         show_or_create_main_window(cx);
     });
+
+    if let Some(err) = startup_error.borrow_mut().take() {
+        return Err(err);
+    }
 
     Ok(())
 }
@@ -134,6 +142,7 @@ fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
 }
 
 pub(crate) fn quit_app(cx: &mut App) {
+    state::layout::save_now(cx);
     event!(Level::INFO, "quit ai-chat2 by action");
     cx.quit();
 }
@@ -186,14 +195,21 @@ fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Roo
     window.activate_window();
 
     let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
-        view.update(cx, |view, cx| view.focus(window, cx));
+        view.update(cx, |view, cx| view.focus_chat_form(window, cx));
     });
 }
 
 pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, AiChat2Error> {
     let title = cx.global::<foundation::I18n>().t("app-title");
+    let placement = state::layout::restored_window_placement(
+        state::layout::WindowPlacementKind::Main,
+        MAIN_WINDOW_FALLBACK_SIZE,
+        cx,
+    );
     cx.open_window(
         WindowOptions {
+            window_bounds: Some(placement.window_bounds),
+            display_id: placement.display_id,
             titlebar: Some(main_titlebar_options(title)),
             window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()

@@ -60,7 +60,7 @@ fn theme_id_for_component_mode(settings: &AppThemeSettings, mode: ComponentTheme
     }
 }
 
-fn normalized_custom_theme_colors(settings: &AppThemeSettings) -> Vec<String> {
+pub(crate) fn normalized_custom_theme_colors(settings: &AppThemeSettings) -> Vec<String> {
     let mut colors = settings
         .custom_theme_colors
         .iter()

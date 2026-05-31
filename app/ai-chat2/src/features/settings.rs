@@ -73,6 +73,7 @@ impl SettingsView {
         });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let _subscriptions = vec![
             cx.subscribe_in(&hotkey_input, window, Self::subscribe_hotkey_changes),
             cx.subscribe_in(
@@ -80,6 +81,18 @@ impl SettingsView {
                 window,
                 Self::subscribe_settings_search_changes,
             ),
+            cx.observe_window_bounds(window, move |_settings, window, cx| {
+                let window_bounds = window.window_bounds();
+                let display_id = window.display(cx).map(|display| display.id());
+                layout_state.update(cx, |layout, cx| {
+                    layout.set_window_bounds(
+                        state::layout::WindowPlacementKind::Settings,
+                        window_bounds,
+                        display_id,
+                        cx,
+                    );
+                });
+            }),
             cx.observe_window_appearance(window, |_settings, window, cx| {
                 state::theme::apply_current_theme(window, cx);
                 cx.refresh_windows();
@@ -334,9 +347,15 @@ fn open_settings_window_to(toggle_if_active: bool, cx: &mut App) {
 
 fn inner_open_settings_window(cx: &mut App) {
     let title = cx.global::<I18n>().t("settings-title");
+    let placement = state::layout::restored_window_placement(
+        state::layout::WindowPlacementKind::Settings,
+        SETTINGS_WINDOW_FALLBACK_SIZE,
+        cx,
+    );
     match cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::centered(SETTINGS_WINDOW_FALLBACK_SIZE, cx)),
+            window_bounds: Some(placement.window_bounds),
+            display_id: placement.display_id,
             titlebar: Some(settings_titlebar_options(title)),
             window_background: WindowBackgroundAppearance::Blurred,
             is_resizable: true,

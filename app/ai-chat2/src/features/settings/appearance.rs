@@ -151,6 +151,12 @@ impl AppearanceSettingsPage {
     ) -> impl IntoElement {
         let settings = cx.global::<AiChat2AppSettings>().theme().clone();
         let custom_theme_colors = custom_theme_colors_for_choices(&settings);
+        let deletable_material_theme_ids = settings
+            .custom_theme_colors
+            .iter()
+            .filter_map(|color| app_theme::normalize_hex_color(color))
+            .filter_map(|color| app_theme::material_you_theme_id(&color))
+            .collect::<Vec<_>>();
         let registry = gpui_component::ThemeRegistry::global(cx);
         let choices = app_theme::theme_choices(registry, mode, &custom_theme_colors);
         let selected_id = app_theme::normalize_theme_id(selected_id);
@@ -168,11 +174,15 @@ impl AppearanceSettingsPage {
         let mut tiles = Vec::with_capacity(choices.len());
         for choice in choices {
             let selected = choice.id == selected_id;
+            let can_delete_material_theme = deletable_material_theme_ids
+                .iter()
+                .any(|theme_id| theme_id == &choice.id);
             tiles.push(self.render_theme_tile(
                 choice,
                 mode,
                 selected,
                 selected_border,
+                can_delete_material_theme,
                 text.selected_label.clone(),
                 text.delete_material_theme_label.clone(),
             ));
@@ -211,6 +221,7 @@ impl AppearanceSettingsPage {
         mode: gpui_component::ThemeMode,
         selected: bool,
         selected_border: Hsla,
+        can_delete_material_theme: bool,
         selected_label: SharedString,
         delete_material_theme_label: SharedString,
     ) -> AnyElement {
@@ -231,7 +242,7 @@ impl AppearanceSettingsPage {
         } else {
             colors.primary
         };
-        let delete_button = app_theme::material_you_color_from_id(&id).map(|_| {
+        let delete_button = can_delete_material_theme.then(|| {
             let delete_id = id.clone();
             Button::new(SharedString::from(format!(
                 "delete-material-theme-{}-{id}",
@@ -523,23 +534,7 @@ fn set_dark_theme_id(settings: &mut AppThemeSettings, theme_id: String) {
 }
 
 fn custom_theme_colors_for_choices(settings: &AppThemeSettings) -> Vec<String> {
-    let mut colors = settings
-        .custom_theme_colors
-        .iter()
-        .filter_map(|color| app_theme::normalize_hex_color(color))
-        .fold(Vec::new(), |mut colors, color| {
-            append_custom_theme_color(&mut colors, color);
-            colors
-        });
-
-    for theme_id in [&settings.light_theme, &settings.dark_theme]
-        .into_iter()
-        .flatten()
-    {
-        add_custom_theme_color_from_theme_id(&mut colors, theme_id);
-    }
-
-    colors
+    state::theme::normalized_custom_theme_colors(settings)
 }
 
 fn append_custom_theme_color(colors: &mut Vec<String>, color: String) {
@@ -588,9 +583,9 @@ fn delete_custom_theme_color(settings: &mut AppThemeSettings, theme_id_or_color:
 }
 
 fn default_custom_color(cx: &App) -> Hsla {
-    cx.global::<AiChat2AppSettings>()
-        .theme()
-        .custom_theme_colors
+    let colors =
+        state::theme::normalized_custom_theme_colors(cx.global::<AiChat2AppSettings>().theme());
+    colors
         .last()
         .and_then(|color| Hsla::parse_hex(color).ok())
         .or_else(|| Hsla::parse_hex(app_theme::DEFAULT_CUSTOM_THEME_COLOR).ok())
@@ -711,6 +706,14 @@ mod tests {
         assert_eq!(
             custom_theme_colors_for_choices(&settings),
             vec!["#123456".to_string(), "#ABCDEF".to_string()]
+        );
+    }
+
+    #[test]
+    fn material_theme_choices_include_default_color_when_settings_are_empty() {
+        assert_eq!(
+            custom_theme_colors_for_choices(&AppThemeSettings::default()),
+            vec![app_theme::DEFAULT_CUSTOM_THEME_COLOR.to_string()]
         );
     }
 

@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+use crate::errors::AiChat2Result;
+
 mod app;
 mod components;
 mod database;
@@ -11,8 +13,6 @@ mod features;
 mod foundation;
 mod state;
 
-fn main() {
-    if let Err(err) = app::run() {
-        eprintln!("ai-chat2 failed: {err}");
-    }
+fn main() -> AiChat2Result<()> {
+    app::run()
 }

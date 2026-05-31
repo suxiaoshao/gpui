@@ -18,7 +18,7 @@ use crate::{
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub(crate) struct AiChat2Config {
     pub(crate) storage: StorageConfig,
 }
@@ -26,7 +26,7 @@ pub(crate) struct AiChat2Config {
 impl Global for AiChat2Config {}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub(crate) struct StorageConfig {
     pub(crate) data_dir: Option<PathBuf>,
 }
@@ -41,11 +41,23 @@ impl Global for AiChat2AppSettings {}
 impl AiChat2Config {
     pub(crate) fn load_or_create() -> AiChat2Result<Self> {
         let path = Self::path()?;
-        match fs::read_to_string(&path) {
-            Ok(source) => Ok(toml::from_str(&source)?),
+        Self::load_or_create_from_path(&path)
+    }
+
+    fn load_or_create_from_path(path: &Path) -> AiChat2Result<Self> {
+        match fs::read_to_string(path) {
+            Ok(source) => match toml::from_str(&source) {
+                Ok(config) => Ok(config),
+                Err(err) => {
+                    event!(Level::ERROR, error = ?err, "parse ai-chat2 config.toml failed");
+                    let config = Self::default();
+                    config.save_to_path(path)?;
+                    Ok(config)
+                }
+            },
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 let config = Self::default();
-                config.save_to_path(&path)?;
+                config.save_to_path(path)?;
                 Ok(config)
             }
             Err(err) => Err(err.into()),
@@ -178,6 +190,43 @@ mod tests {
             toml::from_str::<AiChat2Config>(&serialized).unwrap(),
             config
         );
+    }
+
+    #[test]
+    fn toml_config_ignores_unknown_fields_for_compatibility() {
+        let config = toml::from_str::<AiChat2Config>(
+            r#"
+unknown_top_level = true
+
+[storage]
+data_dir = "/tmp/ai-chat2"
+unknown_storage = "kept by newer app"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config,
+            AiChat2Config {
+                storage: StorageConfig {
+                    data_dir: Some(PathBuf::from("/tmp/ai-chat2")),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_toml_config_rewrites_default_config() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "not = [valid").expect("write malformed config");
+
+        let config = AiChat2Config::load_or_create_from_path(&path).expect("load fallback config");
+
+        assert_eq!(config, AiChat2Config::default());
+        let source = std::fs::read_to_string(&path).expect("read rewritten config");
+        assert!(toml::from_str::<AiChat2Config>(&source).is_ok());
+        assert!(!source.contains("not = [valid"));
     }
 
     #[test]
