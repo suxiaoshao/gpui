@@ -27,7 +27,10 @@ ai-chat-core.workspace = true
 
 # ui
 app-assets.workspace = true
-app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
+app-theme = { workspace = true, default-features = false, features = [
+  "system-accent",
+  "theme-picker",
+] }
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
@@ -40,6 +43,7 @@ window-ext.workspace = true
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
+pinyin = "0.11.0"
 
 # err
 thiserror = "2.0.18"

@@ -1,5 +1,6 @@
 use crate::{
     app::{about, placeholder_windows, quit_app, show_or_create_main_window},
+    features::settings,
     foundation::I18n,
 };
 use fluent_bundle::FluentArgs;
@@ -30,10 +31,7 @@ actions!(
 const WINDOW_MENU_INDEX: usize = 1;
 
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new(settings_key_binding(), OpenSettings, None),
-    ]);
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
 
     #[cfg(target_os = "macos")]
     cx.bind_keys([
@@ -46,7 +44,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &OpenTemporaryConversation, cx: &mut App| {
         placeholder_windows::open_temporary_window(cx);
     });
-    cx.on_action(|_: &OpenSettings, cx: &mut App| placeholder_windows::open_settings_window(cx));
+    cx.on_action(|_: &OpenSettings, cx: &mut App| settings::open_settings_window_from_menu(cx));
     cx.on_action(|_: &Quit, cx: &mut App| quit_app(cx));
 
     #[cfg(target_os = "macos")]
@@ -139,14 +137,6 @@ fn version_message(i18n: &I18n) -> String {
     let mut args = FluentArgs::new();
     args.set("version", env!("CARGO_PKG_VERSION"));
     i18n.t_with_args("app-menu-version", &args)
-}
-
-const fn settings_key_binding() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "cmd-,"
-    } else {
-        "ctrl-,"
-    }
 }
 
 #[cfg(test)]
@@ -264,17 +254,5 @@ mod tests {
         let window_menu = menus.remove(WINDOW_MENU_INDEX);
 
         assert_eq!(item_names(window_menu.items), vec!["Minimize", "Zoom"]);
-    }
-
-    #[test]
-    fn settings_key_binding_matches_platform() {
-        assert_eq!(
-            settings_key_binding(),
-            if cfg!(target_os = "macos") {
-                "cmd-,"
-            } else {
-                "ctrl-,"
-            }
-        );
     }
 }

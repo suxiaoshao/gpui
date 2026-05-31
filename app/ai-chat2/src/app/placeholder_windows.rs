@@ -11,17 +11,11 @@ use gpui_component::{ActiveTheme, Root, StyledExt, TitleBar, h_flex, label::Labe
 use window_ext::WindowExt;
 
 const PLACEHOLDER_CONTEXT: &str = "AiChat2PlaceholderWindow";
-const SETTINGS_WINDOW_SIZE: Size<Pixels> = size(px(760.), px(520.));
 const TEMPORARY_WINDOW_SIZE: Size<Pixels> = size(px(680.), px(420.));
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlaceholderKind {
-    Settings,
     Temporary,
-}
-
-pub(crate) fn open_settings_window(cx: &mut App) {
-    open_placeholder_window(PlaceholderKind::Settings, cx);
 }
 
 pub(crate) fn open_temporary_window(cx: &mut App) {
@@ -119,7 +113,6 @@ fn placeholder_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptio
 
 fn placeholder_window_title(kind: PlaceholderKind, i18n: &I18n) -> String {
     match kind {
-        PlaceholderKind::Settings => i18n.t("placeholder-settings-title"),
         PlaceholderKind::Temporary => i18n.t("placeholder-temporary-title"),
     }
 }
@@ -127,27 +120,24 @@ fn placeholder_window_title(kind: PlaceholderKind, i18n: &I18n) -> String {
 impl PlaceholderKind {
     const fn window_size(self) -> Size<Pixels> {
         match self {
-            Self::Settings => SETTINGS_WINDOW_SIZE,
             Self::Temporary => TEMPORARY_WINDOW_SIZE,
         }
     }
 
     const fn is_resizable(self) -> bool {
         match self {
-            Self::Settings | Self::Temporary => true,
+            Self::Temporary => true,
         }
     }
 
     fn heading(self, i18n: &I18n) -> String {
         match self {
-            Self::Settings => i18n.t("placeholder-settings-title"),
             Self::Temporary => i18n.t("placeholder-temporary-title"),
         }
     }
 
     fn body(self, i18n: &I18n) -> String {
         match self {
-            Self::Settings => i18n.t("placeholder-settings-body"),
             Self::Temporary => i18n.t("placeholder-temporary-body"),
         }
     }
@@ -299,15 +289,10 @@ mod tests {
     #[test]
     fn placeholder_titles_are_localized() {
         let english = I18n::english_for_test();
-        let chinese = I18n::for_locale_tag("zh-CN");
 
         assert_eq!(
             placeholder_window_title(PlaceholderKind::Temporary, &english),
             "Temporary Conversation"
-        );
-        assert_eq!(
-            placeholder_window_title(PlaceholderKind::Settings, &chinese),
-            "设置"
         );
     }
 }

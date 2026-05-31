@@ -4,12 +4,13 @@
 `app/ai-chat/docs/dev/issue-137-llm-abstractions.md`；本文档负责把
 `app/ai-chat2` UI、壳、本机状态、可观测性和旧 `app/ai-chat` 能力映射拆成可执行事项。
 
-最后同步时间：2026-05-29。
+最后同步时间：2026-05-31。
 
 当前分支：`codex/issue-159-ai-chat2-ui`。
 
 当前状态：进行中。当前分支已包含基础设施壳、app chrome、About、Sidebar/home skeleton、Home root/sidebar
-结构修正、ChatForm 视觉预览和 `ComposerEditor` 第一版输入内核，但尚未创建 PR，尚未合入
+结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll 修正和
+Unicode/grapheme-aware 编辑；GitHub #159 仍 open，当前没有 PR，尚未合入
 `codex/issue-137-llm-abstractions`。
 
 已完成提交：
@@ -18,7 +19,12 @@
 - `0843e15 feat(ai-chat2): add app chrome and bundle shell`
 - `e7077fc feat(ai-chat2): implement about window`
 - `6d4a34f feat(ai-chat2): add sidebar home shell`
+- `ef1c3f4 refactor(ai-chat2): split home root and sidebar`
 - `d7a5751 ai-chat2: add chat form preview`
+- `e6e766e feat(ai-chat2): implement composer editor`
+- `34ccb6f fix(ai-chat2): refine composer cursor styling`
+- `26a89fa Fix ai-chat2 composer scrolling`
+- `09b2f22 feat(ai-chat2): add unicode-aware composer editing`
 
 ## 状态定义
 
@@ -86,7 +92,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | macOS bundle localization | `app/ai-chat2/locales/macos/` | 已有 `en-US` 和 `zh-Hans` InfoPlist strings。 |
 | Windows icon build script | `app/ai-chat2/build.rs` | Windows build 时从 base PNG 派生 multi-frame `.ico`。 |
 | `xtask bundle ai-chat2` | `crates/xtask/src/cli.rs` | `BundleApp::AiChat2` 已加入，CLI parse test 已覆盖。 |
-| ComposerEditor v1 | `app/ai-chat2/src/features/home/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、`$skill-name` token 和 `ComposerSnapshot`。 |
+| ComposerEditor v1 | `app/ai-chat2/src/features/home/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、cursor blink/styling、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、soft wrap、内部滚动、Unicode/grapheme-aware movement/delete/word boundary、`$skill-name` token 和 `ComposerSnapshot`。 |
 
 ## 占位
 
@@ -137,7 +143,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | --- | --- |
 | Project navigation | project-first sidebar、open folder、recent projects、scratch project、default project、project metadata/status。 |
 | Conversation navigation | conversation list、new conversation、archive/delete、search/filter、title edit、status display、last item preview。 |
-| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核；真实工作仍包括 prompt selector、多 part input、provider/model data source、capability warning、附件、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
+| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；真实工作仍包括 prompt selector、多 part input、provider/model data source、capability warning、附件、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Timeline text | user/assistant text item、streaming text delta、multi-block assistant output、copy/export affordance。 |
 | Reasoning | multiple reasoning blocks、reasoning summary、collapsed/expanded state、provider-specific reasoning capability gating。 |
 | Tools | local/MCP/provider-hosted tool call、progress、result、error、structured output、attachment result、tool name collision display。 |
@@ -183,7 +189,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | conversation list/search | `features/home/search.rs` / `search_list.rs` | 未开始 | 需要基于 fresh conversations 和 `conversation_items.search_text` 后续设计。 |
 | delete confirmation | `components/delete_confirm.rs` | 未开始 | project/conversation/prompt/provider/shortcut 等 destructive actions 需要新的确认策略。 |
 | conversation export | `features/home/export.rs` | 未开始 | 新 export 应读取 canonical `conversation_items`。 |
-| chat form | `components/chat_form.rs` | 占位 | `ai-chat2` 已有 ChatForm 视觉外框和真实 `ComposerEditor` 第一版输入内核，但仍不接 prompt selector、attachments、真实 provider/model store 或 agent loop；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| chat form | `components/chat_form.rs` | 占位 | `ai-chat2` 已有 ChatForm 视觉外框和真实 `ComposerEditor` 第一版输入内核，并已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；但仍不接 prompt selector、attachments、真实 provider/model store 或 agent loop；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 | chat form provider ext settings | `components/chat_form/ext_settings.rs` | 未开始 | 新 composer/provider settings 需要按 provider capability 和 typed extension 重做。 |
 | mode select | `components/chat_form/mode_select.rs` | 不照搬 | 新模型所有 conversation 都 contextual。 |
 | template picker | `components/chat_form/template_picker.rs` | 不照搬 | 新 UI 使用 prompt selector。 |
@@ -274,5 +280,14 @@ ComposerEditor 第一版实现后已运行：
 - `cargo clippy -p ai-chat2 --all-targets --all-features -- -D warnings`
 - `git diff --check`
 - 未做手动 macOS 中文输入法、候选框、双击/拖拽或 bundle GUI 验证。
+
+2026-05-31 状态同步记录：
+
+- live GitHub 状态：#159 仍 open；PR 列表中没有 `codex/issue-159-ai-chat2-ui` 对应 PR。
+- 远程分支状态：本地 `codex/issue-159-ai-chat2-ui` 与 `origin/codex/issue-159-ai-chat2-ui`
+  一致，领先 `origin/codex/issue-137-llm-abstractions` 10 个提交。
+- 5/29 文档后新增提交：`34ccb6f` cursor styling、`26a89fa` composer scrolling、`09b2f22`
+  Unicode-aware composer editing。
+- 本次只同步文档状态；未运行 Rust tests。
 
 文档-only 更新只需运行 `git diff --check`。

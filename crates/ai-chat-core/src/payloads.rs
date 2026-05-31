@@ -824,6 +824,8 @@ pub struct AppSettingsPayload {
     #[serde(default)]
     pub temporary_hotkey: Option<String>,
     #[serde(default)]
+    pub http_proxy: Option<String>,
+    #[serde(default)]
     pub default_project_id: Option<ProjectId>,
 }
 
@@ -833,6 +835,7 @@ impl Default for AppSettingsPayload {
             language: AppLanguage::System,
             theme: AppThemeSettings::default(),
             temporary_hotkey: None,
+            http_proxy: None,
             default_project_id: None,
         }
     }
@@ -868,6 +871,7 @@ mod tests {
                 custom_theme_colors: vec!["#3271AE".to_string()],
             },
             temporary_hotkey: Some("cmd+shift+j".to_string()),
+            http_proxy: Some("http://127.0.0.1:8080".to_string()),
             default_project_id: Some("project_1".to_string()),
         };
 
@@ -875,6 +879,7 @@ mod tests {
         assert_eq!(value["language"], "zh-CN");
         assert_eq!(value["theme"]["mode"], "dark");
         assert_eq!(value["temporaryHotkey"], "cmd+shift+j");
+        assert_eq!(value["httpProxy"], "http://127.0.0.1:8080");
         assert_eq!(
             serde_json::from_value::<AppSettingsPayload>(value).unwrap(),
             payload
@@ -894,6 +899,7 @@ mod tests {
         assert_eq!(payload.language, AppLanguage::System);
         assert_eq!(payload.theme.mode, AppThemeMode::System);
         assert_eq!(payload.temporary_hotkey, None);
+        assert_eq!(payload.http_proxy, None);
         assert_eq!(payload.default_project_id, None);
     }
 

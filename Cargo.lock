@@ -244,6 +244,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "image",
+ "pinyin",
  "platform-ext",
  "rust-embed",
  "serde",

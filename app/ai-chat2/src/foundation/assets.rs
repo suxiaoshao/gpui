@@ -11,21 +11,49 @@ define_lucide_icons!(
         ChevronDown => "chevron-down",
         ChevronUp => "chevron-up",
         Database => "database",
+        FilePen => "file-pen",
         Keyboard => "keyboard",
         Languages => "languages",
         Lightbulb => "lightbulb",
         Palette => "palette",
         Plus => "plus",
+        Search => "search",
         Send => "send",
         Settings => "settings",
         Sparkles => "sparkles",
+        Trash => "trash",
+        X => "x",
     }
 );
+
+#[derive(RustEmbed)]
+#[folder = "assets"]
+#[include = "themes/**/*.json"]
+struct AssetsInner;
 
 #[derive(RustEmbed)]
 #[folder = "."]
 #[include = "build-assets/icon/app-icon.png"]
 struct BuildAssets;
+
+impl AssetSource for AssetsInner {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Self::get(path).map(|file| file.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|item| {
+                let item = item.into_owned();
+                (path.is_empty() || item.starts_with(path)).then(|| item.into())
+            })
+            .collect())
+    }
+}
 
 impl AssetSource for BuildAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
@@ -47,14 +75,29 @@ impl AssetSource for BuildAssets {
 }
 
 pub(crate) struct Assets {
+    assets: AssetsInner,
     build_assets: BuildAssets,
     lucide_assets: LucideAssets,
     component_assets: gpui_component_assets::Assets,
 }
 
+pub(crate) fn bundled_theme_sets() -> Vec<String> {
+    AssetsInner::iter()
+        .filter(|path| path.starts_with("themes/gpui-component/") && path.ends_with(".json"))
+        .filter_map(|path| {
+            AssetsInner::get(path.as_ref()).and_then(|file| {
+                std::str::from_utf8(file.data.as_ref())
+                    .ok()
+                    .map(ToOwned::to_owned)
+            })
+        })
+        .collect()
+}
+
 impl Default for Assets {
     fn default() -> Self {
         Self {
+            assets: AssetsInner,
             build_assets: BuildAssets,
             lucide_assets: LucideAssets,
             component_assets: gpui_component_assets::Assets,
@@ -69,6 +112,7 @@ impl AssetSource for Assets {
         }
 
         for source in [
+            &self.assets as &dyn AssetSource,
             &self.build_assets as &dyn AssetSource,
             &self.lucide_assets as &dyn AssetSource,
         ] {
@@ -83,6 +127,7 @@ impl AssetSource for Assets {
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
         let mut names = BTreeSet::new();
 
+        names.extend(self.assets.list(path)?);
         names.extend(self.build_assets.list(path)?);
         names.extend(self.lucide_assets.list(path)?);
         names.extend(self.component_assets.list(path)?);
@@ -93,7 +138,7 @@ impl AssetSource for Assets {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_ICON_ASSET_PATH, Assets, IconName};
+    use super::{APP_ICON_ASSET_PATH, Assets, IconName, bundled_theme_sets};
     use gpui::{AssetSource, SharedString};
     use gpui_component::IconNamed;
 
@@ -111,7 +156,15 @@ mod tests {
             IconName::Lightbulb.path(),
             SharedString::from("icons/lightbulb.svg")
         );
+        assert_eq!(
+            IconName::Search.path(),
+            SharedString::from("icons/search.svg")
+        );
         assert_eq!(IconName::Send.path(), SharedString::from("icons/send.svg"));
+        assert_eq!(
+            IconName::Trash.path(),
+            SharedString::from("icons/trash.svg")
+        );
     }
 
     #[test]
@@ -123,6 +176,18 @@ mod tests {
             .expect("database icon exists");
 
         assert!(!icon.is_empty());
+    }
+
+    #[test]
+    fn assets_embed_bundled_theme_sets() {
+        let theme_sets = bundled_theme_sets();
+
+        assert!(theme_sets.len() >= 20);
+        assert!(
+            theme_sets
+                .iter()
+                .any(|theme_set| theme_set.contains("Ayu Light"))
+        );
     }
 
     #[test]

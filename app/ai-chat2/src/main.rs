@@ -4,6 +4,7 @@
 )]
 
 mod app;
+mod components;
 mod database;
 mod errors;
 mod features;

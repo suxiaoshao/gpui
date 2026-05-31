@@ -3,10 +3,11 @@ pub(crate) mod menus;
 pub(crate) mod placeholder_windows;
 pub(crate) mod title_bar_menu;
 
-use crate::features::home::HomeView;
+use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{database, errors::AiChat2Error, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
+use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::WindowExt;
@@ -15,7 +16,8 @@ pub(crate) static APP_NAME: &str = "top.sushao.ai-chat2";
 const APP_TITLE: &str = "AI Chat 2";
 
 pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
-    init_tracing();
+    init_tracing()?;
+    event!(Level::INFO, "startup begin");
 
     let app = gpui_platform::application().with_assets(foundation::Assets::default());
     app.on_reopen(show_or_create_main_window);
@@ -33,10 +35,70 @@ pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
-    let _ = tracing_subscriber::registry()
-        .with(fmt::layer().with_filter(LevelFilter::INFO))
-        .try_init();
+fn get_logs_dir() -> crate::errors::AiChat2Result<PathBuf> {
+    let path =
+        logs_dir_from_base(logs_base_dir().ok_or(crate::errors::AiChat2Error::LogFileNotFound)?);
+
+    if !path.exists() {
+        create_dir_all(&path).map_err(|_| crate::errors::AiChat2Error::LogFileNotFound)?;
+    }
+
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn logs_base_dir() -> Option<PathBuf> {
+    dirs_next::home_dir()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn logs_base_dir() -> Option<PathBuf> {
+    dirs_next::data_local_dir()
+}
+
+#[cfg(target_os = "macos")]
+fn logs_dir_from_base(base_dir: PathBuf) -> PathBuf {
+    base_dir.join("Library/Logs").join(APP_NAME)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn logs_dir_from_base(base_dir: PathBuf) -> PathBuf {
+    base_dir.join(APP_NAME).join("logs")
+}
+
+fn init_tracing() -> crate::errors::AiChat2Result<()> {
+    let logs_dir = get_logs_dir()?;
+    let log_file = logs_dir.join("data.log");
+
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_timer(fmt::time::LocalTime::rfc_3339())
+                .with_writer(
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&log_file)
+                        .map_err(|_| crate::errors::AiChat2Error::LogFileNotFound)?,
+                )
+                .with_filter(LevelFilter::INFO),
+        )
+        .with(
+            fmt::layer()
+                .with_timer(fmt::time::LocalTime::rfc_3339())
+                .event_format(fmt::format().pretty())
+                .with_filter(LevelFilter::INFO),
+        )
+        .init();
+
+    event!(
+        Level::INFO,
+        logs_dir = %logs_dir.display(),
+        log_file = %log_file.display(),
+        "tracing initialized"
+    );
+
+    Ok(())
 }
 
 fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
@@ -167,6 +229,9 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
             let _ = with_root_view::<about::AboutWindow, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
+            let _ = with_root_view::<SettingsView, _>(root, cx, |view, cx| {
+                view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
+            });
             let _ = with_root_view::<placeholder_windows::PlaceholderWindow, _>(
                 root,
                 cx,
@@ -204,8 +269,12 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_TITLE, main_titlebar_options, should_hide_main_window_on_close};
+    use super::{
+        APP_NAME, APP_TITLE, logs_dir_from_base, main_titlebar_options,
+        should_hide_main_window_on_close,
+    };
     use gpui_component::TitleBar;
+    use std::path::PathBuf;
 
     #[test]
     fn main_window_close_behavior_matches_platform_support() {
@@ -229,5 +298,16 @@ mod tests {
             titlebar.traffic_light_position,
             expected.traffic_light_position
         );
+    }
+
+    #[test]
+    fn log_directory_matches_app_convention() {
+        let dir = logs_dir_from_base(PathBuf::from("/tmp/base"));
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(dir, PathBuf::from("/tmp/base/Library/Logs").join(APP_NAME));
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(dir, PathBuf::from("/tmp/base").join(APP_NAME).join("logs"));
     }
 }

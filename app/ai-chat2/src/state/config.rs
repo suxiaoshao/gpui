@@ -89,6 +89,10 @@ impl AiChat2AppSettings {
         self.payload.language
     }
 
+    pub(crate) fn payload(&self) -> &AppSettingsPayload {
+        &self.payload
+    }
+
     pub(crate) fn theme(&self) -> &AppThemeSettings {
         &self.payload.theme
     }
@@ -97,9 +101,25 @@ impl AiChat2AppSettings {
         self.payload.temporary_hotkey.as_deref()
     }
 
+    pub(crate) fn http_proxy(&self) -> Option<&str> {
+        self.payload.http_proxy.as_deref()
+    }
+
     pub(crate) fn default_project_id(&self) -> Option<&ProjectId> {
         self.payload.default_project_id.as_ref()
     }
+}
+
+pub(crate) fn update_app_settings(
+    cx: &mut App,
+    update: impl FnOnce(&mut AppSettingsPayload),
+) -> AiChat2Result<AppSettingsPayload> {
+    let mut payload = cx.global::<AiChat2AppSettings>().payload().clone();
+    update(&mut payload);
+    database::repository(cx).set_app_settings(payload.clone())?;
+    cx.set_global(AiChat2AppSettings::new(payload.clone()));
+    cx.refresh_windows();
+    Ok(payload)
 }
 
 pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
@@ -126,6 +146,7 @@ pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
         language = ?settings.language(),
         theme = ?settings.theme().mode,
         temporary_hotkey = ?settings.temporary_hotkey(),
+        http_proxy = ?settings.http_proxy(),
         default_project_id = ?settings.default_project_id(),
         "loaded ai-chat2 app settings"
     );
@@ -168,12 +189,14 @@ mod tests {
                 ..Default::default()
             },
             temporary_hotkey: Some("cmd+shift+j".to_string()),
+            http_proxy: Some("http://127.0.0.1:8080".to_string()),
             default_project_id: Some("project-1".to_string()),
         });
 
         assert_eq!(settings.language(), AppLanguage::Chinese);
         assert_eq!(settings.theme().mode, AppThemeMode::Light);
         assert_eq!(settings.temporary_hotkey(), Some("cmd+shift+j"));
+        assert_eq!(settings.http_proxy(), Some("http://127.0.0.1:8080"));
         assert_eq!(
             settings.default_project_id().map(String::as_str),
             Some("project-1")

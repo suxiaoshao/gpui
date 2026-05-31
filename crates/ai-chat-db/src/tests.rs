@@ -1230,6 +1230,7 @@ fn typed_json_roundtrips_for_repository_records() {
                 custom_theme_colors: vec!["#3271AE".to_string()],
             },
             temporary_hotkey: Some("cmd+shift+j".to_string()),
+            http_proxy: Some("http://127.0.0.1:8080".to_string()),
             default_project_id: Some(project.id.clone()),
         })
         .unwrap();
@@ -1237,6 +1238,10 @@ fn typed_json_roundtrips_for_repository_records() {
     assert_eq!(
         app_settings.settings.temporary_hotkey.as_deref(),
         Some("cmd+shift+j")
+    );
+    assert_eq!(
+        app_settings.settings.http_proxy.as_deref(),
+        Some("http://127.0.0.1:8080")
     );
     assert_eq!(app_settings.settings.default_project_id, Some(project.id));
 }

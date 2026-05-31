@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, str::FromStr, time::SystemTime};
 use ai_chat_core::ShortcutId;
 use ai_chat_db::ShortcutRecord;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
-use gpui::{App, Global, Task};
+use gpui::{App, BorrowAppContext, Global, Task};
 use tracing::{Level, event};
 
 use crate::{
@@ -29,6 +29,7 @@ impl RegisteredHotkeyAction {
 
 trait HotkeyBackend {
     fn register(&mut self, hotkey: HotKey) -> AiChat2Result<()>;
+    fn unregister(&mut self, hotkey: HotKey) -> AiChat2Result<()>;
 }
 
 struct SystemHotkeyBackend {
@@ -39,6 +40,10 @@ impl HotkeyBackend for SystemHotkeyBackend {
     fn register(&mut self, hotkey: HotKey) -> AiChat2Result<()> {
         Ok(self.manager.register(hotkey)?)
     }
+
+    fn unregister(&mut self, hotkey: HotKey) -> AiChat2Result<()> {
+        Ok(self.manager.unregister(hotkey)?)
+    }
 }
 
 struct DisabledHotkeyBackend {
@@ -48,6 +53,10 @@ struct DisabledHotkeyBackend {
 impl HotkeyBackend for DisabledHotkeyBackend {
     fn register(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
         Err(AiChat2Error::HotkeyUnavailable(self.error.clone()))
+    }
+
+    fn unregister(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
+        Ok(())
     }
 }
 
@@ -165,13 +174,44 @@ impl GlobalHotkeyState {
         Ok(())
     }
 
+    fn unregister_action(
+        &mut self,
+        hotkey: &str,
+        expected_action: RegisteredHotkeyAction,
+    ) -> AiChat2Result<()> {
+        let hotkey = Self::parse_hotkey(hotkey)?;
+        if self.hotkey_actions.get(&hotkey.id()) != Some(&expected_action) {
+            event!(
+                Level::INFO,
+                hotkey = %hotkey,
+                hotkey_id = hotkey.id(),
+                expected_action = ?expected_action,
+                "skip ai-chat2 hotkey unregister because registered action does not match"
+            );
+            return Ok(());
+        }
+
+        self.backend.unregister(hotkey)?;
+        self.hotkey_actions.remove(&hotkey.id());
+        event!(
+            Level::INFO,
+            hotkey = %hotkey,
+            hotkey_id = hotkey.id(),
+            action = ?expected_action,
+            "unregistered ai-chat2 hotkey"
+        );
+        Ok(())
+    }
+
     fn load_initial_shortcuts(&mut self, cx: &mut App) -> AiChat2Result<()> {
         if let Some(hotkey) = cx
             .global::<AiChat2AppSettings>()
             .temporary_hotkey()
             .map(str::to_string)
         {
-            self.register_temporary_hotkey(hotkey);
+            if let Err(err) = self.register_temporary_hotkey(hotkey) {
+                event!(Level::ERROR, error = ?err, "failed to load temporary hotkey");
+            }
         }
 
         let shortcuts = database::repository(cx).list_shortcuts()?;
@@ -182,17 +222,76 @@ impl GlobalHotkeyState {
         Ok(())
     }
 
-    fn register_temporary_hotkey(&mut self, hotkey: String) {
+    fn register_temporary_hotkey(&mut self, hotkey: String) -> AiChat2Result<()> {
         let result = self.register_action(&hotkey, RegisteredHotkeyAction::TemporaryConversation);
         self.temporary_hotkey = Some(hotkey);
 
-        if let Err(err) = result {
-            self.registration_errors
-                .insert("temporary".to_string(), err.to_string());
-            event!(Level::ERROR, error = ?err, "failed to register temporary hotkey");
-        } else {
+        match result {
+            Ok(()) => {
+                self.registration_errors.remove("temporary");
+                Ok(())
+            }
+            Err(err) => {
+                self.registration_errors
+                    .insert("temporary".to_string(), err.to_string());
+                event!(Level::ERROR, error = ?err, "failed to register temporary hotkey");
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn update_temporary_hotkey(
+        old_hotkey: Option<&str>,
+        new_hotkey: Option<&str>,
+        cx: &mut App,
+    ) -> AiChat2Result<()> {
+        if !cx.has_global::<GlobalHotkeyState>() {
+            return Ok(());
+        }
+
+        let mut result = Ok(());
+        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+            result = hotkeys.update_temporary_hotkey_runtime(old_hotkey, new_hotkey);
+        });
+        result
+    }
+
+    fn update_temporary_hotkey_runtime(
+        &mut self,
+        old_hotkey: Option<&str>,
+        new_hotkey: Option<&str>,
+    ) -> AiChat2Result<()> {
+        event!(
+            Level::INFO,
+            old_hotkey = ?old_hotkey,
+            new_hotkey = ?new_hotkey,
+            "updating ai-chat2 temporary hotkey"
+        );
+
+        if old_hotkey == new_hotkey {
+            self.temporary_hotkey = new_hotkey.map(str::to_string);
+            return Ok(());
+        }
+
+        if let Some(old_hotkey) = old_hotkey {
+            self.unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryConversation)?;
+        }
+
+        if let Some(new_hotkey) = new_hotkey
+            && let Err(err) = self.register_temporary_hotkey(new_hotkey.to_string())
+        {
+            if let Some(old_hotkey) = old_hotkey {
+                let _ = self.register_temporary_hotkey(old_hotkey.to_string());
+            }
+            return Err(err);
+        }
+
+        if new_hotkey.is_none() {
+            self.temporary_hotkey = None;
             self.registration_errors.remove("temporary");
         }
+
+        Ok(())
     }
 
     fn register_shortcut(&mut self, shortcut: ShortcutRecord) {
@@ -277,13 +376,19 @@ mod tests {
         fn register(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
             Ok(())
         }
+
+        fn unregister(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {
         let mut hotkeys =
             GlobalHotkeyState::new(Box::<FakeHotkeyBackend>::default(), Task::ready(()));
-        hotkeys.register_temporary_hotkey("cmd+shift+j".to_string());
+        hotkeys
+            .register_temporary_hotkey("cmd+shift+j".to_string())
+            .expect("register temporary hotkey");
 
         let hotkey = HotKey::from_str("cmd+shift+j").unwrap();
         hotkeys.handle_pressed_hotkey(hotkey.id());
@@ -304,13 +409,30 @@ mod tests {
     fn invalid_temporary_hotkey_is_reported_without_panicking() {
         let mut hotkeys =
             GlobalHotkeyState::new(Box::<FakeHotkeyBackend>::default(), Task::ready(()));
-        hotkeys.register_temporary_hotkey("cmd+shift+".to_string());
+        let result = hotkeys.register_temporary_hotkey("cmd+shift+".to_string());
 
+        assert!(result.is_err());
         assert!(
             hotkeys
                 .diagnostics()
                 .registration_errors
                 .contains_key("temporary")
         );
+    }
+
+    #[test]
+    fn temporary_hotkey_runtime_update_can_clear_registration() {
+        let mut hotkeys =
+            GlobalHotkeyState::new(Box::<FakeHotkeyBackend>::default(), Task::ready(()));
+        hotkeys
+            .register_temporary_hotkey("cmd+shift+j".to_string())
+            .expect("register temporary hotkey");
+
+        hotkeys
+            .update_temporary_hotkey_runtime(Some("cmd+shift+j"), None)
+            .expect("clear temporary hotkey");
+
+        assert_eq!(hotkeys.diagnostics().temporary_hotkey, None);
+        assert!(hotkeys.diagnostics().registration_errors.is_empty());
     }
 }

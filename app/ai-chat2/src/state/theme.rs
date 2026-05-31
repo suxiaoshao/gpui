@@ -1,10 +1,19 @@
 use ai_chat_core::{AppThemeMode, AppThemeSettings};
 use gpui::{App, Window, WindowAppearance};
 use gpui_component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use tracing::{Level, event};
+
+use crate::foundation::assets;
 
 pub(crate) use app_theme::SystemAccentThemeState;
 
 pub(crate) fn init(cx: &mut App) {
+    let registry = ThemeRegistry::global_mut(cx);
+    for theme_set in assets::bundled_theme_sets() {
+        if let Err(err) = registry.load_themes_from_str(&theme_set) {
+            event!(Level::ERROR, error = ?err, "failed to load ai-chat2 bundled theme set");
+        }
+    }
     app_theme::init_system_accent_theme(cx);
 }
 
