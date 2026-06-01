@@ -12,8 +12,8 @@
 skeleton、Home root/sidebar 结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll
 修正、Unicode/grapheme-aware 编辑、真实 Settings shell + General/Appearance/Projects、New Conversation 默认页、
 新对话项目选择器、no-project 默认语义、Codex-style composer/project tray polish、main/settings window placement 持久化和基础 parity 修复；GitHub #159 仍 open，当前没有 PR，尚未合入
-`codex/issue-137-llm-abstractions`。完整 project chat、多模态 timeline、Provider/Prompt/Shortcut settings 和真实
-Temporary Conversation runtime 仍未完成。
+`codex/issue-137-llm-abstractions`。Provider settings 已开始实现；完整 project chat、多模态
+timeline、Prompt/Shortcut settings 和真实 Temporary Conversation runtime 仍未完成。
 
 已完成提交：
 
@@ -39,6 +39,7 @@ Temporary Conversation runtime 仍未完成。
 | 已完成 | 代码可运行，且不是占位。 |
 | 占位 | 入口、窗口、菜单或资源已接线，但没有真实业务行为。 |
 | 后端已具备 | `ai-chat-core` / `ai-chat-db` / `ai-chat-agent` 已有模型或 API，但 `ai-chat2` UI 未消费。 |
+| 已有专项计划 | 已固定开发计划或专项进度板，但对应代码能力尚未实现。 |
 | 未开始 | 旧 `app/ai-chat` 有对应能力，新 `app/ai-chat2` 还没有。 |
 | 暂不做 | 不属于当前 #159 UI 阶段，除非后续重新定义 scope。 |
 | 不照搬 | 旧 `app/ai-chat` 概念或实现形状不适合 fresh app，应按新模型重做或删除入口。 |
@@ -138,9 +139,9 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | approvals | `approval_decisions` + agent runtime | 没有 approval prompt、approve/deny/cancel/expired UI。 |
 | usage | `usage_events` | 没有 token/usage summary 或 rollup UI。 |
 | prompts | `prompts` | 没有 prompt CRUD、selection、snapshot display。 |
-| providers | `providers` | 没有 provider settings UI、secret refs UI 或 enabled/disabled control。 |
-| provider models | `provider_models` | 只有 preview-only model picker；没有读取 fresh cache、manual refresh、model cache display 或 capability detail UI。 |
-| app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；Provider/Prompt/Shortcut settings 仍未接。 |
+| providers | `providers` | Provider settings 已开始实现：`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。已接 Settings 页骨架、Provider i18n、未保存 provider 默认 disabled、provider enabled 保存和 secret refs stub；真实 keychain/Rig validation 仍未完成。 |
+| provider models | `provider_models` | 已补 per-model enabled DB 合同、Settings 内 model enabled toggle 和 Provider 双栏独立滚动布局；远端模型刷新、manual model editor 和 composer picker 接线仍未完成。 |
+| app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；Provider settings 已有专项计划，Prompt/Shortcut settings 仍未接。 |
 | file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
 | MCP helpers | `ai-chat-agent::mcp` | 没有 MCP config UI、connected server status 或 MCP tool approval UI。 |
 
@@ -158,7 +159,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Status and errors | queued/running/waiting/completed/failed/canceled 状态、retry/cancel affordance、user-visible error item。 |
 | Usage | per-run usage summary、provider/model token counts、usage event rollup display。 |
 | Attachments and multimodal | image/file/audio input、generated files/images、preview/download/open, provider unsupported-state messaging。 |
-| Settings | General/Appearance/Projects 已实现；仍缺 Provider、provider models manual refresh、prompts、shortcuts、tool/MCP policy 和 default project picker。 |
+| Settings | General/Appearance/Projects 已实现；Provider settings 已开始实现并补齐基础 i18n/default disabled/滚动布局；仍缺真实 keychain/Rig validation、provider models manual refresh、prompts、shortcuts、tool/MCP policy 和 default project picker。 |
 | Shortcuts | shortcut CRUD、input source selection、prompt/provider/model binding、capability validation、registration/runtime status。 |
 | Temporary chat | real temporary conversation window、selected text/screenshot input、save/promote to conversation。 |
 | Screenshot/input capture | screenshot overlay、OCR fallback、image-capable model data URL path、unsupported model warnings。 |
@@ -177,7 +178,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | bundle/app icon | `build-assets` / `build.rs` / `xtask` | 已完成 | 图标暂时复用旧 `ai-chat`，后续可替换品牌图标。 |
 | About window | `features/about.rs` | 已完成 | `ai-chat2` 已实现精简真实 About，不照搬旧 tray/about 文案。 |
 | Settings window | `features/settings.rs` | 已完成 | 已迁移真实 Settings shell；当前注册 General/Appearance/Projects 三页。 |
-| Provider settings | `features/settings/provider_settings.rs` | 未开始 | 需要接 fresh `providers` / `provider_models`，并支持手动刷新 model cache。 |
+| Provider settings | `features/settings/provider.rs` + `features/settings/provider/*.rs` | 已开始 | 已接 fresh `providers` / `provider_models` 基础 UI、Provider i18n、默认 disabled、独立滚动布局、provider save 和 model enabled toggle；仍需 GPUI keychain secret refs、Rig client validation、远端 fetch 和手动 model cache。 |
 | Appearance settings | `features/settings/appearance_settings.rs` | 已完成 | 已迁移 theme mode、light/dark theme preview grid、Material You color picker/add/delete 和默认 Material You theme visibility。 |
 | General settings | `features/settings/general_settings.rs` | 已完成 | 已迁移 language、HTTP proxy、temporary hotkey 专用输入和 open config file；default project picker 不在本轮。 |
 | Template settings | `features/settings/template_settings.rs` | 不照搬 | 新模型删除 templates，改为 prompts。 |
@@ -197,7 +198,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | delete confirmation | `components/delete_confirm.rs` | 未开始 | project/conversation/prompt/provider/shortcut 等 destructive actions 需要新的确认策略。 |
 | conversation export | `features/home/export.rs` | 未开始 | 新 export 应读取 canonical `conversation_items`。 |
 | chat form | `components/chat_form.rs` | 占位 | `ai-chat2` 已有 ChatForm 视觉外框和真实 `ComposerEditor` 第一版输入内核，并已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；但仍不接 prompt selector、attachments、真实 provider/model store 或 agent loop；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
-| chat form provider ext settings | `components/chat_form/ext_settings.rs` | 未开始 | 新 composer/provider settings 需要按 provider capability 和 typed extension 重做。 |
+| chat form provider ext settings | `components/chat_form/ext_settings.rs` | 已有专项计划 | Provider settings 专项计划已固定 capability cache 和 typed extension 的来源；composer 接线仍未实现。 |
 | mode select | `components/chat_form/mode_select.rs` | 不照搬 | 新模型所有 conversation 都 contextual。 |
 | template picker | `components/chat_form/template_picker.rs` | 不照搬 | 新 UI 使用 prompt selector。 |
 | model select | `components/chat_form/model_select.rs` | 占位 | 已有 preview-only model picker 和 thinking effort picker；后续接 fresh `provider_models` cache 和 capability gating。 |
@@ -355,5 +356,25 @@ Codex-style project tray 颜色/层级 polish 后已运行：
 - 当前仍不接真实 project/conversation navigation、prompt/provider/model data source、agent run/timeline、
   `$` completion UI、Shortcuts settings 或 Temporary Conversation runtime。
 - 本次包含 New Conversation 默认页、项目 selector 和视觉 polish；验证见上方记录。
+
+2026-06-01 Provider settings 专项计划记录：
+
+- 新增 `app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`，固定 Rig-first provider
+  scope、Alma/Zed 参考边界、DB/secret/Rig 对齐、模型刷新和 capability cache 计划。
+- 后续实现已开始：`ai-chat-db` repository API 与 `provider_models.enabled` 已落地，`ai-chat2`
+  已新增 Settings Provider 页骨架、registry/draft/capability 模块和 DB-backed enabled model helper。
+  真实 GPUI keychain、Rig client factory、远端 model fetcher、manual model editor 和 DB-backed
+  composer model picker 仍未完成。
+- 追加补强：专项计划已扩展到 implementation-ready 粒度，固定 `provider.rs + provider/*.rs`
+  模块结构、`gpui-component` 组件清单、app-local entity 结构体、`provider_models.enabled`
+  schema/API 合同和 UI 状态流。
+
+2026-06-02 Provider settings 修复记录：
+
+- Provider settings 可见文案已接入 `I18n`，Provider settings page title 使用 `settings-page-provider`，
+  provider 品牌名保持原文。
+- 未保存 built-in provider draft 默认 disabled，已保存 provider 继续使用 DB row 的 enabled 状态。
+- Settings frame 为 Provider 页新增 no-outer-scroll 模式，Provider 左侧 list 和右侧 detail 使用独立滚动条。
+- 验证：`cargo fmt`、`cargo test -p ai-chat2 provider`、`cargo check -p ai-chat2`、`git diff --check`。
 
 文档-only 更新只需运行 `git diff --check`。

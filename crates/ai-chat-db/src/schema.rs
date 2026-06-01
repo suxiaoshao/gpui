@@ -224,6 +224,7 @@ diesel::table! {
         provider_id -> Text,
         model_id -> Text,
         display_name -> Nullable<Text>,
+        enabled -> Bool,
         capabilities_json -> Json,
         metadata_json -> Json,
         fetched_at -> TimestamptzSqlite,

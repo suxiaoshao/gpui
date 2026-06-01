@@ -23,6 +23,7 @@ mod appearance;
 mod general;
 mod layout;
 mod projects;
+mod provider;
 
 use self::{
     appearance::AppearanceSettingsPage,
@@ -31,6 +32,7 @@ use self::{
         SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
     },
     projects::ProjectsSettingsPage,
+    provider::ProviderSettingsPage,
 };
 
 actions!(ai_chat2_settings, [ToggleSettings]);
@@ -51,6 +53,7 @@ pub(crate) struct SettingsView {
     hotkey_input: Entity<HotkeyInput>,
     settings_search_input: Entity<InputState>,
     appearance_settings: Entity<AppearanceSettingsPage>,
+    provider_settings: Entity<ProviderSettingsPage>,
     projects_settings: Entity<ProjectsSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
@@ -75,6 +78,7 @@ impl SettingsView {
             InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-settings"))
         });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
+        let provider_settings = cx.new(|cx| ProviderSettingsPage::new(window, cx));
         let projects_settings = cx.new(ProjectsSettingsPage::new);
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
@@ -121,6 +125,7 @@ impl SettingsView {
             hotkey_input,
             settings_search_input,
             appearance_settings,
+            provider_settings,
             projects_settings,
             app_menu_bar,
             selected_page: SettingsPageKey::General,
@@ -245,9 +250,13 @@ impl Render for SettingsView {
                     SettingsPageKey::Appearance => {
                         self.appearance_settings.clone().into_any_element()
                     }
+                    SettingsPageKey::Provider => self.provider_settings.clone().into_any_element(),
                     SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
                 },
             )
+            .when(active_page_key == SettingsPageKey::Provider, |frame| {
+                frame.no_outer_body_scroll()
+            })
             .into_any_element()
         };
         let resize_view = cx.entity().downgrade();
@@ -391,10 +400,15 @@ fn inner_open_settings_window(cx: &mut App) {
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 3] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 4] {
     let i18n = cx.global::<I18n>();
+    settings_page_specs_for_i18n(i18n)
+}
+
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 4] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
+    let page_provider = i18n.t("settings-page-provider");
     let page_projects = i18n.t("settings-page-projects");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
@@ -424,6 +438,14 @@ fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 3] {
             settings_search_text(
                 [page_appearance.as_str()],
                 "appearance theme color mode light dark system material you bright custom 主题 外观 亮色 暗色 系统 自定义",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Provider,
+            page_provider.clone(),
+            settings_search_text(
+                [page_provider.as_str()],
+                "provider model api key base url openai anthropic gemini ollama openrouter deepseek kimi azure mistral groq perplexity together 模型 提供商",
             ),
         ),
         SettingsPageSpec::new(
@@ -497,8 +519,9 @@ const fn settings_key_binding() -> &'static str {
 mod tests {
     use super::{
         SettingsPageKey, SettingsPageSpec, settings_key_binding, settings_page_matches,
-        settings_search_text, settings_titlebar_options,
+        settings_page_specs_for_i18n, settings_search_text, settings_titlebar_options,
     };
+    use crate::foundation::I18n;
     use gpui_component::TitleBar;
 
     #[test]
@@ -555,6 +578,24 @@ mod tests {
 
         assert!(text.contains("http proxy"));
         assert!(text.contains("openai provider"));
+    }
+
+    #[test]
+    fn settings_provider_page_uses_i18n_title_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let provider = specs
+            .iter()
+            .find(|spec| spec.key == SettingsPageKey::Provider)
+            .expect("provider settings page exists");
+
+        assert_eq!(provider.title.as_ref(), "提供商");
+        assert!(settings_page_matches(provider, "provider"));
+        assert!(settings_page_matches(provider, "model"));
+        assert!(settings_page_matches(provider, "OpenAI"));
+        assert!(settings_page_matches(provider, "Ollama"));
+        assert!(settings_page_matches(provider, "提供商"));
+        assert!(settings_page_matches(provider, "模型"));
     }
 
     #[test]

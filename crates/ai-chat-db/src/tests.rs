@@ -2,7 +2,7 @@ use crate::{
     FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
     NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -38,7 +38,7 @@ fn bootstrap_is_idempotent() {
     assert!(metadata.updated_at >= first_updated_at);
 
     let mut conn = second.pool().get().unwrap();
-    assert_eq!(count(&mut conn, "schema_migrations"), 1);
+    assert_eq!(count(&mut conn, "schema_migrations"), 2);
 }
 
 #[test]
@@ -193,6 +193,10 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     assert!(providers_sql.contains("CHECK (enabled IN (0, 1))"));
     assert!(providers_sql.contains("created_at DateTime NOT NULL"));
     assert!(providers_sql.contains("updated_at DateTime NOT NULL"));
+
+    let provider_models_sql = table_sql(&mut conn, "provider_models");
+    assert!(provider_models_sql.contains("enabled BOOLEAN NOT NULL DEFAULT 1"));
+    assert!(provider_models_sql.contains("CHECK (enabled IN (0, 1))"));
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
@@ -1337,6 +1341,89 @@ fn provider_model_manual_refresh_updates_cached_row() {
 }
 
 #[test]
+fn provider_repository_lists_updates_and_deletes_provider_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider = repo.insert_provider(provider()).unwrap();
+
+    let listed = repo.list_providers().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, provider.id);
+
+    let updated = repo
+        .update_provider(
+            &provider.id,
+            UpdateProvider {
+                display_name: "OpenAI API".to_string(),
+                enabled: false,
+                settings: provider_settings(),
+                secret_refs: ProviderSecretRefs { refs: Vec::new() },
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.display_name, "OpenAI API");
+    assert!(!updated.enabled);
+    assert!(updated.secret_refs.refs.is_empty());
+
+    assert_eq!(repo.delete_provider(&provider.id).unwrap(), 1);
+    assert!(repo.get_provider(&provider.id).unwrap().is_none());
+}
+
+#[test]
+fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider = repo.insert_provider(provider()).unwrap();
+
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    assert!(model.enabled);
+    assert_eq!(repo.list_provider_models(&provider.id).unwrap().len(), 1);
+
+    let disabled = repo
+        .set_provider_model_enabled(&provider.id, "gpt-5.2", false)
+        .unwrap();
+    assert!(!disabled.enabled);
+
+    let refreshed = repo
+        .replace_fetched_provider_models(
+            &provider.id,
+            vec![
+                provider_model(&provider.id, "gpt-5.2", "GPT-5.2 Fresh"),
+                provider_model(&provider.id, "gpt-4.1", "GPT-4.1"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(refreshed.len(), 2);
+
+    let existing = repo
+        .get_provider_model(&provider.id, "gpt-5.2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(existing.display_name.as_deref(), Some("GPT-5.2 Fresh"));
+    assert!(!existing.enabled);
+
+    let new_model = repo
+        .get_provider_model(&provider.id, "gpt-4.1")
+        .unwrap()
+        .unwrap();
+    assert!(new_model.enabled);
+
+    assert_eq!(
+        repo.delete_provider_model(&provider.id, "gpt-4.1").unwrap(),
+        1
+    );
+    assert!(
+        repo.get_provider_model(&provider.id, "gpt-4.1")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn legacy_store_files_coexist_with_fresh_database() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("history.sqlite3"), "legacy-v1").unwrap();
@@ -1516,6 +1603,7 @@ fn provider_model(provider_id: &str, model_id: &str, display_name: &str) -> NewP
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
         display_name: Some(display_name.to_string()),
+        enabled: true,
         capabilities: model_capabilities(),
         metadata: provider_model_metadata(display_name),
     }

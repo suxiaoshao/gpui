@@ -1557,6 +1557,7 @@ mod tests {
                     provider_id: provider.id.clone(),
                     model_id: "gpt-5.2".to_string(),
                     display_name: Some("GPT-5.2".to_string()),
+                    enabled: true,
                     capabilities: model_capabilities(),
                     metadata: ProviderModelMetadata {
                         display_name: Some("GPT-5.2".to_string()),
