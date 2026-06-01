@@ -1,9 +1,8 @@
 use crate::{
-    database,
     foundation::{I18n, assets::IconName},
+    state,
 };
-use ai_chat_core::{ProjectKind, ProjectMetadata};
-use ai_chat_db::{NewProject, ProjectRecord};
+use ai_chat_db::ProjectRecord;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -13,7 +12,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{Level, event};
 
 use super::{layout::settings_empty_message, push_settings_error};
@@ -30,8 +29,7 @@ impl ProjectsSettingsPage {
     }
 
     fn load_projects(cx: &App) -> ai_chat_db::Result<Vec<ProjectRecord>> {
-        let projects = database::repository(cx).list_projects()?;
-        Ok(visible_projects(&projects))
+        state::projects::normal_projects(cx)
     }
 
     fn reload_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -106,47 +104,26 @@ impl ProjectsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let project_path = path.display().to_string();
-        let repository = database::repository(cx);
-
-        match repository.get_project_by_path(&project_path) {
-            Ok(Some(_)) => {
+        match state::projects::insert_existing_folder_project(cx, path) {
+            Ok(result) => {
                 let _ = self.reload_projects(window, cx);
-                let title = cx.global::<I18n>().t("notify-project-already-exists");
+                let (title, notification_type) = if result.was_existing {
+                    (
+                        cx.global::<I18n>().t("notify-project-already-exists"),
+                        NotificationType::Warning,
+                    )
+                } else {
+                    (
+                        cx.global::<I18n>().t("notify-project-added-success"),
+                        NotificationType::Success,
+                    )
+                };
                 push_project_notification(
                     window,
                     cx,
                     title,
-                    project_path,
-                    NotificationType::Warning,
-                );
-                return;
-            }
-            Ok(None) => {}
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-add-project-failed");
-                push_settings_error(window, cx, title, err);
-                return;
-            }
-        }
-
-        let input = NewProject {
-            path: project_path,
-            display_name: project_display_name(&path),
-            kind: ProjectKind::Normal,
-            metadata: empty_project_metadata(),
-        };
-
-        match repository.insert_project(input) {
-            Ok(project) => {
-                let _ = self.reload_projects(window, cx);
-                let title = cx.global::<I18n>().t("notify-project-added-success");
-                push_project_notification(
-                    window,
-                    cx,
-                    title,
-                    project.path,
-                    NotificationType::Success,
+                    result.project.path,
+                    notification_type,
                 );
             }
             Err(err) => {
@@ -278,61 +255,5 @@ fn push_project_notification_async(
         push_project_notification(window, cx, title, message, notification_type);
     }) {
         event!(Level::ERROR, error = ?err, "push project settings notification failed");
-    }
-}
-
-pub(super) fn project_display_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-fn visible_projects(projects: &[ProjectRecord]) -> Vec<ProjectRecord> {
-    projects
-        .iter()
-        .filter(|project| project_kind_is_visible(project.kind))
-        .cloned()
-        .collect()
-}
-
-fn project_kind_is_visible(kind: ProjectKind) -> bool {
-    kind == ProjectKind::Normal
-}
-
-fn empty_project_metadata() -> ProjectMetadata {
-    ProjectMetadata {
-        scratch_reason: None,
-        git_root: None,
-        last_active_conversation_id: None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{project_display_name, project_kind_is_visible};
-    use ai_chat_core::ProjectKind;
-    use std::path::Path;
-
-    #[test]
-    fn project_display_name_uses_path_last_component() {
-        assert_eq!(
-            project_display_name(Path::new("/tmp/ai-chat-project")),
-            "ai-chat-project"
-        );
-    }
-
-    #[test]
-    fn project_display_name_falls_back_to_full_path() {
-        let path = Path::new("/");
-
-        assert_eq!(project_display_name(path), path.display().to_string());
-    }
-
-    #[test]
-    fn project_settings_show_only_normal_projects() {
-        assert!(project_kind_is_visible(ProjectKind::Normal));
-        assert!(!project_kind_is_visible(ProjectKind::Scratch));
     }
 }

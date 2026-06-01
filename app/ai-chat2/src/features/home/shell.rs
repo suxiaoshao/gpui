@@ -10,7 +10,7 @@ use gpui_component::{
     v_flex,
 };
 
-use super::{chat_form::ChatForm, sidebar::HomeSidebar};
+use super::{new_conversation::NewConversationPage, sidebar::HomeSidebar};
 
 const KEY_CONTEXT: &str = "AiChat2Home";
 
@@ -19,7 +19,7 @@ pub(crate) struct HomeView {
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::AiChat2LayoutState>,
     sidebar: Entity<HomeSidebar>,
-    chat_form: Entity<ChatForm>,
+    new_conversation: Entity<NewConversationPage>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -31,7 +31,7 @@ impl HomeView {
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let sidebar = cx.new(HomeSidebar::new);
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
+        let new_conversation = cx.new(|cx| NewConversationPage::new(window, cx));
         let layout_state_for_bounds = layout_state.clone();
 
         Self {
@@ -39,7 +39,7 @@ impl HomeView {
             app_menu_bar,
             layout_state: layout_state.clone(),
             sidebar,
-            chat_form,
+            new_conversation,
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
@@ -84,8 +84,8 @@ impl HomeView {
     }
 
     pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
+        self.new_conversation
+            .update(cx, |page, cx| page.focus_primary(window, cx));
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
@@ -151,16 +151,7 @@ impl Render for HomeView {
                                 div()
                                     .size_full()
                                     .min_w_0()
-                                    .p_8()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .max_w(px(780.))
-                                            .child(self.chat_form.clone()),
-                                    ),
+                                    .child(self.new_conversation.clone()),
                             ),
                         ),
                 ),

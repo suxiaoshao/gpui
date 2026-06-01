@@ -79,6 +79,7 @@ impl ChatForm {
                 width: px(180.),
                 max_height: rems(16.).into(),
                 search_placeholder: None,
+                footer: None,
                 on_open_change: cx.listener(|form, open: &bool, window, cx| {
                     form.set_effort_picker_open(*open, window, cx);
                 }),

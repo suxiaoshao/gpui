@@ -1,7 +1,7 @@
 mod composer_editor;
 mod effort_select;
 mod model_select;
-mod picker;
+pub(in crate::features::home) mod picker;
 mod preview_models;
 mod thinking_effort;
 
@@ -19,7 +19,7 @@ use gpui_component::{
 use model_select::{ModelOption, model_sections};
 use picker::PickerListDelegate;
 use preview_models::{PreviewModel, preview_model, preview_models};
-use std::rc::Rc;
+use std::{path::Path, rc::Rc};
 use thinking_effort::ThinkingEffort;
 
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
@@ -188,6 +188,16 @@ impl ChatForm {
             .update(cx, |composer, cx| composer.focus(window, cx));
     }
 
+    pub(crate) fn refresh_skill_catalog(
+        &mut self,
+        project_root: Option<&Path>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer.update(cx, |composer, cx| {
+            composer.refresh_skill_catalog(project_root, cx)
+        });
+    }
+
     fn set_effort_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.effort_picker_open = open;
         if open {
@@ -277,9 +287,9 @@ impl Render for ChatForm {
             .p(px(8.))
             .rounded(px(25.))
             .border_1()
-            .border_color(cx.theme().border.opacity(0.10))
-            .bg(cx.theme().popover.opacity(0.90))
-            .text_color(cx.theme().popover_foreground)
+            .border_color(cx.theme().input)
+            .bg(cx.theme().input_background())
+            .text_color(cx.theme().foreground)
             .when(cx.theme().shadow, |this| {
                 this.shadow(vec![box_shadow(
                     0.,

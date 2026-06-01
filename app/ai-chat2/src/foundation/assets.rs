@@ -13,6 +13,9 @@ define_lucide_icons!(
         Database => "database",
         FilePen => "file-pen",
         Folder => "folder",
+        FolderOpen => "folder-open",
+        FolderPlus => "folder-plus",
+        FolderX => "folder-x",
         Keyboard => "keyboard",
         Languages => "languages",
         Lightbulb => "lightbulb",
@@ -158,6 +161,18 @@ mod tests {
             SharedString::from("icons/folder.svg")
         );
         assert_eq!(
+            IconName::FolderOpen.path(),
+            SharedString::from("icons/folder-open.svg")
+        );
+        assert_eq!(
+            IconName::FolderPlus.path(),
+            SharedString::from("icons/folder-plus.svg")
+        );
+        assert_eq!(
+            IconName::FolderX.path(),
+            SharedString::from("icons/folder-x.svg")
+        );
+        assert_eq!(
             IconName::Lightbulb.path(),
             SharedString::from("icons/lightbulb.svg")
         );
@@ -202,6 +217,9 @@ mod tests {
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder.svg")));
+        assert!(icons.contains(&SharedString::from("icons/folder-open.svg")));
+        assert!(icons.contains(&SharedString::from("icons/folder-plus.svg")));
+        assert!(icons.contains(&SharedString::from("icons/folder-x.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
         assert!(icons.contains(&SharedString::from("icons/lightbulb.svg")));
         assert!(icons.contains(&SharedString::from("icons/send.svg")));

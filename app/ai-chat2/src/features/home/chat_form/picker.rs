@@ -17,9 +17,9 @@ type OnCancel = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 type OnConfirm<T> = Rc<dyn Fn(T, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, Debug)]
-pub(super) struct PickerSection<T> {
-    pub(super) title: Option<SharedString>,
-    pub(super) items: Vec<Rc<T>>,
+pub(in crate::features::home) struct PickerSection<T> {
+    pub(in crate::features::home) title: Option<SharedString>,
+    pub(in crate::features::home) items: Vec<Rc<T>>,
 }
 
 impl<T> PickerSection<T> {
@@ -31,7 +31,14 @@ impl<T> PickerSection<T> {
         }]
     }
 
-    pub(super) fn section(
+    pub(in crate::features::home) fn untitled(items: impl IntoIterator<Item = T>) -> Self {
+        Self {
+            title: None,
+            items: items.into_iter().map(Rc::new).collect(),
+        }
+    }
+
+    pub(in crate::features::home) fn section(
         title: impl Into<SharedString>,
         items: impl IntoIterator<Item = T>,
     ) -> Self {
@@ -42,7 +49,7 @@ impl<T> PickerSection<T> {
     }
 }
 
-pub(super) struct PickerListDelegate<T>
+pub(in crate::features::home) struct PickerListDelegate<T>
 where
     T: SelectItem + Clone + 'static,
 {
@@ -57,7 +64,7 @@ where
 }
 
 #[derive(IntoElement, Clone)]
-pub(super) struct PickerListItem<T>
+pub(in crate::features::home) struct PickerListItem<T>
 where
     T: SelectItem + Clone + 'static,
 {
@@ -133,7 +140,7 @@ impl<T> PickerListDelegate<T>
 where
     T: SelectItem + Clone + 'static,
 {
-    pub(super) fn new(
+    pub(in crate::features::home) fn new(
         sections: Vec<PickerSection<T>>,
         selected_value: Option<T::Value>,
         empty_label: SharedString,
@@ -152,20 +159,23 @@ where
         }
     }
 
-    pub(super) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
+    pub(in crate::features::home) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
         self.all_sections = sections;
         self.apply_query();
     }
 
-    pub(super) fn set_selected_value(&mut self, selected_value: Option<T::Value>) {
+    pub(in crate::features::home) fn set_selected_value(
+        &mut self,
+        selected_value: Option<T::Value>,
+    ) {
         self.selected_value = selected_value;
     }
 
-    pub(super) fn selected_index(&self) -> Option<IndexPath> {
+    pub(in crate::features::home) fn selected_index(&self) -> Option<IndexPath> {
         Self::selected_index_for(&self.sections, self.selected_value.as_ref())
     }
 
-    pub(super) fn selected_index_for(
+    pub(in crate::features::home) fn selected_index_for(
         sections: &[PickerSection<T>],
         selected_value: Option<&T::Value>,
     ) -> Option<IndexPath> {
@@ -317,7 +327,7 @@ where
     }
 }
 
-pub(super) fn picker_trigger(
+pub(in crate::features::home) fn picker_trigger(
     id: &'static str,
     icon: IconName,
     label: impl Into<SharedString>,
@@ -355,22 +365,26 @@ pub(super) fn picker_trigger(
         )
 }
 
-pub(super) struct PickerPopoverConfig<D, F>
+pub(in crate::features::home) struct PickerPopoverConfig<D, F>
 where
     D: ListDelegate + 'static,
     F: Fn(&bool, &mut Window, &mut App) + 'static,
 {
-    pub(super) id: &'static str,
-    pub(super) open: bool,
-    pub(super) trigger: Button,
-    pub(super) list: Entity<ListState<D>>,
-    pub(super) width: Pixels,
-    pub(super) max_height: Length,
-    pub(super) search_placeholder: Option<SharedString>,
-    pub(super) on_open_change: F,
+    pub(in crate::features::home) id: &'static str,
+    pub(in crate::features::home) open: bool,
+    pub(in crate::features::home) trigger: Button,
+    pub(in crate::features::home) list: Entity<ListState<D>>,
+    pub(in crate::features::home) width: Pixels,
+    pub(in crate::features::home) max_height: Length,
+    pub(in crate::features::home) search_placeholder: Option<SharedString>,
+    pub(in crate::features::home) footer: Option<AnyElement>,
+    pub(in crate::features::home) on_open_change: F,
 }
 
-pub(super) fn picker_popover<D, F>(cx: &App, config: PickerPopoverConfig<D, F>) -> impl IntoElement
+pub(in crate::features::home) fn picker_popover<D, F>(
+    cx: &App,
+    config: PickerPopoverConfig<D, F>,
+) -> impl IntoElement
 where
     D: ListDelegate + 'static,
     F: Fn(&bool, &mut Window, &mut App) + 'static,
@@ -400,7 +414,8 @@ where
                         .scrollbar_visible(false)
                         .max_h(config.max_height)
                         .paddings(Edges::all(px(4.))),
-                ),
+                )
+                .when_some(config.footer, |this, footer| this.child(footer)),
         )
 }
 

@@ -10,8 +10,8 @@
 
 当前状态：进行中。当前分支已包含基础设施壳、app chrome、file-backed logging、About、Sidebar/home
 skeleton、Home root/sidebar 结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll
-修正、Unicode/grapheme-aware 编辑、真实 Settings shell + General/Appearance/Projects、main/settings window placement
-持久化和基础 parity 修复；GitHub #159 仍 open，当前没有 PR，尚未合入
+修正、Unicode/grapheme-aware 编辑、真实 Settings shell + General/Appearance/Projects、New Conversation 默认页、
+新对话项目选择器、no-project 默认语义、Codex-style composer/project tray polish、main/settings window placement 持久化和基础 parity 修复；GitHub #159 仍 open，当前没有 PR，尚未合入
 `codex/issue-137-llm-abstractions`。完整 project chat、多模态 timeline、Provider/Prompt/Shortcut settings 和真实
 Temporary Conversation runtime 仍未完成。
 
@@ -29,7 +29,8 @@ Temporary Conversation runtime 仍未完成。
 - `09b2f22 feat(ai-chat2): add unicode-aware composer editing`
 - `ed59682 feat(ai-chat2): add settings shell`
 - `57bb3d5 fix(ai-chat2): align basic parity behaviors`
-- 本次提交：Settings Projects 列表和添加项目
+- `edb4a3d feat(ai-chat2): add project settings management`
+- 本次提交：New Conversation 默认页、项目选择器和 Codex-style project tray polish
 
 ## 状态定义
 
@@ -89,6 +90,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | titlebar menu bar | `app/ai-chat2/src/app/title_bar_menu.rs` | 非 macOS 渲染 app icon + component menu bar；macOS 使用系统菜单。 |
 | main window shell | `app/ai-chat2/src/features/home/shell.rs` | 主窗口 UI root 已移出 `app.rs`：titlebar、可调宽 Sidebar、空内容区和 `gpui-component` sheet/dialog/notification layers 都挂在 Home root。 |
 | home sidebar component | `app/ai-chat2/src/features/home/sidebar.rs` | Sidebar 已拆成独立组件；当前底部只有 Settings item，打开真实 Settings 窗口。 |
+| New Conversation 默认页 + 项目选择器 | `app/ai-chat2/src/features/home/new_conversation.rs` | Home 右侧未选择具体对话时显示默认新对话页：中性 AI Chat 标题、现有 `ChatForm` 和仅在该页出现的项目选择器。项目选择器读取 normal projects，支持“不使用项目”，选中项目后写入 `default_project_id` 并刷新 composer skill catalog；添加项目只选择现有文件夹，不提供新建空项目。Composer 使用 opaque input surface 压住下层项目条；项目条按 Codex app 参考使用 neutral muted surface，不使用 secondary/action 色。 |
 | dock/app reopen | `app/ai-chat2/src/app.rs` | app reopen 会 show/create main window。 |
 | close-hide behavior | `app/ai-chat2/src/app.rs` | macOS/Windows 主窗口关闭时隐藏窗口。 |
 | Minimize/Zoom action | `app/ai-chat2/src/app.rs` / `placeholder_windows.rs` | 主窗口和占位窗口已处理 Window menu action。 |
@@ -107,7 +109,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Temporary Conversation window | `app/ai-chat2/src/app/placeholder_windows.rs` | 只显示“临时对话运行时暂不接入”。 | 接入真实 temporary chat、prompt/model/provider 和 agent run。 |
 | temporary hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 `last_pressed` 和 tracing/log event。 | 打开/切换真实 temporary conversation。 |
 | shortcut hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 diagnostics 和 tracing/log event。 | 按 shortcut 的 prompt/provider/model/input/action 执行 agent run。 |
-| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | Home 右侧已接 Codex 风格 composer 外框和真实 `ComposerEditor`；`+`、thinking effort picker、model picker 仍是 preview/local event，picker 数据是 `preview_*`。 | 接真实 prompt/provider/model 数据源、附件入口、send/run/cancel/retry 和 agent loop。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | New Conversation 默认页已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。`+`、thinking effort picker、model picker 仍是 preview/local event，picker 数据是 `preview_*`。 | 接真实 prompt/provider/model 数据源、附件入口、send/run/cancel/retry 和 agent loop。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 
 ## 基础设施 / 本地状态 / 可观测性
 
@@ -126,7 +128,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 
 | 能力 | 后端位置 | UI 缺口 |
 | --- | --- | --- |
-| projects | `ai-chat-db` repositories / fresh schema | Settings 已可列出 normal projects 并添加文件夹项目；仍没有 project sidebar、open folder、recent projects、scratch project runtime 或 default project flow。 |
+| projects | `ai-chat-db` repositories / fresh schema | Settings 已可列出 normal projects 并添加文件夹项目；New Conversation 默认页已可选择 normal project、添加现有文件夹、支持不使用项目，并按选择持久化或清空 `default_project_id`。仍没有 project sidebar、open folder、recent projects 或 scratch project runtime。 |
 | conversations | `ai-chat-db` repositories / fresh schema | 没有 conversation list、create/archive/delete/search/title/status UI。 |
 | canonical timeline | `conversation_items` | 没有按 `seq` 渲染 timeline，也没有 streaming append/update UI。 |
 | attachments | `attachments` + typed payloads | 没有 file/image/audio attach、preview、generated output 或 storage UI。 |
@@ -138,7 +140,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | prompts | `prompts` | 没有 prompt CRUD、selection、snapshot display。 |
 | providers | `providers` | 没有 provider settings UI、secret refs UI 或 enabled/disabled control。 |
 | provider models | `provider_models` | 只有 preview-only model picker；没有读取 fresh cache、manual refresh、model cache display 或 capability detail UI。 |
-| app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；default project 当前只在 payload 中保留，Provider/Prompt/Shortcut settings 仍未接。 |
+| app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；Provider/Prompt/Shortcut settings 仍未接。 |
 | file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
 | MCP helpers | `ai-chat-agent::mcp` | 没有 MCP config UI、connected server status 或 MCP tool approval UI。 |
 
@@ -146,7 +148,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 
 | 区域 | 事项 |
 | --- | --- |
-| Project navigation | project-first sidebar、open folder、recent projects、scratch project、default project、project metadata/status。 |
+| Project navigation | New Conversation 默认页已有 default/no-project selector；仍缺 project-first sidebar、open folder、recent projects、scratch project 和 project metadata/status。 |
 | Conversation navigation | conversation list、new conversation、archive/delete、search/filter、title edit、status display、last item preview。 |
 | Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；真实工作仍包括 prompt selector、多 part input、provider/model data source、capability warning、附件、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Timeline text | user/assistant text item、streaming text delta、multi-block assistant output、copy/export affordance。 |
@@ -310,6 +312,27 @@ Settings Projects 页面后已运行：
 - `git diff --check`
 - 未做手动 Settings Projects 添加文件夹或 bundle GUI 验证。
 
+New Conversation 默认页、no-project 项目选择器和视觉修正后已运行：
+
+- `cargo fmt`
+- `cargo test -p ai-chat2 home`
+- `cargo test -p ai-chat2 chat_form`
+- `cargo test -p ai-chat2 projects`
+- `cargo test -p ai-chat2 settings`
+- `cargo test -p ai-chat2 assets`
+- `cargo check -p ai-chat2`
+- `git diff --check`
+- 未做手动添加文件夹、重复项目选择、重开窗口或 bundle GUI 验证。
+- 此前额外尝试 `cargo clippy -p ai-chat2 --all-targets --all-features -- -D warnings`，但当前分支已有未处理 clippy lint：`composer_editor/element.rs` 和 `settings/appearance.rs` 的 `too_many_arguments`，以及 `state/hotkey.rs` 的 `collapsible_if`；本轮未修改这些无关代码。
+
+Codex-style project tray 颜色/层级 polish 后已运行：
+
+- `cargo fmt`
+- `cargo test -p ai-chat2 home`
+- `cargo check -p ai-chat2`
+- `git diff --check`
+- 未做手动 GUI 截图验证。
+
 2026-05-31 状态同步记录：
 
 - live GitHub 状态：#159 仍 open；PR 列表中没有 `codex/issue-159-ai-chat2-ui` 对应 PR。
@@ -324,12 +347,13 @@ Settings Projects 页面后已运行：
 - live GitHub 状态：#137、#155-#159 仍 open；PR 列表中没有 `codex/issue-159-ai-chat2-ui`
   对应 PR。
 - 远程分支状态：本轮推送后 `codex/issue-159-ai-chat2-ui` 领先
-  `origin/codex/issue-137-llm-abstractions` 13 个提交。
+  `origin/codex/issue-137-llm-abstractions` 14 个提交。
 - 5/31 文档后新增提交：`ed59682` Settings shell + General/Appearance、`57bb3d5`
   basic parity fixes（main/settings window placement、composer focus、quit flush、config tolerance、
-  default Material You visibility），以及本次 Settings Projects 列表/添加项目。
+  default Material You visibility）、`edb4a3d` Settings Projects 列表/添加项目，以及本次 New
+  Conversation 默认页、no-project 项目选择器和 Codex-style project tray polish。
 - 当前仍不接真实 project/conversation navigation、prompt/provider/model data source、agent run/timeline、
   `$` completion UI、Shortcuts settings 或 Temporary Conversation runtime。
-- 本次包含 Settings Projects 实现和文档状态同步；验证见上方记录。
+- 本次包含 New Conversation 默认页、项目 selector 和视觉 polish；验证见上方记录。
 
 文档-only 更新只需运行 `git diff --check`。

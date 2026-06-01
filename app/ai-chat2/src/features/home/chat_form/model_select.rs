@@ -88,6 +88,7 @@ impl ChatForm {
                 width: px(260.),
                 max_height: rems(18.).into(),
                 search_placeholder: Some(i18n.t("chat-form-model-search-placeholder").into()),
+                footer: None,
                 on_open_change: cx.listener(|form, open: &bool, window, cx| {
                     form.set_model_picker_open(*open, window, cx);
                 }),
