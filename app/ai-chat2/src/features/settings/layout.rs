@@ -24,6 +24,7 @@ type SettingsRowRender = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub(super) enum SettingsPageKey {
     General,
     Appearance,
+    Projects,
 }
 
 #[derive(Clone, Debug)]

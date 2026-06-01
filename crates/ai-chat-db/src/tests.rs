@@ -117,6 +117,69 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
 }
 
 #[test]
+fn projects_can_be_listed_in_display_order() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    repo.insert_project(NewProject {
+        path: "/tmp/zeta".to_string(),
+        display_name: "Zeta".to_string(),
+        kind: ProjectKind::Normal,
+        metadata: project_metadata(),
+    })
+    .unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/alpha-b".to_string(),
+        display_name: "Alpha".to_string(),
+        kind: ProjectKind::Normal,
+        metadata: project_metadata(),
+    })
+    .unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/alpha-a".to_string(),
+        display_name: "Alpha".to_string(),
+        kind: ProjectKind::Scratch,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("temporary".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+        },
+    })
+    .unwrap();
+
+    let projects = repo.list_projects().unwrap();
+
+    assert_eq!(
+        projects
+            .iter()
+            .map(|project| (project.display_name.as_str(), project.path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Alpha", "/tmp/alpha-a"),
+            ("Alpha", "/tmp/alpha-b"),
+            ("Zeta", "/tmp/zeta"),
+        ]
+    );
+}
+
+#[test]
+fn project_can_be_loaded_by_path() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let inserted = repo.insert_project(project("by-path")).unwrap();
+
+    let found = repo
+        .get_project_by_path("/tmp/ai-chat-by-path")
+        .unwrap()
+        .expect("project exists");
+
+    assert_eq!(found.id, inserted.id);
+    assert!(repo.get_project_by_path("/tmp/missing").unwrap().is_none());
+}
+
+#[test]
 fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();

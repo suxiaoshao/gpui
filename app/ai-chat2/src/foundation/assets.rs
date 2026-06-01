@@ -12,6 +12,7 @@ define_lucide_icons!(
         ChevronUp => "chevron-up",
         Database => "database",
         FilePen => "file-pen",
+        Folder => "folder",
         Keyboard => "keyboard",
         Languages => "languages",
         Lightbulb => "lightbulb",
@@ -153,6 +154,10 @@ mod tests {
             SharedString::from("icons/keyboard.svg")
         );
         assert_eq!(
+            IconName::Folder.path(),
+            SharedString::from("icons/folder.svg")
+        );
+        assert_eq!(
             IconName::Lightbulb.path(),
             SharedString::from("icons/lightbulb.svg")
         );
@@ -196,6 +201,7 @@ mod tests {
         let icons = assets.list("icons/").expect("list icons");
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
+        assert!(icons.contains(&SharedString::from("icons/folder.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
         assert!(icons.contains(&SharedString::from("icons/lightbulb.svg")));
         assert!(icons.contains(&SharedString::from("icons/send.svg")));

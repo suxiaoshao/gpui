@@ -22,6 +22,7 @@ use window_ext::WindowExt as SystemWindowExt;
 mod appearance;
 mod general;
 mod layout;
+mod projects;
 
 use self::{
     appearance::AppearanceSettingsPage,
@@ -29,6 +30,7 @@ use self::{
         SETTINGS_SIDEBAR_DEFAULT_WIDTH, SettingsPageFrame, SettingsPageKey, SettingsPageSpec,
         SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
     },
+    projects::ProjectsSettingsPage,
 };
 
 actions!(ai_chat2_settings, [ToggleSettings]);
@@ -49,6 +51,7 @@ pub(crate) struct SettingsView {
     hotkey_input: Entity<HotkeyInput>,
     settings_search_input: Entity<InputState>,
     appearance_settings: Entity<AppearanceSettingsPage>,
+    projects_settings: Entity<ProjectsSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
@@ -72,6 +75,7 @@ impl SettingsView {
             InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-settings"))
         });
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
+        let projects_settings = cx.new(ProjectsSettingsPage::new);
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let _subscriptions = vec![
@@ -117,6 +121,7 @@ impl SettingsView {
             hotkey_input,
             settings_search_input,
             appearance_settings,
+            projects_settings,
             app_menu_bar,
             selected_page: SettingsPageKey::General,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
@@ -240,6 +245,7 @@ impl Render for SettingsView {
                     SettingsPageKey::Appearance => {
                         self.appearance_settings.clone().into_any_element()
                     }
+                    SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
                 },
             )
             .into_any_element()
@@ -385,10 +391,11 @@ fn inner_open_settings_window(cx: &mut App) {
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 2] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 3] {
     let i18n = cx.global::<I18n>();
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
+    let page_projects = i18n.t("settings-page-projects");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
     let field_http_proxy = i18n.t("field-http-proxy");
@@ -417,6 +424,14 @@ fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 2] {
             settings_search_text(
                 [page_appearance.as_str()],
                 "appearance theme color mode light dark system material you bright custom 主题 外观 亮色 暗色 系统 自定义",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Projects,
+            page_projects.clone(),
+            settings_search_text(
+                [page_projects.as_str()],
+                "projects project workspace folder path directory 项目 工作区 文件夹 路径",
             ),
         ),
     ]

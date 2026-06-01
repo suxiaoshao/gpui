@@ -79,6 +79,28 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn get_project_by_path(&self, path: &str) -> Result<Option<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .filter(projects::path.eq(path))
+            .select(SqlProjectRow::as_select())
+            .first::<SqlProjectRow>(&mut conn)
+            .optional()?
+            .map(TryInto::try_into)
+            .transpose()
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
