@@ -150,6 +150,7 @@ fn api_key_provider(
             },
         ],
         model_listing: if kind == "azure_openai"
+            || kind == "moonshot"
             || kind == "zai"
             || kind == "xai"
             || kind == "groq"

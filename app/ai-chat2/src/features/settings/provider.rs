@@ -1,19 +1,26 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     database,
     foundation::{I18n, assets::IconName},
 };
-use ai_chat_core::{ProviderId, ProviderSecretRefs, ProviderSettingValue};
-use ai_chat_db::{NewProvider, ProviderModelRecord, ProviderRecord, UpdateProvider};
+use ai_chat_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
+use ai_chat_core::{
+    ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
+};
+use ai_chat_db::{
+    FreshRepository, NewProvider, ProviderModelRecord, ProviderRecord, UpdateProvider,
+};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
+    group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    list::{List, ListEvent, ListState},
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     switch::Switch,
@@ -26,14 +33,19 @@ mod capabilities;
 mod catalog;
 mod components;
 mod draft;
+mod list_delegates;
 mod model_fetch;
 mod secret_store;
 
 use self::{
     catalog::{ProviderFieldKind, ProviderKindKey, ProviderSpec, builtin_provider_specs},
     draft::{
-        AsyncActionState, ManualModelEditor, ProviderDraft, ProviderDraftValue, ProviderModelDraft,
-        ProviderSecretInput, ProviderSelection, ProviderValidationState,
+        AsyncActionState, ManualModelEditor, ProviderDraft, ProviderDraftSnapshot,
+        ProviderDraftValue, ProviderModelDraft, ProviderSecretInput, ProviderSelection,
+        ProviderValidationState,
+    },
+    list_delegates::{
+        ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
     },
     model_fetch::{ModelFetchSupport, fetch_support},
 };
@@ -45,12 +57,13 @@ pub(super) struct ProviderListItem {
 }
 
 pub(super) struct ProviderSettingsPage {
-    provider_search: Entity<InputState>,
-    model_search: Entity<InputState>,
+    provider_list: Entity<ListState<ProviderListDelegate>>,
+    model_list: Entity<ListState<ProviderModelListDelegate>>,
     selected: ProviderSelection,
     providers: Vec<ProviderListItem>,
     models: Vec<ProviderModelDraft>,
     draft: ProviderDraft,
+    saved_snapshot: Option<ProviderDraftSnapshot>,
     text_inputs: BTreeMap<String, Entity<InputState>>,
     secret_inputs: BTreeMap<String, Entity<ProviderSecretInput>>,
     validation: ProviderValidationState,
@@ -58,20 +71,41 @@ pub(super) struct ProviderSettingsPage {
     fetch_state: AsyncActionState,
     #[allow(dead_code)]
     manual_model_editor: Option<Entity<ManualModelEditor>>,
-    _subscriptions: Vec<Subscription>,
+    _list_subscriptions: Vec<Subscription>,
+    _field_subscriptions: Vec<Subscription>,
     _load_task: Option<Task<()>>,
     _save_task: Option<Task<()>>,
     _fetch_task: Option<Task<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProviderSecretValidationState {
+    has_saved_secret: bool,
+    has_pending_value: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProviderFetchPrecondition {
+    Ready,
+    SaveProviderFirst,
+    SaveChangesFirst,
+    ManualModelsRequired,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderSaveRequest {
+    provider_id: Option<ProviderId>,
+    new_provider_id: Option<ProviderId>,
+    kind: String,
+    display_name: String,
+    enabled: bool,
+    settings: ProviderSettingsPayload,
+    secret_refs: ProviderSecretRefs,
+    writes: Vec<secret_store::ProviderSecretWrite>,
+}
+
 impl ProviderSettingsPage {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let provider_search_placeholder = cx.global::<I18n>().t("provider-search-placeholder");
-        let model_search_placeholder = cx.global::<I18n>().t("provider-model-search-placeholder");
-        let provider_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder(provider_search_placeholder));
-        let model_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder(model_search_placeholder));
         let providers = Self::load_provider_list(cx).unwrap_or_else(|err| {
             event!(Level::ERROR, error = ?err, "load provider settings failed");
             Vec::new()
@@ -85,29 +119,59 @@ impl ProviderSettingsPage {
             .unwrap_or(ProviderSelection::NewCustom);
         let draft = Self::draft_for_selection(&selected, &providers);
         let models = Self::load_models_for_draft(&draft, cx).unwrap_or_default();
+        let page = cx.entity().downgrade();
+        let provider_rows = provider_list_rows(&providers, cx.global::<I18n>());
+        let provider_selected_index =
+            ProviderListDelegate::selected_index_for(&provider_rows, &draft.kind);
+        let provider_empty_label = cx.global::<I18n>().t("provider-empty-selection");
+        let provider_list = cx.new(|cx| {
+            let mut state = ListState::new(
+                ProviderListDelegate::new(provider_rows.clone(), provider_empty_label.clone()),
+                window,
+                cx,
+            );
+            state.set_selected_index(provider_selected_index, window, cx);
+            state.searchable(true)
+        });
+        let model_rows = model_list_rows(&models);
+        let model_empty_label = cx.global::<I18n>().t("provider-empty-models");
+        let model_list = cx.new(|cx| {
+            ListState::new(
+                ProviderModelListDelegate::new(
+                    model_rows.clone(),
+                    page.clone(),
+                    model_empty_label.clone(),
+                ),
+                window,
+                cx,
+            )
+            .searchable(true)
+            .selectable(false)
+        });
+        let provider_list_subscription =
+            cx.subscribe_in(&provider_list, window, Self::on_provider_list_event);
         let mut this = Self {
-            provider_search,
-            model_search,
+            provider_list,
+            model_list,
             selected,
             providers,
             models,
             draft,
+            saved_snapshot: None,
             text_inputs: BTreeMap::new(),
             secret_inputs: BTreeMap::new(),
             validation: ProviderValidationState::Idle,
             save_state: AsyncActionState::Idle,
             fetch_state: AsyncActionState::Idle,
             manual_model_editor: None,
-            _subscriptions: Vec::new(),
+            _list_subscriptions: vec![provider_list_subscription],
+            _field_subscriptions: Vec::new(),
             _load_task: None,
             _save_task: None,
             _fetch_task: None,
         };
         this.rebuild_inputs(window, cx);
-        this._subscriptions = vec![
-            cx.subscribe_in(&this.provider_search, window, Self::on_search_input),
-            cx.subscribe_in(&this.model_search, window, Self::on_search_input),
-        ];
+        this.saved_snapshot = Some(this.current_snapshot(cx));
         this
     }
 
@@ -172,6 +236,7 @@ impl ProviderSettingsPage {
     fn rebuild_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.text_inputs.clear();
         self.secret_inputs.clear();
+        self._field_subscriptions.clear();
         let Some(spec) = self.selected_spec() else {
             return;
         };
@@ -191,9 +256,21 @@ impl ProviderSettingsPage {
                             .placeholder(cx.global::<I18n>().t(field.placeholder_key))
                             .masked(true)
                     });
+                    self._field_subscriptions.push(cx.subscribe_in(
+                        &input,
+                        window,
+                        Self::on_form_input,
+                    ));
                     let key = field.key.to_string();
+                    let secret_input = input.clone();
                     let secret = cx.new(|cx| {
-                        ProviderSecretInput::new(key.clone(), saved_ref_id, input, window, cx)
+                        ProviderSecretInput::new(
+                            key.clone(),
+                            saved_ref_id,
+                            secret_input,
+                            window,
+                            cx,
+                        )
                     });
                     self.secret_inputs.insert(field.key.to_string(), secret);
                 }
@@ -204,13 +281,18 @@ impl ProviderSettingsPage {
                             .placeholder(cx.global::<I18n>().t(field.placeholder_key))
                             .default_value(value)
                     });
+                    self._field_subscriptions.push(cx.subscribe_in(
+                        &input,
+                        window,
+                        Self::on_form_input,
+                    ));
                     self.text_inputs.insert(field.key.to_string(), input);
                 }
             }
         }
     }
 
-    fn on_search_input(
+    fn on_form_input(
         &mut self,
         _: &Entity<InputState>,
         event: &InputEvent,
@@ -218,6 +300,7 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
+            self.validation = ProviderValidationState::Idle;
             cx.notify();
         }
     }
@@ -230,7 +313,38 @@ impl ProviderSettingsPage {
             .map(|item| &item.spec)
     }
 
-    fn select_provider(
+    fn select_provider_from_list(
+        &mut self,
+        kind: ProviderKindKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_provider_inner(kind, window, cx);
+        self.sync_model_list(window, cx);
+        cx.notify();
+    }
+
+    fn on_provider_list_event(
+        &mut self,
+        _: &Entity<ListState<ProviderListDelegate>>,
+        event: &ListEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ix = match event {
+            ListEvent::Select(ix) | ListEvent::Confirm(ix) => *ix,
+            ListEvent::Cancel => return,
+        };
+        let Some(kind) = self.provider_list.read(cx).delegate().kind_for_index(ix) else {
+            return;
+        };
+        if self.draft.kind == kind {
+            return;
+        }
+        self.select_provider_from_list(kind, window, cx);
+    }
+
+    fn select_provider_inner(
         &mut self,
         kind: ProviderKindKey,
         window: &mut Window,
@@ -246,10 +360,32 @@ impl ProviderSettingsPage {
         self.models = Self::load_models_for_draft(&self.draft, cx).unwrap_or_default();
         self.validation = ProviderValidationState::Idle;
         self.rebuild_inputs(window, cx);
-        cx.notify();
+        self.saved_snapshot = Some(self.current_snapshot(cx));
     }
 
-    fn collect_input_values(&mut self, cx: &mut Context<Self>) {
+    fn sync_list_delegates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_provider_list(window, cx);
+        self.sync_model_list(window, cx);
+    }
+
+    fn sync_provider_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = provider_list_rows(&self.providers, cx.global::<I18n>());
+        self.provider_list.update(cx, |list, cx| {
+            list.delegate_mut().set_rows(rows);
+            let selected_index = list.delegate().selected_index_for_kind(&self.draft.kind);
+            list.set_selected_index(selected_index, window, cx);
+        });
+    }
+
+    fn sync_model_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = model_list_rows(&self.models);
+        self.model_list.update(cx, |list, cx| {
+            list.delegate_mut().set_rows(rows);
+            list.set_selected_index(None, window, cx);
+        });
+    }
+
+    fn sync_inputs_to_draft(&mut self, cx: &mut Context<Self>) {
         for (key, input) in &self.text_inputs {
             let value = input.read(cx).value().to_string();
             self.draft
@@ -258,9 +394,9 @@ impl ProviderSettingsPage {
         }
     }
 
-    fn validate_draft(&mut self, cx: &mut Context<Self>) -> bool {
-        self.collect_input_values(cx);
-        let Some(spec) = self.selected_spec() else {
+    fn validate_current_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        self.sync_inputs_to_draft(cx);
+        let Some(spec) = self.selected_spec().cloned() else {
             self.validation = ProviderValidationState::Invalid(
                 cx.global::<I18n>()
                     .t("provider-validation-not-registered")
@@ -268,73 +404,89 @@ impl ProviderSettingsPage {
             );
             return false;
         };
-        for field in &spec.fields {
-            if !field.required {
-                continue;
+        let secrets = self.secret_validation_states(cx);
+        match validate_provider_draft(&self.draft, &spec, &secrets, cx.global::<I18n>()) {
+            Ok(()) => {
+                self.validation = ProviderValidationState::Valid;
+                true
             }
-            match field.kind {
-                ProviderFieldKind::Secret => {
-                    let valid = self.secret_inputs.get(field.key).is_some_and(|secret| {
-                        let secret = secret.read(cx);
-                        secret.has_saved_secret || !secret.input.read(cx).value().is_empty()
-                    });
-                    if !valid {
-                        self.validation = ProviderValidationState::Invalid(required_field_message(
-                            field.label_key,
-                            cx,
-                        ));
-                        return false;
-                    }
-                }
-                _ if self.draft.field_string(field.key).trim().is_empty() => {
-                    self.validation = ProviderValidationState::Invalid(required_field_message(
-                        field.label_key,
-                        cx,
-                    ));
-                    return false;
-                }
-                _ => {}
+            Err(message) => {
+                self.validation = ProviderValidationState::Invalid(message);
+                false
             }
         }
-        self.validation = ProviderValidationState::Valid;
-        true
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.validate_draft(cx) {
+        if self.save_state == AsyncActionState::Running {
+            return;
+        }
+        if !self.validate_current_draft(cx) {
+            if let ProviderValidationState::Invalid(message) = &self.validation {
+                window.push_notification(
+                    Notification::new()
+                        .title(
+                            cx.global::<I18n>()
+                                .t("provider-notification-validation-failed"),
+                        )
+                        .message(message.clone())
+                        .with_type(NotificationType::Error),
+                    cx,
+                );
+            }
             cx.notify();
             return;
         }
         self.save_state = AsyncActionState::Running;
-        self.collect_input_values(cx);
+        self.sync_inputs_to_draft(cx);
         let repository = database::repository(cx);
-        let result = if let Some(provider_id) = self.draft.provider_id.clone() {
-            let secret_refs = self.secret_refs_for_provider(&provider_id, cx);
-            repository.update_provider(
-                &provider_id,
-                UpdateProvider {
-                    display_name: self.draft.display_name.clone(),
-                    enabled: self.draft.enabled,
-                    settings: self.draft.settings_payload(),
-                    secret_refs,
-                },
-            )
-        } else {
-            repository.insert_provider(NewProvider {
-                kind: self.draft.kind.as_str().to_string(),
-                display_name: self.draft.display_name.clone(),
-                enabled: self.draft.enabled,
-                settings: self.draft.settings_payload(),
-                secret_refs: self.secret_refs_for_provider(self.draft.kind.as_str(), cx),
-            })
+        let writes = self.secret_writes(cx);
+        let provider_id = self.draft.provider_id.clone();
+        let new_provider_id = provider_id.is_none().then(new_id);
+        let secret_ref_owner = provider_id
+            .as_deref()
+            .or(new_provider_id.as_deref())
+            .expect("new provider id is preallocated before saving secrets");
+        let secret_refs = self.secret_refs_for_provider(secret_ref_owner, &writes);
+        let save = ProviderSaveRequest {
+            provider_id,
+            new_provider_id,
+            kind: self.draft.kind.as_str().to_string(),
+            display_name: self.draft.display_name.clone(),
+            enabled: self.draft.enabled,
+            settings: self.draft.settings_payload(),
+            secret_refs,
+            writes,
         };
+        let page = cx.entity().downgrade();
+        self._save_task = Some(window.spawn(cx, async move |cx| {
+            let result = save_provider(repository, save, cx).await;
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.finish_save(result, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "finish provider save failed");
+            }
+        }));
+        cx.notify();
+    }
+
+    fn finish_save(
+        &mut self,
+        result: Result<ProviderRecord, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._save_task = None;
         self.save_state = AsyncActionState::Idle;
         match result {
             Ok(provider) => {
                 self.draft = draft_from_record(&provider);
                 self.providers = Self::load_provider_list(cx).unwrap_or_default();
                 self.models = Self::load_models_for_draft(&self.draft, cx).unwrap_or_default();
+                self.rebuild_inputs(window, cx);
+                self.saved_snapshot = Some(self.current_snapshot(cx));
                 self.validation = ProviderValidationState::Valid;
+                self.sync_list_delegates(window, cx);
                 window.push_notification(
                     Notification::new()
                         .title(cx.global::<I18n>().t("provider-notification-saved"))
@@ -347,7 +499,7 @@ impl ProviderSettingsPage {
                 window.push_notification(
                     Notification::new()
                         .title(cx.global::<I18n>().t("notify-save-settings-failed"))
-                        .message(err.to_string())
+                        .message(err)
                         .with_type(NotificationType::Error),
                     cx,
                 );
@@ -356,9 +508,52 @@ impl ProviderSettingsPage {
         cx.notify();
     }
 
-    fn secret_refs_for_provider(&self, provider_id: &str, cx: &App) -> ProviderSecretRefs {
-        let writes = self
+    fn current_snapshot(&self, cx: &App) -> ProviderDraftSnapshot {
+        let mut snapshot = ProviderDraftSnapshot::from_draft(&self.draft);
+        for (key, input) in &self.text_inputs {
+            snapshot.fields.insert(
+                key.clone(),
+                ProviderDraftValue::String(input.read(cx).value().to_string()),
+            );
+        }
+        snapshot.dirty_secret_keys = self
             .secret_inputs
+            .iter()
+            .filter_map(|(key, secret)| {
+                let secret = secret.read(cx);
+                let value = secret.input.read(cx).value();
+                (secret.dirty || !value.is_empty()).then(|| key.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        snapshot
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.current_snapshot(cx)
+            .is_dirty_against(self.saved_snapshot.as_ref())
+    }
+
+    fn secret_validation_states(
+        &self,
+        cx: &App,
+    ) -> BTreeMap<String, ProviderSecretValidationState> {
+        self.secret_inputs
+            .iter()
+            .map(|(key, secret)| {
+                let secret = secret.read(cx);
+                (
+                    key.clone(),
+                    ProviderSecretValidationState {
+                        has_saved_secret: secret.has_saved_secret,
+                        has_pending_value: !secret.input.read(cx).value().is_empty(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn secret_writes(&self, cx: &App) -> Vec<secret_store::ProviderSecretWrite> {
+        self.secret_inputs
             .iter()
             .filter_map(|(key, secret)| {
                 let secret = secret.read(cx);
@@ -368,7 +563,14 @@ impl ProviderSettingsPage {
                     value,
                 })
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn secret_refs_for_provider(
+        &self,
+        provider_id: &str,
+        writes: &[secret_store::ProviderSecretWrite],
+    ) -> ProviderSecretRefs {
         let mut refs = secret_store::ProviderSecretStore::refs_for(provider_id, &writes);
         for saved in &self.draft.existing_secret_refs.refs {
             if !refs.refs.iter().any(|secret| secret.key == saved.key) {
@@ -392,6 +594,7 @@ impl ProviderSettingsPage {
         {
             Ok(_) => {
                 self.models = Self::load_models_for_draft(&self.draft, cx).unwrap_or_default();
+                self.sync_model_list(window, cx);
                 cx.notify();
             }
             Err(err) => {
@@ -410,98 +613,134 @@ impl ProviderSettingsPage {
     }
 
     fn fetch_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let support = fetch_support(&self.draft.kind);
-        self.fetch_state = AsyncActionState::Running;
-        self.fetch_state = AsyncActionState::Idle;
-        let i18n = cx.global::<I18n>();
-        let message = match support {
-            ModelFetchSupport::Supported => i18n.t("provider-fetch-supported-placeholder"),
-            ModelFetchSupport::ManualOnly => i18n.t("provider-fetch-manual-only"),
+        if self.fetch_state == AsyncActionState::Running {
+            return;
+        }
+        let Some(spec) = self.selected_spec() else {
+            return;
         };
-        window.push_notification(
-            Notification::new()
-                .title(i18n.t("provider-notification-fetch-unavailable-title"))
-                .message(message)
-                .with_type(NotificationType::Warning),
-            cx,
+        let support = fetch_support(spec.model_listing);
+        let precondition = provider_fetch_precondition(
+            self.draft.provider_id.as_ref(),
+            self.is_dirty(cx),
+            support,
         );
+        match precondition {
+            ProviderFetchPrecondition::Ready => {}
+            ProviderFetchPrecondition::SaveProviderFirst => {
+                window.push_notification(
+                    Notification::new()
+                        .title(cx.global::<I18n>().t("provider-notification-fetch-failed"))
+                        .message(cx.global::<I18n>().t("provider-fetch-save-first"))
+                        .with_type(NotificationType::Warning),
+                    cx,
+                );
+                return;
+            }
+            ProviderFetchPrecondition::SaveChangesFirst => {
+                window.push_notification(
+                    Notification::new()
+                        .title(cx.global::<I18n>().t("provider-notification-fetch-failed"))
+                        .message(cx.global::<I18n>().t("provider-fetch-save-changes-first"))
+                        .with_type(NotificationType::Warning),
+                    cx,
+                );
+                return;
+            }
+            ProviderFetchPrecondition::ManualModelsRequired => {
+                window.push_notification(
+                    Notification::new()
+                        .title(
+                            cx.global::<I18n>()
+                                .t("provider-notification-fetch-unavailable-title"),
+                        )
+                        .message(cx.global::<I18n>().t("provider-fetch-manual-only"))
+                        .with_type(NotificationType::Warning),
+                    cx,
+                );
+                return;
+            }
+        }
+        let Some(provider_id) = self.draft.provider_id.clone() else {
+            return;
+        };
+        self.fetch_state = AsyncActionState::Running;
+        let repository = database::repository(cx);
+        let page = cx.entity().downgrade();
+        self._fetch_task = Some(window.spawn(cx, async move |cx| {
+            let result = fetch_and_store_models(repository, provider_id, cx).await;
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.finish_fetch(result, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "finish provider model fetch failed");
+            }
+        }));
+        cx.notify();
+    }
+
+    fn finish_fetch(
+        &mut self,
+        result: Result<usize, ProviderModelFetchError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._fetch_task = None;
+        self.fetch_state = AsyncActionState::Idle;
+        match result {
+            Ok(count) => {
+                self.models = Self::load_models_for_draft(&self.draft, cx).unwrap_or_default();
+                self.sync_model_list(window, cx);
+                let mut args = FluentArgs::new();
+                args.set("count", count);
+                window.push_notification(
+                    Notification::new()
+                        .title(cx.global::<I18n>().t("provider-notification-fetch-success"))
+                        .message(
+                            cx.global::<I18n>()
+                                .t_with_args("provider-fetch-success-message", &args),
+                        )
+                        .with_type(NotificationType::Success),
+                    cx,
+                );
+            }
+            Err(ProviderModelFetchError::ManualModelsRequired { .. }) => {
+                window.push_notification(
+                    Notification::new()
+                        .title(
+                            cx.global::<I18n>()
+                                .t("provider-notification-fetch-unavailable-title"),
+                        )
+                        .message(cx.global::<I18n>().t("provider-fetch-manual-only"))
+                        .with_type(NotificationType::Warning),
+                    cx,
+                );
+            }
+            Err(err) => {
+                window.push_notification(
+                    Notification::new()
+                        .title(cx.global::<I18n>().t("provider-notification-fetch-failed"))
+                        .message(err.to_string())
+                        .with_type(NotificationType::Error),
+                    cx,
+                );
+            }
+        }
+        cx.notify();
     }
 
     fn render_provider_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.provider_search.read(cx).value().trim().to_lowercase();
         v_flex()
             .w(px(260.))
             .min_w(px(220.))
             .h_full()
-            .gap_3()
+            .min_h_0()
             .child(
-                Input::new(&self.provider_search)
-                    .w_full()
-                    .prefix(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground)),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .gap_2()
-                    .children(self.providers.iter().filter_map(|item| {
-                        let haystack = format!(
-                            "{} {} {}",
-                            item.spec.display_name,
-                            item.spec.kind.as_str(),
-                            cx.global::<I18n>().t(item.spec.description_key)
-                        )
-                        .to_lowercase();
-                        (query.is_empty() || haystack.contains(&query))
-                            .then(|| self.render_provider_row(item, cx))
-                    })),
-            )
-            .into_any_element()
-    }
-
-    fn render_provider_row(&self, item: &ProviderListItem, cx: &mut Context<Self>) -> AnyElement {
-        let active = item.spec.kind == self.draft.kind;
-        let kind = item.spec.kind.clone();
-        h_flex()
-            .id(format!(
-                "provider-settings-provider-{}",
-                item.spec.kind.as_str()
-            ))
-            .w_full()
-            .h(px(42.))
-            .items_center()
-            .gap_2()
-            .px_3()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().border
-            })
-            .bg(if active {
-                cx.theme().accent
-            } else {
-                cx.theme().background
-            })
-            .cursor_pointer()
-            .on_click(cx.listener(move |page, _, window, cx| {
-                page.select_provider(kind.clone(), window, cx);
-            }))
-            .child(Icon::new(item.spec.icon).text_color(cx.theme().muted_foreground))
-            .child(
-                Label::new(item.spec.display_name)
-                    .text_sm()
-                    .font_medium()
-                    .truncate(),
-            )
-            .child(div().flex_1())
-            .when(
-                item.provider
-                    .as_ref()
-                    .is_some_and(|provider| provider.enabled),
-                |this| this.child(div().size_2().rounded_full().bg(cx.theme().primary)),
+                div().flex_1().min_h_0().overflow_hidden().child(
+                    List::new(&self.provider_list)
+                        .search_placeholder(cx.global::<I18n>().t("provider-search-placeholder"))
+                        .w_full()
+                        .h_full(),
+                ),
             )
             .into_any_element()
     }
@@ -533,6 +772,7 @@ impl ProviderSettingsPage {
     }
 
     fn render_header(&self, spec: &ProviderSpec, cx: &mut Context<Self>) -> AnyElement {
+        let dirty = self.is_dirty(cx);
         h_flex()
             .w_full()
             .items_start()
@@ -546,11 +786,18 @@ impl ProviderSettingsPage {
                             .gap_2()
                             .items_center()
                             .child(Label::new(spec.display_name).text_lg().font_medium())
-                            .when(self.draft.provider_id.is_some(), |this| {
+                            .when(self.draft.provider_id.is_some() && !dirty, |this| {
                                 this.child(
                                     Tag::success()
                                         .small()
                                         .child(cx.global::<I18n>().t("provider-status-saved")),
+                                )
+                            })
+                            .when(dirty, |this| {
+                                this.child(
+                                    Tag::warning()
+                                        .small()
+                                        .child(cx.global::<I18n>().t("provider-status-unsaved")),
                                 )
                             }),
                     )
@@ -565,7 +812,6 @@ impl ProviderSettingsPage {
                     .checked(self.draft.enabled)
                     .on_click(cx.listener(|page, checked, _, cx| {
                         page.draft.enabled = *checked;
-                        page.draft.dirty = true;
                         cx.notify();
                     })),
             )
@@ -620,7 +866,7 @@ impl ProviderSettingsPage {
                             .label(cx.global::<I18n>().t("provider-action-validate"))
                             .small()
                             .on_click(cx.listener(|page, _, _, cx| {
-                                page.validate_draft(cx);
+                                page.validate_current_draft(cx);
                                 cx.notify();
                             })),
                     )
@@ -630,6 +876,8 @@ impl ProviderSettingsPage {
                             .label(cx.global::<I18n>().t("provider-action-save"))
                             .small()
                             .primary()
+                            .loading(self.save_state == AsyncActionState::Running)
+                            .disabled(self.save_state == AsyncActionState::Running)
                             .on_click(cx.listener(|page, _, window, cx| page.save(window, cx))),
                     ),
             )
@@ -655,29 +903,11 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.model_search.read(cx).value().trim().to_lowercase();
-        let rows = self
-            .models
-            .iter()
-            .filter(|model| {
-                query.is_empty()
-                    || model.model_id.to_lowercase().contains(&query)
-                    || model
-                        .display_name
-                        .as_ref()
-                        .is_some_and(|name| name.to_lowercase().contains(&query))
-            })
-            .map(|model| self.render_model_row(model, cx))
-            .collect::<Vec<_>>();
-        v_flex()
-            .w_full()
-            .gap_3()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .p_4()
-            .child(
+        GroupBox::new()
+            .outline()
+            .title(
                 h_flex()
+                    .w_full()
                     .items_center()
                     .justify_between()
                     .child(
@@ -690,72 +920,29 @@ impl ProviderSettingsPage {
                             .icon(IconName::RefreshCcw)
                             .label(cx.global::<I18n>().t("provider-action-fetch-models"))
                             .small()
+                            .loading(self.fetch_state == AsyncActionState::Running)
+                            .disabled(self.fetch_state == AsyncActionState::Running)
                             .on_click(cx.listener(|page, _, window, cx| {
                                 page.fetch_models(window, cx);
                             })),
                     ),
             )
             .child(
-                Input::new(&self.model_search)
+                div()
                     .w_full()
-                    .prefix(Icon::new(IconName::Search).text_color(cx.theme().muted_foreground)),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .children(rows)
-                    .when(self.models.is_empty(), |this| {
-                        this.child(
-                            Label::new(cx.global::<I18n>().t("provider-empty-models"))
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn render_model_row(&self, model: &ProviderModelDraft, cx: &mut Context<Self>) -> AnyElement {
-        let model_id = model.model_id.clone();
-        h_flex()
-            .w_full()
-            .gap_3()
-            .items_center()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .px_3()
-            .py_2()
-            .child(
-                Switch::new(format!("provider-model-enabled-{}", model.model_id))
-                    .checked(model.enabled)
-                    .small()
-                    .on_click(cx.listener(move |page, checked, window, cx| {
-                        page.toggle_model(model_id.clone(), *checked, window, cx);
-                    })),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
+                    .h(px(300.))
+                    .min_h(px(120.))
+                    .overflow_hidden()
                     .child(
-                        Label::new(
-                            model
-                                .display_name
-                                .clone()
-                                .unwrap_or_else(|| model.model_id.clone()),
-                        )
-                        .text_sm()
-                        .truncate(),
-                    )
-                    .child(
-                        Label::new(model.model_id.clone())
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate(),
+                        List::new(&self.model_list)
+                            .search_placeholder(
+                                cx.global::<I18n>().t("provider-model-search-placeholder"),
+                            )
+                            .w_full()
+                            .h_full(),
                     ),
             )
-            .child(capability_tags(&model.capabilities))
+            .border_color(cx.theme().border)
             .into_any_element()
     }
 }
@@ -769,6 +956,95 @@ impl Render for ProviderSettingsPage {
             .gap_5()
             .child(self.render_provider_list(cx))
             .child(self.render_detail(cx))
+    }
+}
+
+async fn save_provider(
+    repository: FreshRepository,
+    save: ProviderSaveRequest,
+    cx: &mut AsyncWindowContext,
+) -> Result<ProviderRecord, String> {
+    secret_store::ProviderSecretStore::write_values(cx, &save.secret_refs, &save.writes).await?;
+
+    match save.provider_id {
+        Some(provider_id) => repository
+            .update_provider(
+                &provider_id,
+                UpdateProvider {
+                    display_name: save.display_name,
+                    enabled: save.enabled,
+                    settings: save.settings,
+                    secret_refs: save.secret_refs,
+                },
+            )
+            .map_err(|err| err.to_string()),
+        None => repository
+            .insert_provider_with_id(
+                save.new_provider_id
+                    .expect("new provider saves must include a preallocated id"),
+                NewProvider {
+                    kind: save.kind,
+                    display_name: save.display_name,
+                    enabled: save.enabled,
+                    settings: save.settings,
+                    secret_refs: save.secret_refs,
+                },
+            )
+            .map_err(|err| err.to_string()),
+    }
+}
+
+async fn fetch_and_store_models(
+    repository: FreshRepository,
+    provider_id: ProviderId,
+    cx: &mut AsyncWindowContext,
+) -> Result<usize, ProviderModelFetchError> {
+    let provider = repository
+        .get_provider(&provider_id)
+        .map_err(|err| ProviderModelFetchError::InvalidConfig {
+            message: err.to_string(),
+        })?
+        .ok_or_else(|| ProviderModelFetchError::InvalidConfig {
+            message: format!("provider `{provider_id}` was not found"),
+        })?;
+    let secrets = secret_store::ProviderSecretStore::read_values(cx, &provider.secret_refs)
+        .await
+        .map_err(|err| ProviderModelFetchError::InvalidConfig { message: err })?;
+    let provider_kind = provider.kind.clone();
+    let models = gpui_tokio::Tokio::spawn(
+        cx,
+        fetch_provider_models(ProviderModelFetchRequest {
+            provider: provider.clone(),
+            secrets,
+        }),
+    )
+    .await
+    .map_err(|err| ProviderModelFetchError::ListingFailed {
+        provider_kind,
+        message: err.to_string(),
+    })??;
+    let count = models.len();
+    repository
+        .replace_fetched_provider_models(&provider.id, models)
+        .map_err(|err| ProviderModelFetchError::InvalidConfig {
+            message: err.to_string(),
+        })?;
+    Ok(count)
+}
+
+fn provider_fetch_precondition(
+    provider_id: Option<&ProviderId>,
+    dirty: bool,
+    support: ModelFetchSupport,
+) -> ProviderFetchPrecondition {
+    if provider_id.is_none() {
+        ProviderFetchPrecondition::SaveProviderFirst
+    } else if dirty {
+        ProviderFetchPrecondition::SaveChangesFirst
+    } else if support == ModelFetchSupport::ManualOnly {
+        ProviderFetchPrecondition::ManualModelsRequired
+    } else {
+        ProviderFetchPrecondition::Ready
     }
 }
 
@@ -795,11 +1071,38 @@ fn draft_from_spec(spec: &ProviderSpec, provider_id: Option<ProviderId>) -> Prov
     }
 }
 
-fn required_field_message(field_label_key: &str, cx: &App) -> SharedString {
+fn validate_provider_draft(
+    draft: &ProviderDraft,
+    spec: &ProviderSpec,
+    secrets: &BTreeMap<String, ProviderSecretValidationState>,
+    i18n: &I18n,
+) -> Result<(), SharedString> {
+    for field in &spec.fields {
+        if !field.required {
+            continue;
+        }
+        match field.kind {
+            ProviderFieldKind::Secret => {
+                let valid = secrets
+                    .get(field.key)
+                    .is_some_and(|secret| secret.has_saved_secret || secret.has_pending_value);
+                if !valid {
+                    return Err(required_field_message(field.label_key, i18n));
+                }
+            }
+            _ if draft.field_string(field.key).trim().is_empty() => {
+                return Err(required_field_message(field.label_key, i18n));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn required_field_message(field_label_key: &str, i18n: &I18n) -> SharedString {
     let mut args = FluentArgs::new();
-    args.set("field", cx.global::<I18n>().t(field_label_key));
-    cx.global::<I18n>()
-        .t_with_args("provider-validation-required", &args)
+    args.set("field", i18n.t(field_label_key));
+    i18n.t_with_args("provider-validation-required", &args)
         .into()
 }
 
@@ -848,32 +1151,37 @@ impl From<ProviderModelRecord> for ProviderModelDraft {
     }
 }
 
-fn capability_tags(capabilities: &ai_chat_core::ModelCapabilitiesSnapshot) -> AnyElement {
-    h_flex()
-        .gap_1()
-        .when(capabilities.reasoning.is_some(), |this| {
-            this.child(Tag::secondary().small().child("reasoning"))
-        })
-        .when(capabilities.tool_calling.is_some(), |this| {
-            this.child(Tag::secondary().small().child("tools"))
-        })
-        .when(capabilities.image_input.is_some(), |this| {
-            this.child(Tag::secondary().small().child("vision"))
-        })
-        .when(capabilities.structured_output, |this| {
-            this.child(Tag::secondary().small().child("structured"))
-        })
-        .into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{draft_from_record, draft_from_spec};
-    use crate::features::settings::provider::catalog::builtin_provider_specs;
+    use super::{
+        ModelFetchSupport, ProviderFetchPrecondition, ProviderListItem,
+        ProviderSecretValidationState, draft_from_record, draft_from_spec, fetch_support,
+        provider_fetch_precondition, validate_provider_draft,
+    };
+    use crate::features::settings::provider::catalog::{
+        ModelListingStrategy, ProviderKindKey, builtin_provider_specs,
+    };
+    use crate::features::settings::provider::draft::{
+        ProviderDraftSnapshot, ProviderDraftValue, ProviderModelDraft,
+        secret_input_event_marks_dirty,
+    };
+    use crate::features::settings::provider::list_delegates::{
+        ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
+    };
+    use crate::features::settings::provider::secret_store::{
+        ProviderSecretStore, ProviderSecretWrite,
+    };
     use crate::foundation::I18n;
-    use ai_chat_core::{ProviderSecretRefs, ProviderSettingsPayload};
+    use ai_chat_core::{
+        ProviderModelMetadata, ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
+        ProviderSettingsPayload, conservative_model_capabilities,
+    };
     use ai_chat_db::{FreshStore, NewProvider};
     use fluent_bundle::FluentArgs;
+    use gpui::WeakEntity;
+    use gpui_component::IndexPath;
+    use gpui_component::input::InputEvent;
+    use std::collections::{BTreeMap, BTreeSet};
     use tempfile::tempdir;
 
     #[test]
@@ -921,6 +1229,7 @@ mod tests {
             "provider-action-save",
             "provider-action-fetch-models",
             "provider-status-saved",
+            "provider-status-unsaved",
             "provider-validation-valid",
             "provider-validation-not-registered",
             "provider-empty-selection",
@@ -955,8 +1264,13 @@ mod tests {
             "provider-description-together",
             "provider-description-custom-openai-compatible",
             "provider-notification-saved",
+            "provider-notification-validation-failed",
             "provider-notification-update-model-failed",
+            "provider-notification-fetch-success",
+            "provider-notification-fetch-failed",
             "provider-notification-fetch-unavailable-title",
+            "provider-fetch-save-first",
+            "provider-fetch-save-changes-first",
             "provider-fetch-supported-placeholder",
             "provider-fetch-manual-only",
         ];
@@ -973,6 +1287,331 @@ mod tests {
                 i18n.t_with_args("provider-validation-required", &args),
                 "provider-validation-required"
             );
+            let mut args = FluentArgs::new();
+            args.set("count", 3);
+            assert_ne!(
+                i18n.t_with_args("provider-fetch-success-message", &args),
+                "provider-fetch-success-message"
+            );
         }
+    }
+
+    #[test]
+    fn validation_rejects_missing_secret_before_repository_write() {
+        let spec = builtin_provider_specs()
+            .into_iter()
+            .find(|spec| spec.kind.as_str() == "openai")
+            .expect("openai provider spec exists");
+        let draft = draft_from_spec(&spec, None);
+        let secrets = BTreeMap::new();
+        let i18n = I18n::english_for_test();
+        let dir = tempdir().unwrap();
+        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let repository = store.repository();
+
+        if validate_provider_draft(&draft, &spec, &secrets, &i18n).is_ok() {
+            repository
+                .insert_provider(NewProvider {
+                    kind: draft.kind.as_str().to_string(),
+                    display_name: draft.display_name.clone(),
+                    enabled: draft.enabled,
+                    settings: draft.settings_payload(),
+                    secret_refs: ProviderSecretRefs { refs: Vec::new() },
+                })
+                .unwrap();
+        }
+
+        assert!(repository.list_providers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn validation_accepts_saved_or_pending_secret_consistently() {
+        let spec = builtin_provider_specs()
+            .into_iter()
+            .find(|spec| spec.kind.as_str() == "openai")
+            .expect("openai provider spec exists");
+        let draft = draft_from_spec(&spec, None);
+        let i18n = I18n::english_for_test();
+        let saved_secret = BTreeMap::from([(
+            "api_key".to_string(),
+            ProviderSecretValidationState {
+                has_saved_secret: true,
+                has_pending_value: false,
+            },
+        )]);
+        let pending_secret = BTreeMap::from([(
+            "api_key".to_string(),
+            ProviderSecretValidationState {
+                has_saved_secret: false,
+                has_pending_value: true,
+            },
+        )]);
+
+        assert!(validate_provider_draft(&draft, &spec, &saved_secret, &i18n).is_ok());
+        assert!(validate_provider_draft(&draft, &spec, &pending_secret, &i18n).is_ok());
+    }
+
+    #[test]
+    fn provider_snapshot_tracks_field_and_enabled_dirty_state() {
+        let provider = provider_record_with_base_url(false, "https://old.example/v1");
+        let draft = draft_from_record(&provider);
+        let saved = ProviderDraftSnapshot::from_draft(&draft);
+        let mut changed_field = saved.clone();
+        changed_field.fields.insert(
+            "base_url".to_string(),
+            ProviderDraftValue::String("https://new.example/v1".to_string()),
+        );
+        let mut changed_enabled = saved.clone();
+        changed_enabled.enabled = true;
+
+        assert!(!saved.is_dirty_against(Some(&saved)));
+        assert!(changed_field.is_dirty_against(Some(&saved)));
+        assert!(changed_enabled.is_dirty_against(Some(&saved)));
+    }
+
+    #[test]
+    fn provider_snapshot_tracks_secret_dirty_without_persisting_secret_value() {
+        let provider = provider_record_with_base_url(false, "https://old.example/v1");
+        let draft = draft_from_record(&provider);
+        let saved = ProviderDraftSnapshot::from_draft(&draft);
+        let mut changed_secret = saved.clone();
+        changed_secret.dirty_secret_keys = BTreeSet::from(["api_key".to_string()]);
+        let secret_refs = ProviderSecretStore::refs_for(
+            "provider-id",
+            &[ProviderSecretWrite {
+                key: "api_key".to_string(),
+                value: "sk-secret-value".to_string(),
+            }],
+        );
+
+        assert!(changed_secret.is_dirty_against(Some(&saved)));
+        assert!(
+            secret_refs
+                .refs
+                .iter()
+                .all(|secret| !secret.ref_id.contains("sk-secret-value"))
+        );
+    }
+
+    #[test]
+    fn secret_input_dirty_tracking_only_uses_text_changes() {
+        assert!(secret_input_event_marks_dirty(&InputEvent::Change));
+        assert!(!secret_input_event_marks_dirty(&InputEvent::Focus));
+        assert!(!secret_input_event_marks_dirty(&InputEvent::Blur));
+        assert!(!secret_input_event_marks_dirty(&InputEvent::PressEnter {
+            secondary: false,
+        }));
+    }
+
+    #[test]
+    fn provider_fetch_precondition_blocks_unsaved_dirty_and_manual_providers() {
+        let provider_id = "provider-id".to_string();
+
+        assert_eq!(
+            provider_fetch_precondition(None, false, ModelFetchSupport::Supported),
+            ProviderFetchPrecondition::SaveProviderFirst
+        );
+        assert_eq!(
+            provider_fetch_precondition(Some(&provider_id), true, ModelFetchSupport::Supported),
+            ProviderFetchPrecondition::SaveChangesFirst
+        );
+        assert_eq!(
+            provider_fetch_precondition(Some(&provider_id), false, ModelFetchSupport::ManualOnly),
+            ProviderFetchPrecondition::ManualModelsRequired
+        );
+        assert_eq!(
+            provider_fetch_precondition(Some(&provider_id), false, ModelFetchSupport::Supported),
+            ProviderFetchPrecondition::Ready
+        );
+    }
+
+    #[test]
+    fn moonshot_provider_uses_manual_model_listing() {
+        let moonshot = builtin_provider_specs()
+            .into_iter()
+            .find(|spec| spec.kind.as_str() == "moonshot")
+            .expect("moonshot provider spec exists");
+
+        assert_eq!(moonshot.model_listing, ModelListingStrategy::Manual);
+        assert_eq!(
+            fetch_support(moonshot.model_listing),
+            ModelFetchSupport::ManualOnly
+        );
+    }
+
+    #[test]
+    fn provider_list_delegate_searches_by_brand_kind_and_localized_terms() {
+        let providers = builtin_provider_specs()
+            .into_iter()
+            .map(|spec| ProviderListItem {
+                spec,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let i18n = I18n::for_locale_tag("zh-CN");
+        let mut delegate = provider_list_delegate(&providers, &i18n);
+
+        delegate.set_query_for_test("ollama");
+        assert_eq!(delegate.row_count_for_test(), 1);
+
+        delegate.set_query_for_test("提供商");
+        assert_eq!(delegate.row_count_for_test(), providers.len());
+
+        delegate.set_query_for_test("模型");
+        assert_eq!(delegate.row_count_for_test(), providers.len());
+    }
+
+    #[test]
+    fn provider_list_selected_index_tracks_selected_kind() {
+        let providers = builtin_provider_specs()
+            .into_iter()
+            .map(|spec| ProviderListItem {
+                spec,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let i18n = I18n::english_for_test();
+        let rows = provider_list_rows(&providers, &i18n);
+
+        assert_eq!(
+            ProviderListDelegate::selected_index_for(&rows, &ProviderKindKey::from("openai")),
+            Some(IndexPath::new(0))
+        );
+        assert_eq!(
+            ProviderListDelegate::selected_index_for(&rows, &ProviderKindKey::from("missing")),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_list_delegate_preserves_query_when_rows_change() {
+        let providers = builtin_provider_specs()
+            .into_iter()
+            .map(|spec| ProviderListItem {
+                spec,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let i18n = I18n::english_for_test();
+        let mut delegate = provider_list_delegate(&providers, &i18n);
+
+        delegate.set_query_for_test("ollama");
+        assert_eq!(delegate.row_count_for_test(), 1);
+        assert_eq!(
+            delegate.kind_for_index(IndexPath::new(0)),
+            Some(ProviderKindKey::from("ollama"))
+        );
+        delegate.set_rows(provider_list_rows(&providers, &i18n));
+
+        assert_eq!(delegate.row_count_for_test(), 1);
+        assert_eq!(
+            delegate.selected_index_for_kind(&ProviderKindKey::from("ollama")),
+            Some(IndexPath::new(0))
+        );
+        assert_eq!(
+            delegate.selected_index_for_kind(&ProviderKindKey::from("openai")),
+            None
+        );
+    }
+
+    #[test]
+    fn model_list_delegate_searches_by_id_display_name_capability_and_status() {
+        let models = vec![
+            provider_model_draft("gpt-5", Some("GPT Five"), true, "openai"),
+            provider_model_draft("llama3.2", None, false, "ollama"),
+        ];
+        let mut delegate = model_list_delegate(&models);
+
+        delegate.set_query_for_test("five");
+        assert_eq!(delegate.row_count_for_test(), 1);
+
+        delegate.set_query_for_test("tools");
+        assert_eq!(delegate.row_count_for_test(), 2);
+
+        delegate.set_query_for_test("禁用");
+        assert_eq!(delegate.row_count_for_test(), 1);
+    }
+
+    #[test]
+    fn model_list_delegate_preserves_query_when_rows_change() {
+        let models = vec![
+            provider_model_draft("gpt-5", Some("GPT Five"), true, "openai"),
+            provider_model_draft("llama3.2", None, false, "ollama"),
+        ];
+        let mut delegate = model_list_delegate(&models);
+
+        delegate.set_query_for_test("five");
+        assert_eq!(delegate.row_count_for_test(), 1);
+        delegate.set_rows(model_list_rows(&[provider_model_draft(
+            "llama3.2", None, false, "ollama",
+        )]));
+
+        assert_eq!(delegate.row_count_for_test(), 0);
+    }
+
+    #[test]
+    fn model_list_delegate_separates_rows_except_last() {
+        let models = vec![
+            provider_model_draft("gpt-5", Some("GPT Five"), true, "openai"),
+            provider_model_draft("gpt-5-mini", Some("GPT Five Mini"), true, "openai"),
+        ];
+        let delegate = model_list_delegate(&models);
+
+        assert!(delegate.row_separator_for_test(0));
+        assert!(!delegate.row_separator_for_test(1));
+    }
+
+    fn provider_record_with_base_url(enabled: bool, base_url: &str) -> ai_chat_db::ProviderRecord {
+        let dir = tempdir().unwrap();
+        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        store
+            .repository()
+            .insert_provider(NewProvider {
+                kind: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                enabled,
+                settings: ProviderSettingsPayload {
+                    provider_kind: "openai".to_string(),
+                    fields: vec![ProviderSettingFieldValue {
+                        key: "base_url".to_string(),
+                        value: ProviderSettingValue::String {
+                            value: base_url.to_string(),
+                        },
+                    }],
+                },
+                secret_refs: ProviderSecretRefs { refs: Vec::new() },
+            })
+            .unwrap()
+    }
+
+    fn provider_model_draft(
+        model_id: &str,
+        display_name: Option<&str>,
+        enabled: bool,
+        provider_kind: &str,
+    ) -> ProviderModelDraft {
+        ProviderModelDraft {
+            row_id: None,
+            provider_id: "provider-id".to_string(),
+            model_id: model_id.to_string(),
+            display_name: display_name.map(ToString::to_string),
+            enabled,
+            capabilities: conservative_model_capabilities(provider_kind),
+            metadata: ProviderModelMetadata {
+                display_name: None,
+                family: None,
+                raw: None,
+            },
+            fetched_at: Some("2026-06-02T00:00:00Z".to_string()),
+            dirty: false,
+        }
+    }
+
+    fn provider_list_delegate(providers: &[ProviderListItem], i18n: &I18n) -> ProviderListDelegate {
+        ProviderListDelegate::new(provider_list_rows(providers, i18n), "empty")
+    }
+
+    fn model_list_delegate(models: &[ProviderModelDraft]) -> ProviderModelListDelegate {
+        ProviderModelListDelegate::new(model_list_rows(models), WeakEntity::new_invalid(), "empty")
     }
 }

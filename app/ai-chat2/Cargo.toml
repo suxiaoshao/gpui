@@ -58,6 +58,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 # async runtime
+gpui-tokio.workspace = true
 smol = "2.0.2"
 
 # config

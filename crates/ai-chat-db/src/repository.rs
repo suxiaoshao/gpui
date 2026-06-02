@@ -102,11 +102,19 @@ impl FreshRepository {
     }
 
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
+        self.insert_provider_with_id(new_id(), input)
+    }
+
+    pub fn insert_provider_with_id(
+        &self,
+        id: ProviderId,
+        input: NewProvider,
+    ) -> Result<ProviderRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
             let row = SqlNewProviderRow {
-                id: new_id(),
+                id,
                 kind: input.kind,
                 display_name: input.display_name,
                 enabled: input.enabled,

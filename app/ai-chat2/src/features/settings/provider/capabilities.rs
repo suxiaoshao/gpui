@@ -1,9 +1,6 @@
 #![allow(dead_code)]
 
-use ai_chat_core::{
-    ImageInputCapabilitySnapshot, ModelCapabilitiesSnapshot, ProviderCapabilityExtensionSnapshot,
-    ReasoningCapabilitySnapshot, ToolCallingCapabilitySnapshot,
-};
+use ai_chat_core::{ModelCapabilitiesSnapshot, conservative_model_capabilities};
 
 use super::catalog::ProviderKindKey;
 
@@ -39,58 +36,35 @@ impl Default for CapabilityDraft {
 }
 
 pub(super) fn conservative_capabilities(kind: &ProviderKindKey) -> ModelCapabilitiesSnapshot {
-    let mut draft = CapabilityDraft::default();
-    match kind.as_str() {
-        "openai" | "anthropic" | "gemini" | "openrouter" => {
-            draft.tool_calling = true;
-            draft.reasoning = true;
-            draft.structured_output = true;
-        }
-        "ollama" => {
-            draft.tool_calling = true;
-        }
-        _ => {}
-    }
-    snapshot_from_draft(draft, kind)
+    conservative_model_capabilities(kind.as_str())
 }
 
 pub(super) fn snapshot_from_draft(
     draft: CapabilityDraft,
     kind: &ProviderKindKey,
 ) -> ModelCapabilitiesSnapshot {
-    ModelCapabilitiesSnapshot {
-        text_input: draft.text_input,
-        text_output: draft.text_output,
-        streaming: draft.streaming,
-        image_input: draft
-            .image_input
-            .then_some(ImageInputCapabilitySnapshot { max_images: None }),
-        file_input: None,
-        audio_input: false,
-        image_generation: draft.image_generation,
-        tool_calling: draft.tool_calling.then_some(ToolCallingCapabilitySnapshot {
-            parallel_tool_calls: true,
-        }),
-        hosted_web_search: draft.hosted_web_search,
-        remote_mcp: false,
-        reasoning: draft.reasoning.then_some(ReasoningCapabilitySnapshot {
+    let mut snapshot = conservative_model_capabilities(kind.as_str());
+    snapshot.text_input = draft.text_input;
+    snapshot.text_output = draft.text_output;
+    snapshot.streaming = draft.streaming;
+    snapshot.image_input = draft
+        .image_input
+        .then_some(ai_chat_core::ImageInputCapabilitySnapshot { max_images: None });
+    snapshot.image_generation = draft.image_generation;
+    snapshot.tool_calling =
+        draft
+            .tool_calling
+            .then_some(ai_chat_core::ToolCallingCapabilitySnapshot {
+                parallel_tool_calls: true,
+            });
+    snapshot.hosted_web_search = draft.hosted_web_search;
+    snapshot.reasoning = draft
+        .reasoning
+        .then_some(ai_chat_core::ReasoningCapabilitySnapshot {
             default_effort: "medium".to_string(),
             efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
             summaries: false,
-        }),
-        structured_output: draft.structured_output,
-        stateful_response_continuation: kind.as_str() == "openai",
-        extension: match kind.as_str() {
-            "openai" => ProviderCapabilityExtensionSnapshot::OpenAi {
-                responses_api: true,
-                raw: None,
-            },
-            "ollama" => ProviderCapabilityExtensionSnapshot::Ollama {
-                raw_capabilities: Vec::new(),
-                family: "unknown".to_string(),
-                raw: None,
-            },
-            _ => ProviderCapabilityExtensionSnapshot::None,
-        },
-    }
+        });
+    snapshot.structured_output = draft.structured_output;
+    snapshot
 }

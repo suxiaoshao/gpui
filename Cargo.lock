@@ -201,6 +201,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -242,6 +243,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "gpui-tokio",
  "gpui_platform",
  "image",
  "pinyin",
@@ -4924,6 +4926,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "gpui-tokio"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "tokio",
 ]
 
 [[package]]

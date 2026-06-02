@@ -3,7 +3,10 @@
 use ai_chat_core::ProviderId;
 use ai_chat_db::NewProviderModel;
 
-use super::{capabilities::conservative_capabilities, catalog::ProviderKindKey};
+use super::{
+    capabilities::conservative_capabilities,
+    catalog::{ModelListingStrategy, ProviderKindKey},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ModelFetchSupport {
@@ -16,16 +19,12 @@ pub(super) struct ModelFetchError {
     pub(super) message: String,
 }
 
-pub(super) fn fetch_support(kind: &ProviderKindKey) -> ModelFetchSupport {
-    match kind.as_str() {
-        "azure_openai"
-        | "zai"
-        | "xai"
-        | "groq"
-        | "perplexity"
-        | "together"
-        | "custom_openai_compatible" => ModelFetchSupport::ManualOnly,
-        _ => ModelFetchSupport::Supported,
+pub(super) fn fetch_support(strategy: ModelListingStrategy) -> ModelFetchSupport {
+    match strategy {
+        ModelListingStrategy::RigModels | ModelListingStrategy::OllamaTagsAndShow => {
+            ModelFetchSupport::Supported
+        }
+        ModelListingStrategy::Manual => ModelFetchSupport::ManualOnly,
     }
 }
 

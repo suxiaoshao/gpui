@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ai_chat_core::{
     ModelCapabilitiesSnapshot, ProviderId, ProviderModelId, ProviderModelMetadata,
     ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
 };
 use gpui::{Entity, SharedString, Subscription, Window};
-use gpui_component::input::InputState;
+use gpui_component::input::{InputEvent, InputState};
 
 use super::{capabilities::CapabilityDraft, catalog::ProviderKindKey};
 
@@ -76,6 +76,35 @@ impl ProviderDraft {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ProviderDraftSnapshot {
+    pub(super) provider_id: Option<ProviderId>,
+    pub(super) kind: ProviderKindKey,
+    pub(super) display_name: String,
+    pub(super) enabled: bool,
+    pub(super) fields: BTreeMap<String, ProviderDraftValue>,
+    pub(super) secret_refs: ProviderSecretRefs,
+    pub(super) dirty_secret_keys: BTreeSet<String>,
+}
+
+impl ProviderDraftSnapshot {
+    pub(super) fn from_draft(draft: &ProviderDraft) -> Self {
+        Self {
+            provider_id: draft.provider_id.clone(),
+            kind: draft.kind.clone(),
+            display_name: draft.display_name.clone(),
+            enabled: draft.enabled,
+            fields: draft.fields.clone(),
+            secret_refs: draft.existing_secret_refs.clone(),
+            dirty_secret_keys: BTreeSet::new(),
+        }
+    }
+
+    pub(super) fn is_dirty_against(&self, saved: Option<&Self>) -> bool {
+        saved != Some(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProviderValidationState {
     Idle,
@@ -108,10 +137,13 @@ impl ProviderSecretInput {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let _subscription = cx.observe_in(&input, window, |this, _, _, cx| {
-            this.dirty = true;
-            cx.notify();
-        });
+        let _subscription =
+            cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+                if secret_input_event_marks_dirty(event) {
+                    this.dirty = true;
+                    cx.notify();
+                }
+            });
         let has_saved_secret = saved_ref_id.is_some();
         Self {
             key: key.into(),
@@ -123,6 +155,10 @@ impl ProviderSecretInput {
             _subscription,
         }
     }
+}
+
+pub(super) fn secret_input_event_marks_dirty(event: &InputEvent) -> bool {
+    matches!(event, InputEvent::Change)
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1371,6 +1371,24 @@ fn provider_repository_lists_updates_and_deletes_provider_rows() {
 }
 
 #[test]
+fn provider_repository_can_insert_with_preallocated_id() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider_id = "provider-preallocated-id".to_string();
+
+    let provider = repo
+        .insert_provider_with_id(provider_id.clone(), provider())
+        .unwrap();
+
+    assert_eq!(provider.id, provider_id);
+    assert_eq!(
+        repo.get_provider(&provider_id).unwrap().unwrap().id,
+        provider_id
+    );
+}
+
+#[test]
 fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
