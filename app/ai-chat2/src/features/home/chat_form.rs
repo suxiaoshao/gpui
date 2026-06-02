@@ -9,6 +9,7 @@ use crate::{
     state,
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
+use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode};
 use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 use effort_select::{EffortOption, effort_sections};
 use gpui::{prelude::FluentBuilder as _, *};
@@ -16,13 +17,17 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, box_shadow,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{InputEvent, InputState, NumberInputEvent, StepAction},
     list::ListState,
     v_flex,
 };
 use model_select::{ModelOption, model_sections};
 use picker::PickerListDelegate;
 use std::{path::Path, rc::Rc};
-use thinking_effort::{ThinkingEffort, computed_default_reasoning_effort, reasoning_efforts};
+use thinking_effort::{
+    computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,
+    reasoning_selections, token_budget_bounds,
+};
 
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
 pub(super) const COMPOSER_BUTTON_ICON_SIZE: f32 = 18.;
@@ -41,14 +46,15 @@ impl EventEmitter<ChatFormEvent> for ChatForm {}
 pub(crate) struct ChatFormSubmit {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) provider_model: ProviderModelChoice,
-    pub(crate) thinking_effort: Option<ThinkingEffort>,
+    pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
 }
 
 pub(crate) struct ChatForm {
     composer: Entity<ComposerEditor>,
     model_choices: Result<Vec<ProviderModelChoice>, SharedString>,
     selected_model_key: Option<ProviderModelKey>,
-    selected_effort: Option<ThinkingEffort>,
+    selected_reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    token_budget_input: Entity<InputState>,
     effort_picker_open: bool,
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
@@ -70,10 +76,16 @@ impl ChatForm {
             .as_ref()
             .ok()
             .and_then(|choices| choices.first().map(ProviderModelChoice::key));
-        let selected_effort = selected_model_choice_in(&model_choices, selected_model_key.as_ref())
-            .and_then(|choice| {
-                computed_default_reasoning_effort(choice.capabilities.reasoning.as_ref())
-            });
+        let selected_reasoning_selection =
+            selected_model_choice_in(&model_choices, selected_model_key.as_ref()).and_then(
+                |choice| {
+                    computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
+                },
+            );
+        let initial_token_budget =
+            initial_token_budget_value(&model_choices, selected_model_key.as_ref());
+        let token_budget_input = cx
+            .new(|cx| InputState::new(window, cx).default_value(initial_token_budget.to_string()));
         let state = cx.entity().downgrade();
         let effort_sections = {
             let i18n = cx.global::<foundation::I18n>();
@@ -83,8 +95,10 @@ impl ChatForm {
                 i18n,
             )
         };
-        let effort_selected_ix =
-            PickerListDelegate::selected_index_for(&effort_sections, selected_effort.as_ref());
+        let effort_selected_ix = PickerListDelegate::selected_index_for(
+            &effort_sections,
+            selected_reasoning_selection.as_ref(),
+        );
         let effort_empty_label = cx
             .global::<foundation::I18n>()
             .t("chat-form-effort-empty")
@@ -93,7 +107,7 @@ impl ChatForm {
             let state = state.clone();
             move |option: EffortOption, window: &mut Window, cx: &mut App| {
                 let _ = state.update(cx, |form, cx| {
-                    form.select_effort(option.effort, window, cx);
+                    form.select_effort(option.selection().clone(), window, cx);
                 });
             }
         });
@@ -109,7 +123,7 @@ impl ChatForm {
             let mut picker = ListState::new(
                 PickerListDelegate::new(
                     effort_sections,
-                    selected_effort,
+                    selected_reasoning_selection.clone(),
                     effort_empty_label,
                     effort_confirm,
                     effort_cancel,
@@ -173,17 +187,57 @@ impl ChatForm {
                 }
             },
         );
+        let token_budget_change_subscription = cx.subscribe_in(
+            &token_budget_input,
+            window,
+            |form, input, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                let Ok(value) = input.read(cx).value().as_ref().parse::<u32>() else {
+                    return;
+                };
+                form.apply_custom_token_budget(value, input, window, cx);
+            },
+        );
+        let token_budget_step_subscription = cx.subscribe_in(
+            &token_budget_input,
+            window,
+            |form, input, event: &NumberInputEvent, window, cx| {
+                let NumberInputEvent::Step(action) = event;
+                let bounds = form.current_token_budget_bounds();
+                let step = bounds.map(|bounds| bounds.step()).unwrap_or(1024);
+                let current = input
+                    .read(cx)
+                    .value()
+                    .as_ref()
+                    .parse::<u32>()
+                    .ok()
+                    .or_else(|| bounds.map(|bounds| bounds.default_value))
+                    .unwrap_or(step);
+                let next = match *action {
+                    StepAction::Increment => current.saturating_add(step),
+                    StepAction::Decrement => current.saturating_sub(step),
+                };
+                form.apply_custom_token_budget(next, input, window, cx);
+            },
+        );
 
         Self {
             composer,
             model_choices,
             selected_model_key,
-            selected_effort,
+            selected_reasoning_selection,
+            token_budget_input,
             effort_picker_open: false,
             effort_picker,
             model_picker_open: false,
             model_picker,
-            _subscriptions: vec![composer_subscription],
+            _subscriptions: vec![
+                composer_subscription,
+                token_budget_change_subscription,
+                token_budget_step_subscription,
+            ],
         }
     }
 
@@ -246,28 +300,21 @@ impl ChatForm {
 
     fn select_effort(
         &mut self,
-        effort: ThinkingEffort,
+        selection: ReasoningSelectionSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected_effort = Some(effort);
+        self.selected_reasoning_selection = Some(selection);
+        self.sync_token_budget_input(window, cx);
         self.set_effort_picker_open(false, window, cx);
     }
 
     fn select_model(&mut self, key: ProviderModelKey, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_model_key = Some(key);
-        let efforts = self
-            .selected_model_choice()
-            .map(|choice| reasoning_efforts(choice.capabilities.reasoning.as_ref()))
-            .unwrap_or_default();
-        let selected_is_valid = self
-            .selected_effort
-            .is_some_and(|effort| efforts.contains(&effort));
-        if !selected_is_valid {
-            self.selected_effort = self.selected_model_choice().and_then(|choice| {
-                computed_default_reasoning_effort(choice.capabilities.reasoning.as_ref())
-            });
-        }
+        self.selected_reasoning_selection = self.selected_model_choice().and_then(|choice| {
+            computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
+        });
+        self.sync_token_budget_input(window, cx);
         self.sync_effort_picker(window, cx);
         self.set_model_picker_open(false, window, cx);
     }
@@ -281,7 +328,7 @@ impl ChatForm {
                 i18n,
             )
         };
-        let selected_value = self.selected_effort;
+        let selected_value = self.selected_reasoning_selection.clone();
 
         self.effort_picker.update(cx, |picker, cx| {
             picker.delegate_mut().set_sections(sections);
@@ -327,17 +374,65 @@ impl ChatForm {
             }
         }
         let selected_is_valid = self.selected_model_choice().is_some_and(|choice| {
-            self.selected_effort.is_some_and(|effort| {
-                reasoning_efforts(choice.capabilities.reasoning.as_ref()).contains(&effort)
-            })
+            self.selected_reasoning_selection
+                .as_ref()
+                .is_some_and(|selection| {
+                    reasoning_selection_is_valid(choice.capabilities.reasoning.as_ref(), selection)
+                })
         });
         if !selected_is_valid {
-            self.selected_effort = self.selected_model_choice().and_then(|choice| {
-                computed_default_reasoning_effort(choice.capabilities.reasoning.as_ref())
+            self.selected_reasoning_selection = self.selected_model_choice().and_then(|choice| {
+                computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
             });
         }
         self.sync_model_picker(window, cx);
+        self.sync_token_budget_input(window, cx);
         self.sync_effort_picker(window, cx);
+    }
+
+    fn current_token_budget_bounds(&self) -> Option<thinking_effort::TokenBudgetBounds> {
+        token_budget_bounds(
+            self.selected_model_choice()
+                .and_then(|choice| choice.capabilities.reasoning.as_ref()),
+        )
+    }
+
+    fn sync_token_budget_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bounds) = self.current_token_budget_bounds() else {
+            return;
+        };
+        let value = custom_token_budget_value(self.selected_reasoning_selection.as_ref())
+            .map(|value| bounds.clamp(value))
+            .unwrap_or(bounds.default_value);
+        self.token_budget_input.update(cx, |input, cx| {
+            if input.value().as_ref() != value.to_string() {
+                input.set_value(value.to_string(), window, cx);
+            }
+        });
+    }
+
+    fn apply_custom_token_budget(
+        &mut self,
+        value: u32,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(bounds) = self.current_token_budget_bounds() else {
+            return;
+        };
+        let value = bounds.clamp(value);
+        input.update(cx, |input, cx| {
+            if input.value().as_ref() != value.to_string() {
+                input.set_value(value.to_string(), window, cx);
+            }
+        });
+        self.selected_reasoning_selection = Some(ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Custom,
+            value: Some(value),
+        });
+        self.sync_effort_picker(window, cx);
+        cx.notify();
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
@@ -351,7 +446,7 @@ impl ChatForm {
         Some(ChatFormSubmit {
             composer: snapshot,
             provider_model: self.selected_model_choice()?.clone(),
-            thinking_effort: self.selected_effort,
+            reasoning_selection: self.selected_reasoning_selection.clone(),
         })
     }
 
@@ -374,8 +469,14 @@ impl ChatForm {
 
     pub(super) fn has_effort_options(&self) -> bool {
         self.selected_model_capabilities()
-            .map(|capabilities| !reasoning_efforts(capabilities.reasoning.as_ref()).is_empty())
+            .map(|capabilities| !reasoning_selections(capabilities.reasoning.as_ref()).is_empty())
             .unwrap_or(false)
+    }
+
+    pub(super) fn has_token_budget_options(&self) -> bool {
+        self.selected_model_capabilities()
+            .and_then(|capabilities| token_budget_bounds(capabilities.reasoning.as_ref()))
+            .is_some()
     }
 
     pub(super) fn has_model_choices(&self) -> bool {
@@ -492,6 +593,16 @@ fn selected_model_choice_in<'a>(
         .ok()?
         .iter()
         .find(|choice| &choice.key() == key)
+}
+
+fn initial_token_budget_value(
+    choices: &Result<Vec<ProviderModelChoice>, SharedString>,
+    key: Option<&ProviderModelKey>,
+) -> u32 {
+    selected_model_choice_in(choices, key)
+        .and_then(|choice| token_budget_bounds(choice.capabilities.reasoning.as_ref()))
+        .map(|bounds| bounds.default_value)
+        .unwrap_or(1024)
 }
 
 fn model_empty_label(

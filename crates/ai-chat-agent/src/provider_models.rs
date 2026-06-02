@@ -1,15 +1,20 @@
 use std::collections::BTreeMap;
 
+use crate::model_capabilities::{
+    capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
+    capabilities_from_openrouter_model,
+};
 use ai_chat_core::{
     ProviderModelMetadata, ProviderRawPayload, ProviderSettingValue, ProviderSettingsPayload,
-    conservative_model_capabilities,
 };
 use ai_chat_db::{NewProviderModel, ProviderRecord};
 use rig_core::{
     client::ModelListingClient,
     model::{Model, ModelList, ModelListingError},
-    providers::{anthropic, deepseek, gemini, mistral, ollama, openai, openrouter},
+    providers::{anthropic, deepseek, mistral, openai},
 };
+use serde::Deserialize;
+use serde_json::json;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -48,6 +53,13 @@ pub async fn fetch_provider_models(
     request: ProviderModelFetchRequest,
 ) -> Result<Vec<NewProviderModel>, ProviderModelFetchError> {
     let provider_kind = request.provider.kind.as_str();
+    match provider_kind {
+        "ollama" => return fetch_ollama_models(&request).await,
+        "gemini" => return fetch_gemini_models(&request).await,
+        "openrouter" => return fetch_openrouter_models(&request).await,
+        _ => {}
+    }
+
     let models = match provider_kind {
         "openai" => {
             let client = apply_base_url(
@@ -61,35 +73,6 @@ pub async fn fetch_provider_models(
         "anthropic" => {
             let client = apply_base_url(
                 anthropic::Client::builder().api_key(required_secret(&request.secrets, "api_key")?),
-                &request.provider.settings,
-            )?
-            .build()
-            .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
-        }
-        "gemini" => {
-            let client = apply_base_url(
-                gemini::Client::builder().api_key(required_secret(&request.secrets, "api_key")?),
-                &request.provider.settings,
-            )?
-            .build()
-            .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
-        }
-        "ollama" => {
-            let token = request.secrets.get("bearer_token").unwrap_or_default();
-            let client = apply_base_url(
-                ollama::Client::builder().api_key(token),
-                &request.provider.settings,
-            )?
-            .build()
-            .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
-        }
-        "openrouter" => {
-            let client = apply_base_url(
-                openrouter::Client::builder()
-                    .api_key(required_secret(&request.secrets, "api_key")?),
                 &request.provider.settings,
             )?
             .build()
@@ -129,6 +112,7 @@ pub async fn fetch_provider_models(
 }
 
 pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) -> NewProviderModel {
+    let model_id = model.id.clone();
     let raw = serde_json::to_value(&model)
         .ok()
         .map(|value| ProviderRawPayload {
@@ -143,16 +127,255 @@ pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) ->
 
     NewProviderModel {
         provider_id: provider.id.clone(),
-        model_id: model.id,
+        model_id: model_id.clone(),
         display_name: display_name.clone(),
         enabled: true,
-        capabilities: conservative_model_capabilities(&provider.kind),
+        capabilities: capabilities_for_model(&provider.kind, &model_id, raw.clone()),
         metadata: ProviderModelMetadata {
             display_name,
             family: model.owned_by,
             raw,
         },
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagModel {
+    name: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    details: OllamaModelDetails,
+    #[serde(default, deserialize_with = "deserialize_null_default_vec")]
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OllamaModelDetails {
+    #[serde(default)]
+    family: String,
+    #[serde(default, deserialize_with = "deserialize_null_default_vec")]
+    families: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiModelsResponse {
+    models: Vec<GeminiModelEntry>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiModelEntry {
+    name: String,
+    base_model_id: Option<String>,
+    display_name: Option<String>,
+    input_token_limit: Option<u64>,
+    thinking: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterModelsResponse {
+    data: Vec<OpenRouterModelEntry>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct OpenRouterModelEntry {
+    id: String,
+    name: String,
+    created: Option<u64>,
+    #[serde(rename = "context_length")]
+    context_length: Option<u32>,
+    #[serde(default, rename = "supported_parameters")]
+    supported_parameters: Vec<String>,
+}
+
+async fn fetch_ollama_models(
+    request: &ProviderModelFetchRequest,
+) -> Result<Vec<NewProviderModel>, ProviderModelFetchError> {
+    let base_url = provider_base_url(&request.provider.settings, "http://localhost:11434")?;
+    let bearer_token = request
+        .secrets
+        .get("bearer_token")
+        .filter(|token| !token.is_empty());
+    let client = reqwest::Client::new();
+    let mut tags_request = client.get(provider_url(&base_url, "/api/tags")?);
+    if let Some(token) = bearer_token {
+        tags_request = tags_request.bearer_auth(token);
+    }
+
+    let tags = send_json::<OllamaTagsResponse>("ollama", "/api/tags", tags_request).await?;
+    let mut models = Vec::new();
+    for model in tags.models {
+        let model_id = (!model.model.trim().is_empty())
+            .then(|| model.model.clone())
+            .unwrap_or_else(|| model.name.clone());
+        let mut show_request = client
+            .post(provider_url(&base_url, "/api/show")?)
+            .json(&json!({ "model": model_id.clone() }));
+        if let Some(token) = bearer_token {
+            show_request = show_request.bearer_auth(token);
+        }
+
+        let show = send_json::<OllamaShowResponse>("ollama", "/api/show", show_request).await?;
+        if !show
+            .capabilities
+            .iter()
+            .any(|capability| capability == "completion")
+        {
+            continue;
+        }
+        let display_name = Some(model.name.clone()).filter(|name| name != &model_id);
+        let raw = Some(ProviderRawPayload {
+            provider_kind: request.provider.kind.clone(),
+            value: json!({
+                "tag": {
+                    "name": model.name,
+                    "model": model_id.clone(),
+                },
+                "show": {
+                    "details": {
+                        "family": show.details.family.clone(),
+                        "families": show.details.families.clone(),
+                    },
+                    "capabilities": show.capabilities.clone(),
+                }
+            }),
+        });
+        models.push(NewProviderModel {
+            provider_id: request.provider.id.clone(),
+            model_id,
+            display_name: display_name.clone(),
+            enabled: true,
+            capabilities: capabilities_from_ollama_show(
+                show.capabilities,
+                show.details.family.clone(),
+                show.details.families.clone(),
+                raw.clone(),
+            ),
+            metadata: ProviderModelMetadata {
+                display_name,
+                family: Some(show.details.family),
+                raw,
+            },
+        });
+    }
+    models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+    Ok(models)
+}
+
+async fn fetch_gemini_models(
+    request: &ProviderModelFetchRequest,
+) -> Result<Vec<NewProviderModel>, ProviderModelFetchError> {
+    let base_url = provider_base_url(
+        &request.provider.settings,
+        "https://generativelanguage.googleapis.com",
+    )?;
+    let api_key = required_secret(&request.secrets, "api_key")?;
+    let client = reqwest::Client::new();
+    let mut page_token: Option<String> = None;
+    let mut models = Vec::new();
+
+    loop {
+        let url = gemini_models_url(&base_url, api_key, page_token.as_deref())?;
+        let page =
+            send_json::<GeminiModelsResponse>("gemini", "/v1beta/models", client.get(url)).await?;
+        page_token = page.next_page_token.clone();
+        for model in page.models {
+            let model_id = model
+                .base_model_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+                .or_else(|| normalize_gemini_model_name(&model.name));
+            let Some(model_id) = model_id else {
+                continue;
+            };
+            let raw = serde_json::to_value(&model)
+                .ok()
+                .map(|value| ProviderRawPayload {
+                    provider_kind: request.provider.kind.clone(),
+                    value,
+                });
+            models.push(NewProviderModel {
+                provider_id: request.provider.id.clone(),
+                model_id: model_id.clone(),
+                display_name: model.display_name.clone().filter(|name| name != &model_id),
+                enabled: true,
+                capabilities: capabilities_from_gemini_model(
+                    &model_id,
+                    model.thinking,
+                    raw.clone(),
+                ),
+                metadata: ProviderModelMetadata {
+                    display_name: model.display_name,
+                    family: None,
+                    raw,
+                },
+            });
+        }
+        if page_token.is_none() {
+            break;
+        }
+    }
+
+    models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+    Ok(models)
+}
+
+async fn fetch_openrouter_models(
+    request: &ProviderModelFetchRequest,
+) -> Result<Vec<NewProviderModel>, ProviderModelFetchError> {
+    let base_url = provider_base_url(&request.provider.settings, "https://openrouter.ai/api/v1")?;
+    let api_key = required_secret(&request.secrets, "api_key")?;
+    let client = reqwest::Client::new();
+    let response = send_json::<OpenRouterModelsResponse>(
+        "openrouter",
+        "/models",
+        client
+            .get(provider_url(&base_url, "/models")?)
+            .bearer_auth(api_key),
+    )
+    .await?;
+
+    let mut models = response
+        .data
+        .into_iter()
+        .map(|model| {
+            let display_name = Some(model.name.clone()).filter(|name| name != &model.id);
+            let raw = serde_json::to_value(&model)
+                .ok()
+                .map(|value| ProviderRawPayload {
+                    provider_kind: request.provider.kind.clone(),
+                    value,
+                });
+            NewProviderModel {
+                provider_id: request.provider.id.clone(),
+                model_id: model.id.clone(),
+                display_name: display_name.clone(),
+                enabled: true,
+                capabilities: capabilities_from_openrouter_model(
+                    model.supported_parameters,
+                    raw.clone(),
+                ),
+                metadata: ProviderModelMetadata {
+                    display_name,
+                    family: None,
+                    raw,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+    Ok(models)
 }
 
 fn required_secret<'a>(
@@ -188,6 +411,87 @@ fn invalid_config(err: impl std::fmt::Display) -> ProviderModelFetchError {
     ProviderModelFetchError::InvalidConfig {
         message: err.to_string(),
     }
+}
+
+async fn send_json<T>(
+    provider_kind: &str,
+    path: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<T, ProviderModelFetchError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let response = request
+        .send()
+        .await
+        .map_err(|err| listing_failed_message(provider_kind, err))?;
+    let response = response
+        .error_for_status()
+        .map_err(|err| listing_failed_message(provider_kind, err))?;
+    response
+        .json::<T>()
+        .await
+        .map_err(|err| ProviderModelFetchError::ListingFailed {
+            provider_kind: provider_kind.to_string(),
+            message: format!("decode {path} response failed: {err}"),
+        })
+}
+
+fn listing_failed_message(
+    provider_kind: &str,
+    err: impl std::fmt::Display,
+) -> ProviderModelFetchError {
+    ProviderModelFetchError::ListingFailed {
+        provider_kind: provider_kind.to_string(),
+        message: err.to_string(),
+    }
+}
+
+fn provider_base_url(
+    settings: &ProviderSettingsPayload,
+    default_base_url: &str,
+) -> Result<String, ProviderModelFetchError> {
+    let base_url = settings_field_string(settings, "base_url")
+        .map(str::trim)
+        .filter(|base_url| !base_url.is_empty())
+        .unwrap_or(default_base_url);
+    validate_base_url(base_url)?;
+    Ok(base_url.trim_end_matches('/').to_string())
+}
+
+fn provider_url(base_url: &str, path: &str) -> Result<url::Url, ProviderModelFetchError> {
+    let base = url::Url::parse(&format!("{}/", base_url.trim_end_matches('/'))).map_err(|err| {
+        ProviderModelFetchError::InvalidConfig {
+            message: format!("invalid base URL `{base_url}`: {err}"),
+        }
+    })?;
+    base.join(path.trim_start_matches('/'))
+        .map_err(|err| ProviderModelFetchError::InvalidConfig {
+            message: format!("invalid provider path `{path}`: {err}"),
+        })
+}
+
+fn gemini_models_url(
+    base_url: &str,
+    api_key: &str,
+    page_token: Option<&str>,
+) -> Result<url::Url, ProviderModelFetchError> {
+    let mut url = provider_url(base_url, "/v1beta/models")?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("pageSize", "1000");
+        query.append_pair("key", api_key);
+        if let Some(page_token) = page_token {
+            query.append_pair("pageToken", page_token);
+        }
+    }
+    Ok(url)
+}
+
+fn normalize_gemini_model_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let trimmed = trimmed.strip_prefix("models/").unwrap_or(trimmed);
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn apply_base_url<Builder>(
@@ -242,6 +546,14 @@ fn settings_field_string<'a>(settings: &'a ProviderSettingsPayload, key: &str) -
         })
 }
 
+fn deserialize_null_default_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +562,7 @@ mod tests {
         ProviderSettingsPayload,
     };
     use ai_chat_db::{FreshStore, NewProvider};
+    use rig_core::providers::{gemini, ollama, openrouter};
     use tempfile::tempdir;
 
     #[test]
@@ -317,6 +630,52 @@ mod tests {
         assert!(mapped.enabled);
         assert!(mapped.capabilities.reasoning.is_some());
         assert!(mapped.metadata.raw.is_some());
+    }
+
+    #[test]
+    fn native_openrouter_payload_keeps_supported_parameters() {
+        let payload: OpenRouterModelsResponse = serde_json::from_value(json!({
+            "data": [{
+                "id": "openai/gpt-5",
+                "name": "GPT-5",
+                "created": 1,
+                "context_length": 272000,
+                "supported_parameters": ["tools", "reasoning"]
+            }]
+        }))
+        .unwrap();
+
+        let model = &payload.data[0];
+        assert_eq!(model.context_length, Some(272000));
+        assert_eq!(
+            model.supported_parameters,
+            vec!["tools".to_string(), "reasoning".to_string()]
+        );
+    }
+
+    #[test]
+    fn native_gemini_payload_keeps_thinking_signal() {
+        let payload: GeminiModelsResponse = serde_json::from_value(json!({
+            "models": [{
+                "name": "models/gemini-2.5-flash",
+                "baseModelId": "gemini-2.5-flash",
+                "displayName": "Gemini 2.5 Flash",
+                "inputTokenLimit": 1048576,
+                "thinking": true
+            }]
+        }))
+        .unwrap();
+
+        let model = &payload.models[0];
+        assert_eq!(model.base_model_id.as_deref(), Some("gemini-2.5-flash"));
+        assert_eq!(model.thinking, Some(true));
+    }
+
+    #[test]
+    fn provider_url_joins_paths_without_losing_base_path() {
+        let url = provider_url("https://example.com/openai/v1", "/models").unwrap();
+
+        assert_eq!(url.as_str(), "https://example.com/openai/v1/models");
     }
 
     #[tokio::test]

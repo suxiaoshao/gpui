@@ -2,6 +2,7 @@ use crate::{
     AgentRunHandle, AgentRunRequest, AgentRuntimeError, Result, SkillCatalog, SkillLoader,
     history::build_prompt_history,
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
+    reasoning_params::{merge_additional_params, reasoning_additional_params},
 };
 use ai_chat_core::*;
 use ai_chat_db::{
@@ -123,10 +124,16 @@ impl AgentRuntime {
         if let Some(prompt) = prompt_preamble(request.prompt_snapshot.as_ref()) {
             builder = builder.preamble(&prompt);
         }
-        if !request.provider_tools.is_empty() {
-            builder = builder.additional_params(serde_json::json!({
-                "tools": request.provider_tools,
-            }));
+        let additional_params = merge_additional_params(
+            reasoning_additional_params(&request.settings_snapshot),
+            (!request.provider_tools.is_empty()).then(|| {
+                serde_json::json!({
+                    "tools": request.provider_tools,
+                })
+            }),
+        );
+        if let Some(additional_params) = additional_params {
+            builder = builder.additional_params(additional_params);
         }
         let agent = builder.build();
 
@@ -1744,6 +1751,7 @@ mod tests {
             model_id: model_id.to_string(),
             model_capabilities: model_capabilities(),
             provider_settings: provider_settings(),
+            reasoning_selection: None,
             tool_policy: ToolPolicySnapshot {
                 approval_policy: ToolApprovalPolicy::Never,
                 enabled_sources: vec![ToolSource::Local],

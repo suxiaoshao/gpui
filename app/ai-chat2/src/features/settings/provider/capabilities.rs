@@ -64,6 +64,13 @@ pub(super) fn snapshot_from_draft(
             default_effort: "medium".to_string(),
             efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
             summaries: false,
+            control: Some(ai_chat_core::ReasoningControlSnapshot::Levels {
+                values: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+                default_value: Some("medium".to_string()),
+            }),
+            source: ai_chat_core::CapabilitySourceSnapshot::Manual {
+                source: "provider settings capability draft".to_string(),
+            },
         });
     snapshot.structured_output = draft.structured_output;
     snapshot

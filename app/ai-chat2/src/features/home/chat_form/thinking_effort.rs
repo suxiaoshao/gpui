@@ -1,172 +1,524 @@
 use crate::foundation;
-use ai_chat_core::ReasoningCapabilitySnapshot;
+use ai_chat_core::{
+    ReasoningCapabilitySnapshot, ReasoningControlSnapshot, ReasoningSelectionSnapshot,
+    TokenBudgetSelectionMode,
+};
+use fluent_bundle::FluentArgs;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ThinkingEffort {
-    None,
-    Low,
-    Medium,
-    High,
-    XHigh,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TokenBudgetBounds {
+    pub(crate) min: Option<u32>,
+    pub(crate) max: Option<u32>,
+    pub(crate) default_value: u32,
 }
 
-impl ThinkingEffort {
-    pub(crate) fn label(self, i18n: &foundation::I18n) -> String {
-        i18n.t(match self {
-            Self::None => "chat-form-effort-none",
-            Self::Low => "chat-form-effort-low",
-            Self::Medium => "chat-form-effort-medium",
-            Self::High => "chat-form-effort-high",
-            Self::XHigh => "chat-form-effort-xhigh",
-        })
+impl TokenBudgetBounds {
+    pub(crate) fn clamp(self, value: u32) -> u32 {
+        let value = value.max(self.min.unwrap_or(0));
+        self.max.map_or(value, |max| value.min(max))
+    }
+
+    pub(crate) fn step(self) -> u32 {
+        self.max
+            .filter(|max| *max <= 256)
+            .map(|_| 1)
+            .unwrap_or(1024)
     }
 }
 
-pub(crate) fn reasoning_efforts(
+pub(crate) fn reasoning_selections(
     reasoning: Option<&ReasoningCapabilitySnapshot>,
-) -> Vec<ThinkingEffort> {
-    reasoning
-        .map(|reasoning| {
-            reasoning
-                .efforts
-                .iter()
-                .filter_map(|effort| ThinkingEffort::from_capability_value(effort))
-                .filter(|effort| *effort != ThinkingEffort::None)
-                .collect()
-        })
-        .unwrap_or_default()
+) -> Vec<ReasoningSelectionSnapshot> {
+    let Some(reasoning) = reasoning else {
+        return Vec::new();
+    };
+
+    if let Some(control) = reasoning.control.as_ref() {
+        return selections_for_control(control);
+    }
+
+    legacy_level_selections(reasoning)
 }
 
-pub(crate) fn computed_default_reasoning_effort(
+pub(crate) fn computed_default_reasoning_selection(
     reasoning: Option<&ReasoningCapabilitySnapshot>,
-) -> Option<ThinkingEffort> {
+) -> Option<ReasoningSelectionSnapshot> {
     let reasoning = reasoning?;
-    let efforts = reasoning_efforts(Some(reasoning));
-    let default_effort = ThinkingEffort::from_capability_value(&reasoning.default_effort);
-    computed_default_effort(&efforts, default_effort)
+    if let Some(control) = reasoning.control.as_ref() {
+        return default_selection_for_control(control);
+    }
+
+    legacy_default_selection(reasoning)
 }
 
-pub(crate) fn computed_default_effort(
-    efforts: &[ThinkingEffort],
-    default_effort: Option<ThinkingEffort>,
-) -> Option<ThinkingEffort> {
-    default_effort
-        .filter(|effort| *effort != ThinkingEffort::None)
-        .or_else(|| {
-            efforts
-                .contains(&ThinkingEffort::Medium)
-                .then_some(ThinkingEffort::Medium)
-        })
-        .or_else(|| {
-            efforts
-                .iter()
-                .copied()
-                .find(|effort| *effort != ThinkingEffort::None)
-        })
+pub(crate) fn reasoning_selection_is_valid(
+    reasoning: Option<&ReasoningCapabilitySnapshot>,
+    selection: &ReasoningSelectionSnapshot,
+) -> bool {
+    reasoning_selections(reasoning).contains(selection)
 }
 
-impl ThinkingEffort {
-    fn from_capability_value(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "none" => Some(Self::None),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            "x_high" | "xhigh" | "extra_high" | "extra-high" | "extra high" => Some(Self::XHigh),
-            _ => None,
+pub(crate) fn token_budget_bounds(
+    reasoning: Option<&ReasoningCapabilitySnapshot>,
+) -> Option<TokenBudgetBounds> {
+    let control = reasoning?.control.as_ref()?;
+    token_budget_bounds_for_control(control)
+}
+
+pub(crate) fn custom_token_budget_value(
+    selection: Option<&ReasoningSelectionSnapshot>,
+) -> Option<u32> {
+    match selection? {
+        ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Custom,
+            value,
+        } => *value,
+        ReasoningSelectionSnapshot::Composite { selections } => selections
+            .iter()
+            .find_map(|selection| custom_token_budget_value(Some(selection))),
+        _ => None,
+    }
+}
+
+pub(crate) fn reasoning_selection_label(
+    selection: &ReasoningSelectionSnapshot,
+    i18n: &foundation::I18n,
+) -> String {
+    match selection {
+        ReasoningSelectionSnapshot::Boolean { enabled } => i18n.t(if *enabled {
+            "chat-form-effort-enabled"
+        } else {
+            "chat-form-effort-disabled"
+        }),
+        ReasoningSelectionSnapshot::Level { value } => reasoning_value_label(value, i18n),
+        ReasoningSelectionSnapshot::TokenBudget { mode, value } => match mode {
+            TokenBudgetSelectionMode::Off => i18n.t("chat-form-effort-off"),
+            TokenBudgetSelectionMode::Dynamic => i18n.t("chat-form-effort-dynamic"),
+            TokenBudgetSelectionMode::Custom => {
+                let mut args = FluentArgs::new();
+                args.set("tokens", i64::from(value.unwrap_or(0)));
+                i18n.t_with_args("chat-form-effort-custom-budget", &args)
+            }
+        },
+        ReasoningSelectionSnapshot::Composite { selections } => selections
+            .iter()
+            .map(|selection| reasoning_selection_label(selection, i18n))
+            .collect::<Vec<_>>()
+            .join(", "),
+        ReasoningSelectionSnapshot::AlwaysOn => i18n.t("chat-form-effort-always-on"),
+    }
+}
+
+fn token_budget_bounds_for_control(
+    control: &ReasoningControlSnapshot,
+) -> Option<TokenBudgetBounds> {
+    match control {
+        ReasoningControlSnapshot::TokenBudget {
+            min,
+            max,
+            default_value,
+            ..
+        } => Some(TokenBudgetBounds {
+            min: *min,
+            max: *max,
+            default_value: default_token_budget(*min, *max, *default_value),
+        }),
+        ReasoningControlSnapshot::Composite { controls } => {
+            controls.iter().find_map(token_budget_bounds_for_control)
         }
+        _ => None,
+    }
+}
+
+fn selections_for_control(control: &ReasoningControlSnapshot) -> Vec<ReasoningSelectionSnapshot> {
+    match control {
+        ReasoningControlSnapshot::None => Vec::new(),
+        ReasoningControlSnapshot::Boolean { .. } => vec![
+            ReasoningSelectionSnapshot::Boolean { enabled: false },
+            ReasoningSelectionSnapshot::Boolean { enabled: true },
+        ],
+        ReasoningControlSnapshot::Levels { values, .. }
+        | ReasoningControlSnapshot::AdaptiveLevels { values, .. } => values
+            .iter()
+            .filter_map(|value| normalized_level_selection(value))
+            .collect(),
+        ReasoningControlSnapshot::TokenBudget {
+            min,
+            max,
+            default_value,
+            dynamic_supported,
+            off_supported,
+        } => {
+            let mut selections = Vec::new();
+            if *off_supported {
+                selections.push(ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Off,
+                    value: None,
+                });
+            }
+            if *dynamic_supported {
+                selections.push(ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Dynamic,
+                    value: None,
+                });
+            }
+            selections.push(ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: Some(default_token_budget(*min, *max, *default_value)),
+            });
+            selections
+        }
+        ReasoningControlSnapshot::AlwaysOn { .. } => vec![ReasoningSelectionSnapshot::AlwaysOn],
+        ReasoningControlSnapshot::Composite { controls } => {
+            let mut selections = Vec::new();
+            for control in controls {
+                for selection in selections_for_control(control) {
+                    if !selections.contains(&selection) {
+                        selections.push(selection);
+                    }
+                }
+            }
+            selections
+        }
+    }
+}
+
+fn default_selection_for_control(
+    control: &ReasoningControlSnapshot,
+) -> Option<ReasoningSelectionSnapshot> {
+    match control {
+        ReasoningControlSnapshot::None => None,
+        ReasoningControlSnapshot::Boolean { default_enabled } => {
+            Some(ReasoningSelectionSnapshot::Boolean {
+                enabled: default_enabled.unwrap_or(false),
+            })
+        }
+        ReasoningControlSnapshot::Levels {
+            values,
+            default_value,
+        }
+        | ReasoningControlSnapshot::AdaptiveLevels {
+            values,
+            default_value,
+        } => default_level_selection(values, default_value.as_deref()),
+        ReasoningControlSnapshot::TokenBudget {
+            min,
+            max,
+            default_value,
+            dynamic_supported,
+            off_supported,
+        } => Some(default_token_budget_selection(
+            *min,
+            *max,
+            *default_value,
+            *dynamic_supported,
+            *off_supported,
+        )),
+        ReasoningControlSnapshot::AlwaysOn { .. } => Some(ReasoningSelectionSnapshot::AlwaysOn),
+        ReasoningControlSnapshot::Composite { controls } => default_composite_selection(controls),
+    }
+}
+
+fn default_composite_selection(
+    controls: &[ReasoningControlSnapshot],
+) -> Option<ReasoningSelectionSnapshot> {
+    controls
+        .iter()
+        .find_map(|control| match control {
+            ReasoningControlSnapshot::Levels { .. }
+            | ReasoningControlSnapshot::AdaptiveLevels { .. } => {
+                default_selection_for_control(control)
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            controls.iter().find_map(|control| match control {
+                ReasoningControlSnapshot::TokenBudget { .. } => {
+                    default_selection_for_control(control)
+                }
+                _ => None,
+            })
+        })
+        .or_else(|| controls.iter().find_map(default_selection_for_control))
+}
+
+fn default_level_selection(
+    values: &[String],
+    default_value: Option<&str>,
+) -> Option<ReasoningSelectionSnapshot> {
+    default_value
+        .and_then(|value| normalized_level_value(value))
+        .filter(|value| {
+            values
+                .iter()
+                .any(|candidate| normalized_matches(candidate, value))
+        })
+        .or_else(|| {
+            values
+                .iter()
+                .find_map(|value| normalized_matches(value, "medium").then(|| "medium".to_string()))
+        })
+        .or_else(|| {
+            values
+                .iter()
+                .find_map(|value| normalized_level_value(value))
+        })
+        .map(|value| ReasoningSelectionSnapshot::Level { value })
+}
+
+fn legacy_level_selections(
+    reasoning: &ReasoningCapabilitySnapshot,
+) -> Vec<ReasoningSelectionSnapshot> {
+    let mut selections = Vec::new();
+    for effort in &reasoning.efforts {
+        if let Some(selection) = normalized_level_selection(effort) {
+            if !selections.contains(&selection) {
+                selections.push(selection);
+            }
+        }
+    }
+    selections
+}
+
+fn legacy_default_selection(
+    reasoning: &ReasoningCapabilitySnapshot,
+) -> Option<ReasoningSelectionSnapshot> {
+    let options = legacy_level_selections(reasoning);
+    normalized_level_selection(&reasoning.default_effort)
+        .filter(|selection| options.contains(selection))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|selection| {
+                    matches!(selection, ReasoningSelectionSnapshot::Level { value } if value == "medium")
+                })
+                .cloned()
+        })
+        .or_else(|| options.first().cloned())
+}
+
+fn default_token_budget_selection(
+    min: Option<u32>,
+    max: Option<u32>,
+    default_value: Option<i32>,
+    dynamic_supported: bool,
+    off_supported: bool,
+) -> ReasoningSelectionSnapshot {
+    match default_value {
+        Some(value) if value <= 0 && off_supported && !dynamic_supported => {
+            ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Off,
+                value: None,
+            }
+        }
+        Some(value) if value < 0 && dynamic_supported => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Dynamic,
+            value: None,
+        },
+        Some(0) if off_supported => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Off,
+            value: None,
+        },
+        Some(value) if value > 0 => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Custom,
+            value: Some(value as u32),
+        },
+        _ if dynamic_supported => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Dynamic,
+            value: None,
+        },
+        _ if off_supported => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Off,
+            value: None,
+        },
+        _ => ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Custom,
+            value: Some(default_token_budget(min, max, default_value)),
+        },
+    }
+}
+
+fn default_token_budget(min: Option<u32>, max: Option<u32>, default_value: Option<i32>) -> u32 {
+    default_value
+        .and_then(|value| (value > 0).then_some(value as u32))
+        .or(min.filter(|value| *value > 0))
+        .or(max)
+        .unwrap_or(1024)
+}
+
+fn normalized_level_selection(value: &str) -> Option<ReasoningSelectionSnapshot> {
+    normalized_level_value(value).map(|value| ReasoningSelectionSnapshot::Level { value })
+}
+
+fn normalized_level_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let normalized = match value.to_ascii_lowercase().as_str() {
+        "x_high" | "extra_high" | "extra-high" | "extra high" => "xhigh".to_string(),
+        other => other.to_string(),
+    };
+    Some(normalized)
+}
+
+fn normalized_matches(candidate: &str, value: &str) -> bool {
+    normalized_level_value(candidate).as_deref() == Some(value)
+}
+
+fn reasoning_value_label(value: &str, i18n: &foundation::I18n) -> String {
+    let Some(value) = normalized_level_value(value) else {
+        return String::new();
+    };
+    match value.as_str() {
+        "none" => i18n.t("chat-form-effort-none"),
+        "minimal" => i18n.t("chat-form-effort-minimal"),
+        "low" => i18n.t("chat-form-effort-low"),
+        "medium" => i18n.t("chat-form-effort-medium"),
+        "high" => i18n.t("chat-form-effort-high"),
+        "xhigh" => i18n.t("chat-form-effort-xhigh"),
+        "max" => i18n.t("chat-form-effort-max"),
+        "disabled" => i18n.t("chat-form-effort-disabled"),
+        "enabled" => i18n.t("chat-form-effort-enabled"),
+        "off" => i18n.t("chat-form-effort-off"),
+        "dynamic" => i18n.t("chat-form-effort-dynamic"),
+        "always_on" => i18n.t("chat-form-effort-always-on"),
+        _ => value,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ThinkingEffort, computed_default_effort, computed_default_reasoning_effort,
-        reasoning_efforts,
+        computed_default_reasoning_selection, reasoning_selection_is_valid, reasoning_selections,
     };
-    use ai_chat_core::ReasoningCapabilitySnapshot;
+    use ai_chat_core::{
+        CapabilitySourceSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
+        ReasoningSelectionSnapshot, TokenBudgetSelectionMode,
+    };
 
     #[test]
-    fn default_effort_skips_none_and_prefers_medium() {
-        let efforts = &[
-            ThinkingEffort::None,
-            ThinkingEffort::Low,
-            ThinkingEffort::Medium,
-            ThinkingEffort::High,
-        ];
+    fn level_controls_preserve_provider_values() {
+        let reasoning = reasoning(ReasoningControlSnapshot::Levels {
+            values: vec![
+                "minimal".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "x_high".to_string(),
+            ],
+            default_value: Some("x_high".to_string()),
+        });
 
         assert_eq!(
-            computed_default_effort(efforts, Some(ThinkingEffort::None)),
-            Some(ThinkingEffort::Medium)
+            reasoning_selections(Some(&reasoning)),
+            vec![
+                level("minimal"),
+                level("low"),
+                level("medium"),
+                level("xhigh")
+            ]
+        );
+        assert_eq!(
+            computed_default_reasoning_selection(Some(&reasoning)),
+            Some(level("xhigh"))
         );
     }
 
     #[test]
-    fn default_effort_falls_back_to_first_non_none() {
-        let efforts = &[ThinkingEffort::None, ThinkingEffort::High];
+    fn token_budget_controls_expose_off_dynamic_and_custom_default() {
+        let reasoning = reasoning(ReasoningControlSnapshot::TokenBudget {
+            min: Some(0),
+            max: Some(32768),
+            default_value: Some(-1),
+            dynamic_supported: true,
+            off_supported: true,
+        });
 
         assert_eq!(
-            computed_default_effort(efforts, None),
-            Some(ThinkingEffort::High)
+            reasoning_selections(Some(&reasoning)),
+            vec![
+                ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Off,
+                    value: None,
+                },
+                ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Dynamic,
+                    value: None,
+                },
+                ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Custom,
+                    value: Some(32768),
+                },
+            ]
+        );
+        assert_eq!(
+            computed_default_reasoning_selection(Some(&reasoning)),
+            Some(ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Dynamic,
+                value: None,
+            })
         );
     }
 
     #[test]
-    fn reasoning_efforts_map_known_capability_values() {
+    fn composite_controls_pick_a_level_default_without_leaking_old_models() {
+        let old = reasoning(ReasoningControlSnapshot::Levels {
+            values: vec!["low".to_string()],
+            default_value: Some("low".to_string()),
+        });
+        let new = reasoning(ReasoningControlSnapshot::Boolean {
+            default_enabled: Some(false),
+        });
+        let old_selection = computed_default_reasoning_selection(Some(&old)).unwrap();
+
+        assert!(!reasoning_selection_is_valid(Some(&new), &old_selection));
+        assert_eq!(
+            computed_default_reasoning_selection(Some(&new)),
+            Some(ReasoningSelectionSnapshot::Boolean { enabled: false })
+        );
+    }
+
+    #[test]
+    fn legacy_reasoning_payloads_still_map_to_level_selections() {
         let reasoning = ReasoningCapabilitySnapshot {
-            default_effort: "x_high".to_string(),
+            default_effort: "extra_high".to_string(),
             efforts: vec![
                 "low".to_string(),
                 "medium".to_string(),
                 "extra_high".to_string(),
-                "unknown".to_string(),
             ],
             summaries: false,
+            control: None,
+            source: CapabilitySourceSnapshot::Heuristic {
+                reason: "legacy".to_string(),
+            },
         };
 
         assert_eq!(
-            reasoning_efforts(Some(&reasoning)),
-            vec![
-                ThinkingEffort::Low,
-                ThinkingEffort::Medium,
-                ThinkingEffort::XHigh
-            ]
+            reasoning_selections(Some(&reasoning)),
+            vec![level("low"), level("medium"), level("xhigh")]
         );
         assert_eq!(
-            computed_default_reasoning_effort(Some(&reasoning)),
-            Some(ThinkingEffort::XHigh)
+            computed_default_reasoning_selection(Some(&reasoning)),
+            Some(level("xhigh"))
         );
     }
 
-    #[test]
-    fn reasoning_default_falls_back_to_medium_then_first_known_effort() {
-        let reasoning = ReasoningCapabilitySnapshot {
-            default_effort: "unknown".to_string(),
-            efforts: vec!["low".to_string(), "medium".to_string()],
+    fn reasoning(control: ReasoningControlSnapshot) -> ReasoningCapabilitySnapshot {
+        ReasoningCapabilitySnapshot {
+            default_effort: String::new(),
+            efforts: Vec::new(),
             summaries: false,
-        };
-
-        assert_eq!(
-            computed_default_reasoning_effort(Some(&reasoning)),
-            Some(ThinkingEffort::Medium)
-        );
+            control: Some(control),
+            source: CapabilitySourceSnapshot::Manual {
+                source: "test".to_string(),
+            },
+        }
     }
 
-    #[test]
-    fn reasoning_efforts_hide_none_option() {
-        let reasoning = ReasoningCapabilitySnapshot {
-            default_effort: "none".to_string(),
-            efforts: vec!["none".to_string(), "high".to_string()],
-            summaries: false,
-        };
-
-        assert_eq!(
-            reasoning_efforts(Some(&reasoning)),
-            vec![ThinkingEffort::High]
-        );
-        assert_eq!(
-            computed_default_reasoning_effort(Some(&reasoning)),
-            Some(ThinkingEffort::High)
-        );
+    fn level(value: &str) -> ReasoningSelectionSnapshot {
+        ReasoningSelectionSnapshot::Level {
+            value: value.to_string(),
+        }
     }
 }

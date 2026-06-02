@@ -489,6 +489,8 @@ pub struct RunSettingsSnapshot {
     pub model_id: ProviderModelId,
     pub model_capabilities: ModelCapabilitiesSnapshot,
     pub provider_settings: ProviderSettingsPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_selection: Option<ReasoningSelectionSnapshot>,
     pub tool_policy: ToolPolicySnapshot,
 }
 
@@ -743,6 +745,100 @@ pub struct ReasoningCapabilitySnapshot {
     pub default_effort: String,
     pub efforts: Vec<String>,
     pub summaries: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ReasoningControlSnapshot>,
+    #[serde(default = "default_capability_source")]
+    pub source: CapabilitySourceSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CapabilitySourceSnapshot {
+    ApiDiscovered {
+        provider: String,
+        endpoint: String,
+    },
+    OfficialDocs {
+        provider: String,
+        url: String,
+        checked_at: String,
+    },
+    Heuristic {
+        reason: String,
+    },
+    Manual {
+        source: String,
+    },
+    OpenRouterNormalized,
+}
+
+impl Default for CapabilitySourceSnapshot {
+    fn default() -> Self {
+        default_capability_source()
+    }
+}
+
+fn default_capability_source() -> CapabilitySourceSnapshot {
+    CapabilitySourceSnapshot::Heuristic {
+        reason: "legacy capability payload".to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReasoningControlSnapshot {
+    None,
+    Boolean {
+        default_enabled: Option<bool>,
+    },
+    Levels {
+        values: Vec<String>,
+        default_value: Option<String>,
+    },
+    TokenBudget {
+        min: Option<u32>,
+        max: Option<u32>,
+        default_value: Option<i32>,
+        dynamic_supported: bool,
+        off_supported: bool,
+    },
+    AdaptiveLevels {
+        values: Vec<String>,
+        default_value: Option<String>,
+    },
+    AlwaysOn {
+        visible_summary_supported: bool,
+    },
+    Composite {
+        controls: Vec<ReasoningControlSnapshot>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReasoningSelectionSnapshot {
+    Boolean {
+        enabled: bool,
+    },
+    Level {
+        value: String,
+    },
+    TokenBudget {
+        mode: TokenBudgetSelectionMode,
+        value: Option<u32>,
+    },
+    Composite {
+        selections: Vec<ReasoningSelectionSnapshot>,
+    },
+    AlwaysOn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenBudgetSelectionMode {
+    Off,
+    Dynamic,
+    Custom,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -756,11 +852,34 @@ pub enum ProviderCapabilityExtensionSnapshot {
     Ollama {
         raw_capabilities: Vec<String>,
         family: String,
+        #[serde(default)]
+        families: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<OllamaThinkingCapabilitySnapshot>,
+        #[serde(default)]
+        local_web_tools: bool,
+        raw: Option<ProviderRawPayload>,
+    },
+    Gemini {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<bool>,
+        raw: Option<ProviderRawPayload>,
+    },
+    OpenRouter {
+        #[serde(default)]
+        supported_parameters: Vec<String>,
         raw: Option<ProviderRawPayload>,
     },
     Other {
         raw: ProviderRawPayload,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OllamaThinkingCapabilitySnapshot {
+    Boolean,
+    Levels,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -987,5 +1106,60 @@ mod tests {
             serde_json::from_value::<ProviderStepRequestSnapshot>(value).unwrap(),
             snapshot
         );
+    }
+
+    #[test]
+    fn legacy_reasoning_capability_defaults_to_heuristic_source() {
+        let payload = json!({
+            "defaultEffort": "medium",
+            "efforts": ["low", "medium", "high"],
+            "summaries": true
+        });
+
+        let snapshot: ReasoningCapabilitySnapshot = serde_json::from_value(payload).unwrap();
+
+        assert_eq!(snapshot.control, None);
+        assert!(matches!(
+            snapshot.source,
+            CapabilitySourceSnapshot::Heuristic { .. }
+        ));
+    }
+
+    #[test]
+    fn run_settings_defaults_missing_reasoning_selection() {
+        let payload = json!({
+            "prompt": null,
+            "providerId": "provider",
+            "modelId": "model",
+            "modelCapabilities": {
+                "textInput": true,
+                "textOutput": true,
+                "streaming": true,
+                "imageInput": null,
+                "fileInput": null,
+                "audioInput": false,
+                "imageGeneration": false,
+                "toolCalling": null,
+                "hostedWebSearch": false,
+                "remoteMcp": false,
+                "reasoning": null,
+                "structuredOutput": false,
+                "statefulResponseContinuation": false,
+                "extension": { "provider": "none" }
+            },
+            "providerSettings": {
+                "providerKind": "openai",
+                "fields": []
+            },
+            "toolPolicy": {
+                "approvalPolicy": "never",
+                "enabledSources": [],
+                "maxSteps": 8
+            }
+        });
+
+        let snapshot: RunSettingsSnapshot = serde_json::from_value(payload).unwrap();
+
+        assert_eq!(snapshot.reasoning_selection, None);
     }
 }

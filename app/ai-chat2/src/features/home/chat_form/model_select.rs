@@ -243,7 +243,10 @@ fn capability_search_tokens(capabilities: &ModelCapabilitiesSnapshot) -> Vec<&'s
 mod tests {
     use super::{capability_tag_labels, model_sections};
     use crate::{foundation::I18n, state::providers::ProviderModelChoice};
-    use ai_chat_core::conservative_model_capabilities;
+    use ai_chat_core::{
+        CapabilitySourceSnapshot, ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot,
+        ReasoningControlSnapshot, conservative_model_capabilities,
+    };
     use gpui_component::select::SelectItem;
 
     #[test]
@@ -284,7 +287,7 @@ mod tests {
     #[test]
     fn capability_tags_are_limited_to_three_labels() {
         let i18n = I18n::english_for_test();
-        let labels = capability_tag_labels(&conservative_model_capabilities("openai"), &i18n);
+        let labels = capability_tag_labels(&capabilities_with_reasoning(), &i18n);
 
         assert_eq!(labels.len(), 3);
         assert_eq!(labels[0].as_ref(), "reasoning");
@@ -325,5 +328,22 @@ mod tests {
             model_display_name: model_display_name.map(ToString::to_string),
             capabilities: conservative_model_capabilities(provider_kind),
         }
+    }
+
+    fn capabilities_with_reasoning() -> ModelCapabilitiesSnapshot {
+        let mut capabilities = conservative_model_capabilities("openai");
+        capabilities.reasoning = Some(ReasoningCapabilitySnapshot {
+            default_effort: "medium".to_string(),
+            efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+            summaries: true,
+            control: Some(ReasoningControlSnapshot::Levels {
+                values: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+                default_value: Some("medium".to_string()),
+            }),
+            source: CapabilitySourceSnapshot::Manual {
+                source: "test".to_string(),
+            },
+        });
+        capabilities
     }
 }

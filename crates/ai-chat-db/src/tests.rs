@@ -1785,6 +1785,7 @@ fn run_settings(provider_id: &str, model_id: &str) -> RunSettingsSnapshot {
         model_id: model_id.to_string(),
         model_capabilities: model_capabilities(),
         provider_settings: provider_settings(),
+        reasoning_selection: None,
         tool_policy: tool_policy(),
     }
 }
@@ -1822,6 +1823,8 @@ fn model_capabilities() -> ModelCapabilitiesSnapshot {
             default_effort: "medium".to_string(),
             efforts: vec!["low".to_string(), "medium".to_string()],
             summaries: true,
+            control: None,
+            source: Default::default(),
         }),
         structured_output: true,
         stateful_response_continuation: true,

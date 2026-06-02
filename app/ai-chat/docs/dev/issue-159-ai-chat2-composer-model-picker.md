@@ -6,10 +6,10 @@
 
 最后同步时间：2026-06-03。
 
-当前状态：当前工作区已按本计划实现，尚未提交。`ChatForm` 的 preview-only model picker 已切到
-fresh DB 中的 enabled provider/model cache，并会在打开 picker 前刷新；本阶段仍不创建真实
-conversation，不调用 `ai-chat-agent`，不接 timeline，不扩 `AppSettingsPayload`，不实现 manual
-model editor。
+当前状态：本计划已实现。`ChatForm` 的 preview-only model picker 已切到 fresh DB 中的 enabled
+provider/model cache，并会在打开 picker 前刷新；发送 snapshot 已包含 provider/model 和
+`ReasoningSelectionSnapshot`。本阶段仍不创建真实 conversation，不启动 `AgentRuntime`，不接
+timeline，不扩 `AppSettingsPayload`，不实现 manual model editor。
 
 ## 目标边界
 
@@ -50,10 +50,10 @@ Settings Provider page
 User selects ModelOption
   -> ChatForm.selected_model_key = ProviderModelKey
   -> selected ProviderModelChoice snapshot retained in ChatForm
-  -> recompute ThinkingEffort from ModelCapabilitiesSnapshot.reasoning
+  -> recompute ReasoningSelectionSnapshot from ModelCapabilitiesSnapshot.reasoning.control
   -> SendRequested(ChatFormSubmit)
   -> later NewConversation creates conversation with default_provider_id/default_model_id
-  -> later AgentRunRequest uses provider_id/model_id/settings_snapshot
+  -> later AgentRunRequest uses provider_id/model_id/reasoning_selection/settings_snapshot
 ```
 
 本阶段只到 `SendRequested(ChatFormSubmit)` 为止。`NewConversationPage` 可以先接收事件并记录 TODO /
@@ -100,7 +100,8 @@ pub(crate) struct ChatForm {
     composer: Entity<ComposerEditor>,
     model_choices: Result<Vec<ProviderModelChoice>, SharedString>,
     selected_model_key: Option<ProviderModelKey>,
-    selected_effort: Option<ThinkingEffort>,
+    selected_reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    token_budget_input: Entity<InputState>,
     effort_picker_open: bool,
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
@@ -116,7 +117,7 @@ pub(crate) struct ChatForm {
 pub(crate) struct ChatFormSubmit {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) provider_model: ProviderModelChoice,
-    pub(crate) thinking_effort: Option<ThinkingEffort>,
+    pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
 }
 
 pub(crate) enum ChatFormEvent {
@@ -157,11 +158,14 @@ display name 和 capability tokens。
 
 ### `thinking_effort`
 
-`ThinkingEffort` 从 `ModelCapabilitiesSnapshot.reasoning` 派生：
+`ReasoningSelectionSnapshot` 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生：
 
-- 支持 `low`、`medium`、`high`、`x_high`、`xhigh`、`extra_high`。
-- 默认值优先使用 `reasoning.default_effort`，否则优先 `medium`，再取第一个已知 effort。
-- `reasoning == None` 或没有可识别 effort 时，effort picker disabled，label 显示默认“Thinking”文案或不渲染可选项。
+- `Levels` / `AdaptiveLevels` 保留 provider 原始档位值，并兼容 `x_high`、`extra_high` 到 `xhigh`。
+- `Boolean` 显示 Enabled / Disabled。
+- `TokenBudget` 显示 Off / Dynamic / Custom，并在 picker footer 提供 numeric input。
+- `AlwaysOn` 显示 Always On。
+- 旧 payload 中只有 `default_effort` / `efforts` 时仍按 legacy level 规则 fallback。
+- `reasoning == None` 或没有可识别 control 时，effort picker disabled，label 显示默认“Thinking”文案或不渲染可选项。
 
 ## 模块结构
 
@@ -233,7 +237,9 @@ Icon 约定：
 | no model / configure provider footer | `IconName::Settings` |
 | capability tool/search/vision 暂不新增专用 icon | `Tag` 文案表达 |
 
-当前 `IconName::Sparkles`、`Lightbulb`、`Cpu`、`Settings` 已存在。实现时不需要新增 Lucide 资源。
+当前 `IconName::Sparkles`、`Lightbulb`、`Cpu`、`Settings` 已存在。当前实现仍用 generic Lucide
+icon，不新增 Lucide 资源。provider brand logo 是独立后续工作：Lucide v1 已移除品牌图标，后续
+应使用品牌官方 SVG 或 Simple Icons 作为 app-owned runtime asset，并保留 generic fallback。
 
 Row 布局：
 
@@ -295,9 +301,9 @@ Empty state：
 - `ChatForm` 读取 `state::providers::enabled_provider_models(cx)`，维护 `model_choices` /
   `selected_model_key`，打开 picker 前刷新，send disabled 依赖 composer + selected model。
 - `ChatFormEvent::SendRequested` 携带 `ChatFormSubmit`，包含 composer snapshot、provider/model snapshot
-  和 thinking effort。
+  和 reasoning selection。
 - `model_select` 从 `ProviderModelChoice` 生成分组、搜索、能力标签和 Provider Settings footer。
-- `thinking_effort` 从 `ModelCapabilitiesSnapshot.reasoning` 派生可选项和默认值。
+- `thinking_effort` 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生可选项、默认值和 token budget input。
 - Settings 增加 `open_settings_window_to_provider(cx)`，复用已有 Settings window、清空搜索并切到
   Provider 页。
 - `preview_models.rs` 已删除，新增 en-US / zh-CN model picker 文案。
@@ -309,7 +315,8 @@ Empty state：
 - model search 匹配 provider display name、provider kind、model id、display name 和 capability tokens。
 - selected model 被禁用或删除后 fallback 到第一个可用模型。
 - 无可用模型时 `can_send == false`。
-- reasoning capability 到 `ThinkingEffort` 的映射覆盖 `low/medium/high/x_high/xhigh/extra_high`。
+- reasoning capability 到 `ReasoningSelectionSnapshot` 的映射覆盖 levels、boolean、token budget、
+  always-on 和 legacy effort payload。
 - 新增 i18n key 在 `en-US` 和 `zh-CN` 都存在。
 
 验证命令：
@@ -317,6 +324,10 @@ Empty state：
 - `cargo fmt`
 - `cargo test -p ai-chat2 chat_form`
 - `cargo test -p ai-chat2 provider`
+- `cargo test -p ai-chat-agent provider_models`
+- `cargo test -p ai-chat-agent model_capabilities`
+- `cargo test -p ai-chat-agent reasoning_params`
+- `cargo test -p ai-chat-core reasoning`
 - `cargo test -p ai-chat2 settings`
 - `cargo check -p ai-chat2`
 - `git diff --check`
@@ -326,8 +337,13 @@ Empty state：
 本次验证记录：
 
 - `cargo fmt`
+- `cargo test -p ai-chat-core reasoning`
+- `cargo test -p ai-chat-agent provider_models`
+- `cargo test -p ai-chat-agent model_capabilities`
+- `cargo test -p ai-chat-agent reasoning_params`
 - `cargo test -p ai-chat2 chat_form`
 - `cargo test -p ai-chat2 provider`
 - `cargo test -p ai-chat2 settings`
+- `cargo test -p ai-chat-db`
 - `cargo check -p ai-chat2`
 - `git diff --check`

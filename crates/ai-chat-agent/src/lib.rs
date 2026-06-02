@@ -1,8 +1,10 @@
 mod error;
 mod history;
 mod mcp;
+mod model_capabilities;
 mod persistence;
 mod provider_models;
+mod reasoning_params;
 mod runtime;
 mod skills;
 mod tool_registry;
