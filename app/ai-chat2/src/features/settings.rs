@@ -45,7 +45,7 @@ pub(crate) fn init(cx: &mut App) {
         ToggleSettings,
         None,
     )]);
-    cx.on_action(|_: &ToggleSettings, cx: &mut App| open_settings_window_to(true, cx));
+    cx.on_action(|_: &ToggleSettings, cx: &mut App| open_settings_window_to(true, None, cx));
 }
 
 pub(crate) struct SettingsView {
@@ -62,7 +62,11 @@ pub(crate) struct SettingsView {
 }
 
 impl SettingsView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new_with_page(
+        selected_page: SettingsPageKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -128,7 +132,7 @@ impl SettingsView {
             provider_settings,
             projects_settings,
             app_menu_bar,
-            selected_page: SettingsPageKey::General,
+            selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
             _subscriptions,
         }
@@ -310,10 +314,18 @@ impl Render for SettingsView {
 }
 
 pub(crate) fn open_settings_window_from_menu(cx: &mut App) {
-    open_settings_window_to(false, cx);
+    open_settings_window_to(false, None, cx);
 }
 
-fn open_settings_window_to(toggle_if_active: bool, cx: &mut App) {
+pub(crate) fn open_settings_window_to_provider(cx: &mut App) {
+    open_settings_window_to(false, Some(SettingsPageKey::Provider), cx);
+}
+
+fn open_settings_window_to(
+    toggle_if_active: bool,
+    selected_page: Option<SettingsPageKey>,
+    cx: &mut App,
+) {
     let span = tracing::info_span!("open_ai_chat2_settings_window");
     let _guard = span.enter();
     let exists_settings = cx.windows().iter().find_map(|window| {
@@ -335,6 +347,9 @@ fn open_settings_window_to(toggle_if_active: bool, cx: &mut App) {
                         search_input.update(cx, |search_input, cx| {
                             search_input.set_value("", window, cx);
                         });
+                        if let Some(selected_page) = selected_page {
+                            settings.selected_page = selected_page;
+                        }
                         settings.focus(window, cx);
                         cx.notify();
                     });
@@ -355,12 +370,12 @@ fn open_settings_window_to(toggle_if_active: bool, cx: &mut App) {
             };
         }
         None => {
-            inner_open_settings_window(cx);
+            inner_open_settings_window(selected_page, cx);
         }
     }
 }
 
-fn inner_open_settings_window(cx: &mut App) {
+fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut App) {
     let title = cx.global::<I18n>().t("settings-title");
     let placement = state::layout::restored_window_placement(
         state::layout::WindowPlacementKind::Settings,
@@ -379,7 +394,8 @@ fn inner_open_settings_window(cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            let setting = cx.new(|cx| SettingsView::new(window, cx));
+            let selected_page = selected_page.unwrap_or(SettingsPageKey::General);
+            let setting = cx.new(|cx| SettingsView::new_with_page(selected_page, window, cx));
             cx.new(|cx| Root::new(setting, window, cx))
         },
     ) {

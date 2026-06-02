@@ -171,6 +171,13 @@ where
         self.selected_value = selected_value;
     }
 
+    pub(in crate::features::home) fn set_empty_label(
+        &mut self,
+        empty_label: impl Into<SharedString>,
+    ) {
+        self.empty_label = empty_label.into();
+    }
+
     pub(in crate::features::home) fn selected_index(&self) -> Option<IndexPath> {
         Self::selected_index_for(&self.sections, self.selected_value.as_ref())
     }
@@ -315,10 +322,12 @@ where
             .sections
             .get(ix.section)
             .and_then(|section| section.items.get(ix.row))
+            .cloned()
         else {
             return;
         };
 
+        self.selected_value = Some(item.value().clone());
         (self.on_confirm)(item.as_ref().clone(), window, cx);
     }
 

@@ -1,12 +1,12 @@
 use super::{
     ChatForm,
     picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
-    preview_models::PreviewModel,
-    thinking_effort::ThinkingEffort,
+    thinking_effort::{ThinkingEffort, reasoning_efforts},
 };
 use crate::{foundation, foundation::assets::IconName};
+use ai_chat_core::ModelCapabilitiesSnapshot;
 use gpui::*;
-use gpui_component::{label::Label, select::SelectItem};
+use gpui_component::{Disableable, label::Label, select::SelectItem};
 
 #[derive(Clone, Debug)]
 pub(super) struct EffortOption {
@@ -45,15 +45,14 @@ impl SelectItem for EffortOption {
 }
 
 pub(super) fn effort_sections(
-    model: &PreviewModel,
+    capabilities: Option<&ModelCapabilitiesSnapshot>,
     i18n: &foundation::I18n,
 ) -> Vec<PickerSection<EffortOption>> {
+    let efforts =
+        reasoning_efforts(capabilities.and_then(|capabilities| capabilities.reasoning.as_ref()));
     vec![PickerSection::section(
         i18n.t("chat-form-thinking-header"),
-        model
-            .selectable_efforts()
-            .into_iter()
-            .map(EffortOption::new),
+        efforts.into_iter().map(EffortOption::new),
     )]
 }
 
@@ -63,6 +62,8 @@ impl ChatForm {
             .selected_effort
             .map(|effort| effort.label(cx.global::<foundation::I18n>()))
             .unwrap_or_else(|| cx.global::<foundation::I18n>().t("chat-form-effort-select"));
+
+        let has_effort_options = self.has_effort_options();
 
         picker_popover(
             cx,
@@ -74,7 +75,8 @@ impl ChatForm {
                     IconName::Lightbulb,
                     label,
                     self.effort_picker_open,
-                ),
+                )
+                .disabled(!has_effort_options),
                 list: self.effort_picker.clone(),
                 width: px(180.),
                 max_height: rems(16.).into(),
