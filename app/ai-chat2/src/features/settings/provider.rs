@@ -12,11 +12,10 @@ use ai_chat_db::{
     FreshRepository, NewProvider, ProviderModelRecord, ProviderRecord, UpdateProvider,
 };
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
+use gpui::{StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
-    group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -59,6 +58,7 @@ pub(super) struct ProviderListItem {
 pub(super) struct ProviderSettingsPage {
     provider_list: Entity<ListState<ProviderListDelegate>>,
     model_list: Entity<ListState<ProviderModelListDelegate>>,
+    detail_scroll_handle: ScrollHandle,
     selected: ProviderSelection,
     providers: Vec<ProviderListItem>,
     models: Vec<ProviderModelDraft>,
@@ -119,7 +119,6 @@ impl ProviderSettingsPage {
             .unwrap_or(ProviderSelection::NewCustom);
         let draft = Self::draft_for_selection(&selected, &providers);
         let models = Self::load_models_for_draft(&draft, cx).unwrap_or_default();
-        let page = cx.entity().downgrade();
         let provider_rows = provider_list_rows(&providers, cx.global::<I18n>());
         let provider_selected_index =
             ProviderListDelegate::selected_index_for(&provider_rows, &draft.kind);
@@ -137,11 +136,7 @@ impl ProviderSettingsPage {
         let model_empty_label = cx.global::<I18n>().t("provider-empty-models");
         let model_list = cx.new(|cx| {
             ListState::new(
-                ProviderModelListDelegate::new(
-                    model_rows.clone(),
-                    page.clone(),
-                    model_empty_label.clone(),
-                ),
+                ProviderModelListDelegate::new(model_rows.clone(), model_empty_label.clone()),
                 window,
                 cx,
             )
@@ -150,9 +145,12 @@ impl ProviderSettingsPage {
         });
         let provider_list_subscription =
             cx.subscribe_in(&provider_list, window, Self::on_provider_list_event);
+        let model_list_subscription =
+            cx.subscribe_in(&model_list, window, Self::on_model_list_event);
         let mut this = Self {
             provider_list,
             model_list,
+            detail_scroll_handle: ScrollHandle::default(),
             selected,
             providers,
             models,
@@ -164,7 +162,7 @@ impl ProviderSettingsPage {
             save_state: AsyncActionState::Idle,
             fetch_state: AsyncActionState::Idle,
             manual_model_editor: None,
-            _list_subscriptions: vec![provider_list_subscription],
+            _list_subscriptions: vec![provider_list_subscription, model_list_subscription],
             _field_subscriptions: Vec::new(),
             _load_task: None,
             _save_task: None,
@@ -342,6 +340,28 @@ impl ProviderSettingsPage {
             return;
         }
         self.select_provider_from_list(kind, window, cx);
+    }
+
+    fn on_model_list_event(
+        &mut self,
+        _: &Entity<ListState<ProviderModelListDelegate>>,
+        event: &ListEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ListEvent::Confirm(ix) = event else {
+            return;
+        };
+        let Some(row) = self
+            .model_list
+            .read(cx)
+            .delegate()
+            .row_for_index(*ix)
+            .cloned()
+        else {
+            return;
+        };
+        self.toggle_model(row.model_id, !row.enabled, window, cx);
     }
 
     fn select_provider_inner(
@@ -735,12 +755,22 @@ impl ProviderSettingsPage {
             .h_full()
             .min_h_0()
             .child(
-                div().flex_1().min_h_0().overflow_hidden().child(
-                    List::new(&self.provider_list)
-                        .search_placeholder(cx.global::<I18n>().t("provider-search-placeholder"))
-                        .w_full()
-                        .h_full(),
-                ),
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
+                    .child(
+                        List::new(&self.provider_list)
+                            .search_placeholder(
+                                cx.global::<I18n>().t("provider-search-placeholder"),
+                            )
+                            .w_full()
+                            .h_full(),
+                    ),
             )
             .into_any_element()
     }
@@ -760,13 +790,28 @@ impl ProviderSettingsPage {
             .gap_4()
             .child(self.render_header(spec, cx))
             .child(
-                v_flex()
+                div()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .gap_4()
-                    .child(self.render_config(spec, cx))
-                    .child(self.render_models(cx)),
+                    .min_w_0()
+                    .overflow_hidden()
+                    .relative()
+                    .child(
+                        div()
+                            .id("provider-settings-detail-scroll")
+                            .size_full()
+                            .track_scroll(&self.detail_scroll_handle)
+                            .overflow_y_scroll()
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_4()
+                                    .child(self.render_config(spec, cx))
+                                    .child(self.render_models(cx)),
+                            ),
+                    )
+                    .vertical_scrollbar(&self.detail_scroll_handle),
             )
             .into_any_element()
     }
@@ -774,6 +819,7 @@ impl ProviderSettingsPage {
     fn render_header(&self, spec: &ProviderSpec, cx: &mut Context<Self>) -> AnyElement {
         let dirty = self.is_dirty(cx);
         h_flex()
+            .flex_none()
             .w_full()
             .items_start()
             .justify_between()
@@ -820,6 +866,7 @@ impl ProviderSettingsPage {
 
     fn render_config(&self, spec: &ProviderSpec, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
+            .flex_none()
             .w_full()
             .gap_3()
             .rounded(cx.theme().radius)
@@ -903,13 +950,23 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        GroupBox::new()
-            .outline()
-            .title(
+        v_flex()
+            .flex_none()
+            .w_full()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .overflow_hidden()
+            .child(
                 h_flex()
                     .w_full()
                     .items_center()
                     .justify_between()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
                         Label::new(cx.global::<I18n>().t("provider-section-models"))
                             .text_sm()
@@ -942,7 +999,6 @@ impl ProviderSettingsPage {
                             .h_full(),
                     ),
             )
-            .border_color(cx.theme().border)
             .into_any_element()
     }
 }
@@ -1178,7 +1234,6 @@ mod tests {
     };
     use ai_chat_db::{FreshStore, NewProvider};
     use fluent_bundle::FluentArgs;
-    use gpui::WeakEntity;
     use gpui_component::IndexPath;
     use gpui_component::input::InputEvent;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1515,6 +1570,27 @@ mod tests {
     }
 
     #[test]
+    fn provider_list_delegate_separates_filtered_rows_except_last() {
+        let providers = builtin_provider_specs()
+            .into_iter()
+            .map(|spec| ProviderListItem {
+                spec,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let i18n = I18n::english_for_test();
+        let mut delegate = provider_list_delegate(&providers, &i18n);
+
+        assert!(delegate.row_separator_for_test(0));
+        assert!(!delegate.row_separator_for_test(providers.len() - 1));
+
+        delegate.set_query_for_test("ollama");
+
+        assert_eq!(delegate.row_count_for_test(), 1);
+        assert!(!delegate.row_separator_for_test(0));
+    }
+
+    #[test]
     fn model_list_delegate_searches_by_id_display_name_capability_and_status() {
         let models = vec![
             provider_model_draft("gpt-5", Some("GPT Five"), true, "openai"),
@@ -1530,6 +1606,22 @@ mod tests {
 
         delegate.set_query_for_test("禁用");
         assert_eq!(delegate.row_count_for_test(), 1);
+    }
+
+    #[test]
+    fn model_list_delegate_index_uses_filtered_rows() {
+        let models = vec![
+            provider_model_draft("gpt-5", Some("GPT Five"), true, "openai"),
+            provider_model_draft("llama3.2", None, false, "ollama"),
+        ];
+        let mut delegate = model_list_delegate(&models);
+
+        delegate.set_query_for_test("llama");
+
+        let row = delegate
+            .row_for_index(IndexPath::new(0))
+            .expect("filtered row exists");
+        assert_eq!(row.model_id, "llama3.2");
     }
 
     #[test]
@@ -1612,6 +1704,6 @@ mod tests {
     }
 
     fn model_list_delegate(models: &[ProviderModelDraft]) -> ProviderModelListDelegate {
-        ProviderModelListDelegate::new(model_list_rows(models), WeakEntity::new_invalid(), "empty")
+        ProviderModelListDelegate::new(model_list_rows(models), "empty")
     }
 }

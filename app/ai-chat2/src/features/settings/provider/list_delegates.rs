@@ -11,9 +11,7 @@ use gpui_component::{
 
 use crate::foundation::{I18n, assets::IconName};
 
-use super::{
-    ProviderListItem, ProviderSettingsPage, catalog::ProviderKindKey, draft::ProviderModelDraft,
-};
+use super::{ProviderListItem, catalog::ProviderKindKey, draft::ProviderModelDraft};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ProviderListRow {
@@ -35,13 +33,15 @@ pub(super) struct ProviderListDelegate {
 pub(super) struct ProviderListEntry {
     row: ProviderListRow,
     selected: bool,
+    show_separator: bool,
 }
 
 impl ProviderListEntry {
-    fn new(row: ProviderListRow) -> Self {
+    fn new(row: ProviderListRow, show_separator: bool) -> Self {
         Self {
             row,
             selected: false,
+            show_separator,
         }
     }
 }
@@ -65,8 +65,10 @@ impl RenderOnce for ProviderListEntry {
                 self.row.kind.as_str()
             ))
             .w_full()
-            .h(px(50.))
-            .py_1()
+            .h(px(42.))
+            .when(self.show_separator, |this| {
+                this.border_b_1().border_color(cx.theme().border)
+            })
             .child(
                 h_flex()
                     .id(format!(
@@ -74,19 +76,12 @@ impl RenderOnce for ProviderListEntry {
                         self.row.kind.as_str()
                     ))
                     .w_full()
-                    .h(px(42.))
+                    .h_full()
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .rounded(cx.theme().radius)
-                    .border_1()
-                    .border_color(if self.selected {
-                        cx.theme().primary
-                    } else {
-                        cx.theme().border
-                    })
                     .bg(if self.selected {
-                        cx.theme().accent
+                        cx.theme().secondary_active
                     } else {
                         cx.theme().background
                     })
@@ -138,6 +133,11 @@ impl ProviderListDelegate {
 
     pub(super) fn kind_for_index(&self, ix: IndexPath) -> Option<ProviderKindKey> {
         self.rows.get(ix.row).map(|row| row.kind.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn row_separator_for_test(&self, row: usize) -> bool {
+        row + 1 < self.rows.len()
     }
 
     fn apply_query(&mut self) {
@@ -195,7 +195,11 @@ impl ListDelegate for ProviderListDelegate {
         _window: &mut Window,
         _cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        self.rows.get(ix.row).cloned().map(ProviderListEntry::new)
+        let show_separator = ix.row + 1 < self.rows.len();
+        self.rows
+            .get(ix.row)
+            .cloned()
+            .map(|row| ProviderListEntry::new(row, show_separator))
     }
 
     fn render_empty(
@@ -233,27 +237,29 @@ pub(super) struct ProviderModelListDelegate {
     all_rows: Vec<ProviderModelRow>,
     rows: Vec<ProviderModelRow>,
     last_query: String,
-    page: WeakEntity<ProviderSettingsPage>,
     empty_label: SharedString,
 }
 
 #[derive(IntoElement, Clone)]
 pub(super) struct ProviderModelListEntry {
+    ix: IndexPath,
     row: ProviderModelRow,
-    page: WeakEntity<ProviderSettingsPage>,
+    list: WeakEntity<ListState<ProviderModelListDelegate>>,
     selected: bool,
     show_separator: bool,
 }
 
 impl ProviderModelListEntry {
     fn new(
+        ix: IndexPath,
         row: ProviderModelRow,
-        page: WeakEntity<ProviderSettingsPage>,
+        list: WeakEntity<ListState<ProviderModelListDelegate>>,
         show_separator: bool,
     ) -> Self {
         Self {
+            ix,
             row,
-            page,
+            list,
             selected: false,
             show_separator,
         }
@@ -273,8 +279,8 @@ impl Selectable for ProviderModelListEntry {
 
 impl RenderOnce for ProviderModelListEntry {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let model_id = self.row.model_id.clone();
-        let page = self.page.clone();
+        let ix = self.ix;
+        let list = self.list.clone();
 
         div()
             .id(format!("provider-model-row-{}", self.row.model_id))
@@ -300,9 +306,9 @@ impl RenderOnce for ProviderModelListEntry {
                         Switch::new(format!("provider-model-enabled-{}", self.row.model_id))
                             .checked(self.row.enabled)
                             .small()
-                            .on_click(move |checked, _window, cx| {
-                                let _ = page.update_in(cx, |page, window, cx| {
-                                    page.toggle_model(model_id.clone(), *checked, window, cx);
+                            .on_click(move |_, _window, cx| {
+                                let _ = list.update(cx, |_, cx| {
+                                    cx.emit(ListEvent::Confirm(ix));
                                 });
                             }),
                     )
@@ -333,16 +339,11 @@ impl RenderOnce for ProviderModelListEntry {
 }
 
 impl ProviderModelListDelegate {
-    pub(super) fn new(
-        rows: Vec<ProviderModelRow>,
-        page: WeakEntity<ProviderSettingsPage>,
-        empty_label: impl Into<SharedString>,
-    ) -> Self {
+    pub(super) fn new(rows: Vec<ProviderModelRow>, empty_label: impl Into<SharedString>) -> Self {
         Self {
             all_rows: rows.clone(),
             rows,
             last_query: String::new(),
-            page,
             empty_label: empty_label.into(),
         }
     }
@@ -350,6 +351,10 @@ impl ProviderModelListDelegate {
     pub(super) fn set_rows(&mut self, rows: Vec<ProviderModelRow>) {
         self.all_rows = rows;
         self.apply_query();
+    }
+
+    pub(super) fn row_for_index(&self, ix: IndexPath) -> Option<&ProviderModelRow> {
+        self.rows.get(ix.row)
     }
 
     fn apply_query(&mut self) {
@@ -405,13 +410,14 @@ impl ListDelegate for ProviderModelListDelegate {
         &mut self,
         ix: IndexPath,
         _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
+        cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let show_separator = ix.row + 1 < self.rows.len();
+        let list = cx.entity().downgrade();
         self.rows
             .get(ix.row)
             .cloned()
-            .map(|row| ProviderModelListEntry::new(row, self.page.clone(), show_separator))
+            .map(|row| ProviderModelListEntry::new(ix, row, list, show_separator))
     }
 
     fn render_empty(
