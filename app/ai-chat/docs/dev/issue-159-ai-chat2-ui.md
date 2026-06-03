@@ -3,8 +3,9 @@
 本文档是 GitHub issue #159 的细化开发清单和全量能力追踪板。父级协调文档仍是
 `app/ai-chat/docs/dev/issue-137-llm-abstractions.md`；本文档负责把
 `app/ai-chat2` UI、壳、本机状态、可观测性和旧 `app/ai-chat` 能力映射拆成可执行事项。
+侧边栏专项计划见 `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md`。
 
-最后同步时间：2026-06-03。
+最后同步时间：2026-06-04。
 
 当前分支：`codex/issue-159-ai-chat2-ui`。
 
@@ -19,8 +20,12 @@ polish、右侧 detail 整体滚动和 model switch 事件修复）、DB-backed 
 capability source / reasoning control 第一版（Ollama/Gemini/OpenRouter API discovery、OpenAI/Anthropic/
 DeepSeek/Mistral docs-derived profile、Composer token budget selector 和 provider-specific reasoning
 params），以及 provider brand logo 资产框架（Simple Icons 来源的 app-owned SVG、`ProviderVisual`
-fallback 和 Settings/ChatForm 渲染接线）。GitHub #159 仍 open，当前没有 PR，尚未合入
-`codex/issue-137-llm-abstractions`。完整 project chat、多模态 timeline、Prompt/Shortcut settings、
+fallback 和 Settings/ChatForm 渲染接线）、project-first sidebar 第一版（新对话/搜索入口、置顶、
+项目展开、无项目对话、hover action、项目菜单、conversation search、右侧 conversation route 和
+project/conversation soft-delete）。GitHub #159 仍 open，当前没有 PR，尚未合入
+`codex/issue-137-llm-abstractions`。本轮已补齐 Sidebar action row 视觉一致性：顶部“新对话/搜索”和底部
+“设置”统一使用 hover-only shortcut badge，并把跨平台快捷键改为 GPUI `secondary` 语义。完整 project chat、
+多模态 timeline、Prompt/Shortcut settings、
 manual provider model editor、真实 agent runtime 和真实 Temporary Conversation
 runtime 仍未完成。
 
@@ -44,6 +49,7 @@ runtime 仍未完成。
 - `4d4110b feat(ai-chat2): wire provider settings model fetch`
 - 本轮实现：DB-backed Composer model picker、provider model capability source 和 reasoning controls
 - 本轮实现：provider brand assets / `ProviderVisual` / app-assets proc macro refactor
+- 本轮实现：project-first sidebar 第一版和 Sidebar shortcut action row polish
 
 ## 状态定义
 
@@ -103,7 +109,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | About window | `app/ai-chat2/src/app/about.rs` | 已实现精简真实 About：app icon、名称、描述、版本、license 和 GitHub 链接。 |
 | titlebar menu bar | `app/ai-chat2/src/app/title_bar_menu.rs` | 非 macOS 渲染 app icon + component menu bar；macOS 使用系统菜单。 |
 | main window shell | `app/ai-chat2/src/features/home/shell.rs` | 主窗口 UI root 已移出 `app.rs`：titlebar、可调宽 Sidebar、空内容区和 `gpui-component` sheet/dialog/notification layers 都挂在 Home root。 |
-| home sidebar component | `app/ai-chat2/src/features/home/sidebar.rs` | Sidebar 已拆成独立组件；当前底部只有 Settings item，打开真实 Settings 窗口。 |
+| home sidebar component | `app/ai-chat2/src/features/home/sidebar.rs` / `features/home/sidebar/row.rs` | Sidebar 已拆成独立组件；project-first sidebar 第一版已接线。顶部“新对话/搜索”和底部“设置”统一使用 app-local shortcut action row，hover 时显示 `Kbd` shortcut badge，快捷键使用 GPUI `secondary` 语义。 |
 | New Conversation 默认页 + 项目选择器 | `app/ai-chat2/src/features/home/new_conversation.rs` | Home 右侧未选择具体对话时显示默认新对话页：中性 AI Chat 标题、现有 `ChatForm` 和仅在该页出现的项目选择器。项目选择器读取 normal projects，支持“不使用项目”，选中项目后写入 `default_project_id` 并刷新 composer skill catalog；添加项目只选择现有文件夹，不提供新建空项目。Composer 使用 opaque input surface 压住下层项目条；项目条按 Codex app 参考使用 neutral muted surface，不使用 secondary/action 色。 |
 | dock/app reopen | `app/ai-chat2/src/app.rs` | app reopen 会 show/create main window。 |
 | close-hide behavior | `app/ai-chat2/src/app.rs` | macOS/Windows 主窗口关闭时隐藏窗口。 |
@@ -124,6 +130,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | temporary hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 `last_pressed` 和 tracing/log event。 | 打开/切换真实 temporary conversation。 |
 | shortcut hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 diagnostics 和 tracing/log event。 | 按 shortcut 的 prompt/provider/model/input/action 执行 agent run。 |
 | ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | New Conversation 默认页已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。model picker 已读取 fresh DB enabled provider/model cache，reasoning selector 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，支持 level、boolean、always-on 和 token budget，`SendRequested` 已携带 `ChatFormSubmit`。`+` 仍是 local event，prompt selector、attachments 和 agent loop 仍未接。 | 下一步接真实 prompt 数据源、附件入口、conversation create、send/run/cancel/retry 和 agent loop。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| Project-first sidebar | `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md` | 已完成第一版：顶部新对话/搜索入口、底部设置入口、置顶对话/项目、项目展开、项目更多菜单、conversation search、conversation route、project/conversation soft-delete，以及 shortcut action row 视觉对齐已接线。 | 后续继续补完整 timeline、真实 conversation create/send runtime、last item preview 和更完整的 project metadata/status UI。 |
 
 ## 基础设施 / 本地状态 / 可观测性
 
@@ -162,8 +169,8 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 
 | 区域 | 事项 |
 | --- | --- |
-| Project navigation | New Conversation 默认页已有 default/no-project selector；仍缺 project-first sidebar、open folder、recent projects、scratch project 和 project metadata/status。 |
-| Conversation navigation | conversation list、new conversation、archive/delete、search/filter、title edit、status display、last item preview。 |
+| Project navigation | New Conversation 默认页已有 default/no-project selector；project-first sidebar 第一版已实现项目列表、置顶、展开、菜单、显示目录、重命名和移除。仍缺 recent projects、scratch project runtime 和更完整的 project metadata/status UI。 |
+| Conversation navigation | conversation list、new conversation 入口、delete、search/filter 和右侧 conversation route 已实现第一版；仍缺真实 conversation create/send runtime、title edit、status display、last item preview 和完整 timeline。 |
 | Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生，model picker row/trigger 已接 provider logo visual。真实工作仍包括 prompt selector、多 part input、capability warning、附件、conversation create、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Timeline text | user/assistant text item、streaming text delta、multi-block assistant output、copy/export affordance。 |
 | Reasoning | multiple reasoning blocks、reasoning summary、collapsed/expanded state、provider-specific reasoning capability gating。 |

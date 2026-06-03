@@ -10,14 +10,20 @@ use gpui_component::{
     v_flex,
 };
 
-use super::{new_conversation::NewConversationPage, sidebar::HomeSidebar};
+use super::{
+    actions::{OpenConversationSearch, OpenNewConversation},
+    conversation::ConversationPage,
+    new_conversation::NewConversationPage,
+    sidebar::{self, HomeSidebar},
+};
 
-const KEY_CONTEXT: &str = "AiChat2Home";
+pub(crate) const KEY_CONTEXT: &str = "AiChat2Home";
 
 pub(crate) struct HomeView {
     focus_handle: FocusHandle,
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::AiChat2LayoutState>,
+    workspace: Entity<state::AiChat2WorkspaceStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
     _subscriptions: Vec<Subscription>,
@@ -30,18 +36,32 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
+        let workspace = state::workspace::workspace(cx);
         let sidebar = cx.new(HomeSidebar::new);
         let new_conversation = cx.new(|cx| NewConversationPage::new(window, cx));
         let layout_state_for_bounds = layout_state.clone();
+        let new_conversation_for_workspace = new_conversation.clone();
 
         Self {
             focus_handle,
             app_menu_bar,
             layout_state: layout_state.clone(),
+            workspace: workspace.clone(),
             sidebar,
             new_conversation,
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
+                    cx.notify();
+                }),
+                cx.observe(&workspace, move |_state, workspace, cx| {
+                    let pending_project_id = workspace.update(cx, |workspace, _cx| {
+                        workspace.take_pending_new_conversation_project_id()
+                    });
+                    if let Some(project_id) = pending_project_id {
+                        new_conversation_for_workspace.update(cx, |page, cx| {
+                            page.select_project_id_from_sidebar(project_id, cx);
+                        });
+                    }
                     cx.notify();
                 }),
                 cx.observe_window_bounds(window, move |_state, window, cx| {
@@ -95,6 +115,27 @@ impl HomeView {
     fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
+
+    fn open_new_conversation(
+        &mut self,
+        _: &OpenNewConversation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.open_new_conversation(cx);
+        });
+        self.focus_chat_form(window, cx);
+    }
+
+    fn open_conversation_search(
+        &mut self,
+        _: &OpenConversationSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        sidebar::search::open_conversation_search_dialog(window, cx);
+    }
 }
 
 impl Render for HomeView {
@@ -102,6 +143,7 @@ impl Render for HomeView {
         let title = cx.global::<foundation::I18n>().t("app-title");
         let sidebar_width = self.layout_state.read(cx).sidebar_width();
         let layout_state = self.layout_state.clone();
+        let route = self.workspace.read(cx).route().clone();
         let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
@@ -116,6 +158,8 @@ impl Render for HomeView {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
+            .on_action(cx.listener(Self::open_new_conversation))
+            .on_action(cx.listener(Self::open_conversation_search))
             .child(
                 div()
                     .child(
@@ -146,14 +190,16 @@ impl Render for HomeView {
                                 )
                                 .child(self.sidebar.clone()),
                         )
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .size_full()
-                                    .min_w_0()
-                                    .child(self.new_conversation.clone()),
-                            ),
-                        ),
+                        .child(resizable_panel().child(div().size_full().min_w_0().child(
+                            match route {
+                                state::HomeRoute::NewConversation => {
+                                    self.new_conversation.clone().into_any_element()
+                                }
+                                state::HomeRoute::Conversation(conversation_id) => {
+                                    ConversationPage::new(conversation_id).into_any_element()
+                                }
+                            },
+                        ))),
                 ),
             )
             .children(sheet_layer)

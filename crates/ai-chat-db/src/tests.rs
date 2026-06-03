@@ -144,6 +144,8 @@ fn projects_can_be_listed_in_display_order() {
             scratch_reason: Some("temporary".to_string()),
             git_root: None,
             last_active_conversation_id: None,
+            pinned: false,
+            removed: false,
         },
     })
     .unwrap();
@@ -177,6 +179,182 @@ fn project_can_be_loaded_by_path() {
 
     assert_eq!(found.id, inserted.id);
     assert!(repo.get_project_by_path("/tmp/missing").unwrap().is_none());
+}
+
+#[test]
+fn sidebar_projects_filter_scratch_and_removed_projects() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let visible = repo.insert_project(project("visible")).unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/hidden-scratch".to_string(),
+        display_name: "Hidden Scratch".to_string(),
+        kind: ProjectKind::Scratch,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("no-project".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+            pinned: false,
+            removed: false,
+        },
+    })
+    .unwrap();
+    let removed = repo.insert_project(project("removed")).unwrap();
+    repo.set_project_removed(&removed.id, true).unwrap();
+
+    let projects = repo.list_sidebar_projects().unwrap();
+
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, visible.id);
+}
+
+#[test]
+fn sidebar_project_and_conversation_metadata_can_be_updated() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let project = repo.insert_project(project("pin")).unwrap();
+    let mut project_metadata = project.metadata.clone();
+    project_metadata.pinned = true;
+    let project = repo
+        .update_project_metadata(&project.id, project_metadata)
+        .unwrap();
+    assert!(project.metadata.pinned);
+
+    let renamed = repo
+        .rename_project(&project.id, "Renamed Project".to_string())
+        .unwrap();
+    assert_eq!(renamed.display_name, "Renamed Project");
+
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let mut conversation_metadata = conversation.metadata.clone();
+    conversation_metadata.pinned = false;
+    let conversation = repo
+        .update_conversation_metadata(&conversation.id, conversation_metadata)
+        .unwrap();
+
+    assert!(!conversation.metadata.pinned);
+}
+
+#[test]
+fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let visible_project = repo
+        .insert_project(project("visible-conversation"))
+        .unwrap();
+    let removed_project = repo
+        .insert_project(project("removed-conversation"))
+        .unwrap();
+    repo.set_project_removed(&removed_project.id, true).unwrap();
+    let scratch_project = repo
+        .insert_project(NewProject {
+            path: "/tmp/scratch-conversation".to_string(),
+            display_name: "Scratch".to_string(),
+            kind: ProjectKind::Scratch,
+            metadata: ProjectMetadata {
+                scratch_reason: Some("no-project".to_string()),
+                git_root: None,
+                last_active_conversation_id: None,
+                pinned: false,
+                removed: false,
+            },
+        })
+        .unwrap();
+
+    let visible = repo
+        .insert_conversation(conversation(&visible_project))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&visible_project))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+    repo.insert_conversation(conversation(&removed_project))
+        .unwrap();
+    let scratch = repo
+        .insert_conversation(conversation(&scratch_project))
+        .unwrap();
+
+    let conversations = repo.list_sidebar_conversations().unwrap();
+    let ids = conversations
+        .iter()
+        .map(|conversation| conversation.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(ids.contains(&visible.id.as_str()));
+    assert!(ids.contains(&scratch.id.as_str()));
+    assert!(!ids.contains(&deleted.id.as_str()));
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let searchable_project = repo.insert_project(project("searchable-project")).unwrap();
+    let removed_project = repo.insert_project(project("removed-search")).unwrap();
+    repo.set_project_removed(&removed_project.id, true).unwrap();
+
+    let mut by_title = conversation(&searchable_project);
+    by_title.title = "Release notes".to_string();
+    let by_title = repo.insert_conversation(by_title).unwrap();
+
+    let mut by_item = conversation(&searchable_project);
+    by_item.title = "Chat".to_string();
+    let by_item = repo.insert_conversation(by_item).unwrap();
+    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+        .unwrap();
+
+    let by_project = repo
+        .insert_conversation(conversation(&searchable_project))
+        .unwrap();
+    let removed = repo
+        .insert_conversation(conversation(&removed_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&removed.id, "unique needle"))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&searchable_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&deleted.id, "unique needle"))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+
+    let title_matches = repo.search_sidebar_conversations("release", 10).unwrap();
+    assert_eq!(title_matches.len(), 1);
+    assert_eq!(title_matches[0].id, by_title.id);
+
+    let item_matches = repo
+        .search_sidebar_conversations("unique needle", 10)
+        .unwrap();
+    assert_eq!(item_matches.len(), 1);
+    assert_eq!(item_matches[0].id, by_item.id);
+
+    let project_matches = repo
+        .search_sidebar_conversations("searchable-project", 10)
+        .unwrap();
+    assert!(
+        project_matches
+            .iter()
+            .any(|conversation| conversation.id == by_project.id)
+    );
+    assert!(
+        !project_matches
+            .iter()
+            .any(|conversation| conversation.id == removed.id)
+    );
+    assert!(
+        !project_matches
+            .iter()
+            .any(|conversation| conversation.id == deleted.id)
+    );
 }
 
 #[test]
@@ -1526,6 +1704,8 @@ fn project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: Some("/tmp".to_string()),
         last_active_conversation_id: None,
+        pinned: false,
+        removed: false,
     }
 }
 

@@ -562,6 +562,10 @@ pub struct ProjectMetadata {
     pub scratch_reason: Option<String>,
     pub git_root: Option<String>,
     pub last_active_conversation_id: Option<ConversationId>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -977,6 +981,19 @@ mod tests {
         let id = crate::new_id();
         assert_eq!(id.len(), 36);
         assert_eq!(id.chars().nth(14), Some('7'));
+    }
+
+    #[test]
+    fn legacy_project_metadata_defaults_sidebar_flags() {
+        let metadata: ProjectMetadata = serde_json::from_value(json!({
+            "scratchReason": null,
+            "gitRoot": "/tmp/project",
+            "lastActiveConversationId": null
+        }))
+        .unwrap();
+
+        assert!(!metadata.pinned);
+        assert!(!metadata.removed);
     }
 
     #[test]

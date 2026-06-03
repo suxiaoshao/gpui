@@ -38,6 +38,7 @@ pub(crate) struct NewConversationPage {
     selected_project_id: Option<ProjectId>,
     project_picker_open: bool,
     project_picker: Entity<ListState<PickerListDelegate<ProjectPickerOption>>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl NewConversationPage {
@@ -90,6 +91,13 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
             picker
         });
+        let project_catalog = state::projects::catalog(cx);
+        let subscription = cx.subscribe(
+            &project_catalog,
+            |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
+                page.reload_projects_from_catalog(cx);
+            },
+        );
 
         if let Some(project) = selected_project {
             chat_form.update(cx, |chat_form, cx| {
@@ -103,6 +111,7 @@ impl NewConversationPage {
             selected_project_id,
             project_picker_open: false,
             project_picker,
+            _subscriptions: vec![subscription],
         }
     }
 
@@ -115,6 +124,36 @@ impl NewConversationPage {
 
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
+    }
+
+    pub(crate) fn select_project_id_from_sidebar(
+        &mut self,
+        project_id: ProjectId,
+        cx: &mut Context<Self>,
+    ) {
+        match load_projects(cx) {
+            Ok(projects) => {
+                let project = project_by_id(&projects, &project_id).cloned();
+                self.projects = Ok(projects);
+                if let Some(project) = project {
+                    let save_result = state::config::update_app_settings(cx, |payload| {
+                        payload.default_project_id = Some(project.id.clone());
+                    });
+                    if let Err(err) = save_result {
+                        event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
+                    }
+                    self.selected_project_id = Some(project.id.clone());
+                    self.chat_form.update(cx, |chat_form, cx| {
+                        chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
+                    });
+                    self.project_picker_open = false;
+                }
+            }
+            Err(err) => {
+                self.projects = Err(err.to_string());
+            }
+        }
+        cx.notify();
     }
 
     fn selected_project(&self) -> Option<&ProjectRecord> {
@@ -133,6 +172,7 @@ impl NewConversationPage {
                 );
                 self.projects = Ok(projects);
                 self.selected_project_id = selected_project_id;
+                self.refresh_skill_catalog_for_selected(cx);
                 self.sync_project_picker(window, cx);
                 true
             }
@@ -145,6 +185,32 @@ impl NewConversationPage {
                 false
             }
         }
+    }
+
+    fn reload_projects_from_catalog(&mut self, cx: &mut Context<Self>) {
+        match load_projects(cx) {
+            Ok(projects) => {
+                let selected_project_id = selected_or_initial_project_id(
+                    &projects,
+                    self.selected_project_id.as_ref(),
+                    default_project_id(cx).as_ref(),
+                );
+                self.projects = Ok(projects);
+                self.selected_project_id = selected_project_id;
+                self.refresh_skill_catalog_for_selected(cx);
+            }
+            Err(err) => {
+                self.projects = Err(err.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn refresh_skill_catalog_for_selected(&mut self, cx: &mut Context<Self>) {
+        let selected_path = self.selected_project().map(|project| project.path.clone());
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.refresh_skill_catalog(selected_path.as_deref().map(Path::new), cx);
+        });
     }
 
     fn set_project_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {

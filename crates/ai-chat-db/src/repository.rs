@@ -18,6 +18,7 @@ use diesel::{
     sql_types::Text,
     upsert::excluded,
 };
+use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -99,6 +100,51 @@ impl FreshRepository {
             .into_iter()
             .map(TryInto::try_into)
             .collect()
+    }
+
+    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|project| project.kind == ProjectKind::Normal && !project.metadata.removed)
+            .collect())
+    }
+
+    pub fn update_project_metadata(
+        &self,
+        id: &str,
+        metadata: ProjectMetadata,
+    ) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::metadata_json.eq(to_json(&metadata)?),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn rename_project(&self, id: &str, display_name: String) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::display_name.eq(display_name),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_project_removed(&self, id: &str, removed: bool) -> Result<ProjectRecord> {
+        let project = self
+            .get_project(id)?
+            .ok_or_else(|| DbError::Invariant(format!("project {id} is missing")))?;
+        let mut metadata = project.metadata;
+        metadata.removed = removed;
+        self.update_project_metadata(id, metadata)
     }
 
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
@@ -374,6 +420,90 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn list_sidebar_conversations(&self) -> Result<Vec<ConversationRecord>> {
+        let visible_project_ids = self.visible_sidebar_project_ids()?;
+        let active = db_label(&ConversationStatus::Active)?;
+        let mut conn = self.conn()?;
+        Ok(conversations::table
+            .filter(conversations::status.eq(active))
+            .order(conversations::updated_at.desc())
+            .select(SqlConversationRow::as_select())
+            .load::<SqlConversationRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<ConversationRecord>>>()?
+            .into_iter()
+            .filter(|conversation| visible_project_ids.contains(&conversation.project_id))
+            .collect())
+    }
+
+    pub fn update_conversation_metadata(
+        &self,
+        id: &str,
+        metadata: ConversationMetadata,
+    ) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::metadata_json.eq(to_json(&metadata)?),
+                conversations::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn soft_delete_conversation(&self, id: &str) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        let now = now_string()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::status.eq(db_label(&ConversationStatus::Deleted)?),
+                conversations::deleted_at.eq(Some(now)),
+                conversations::updated_at.eq(now),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn search_sidebar_conversations(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ConversationRecord>> {
+        let conversations = self.list_sidebar_conversations()?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(conversations.into_iter().take(limit).collect());
+        }
+
+        let projects = self.visible_sidebar_project_map()?;
+        let item_text_by_conversation = self.conversation_search_texts(
+            conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect(),
+        )?;
+
+        Ok(conversations
+            .into_iter()
+            .filter(|conversation| {
+                conversation_matches_query(
+                    conversation,
+                    projects.get(&conversation.project_id),
+                    item_text_by_conversation.get(&conversation.id),
+                    &query,
+                )
+            })
+            .take(limit)
+            .collect())
+    }
+
     pub fn append_conversation_item(
         &self,
         input: NewConversationItem,
@@ -419,6 +549,51 @@ impl FreshRepository {
                 .execute(conn)?;
             item.try_into()
         })
+    }
+
+    fn visible_sidebar_project_ids(&self) -> Result<HashSet<ProjectId>> {
+        Ok(self.visible_sidebar_project_map()?.into_keys().collect())
+    }
+
+    fn visible_sidebar_project_map(&self) -> Result<HashMap<ProjectId, ProjectRecord>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|project| {
+                !project.metadata.removed
+                    && matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch)
+            })
+            .map(|project| (project.id.clone(), project))
+            .collect())
+    }
+
+    fn conversation_search_texts(
+        &self,
+        conversation_ids: Vec<ConversationId>,
+    ) -> Result<HashMap<ConversationId, String>> {
+        if conversation_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut conn = self.conn()?;
+        let rows = conversation_items::table
+            .filter(conversation_items::conversation_id.eq_any(conversation_ids))
+            .select((
+                conversation_items::conversation_id,
+                conversation_items::search_text,
+            ))
+            .load::<(String, String)>(&mut conn)?;
+        let mut grouped = HashMap::<ConversationId, Vec<String>>::new();
+        for (conversation_id, text) in rows {
+            if !text.is_empty() {
+                grouped.entry(conversation_id).or_default().push(text);
+            }
+        }
+
+        Ok(grouped
+            .into_iter()
+            .map(|(conversation_id, parts)| (conversation_id, parts.join("\n")))
+            .collect())
     }
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
@@ -1081,6 +1256,23 @@ fn append_conversation_item_with_conn(
         ))
         .execute(conn)?;
     item.try_into()
+}
+
+fn conversation_matches_query(
+    conversation: &ConversationRecord,
+    project: Option<&ProjectRecord>,
+    item_search_text: Option<&String>,
+    query: &str,
+) -> bool {
+    contains_query(&conversation.title, query)
+        || project.is_some_and(|project| {
+            contains_query(&project.display_name, query) || contains_query(&project.path, query)
+        })
+        || item_search_text.is_some_and(|text| contains_query(text, query))
+}
+
+fn contains_query(value: &str, query: &str) -> bool {
+    value.to_lowercase().contains(query)
 }
 
 fn update_agent_run_status_with_conn(

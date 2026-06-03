@@ -37,14 +37,12 @@ use self::{
 
 actions!(ai_chat2_settings, [ToggleSettings]);
 
+pub(crate) const TOGGLE_SETTINGS_KEY: &str = "secondary-,";
+
 const SETTINGS_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(960.), px(720.));
 
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        settings_key_binding(),
-        ToggleSettings,
-        None,
-    )]);
+    cx.bind_keys([KeyBinding::new(TOGGLE_SETTINGS_KEY, ToggleSettings, None)]);
     cx.on_action(|_: &ToggleSettings, cx: &mut App| open_settings_window_to(true, None, cx));
 }
 
@@ -523,22 +521,16 @@ pub(super) fn push_settings_error(
     );
 }
 
-const fn settings_key_binding() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "cmd-,"
-    } else {
-        "ctrl-,"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        SettingsPageKey, SettingsPageSpec, settings_key_binding, settings_page_matches,
+        SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, settings_page_matches,
         settings_page_specs_for_i18n, settings_search_text, settings_titlebar_options,
     };
     use crate::foundation::I18n;
+    use gpui::Keystroke;
     use gpui_component::TitleBar;
+    use gpui_component::kbd::Kbd;
 
     #[test]
     fn settings_window_uses_component_titlebar_options() {
@@ -615,13 +607,20 @@ mod tests {
     }
 
     #[test]
-    fn settings_key_binding_matches_platform() {
+    fn settings_key_binding_uses_secondary_modifier() {
+        assert_eq!(TOGGLE_SETTINGS_KEY, "secondary-,");
+    }
+
+    #[test]
+    fn settings_shortcut_label_matches_platform() {
+        let label = Kbd::format(&Keystroke::parse(TOGGLE_SETTINGS_KEY).unwrap());
+
         assert_eq!(
-            settings_key_binding(),
+            label,
             if cfg!(target_os = "macos") {
-                "cmd-,"
+                "\u{2318},"
             } else {
-                "ctrl-,"
+                "Ctrl+,"
             }
         );
     }

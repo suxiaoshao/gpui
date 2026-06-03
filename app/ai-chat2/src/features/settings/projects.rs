@@ -19,12 +19,21 @@ use super::{layout::settings_empty_message, push_settings_error};
 
 pub(super) struct ProjectsSettingsPage {
     projects: Result<Vec<ProjectRecord>, String>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ProjectsSettingsPage {
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        let project_catalog = state::projects::catalog(cx);
+        let subscription = cx.subscribe(
+            &project_catalog,
+            |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
+                page.reload_projects_from_catalog(cx);
+            },
+        );
         Self {
             projects: Self::load_projects(cx).map_err(|err| err.to_string()),
+            _subscriptions: vec![subscription],
         }
     }
 
@@ -48,6 +57,11 @@ impl ProjectsSettingsPage {
                 false
             }
         }
+    }
+
+    fn reload_projects_from_catalog(&mut self, cx: &mut Context<Self>) {
+        self.projects = Self::load_projects(cx).map_err(|err| err.to_string());
+        cx.notify();
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -1547,6 +1547,8 @@ mod tests {
                         scratch_reason: None,
                         git_root: Some(dir.path().to_string_lossy().to_string()),
                         last_active_conversation_id: None,
+                        pinned: false,
+                        removed: false,
                     },
                 })
                 .unwrap();
