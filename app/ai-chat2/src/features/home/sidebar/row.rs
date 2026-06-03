@@ -19,6 +19,24 @@ use crate::state::workspace::{SidebarConversationNode, SidebarProjectNode};
 
 type ShortcutActionHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
+const ACTION_SUFFIX_WIDTH: Pixels = px(56.);
+const SHORTCUT_SUFFIX_WIDTH: Pixels = px(56.);
+const ACTION_HOVER_PADDING: Pixels = px(64.);
+
+fn hover_action_overlay(group: impl Into<SharedString>, width: Pixels) -> Div {
+    h_flex()
+        .absolute()
+        .top_0()
+        .right_2()
+        .bottom_0()
+        .w(width)
+        .opacity(0.)
+        .items_center()
+        .justify_end()
+        .gap_1()
+        .group_hover(group, |this| this.opacity(1.))
+}
+
 #[derive(Clone)]
 pub(super) struct ShortcutSidebarAction {
     id: SharedString,
@@ -80,32 +98,24 @@ impl RenderOnce for ShortcutSidebarActionRow {
             .hover(|this| {
                 this.bg(cx.theme().sidebar_accent.opacity(0.8))
                     .text_color(cx.theme().sidebar_accent_foreground)
+                    .pr(ACTION_HOVER_PADDING)
             })
             .on_click(move |event, window, cx| {
                 handler(event, window, cx);
             })
             .child(Icon::new(self.action.icon).size_4().flex_none())
             .child(
-                Label::new(self.action.label)
-                    .text_sm()
-                    .truncate()
-                    .flex_1()
-                    .min_w_0(),
+                h_flex().flex_1().min_w_0().items_center().child(
+                    Label::new(self.action.label)
+                        .text_sm()
+                        .truncate()
+                        .flex_1()
+                        .min_w_0(),
+                ),
             )
             .when_some(keystroke, |this, keystroke| {
                 this.child(
-                    h_flex()
-                        .absolute()
-                        .top_0()
-                        .right_2()
-                        .bottom_0()
-                        .items_center()
-                        .justify_end()
-                        .pl_2()
-                        .bg(cx.theme().sidebar_accent.opacity(0.8))
-                        .opacity(0.)
-                        .group_hover(group, |this| this.opacity(1.))
-                        .child(Kbd::new(keystroke)),
+                    hover_action_overlay(group, SHORTCUT_SUFFIX_WIDTH).child(Kbd::new(keystroke)),
                 )
             })
     }
@@ -160,6 +170,7 @@ impl RenderOnce for ProjectSidebarRow {
             .hover(|this| {
                 this.bg(cx.theme().sidebar_accent.opacity(0.8))
                     .text_color(cx.theme().sidebar_accent_foreground)
+                    .pr(ACTION_HOVER_PADDING)
             })
             .on_click(move |_, _window, cx| {
                 workspace_for_toggle.update(cx, |workspace, cx| {
@@ -176,25 +187,16 @@ impl RenderOnce for ProjectSidebarRow {
                 .flex_none(),
             )
             .child(
-                Label::new(project.display_name.clone())
-                    .text_sm()
-                    .truncate()
-                    .flex_1()
-                    .min_w_0(),
+                h_flex().flex_1().items_center().min_w_0().child(
+                    Label::new(project.display_name.clone())
+                        .text_sm()
+                        .truncate()
+                        .flex_1()
+                        .min_w_0(),
+                ),
             )
             .child(
-                h_flex()
-                    .absolute()
-                    .top_0()
-                    .right_2()
-                    .bottom_0()
-                    .items_center()
-                    .justify_end()
-                    .gap_1()
-                    .pl_2()
-                    .bg(cx.theme().sidebar_accent.opacity(0.8))
-                    .opacity(0.)
-                    .group_hover(group.clone(), |this| this.opacity(1.))
+                hover_action_overlay(group.clone(), ACTION_SUFFIX_WIDTH)
                     .child(
                         Button::new(format!("sidebar-project-more-{new_project_id}"))
                             .icon(IconName::Ellipsis)
@@ -267,11 +269,6 @@ impl RenderOnce for ConversationSidebarRow {
         let delete_conversation_id = conversation_id.clone();
         let delete_conversation = self.conversation.clone();
         let is_pinned = self.conversation.pinned;
-        let action_background = if self.active {
-            cx.theme().sidebar_accent
-        } else {
-            cx.theme().sidebar_accent.opacity(0.8)
-        };
 
         h_flex()
             .id(format!("sidebar-conversation-row-{conversation_id}"))
@@ -294,11 +291,17 @@ impl RenderOnce for ConversationSidebarRow {
                     .bg(cx.theme().sidebar_accent)
                     .text_color(cx.theme().sidebar_accent_foreground)
             })
-            .when(!self.active, |this| {
-                this.hover(|this| {
-                    this.bg(cx.theme().sidebar_accent.opacity(0.8))
-                        .text_color(cx.theme().sidebar_accent_foreground)
-                })
+            .hover({
+                let active = self.active;
+                move |this| {
+                    let this = this.pr(ACTION_HOVER_PADDING);
+                    if active {
+                        this
+                    } else {
+                        this.bg(cx.theme().sidebar_accent.opacity(0.8))
+                            .text_color(cx.theme().sidebar_accent_foreground)
+                    }
+                }
             })
             .on_click(move |_, _window, cx| {
                 workspace_for_open.update(cx, |workspace, cx| {
@@ -307,25 +310,16 @@ impl RenderOnce for ConversationSidebarRow {
             })
             .child(Icon::new(IconName::MessageSquare).size_4().flex_none())
             .child(
-                Label::new(self.conversation.title.clone())
-                    .text_sm()
-                    .truncate()
-                    .flex_1()
-                    .min_w_0(),
+                h_flex().flex_1().items_center().min_w_0().child(
+                    Label::new(self.conversation.title.clone())
+                        .text_sm()
+                        .truncate()
+                        .flex_1()
+                        .min_w_0(),
+                ),
             )
             .child(
-                h_flex()
-                    .absolute()
-                    .top_0()
-                    .right_2()
-                    .bottom_0()
-                    .items_center()
-                    .justify_end()
-                    .gap_1()
-                    .pl_2()
-                    .bg(action_background)
-                    .opacity(0.)
-                    .group_hover(group.clone(), |this| this.opacity(1.))
+                hover_action_overlay(group.clone(), ACTION_SUFFIX_WIDTH)
                     .child(
                         Button::new(format!("sidebar-conversation-pin-{pin_conversation_id}"))
                             .icon(if self.conversation.pinned {
