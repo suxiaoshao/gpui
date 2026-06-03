@@ -22,8 +22,9 @@ DeepSeek/Mistral docs-derived profile、Composer token budget selector 和 provi
 params），以及 provider brand logo 资产框架（Simple Icons 来源的 app-owned SVG、`ProviderVisual`
 fallback 和 Settings/ChatForm 渲染接线）、project-first sidebar 第一版（新对话/搜索入口、置顶、
 项目展开、无项目对话、hover action、项目菜单、conversation search、右侧 conversation route 和
-project/conversation soft-delete）。GitHub #159 仍 open，当前没有 PR，尚未合入
-`codex/issue-137-llm-abstractions`。本轮已补齐 Sidebar action row 视觉一致性：顶部“新对话/搜索”和底部
+project/conversation soft-delete）。GitHub #159 仍 open；PR #164 已从
+`codex/issue-159-ai-chat2-ui` 提交到 `codex/issue-137-llm-abstractions`，尚未合入。本轮已补齐
+Sidebar action row 视觉一致性：顶部“新对话/搜索”和底部
 “设置”统一使用 hover-only shortcut badge，并把跨平台快捷键改为 GPUI `secondary` 语义。完整 project chat、
 多模态 timeline、Prompt/Shortcut settings、
 manual provider model editor、真实 agent runtime 和真实 Temporary Conversation
@@ -50,6 +51,7 @@ runtime 仍未完成。
 - 本轮实现：DB-backed Composer model picker、provider model capability source 和 reasoning controls
 - 本轮实现：provider brand assets / `ProviderVisual` / app-assets proc macro refactor
 - 本轮实现：project-first sidebar 第一版和 Sidebar shortcut action row polish
+- `4eb9e5e fix(ai-chat2): satisfy clippy on foundation branch`
 
 ## 状态定义
 
@@ -506,3 +508,17 @@ Codex-style project tray 颜色/层级 polish 后已运行：
 - 验证：`cargo test -p app-assets`、`cargo fmt`、`cargo test -p ai-chat2 assets`、
   `cargo test -p ai-chat2 provider`、`cargo test -p ai-chat2 chat_form`、
   `cargo check -p ai-chat2`、`git diff --check`。
+
+2026-06-04 foundation PR 记录：
+
+- live GitHub 状态：#137 和 #159 仍 open；`codex/issue-159-ai-chat2-ui` 已创建 PR #164 指向
+  `codex/issue-137-llm-abstractions`，尚未合入。
+- 本 PR 聚焦不依赖真实 agent runtime 的 foundation：`ai-chat2` app shell、Settings、Projects、
+  Provider/model cache、Composer model/reasoning controls、provider brand assets、project-first sidebar
+  和相关 support crate/API。
+- 本轮补充 clippy 修正提交 `4eb9e5e`，清理 `ai-chat2` / `ai-chat-agent` 当前 scoped clippy lint。
+- 验证：`cargo fmt --check`、`cargo fmt`、`cargo check -p ai-chat2`、`cargo build -p ai-chat2`、
+  `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`、
+  `cargo clippy -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db --all-targets --all-features -- -D warnings`、
+  `git diff --check`。
+- 未运行 full workspace validation 或手动 GPUI UI 验证。
