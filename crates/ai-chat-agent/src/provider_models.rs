@@ -216,9 +216,11 @@ async fn fetch_ollama_models(
     let tags = send_json::<OllamaTagsResponse>("ollama", "/api/tags", tags_request).await?;
     let mut models = Vec::new();
     for model in tags.models {
-        let model_id = (!model.model.trim().is_empty())
-            .then(|| model.model.clone())
-            .unwrap_or_else(|| model.name.clone());
+        let model_id = if !model.model.trim().is_empty() {
+            model.model.clone()
+        } else {
+            model.name.clone()
+        };
         let mut show_request = client
             .post(provider_url(&base_url, "/api/show")?)
             .json(&json!({ "model": model_id.clone() }));

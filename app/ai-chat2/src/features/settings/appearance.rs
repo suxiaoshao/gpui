@@ -183,8 +183,7 @@ impl AppearanceSettingsPage {
                 selected,
                 selected_border,
                 can_delete_material_theme,
-                text.selected_label.clone(),
-                text.delete_material_theme_label.clone(),
+                &text,
             ));
         }
 
@@ -222,14 +221,15 @@ impl AppearanceSettingsPage {
         selected: bool,
         selected_border: Hsla,
         can_delete_material_theme: bool,
-        selected_label: SharedString,
-        delete_material_theme_label: SharedString,
+        text: &ThemeGridText,
     ) -> AnyElement {
         let preview = app_theme::preview_theme(&choice.config);
         let colors = preview.colors;
         let id = choice.id.clone();
         let select_id = id.clone();
         let label = choice.name.clone();
+        let selected_label = text.selected_label.clone();
+        let delete_material_theme_label = text.delete_material_theme_label.clone();
         let border_color = if selected {
             selected_border
         } else {

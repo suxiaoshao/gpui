@@ -37,7 +37,7 @@ pub(super) const COMPOSER_BUTTON_RADIUS: f32 = 999.;
 #[derive(Clone)]
 pub(crate) enum ChatFormEvent {
     AddRequested,
-    SendRequested(ChatFormSubmit),
+    SendRequested(Box<ChatFormSubmit>),
 }
 
 impl EventEmitter<ChatFormEvent> for ChatForm {}
@@ -182,7 +182,7 @@ impl ChatForm {
                 }
                 ComposerEditorEvent::SubmitRequested(snapshot) => {
                     if let Some(submit) = form.submit_snapshot(snapshot.clone()) {
-                        cx.emit(ChatFormEvent::SendRequested(submit));
+                        cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
                     }
                 }
             },
@@ -570,7 +570,7 @@ impl Render for ChatForm {
                                     .on_click(cx.listener(|form, _, _, cx| {
                                         let snapshot = form.composer.read(cx).snapshot();
                                         if let Some(submit) = form.submit_snapshot(snapshot) {
-                                            cx.emit(ChatFormEvent::SendRequested(submit));
+                                            cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
                                         }
                                     })),
                             ),

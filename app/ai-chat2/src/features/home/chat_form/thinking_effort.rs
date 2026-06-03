@@ -247,7 +247,7 @@ fn default_level_selection(
     default_value: Option<&str>,
 ) -> Option<ReasoningSelectionSnapshot> {
     default_value
-        .and_then(|value| normalized_level_value(value))
+        .and_then(normalized_level_value)
         .filter(|value| {
             values
                 .iter()
@@ -271,10 +271,10 @@ fn legacy_level_selections(
 ) -> Vec<ReasoningSelectionSnapshot> {
     let mut selections = Vec::new();
     for effort in &reasoning.efforts {
-        if let Some(selection) = normalized_level_selection(effort) {
-            if !selections.contains(&selection) {
-                selections.push(selection);
-            }
+        if let Some(selection) = normalized_level_selection(effort)
+            && !selections.contains(&selection)
+        {
+            selections.push(selection);
         }
     }
     selections

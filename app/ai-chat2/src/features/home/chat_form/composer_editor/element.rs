@@ -260,13 +260,15 @@ impl Element for ComposerEditorElement {
             if !selection.is_empty() && !is_placeholder {
                 push_selection_quads(
                     &mut selections,
-                    selection.clone(),
-                    range.clone(),
-                    &line,
-                    line_origin,
-                    line_height,
-                    wrap_width,
-                    selection_color,
+                    SelectionQuadInput {
+                        selection: selection.clone(),
+                        line_range: range.clone(),
+                        line: &line,
+                        origin: line_origin,
+                        line_height,
+                        wrap_width,
+                        color: selection_color,
+                    },
                 );
             }
 
@@ -396,25 +398,26 @@ impl Element for ComposerEditorElement {
     }
 }
 
-fn push_selection_quads(
-    selections: &mut Vec<PaintQuad>,
+struct SelectionQuadInput<'a> {
     selection: std::ops::Range<usize>,
     line_range: std::ops::Range<usize>,
-    line: &WrappedLine,
-    line_origin: Point<Pixels>,
+    line: &'a WrappedLine,
+    origin: Point<Pixels>,
     line_height: Pixels,
     wrap_width: Pixels,
     color: Hsla,
-) {
-    let selection_start = selection.start.max(line_range.start);
-    let selection_end = selection.end.min(line_range.end);
+}
+
+fn push_selection_quads(selections: &mut Vec<PaintQuad>, input: SelectionQuadInput<'_>) {
+    let selection_start = input.selection.start.max(input.line_range.start);
+    let selection_end = input.selection.end.min(input.line_range.end);
     if selection_start >= selection_end {
         return;
     }
 
-    for visual_range in visual_ranges(line) {
-        let visual_start = line_range.start + visual_range.range.start;
-        let visual_end = line_range.start + visual_range.range.end;
+    for visual_range in visual_ranges(input.line) {
+        let visual_start = input.line_range.start + visual_range.range.start;
+        let visual_end = input.line_range.start + visual_range.range.end;
         let overlap_start = selection_start.max(visual_start);
         let overlap_end = selection_end.min(visual_end);
         if overlap_start >= overlap_end {
@@ -424,21 +427,27 @@ fn push_selection_quads(
         let start_x = if overlap_start == visual_start {
             px(0.)
         } else {
-            line.position_for_index(overlap_start - line_range.start, line_height)
+            input
+                .line
+                .position_for_index(overlap_start - input.line_range.start, input.line_height)
                 .map(|position| position.x)
                 .unwrap_or(px(0.))
         };
-        let end_x = line
-            .position_for_index(overlap_end - line_range.start, line_height)
+        let end_x = input
+            .line
+            .position_for_index(overlap_end - input.line_range.start, input.line_height)
             .map(|position| position.x)
-            .unwrap_or(wrap_width);
-        let y = line_height * visual_range.row as f32;
+            .unwrap_or(input.wrap_width);
+        let y = input.line_height * visual_range.row as f32;
         selections.push(fill(
             Bounds::from_corners(
-                point(line_origin.x + start_x, line_origin.y + y),
-                point(line_origin.x + end_x, line_origin.y + y + line_height),
+                point(input.origin.x + start_x, input.origin.y + y),
+                point(
+                    input.origin.x + end_x,
+                    input.origin.y + y + input.line_height,
+                ),
             ),
-            color,
+            input.color,
         ));
     }
 }

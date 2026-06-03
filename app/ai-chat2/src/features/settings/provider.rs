@@ -594,7 +594,7 @@ impl ProviderSettingsPage {
         provider_id: &str,
         writes: &[secret_store::ProviderSecretWrite],
     ) -> ProviderSecretRefs {
-        let mut refs = secret_store::ProviderSecretStore::refs_for(provider_id, &writes);
+        let mut refs = secret_store::ProviderSecretStore::refs_for(provider_id, writes);
         for saved in &self.draft.existing_secret_refs.refs {
             if !refs.refs.iter().any(|secret| secret.key == saved.key) {
                 refs.refs.push(saved.clone());

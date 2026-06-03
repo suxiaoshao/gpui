@@ -208,10 +208,9 @@ impl GlobalHotkeyState {
             .global::<AiChat2AppSettings>()
             .temporary_hotkey()
             .map(str::to_string)
+            && let Err(err) = self.register_temporary_hotkey(hotkey)
         {
-            if let Err(err) = self.register_temporary_hotkey(hotkey) {
-                event!(Level::ERROR, error = ?err, "failed to load temporary hotkey");
-            }
+            event!(Level::ERROR, error = ?err, "failed to load temporary hotkey");
         }
 
         let shortcuts = database::repository(cx).list_shortcuts()?;
