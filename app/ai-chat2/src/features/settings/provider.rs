@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     database,
-    foundation::{I18n, assets::IconName},
+    foundation::{
+        I18n,
+        assets::{IconName, provider_visual_icon},
+    },
 };
 use ai_chat_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use ai_chat_core::{
@@ -831,6 +834,11 @@ impl ProviderSettingsPage {
                         h_flex()
                             .gap_2()
                             .items_center()
+                            .child(
+                                provider_visual_icon(spec.visual)
+                                    .size_5()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
                             .child(Label::new(spec.display_name).text_lg().font_medium())
                             .when(self.draft.provider_id.is_some() && !dirty, |this| {
                                 this.child(
@@ -1227,7 +1235,10 @@ mod tests {
     use crate::features::settings::provider::secret_store::{
         ProviderSecretStore, ProviderSecretWrite,
     };
-    use crate::foundation::I18n;
+    use crate::foundation::{
+        I18n,
+        assets::{IconName, ProviderLogoName},
+    };
     use ai_chat_core::{
         ProviderModelMetadata, ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
         ProviderSettingsPayload, conservative_model_capabilities,
@@ -1248,6 +1259,46 @@ mod tests {
         let draft = draft_from_spec(&spec, None);
 
         assert!(!draft.enabled);
+    }
+
+    #[test]
+    fn builtin_provider_specs_assign_brand_visuals_and_fallbacks() {
+        let specs = builtin_provider_specs();
+        let anthropic = specs
+            .iter()
+            .find(|spec| spec.kind.as_str() == "anthropic")
+            .expect("anthropic provider spec exists");
+        let openai = specs
+            .iter()
+            .find(|spec| spec.kind.as_str() == "openai")
+            .expect("openai provider spec exists");
+        let azure_openai = specs
+            .iter()
+            .find(|spec| spec.kind.as_str() == "azure_openai")
+            .expect("azure openai provider spec exists");
+        let branded_without_logo = specs
+            .iter()
+            .filter(|spec| spec.kind.as_str() != "custom_openai_compatible")
+            .filter(|spec| spec.visual.logo.is_none())
+            .map(|spec| spec.kind.as_str().to_string())
+            .collect::<Vec<_>>();
+        let custom = specs
+            .iter()
+            .find(|spec| spec.kind.as_str() == "custom_openai_compatible")
+            .expect("custom provider spec exists");
+
+        assert!(branded_without_logo.is_empty(), "{branded_without_logo:?}");
+        assert_eq!(anthropic.visual.logo, Some(ProviderLogoName::Anthropic));
+        assert_eq!(anthropic.visual.fallback, IconName::Cloud);
+        assert_eq!(openai.visual.logo, Some(ProviderLogoName::OpenAI));
+        assert_eq!(openai.visual.fallback, IconName::Cloud);
+        assert_eq!(
+            azure_openai.visual.logo,
+            Some(ProviderLogoName::AzureOpenAI)
+        );
+        assert_eq!(azure_openai.visual.fallback, IconName::Cloud);
+        assert_eq!(custom.visual.logo, None);
+        assert_eq!(custom.visual.fallback, IconName::Server);
     }
 
     #[test]
@@ -1514,6 +1565,29 @@ mod tests {
 
         delegate.set_query_for_test("模型");
         assert_eq!(delegate.row_count_for_test(), providers.len());
+    }
+
+    #[test]
+    fn provider_list_rows_preserve_provider_visuals() {
+        let providers = builtin_provider_specs()
+            .into_iter()
+            .map(|spec| ProviderListItem {
+                spec,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let rows = provider_list_rows(&providers, &I18n::english_for_test());
+        let anthropic = rows
+            .iter()
+            .find(|row| row.kind.as_str() == "anthropic")
+            .expect("anthropic provider row exists");
+        let openai = rows
+            .iter()
+            .find(|row| row.kind.as_str() == "openai")
+            .expect("openai provider row exists");
+
+        assert_eq!(anthropic.visual.logo, Some(ProviderLogoName::Anthropic));
+        assert_eq!(openai.visual.logo, Some(ProviderLogoName::OpenAI));
     }
 
     #[test]

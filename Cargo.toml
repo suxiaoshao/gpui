@@ -6,6 +6,7 @@ members = [
   "app/http-client",
   "app/novel-download",
   "crates/app-assets",
+  "crates/app-assets-macros",
   "crates/app-theme",
   "crates/ai-chat-agent",
   "crates/ai-chat-core",

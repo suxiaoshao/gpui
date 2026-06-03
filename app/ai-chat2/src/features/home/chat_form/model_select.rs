@@ -1,10 +1,13 @@
 use super::{
     ChatForm,
-    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
+    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger_with_icon},
 };
 use crate::{
     features::settings,
-    foundation::{self, I18n, assets::IconName},
+    foundation::{
+        self, I18n,
+        assets::{IconName, ProviderVisual, provider_visual_for_kind, provider_visual_icon},
+    },
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use ai_chat_core::ModelCapabilitiesSnapshot;
@@ -27,6 +30,7 @@ pub(super) struct ModelOption {
     model_id: SharedString,
     model_display_name: Option<SharedString>,
     capabilities: ModelCapabilitiesSnapshot,
+    visual: ProviderVisual,
 }
 
 impl ModelOption {
@@ -38,6 +42,7 @@ impl ModelOption {
             model_id: choice.model_id.clone().into(),
             model_display_name: choice.model_display_name.clone().map(Into::into),
             capabilities: choice.capabilities.clone(),
+            visual: provider_visual_for_model_choice(choice),
         }
     }
 
@@ -66,7 +71,7 @@ impl SelectItem for ModelOption {
             .items_center()
             .gap_2()
             .child(
-                Icon::new(IconName::Cpu)
+                provider_visual_icon(self.visual)
                     .size_4()
                     .text_color(cx.theme().muted_foreground),
             )
@@ -138,9 +143,20 @@ pub(super) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSecti
     sections
 }
 
+fn provider_visual_for_model_choice(choice: &ProviderModelChoice) -> ProviderVisual {
+    provider_visual_for_kind(&choice.provider_kind)
+}
+
 impl ChatForm {
     pub(super) fn render_model_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_model_label = self.selected_model_label(cx.global::<foundation::I18n>());
+        let selected_model_icon = self
+            .selected_model_choice()
+            .map(|choice| provider_visual_icon(provider_visual_for_model_choice(choice)))
+            .unwrap_or_else(|| Icon::new(IconName::Sparkles))
+            .size_4()
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element();
         let search_placeholder = cx
             .global::<foundation::I18n>()
             .t("chat-form-model-search-placeholder")
@@ -152,9 +168,9 @@ impl ChatForm {
             PickerPopoverConfig {
                 id: "chat-form-model-popover",
                 open: self.model_picker_open,
-                trigger: picker_trigger(
+                trigger: picker_trigger_with_icon(
                     "chat-form-model-trigger",
-                    IconName::Sparkles,
+                    selected_model_icon,
                     selected_model_label,
                     self.model_picker_open,
                 ),
@@ -241,8 +257,11 @@ fn capability_search_tokens(capabilities: &ModelCapabilitiesSnapshot) -> Vec<&'s
 
 #[cfg(test)]
 mod tests {
-    use super::{capability_tag_labels, model_sections};
-    use crate::{foundation::I18n, state::providers::ProviderModelChoice};
+    use super::{capability_tag_labels, model_sections, provider_visual_for_model_choice};
+    use crate::{
+        foundation::{I18n, assets::ProviderLogoName},
+        state::providers::ProviderModelChoice,
+    };
     use ai_chat_core::{
         CapabilitySourceSnapshot, ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot,
         ReasoningControlSnapshot, conservative_model_capabilities,
@@ -282,6 +301,31 @@ mod tests {
         assert!(option.matches("five"));
         assert!(option.matches("gpt-5"));
         assert!(option.matches("tools"));
+    }
+
+    #[test]
+    fn model_option_tracks_provider_visual() {
+        let choices = vec![choice("provider-1", "openai", "OpenAI", "gpt-5", None)];
+        let sections = model_sections(&choices);
+        let option = sections[0].items[0].as_ref();
+
+        assert_eq!(option.visual.logo, Some(ProviderLogoName::OpenAI));
+    }
+
+    #[test]
+    fn selected_model_trigger_visual_tracks_provider_visual() {
+        let choice = choice(
+            "provider-1",
+            "together",
+            "Together",
+            "deepseek-ai/DeepSeek-V3",
+            None,
+        );
+
+        assert_eq!(
+            provider_visual_for_model_choice(&choice).logo,
+            Some(ProviderLogoName::Together)
+        );
     }
 
     #[test]

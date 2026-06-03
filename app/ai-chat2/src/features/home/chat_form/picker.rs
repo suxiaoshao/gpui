@@ -342,6 +342,15 @@ pub(in crate::features::home) fn picker_trigger(
     label: impl Into<SharedString>,
     open: bool,
 ) -> Button {
+    picker_trigger_with_icon(id, Icon::new(icon).size_4().into_any_element(), label, open)
+}
+
+pub(in crate::features::home) fn picker_trigger_with_icon(
+    id: &'static str,
+    icon: AnyElement,
+    label: impl Into<SharedString>,
+    open: bool,
+) -> Button {
     Button::new(id)
         .ghost()
         .selected(open)
@@ -355,7 +364,7 @@ pub(in crate::features::home) fn picker_trigger(
                 .items_center()
                 .min_w_0()
                 .gap_1p5()
-                .child(Icon::new(icon).size_4())
+                .child(icon)
                 .child(
                     Label::new(label.into())
                         .text_sm()

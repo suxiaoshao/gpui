@@ -373,9 +373,19 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "app-assets"
 version = "0.1.0"
 dependencies = [
+ "app-assets-macros",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+]
+
+[[package]]
+name = "app-assets-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

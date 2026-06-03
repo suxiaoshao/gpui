@@ -18,9 +18,10 @@ polish、右侧 detail 整体滚动和 model switch 事件修复）、DB-backed 
 （读取 enabled provider/model cache、能力标签、Provider Settings deep-link），以及 provider model
 capability source / reasoning control 第一版（Ollama/Gemini/OpenRouter API discovery、OpenAI/Anthropic/
 DeepSeek/Mistral docs-derived profile、Composer token budget selector 和 provider-specific reasoning
-params）。GitHub #159 仍 open，当前没有 PR，尚未合入
+params），以及 provider brand logo 资产框架（Simple Icons 来源的 app-owned SVG、`ProviderVisual`
+fallback 和 Settings/ChatForm 渲染接线）。GitHub #159 仍 open，当前没有 PR，尚未合入
 `codex/issue-137-llm-abstractions`。完整 project chat、多模态 timeline、Prompt/Shortcut settings、
-manual provider model editor、provider brand logo、真实 agent runtime 和真实 Temporary Conversation
+manual provider model editor、真实 agent runtime 和真实 Temporary Conversation
 runtime 仍未完成。
 
 已完成提交：
@@ -42,6 +43,7 @@ runtime 仍未完成。
 - `5e574c7 Implement ai-chat2 provider settings foundation`
 - `4d4110b feat(ai-chat2): wire provider settings model fetch`
 - 本轮实现：DB-backed Composer model picker、provider model capability source 和 reasoning controls
+- 本轮实现：provider brand assets / `ProviderVisual` / app-assets proc macro refactor
 
 ## 状态定义
 
@@ -95,7 +97,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | typed app settings payload | `crates/ai-chat-core` / `crates/ai-chat-db` | `AppSettingsPayload` 已结构化，DB roundtrip 已覆盖；包含 language、theme、temporary hotkey、HTTP proxy 和 default project。 |
 | theme 初始化 | `app/ai-chat2/src/state/theme.rs` | 初始化 system accent，按 DB settings 和窗口 appearance 应用 theme。 |
 | i18n 初始化 | `app/ai-chat2/src/foundation/i18n.rs` | 支持 `en-US` / `zh-CN`，未知语言按 system fallback。 |
-| runtime assets | `app/ai-chat2/src/foundation/assets.rs` | 组合 app-local Lucide、app icon 和 `gpui-component-assets`；provider brand logo 尚未引入，后续应作为 app-owned runtime asset，而不是塞进 Lucide `IconName`。 |
+| runtime assets | `app/ai-chat2/src/foundation/assets.rs` | 组合 app-local Lucide、provider logo、app icon 和 `gpui-component-assets`；provider brand logo 使用 app-owned runtime SVG asset 和 `ProviderLogoName`，不塞进 Lucide `IconName`。Branded built-in providers 已全覆盖，custom OpenAI-compatible 保留 generic fallback。 |
 | global hotkey runtime | `app/ai-chat2/src/state/hotkey.rs` | 注册 temporary hotkey 和 enabled shortcuts，记录 diagnostics；Settings 保存 temporary hotkey 后会同步更新 runtime 注册。 |
 | app menu | `app/ai-chat2/src/app/menus.rs` | 已接 `About`、`Open Main`、`Open Temporary Conversation`、真实 `Settings`、`Quit`、Window menu 和 macOS Hide/Show actions。 |
 | About window | `app/ai-chat2/src/app/about.rs` | 已实现精简真实 About：app icon、名称、描述、版本、license 和 GitHub 链接。 |
@@ -150,8 +152,8 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | approvals | `approval_decisions` + agent runtime | 没有 approval prompt、approve/deny/cancel/expired UI。 |
 | usage | `usage_events` | 没有 token/usage summary 或 rollup UI。 |
 | prompts | `prompts` | 没有 prompt CRUD、selection、snapshot display。 |
-| providers | `providers` | Provider settings 第一阶段已实现：`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。已接 Settings Provider 页、Provider i18n、未保存 provider 默认 disabled、provider enabled 保存、保存前本地校验、未保存状态标签、GPUI credentials secret write/read、`ListState` provider list、provider list panel/row separator 视觉，以及 Composer 侧 enabled provider/model 读取。仍缺 manual model editor、Rig completion client validation 和 agent runtime 接线。 |
-| provider models | `provider_models` | 已补 per-model enabled DB 合同、Settings 内 model enabled toggle、Provider 双栏独立滚动布局、右侧 detail 整体滚动、`ListState` model list、真实远端模型刷新、保留 enabled 的 fetch upsert、provider-specific capability source/enrichment，以及 Composer model picker 读取/搜索/能力标签/reasoning selector。manual model editor 和 manual capability override persistence 仍未完成。 |
+| providers | `providers` | Provider settings 第一阶段已实现：`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。已接 Settings Provider 页、Provider i18n、未保存 provider 默认 disabled、provider enabled 保存、保存前本地校验、未保存状态标签、GPUI credentials secret write/read、`ListState` provider list、provider list panel/row separator 视觉、provider brand logo / fallback visual，以及 Composer 侧 enabled provider/model 读取。仍缺 manual model editor、Rig completion client validation 和 agent runtime 接线。 |
+| provider models | `provider_models` | 已补 per-model enabled DB 合同、Settings 内 model enabled toggle、Provider 双栏独立滚动布局、右侧 detail 整体滚动、`ListState` model list、真实远端模型刷新、保留 enabled 的 fetch upsert、provider-specific capability source/enrichment，以及 Composer model picker 读取/搜索/能力标签/reasoning selector/provider logo。manual model editor 和 manual capability override persistence 仍未完成。 |
 | app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；Provider settings 第一阶段已落地并有专项文档继续跟踪，Prompt/Shortcut settings 仍未接。 |
 | file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
 | MCP helpers | `ai-chat-agent::mcp` | 没有 MCP config UI、connected server status 或 MCP tool approval UI。 |
@@ -162,7 +164,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | --- | --- |
 | Project navigation | New Conversation 默认页已有 default/no-project selector；仍缺 project-first sidebar、open folder、recent projects、scratch project 和 project metadata/status。 |
 | Conversation navigation | conversation list、new conversation、archive/delete、search/filter、title edit、status display、last item preview。 |
-| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生。真实工作仍包括 prompt selector、多 part input、capability warning、附件、conversation create、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
+| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生，model picker row/trigger 已接 provider logo visual。真实工作仍包括 prompt selector、多 part input、capability warning、附件、conversation create、send/run、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Timeline text | user/assistant text item、streaming text delta、multi-block assistant output、copy/export affordance。 |
 | Reasoning | multiple reasoning blocks、reasoning summary、collapsed/expanded state、provider-specific reasoning capability gating。 |
 | Tools | local/MCP/provider-hosted tool call、progress、result、error、structured output、attachment result、tool name collision display。 |
@@ -170,14 +172,14 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Status and errors | queued/running/waiting/completed/failed/canceled 状态、retry/cancel affordance、user-visible error item。 |
 | Usage | per-run usage summary、provider/model token counts、usage event rollup display。 |
 | Attachments and multimodal | image/file/audio input、generated files/images、preview/download/open, provider unsupported-state messaging。 |
-| Settings | General/Appearance/Projects 已实现；Provider settings 第一阶段已实现并补齐 i18n/default disabled/滚动布局/save validation/secret credentials/model fetch/ListState lists/provider list panel polish；Composer 空状态可 deep-link 到 Provider settings；仍缺 manual provider model editor、Rig completion validation、prompts、shortcuts 和 tool/MCP policy。 |
+| Settings | General/Appearance/Projects 已实现；Provider settings 第一阶段已实现并补齐 i18n/default disabled/滚动布局/save validation/secret credentials/model fetch/ListState lists/provider list panel polish/provider brand visual；Composer 空状态可 deep-link 到 Provider settings；仍缺 manual provider model editor、Rig completion validation、prompts、shortcuts 和 tool/MCP policy。 |
 | Shortcuts | shortcut CRUD、input source selection、prompt/provider/model binding、capability validation、registration/runtime status。 |
 | Temporary chat | real temporary conversation window、selected text/screenshot input、save/promote to conversation。 |
 | Screenshot/input capture | screenshot overlay、OCR fallback、image-capable model data URL path、unsupported model warnings。 |
 | Legacy access | read-only legacy viewer、manual export/import 或 backup-only policy；当前没有任何 legacy data UI。 |
 | Export/import | fresh conversation export、generated output export、legacy manual import/export。 |
 | Capability gating | tool calling、MCP、image/file/audio input、image generation、structured output、reasoning、provider-specific extensions。 |
-| Provider branding | provider row 和 model row 的品牌 logo asset。当前只用 generic Lucide icon；Lucide v1 已移除品牌图标，后续应使用官方品牌 SVG 或 Simple Icons 作为 app-owned runtime asset，并保留 generic fallback。 |
+| Provider branding | 已完成第一版：Lucide v1 移除品牌图标后，`ai-chat2` 使用 app-owned runtime SVG、`ProviderLogoName` 和 `ProviderVisual` fallback；来源策略是 Simple Icons first，Simple Icons 缺失、明显过期或品牌 guideline 要求时用官方 SVG override；没有官方紧凑 SVG 或官方下载不可用时，允许使用可追溯第三方 SVG。Settings provider row/header 与 ChatForm model row/trigger 已优先显示品牌 logo。Branded built-in providers 已全覆盖；custom OpenAI-compatible 不是固定品牌，继续使用 `Server` fallback。 |
 
 ## 旧 `app/ai-chat` 对比
 
@@ -190,7 +192,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | bundle/app icon | `build-assets` / `build.rs` / `xtask` | 已完成 | 图标暂时复用旧 `ai-chat`，后续可替换独立 app 图标。 |
 | About window | `features/about.rs` | 已完成 | `ai-chat2` 已实现精简真实 About，不照搬旧 tray/about 文案。 |
 | Settings window | `features/settings.rs` | 已完成 | 已迁移真实 Settings shell；当前注册 General/Appearance/Projects 三页。 |
-| Provider settings | `features/settings/provider.rs` + `features/settings/provider/*.rs` | 第一阶段已完成 | 已接 fresh `providers` / `provider_models` 基础 UI、Provider i18n、默认 disabled、独立滚动布局、provider save 前本地校验、未保存状态标签、GPUI credentials secret write/read、真实 model fetch、model enabled toggle、`ListState` provider/model lists、provider list panel/row separator 和右侧 detail 整体滚动；provider model refresh 已写入 capability source 和 reasoning control；仍需 manual model editor、manual capability override、provider brand logo 和 Rig completion client validation。 |
+| Provider settings | `features/settings/provider.rs` + `features/settings/provider/*.rs` | 第一阶段已完成 | 已接 fresh `providers` / `provider_models` 基础 UI、Provider i18n、默认 disabled、独立滚动布局、provider save 前本地校验、未保存状态标签、GPUI credentials secret write/read、真实 model fetch、model enabled toggle、`ListState` provider/model lists、provider list panel/row separator、右侧 detail 整体滚动和 provider brand visual；provider model refresh 已写入 capability source 和 reasoning control；仍需 manual model editor、manual capability override 和 Rig completion client validation。 |
 | Appearance settings | `features/settings/appearance_settings.rs` | 已完成 | 已迁移 theme mode、light/dark theme preview grid、Material You color picker/add/delete 和默认 Material You theme visibility。 |
 | General settings | `features/settings/general_settings.rs` | 已完成 | 已迁移 language、HTTP proxy、temporary hotkey 专用输入和 open config file；default project picker 不在本轮。 |
 | Template settings | `features/settings/template_settings.rs` | 不照搬 | 新模型删除 templates，改为 prompts。 |
@@ -434,7 +436,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   打开 model picker 前刷新一次；无可用模型或 DB load error 时 send disabled。
 - `ProviderModelKey` 使用 provider_id + model_id 作为稳定选择 key，`ChatFormEvent::SendRequested`
   改为携带 `ChatFormSubmit`，包含 composer snapshot、provider/model snapshot 和 reasoning selection。
-- model picker 已按 provider 分组，row 使用 `Cpu` icon、model display name、provider + raw model id
+- model picker 已按 provider 分组，row 使用 provider logo/fallback visual、model display name、provider + raw model id
   副标题、最多 3 个 capability `Tag`；search 覆盖 provider/model/capability tokens。
 - reasoning picker 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，空能力时 disabled。
 - 空模型 footer 使用 `Settings` icon 打开 Settings Provider 页；`preview_models.rs` 已删除。
@@ -453,8 +455,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   并为 OpenAI/Anthropic/DeepSeek/Mistral 写入 docs-derived reasoning profile。`AgentRuntime`
   已能把 `ReasoningSelectionSnapshot` 合并进 provider-specific additional params。
 - `ai-chat2` Composer reasoning picker 已从 `ReasoningControl` 派生 options/default，支持 level、
-  boolean、always-on 和 token budget numeric input；provider brand logo 仍未实现，当前仍使用 generic
-  Lucide icon。
+  boolean、always-on 和 token budget numeric input。
 - 验证：`cargo fmt`、`cargo test -p ai-chat-core reasoning`、
   `cargo test -p ai-chat-agent provider_models`、`cargo test -p ai-chat-agent model_capabilities`、
   `cargo test -p ai-chat-agent reasoning_params`、`cargo test -p ai-chat2 chat_form`、
@@ -462,3 +463,39 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   `cargo check -p ai-chat2`、`git diff --check`。
 
 文档-only 更新只需运行 `git diff --check`。
+
+2026-06-03 Provider brand assets / app-assets macro 实现记录：
+
+- 新增 `crates/app-assets-macros`，`crates/app-assets` 保持运行时轻量并 re-export
+  `define_lucide_icons!` / `define_svg_icons!`；旧 Lucide 宏调用形状继续可用，自定义 SVG 通过
+  `#[svg("provider-icons/name.svg", source = "simple-icons", slug = "...")]` 生成 enum、
+  `IconNamed`、metadata 和 `AssetSource`。
+- `app/ai-chat2` 新增 `ProviderLogoName`、`ProviderLogoAssets`、`ProviderVisual` 和
+  `provider_visual_for_kind`。Provider logo 与 Lucide UI pictogram 分离；branded built-in providers
+  已全覆盖，custom OpenAI-compatible 继续走 `Server` fallback。
+- 来源策略是 Simple Icons first；Simple Icons 缺失、明显过期或品牌 guideline 要求时使用官方 SVG
+  override。已 vendor Simple Icons 来源的 Anthropic、Google Gemini、Ollama、OpenRouter、DeepSeek、
+  Moonshot AI、Mistral AI 和 Perplexity 单色 SVG 到 `app/ai-chat2/assets/provider-icons/`；
+  新增 OpenAI（theSVG OpenAI）、Azure OpenAI（theSVG Azure OpenAI）、Groq（theSVG Groq，提取前景
+  mark 后单色化）、xAI（theSVG xAI/Grok；xAI 官方 brand package 当前环境下载返回 403）、Together
+  （Together AI 官方 brand package）和 Z.AI（Wikimedia SVG，记录来源为 `chat.z.ai`；提取 Z mark
+  后单色化）。所有 SVG 以 repo-vendored 文件为准，不使用 CDN 或运行时联网。
+- 新增 SVG 来源表：
+
+  | Provider | 文件 | 来源类型 | 来源 URL | 说明 |
+  | --- | --- | --- | --- | --- |
+  | OpenAI | `provider-icons/openai.svg` | 第三方 theSVG | https://thesvg.org/icon/openai | compact mark，已单色化为 `currentColor` |
+  | Azure OpenAI | `provider-icons/azure-openai.svg` | 第三方 theSVG | https://thesvg.org/icon/azure-azure-openai | 保留 Azure 渐变色 |
+  | xAI | `provider-icons/xai.svg` | 第三方 theSVG fallback | https://thesvg.org/icon/xai-grok | 官方 https://x.ai/legal/brand-guidelines 下载包当前环境返回 403 |
+  | Groq | `provider-icons/groq.svg` | 第三方 theSVG | https://thesvg.org/icon/groq | 提取前景 G-shaped mark，单色 `currentColor` |
+  | Together | `provider-icons/together.svg` | 官方 brand package | https://www.together.ai/brand | 保留官方多色 mark |
+  | Z.AI | `provider-icons/zai.svg` | Wikimedia | https://commons.wikimedia.org/wiki/File:Z.ai_(company_logo).svg | Wikimedia 记录来源为 `chat.z.ai`，已提取 Z mark 并单色化 |
+
+- Settings Provider list/header 与 ChatForm model picker row/trigger 已优先渲染 provider logo，
+  没有 logo 时使用 generic Lucide fallback。
+- 渲染修正：`gpui_component::Icon` 会把 SVG 按 text color 语义渲染；Groq/Z.AI 的原始反白底图会在
+  provider list 中塌成实心方块。当前 vendored SVG 只保留前景 mark 并使用 `currentColor`，资产测试
+  覆盖这两个 provider 不再引入反白背景。
+- 验证：`cargo test -p app-assets`、`cargo fmt`、`cargo test -p ai-chat2 assets`、
+  `cargo test -p ai-chat2 provider`、`cargo test -p ai-chat2 chat_form`、
+  `cargo check -p ai-chat2`、`git diff --check`。

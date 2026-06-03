@@ -1,4 +1,4 @@
-use crate::foundation::assets::IconName;
+use crate::foundation::assets::{ProviderVisual, provider_visual_for_kind};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct ProviderKindKey(String);
@@ -49,7 +49,7 @@ pub(super) struct ProviderSpec {
     pub(super) kind: ProviderKindKey,
     pub(super) display_name: &'static str,
     pub(super) description_key: &'static str,
-    pub(super) icon: IconName,
+    pub(super) visual: ProviderVisual,
     pub(super) fields: Vec<ProviderFieldSchema>,
     pub(super) model_listing: ModelListingStrategy,
 }
@@ -70,7 +70,7 @@ pub(super) fn builtin_provider_specs() -> Vec<ProviderSpec> {
             kind: "ollama".into(),
             display_name: "Ollama",
             description_key: "provider-description-ollama",
-            icon: IconName::Cpu,
+            visual: provider_visual_for_kind("ollama"),
             fields: vec![
                 ProviderFieldSchema {
                     key: "base_url",
@@ -128,7 +128,7 @@ fn api_key_provider(
         kind: kind.into(),
         display_name,
         description_key: description,
-        icon: IconName::Cloud,
+        visual: provider_visual_for_kind(kind),
         fields: vec![
             ProviderFieldSchema {
                 key: "api_key",
@@ -169,7 +169,7 @@ fn custom_openai_provider() -> ProviderSpec {
         kind: "custom_openai_compatible".into(),
         display_name: "Custom OpenAI-compatible",
         description_key: "provider-description-custom-openai-compatible",
-        icon: IconName::Server,
+        visual: provider_visual_for_kind("custom_openai_compatible"),
         fields: vec![
             ProviderFieldSchema {
                 key: "name",

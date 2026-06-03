@@ -1,7 +1,7 @@
 use ai_chat_core::ModelCapabilitiesSnapshot;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Selectable, Sizable, StyledExt, h_flex,
+    ActiveTheme, IndexPath, Selectable, Sizable, StyledExt, h_flex,
     label::Label,
     list::{ListDelegate, ListEvent, ListState},
     switch::Switch,
@@ -9,7 +9,10 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::foundation::{I18n, assets::IconName};
+use crate::foundation::{
+    I18n,
+    assets::{ProviderVisual, provider_visual_icon},
+};
 
 use super::{ProviderListItem, catalog::ProviderKindKey, draft::ProviderModelDraft};
 
@@ -17,7 +20,7 @@ use super::{ProviderListItem, catalog::ProviderKindKey, draft::ProviderModelDraf
 pub(super) struct ProviderListRow {
     pub(super) kind: ProviderKindKey,
     pub(super) display_name: SharedString,
-    pub(super) icon: IconName,
+    pub(super) visual: ProviderVisual,
     pub(super) enabled: bool,
     search_text: String,
 }
@@ -88,7 +91,11 @@ impl RenderOnce for ProviderListEntry {
                     .when(!self.selected, |this| {
                         this.hover(|this| this.bg(cx.theme().secondary_hover))
                     })
-                    .child(Icon::new(self.row.icon).text_color(cx.theme().muted_foreground))
+                    .child(
+                        provider_visual_icon(self.row.visual)
+                            .size_4()
+                            .text_color(cx.theme().muted_foreground),
+                    )
                     .child(
                         Label::new(self.row.display_name)
                             .text_sm()
@@ -453,7 +460,7 @@ pub(super) fn provider_list_rows(
             ProviderListRow {
                 kind: item.spec.kind.clone(),
                 display_name: item.spec.display_name.into(),
-                icon: item.spec.icon,
+                visual: item.spec.visual,
                 enabled: item
                     .provider
                     .as_ref()
