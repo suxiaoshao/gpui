@@ -545,7 +545,7 @@ impl ProviderSettingsPage {
             .as_deref()
             .or(new_provider_id.as_deref())
             .expect("new provider id is preallocated before saving secrets");
-        let secret_refs = Self::secret_refs_for_editor(editor, secret_ref_owner, &writes);
+        let secret_refs = Self::secret_refs_for_editor(editor, secret_ref_owner, &writes, cx);
         let save = ProviderSaveRequest {
             provider_id,
             new_provider_id,
@@ -661,7 +661,7 @@ impl ProviderSettingsPage {
                 (
                     key.clone(),
                     ProviderSecretValidationState {
-                        has_saved_secret: secret.has_saved_secret,
+                        has_saved_secret: secret.has_saved_secret && !secret.dirty,
                         has_pending_value: !secret.input.read(cx).value().is_empty(),
                     },
                 )
@@ -691,11 +691,18 @@ impl ProviderSettingsPage {
         editor: &ProviderEditorState,
         provider_id: &str,
         writes: &[secret_store::ProviderSecretWrite],
+        cx: &App,
     ) -> ProviderSecretRefs {
         let mut refs = secret_store::ProviderSecretStore::refs_for(provider_id, writes);
         for saved in &editor.draft.existing_secret_refs.refs {
             if !refs.refs.iter().any(|secret| secret.key == saved.key) {
-                refs.refs.push(saved.clone());
+                let cleared = editor
+                    .secret_inputs
+                    .get(&saved.key)
+                    .is_some_and(|secret| secret.read(cx).dirty);
+                if !cleared {
+                    refs.refs.push(saved.clone());
+                }
             }
         }
         refs
@@ -1398,7 +1405,7 @@ mod tests {
         ProviderModelMetadata, ProviderSecretRef, ProviderSecretRefs, ProviderSettingFieldValue,
         ProviderSettingValue, ProviderSettingsPayload, conservative_model_capabilities,
     };
-    use ai_chat_db::{FreshStore, NewProvider};
+    use ai_chat_db::{FreshStore, NewProvider, UpdateProvider};
     use fluent_bundle::FluentArgs;
     use gpui::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::InputEvent;
@@ -1970,6 +1977,87 @@ mod tests {
         assert!(!ollama_dirty);
     }
 
+    #[gpui::test]
+    fn provider_save_removes_cleared_optional_secret_ref(cx: &mut TestAppContext) {
+        let _dir = init_provider_page_test(cx);
+        set_provider_secret_refs_for_test(
+            cx,
+            "ollama",
+            ProviderSecretRefs {
+                refs: vec![ProviderSecretRef {
+                    key: "bearer_token".to_string(),
+                    storage: "keychain".to_string(),
+                    ref_id: "ollama-provider:bearer_token".to_string(),
+                }],
+            },
+        );
+        let (window, page) = open_provider_settings_root_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let ollama = provider_editor_key("ollama");
+
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.select_provider_from_list(ProviderKindKey::from("ollama"), window, cx);
+            });
+        });
+        set_text_input_value(
+            &page,
+            &ollama,
+            "base_url",
+            "http://ollama-preserved.example",
+            &mut cx,
+        );
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.save(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.update(|_, cx| provider_secret_ref_keys(cx, "ollama")),
+            vec!["bearer_token".to_string()]
+        );
+
+        set_secret_input_value(&page, &ollama, "bearer_token", "temporary-token", &mut cx);
+        set_secret_input_value(&page, &ollama, "bearer_token", "", &mut cx);
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.save(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.update(|_, cx| provider_secret_ref_keys(cx, "ollama")),
+            Vec::<String>::new()
+        );
+        assert!(!page.read_with(&cx, |page, cx| page.is_editor_dirty(&ollama, cx)));
+    }
+
+    #[gpui::test]
+    fn provider_save_rejects_cleared_required_secret(cx: &mut TestAppContext) {
+        let _dir = init_provider_page_test(cx);
+        let (window, page) = open_provider_settings_root_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let openai = provider_editor_key("openai");
+
+        set_secret_input_value(&page, &openai, "api_key", "temporary-token", &mut cx);
+        set_secret_input_value(&page, &openai, "api_key", "", &mut cx);
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.save(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.update(|_, cx| provider_secret_ref_keys(cx, "openai")),
+            vec!["api_key".to_string()]
+        );
+        assert!(page.read_with(&cx, |page, cx| page.is_editor_dirty(&openai, cx)));
+    }
+
     #[test]
     fn provider_list_selected_index_tracks_selected_kind() {
         let providers = builtin_provider_specs()
@@ -2177,6 +2265,47 @@ mod tests {
         ProviderEditorKey::new(ProviderKindKey::from(kind))
     }
 
+    fn set_provider_secret_refs_for_test(
+        cx: &mut TestAppContext,
+        kind: &str,
+        secret_refs: ProviderSecretRefs,
+    ) {
+        cx.update(|cx| {
+            let repository = database::repository(cx);
+            let provider = repository
+                .list_providers()
+                .unwrap()
+                .into_iter()
+                .find(|provider| provider.kind == kind)
+                .expect("provider exists");
+            repository
+                .update_provider(
+                    &provider.id,
+                    UpdateProvider {
+                        display_name: provider.display_name,
+                        enabled: provider.enabled,
+                        settings: provider.settings,
+                        secret_refs,
+                    },
+                )
+                .unwrap();
+        });
+    }
+
+    fn provider_secret_ref_keys(cx: &App, kind: &str) -> Vec<String> {
+        database::repository(cx)
+            .list_providers()
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.kind == kind)
+            .expect("provider exists")
+            .secret_refs
+            .refs
+            .into_iter()
+            .map(|secret| secret.key)
+            .collect()
+    }
+
     fn provider_for_test(
         kind: &str,
         display_name: &str,
@@ -2228,16 +2357,21 @@ mod tests {
         value: &str,
         cx: &mut VisualTestContext,
     ) {
-        let input = page.read_with(cx, |page, cx| {
+        let secret = page.read_with(cx, |page, _| {
             page.editors
                 .get(key)
                 .and_then(|editor| editor.secret_inputs.get(field))
-                .map(|secret| secret.read(cx).input.clone())
+                .cloned()
                 .expect("secret input exists")
         });
+        let input = secret.read_with(cx, |secret, _| secret.input.clone());
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 input.set_value(value.to_string(), window, cx);
+            });
+            secret.update(cx, |secret, cx| {
+                secret.dirty = true;
+                cx.notify();
             });
         });
     }
