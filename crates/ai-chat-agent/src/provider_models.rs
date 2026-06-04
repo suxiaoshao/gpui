@@ -180,7 +180,17 @@ struct GeminiModelEntry {
     base_model_id: Option<String>,
     display_name: Option<String>,
     input_token_limit: Option<u64>,
+    #[serde(default)]
+    supported_generation_methods: Vec<String>,
     thinking: Option<bool>,
+}
+
+impl GeminiModelEntry {
+    fn supports_generate_content(&self) -> bool {
+        self.supported_generation_methods
+            .iter()
+            .any(|method| method == "generateContent")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,36 +303,9 @@ async fn fetch_gemini_models(
             send_json::<GeminiModelsResponse>("gemini", "/v1beta/models", client.get(url)).await?;
         page_token = page.next_page_token.clone();
         for model in page.models {
-            let model_id = model
-                .base_model_id
-                .clone()
-                .filter(|id| !id.trim().is_empty())
-                .or_else(|| normalize_gemini_model_name(&model.name));
-            let Some(model_id) = model_id else {
-                continue;
-            };
-            let raw = serde_json::to_value(&model)
-                .ok()
-                .map(|value| ProviderRawPayload {
-                    provider_kind: request.provider.kind.clone(),
-                    value,
-                });
-            models.push(NewProviderModel {
-                provider_id: request.provider.id.clone(),
-                model_id: model_id.clone(),
-                display_name: model.display_name.clone().filter(|name| name != &model_id),
-                enabled: true,
-                capabilities: capabilities_from_gemini_model(
-                    &model_id,
-                    model.thinking,
-                    raw.clone(),
-                ),
-                metadata: ProviderModelMetadata {
-                    display_name: model.display_name,
-                    family: None,
-                    raw,
-                },
-            });
+            if let Some(model) = provider_model_from_gemini_model(&request.provider, model) {
+                models.push(model);
+            }
         }
         if page_token.is_none() {
             break;
@@ -331,6 +314,38 @@ async fn fetch_gemini_models(
 
     models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
     Ok(models)
+}
+
+fn provider_model_from_gemini_model(
+    provider: &ProviderRecord,
+    model: GeminiModelEntry,
+) -> Option<NewProviderModel> {
+    if !model.supports_generate_content() {
+        return None;
+    }
+    let model_id = model
+        .base_model_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| normalize_gemini_model_name(&model.name))?;
+    let raw = serde_json::to_value(&model)
+        .ok()
+        .map(|value| ProviderRawPayload {
+            provider_kind: provider.kind.clone(),
+            value,
+        });
+    Some(NewProviderModel {
+        provider_id: provider.id.clone(),
+        model_id: model_id.clone(),
+        display_name: model.display_name.clone().filter(|name| name != &model_id),
+        enabled: true,
+        capabilities: capabilities_from_gemini_model(&model_id, model.thinking, raw.clone()),
+        metadata: ProviderModelMetadata {
+            display_name: model.display_name,
+            family: None,
+            raw,
+        },
+    })
 }
 
 async fn fetch_openrouter_models(
@@ -663,6 +678,7 @@ mod tests {
                 "baseModelId": "gemini-2.5-flash",
                 "displayName": "Gemini 2.5 Flash",
                 "inputTokenLimit": 1048576,
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
                 "thinking": true
             }]
         }))
@@ -670,7 +686,41 @@ mod tests {
 
         let model = &payload.models[0];
         assert_eq!(model.base_model_id.as_deref(), Some("gemini-2.5-flash"));
+        assert!(model.supports_generate_content());
         assert_eq!(model.thinking, Some(true));
+    }
+
+    #[test]
+    fn native_gemini_model_listing_keeps_only_generate_content_models() {
+        let payload: GeminiModelsResponse = serde_json::from_value(json!({
+            "models": [
+                {
+                    "name": "models/gemini-2.5-flash",
+                    "baseModelId": "gemini-2.5-flash",
+                    "displayName": "Gemini 2.5 Flash",
+                    "supportedGenerationMethods": ["generateContent", "countTokens"],
+                    "thinking": true
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "baseModelId": "text-embedding-004",
+                    "displayName": "Text Embedding 004",
+                    "supportedGenerationMethods": ["embedContent"],
+                    "thinking": false
+                }
+            ]
+        }))
+        .unwrap();
+        let provider = provider_record("gemini", None);
+        let models = payload
+            .models
+            .into_iter()
+            .filter_map(|model| provider_model_from_gemini_model(&provider, model))
+            .collect::<Vec<_>>();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_id, "gemini-2.5-flash");
+        assert_eq!(models[0].display_name.as_deref(), Some("Gemini 2.5 Flash"));
     }
 
     #[test]
