@@ -1608,12 +1608,32 @@ fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
         .unwrap();
     assert!(new_model.enabled);
 
+    let refreshed = repo
+        .replace_fetched_provider_models(
+            &provider.id,
+            vec![provider_model(&provider.id, "gpt-5.2", "GPT-5.2 Latest")],
+        )
+        .unwrap();
+    assert_eq!(refreshed.len(), 1);
+
+    let existing = repo
+        .get_provider_model(&provider.id, "gpt-5.2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(existing.display_name.as_deref(), Some("GPT-5.2 Latest"));
+    assert!(!existing.enabled);
+    assert!(
+        repo.get_provider_model(&provider.id, "gpt-4.1")
+            .unwrap()
+            .is_none()
+    );
+
     assert_eq!(
-        repo.delete_provider_model(&provider.id, "gpt-4.1").unwrap(),
+        repo.delete_provider_model(&provider.id, "gpt-5.2").unwrap(),
         1
     );
     assert!(
-        repo.get_provider_model(&provider.id, "gpt-4.1")
+        repo.get_provider_model(&provider.id, "gpt-5.2")
             .unwrap()
             .is_none()
     );

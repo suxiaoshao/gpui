@@ -457,9 +457,14 @@ pub(super) fn provider_list_rows(
         .iter()
         .map(|item| {
             let description = i18n.t(item.spec.description_key);
+            let display_name = item
+                .provider
+                .as_ref()
+                .map(|provider| provider.display_name.as_str())
+                .unwrap_or(item.spec.display_name);
             ProviderListRow {
                 kind: item.spec.kind.clone(),
-                display_name: item.spec.display_name.into(),
+                display_name: display_name.into(),
                 visual: item.spec.visual,
                 enabled: item
                     .provider
@@ -486,7 +491,11 @@ pub(super) fn model_list_rows(models: &[ProviderModelDraft]) -> Vec<ProviderMode
 
 fn provider_search_text(item: &ProviderListItem, description: &str, i18n: &I18n) -> String {
     format!(
-        "{} {} {} {} {} provider model models",
+        "{} {} {} {} {} {} provider model models",
+        item.provider
+            .as_ref()
+            .map(|provider| provider.display_name.as_str())
+            .unwrap_or(item.spec.display_name),
         item.spec.display_name,
         item.spec.kind.as_str(),
         description,

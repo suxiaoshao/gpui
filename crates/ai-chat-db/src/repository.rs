@@ -256,16 +256,32 @@ impl FreshRepository {
         provider_id: &str,
         models: Vec<NewProviderModel>,
     ) -> Result<Vec<ProviderModelRecord>> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let mut records = Vec::with_capacity(models.len());
-            for input in models {
-                if input.provider_id != provider_id {
+        let model_ids = models
+            .iter()
+            .map(|model| {
+                if model.provider_id != provider_id {
                     return Err(DbError::Invariant(format!(
                         "provider model {} belongs to provider {}, expected {}",
-                        input.model_id, input.provider_id, provider_id
+                        model.model_id, model.provider_id, provider_id
                     )));
                 }
+                Ok(model.model_id.clone())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let delete_query = diesel::delete(
+                provider_models::table.filter(provider_models::provider_id.eq(provider_id)),
+            );
+            if model_ids.is_empty() {
+                delete_query.execute(conn)?;
+            } else {
+                delete_query
+                    .filter(provider_models::model_id.ne_all(&model_ids))
+                    .execute(conn)?;
+            }
+            let mut records = Vec::with_capacity(models.len());
+            for input in models {
                 let now = now_string()?;
                 let row = SqlNewProviderModelRow {
                     id: new_id(),
