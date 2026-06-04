@@ -176,12 +176,12 @@ impl ChatForm {
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
-            |form, _composer, event: &ComposerEditorEvent, _window, cx| match event {
+            |form, _composer, event: &ComposerEditorEvent, window, cx| match event {
                 ComposerEditorEvent::Changed => {
                     cx.notify();
                 }
                 ComposerEditorEvent::SubmitRequested(snapshot) => {
-                    if let Some(submit) = form.submit_snapshot(snapshot.clone()) {
+                    if let Some(submit) = form.submit_snapshot(snapshot.clone(), window, cx) {
                         cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
                     }
                 }
@@ -222,6 +222,17 @@ impl ChatForm {
                 form.apply_custom_token_budget(next, input, window, cx);
             },
         );
+        let provider_catalog = state::providers::catalog(cx);
+        let provider_catalog_subscription = cx.subscribe_in(
+            &provider_catalog,
+            window,
+            |form, _catalog, event: &state::providers::ProviderCatalogEvent, window, cx| match event
+            {
+                state::providers::ProviderCatalogEvent::Changed(_) => {
+                    form.reload_model_choices(window, cx);
+                }
+            },
+        );
 
         Self {
             composer,
@@ -237,6 +248,7 @@ impl ChatForm {
                 composer_subscription,
                 token_budget_change_subscription,
                 token_budget_step_subscription,
+                provider_catalog_subscription,
             ],
         }
     }
@@ -358,7 +370,16 @@ impl ChatForm {
     }
 
     fn reload_model_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model_choices = load_model_choices(cx);
+        self.apply_loaded_model_choices(load_model_choices(cx), window, cx);
+    }
+
+    fn apply_loaded_model_choices(
+        &mut self,
+        model_choices: Result<Vec<ProviderModelChoice>, SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.model_choices = model_choices;
         match self.model_choices.as_ref() {
             Ok(choices) => {
                 let selected_still_exists = self
@@ -388,6 +409,18 @@ impl ChatForm {
         self.sync_model_picker(window, cx);
         self.sync_token_budget_input(window, cx);
         self.sync_effort_picker(window, cx);
+    }
+
+    fn revalidate_selected_model_for_submit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ProviderModelChoice> {
+        let selected_key = self.selected_model_key.clone()?;
+        let model_choices = load_model_choices(cx);
+        let selected = selected_model_choice_in(&model_choices, Some(&selected_key)).cloned();
+        self.apply_loaded_model_choices(model_choices, window, cx);
+        selected
     }
 
     fn current_token_budget_bounds(&self) -> Option<thinking_effort::TokenBudgetBounds> {
@@ -439,13 +472,19 @@ impl ChatForm {
         self.composer.read(cx).can_submit() && self.selected_model_choice().is_some()
     }
 
-    fn submit_snapshot(&self, snapshot: ComposerSnapshot) -> Option<ChatFormSubmit> {
+    fn submit_snapshot(
+        &mut self,
+        snapshot: ComposerSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ChatFormSubmit> {
         if snapshot.is_empty() {
             return None;
         }
+        let provider_model = self.revalidate_selected_model_for_submit(window, cx)?;
         Some(ChatFormSubmit {
             composer: snapshot,
-            provider_model: self.selected_model_choice()?.clone(),
+            provider_model,
             reasoning_selection: self.selected_reasoning_selection.clone(),
         })
     }
@@ -567,9 +606,11 @@ impl Render for ChatForm {
                                             .with_size(px(COMPOSER_BUTTON_ICON_SIZE)),
                                     )
                                     .tooltip(send_tooltip)
-                                    .on_click(cx.listener(|form, _, _, cx| {
+                                    .on_click(cx.listener(|form, _, window, cx| {
                                         let snapshot = form.composer.read(cx).snapshot();
-                                        if let Some(submit) = form.submit_snapshot(snapshot) {
+                                        if let Some(submit) =
+                                            form.submit_snapshot(snapshot, window, cx)
+                                        {
                                             cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
                                         }
                                     })),
@@ -617,13 +658,26 @@ fn model_empty_label(
 
 #[cfg(test)]
 mod tests {
-    use super::{model_empty_label, selected_model_choice_in};
+    use super::{
+        ChatForm,
+        composer_editor::{ComposerSendPolicy, ComposerSnapshot},
+        model_empty_label, selected_model_choice_in,
+    };
     use crate::{
+        database::{self, FreshStoreGlobal},
         foundation::I18n,
+        state,
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
-    use ai_chat_core::conservative_model_capabilities;
-    use gpui::SharedString;
+    use ai_chat_core::{
+        ContentPart, ProviderModelMetadata, ProviderSecretRefs, ProviderSettingFieldValue,
+        ProviderSettingValue, ProviderSettingsPayload, conservative_model_capabilities,
+    };
+    use ai_chat_db::{NewProvider, NewProviderModel};
+    use gpui::{
+        App, AppContext as _, SharedString, TestAppContext, VisualTestContext, WindowHandle,
+    };
+    use tempfile::{TempDir, tempdir};
 
     #[test]
     fn selected_model_choice_requires_current_provider_model_key() {
@@ -661,6 +715,53 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn provider_catalog_event_refreshes_mounted_chat_form(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
+
+        cx.update(|_, cx| {
+            let provider_id = provider_id_for_kind(cx, "openai");
+            state::providers::set_provider_model_enabled(
+                cx,
+                &provider_id,
+                &"gpt-5".to_string(),
+                false,
+            )
+            .unwrap();
+        });
+
+        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
+    }
+
+    #[gpui::test]
+    fn submit_revalidates_stale_selected_model_before_emitting(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
+        cx.update(|_, cx| {
+            let provider_id = provider_id_for_kind(cx, "openai");
+            database::repository(cx)
+                .set_provider_model_enabled(&provider_id, "gpt-5", false)
+                .unwrap();
+        });
+
+        let first_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx);
+        assert!(first_submit.is_none());
+        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
+
+        let second_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("refreshed selected model can be submitted");
+        assert_eq!(second_submit.provider_model.model_id, "gpt-5-mini");
+    }
+
     fn choice(provider_id: &str, model_id: &str) -> ProviderModelChoice {
         ProviderModelChoice {
             provider_id: provider_id.to_string(),
@@ -669,6 +770,111 @@ mod tests {
             model_id: model_id.to_string(),
             model_display_name: None,
             capabilities: conservative_model_capabilities("openai"),
+        }
+    }
+
+    fn init_chat_form_test(cx: &mut TestAppContext) -> TempDir {
+        let dir = tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            state::providers::init(cx);
+            crate::foundation::i18n::init(cx);
+
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            repository
+                .replace_fetched_provider_models(
+                    &provider.id,
+                    vec![
+                        provider_model_for_test(&provider.id, "gpt-5"),
+                        provider_model_for_test(&provider.id, "gpt-5-mini"),
+                    ],
+                )
+                .unwrap();
+        });
+        dir
+    }
+
+    fn open_chat_form_window(cx: &mut TestAppContext) -> WindowHandle<ChatForm> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| ChatForm::new(window, cx))
+            })
+        })
+        .unwrap()
+    }
+
+    fn submit_snapshot(
+        form: &gpui::Entity<ChatForm>,
+        snapshot: ComposerSnapshot,
+        cx: &mut VisualTestContext,
+    ) -> Option<super::ChatFormSubmit> {
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.submit_snapshot(snapshot, window, cx))
+        })
+    }
+
+    fn selected_model_id(form: &gpui::Entity<ChatForm>, cx: &VisualTestContext) -> Option<String> {
+        form.read_with(cx, |form, _| {
+            form.selected_model_choice()
+                .map(|choice| choice.model_id.clone())
+        })
+    }
+
+    fn provider_id_for_kind(cx: &App, kind: &str) -> String {
+        database::repository(cx)
+            .list_providers()
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.kind == kind)
+            .expect("provider exists")
+            .id
+    }
+
+    fn provider_for_test() -> NewProvider {
+        NewProvider {
+            kind: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            enabled: true,
+            settings: ProviderSettingsPayload {
+                provider_kind: "openai".to_string(),
+                fields: vec![ProviderSettingFieldValue {
+                    key: "base_url".to_string(),
+                    value: ProviderSettingValue::String {
+                        value: "https://api.openai.com/v1".to_string(),
+                    },
+                }],
+            },
+            secret_refs: ProviderSecretRefs { refs: Vec::new() },
+        }
+    }
+
+    fn provider_model_for_test(provider_id: &str, model_id: &str) -> NewProviderModel {
+        NewProviderModel {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            display_name: None,
+            enabled: true,
+            capabilities: conservative_model_capabilities("openai"),
+            metadata: ProviderModelMetadata {
+                display_name: None,
+                family: None,
+                raw: None,
+            },
+        }
+    }
+
+    fn test_snapshot(text: &str) -> ComposerSnapshot {
+        ComposerSnapshot {
+            text: text.to_string(),
+            content_parts: vec![ContentPart::Text {
+                text: text.to_string(),
+            }],
+            skill_requests: Vec::new(),
+            token_ranges: Vec::new(),
+            attachments: Vec::new(),
+            send_policy: ComposerSendPolicy::EnterToSend,
         }
     }
 }

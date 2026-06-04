@@ -6,13 +6,15 @@ use crate::{
         I18n,
         assets::{IconName, provider_visual_icon},
     },
+    state,
 };
 use ai_chat_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use ai_chat_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
 };
 use ai_chat_db::{
-    FreshRepository, NewProvider, ProviderModelRecord, ProviderRecord, UpdateProvider,
+    FreshRepository, NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord,
+    UpdateProvider,
 };
 use fluent_bundle::FluentArgs;
 use gpui::{StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
@@ -142,6 +144,11 @@ struct ProviderSaveRequest {
     settings: ProviderSettingsPayload,
     secret_refs: ProviderSecretRefs,
     writes: Vec<secret_store::ProviderSecretWrite>,
+}
+
+struct ProviderModelFetchResult {
+    provider_id: ProviderId,
+    models: Vec<NewProviderModel>,
 }
 
 impl ProviderSettingsPage {
@@ -534,7 +541,6 @@ impl ProviderSettingsPage {
             return;
         }
         self.sync_inputs_to_editor(&key, cx);
-        let repository = database::repository(cx);
         let Some(editor) = self.editors.get(&key) else {
             return;
         };
@@ -559,7 +565,7 @@ impl ProviderSettingsPage {
         let page = cx.entity().downgrade();
         let task_key = key.clone();
         let task = window.spawn(cx, async move |cx| {
-            let result = save_provider(repository, save, cx).await;
+            let result = write_provider_secrets(save, cx).await;
             if let Err(err) = page.update_in(cx, |page, window, cx| {
                 page.finish_save(task_key, result, window, cx);
             }) {
@@ -576,7 +582,7 @@ impl ProviderSettingsPage {
     fn finish_save(
         &mut self,
         key: ProviderEditorKey,
-        result: Result<ProviderRecord, String>,
+        result: Result<ProviderSaveRequest, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -584,6 +590,8 @@ impl ProviderSettingsPage {
             editor._save_task = None;
             editor.save_state = AsyncActionState::Idle;
         }
+        let result =
+            result.and_then(|save| persist_provider_save(save, cx).map_err(|err| err.to_string()));
         match result {
             Ok(provider) => {
                 let draft = draft_from_record(&provider);
@@ -722,8 +730,7 @@ impl ProviderSettingsPage {
         let Some(provider_id) = draft.provider_id.clone() else {
             return;
         };
-        match database::repository(cx).set_provider_model_enabled(&provider_id, &model_id, enabled)
-        {
+        match state::providers::set_provider_model_enabled(cx, &provider_id, &model_id, enabled) {
             Ok(_) => {
                 if let Some(editor) = self.editors.get_mut(&key) {
                     editor.models = Self::load_models_for_draft(&draft, cx).unwrap_or_default();
@@ -810,7 +817,7 @@ impl ProviderSettingsPage {
         let page = cx.entity().downgrade();
         let task_key = key.clone();
         let task = window.spawn(cx, async move |cx| {
-            let result = fetch_and_store_models(repository, provider_id, cx).await;
+            let result = fetch_provider_models_for_provider(repository, provider_id, cx).await;
             if let Err(err) = page.update_in(cx, |page, window, cx| {
                 page.finish_fetch(task_key, result, window, cx);
             }) {
@@ -827,7 +834,7 @@ impl ProviderSettingsPage {
     fn finish_fetch(
         &mut self,
         key: ProviderEditorKey,
-        result: Result<usize, ProviderModelFetchError>,
+        result: Result<ProviderModelFetchResult, ProviderModelFetchError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -836,7 +843,23 @@ impl ProviderSettingsPage {
             editor.fetch_state = AsyncActionState::Idle;
         }
         match result {
-            Ok(count) => {
+            Ok(result) => {
+                let count = result.models.len();
+                if let Err(err) = state::providers::replace_fetched_provider_models(
+                    cx,
+                    &result.provider_id,
+                    result.models,
+                ) {
+                    window.push_notification(
+                        Notification::new()
+                            .title(cx.global::<I18n>().t("provider-notification-fetch-failed"))
+                            .message(err.to_string())
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                    cx.notify();
+                    return;
+                }
                 let draft = self.editors.get(&key).map(|editor| editor.draft.clone());
                 if let (Some(editor), Some(draft)) = (self.editors.get_mut(&key), draft) {
                     editor.models = Self::load_models_for_draft(&draft, cx).unwrap_or_default();
@@ -1175,46 +1198,49 @@ impl Render for ProviderSettingsPage {
     }
 }
 
-async fn save_provider(
-    repository: FreshRepository,
+async fn write_provider_secrets(
     save: ProviderSaveRequest,
     cx: &mut AsyncWindowContext,
-) -> Result<ProviderRecord, String> {
+) -> Result<ProviderSaveRequest, String> {
     secret_store::ProviderSecretStore::write_values(cx, &save.secret_refs, &save.writes).await?;
+    Ok(save)
+}
 
+fn persist_provider_save(
+    save: ProviderSaveRequest,
+    cx: &mut App,
+) -> ai_chat_db::Result<ProviderRecord> {
     match save.provider_id {
-        Some(provider_id) => repository
-            .update_provider(
-                &provider_id,
-                UpdateProvider {
-                    display_name: save.display_name,
-                    enabled: save.enabled,
-                    settings: save.settings,
-                    secret_refs: save.secret_refs,
-                },
-            )
-            .map_err(|err| err.to_string()),
-        None => repository
-            .insert_provider_with_id(
-                save.new_provider_id
-                    .expect("new provider saves must include a preallocated id"),
-                NewProvider {
-                    kind: save.kind,
-                    display_name: save.display_name,
-                    enabled: save.enabled,
-                    settings: save.settings,
-                    secret_refs: save.secret_refs,
-                },
-            )
-            .map_err(|err| err.to_string()),
+        Some(provider_id) => state::providers::update_provider(
+            cx,
+            &provider_id,
+            UpdateProvider {
+                display_name: save.display_name,
+                enabled: save.enabled,
+                settings: save.settings,
+                secret_refs: save.secret_refs,
+            },
+        ),
+        None => state::providers::insert_provider_with_id(
+            cx,
+            save.new_provider_id
+                .expect("new provider saves must include a preallocated id"),
+            NewProvider {
+                kind: save.kind,
+                display_name: save.display_name,
+                enabled: save.enabled,
+                settings: save.settings,
+                secret_refs: save.secret_refs,
+            },
+        ),
     }
 }
 
-async fn fetch_and_store_models(
+async fn fetch_provider_models_for_provider(
     repository: FreshRepository,
     provider_id: ProviderId,
     cx: &mut AsyncWindowContext,
-) -> Result<usize, ProviderModelFetchError> {
+) -> Result<ProviderModelFetchResult, ProviderModelFetchError> {
     let provider = repository
         .get_provider(&provider_id)
         .map_err(|err| ProviderModelFetchError::InvalidConfig {
@@ -1239,13 +1265,10 @@ async fn fetch_and_store_models(
         provider_kind,
         message: err.to_string(),
     })??;
-    let count = models.len();
-    repository
-        .replace_fetched_provider_models(&provider.id, models)
-        .map_err(|err| ProviderModelFetchError::InvalidConfig {
-            message: err.to_string(),
-        })?;
-    Ok(count)
+    Ok(ProviderModelFetchResult {
+        provider_id: provider.id,
+        models,
+    })
 }
 
 fn provider_fetch_precondition(
@@ -2200,6 +2223,7 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            crate::state::providers::init(cx);
             crate::foundation::i18n::init(cx);
 
             let repository = database::repository(cx);
