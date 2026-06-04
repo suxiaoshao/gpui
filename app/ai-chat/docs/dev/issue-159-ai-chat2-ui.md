@@ -147,6 +147,13 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | main/settings window placement | 已完成 | 已保存 main/settings window bounds、mode 和 display id，并复用旧 app 离屏/无效 display fallback 语义；About/Temporary placeholder 不持久化。 |
 | hotkey diagnostics UI | 未开始 | runtime 只保留内存 diagnostics；Settings 真实页面尚未展示注册失败、最近触发或重注册状态。 |
 
+### Hotkey UI 后续实现注意
+
+- PR #164 review 指出：如果 hotkey 设置 UI 在系统注册失败前先持久化 `temporary_hotkey`，DB/global settings
+  和输入框默认值会保存为一个实际未注册的快捷键。当前阶段不修复该代码路径；完整 hotkey UI / diagnostics UI
+  尚未实现，后续实现时必须以此为约束：确认 hotkey 时应先 parse/register 成功再写入 app settings，或在注册失败时回滚已写入的
+  settings/default input，避免启动后继续加载不可用 hotkey。
+
 ## 后端已具备但 UI 未接
 
 | 能力 | 后端位置 | UI 缺口 |
