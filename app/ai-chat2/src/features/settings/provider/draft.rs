@@ -112,13 +112,6 @@ pub(super) enum ProviderValidationState {
     Invalid(SharedString),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum AsyncActionState {
-    #[default]
-    Idle,
-    Running,
-}
-
 pub(super) struct ProviderSecretInput {
     pub(super) key: String,
     pub(super) input: Entity<InputState>,

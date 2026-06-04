@@ -35,6 +35,14 @@ Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI s
 - Use `Global`, `cx.global::<T>()`, and `cx.update_global(...)` for app-wide shared state.
 - Keep runtime assets and package-time assets separate. Use `gpui-app-icon-usage` for app icons, Lucide declarations, and bundle icon resources.
 
+## State Modeling
+
+- Prefer one source of truth. If a state can be represented by one field, do not add a second field that mirrors it.
+- Use Rust data structures and type semantics to encode state: `Option<T>` for presence, enum variants with payloads for mutually exclusive states, newtypes for identity, and helper methods for derived predicates.
+- Avoid ineffective synchronization data such as `is_loading` plus `load_task`, `selected_id` plus a duplicated selected record, or `status == Running` plus `task: Option<Task<_>>` when the extra field carries no independent meaning.
+- Add a separate field only when it represents independent information, a durable business state, or user-visible history that cannot be derived from the existing field.
+- For GPUI tasks, store the `Task` to keep it alive or cancel it on drop. If in-flight UI state has no extra semantics, derive loading/disabled guards from `task.is_some()`. Use an underscore prefix only for fields that are intentionally held but never read.
+
 ## Product UI Guidance
 
 - Build practical desktop app surfaces, not generic landing pages or decorative card grids.

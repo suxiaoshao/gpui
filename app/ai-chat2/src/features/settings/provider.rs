@@ -44,8 +44,8 @@ mod secret_store;
 use self::{
     catalog::{ProviderFieldKind, ProviderKindKey, ProviderSpec, builtin_provider_specs},
     draft::{
-        AsyncActionState, ManualModelEditor, ProviderDraft, ProviderDraftSnapshot,
-        ProviderDraftValue, ProviderModelDraft, ProviderSecretInput, ProviderValidationState,
+        ManualModelEditor, ProviderDraft, ProviderDraftSnapshot, ProviderDraftValue,
+        ProviderModelDraft, ProviderSecretInput, ProviderValidationState,
     },
     list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
@@ -81,13 +81,11 @@ struct ProviderEditorState {
     text_inputs: BTreeMap<String, Entity<InputState>>,
     secret_inputs: BTreeMap<String, Entity<ProviderSecretInput>>,
     validation: ProviderValidationState,
-    save_state: AsyncActionState,
-    fetch_state: AsyncActionState,
     #[allow(dead_code)]
     manual_model_editor: Option<Entity<ManualModelEditor>>,
     _field_subscriptions: Vec<Subscription>,
-    _save_task: Option<Task<()>>,
-    _fetch_task: Option<Task<()>>,
+    save_task: Option<Task<()>>,
+    fetch_task: Option<Task<()>>,
 }
 
 impl ProviderEditorState {
@@ -99,14 +97,20 @@ impl ProviderEditorState {
             text_inputs: BTreeMap::new(),
             secret_inputs: BTreeMap::new(),
             validation: ProviderValidationState::Idle,
-            save_state: AsyncActionState::Idle,
-            fetch_state: AsyncActionState::Idle,
             manual_model_editor: None,
             _field_subscriptions: Vec::new(),
-            _save_task: None,
-            _fetch_task: None,
+            save_task: None,
+            fetch_task: None,
         }
     }
+}
+
+fn editor_is_saving(editor: &ProviderEditorState) -> bool {
+    editor.save_task.is_some()
+}
+
+fn editor_is_fetching(editor: &ProviderEditorState) -> bool {
+    editor.fetch_task.is_some()
 }
 
 pub(super) struct ProviderSettingsPage {
@@ -367,6 +371,10 @@ impl ProviderSettingsPage {
         self.editors.get_mut(&self.selected_key)
     }
 
+    fn selected_editor_is_saving(&self) -> bool {
+        self.selected_editor().is_some_and(editor_is_saving)
+    }
+
     fn selected_spec(&self) -> Option<&ProviderSpec> {
         self.spec_for_key(&self.selected_key)
     }
@@ -424,6 +432,9 @@ impl ProviderSettingsPage {
         let ListEvent::Confirm(ix) = event else {
             return;
         };
+        if self.selected_editor_is_saving() {
+            return;
+        }
         let Some(row) = self
             .model_list
             .read(cx)
@@ -457,8 +468,10 @@ impl ProviderSettingsPage {
             .selected_editor()
             .map(|editor| model_list_rows(&editor.models))
             .unwrap_or_default();
+        let locked = self.selected_editor_is_saving();
         self.model_list.update(cx, |list, cx| {
             list.delegate_mut().set_rows(rows);
+            list.delegate_mut().set_disabled(locked);
             list.set_selected_index(None, window, cx);
         });
     }
@@ -511,11 +524,7 @@ impl ProviderSettingsPage {
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.selected_key.clone();
-        if self
-            .editors
-            .get(&key)
-            .is_some_and(|editor| editor.save_state == AsyncActionState::Running)
-        {
+        if self.editors.get(&key).is_some_and(editor_is_saving) {
             return;
         }
         if !self.validate_current_draft(cx) {
@@ -573,8 +582,10 @@ impl ProviderSettingsPage {
             }
         });
         if let Some(editor) = self.editors.get_mut(&key) {
-            editor.save_state = AsyncActionState::Running;
-            editor._save_task = Some(task);
+            editor.save_task = Some(task);
+        }
+        if self.selected_key == key {
+            self.sync_model_list(window, cx);
         }
         cx.notify();
     }
@@ -586,9 +597,12 @@ impl ProviderSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let selected = self.selected_key == key;
         if let Some(editor) = self.editors.get_mut(&key) {
-            editor._save_task = None;
-            editor.save_state = AsyncActionState::Idle;
+            editor.save_task = None;
+        }
+        if selected {
+            self.sync_model_list(window, cx);
         }
         let result =
             result.and_then(|save| persist_provider_save(save, cx).map_err(|err| err.to_string()));
@@ -758,7 +772,7 @@ impl ProviderSettingsPage {
         if self
             .editors
             .get(&key)
-            .is_some_and(|editor| editor.fetch_state == AsyncActionState::Running)
+            .is_some_and(|editor| editor_is_fetching(editor) || editor_is_saving(editor))
         {
             return;
         }
@@ -825,8 +839,7 @@ impl ProviderSettingsPage {
             }
         });
         if let Some(editor) = self.editors.get_mut(&key) {
-            editor.fetch_state = AsyncActionState::Running;
-            editor._fetch_task = Some(task);
+            editor.fetch_task = Some(task);
         }
         cx.notify();
     }
@@ -839,8 +852,7 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) {
         if let Some(editor) = self.editors.get_mut(&key) {
-            editor._fetch_task = None;
-            editor.fetch_state = AsyncActionState::Idle;
+            editor.fetch_task = None;
         }
         match result {
             Ok(result) => {
@@ -985,6 +997,7 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dirty = self.is_dirty(cx);
+        let locked = editor_is_saving(editor);
         h_flex()
             .flex_none()
             .w_full()
@@ -1028,6 +1041,7 @@ impl ProviderSettingsPage {
             .child(
                 Switch::new("provider-settings-enabled")
                     .checked(editor.draft.enabled)
+                    .disabled(locked)
                     .on_click(cx.listener(|page, checked, _, cx| {
                         if let Some(editor) = page.selected_editor_mut() {
                             editor.draft.enabled = *checked;
@@ -1044,6 +1058,7 @@ impl ProviderSettingsPage {
         editor: &ProviderEditorState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let locked = editor_is_saving(editor);
         v_flex()
             .flex_none()
             .w_full()
@@ -1068,6 +1083,7 @@ impl ProviderSettingsPage {
                             .map(|secret| {
                                 Input::new(&secret.read(cx).input)
                                     .w_full()
+                                    .disabled(locked)
                                     .mask_toggle()
                                     .into_any_element()
                             })
@@ -1075,7 +1091,12 @@ impl ProviderSettingsPage {
                         _ => editor
                             .text_inputs
                             .get(field.key)
-                            .map(|input| Input::new(input).w_full().into_any_element())
+                            .map(|input| {
+                                Input::new(input)
+                                    .w_full()
+                                    .disabled(locked)
+                                    .into_any_element()
+                            })
                             .unwrap_or_else(|| div().into_any_element()),
                     })
                     .into_any_element()
@@ -1091,6 +1112,7 @@ impl ProviderSettingsPage {
                             .icon(IconName::CircleCheck)
                             .label(cx.global::<I18n>().t("provider-action-validate"))
                             .small()
+                            .disabled(locked)
                             .on_click(cx.listener(|page, _, _, cx| {
                                 page.validate_current_draft(cx);
                                 cx.notify();
@@ -1102,8 +1124,8 @@ impl ProviderSettingsPage {
                             .label(cx.global::<I18n>().t("provider-action-save"))
                             .small()
                             .primary()
-                            .loading(editor.save_state == AsyncActionState::Running)
-                            .disabled(editor.save_state == AsyncActionState::Running)
+                            .loading(editor_is_saving(editor))
+                            .disabled(editor_is_saving(editor))
                             .on_click(cx.listener(|page, _, window, cx| page.save(window, cx))),
                     ),
             )
@@ -1133,6 +1155,7 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, editor: &ProviderEditorState, cx: &mut Context<Self>) -> AnyElement {
+        let locked = editor_is_saving(editor);
         v_flex()
             .flex_none()
             .w_full()
@@ -1160,8 +1183,8 @@ impl ProviderSettingsPage {
                             .icon(IconName::RefreshCcw)
                             .label(cx.global::<I18n>().t("provider-action-fetch-models"))
                             .small()
-                            .loading(editor.fetch_state == AsyncActionState::Running)
-                            .disabled(editor.fetch_state == AsyncActionState::Running)
+                            .loading(editor_is_fetching(editor))
+                            .disabled(editor_is_fetching(editor) || locked)
                             .on_click(cx.listener(|page, _, window, cx| {
                                 page.fetch_models(window, cx);
                             })),
@@ -1425,10 +1448,11 @@ mod tests {
         assets::{IconName, ProviderLogoName},
     };
     use ai_chat_core::{
-        ProviderModelMetadata, ProviderSecretRef, ProviderSecretRefs, ProviderSettingFieldValue,
-        ProviderSettingValue, ProviderSettingsPayload, conservative_model_capabilities,
+        ProviderId, ProviderModelMetadata, ProviderSecretRef, ProviderSecretRefs,
+        ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
+        conservative_model_capabilities,
     };
-    use ai_chat_db::{FreshStore, NewProvider, UpdateProvider};
+    use ai_chat_db::{FreshStore, NewProvider, NewProviderModel, UpdateProvider};
     use fluent_bundle::FluentArgs;
     use gpui::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::InputEvent;
@@ -2001,6 +2025,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn provider_save_running_locks_model_toggle_events(cx: &mut TestAppContext) {
+        let _dir = init_provider_page_test(cx);
+        let provider_id = cx.update(|cx| {
+            let provider_id = provider_id_for_kind(cx, "openai");
+            database::repository(cx)
+                .replace_fetched_provider_models(
+                    &provider_id,
+                    vec![provider_model_for_test(&provider_id, "gpt-5")],
+                )
+                .unwrap();
+            provider_id
+        });
+        let window = open_provider_settings_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let page = window.root(&mut cx).unwrap();
+        let openai = provider_editor_key("openai");
+
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.select_provider_from_list(ProviderKindKey::from("openai"), window, cx);
+                let task = cx.spawn(async move |_, _| std::future::pending::<()>().await);
+                page.editors
+                    .get_mut(&openai)
+                    .expect("openai editor exists")
+                    .save_task = Some(task);
+                page.sync_model_list(window, cx);
+            });
+        });
+
+        let model_list = page.read_with(&cx, |page, _| page.model_list.clone());
+        assert!(model_list.read_with(&cx, |list, _| list.delegate().disabled_for_test()));
+
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.on_model_list_event(
+                    &model_list,
+                    &ListEvent::Confirm(IndexPath::new(0)),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let model_still_enabled = cx.update(|_, cx| {
+            database::repository(cx)
+                .list_provider_models(&provider_id)
+                .unwrap()
+                .into_iter()
+                .find(|model| model.model_id == "gpt-5")
+                .expect("model exists")
+                .enabled
+        });
+        assert!(model_still_enabled);
+    }
+
+    #[gpui::test]
     fn provider_save_removes_cleared_optional_secret_ref(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         set_provider_secret_refs_for_test(
@@ -2469,6 +2549,31 @@ mod tests {
                 secret_refs: ProviderSecretRefs { refs: Vec::new() },
             })
             .unwrap()
+    }
+
+    fn provider_id_for_kind(cx: &App, kind: &str) -> ProviderId {
+        database::repository(cx)
+            .list_providers()
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.kind == kind)
+            .expect("provider exists")
+            .id
+    }
+
+    fn provider_model_for_test(provider_id: &ProviderId, model_id: &str) -> NewProviderModel {
+        NewProviderModel {
+            provider_id: provider_id.clone(),
+            model_id: model_id.to_string(),
+            display_name: None,
+            enabled: true,
+            capabilities: conservative_model_capabilities("openai"),
+            metadata: ProviderModelMetadata {
+                display_name: None,
+                family: None,
+                raw: None,
+            },
+        }
     }
 
     fn provider_model_draft(

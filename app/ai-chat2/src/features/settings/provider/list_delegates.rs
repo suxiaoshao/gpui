@@ -1,7 +1,7 @@
 use ai_chat_core::ModelCapabilitiesSnapshot;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, IndexPath, Selectable, Sizable, StyledExt, h_flex,
+    ActiveTheme, Disableable, IndexPath, Selectable, Sizable, StyledExt, h_flex,
     label::Label,
     list::{ListDelegate, ListEvent, ListState},
     switch::Switch,
@@ -245,6 +245,7 @@ pub(super) struct ProviderModelListDelegate {
     rows: Vec<ProviderModelRow>,
     last_query: String,
     empty_label: SharedString,
+    disabled: bool,
 }
 
 #[derive(IntoElement, Clone)]
@@ -254,6 +255,7 @@ pub(super) struct ProviderModelListEntry {
     list: WeakEntity<ListState<ProviderModelListDelegate>>,
     selected: bool,
     show_separator: bool,
+    disabled: bool,
 }
 
 impl ProviderModelListEntry {
@@ -262,6 +264,7 @@ impl ProviderModelListEntry {
         row: ProviderModelRow,
         list: WeakEntity<ListState<ProviderModelListDelegate>>,
         show_separator: bool,
+        disabled: bool,
     ) -> Self {
         Self {
             ix,
@@ -269,6 +272,7 @@ impl ProviderModelListEntry {
             list,
             selected: false,
             show_separator,
+            disabled,
         }
     }
 }
@@ -313,6 +317,7 @@ impl RenderOnce for ProviderModelListEntry {
                         Switch::new(format!("provider-model-enabled-{}", self.row.model_id))
                             .checked(self.row.enabled)
                             .small()
+                            .disabled(self.disabled)
                             .on_click(move |_, _window, cx| {
                                 let _ = list.update(cx, |_, cx| {
                                     cx.emit(ListEvent::Confirm(ix));
@@ -352,12 +357,17 @@ impl ProviderModelListDelegate {
             rows,
             last_query: String::new(),
             empty_label: empty_label.into(),
+            disabled: false,
         }
     }
 
     pub(super) fn set_rows(&mut self, rows: Vec<ProviderModelRow>) {
         self.all_rows = rows;
         self.apply_query();
+    }
+
+    pub(super) fn set_disabled(&mut self, disabled: bool) {
+        self.disabled = disabled;
     }
 
     pub(super) fn row_for_index(&self, ix: IndexPath) -> Option<&ProviderModelRow> {
@@ -387,6 +397,11 @@ impl ProviderModelListDelegate {
     #[cfg(test)]
     pub(super) fn row_count_for_test(&self) -> usize {
         self.rows.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn disabled_for_test(&self) -> bool {
+        self.disabled
     }
 
     #[cfg(test)]
@@ -424,7 +439,7 @@ impl ListDelegate for ProviderModelListDelegate {
         self.rows
             .get(ix.row)
             .cloned()
-            .map(|row| ProviderModelListEntry::new(ix, row, list, show_separator))
+            .map(|row| ProviderModelListEntry::new(ix, row, list, show_separator, self.disabled))
     }
 
     fn render_empty(
