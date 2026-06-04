@@ -60,6 +60,21 @@ impl HotkeyBackend for DisabledHotkeyBackend {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct FakeHotkeyBackend;
+
+#[cfg(test)]
+impl HotkeyBackend for FakeHotkeyBackend {
+    fn register(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
+        Ok(())
+    }
+
+    fn unregister(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) struct GlobalHotkeyState {
     backend: Box<dyn HotkeyBackend>,
     temporary_hotkey: Option<String>,
@@ -133,6 +148,14 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
     );
     cx.set_global(hotkeys);
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_hotkey_state(cx: &mut App) {
+    cx.set_global(GlobalHotkeyState::new(
+        Box::<FakeHotkeyBackend>::default(),
+        Task::ready(()),
+    ));
 }
 
 impl GlobalHotkeyState {
@@ -362,24 +385,10 @@ impl GlobalHotkeyState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GlobalHotkeyState, HotkeyBackend};
-    use crate::errors::AiChat2Result;
+    use super::{FakeHotkeyBackend, GlobalHotkeyState};
     use global_hotkey::hotkey::HotKey;
     use gpui::Task;
     use std::str::FromStr;
-
-    #[derive(Default)]
-    struct FakeHotkeyBackend;
-
-    impl HotkeyBackend for FakeHotkeyBackend {
-        fn register(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
-            Ok(())
-        }
-
-        fn unregister(&mut self, _hotkey: HotKey) -> AiChat2Result<()> {
-            Ok(())
-        }
-    }
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {

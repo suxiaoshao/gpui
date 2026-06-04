@@ -3,7 +3,6 @@ use crate::{
         APP_NAME, menus,
         title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
-    components::hotkey_input::{HotkeyEvent, HotkeyInput, string_to_keystroke},
     foundation::{self, I18n},
     state,
 };
@@ -48,7 +47,6 @@ pub(crate) fn init(cx: &mut App) {
 
 pub(crate) struct SettingsView {
     focus_handle: FocusHandle,
-    hotkey_input: Entity<HotkeyInput>,
     settings_search_input: Entity<InputState>,
     appearance_settings: Entity<AppearanceSettingsPage>,
     provider_settings: Entity<ProviderSettingsPage>,
@@ -68,14 +66,6 @@ impl SettingsView {
         state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let hotkey_input = cx.new(|cx| {
-            let temporary_hotkey = cx
-                .global::<state::AiChat2AppSettings>()
-                .temporary_hotkey()
-                .map(str::to_string);
-            HotkeyInput::new("temporary-hotkey-input", window, cx)
-                .default_value(temporary_hotkey.as_deref().and_then(string_to_keystroke))
-        });
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-settings"))
         });
@@ -85,7 +75,6 @@ impl SettingsView {
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let _subscriptions = vec![
-            cx.subscribe_in(&hotkey_input, window, Self::subscribe_hotkey_changes),
             cx.subscribe_in(
                 &settings_search_input,
                 window,
@@ -124,7 +113,6 @@ impl SettingsView {
         ];
         Self {
             focus_handle,
-            hotkey_input,
             settings_search_input,
             appearance_settings,
             provider_settings,
@@ -154,47 +142,6 @@ impl SettingsView {
     ) {
         if matches!(event, InputEvent::Change) {
             cx.notify();
-        }
-    }
-
-    fn subscribe_hotkey_changes(
-        &mut self,
-        state: &Entity<HotkeyInput>,
-        event: &HotkeyEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let previous_hotkey = cx
-            .global::<state::AiChat2AppSettings>()
-            .temporary_hotkey()
-            .map(str::to_string);
-        let next_hotkey = match event {
-            HotkeyEvent::Confirm(shared_string) => Some(shared_string.to_string()),
-            HotkeyEvent::Cancel => None,
-        };
-        let save_result = state::config::update_app_settings(cx, |payload| {
-            payload.temporary_hotkey = next_hotkey.clone();
-        });
-
-        match save_result {
-            Ok(_) => {
-                if let Err(err) = state::GlobalHotkeyState::update_temporary_hotkey(
-                    previous_hotkey.as_deref(),
-                    next_hotkey.as_deref(),
-                    cx,
-                ) {
-                    let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
-                    push_settings_error(window, cx, title, err);
-                }
-                let default_value = next_hotkey.as_deref().and_then(string_to_keystroke);
-                state.update(cx, move |this, _cx| {
-                    this.set_default_value(default_value);
-                });
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                push_settings_error(window, cx, title, err);
-            }
         }
     }
 
@@ -246,9 +193,7 @@ impl Render for SettingsView {
             SettingsPageFrame::new(
                 active_page_title,
                 match active_page_key {
-                    SettingsPageKey::General => {
-                        general::render(self.hotkey_input.clone(), window, cx)
-                    }
+                    SettingsPageKey::General => general::render(window, cx),
                     SettingsPageKey::Appearance => {
                         self.appearance_settings.clone().into_any_element()
                     }
