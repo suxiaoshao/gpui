@@ -18,6 +18,7 @@ use diesel::{
     sql_types::Text,
     upsert::excluded,
 };
+use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -79,12 +80,87 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn get_project_by_path(&self, path: &str) -> Result<Option<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .filter(projects::path.eq(path))
+            .select(SqlProjectRow::as_select())
+            .first::<SqlProjectRow>(&mut conn)
+            .optional()?
+            .map(TryInto::try_into)
+            .transpose()
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|project| project.kind == ProjectKind::Normal && !project.metadata.removed)
+            .collect())
+    }
+
+    pub fn update_project_metadata(
+        &self,
+        id: &str,
+        metadata: ProjectMetadata,
+    ) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::metadata_json.eq(to_json(&metadata)?),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn rename_project(&self, id: &str, display_name: String) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::display_name.eq(display_name),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_project_removed(&self, id: &str, removed: bool) -> Result<ProjectRecord> {
+        let project = self
+            .get_project(id)?
+            .ok_or_else(|| DbError::Invariant(format!("project {id} is missing")))?;
+        let mut metadata = project.metadata;
+        metadata.removed = removed;
+        self.update_project_metadata(id, metadata)
+    }
+
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
+        self.insert_provider_with_id(new_id(), input)
+    }
+
+    pub fn insert_provider_with_id(
+        &self,
+        id: ProviderId,
+        input: NewProvider,
+    ) -> Result<ProviderRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
             let row = SqlNewProviderRow {
-                id: new_id(),
+                id,
                 kind: input.kind,
                 display_name: input.display_name,
                 enabled: input.enabled,
@@ -108,6 +184,39 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn list_providers(&self) -> Result<Vec<ProviderRecord>> {
+        let mut conn = self.conn()?;
+        providers::table
+            .order((providers::display_name.asc(), providers::kind.asc()))
+            .select(SqlProviderRow::as_select())
+            .load::<SqlProviderRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn update_provider(&self, id: &str, input: UpdateProvider) -> Result<ProviderRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            diesel::update(providers::table.find(id))
+                .set((
+                    providers::display_name.eq(input.display_name),
+                    providers::enabled.eq(input.enabled),
+                    providers::settings_json.eq(to_json(&input.settings)?),
+                    providers::secret_refs_json.eq(to_json(&input.secret_refs)?),
+                    providers::updated_at.eq(now_string()?),
+                ))
+                .returning(SqlProviderRow::as_returning())
+                .get_result::<SqlProviderRow>(conn)?
+                .try_into()
+        })
+    }
+
+    pub fn delete_provider(&self, id: &str) -> Result<usize> {
+        let mut conn = self.conn()?;
+        Ok(diesel::delete(providers::table.find(id)).execute(&mut conn)?)
+    }
+
     pub fn upsert_provider_model(&self, input: NewProviderModel) -> Result<ProviderModelRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
@@ -117,6 +226,7 @@ impl FreshRepository {
                 provider_id: input.provider_id,
                 model_id: input.model_id,
                 display_name: input.display_name,
+                enabled: input.enabled,
                 capabilities_json: to_json(&input.capabilities)?,
                 metadata_json: to_json(&input.metadata)?,
                 fetched_at: now,
@@ -141,6 +251,71 @@ impl FreshRepository {
         })
     }
 
+    pub fn replace_fetched_provider_models(
+        &self,
+        provider_id: &str,
+        models: Vec<NewProviderModel>,
+    ) -> Result<Vec<ProviderModelRecord>> {
+        let model_ids = models
+            .iter()
+            .map(|model| {
+                if model.provider_id != provider_id {
+                    return Err(DbError::Invariant(format!(
+                        "provider model {} belongs to provider {}, expected {}",
+                        model.model_id, model.provider_id, provider_id
+                    )));
+                }
+                Ok(model.model_id.clone())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let delete_query = diesel::delete(
+                provider_models::table.filter(provider_models::provider_id.eq(provider_id)),
+            );
+            if model_ids.is_empty() {
+                delete_query.execute(conn)?;
+            } else {
+                delete_query
+                    .filter(provider_models::model_id.ne_all(&model_ids))
+                    .execute(conn)?;
+            }
+            let mut records = Vec::with_capacity(models.len());
+            for input in models {
+                let now = now_string()?;
+                let row = SqlNewProviderModelRow {
+                    id: new_id(),
+                    provider_id: input.provider_id,
+                    model_id: input.model_id,
+                    display_name: input.display_name,
+                    enabled: input.enabled,
+                    capabilities_json: to_json(&input.capabilities)?,
+                    metadata_json: to_json(&input.metadata)?,
+                    fetched_at: now,
+                    created_at: now,
+                    updated_at: now,
+                };
+                let record = diesel::insert_into(provider_models::table)
+                    .values(&row)
+                    .on_conflict((provider_models::provider_id, provider_models::model_id))
+                    .do_update()
+                    .set((
+                        provider_models::display_name.eq(excluded(provider_models::display_name)),
+                        provider_models::capabilities_json
+                            .eq(excluded(provider_models::capabilities_json)),
+                        provider_models::metadata_json.eq(excluded(provider_models::metadata_json)),
+                        provider_models::fetched_at.eq(excluded(provider_models::fetched_at)),
+                        provider_models::updated_at.eq(excluded(provider_models::updated_at)),
+                    ))
+                    .returning(SqlProviderModelRow::as_returning())
+                    .get_result::<SqlProviderModelRow>(conn)?
+                    .try_into()?;
+                records.push(record);
+            }
+            Ok(records)
+        })
+    }
+
     pub fn get_provider_model(
         &self,
         provider_id: &str,
@@ -150,6 +325,52 @@ impl FreshRepository {
         provider_model_row(&mut conn, provider_id, model_id)?
             .map(TryInto::try_into)
             .transpose()
+    }
+
+    pub fn list_provider_models(&self, provider_id: &str) -> Result<Vec<ProviderModelRecord>> {
+        let mut conn = self.conn()?;
+        provider_models::table
+            .filter(provider_models::provider_id.eq(provider_id))
+            .order((
+                provider_models::display_name.asc(),
+                provider_models::model_id.asc(),
+            ))
+            .select(SqlProviderModelRow::as_select())
+            .load::<SqlProviderModelRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn set_provider_model_enabled(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        enabled: bool,
+    ) -> Result<ProviderModelRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(
+            provider_models::table
+                .filter(provider_models::provider_id.eq(provider_id))
+                .filter(provider_models::model_id.eq(model_id)),
+        )
+        .set((
+            provider_models::enabled.eq(enabled),
+            provider_models::updated_at.eq(now_string()?),
+        ))
+        .returning(SqlProviderModelRow::as_returning())
+        .get_result::<SqlProviderModelRow>(&mut conn)?
+        .try_into()
+    }
+
+    pub fn delete_provider_model(&self, provider_id: &str, model_id: &str) -> Result<usize> {
+        let mut conn = self.conn()?;
+        Ok(diesel::delete(
+            provider_models::table
+                .filter(provider_models::provider_id.eq(provider_id))
+                .filter(provider_models::model_id.eq(model_id)),
+        )
+        .execute(&mut conn)?)
     }
 
     pub fn insert_prompt(&self, input: NewPrompt) -> Result<PromptRecord> {
@@ -215,6 +436,90 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn list_sidebar_conversations(&self) -> Result<Vec<ConversationRecord>> {
+        let visible_project_ids = self.visible_sidebar_project_ids()?;
+        let active = db_label(&ConversationStatus::Active)?;
+        let mut conn = self.conn()?;
+        Ok(conversations::table
+            .filter(conversations::status.eq(active))
+            .order(conversations::updated_at.desc())
+            .select(SqlConversationRow::as_select())
+            .load::<SqlConversationRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<ConversationRecord>>>()?
+            .into_iter()
+            .filter(|conversation| visible_project_ids.contains(&conversation.project_id))
+            .collect())
+    }
+
+    pub fn update_conversation_metadata(
+        &self,
+        id: &str,
+        metadata: ConversationMetadata,
+    ) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::metadata_json.eq(to_json(&metadata)?),
+                conversations::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn soft_delete_conversation(&self, id: &str) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        let now = now_string()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::status.eq(db_label(&ConversationStatus::Deleted)?),
+                conversations::deleted_at.eq(Some(now)),
+                conversations::updated_at.eq(now),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn search_sidebar_conversations(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ConversationRecord>> {
+        let conversations = self.list_sidebar_conversations()?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(conversations.into_iter().take(limit).collect());
+        }
+
+        let projects = self.visible_sidebar_project_map()?;
+        let item_text_by_conversation = self.conversation_search_texts(
+            conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect(),
+        )?;
+
+        Ok(conversations
+            .into_iter()
+            .filter(|conversation| {
+                conversation_matches_query(
+                    conversation,
+                    projects.get(&conversation.project_id),
+                    item_text_by_conversation.get(&conversation.id),
+                    &query,
+                )
+            })
+            .take(limit)
+            .collect())
+    }
+
     pub fn append_conversation_item(
         &self,
         input: NewConversationItem,
@@ -260,6 +565,51 @@ impl FreshRepository {
                 .execute(conn)?;
             item.try_into()
         })
+    }
+
+    fn visible_sidebar_project_ids(&self) -> Result<HashSet<ProjectId>> {
+        Ok(self.visible_sidebar_project_map()?.into_keys().collect())
+    }
+
+    fn visible_sidebar_project_map(&self) -> Result<HashMap<ProjectId, ProjectRecord>> {
+        Ok(self
+            .list_projects()?
+            .into_iter()
+            .filter(|project| {
+                !project.metadata.removed
+                    && matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch)
+            })
+            .map(|project| (project.id.clone(), project))
+            .collect())
+    }
+
+    fn conversation_search_texts(
+        &self,
+        conversation_ids: Vec<ConversationId>,
+    ) -> Result<HashMap<ConversationId, String>> {
+        if conversation_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut conn = self.conn()?;
+        let rows = conversation_items::table
+            .filter(conversation_items::conversation_id.eq_any(conversation_ids))
+            .select((
+                conversation_items::conversation_id,
+                conversation_items::search_text,
+            ))
+            .load::<(String, String)>(&mut conn)?;
+        let mut grouped = HashMap::<ConversationId, Vec<String>>::new();
+        for (conversation_id, text) in rows {
+            if !text.is_empty() {
+                grouped.entry(conversation_id).or_default().push(text);
+            }
+        }
+
+        Ok(grouped
+            .into_iter()
+            .map(|(conversation_id, parts)| (conversation_id, parts.join("\n")))
+            .collect())
     }
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
@@ -685,6 +1035,24 @@ impl FreshRepository {
         })
     }
 
+    pub fn get_shortcut(&self, id: &str) -> Result<Option<ShortcutRecord>> {
+        let mut conn = self.conn()?;
+        shortcut_row(&mut conn, id)?
+            .map(TryInto::try_into)
+            .transpose()
+    }
+
+    pub fn list_shortcuts(&self) -> Result<Vec<ShortcutRecord>> {
+        let mut conn = self.conn()?;
+        shortcuts::table
+            .order(shortcuts::created_at.asc())
+            .select(SqlShortcutRow::as_select())
+            .load::<SqlShortcutRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
     pub fn set_app_settings(&self, settings: AppSettingsPayload) -> Result<AppSettingsRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
@@ -764,6 +1132,14 @@ fn prompt_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlPromptR
     Ok(prompts::table
         .find(id)
         .select(SqlPromptRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn shortcut_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlShortcutRow>> {
+    Ok(shortcuts::table
+        .find(id)
+        .select(SqlShortcutRow::as_select())
         .first(conn)
         .optional()?)
 }
@@ -896,6 +1272,23 @@ fn append_conversation_item_with_conn(
         ))
         .execute(conn)?;
     item.try_into()
+}
+
+fn conversation_matches_query(
+    conversation: &ConversationRecord,
+    project: Option<&ProjectRecord>,
+    item_search_text: Option<&String>,
+    query: &str,
+) -> bool {
+    contains_query(&conversation.title, query)
+        || project.is_some_and(|project| {
+            contains_query(&project.display_name, query) || contains_query(&project.path, query)
+        })
+        || item_search_text.is_some_and(|text| contains_query(text, query))
+}
+
+fn contains_query(value: &str, query: &str) -> bool {
+    value.to_lowercase().contains(query)
 }
 
 fn update_agent_run_status_with_conn(

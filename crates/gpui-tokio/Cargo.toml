@@ -1,0 +1,15 @@
+[package]
+name = "gpui-tokio"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "gpui_tokio"
+path = "src/lib.rs"
+
+[dependencies]
+gpui.workspace = true
+tokio = { version = "1.52.3", features = ["net", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

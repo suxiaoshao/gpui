@@ -489,6 +489,8 @@ pub struct RunSettingsSnapshot {
     pub model_id: ProviderModelId,
     pub model_capabilities: ModelCapabilitiesSnapshot,
     pub provider_settings: ProviderSettingsPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_selection: Option<ReasoningSelectionSnapshot>,
     pub tool_policy: ToolPolicySnapshot,
 }
 
@@ -560,6 +562,10 @@ pub struct ProjectMetadata {
     pub scratch_reason: Option<String>,
     pub git_root: Option<String>,
     pub last_active_conversation_id: Option<ConversationId>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -743,6 +749,100 @@ pub struct ReasoningCapabilitySnapshot {
     pub default_effort: String,
     pub efforts: Vec<String>,
     pub summaries: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ReasoningControlSnapshot>,
+    #[serde(default = "default_capability_source")]
+    pub source: CapabilitySourceSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CapabilitySourceSnapshot {
+    ApiDiscovered {
+        provider: String,
+        endpoint: String,
+    },
+    OfficialDocs {
+        provider: String,
+        url: String,
+        checked_at: String,
+    },
+    Heuristic {
+        reason: String,
+    },
+    Manual {
+        source: String,
+    },
+    OpenRouterNormalized,
+}
+
+impl Default for CapabilitySourceSnapshot {
+    fn default() -> Self {
+        default_capability_source()
+    }
+}
+
+fn default_capability_source() -> CapabilitySourceSnapshot {
+    CapabilitySourceSnapshot::Heuristic {
+        reason: "legacy capability payload".to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReasoningControlSnapshot {
+    None,
+    Boolean {
+        default_enabled: Option<bool>,
+    },
+    Levels {
+        values: Vec<String>,
+        default_value: Option<String>,
+    },
+    TokenBudget {
+        min: Option<u32>,
+        max: Option<u32>,
+        default_value: Option<i32>,
+        dynamic_supported: bool,
+        off_supported: bool,
+    },
+    AdaptiveLevels {
+        values: Vec<String>,
+        default_value: Option<String>,
+    },
+    AlwaysOn {
+        visible_summary_supported: bool,
+    },
+    Composite {
+        controls: Vec<ReasoningControlSnapshot>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReasoningSelectionSnapshot {
+    Boolean {
+        enabled: bool,
+    },
+    Level {
+        value: String,
+    },
+    TokenBudget {
+        mode: TokenBudgetSelectionMode,
+        value: Option<u32>,
+    },
+    Composite {
+        selections: Vec<ReasoningSelectionSnapshot>,
+    },
+    AlwaysOn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenBudgetSelectionMode {
+    Off,
+    Dynamic,
+    Custom,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -756,11 +856,34 @@ pub enum ProviderCapabilityExtensionSnapshot {
     Ollama {
         raw_capabilities: Vec<String>,
         family: String,
+        #[serde(default)]
+        families: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<OllamaThinkingCapabilitySnapshot>,
+        #[serde(default)]
+        local_web_tools: bool,
+        raw: Option<ProviderRawPayload>,
+    },
+    Gemini {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<bool>,
+        raw: Option<ProviderRawPayload>,
+    },
+    OpenRouter {
+        #[serde(default)]
+        supported_parameters: Vec<String>,
         raw: Option<ProviderRawPayload>,
     },
     Other {
         raw: ProviderRawPayload,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OllamaThinkingCapabilitySnapshot {
+    Boolean,
+    Levels,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -771,12 +894,74 @@ pub struct ProviderModelMetadata {
     pub raw: Option<ProviderRawPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AppLanguage {
+    #[serde(rename = "en-US", alias = "en")]
+    English,
+    #[serde(rename = "zh-CN", alias = "zh")]
+    Chinese,
+    #[default]
+    #[serde(other, rename = "system")]
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppThemeMode {
+    Light,
+    Dark,
+    #[default]
+    #[serde(other)]
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppThemeSettings {
+    #[serde(default)]
+    pub mode: AppThemeMode,
+    pub light_theme: Option<String>,
+    pub dark_theme: Option<String>,
+    #[serde(default)]
+    pub custom_theme_colors: Vec<String>,
+}
+
+impl Default for AppThemeSettings {
+    fn default() -> Self {
+        Self {
+            mode: AppThemeMode::System,
+            light_theme: None,
+            dark_theme: None,
+            custom_theme_colors: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppSettingsPayload {
-    pub language: Option<String>,
-    pub theme: Option<String>,
+    #[serde(default)]
+    pub language: AppLanguage,
+    #[serde(default)]
+    pub theme: AppThemeSettings,
+    #[serde(default)]
+    pub temporary_hotkey: Option<String>,
+    #[serde(default)]
+    pub http_proxy: Option<String>,
+    #[serde(default)]
     pub default_project_id: Option<ProjectId>,
+}
+
+impl Default for AppSettingsPayload {
+    fn default() -> Self {
+        Self {
+            language: AppLanguage::System,
+            theme: AppThemeSettings::default(),
+            temporary_hotkey: None,
+            http_proxy: None,
+            default_project_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -796,6 +981,62 @@ mod tests {
         let id = crate::new_id();
         assert_eq!(id.len(), 36);
         assert_eq!(id.chars().nth(14), Some('7'));
+    }
+
+    #[test]
+    fn legacy_project_metadata_defaults_sidebar_flags() {
+        let metadata: ProjectMetadata = serde_json::from_value(json!({
+            "scratchReason": null,
+            "gitRoot": "/tmp/project",
+            "lastActiveConversationId": null
+        }))
+        .unwrap();
+
+        assert!(!metadata.pinned);
+        assert!(!metadata.removed);
+    }
+
+    #[test]
+    fn app_settings_payload_roundtrips_as_typed_settings() {
+        let payload = AppSettingsPayload {
+            language: AppLanguage::Chinese,
+            theme: AppThemeSettings {
+                mode: AppThemeMode::Dark,
+                light_theme: Some("preset:Default Light".to_string()),
+                dark_theme: Some("material-you:#3271AE".to_string()),
+                custom_theme_colors: vec!["#3271AE".to_string()],
+            },
+            temporary_hotkey: Some("cmd+shift+j".to_string()),
+            http_proxy: Some("http://127.0.0.1:8080".to_string()),
+            default_project_id: Some("project_1".to_string()),
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["language"], "zh-CN");
+        assert_eq!(value["theme"]["mode"], "dark");
+        assert_eq!(value["temporaryHotkey"], "cmd+shift+j");
+        assert_eq!(value["httpProxy"], "http://127.0.0.1:8080");
+        assert_eq!(
+            serde_json::from_value::<AppSettingsPayload>(value).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn app_settings_payload_defaults_unknown_language_and_theme_mode_to_system() {
+        let payload: AppSettingsPayload = serde_json::from_value(json!({
+            "language": "fr-FR",
+            "theme": {
+                "mode": "auto"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.language, AppLanguage::System);
+        assert_eq!(payload.theme.mode, AppThemeMode::System);
+        assert_eq!(payload.temporary_hotkey, None);
+        assert_eq!(payload.http_proxy, None);
+        assert_eq!(payload.default_project_id, None);
     }
 
     #[test]
@@ -882,5 +1123,60 @@ mod tests {
             serde_json::from_value::<ProviderStepRequestSnapshot>(value).unwrap(),
             snapshot
         );
+    }
+
+    #[test]
+    fn legacy_reasoning_capability_defaults_to_heuristic_source() {
+        let payload = json!({
+            "defaultEffort": "medium",
+            "efforts": ["low", "medium", "high"],
+            "summaries": true
+        });
+
+        let snapshot: ReasoningCapabilitySnapshot = serde_json::from_value(payload).unwrap();
+
+        assert_eq!(snapshot.control, None);
+        assert!(matches!(
+            snapshot.source,
+            CapabilitySourceSnapshot::Heuristic { .. }
+        ));
+    }
+
+    #[test]
+    fn run_settings_defaults_missing_reasoning_selection() {
+        let payload = json!({
+            "prompt": null,
+            "providerId": "provider",
+            "modelId": "model",
+            "modelCapabilities": {
+                "textInput": true,
+                "textOutput": true,
+                "streaming": true,
+                "imageInput": null,
+                "fileInput": null,
+                "audioInput": false,
+                "imageGeneration": false,
+                "toolCalling": null,
+                "hostedWebSearch": false,
+                "remoteMcp": false,
+                "reasoning": null,
+                "structuredOutput": false,
+                "statefulResponseContinuation": false,
+                "extension": { "provider": "none" }
+            },
+            "providerSettings": {
+                "providerKind": "openai",
+                "fields": []
+            },
+            "toolPolicy": {
+                "approvalPolicy": "never",
+                "enabledSources": [],
+                "maxSteps": 8
+            }
+        });
+
+        let snapshot: RunSettingsSnapshot = serde_json::from_value(payload).unwrap();
+
+        assert_eq!(snapshot.reasoning_selection, None);
     }
 }

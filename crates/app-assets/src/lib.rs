@@ -1,63 +1,18 @@
 use gpui::{AssetSource, SharedString};
 use std::{borrow::Cow, collections::BTreeSet};
 
-#[macro_export]
-macro_rules! define_lucide_icons {
-    ($vis:vis enum $name:ident { $( $variant:ident => $slug:literal ),+ $(,)? }) => {
-        #[allow(dead_code)]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        $vis enum $name {
-            $( $variant, )+
-        }
+extern crate self as app_assets;
 
-        impl ::gpui_component::IconNamed for $name {
-            fn path(self) -> ::gpui::SharedString {
-                match self {
-                    $( Self::$variant => concat!("icons/", $slug, ".svg").into(), )+
-                }
-            }
-        }
+pub use app_assets_macros::{define_lucide_icons, define_svg_icons};
 
-        fn load_lucide_icon(path: &str) -> Option<&'static [u8]> {
-            match path {
-                $( concat!("icons/", $slug, ".svg") => Some(include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../third_party/lucide/icons/",
-                    $slug,
-                    ".svg"
-                ))), )+
-                _ => None,
-            }
-        }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SvgIconMetadata {
+    pub source: &'static str,
+    pub slug: Option<&'static str>,
+}
 
-        fn list_lucide_icons(path: &str) -> Vec<::gpui::SharedString> {
-            let icons = [$( ::gpui::SharedString::from(concat!("icons/", $slug, ".svg")), )+];
-            icons
-                .into_iter()
-                .filter(|icon| path.is_empty() || icon.as_ref().starts_with(path))
-                .collect()
-        }
-
-        #[derive(Default)]
-        $vis struct LucideAssets;
-
-        impl ::gpui::AssetSource for LucideAssets {
-            fn load(
-                &self,
-                path: &str,
-            ) -> ::gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
-                if path.is_empty() {
-                    return Ok(None);
-                }
-
-                Ok(load_lucide_icon(path).map(std::borrow::Cow::Borrowed))
-            }
-
-            fn list(&self, path: &str) -> ::gpui::Result<Vec<::gpui::SharedString>> {
-                Ok(list_lucide_icons(path))
-            }
-        }
-    };
+pub trait SvgIconNamed: gpui_component::IconNamed + Copy {
+    fn metadata(self) -> SvgIconMetadata;
 }
 
 pub struct AppAssets<A, B = gpui_component_assets::Assets> {
@@ -130,14 +85,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::AppAssets;
+    use super::{AppAssets, SvgIconMetadata, SvgIconNamed as _};
     use gpui::{AssetSource, SharedString};
     use gpui_component::IconNamed as _;
+    use std::borrow::Cow;
 
     crate::define_lucide_icons!(
         pub enum TestIconName {
             CircleCheck => "circle-check",
             LoaderCircle => "loader-circle",
+        }
+    );
+
+    crate::define_svg_icons!(
+        #[asset_source(TestSvgAssets)]
+        pub enum TestSvgName {
+            #[lucide("circle-check")]
+            CircleCheck,
+            #[svg("test-icons/provider.svg", source = "simple-icons", slug = "provider")]
+            Provider,
         }
     );
 
@@ -150,6 +116,25 @@ mod tests {
         assert_eq!(
             TestIconName::LoaderCircle.path(),
             SharedString::from("icons/loader-circle.svg")
+        );
+    }
+
+    #[test]
+    fn declared_svg_icons_have_paths_and_metadata() {
+        assert_eq!(
+            TestSvgName::CircleCheck.path(),
+            SharedString::from("icons/circle-check.svg")
+        );
+        assert_eq!(
+            TestSvgName::Provider.path(),
+            SharedString::from("test-icons/provider.svg")
+        );
+        assert_eq!(
+            TestSvgName::Provider.metadata(),
+            SvgIconMetadata {
+                source: "simple-icons",
+                slug: Some("provider")
+            }
         );
     }
 
@@ -172,5 +157,59 @@ mod tests {
 
         assert!(icons.contains(&SharedString::from("icons/circle-check.svg")));
         assert!(!icons.contains(&SharedString::from("icons/x.svg")));
+    }
+
+    #[test]
+    fn declared_svg_icons_are_loadable() {
+        let assets = TestSvgAssets;
+
+        let icon = assets
+            .load("test-icons/provider.svg")
+            .expect("load declared provider icon")
+            .expect("declared provider icon exists");
+
+        assert!(!icon.is_empty());
+    }
+
+    #[test]
+    fn declared_svg_icons_are_listed() {
+        let assets = TestSvgAssets;
+        let icons = assets.list("test-icons/").expect("list custom svg icons");
+
+        assert!(icons.contains(&SharedString::from("test-icons/provider.svg")));
+        assert!(!icons.contains(&SharedString::from("icons/circle-check.svg")));
+    }
+
+    #[test]
+    fn app_assets_list_combines_and_deduplicates_sources() {
+        #[derive(Default)]
+        struct ExtraAssets;
+
+        impl AssetSource for ExtraAssets {
+            fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+                Ok((path == "icons/extra.svg").then(|| Cow::Borrowed(b"extra".as_slice())))
+            }
+
+            fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+                let icons = ["icons/circle-check.svg", "icons/extra.svg"];
+                Ok(icons
+                    .into_iter()
+                    .filter(|icon| path.is_empty() || icon.starts_with(path))
+                    .map(SharedString::from)
+                    .collect())
+            }
+        }
+
+        let assets = AppAssets::new(LucideAssets, ExtraAssets);
+        let icons = assets.list("icons/").expect("list combined icons");
+
+        assert_eq!(
+            icons
+                .iter()
+                .filter(|icon| icon.as_ref() == "icons/circle-check.svg")
+                .count(),
+            1
+        );
+        assert!(icons.contains(&SharedString::from("icons/extra.svg")));
     }
 }

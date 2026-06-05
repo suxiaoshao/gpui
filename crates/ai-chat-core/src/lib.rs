@@ -1,5 +1,7 @@
+mod capabilities;
 mod payloads;
 
+pub use capabilities::*;
 pub use payloads::*;
 
 pub type ProjectId = String;

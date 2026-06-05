@@ -1,14 +1,17 @@
 [workspace]
 members = [
   "app/ai-chat",
+  "app/ai-chat2",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
   "crates/app-assets",
+  "crates/app-assets-macros",
   "crates/app-theme",
   "crates/ai-chat-agent",
   "crates/ai-chat-core",
   "crates/ai-chat-db",
+  "crates/gpui-tokio",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
@@ -27,6 +30,7 @@ ai-chat-db = { path = "./crates/ai-chat-db" }
 ai-chat-agent = { path = "./crates/ai-chat-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
+gpui-tokio = { path = "./crates/gpui-tokio" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
 rig-core = { version = "0.37.0", features = ["rmcp"] }

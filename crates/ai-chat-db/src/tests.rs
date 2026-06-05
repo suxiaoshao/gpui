@@ -2,7 +2,7 @@ use crate::{
     FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
     NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -38,7 +38,7 @@ fn bootstrap_is_idempotent() {
     assert!(metadata.updated_at >= first_updated_at);
 
     let mut conn = second.pool().get().unwrap();
-    assert_eq!(count(&mut conn, "schema_migrations"), 1);
+    assert_eq!(count(&mut conn, "schema_migrations"), 2);
 }
 
 #[test]
@@ -117,6 +117,247 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
 }
 
 #[test]
+fn projects_can_be_listed_in_display_order() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    repo.insert_project(NewProject {
+        path: "/tmp/zeta".to_string(),
+        display_name: "Zeta".to_string(),
+        kind: ProjectKind::Normal,
+        metadata: project_metadata(),
+    })
+    .unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/alpha-b".to_string(),
+        display_name: "Alpha".to_string(),
+        kind: ProjectKind::Normal,
+        metadata: project_metadata(),
+    })
+    .unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/alpha-a".to_string(),
+        display_name: "Alpha".to_string(),
+        kind: ProjectKind::Scratch,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("temporary".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+            pinned: false,
+            removed: false,
+        },
+    })
+    .unwrap();
+
+    let projects = repo.list_projects().unwrap();
+
+    assert_eq!(
+        projects
+            .iter()
+            .map(|project| (project.display_name.as_str(), project.path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Alpha", "/tmp/alpha-a"),
+            ("Alpha", "/tmp/alpha-b"),
+            ("Zeta", "/tmp/zeta"),
+        ]
+    );
+}
+
+#[test]
+fn project_can_be_loaded_by_path() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let inserted = repo.insert_project(project("by-path")).unwrap();
+
+    let found = repo
+        .get_project_by_path("/tmp/ai-chat-by-path")
+        .unwrap()
+        .expect("project exists");
+
+    assert_eq!(found.id, inserted.id);
+    assert!(repo.get_project_by_path("/tmp/missing").unwrap().is_none());
+}
+
+#[test]
+fn sidebar_projects_filter_scratch_and_removed_projects() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let visible = repo.insert_project(project("visible")).unwrap();
+    repo.insert_project(NewProject {
+        path: "/tmp/hidden-scratch".to_string(),
+        display_name: "Hidden Scratch".to_string(),
+        kind: ProjectKind::Scratch,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("no-project".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+            pinned: false,
+            removed: false,
+        },
+    })
+    .unwrap();
+    let removed = repo.insert_project(project("removed")).unwrap();
+    repo.set_project_removed(&removed.id, true).unwrap();
+
+    let projects = repo.list_sidebar_projects().unwrap();
+
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, visible.id);
+}
+
+#[test]
+fn sidebar_project_and_conversation_metadata_can_be_updated() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let project = repo.insert_project(project("pin")).unwrap();
+    let mut project_metadata = project.metadata.clone();
+    project_metadata.pinned = true;
+    let project = repo
+        .update_project_metadata(&project.id, project_metadata)
+        .unwrap();
+    assert!(project.metadata.pinned);
+
+    let renamed = repo
+        .rename_project(&project.id, "Renamed Project".to_string())
+        .unwrap();
+    assert_eq!(renamed.display_name, "Renamed Project");
+
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let mut conversation_metadata = conversation.metadata.clone();
+    conversation_metadata.pinned = false;
+    let conversation = repo
+        .update_conversation_metadata(&conversation.id, conversation_metadata)
+        .unwrap();
+
+    assert!(!conversation.metadata.pinned);
+}
+
+#[test]
+fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let visible_project = repo
+        .insert_project(project("visible-conversation"))
+        .unwrap();
+    let removed_project = repo
+        .insert_project(project("removed-conversation"))
+        .unwrap();
+    repo.set_project_removed(&removed_project.id, true).unwrap();
+    let scratch_project = repo
+        .insert_project(NewProject {
+            path: "/tmp/scratch-conversation".to_string(),
+            display_name: "Scratch".to_string(),
+            kind: ProjectKind::Scratch,
+            metadata: ProjectMetadata {
+                scratch_reason: Some("no-project".to_string()),
+                git_root: None,
+                last_active_conversation_id: None,
+                pinned: false,
+                removed: false,
+            },
+        })
+        .unwrap();
+
+    let visible = repo
+        .insert_conversation(conversation(&visible_project))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&visible_project))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+    repo.insert_conversation(conversation(&removed_project))
+        .unwrap();
+    let scratch = repo
+        .insert_conversation(conversation(&scratch_project))
+        .unwrap();
+
+    let conversations = repo.list_sidebar_conversations().unwrap();
+    let ids = conversations
+        .iter()
+        .map(|conversation| conversation.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(ids.contains(&visible.id.as_str()));
+    assert!(ids.contains(&scratch.id.as_str()));
+    assert!(!ids.contains(&deleted.id.as_str()));
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let searchable_project = repo.insert_project(project("searchable-project")).unwrap();
+    let removed_project = repo.insert_project(project("removed-search")).unwrap();
+    repo.set_project_removed(&removed_project.id, true).unwrap();
+
+    let mut by_title = conversation(&searchable_project);
+    by_title.title = "Release notes".to_string();
+    let by_title = repo.insert_conversation(by_title).unwrap();
+
+    let mut by_item = conversation(&searchable_project);
+    by_item.title = "Chat".to_string();
+    let by_item = repo.insert_conversation(by_item).unwrap();
+    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+        .unwrap();
+
+    let by_project = repo
+        .insert_conversation(conversation(&searchable_project))
+        .unwrap();
+    let removed = repo
+        .insert_conversation(conversation(&removed_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&removed.id, "unique needle"))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&searchable_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&deleted.id, "unique needle"))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+
+    let title_matches = repo.search_sidebar_conversations("release", 10).unwrap();
+    assert_eq!(title_matches.len(), 1);
+    assert_eq!(title_matches[0].id, by_title.id);
+
+    let item_matches = repo
+        .search_sidebar_conversations("unique needle", 10)
+        .unwrap();
+    assert_eq!(item_matches.len(), 1);
+    assert_eq!(item_matches[0].id, by_item.id);
+
+    let project_matches = repo
+        .search_sidebar_conversations("searchable-project", 10)
+        .unwrap();
+    assert!(
+        project_matches
+            .iter()
+            .any(|conversation| conversation.id == by_project.id)
+    );
+    assert!(
+        !project_matches
+            .iter()
+            .any(|conversation| conversation.id == removed.id)
+    );
+    assert!(
+        !project_matches
+            .iter()
+            .any(|conversation| conversation.id == deleted.id)
+    );
+}
+
+#[test]
 fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -130,6 +371,10 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     assert!(providers_sql.contains("CHECK (enabled IN (0, 1))"));
     assert!(providers_sql.contains("created_at DateTime NOT NULL"));
     assert!(providers_sql.contains("updated_at DateTime NOT NULL"));
+
+    let provider_models_sql = table_sql(&mut conn, "provider_models");
+    assert!(provider_models_sql.contains("enabled BOOLEAN NOT NULL DEFAULT 1"));
+    assert!(provider_models_sql.contains("CHECK (enabled IN (0, 1))"));
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
@@ -1212,14 +1457,37 @@ fn typed_json_roundtrips_for_repository_records() {
         })
         .unwrap();
     assert_eq!(shortcut.action, ShortcutAction::OpenTemporaryConversation);
+    assert_eq!(
+        repo.get_shortcut(&shortcut.id).unwrap().unwrap().hotkey,
+        "cmd+shift+j"
+    );
+    let shortcuts = repo.list_shortcuts().unwrap();
+    assert_eq!(shortcuts.len(), 1);
+    assert_eq!(shortcuts[0].id, shortcut.id);
 
     let app_settings = repo
         .set_app_settings(AppSettingsPayload {
-            language: Some("zh-CN".to_string()),
-            theme: Some("system".to_string()),
+            language: AppLanguage::Chinese,
+            theme: AppThemeSettings {
+                mode: AppThemeMode::System,
+                light_theme: Some("preset:Default Light".to_string()),
+                dark_theme: Some("preset:Default Dark".to_string()),
+                custom_theme_colors: vec!["#3271AE".to_string()],
+            },
+            temporary_hotkey: Some("cmd+shift+j".to_string()),
+            http_proxy: Some("http://127.0.0.1:8080".to_string()),
             default_project_id: Some(project.id.clone()),
         })
         .unwrap();
+    assert_eq!(app_settings.settings.language, AppLanguage::Chinese);
+    assert_eq!(
+        app_settings.settings.temporary_hotkey.as_deref(),
+        Some("cmd+shift+j")
+    );
+    assert_eq!(
+        app_settings.settings.http_proxy.as_deref(),
+        Some("http://127.0.0.1:8080")
+    );
     assert_eq!(app_settings.settings.default_project_id, Some(project.id));
 }
 
@@ -1247,6 +1515,127 @@ fn provider_model_manual_refresh_updates_cached_row() {
             .display_name
             .as_deref(),
         Some("New")
+    );
+}
+
+#[test]
+fn provider_repository_lists_updates_and_deletes_provider_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider = repo.insert_provider(provider()).unwrap();
+
+    let listed = repo.list_providers().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, provider.id);
+
+    let updated = repo
+        .update_provider(
+            &provider.id,
+            UpdateProvider {
+                display_name: "OpenAI API".to_string(),
+                enabled: false,
+                settings: provider_settings(),
+                secret_refs: ProviderSecretRefs { refs: Vec::new() },
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.display_name, "OpenAI API");
+    assert!(!updated.enabled);
+    assert!(updated.secret_refs.refs.is_empty());
+
+    assert_eq!(repo.delete_provider(&provider.id).unwrap(), 1);
+    assert!(repo.get_provider(&provider.id).unwrap().is_none());
+}
+
+#[test]
+fn provider_repository_can_insert_with_preallocated_id() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider_id = "provider-preallocated-id".to_string();
+
+    let provider = repo
+        .insert_provider_with_id(provider_id.clone(), provider())
+        .unwrap();
+
+    assert_eq!(provider.id, provider_id);
+    assert_eq!(
+        repo.get_provider(&provider_id).unwrap().unwrap().id,
+        provider_id
+    );
+}
+
+#[test]
+fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let provider = repo.insert_provider(provider()).unwrap();
+
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    assert!(model.enabled);
+    assert_eq!(repo.list_provider_models(&provider.id).unwrap().len(), 1);
+
+    let disabled = repo
+        .set_provider_model_enabled(&provider.id, "gpt-5.2", false)
+        .unwrap();
+    assert!(!disabled.enabled);
+
+    let refreshed = repo
+        .replace_fetched_provider_models(
+            &provider.id,
+            vec![
+                provider_model(&provider.id, "gpt-5.2", "GPT-5.2 Fresh"),
+                provider_model(&provider.id, "gpt-4.1", "GPT-4.1"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(refreshed.len(), 2);
+
+    let existing = repo
+        .get_provider_model(&provider.id, "gpt-5.2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(existing.display_name.as_deref(), Some("GPT-5.2 Fresh"));
+    assert!(!existing.enabled);
+
+    let new_model = repo
+        .get_provider_model(&provider.id, "gpt-4.1")
+        .unwrap()
+        .unwrap();
+    assert!(new_model.enabled);
+
+    let refreshed = repo
+        .replace_fetched_provider_models(
+            &provider.id,
+            vec![provider_model(&provider.id, "gpt-5.2", "GPT-5.2 Latest")],
+        )
+        .unwrap();
+    assert_eq!(refreshed.len(), 1);
+
+    let existing = repo
+        .get_provider_model(&provider.id, "gpt-5.2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(existing.display_name.as_deref(), Some("GPT-5.2 Latest"));
+    assert!(!existing.enabled);
+    assert!(
+        repo.get_provider_model(&provider.id, "gpt-4.1")
+            .unwrap()
+            .is_none()
+    );
+
+    assert_eq!(
+        repo.delete_provider_model(&provider.id, "gpt-5.2").unwrap(),
+        1
+    );
+    assert!(
+        repo.get_provider_model(&provider.id, "gpt-5.2")
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -1335,6 +1724,8 @@ fn project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: Some("/tmp".to_string()),
         last_active_conversation_id: None,
+        pinned: false,
+        removed: false,
     }
 }
 
@@ -1430,6 +1821,7 @@ fn provider_model(provider_id: &str, model_id: &str, display_name: &str) -> NewP
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
         display_name: Some(display_name.to_string()),
+        enabled: true,
         capabilities: model_capabilities(),
         metadata: provider_model_metadata(display_name),
     }
@@ -1593,6 +1985,7 @@ fn run_settings(provider_id: &str, model_id: &str) -> RunSettingsSnapshot {
         model_id: model_id.to_string(),
         model_capabilities: model_capabilities(),
         provider_settings: provider_settings(),
+        reasoning_selection: None,
         tool_policy: tool_policy(),
     }
 }
@@ -1630,6 +2023,8 @@ fn model_capabilities() -> ModelCapabilitiesSnapshot {
             default_effort: "medium".to_string(),
             efforts: vec!["low".to_string(), "medium".to_string()],
             summaries: true,
+            control: None,
+            source: Default::default(),
         }),
         structured_output: true,
         stateful_response_continuation: true,

@@ -9,17 +9,23 @@ use diesel::{
 };
 use time::OffsetDateTime;
 
-pub(crate) const SCHEMA_VERSION: i32 = 1;
+pub(crate) const SCHEMA_VERSION: i32 = 2;
 
 pub(crate) struct Migration {
     pub(crate) name: &'static str,
     pub(crate) sql: &'static str,
 }
 
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    name: "0001_create_fresh_schema",
-    sql: CREATE_FRESH_SCHEMA_SQL,
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "0001_create_fresh_schema",
+        sql: CREATE_FRESH_SCHEMA_SQL,
+    },
+    Migration {
+        name: "0002_provider_model_enabled",
+        sql: ADD_PROVIDER_MODEL_ENABLED_SQL,
+    },
+];
 
 const CREATE_FRESH_SCHEMA_SQL: &str = r#"
 CREATE TABLE schema_migrations (
@@ -242,6 +248,11 @@ CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);
 CREATE INDEX idx_provider_steps_agent_seq ON provider_steps(agent_run_id, seq);
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
+"#;
+
+const ADD_PROVIDER_MODEL_ENABLED_SQL: &str = r#"
+ALTER TABLE provider_models
+ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1));
 "#;
 
 #[derive(diesel::QueryableByName)]
