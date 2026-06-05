@@ -1,17 +1,20 @@
 use std::collections::BTreeMap;
 
-use crate::model_capabilities::{
-    capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
-    capabilities_from_openrouter_model,
+use crate::{
+    AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeError, AgentRuntimeObserver,
+    model_capabilities::{
+        capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
+        capabilities_from_openrouter_model,
+    },
 };
 use ai_chat_core::{
     ProviderModelMetadata, ProviderRawPayload, ProviderSettingValue, ProviderSettingsPayload,
 };
 use ai_chat_db::{NewProviderModel, ProviderRecord};
 use rig_core::{
-    client::ModelListingClient,
+    client::{CompletionClient, ModelListingClient},
     model::{Model, ModelList, ModelListingError},
-    providers::{anthropic, deepseek, mistral, openai},
+    providers::{anthropic, deepseek, gemini, mistral, ollama, openai, openrouter},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -109,6 +112,154 @@ pub async fn fetch_provider_models(
         .into_iter()
         .map(|model| provider_model_from_rig_model(&request.provider, model))
         .collect())
+}
+
+pub(crate) async fn run_saved_provider_model(
+    runtime: &AgentRuntime,
+    request: AgentRunRequest,
+    provider: ProviderRecord,
+    secrets: ProviderSecretValues,
+    observer: Option<AgentRuntimeObserver>,
+) -> crate::Result<AgentRunHandle> {
+    let model_id = request.model_id.clone();
+    match provider.kind.as_str() {
+        "openai" => {
+            let client = build_openai_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "anthropic" => {
+            let client =
+                build_anthropic_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "gemini" => {
+            let client = build_gemini_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "ollama" => {
+            let client = build_ollama_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "openrouter" => {
+            let client =
+                build_openrouter_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "deepseek" => {
+            let client =
+                build_deepseek_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        "mistral" => {
+            let client = build_mistral_client(&provider, &secrets).map_err(runtime_config_error)?;
+            runtime
+                .run_with_model_observed(request, client.completion_model(model_id), observer)
+                .await
+        }
+        provider_kind => Err(AgentRuntimeError::Unsupported(format!(
+            "provider `{provider_kind}` cannot run completion models"
+        ))),
+    }
+}
+
+fn runtime_config_error(err: ProviderModelFetchError) -> AgentRuntimeError {
+    AgentRuntimeError::Unsupported(err.to_string())
+}
+
+pub fn build_openai_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<openai::Client, ProviderModelFetchError> {
+    apply_base_url(
+        openai::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_anthropic_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<anthropic::Client, ProviderModelFetchError> {
+    apply_base_url(
+        anthropic::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_gemini_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<gemini::Client, ProviderModelFetchError> {
+    apply_base_url(
+        gemini::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_ollama_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<ollama::Client, ProviderModelFetchError> {
+    apply_base_url(
+        ollama::Client::builder().api_key(secrets.get("bearer_token").unwrap_or_default()),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_openrouter_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<openrouter::Client, ProviderModelFetchError> {
+    apply_base_url(
+        openrouter::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_deepseek_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<deepseek::Client, ProviderModelFetchError> {
+    apply_base_url(
+        deepseek::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_mistral_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<mistral::Client, ProviderModelFetchError> {
+    apply_base_url(
+        mistral::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
 }
 
 pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) -> NewProviderModel {

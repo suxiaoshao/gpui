@@ -1,5 +1,6 @@
 use crate::{
-    AgentRuntimeError, AgentStep, RegisteredToolDefinition, Result,
+    AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
+    RegisteredToolDefinition, Result,
     tool_registry::{RegisteredRuntimeTool, tool_output_to_model_text},
 };
 use ai_chat_core::*;
@@ -144,6 +145,7 @@ pub(crate) struct PersistenceContext {
     max_tool_calls: u32,
     repeated_tool_call_limit: u32,
     cancellation_token: CancellationToken,
+    observer: Option<AgentRuntimeObserver>,
 }
 
 impl PersistenceContext {
@@ -161,6 +163,7 @@ impl PersistenceContext {
         max_tool_calls: u32,
         repeated_tool_call_limit: u32,
         cancellation_token: CancellationToken,
+        observer: Option<AgentRuntimeObserver>,
     ) -> Self {
         Self {
             repo,
@@ -191,6 +194,7 @@ impl PersistenceContext {
             max_tool_calls,
             repeated_tool_call_limit,
             cancellation_token,
+            observer,
         }
     }
 
@@ -239,6 +243,10 @@ impl PersistenceContext {
             provider_step_id: step.id.clone(),
         });
         self.push_step(AgentStep::ProviderStep(step.id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
+            agent_run_id: self.agent_run_id.clone(),
+            provider_step_id: step.id.clone(),
+        });
         Ok(step)
     }
 
@@ -287,6 +295,10 @@ impl PersistenceContext {
                 error: None,
             },
         )?;
+        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
+            agent_run_id: self.agent_run_id.clone(),
+            provider_step_id: provider_step_id.to_string(),
+        });
         let usage = provider_usage(response.usage);
         self.repo.insert_usage_event(NewUsageEvent {
             provider_step_id: provider_step_id.to_string(),
@@ -320,6 +332,10 @@ impl PersistenceContext {
                 error: None,
             },
         )?;
+        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
+            agent_run_id: self.agent_run_id.clone(),
+            provider_step_id: provider_step_id.to_string(),
+        });
         Ok(())
     }
 
@@ -333,6 +349,10 @@ impl PersistenceContext {
                 error: Some(error.clone()),
             },
         )?;
+        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
+            agent_run_id: self.agent_run_id.clone(),
+            provider_step_id: provider_step_id.to_string(),
+        });
         self.push_event(AgentRunEvent::ProviderStepEvent {
             provider_step_id: provider_step_id.to_string(),
             event: ProviderStepEvent::Failed { error },
@@ -352,6 +372,10 @@ impl PersistenceContext {
         })?;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationItem(item.id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
+            conversation_id: self.conversation_id.clone(),
+            item_id: item.id.clone(),
+        });
         Ok(item)
     }
 
@@ -371,6 +395,10 @@ impl PersistenceContext {
         })?;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationItem(item.id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
+            conversation_id: self.conversation_id.clone(),
+            item_id: item.id.clone(),
+        });
         Ok(item)
     }
 
@@ -385,6 +413,12 @@ impl PersistenceContext {
 
     fn push_step(&self, step: AgentStep) {
         lock(&self.steps).push(step);
+    }
+
+    fn emit_runtime(&self, event: AgentRuntimeEvent) {
+        if let Some(observer) = &self.observer {
+            observer.emit(event);
+        }
     }
 
     async fn execute_tool_invocation(
@@ -451,8 +485,17 @@ impl PersistenceContext {
                     error,
                 },
             )?;
-        self.add_input_item_id(item.id.clone());
-        self.push_step(AgentStep::ConversationItem(item.id));
+        let item_id = item.id.clone();
+        self.add_input_item_id(item_id.clone());
+        self.push_step(AgentStep::ConversationItem(item_id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
+            conversation_id: self.conversation_id.clone(),
+            item_id,
+        });
+        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
+            agent_run_id: invocation.agent_run_id.clone(),
+            tool_invocation_id: invocation.id.clone(),
+        });
         self.push_event(AgentRunEvent::ToolInvocationFinished {
             tool_invocation_id: invocation.id,
         });
@@ -609,6 +652,11 @@ where
                 tool_invocation_id: invocation.id.clone(),
             });
         self.context
+            .emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
+                agent_run_id: self.context.agent_run_id.clone(),
+                tool_invocation_id: invocation.id.clone(),
+            });
+        self.context
             .push_step(AgentStep::ToolInvocation(invocation.id.clone()));
 
         let payload = ConversationItemPayload::ToolCall(ToolCallItem {
@@ -672,6 +720,11 @@ where
             ) {
                 return ToolCallHookAction::terminate(error.to_string());
             }
+            self.context
+                .emit_runtime(AgentRuntimeEvent::AgentRunStatusChanged {
+                    agent_run_id: self.context.agent_run_id.clone(),
+                    status: AgentRunStatus::WaitingForApproval,
+                });
             return ToolCallHookAction::terminate("tool approval required");
         }
 
@@ -738,6 +791,11 @@ where
         }
         self.context
             .push_event(AgentRunEvent::ToolInvocationFinished { tool_invocation_id });
+        self.context
+            .emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
+                agent_run_id: self.context.agent_run_id.clone(),
+                tool_invocation_id: invocation.id,
+            });
         HookAction::cont()
     }
 }

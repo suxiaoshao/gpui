@@ -39,7 +39,6 @@ mod components;
 mod draft;
 mod list_delegates;
 mod model_fetch;
-mod secret_store;
 
 use self::{
     catalog::{ProviderFieldKind, ProviderKindKey, ProviderSpec, builtin_provider_specs},
@@ -52,6 +51,7 @@ use self::{
     },
     model_fetch::{ModelFetchSupport, fetch_support},
 };
+use state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ProviderListItem {
@@ -147,7 +147,7 @@ struct ProviderSaveRequest {
     enabled: bool,
     settings: ProviderSettingsPayload,
     secret_refs: ProviderSecretRefs,
-    writes: Vec<secret_store::ProviderSecretWrite>,
+    writes: Vec<ProviderSecretWrite>,
 }
 
 struct ProviderModelFetchResult {
@@ -694,14 +694,14 @@ impl ProviderSettingsPage {
     fn secret_writes_for_editor(
         editor: &ProviderEditorState,
         cx: &App,
-    ) -> Vec<secret_store::ProviderSecretWrite> {
+    ) -> Vec<ProviderSecretWrite> {
         editor
             .secret_inputs
             .iter()
             .filter_map(|(key, secret)| {
                 let secret = secret.read(cx);
                 let value = secret.input.read(cx).value().to_string();
-                (!value.is_empty()).then(|| secret_store::ProviderSecretWrite {
+                (!value.is_empty()).then(|| ProviderSecretWrite {
                     key: key.clone(),
                     value,
                 })
@@ -712,10 +712,10 @@ impl ProviderSettingsPage {
     fn secret_refs_for_editor(
         editor: &ProviderEditorState,
         provider_id: &str,
-        writes: &[secret_store::ProviderSecretWrite],
+        writes: &[ProviderSecretWrite],
         cx: &App,
     ) -> ProviderSecretRefs {
-        let mut refs = secret_store::ProviderSecretStore::refs_for(provider_id, writes);
+        let mut refs = ProviderSecretStore::refs_for(provider_id, writes);
         for saved in &editor.draft.existing_secret_refs.refs {
             if !refs.refs.iter().any(|secret| secret.key == saved.key) {
                 let cleared = editor
@@ -1225,7 +1225,7 @@ async fn write_provider_secrets(
     save: ProviderSaveRequest,
     cx: &mut AsyncWindowContext,
 ) -> Result<ProviderSaveRequest, String> {
-    secret_store::ProviderSecretStore::write_values(cx, &save.secret_refs, &save.writes).await?;
+    ProviderSecretStore::write_values(cx, &save.secret_refs, &save.writes).await?;
     Ok(save)
 }
 
@@ -1272,7 +1272,7 @@ async fn fetch_provider_models_for_provider(
         .ok_or_else(|| ProviderModelFetchError::InvalidConfig {
             message: format!("provider `{provider_id}` was not found"),
         })?;
-    let secrets = secret_store::ProviderSecretStore::read_values(cx, &provider.secret_refs)
+    let secrets = ProviderSecretStore::read_values(cx, &provider.secret_refs)
         .await
         .map_err(|err| ProviderModelFetchError::InvalidConfig { message: err })?;
     let provider_kind = provider.kind.clone();
@@ -1440,13 +1440,11 @@ mod tests {
     use crate::features::settings::provider::list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
     };
-    use crate::features::settings::provider::secret_store::{
-        ProviderSecretStore, ProviderSecretWrite,
-    };
     use crate::foundation::{
         I18n,
         assets::{IconName, ProviderLogoName},
     };
+    use crate::state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
     use ai_chat_core::{
         ProviderId, ProviderModelMetadata, ProviderSecretRef, ProviderSecretRefs,
         ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,

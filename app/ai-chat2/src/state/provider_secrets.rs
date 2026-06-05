@@ -5,16 +5,16 @@ use ai_chat_core::{ProviderSecretRef, ProviderSecretRefs};
 use gpui::AsyncWindowContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProviderSecretWrite {
-    pub(super) key: String,
-    pub(super) value: String,
+pub(crate) struct ProviderSecretWrite {
+    pub(crate) key: String,
+    pub(crate) value: String,
 }
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct ProviderSecretStore;
+pub(crate) struct ProviderSecretStore;
 
 impl ProviderSecretStore {
-    pub(super) fn refs_for(
+    pub(crate) fn refs_for(
         provider_id: &str,
         writes: &[ProviderSecretWrite],
     ) -> ProviderSecretRefs {
@@ -31,7 +31,7 @@ impl ProviderSecretStore {
         }
     }
 
-    pub(super) async fn write_values(
+    pub(crate) async fn write_values(
         cx: &mut AsyncWindowContext,
         refs: &ProviderSecretRefs,
         writes: &[ProviderSecretWrite],
@@ -51,7 +51,7 @@ impl ProviderSecretStore {
         Ok(())
     }
 
-    pub(super) async fn read_values(
+    pub(crate) async fn read_values(
         cx: &mut AsyncWindowContext,
         refs: &ProviderSecretRefs,
     ) -> Result<ProviderSecretValues, String> {

@@ -26,5 +26,6 @@ pub use tool_registry::{
     LocalTool, RegisteredToolDefinition, ToolDefinition, ToolExecutor, ToolRegistry, ToolRunPolicy,
 };
 pub use types::{
-    AgentRunHandle, AgentRunRequest, AgentStep, CompletionModelFactory, RuntimeGuards,
+    AgentRunHandle, AgentRunRequest, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
+    CompletionModelFactory, RuntimeGuards,
 };

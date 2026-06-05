@@ -2,6 +2,7 @@ use crate::{
     app::{menus, title_bar_menu},
     foundation, state,
 };
+use ai_chat_core::ConversationId;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Root, StyledExt, TitleBar, h_flex,
@@ -9,6 +10,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
+use std::collections::HashMap;
 
 use super::{
     actions::{OpenConversationSearch, OpenNewConversation},
@@ -26,6 +28,7 @@ pub(crate) struct HomeView {
     workspace: Entity<state::AiChat2WorkspaceStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
+    conversation_pages: HashMap<ConversationId, Entity<ConversationPage>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -49,6 +52,7 @@ impl HomeView {
             workspace: workspace.clone(),
             sidebar,
             new_conversation,
+            conversation_pages: HashMap::new(),
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
@@ -136,6 +140,18 @@ impl HomeView {
     ) {
         sidebar::search::open_conversation_search_dialog(window, cx);
     }
+
+    fn conversation_page(
+        &mut self,
+        conversation_id: ConversationId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ConversationPage> {
+        self.conversation_pages
+            .entry(conversation_id.clone())
+            .or_insert_with(|| cx.new(|cx| ConversationPage::new(conversation_id, window, cx)))
+            .clone()
+    }
 }
 
 impl Render for HomeView {
@@ -190,16 +206,18 @@ impl Render for HomeView {
                                 )
                                 .child(self.sidebar.clone()),
                         )
-                        .child(resizable_panel().child(div().size_full().min_w_0().child(
-                            match route {
-                                state::HomeRoute::NewConversation => {
-                                    self.new_conversation.clone().into_any_element()
-                                }
-                                state::HomeRoute::Conversation(conversation_id) => {
-                                    ConversationPage::new(conversation_id).into_any_element()
-                                }
-                            },
-                        ))),
+                        .child(
+                            resizable_panel().child(
+                                div().size_full().min_w_0().child(match route {
+                                    state::HomeRoute::NewConversation => {
+                                        self.new_conversation.clone().into_any_element()
+                                    }
+                                    state::HomeRoute::Conversation(conversation_id) => self
+                                        .conversation_page(conversation_id, window, cx)
+                                        .into_any_element(),
+                                }),
+                            ),
+                        ),
                 ),
             )
             .children(sheet_layer)

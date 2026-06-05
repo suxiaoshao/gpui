@@ -1,14 +1,16 @@
 use crate::{
-    AgentRunHandle, AgentRunRequest, AgentRuntimeError, Result, SkillCatalog, SkillLoader,
+    AgentRunHandle, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver,
+    ProviderSecretValues, Result, SkillCatalog, SkillLoader,
     history::build_prompt_history,
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
+    provider_models::run_saved_provider_model,
     reasoning_params::{merge_additional_params, reasoning_additional_params},
 };
 use ai_chat_core::*;
 use ai_chat_db::{
     AgentRunRecord, ApprovalDecisionRecord, FreshRepository, NewApprovalDecisionOutcome,
-    NewConversationItem, ToolInvocationRecord, UpdateAgentRunStatus, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus,
+    NewConversationItem, ProviderRecord, ToolInvocationRecord, UpdateAgentRunStatus,
+    UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::AgentBuilder,
@@ -37,8 +39,28 @@ impl AgentRuntime {
 
     pub async fn run_with_model<M>(
         &self,
+        request: AgentRunRequest,
+        model: M,
+    ) -> Result<AgentRunHandle>
+    where
+        M: CompletionModel + 'static,
+        M::Response: serde::Serialize + serde::de::DeserializeOwned,
+        M::StreamingResponse: Clone
+            + Unpin
+            + Send
+            + Sync
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + rig_core::completion::GetTokenUsage,
+    {
+        self.run_with_model_observed(request, model, None).await
+    }
+
+    pub async fn run_with_model_observed<M>(
+        &self,
         mut request: AgentRunRequest,
         model: M,
+        observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
@@ -57,6 +79,13 @@ impl AgentRuntime {
 
         request.tool_registry.finalize_names();
         let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(&request))?;
+        emit_runtime(
+            observer.as_ref(),
+            AgentRuntimeEvent::AgentRunStarted {
+                agent_run_id: agent_run.id.clone(),
+                conversation_id: agent_run.conversation_id.clone(),
+            },
+        );
         agent_run = self.repo.update_agent_run_status(
             &agent_run.id,
             UpdateAgentRunStatus {
@@ -65,21 +94,34 @@ impl AgentRuntime {
                 error: None,
             },
         )?;
+        emit_runtime(
+            observer.as_ref(),
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run.id.clone(),
+                status: AgentRunStatus::Running,
+            },
+        );
 
         if let Err(error) = self.activate_skills(&request, &agent_run.id) {
-            return Err(self.mark_setup_failed(&agent_run.id, error)?);
+            return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
         }
 
         let items = match self.repo.conversation_items(&request.conversation_id) {
             Ok(items) => items,
             Err(error) => {
-                return Err(self.mark_setup_failed(&agent_run.id, AgentRuntimeError::from(error))?);
+                return Err(self.mark_setup_failed(
+                    &agent_run.id,
+                    AgentRuntimeError::from(error),
+                    observer.as_ref(),
+                )?);
             }
         };
         let prompt_history =
             match build_prompt_history(&items, &request.user_item_id, &agent_run.id) {
                 Ok(prompt_history) => prompt_history,
-                Err(error) => return Err(self.mark_setup_failed(&agent_run.id, error)?),
+                Err(error) => {
+                    return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
+                }
             };
 
         let tool_server = ToolServer::new().run();
@@ -92,7 +134,11 @@ impl AgentRuntime {
             toolset.add_tool_boxed(tool);
         }
         if let Err(error) = tool_server.append_toolset(toolset).await {
-            return Err(self.mark_setup_failed(&agent_run.id, AgentRuntimeError::from(error))?);
+            return Err(self.mark_setup_failed(
+                &agent_run.id,
+                AgentRuntimeError::from(error),
+                observer.as_ref(),
+            )?);
         }
 
         let registered_definitions = request.tool_registry.registered_definitions();
@@ -112,6 +158,7 @@ impl AgentRuntime {
             request.guards.max_tool_calls,
             request.guards.repeated_tool_call_limit,
             request.cancellation_token.clone(),
+            observer.clone(),
         );
         let model = PersistingCompletionModel::new(model, context.clone());
         let hook = context.hook();
@@ -159,6 +206,13 @@ impl AgentRuntime {
                         error: None,
                     },
                 )?;
+                emit_runtime(
+                    observer.as_ref(),
+                    AgentRuntimeEvent::AgentRunStatusChanged {
+                        agent_run_id: agent_run.id.clone(),
+                        status: AgentRunStatus::Completed,
+                    },
+                );
                 let mut events = context.events();
                 events.push(AgentRunEvent::Completed {
                     output: output.clone(),
@@ -205,6 +259,13 @@ impl AgentRuntime {
                             error: None,
                         },
                     )?;
+                    emit_runtime(
+                        observer.as_ref(),
+                        AgentRuntimeEvent::AgentRunStatusChanged {
+                            agent_run_id: agent_run.id.clone(),
+                            status: AgentRunStatus::Completed,
+                        },
+                    );
                     let mut events = context.events();
                     events.push(AgentRunEvent::Completed {
                         output: output.clone(),
@@ -249,6 +310,13 @@ impl AgentRuntime {
                         error: (final_status == AgentRunStatus::Failed).then_some(payload.clone()),
                     },
                 )?;
+                emit_runtime(
+                    observer.as_ref(),
+                    AgentRuntimeEvent::AgentRunStatusChanged {
+                        agent_run_id: agent_run.id.clone(),
+                        status: final_status,
+                    },
+                );
                 let mut events = context.events();
                 if final_status == AgentRunStatus::Canceled {
                     events.push(AgentRunEvent::Canceled);
@@ -263,6 +331,16 @@ impl AgentRuntime {
                 })
             }
         }
+    }
+
+    pub async fn run_with_saved_provider_observed(
+        &self,
+        request: AgentRunRequest,
+        provider: ProviderRecord,
+        secrets: ProviderSecretValues,
+        observer: Option<AgentRuntimeObserver>,
+    ) -> Result<AgentRunHandle> {
+        run_saved_provider_model(self, request, provider, secrets, observer).await
     }
 
     fn finalize_active_tool_invocations(
@@ -363,6 +441,7 @@ impl AgentRuntime {
         &self,
         agent_run_id: &str,
         error: AgentRuntimeError,
+        observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRuntimeError> {
         self.repo.update_agent_run_status(
             agent_run_id,
@@ -372,6 +451,13 @@ impl AgentRuntime {
                 error: Some(run_error("setup_error", error.to_string(), true, None)),
             },
         )?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run_id.to_string(),
+                status: AgentRunStatus::Failed,
+            },
+        );
         Ok(error)
     }
 
@@ -567,6 +653,12 @@ impl AgentRuntime {
             })?;
         }
         Ok(())
+    }
+}
+
+fn emit_runtime(observer: Option<&AgentRuntimeObserver>, event: AgentRuntimeEvent) {
+    if let Some(observer) = observer {
+        observer.emit(event);
     }
 }
 

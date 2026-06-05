@@ -429,6 +429,48 @@ impl FreshRepository {
         })
     }
 
+    pub fn insert_conversation_with_user_item(
+        &self,
+        input: NewConversationWithUserItem,
+    ) -> Result<ConversationWithUserItemRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let new_conversation_row = SqlNewConversationRow {
+                id: new_id(),
+                project_id: input.conversation.project_id,
+                title: input.conversation.title,
+                status: db_label(&ConversationStatus::Active)?,
+                prompt_id: input.conversation.prompt_id,
+                default_provider_id: input.conversation.default_provider_id,
+                default_model_id: input.conversation.default_model_id,
+                last_item_seq: 0,
+                metadata_json: to_json(&input.conversation.metadata)?,
+                settings_snapshot_json: to_json(&input.conversation.settings_snapshot)?,
+                created_at: now,
+                updated_at: now,
+                archived_at: None,
+                deleted_at: None,
+            };
+            let conversation: ConversationRecord = diesel::insert_into(conversations::table)
+                .values(&new_conversation_row)
+                .returning(SqlConversationRow::as_returning())
+                .get_result::<SqlConversationRow>(conn)?
+                .try_into()?;
+            let mut user_item = input.user_item;
+            user_item.conversation_id = new_conversation_row.id;
+            let user_item = append_conversation_item_with_conn(conn, user_item)?;
+            let conversation = conversation_row(conn, &conversation.id)?
+                .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
+                .try_into()?;
+
+            Ok(ConversationWithUserItemRecord {
+                conversation,
+                user_item,
+            })
+        })
+    }
+
     pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRecord>> {
         let mut conn = self.conn()?;
         conversation_row(&mut conn, id)?
@@ -538,6 +580,27 @@ impl FreshRepository {
             .into_iter()
             .map(TryInto::try_into)
             .collect()
+    }
+
+    pub fn conversation_timeline_records(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationTimelineRecords>> {
+        let Some(conversation) = self.get_conversation(conversation_id)? else {
+            return Ok(None);
+        };
+        let project = self.get_project(&conversation.project_id)?.ok_or_else(|| {
+            DbError::Invariant(format!("project {} is missing", conversation.project_id))
+        })?;
+        let items = self.conversation_items(conversation_id)?;
+        let runs = self.agent_runs_for_conversation(conversation_id)?;
+
+        Ok(Some(ConversationTimelineRecords {
+            conversation,
+            project,
+            items,
+            runs,
+        }))
     }
 
     pub fn update_conversation_item_payload(

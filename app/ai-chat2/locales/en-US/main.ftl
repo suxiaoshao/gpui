@@ -128,6 +128,7 @@ new-conversation-project-none = No project
 new-conversation-project-search = Search projects
 new-conversation-project-empty = No matching projects
 new-conversation-project-load-failed = Load projects failed
+new-conversation-submit-failed = Create conversation failed
 chat-form-placeholder = Message AI Chat...
 chat-form-add-tooltip = Add context
 chat-form-send-tooltip = Send message
@@ -193,3 +194,48 @@ sidebar-delete-conversation-failed = Delete conversation failed
 conversation-missing-title = Conversation not found
 conversation-missing-subtitle = It may have been deleted or removed from the sidebar.
 conversation-opened-subtitle = Conversation opened
+conversation-default-title = New conversation
+conversation-load-failed = Load conversation failed
+conversation-empty = No messages yet
+conversation-copy-tooltip = Copy
+conversation-copy-success = Copied
+conversation-copy-failed = Copy failed
+conversation-copy-failed-message = Could not write to the clipboard.
+conversation-timestamp-time = { $time }
+conversation-timestamp-weekday-time =
+    { $weekday ->
+        [monday] Monday
+        [tuesday] Tuesday
+        [wednesday] Wednesday
+        [thursday] Thursday
+        [friday] Friday
+        [saturday] Saturday
+        [sunday] Sunday
+       *[other] { $weekday }
+    } { $time }
+conversation-timestamp-month-day-time =
+    { $month ->
+        [january] Jan
+        [february] Feb
+        [march] Mar
+        [april] Apr
+        [may] May
+        [june] Jun
+        [july] Jul
+        [august] Aug
+        [september] Sep
+        [october] Oct
+        [november] Nov
+        [december] Dec
+       *[other] { $month }
+    } { $day }, { $time }
+conversation-user-sent-time = { $time }
+conversation-agent-started-time = Started { $time }
+conversation-agent-completed-time = Completed { $time }
+conversation-agent-processed = Processed { $duration }
+conversation-agent-processing = Processing { $duration }
+conversation-agent-details = Details
+conversation-send-disabled-running = Wait for the current agent run to finish
+conversation-send-failed = Send message failed
+conversation-run-failed = Agent run failed
+anonymous-project-name = Anonymous project

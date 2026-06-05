@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use ai_chat_core::{ProjectId, ProjectKind, ProjectMetadata};
+use ai_chat_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use ai_chat_db::{NewProject, ProjectRecord};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
 
-use crate::database;
+use crate::{database, errors::AiChat2Result, foundation::I18n, state::AiChat2Config};
+
+const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
+const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
 
 #[derive(Clone)]
 pub(crate) struct ProjectCatalogGlobal(Entity<ProjectCatalogStore>);
@@ -100,6 +103,30 @@ impl ProjectCatalogStore {
         })
     }
 
+    pub(crate) fn insert_scratch_project(
+        &mut self,
+        path: PathBuf,
+        display_name: String,
+        scratch_reason: String,
+        cx: &mut Context<Self>,
+    ) -> ai_chat_db::Result<ProjectRecord> {
+        let mut metadata = empty_project_metadata();
+        metadata.scratch_reason = Some(scratch_reason);
+        let project = database::repository(cx).insert_project(NewProject {
+            path: path.display().to_string(),
+            display_name,
+            kind: ProjectKind::Scratch,
+            metadata,
+        })?;
+        self.emit_changed(
+            ProjectCatalogChange::Added {
+                project_id: project.id.clone(),
+            },
+            cx,
+        );
+        Ok(project)
+    }
+
     pub(crate) fn rename_project(
         &mut self,
         project_id: &ProjectId,
@@ -182,6 +209,25 @@ pub(crate) fn insert_existing_folder_project(
     catalog(cx).update(cx, |catalog, cx| {
         catalog.insert_existing_folder_project(path, cx)
     })
+}
+
+pub(crate) fn create_anonymous_scratch_project(cx: &mut App) -> AiChat2Result<ProjectRecord> {
+    let id = new_id();
+    let path = cx
+        .global::<AiChat2Config>()
+        .data_dir()?
+        .join(SCRATCH_PROJECTS_DIR)
+        .join(&id);
+    std::fs::create_dir_all(&path)?;
+    let display_name = cx.global::<I18n>().t("anonymous-project-name");
+    Ok(catalog(cx).update(cx, |catalog, cx| {
+        catalog.insert_scratch_project(
+            path,
+            display_name,
+            NO_PROJECT_SCRATCH_REASON.to_string(),
+            cx,
+        )
+    })?)
 }
 
 pub(crate) fn project_display_name(path: &Path) -> String {

@@ -258,7 +258,7 @@ fn token_budget_selection_is_valid(
         ReasoningSelectionSnapshot::TokenBudget {
             mode: TokenBudgetSelectionMode::Custom,
             value: Some(value),
-        } => min.map_or(true, |min| *value >= min) && max.map_or(true, |max| *value <= max),
+        } => min.is_none_or(|min| *value >= min) && max.is_none_or(|max| *value <= max),
         _ => false,
     }
 }

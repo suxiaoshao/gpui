@@ -61,6 +61,26 @@ pub struct NewConversation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NewConversationWithUserItem {
+    pub conversation: NewConversation,
+    pub user_item: NewConversationItem,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationWithUserItemRecord {
+    pub conversation: ConversationRecord,
+    pub user_item: ConversationItemRecord,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationTimelineRecords {
+    pub conversation: ConversationRecord,
+    pub project: ProjectRecord,
+    pub items: Vec<ConversationItemRecord>,
+    pub runs: Vec<AgentRunRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConversationItemRecord {
     pub id: ConversationItemId,
     pub conversation_id: ConversationId,

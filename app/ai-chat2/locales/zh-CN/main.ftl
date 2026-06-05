@@ -128,6 +128,7 @@ new-conversation-project-none = 不使用项目
 new-conversation-project-search = 搜索项目
 new-conversation-project-empty = 没有匹配的项目
 new-conversation-project-load-failed = 加载项目失败
+new-conversation-submit-failed = 创建对话失败
 chat-form-placeholder = 向 AI Chat 发送消息...
 chat-form-add-tooltip = 添加上下文
 chat-form-send-tooltip = 发送消息
@@ -193,3 +194,33 @@ sidebar-delete-conversation-failed = 删除对话失败
 conversation-missing-title = 未找到对话
 conversation-missing-subtitle = 它可能已被删除或从侧边栏移除。
 conversation-opened-subtitle = 已打开对话
+conversation-default-title = 新对话
+conversation-load-failed = 加载对话失败
+conversation-empty = 暂无消息
+conversation-copy-tooltip = 复制
+conversation-copy-success = 已复制
+conversation-copy-failed = 复制失败
+conversation-copy-failed-message = 无法写入剪贴板。
+conversation-timestamp-time = { $time }
+conversation-timestamp-weekday-time =
+    { $weekday ->
+        [monday] 周一
+        [tuesday] 周二
+        [wednesday] 周三
+        [thursday] 周四
+        [friday] 周五
+        [saturday] 周六
+        [sunday] 周日
+       *[other] { $weekday }
+    } { $time }
+conversation-timestamp-month-day-time = { $month_number }月{ $day }日 { $time }
+conversation-user-sent-time = { $time }
+conversation-agent-started-time = 开始于 { $time }
+conversation-agent-completed-time = 完成于 { $time }
+conversation-agent-processed = 已处理 { $duration }
+conversation-agent-processing = 处理中 { $duration }
+conversation-agent-details = 详情
+conversation-send-disabled-running = 当前 agent 运行结束后才能继续发送
+conversation-send-failed = 发送消息失败
+conversation-run-failed = Agent 运行失败
+anonymous-project-name = 匿名项目

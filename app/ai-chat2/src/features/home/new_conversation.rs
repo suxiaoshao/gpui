@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::chat_form::{
-    ChatForm,
+    ChatForm, ChatFormEvent, ChatFormSubmit,
     picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
 };
 
@@ -92,10 +92,20 @@ impl NewConversationPage {
             picker
         });
         let project_catalog = state::projects::catalog(cx);
-        let subscription = cx.subscribe(
+        let project_subscription = cx.subscribe(
             &project_catalog,
             |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
                 page.reload_projects_from_catalog(cx);
+            },
+        );
+        let chat_form_subscription = cx.subscribe_in(
+            &chat_form,
+            window,
+            |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
+                ChatFormEvent::SendRequested(submit) => {
+                    page.submit_new_conversation((**submit).clone(), window, cx);
+                }
+                ChatFormEvent::AddRequested => {}
             },
         );
 
@@ -111,7 +121,7 @@ impl NewConversationPage {
             selected_project_id,
             project_picker_open: false,
             project_picker,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![project_subscription, chat_form_subscription],
         }
     }
 
@@ -356,6 +366,47 @@ impl NewConversationPage {
                 }
             })
             .detach();
+    }
+
+    fn submit_new_conversation(
+        &mut self,
+        submit: ChatFormSubmit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let request = state::conversations::CreateConversationRequest {
+            project_id: self.selected_project_id.clone(),
+            content_parts: submit.composer.content_parts.clone(),
+            title_seed: submit.composer.text.clone(),
+            skill_requests: submit.composer.skill_requests.clone(),
+            provider_model: submit.provider_model,
+            reasoning_selection: submit.reasoning_selection,
+        };
+        match state::conversations::create_conversation(request, cx) {
+            Ok(created) => {
+                let conversation_id = created.record.conversation.id.clone();
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.clear_after_submit(cx);
+                });
+                state::workspace::workspace(cx).update(cx, |workspace, cx| {
+                    workspace.reload_sidebar(cx);
+                    workspace.open_conversation(conversation_id.clone(), cx);
+                });
+                state::conversation_runtime::runtime(cx).update(cx, |runtime, cx| {
+                    runtime.start_run(created.run_request, window, cx);
+                });
+            }
+            Err(err) => {
+                let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    err.to_string(),
+                    NotificationType::Error,
+                );
+            }
+        }
     }
 
     fn insert_selected_project(

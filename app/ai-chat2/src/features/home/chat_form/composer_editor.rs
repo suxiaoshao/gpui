@@ -257,6 +257,22 @@ impl ComposerEditor {
         !self.snapshot().is_empty()
     }
 
+    pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
+        if self.text.is_empty() && self.tokens.is_empty() {
+            return;
+        }
+        self.record_before_change();
+        self.restore_state(
+            EditorState {
+                text: String::new(),
+                selection: Selection::default(),
+                marked_range: None,
+                tokens: Vec::new(),
+            },
+            cx,
+        );
+    }
+
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }

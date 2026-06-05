@@ -59,6 +59,8 @@ pub(crate) struct ChatForm {
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
+    submit_blocked: bool,
+    submit_blocked_tooltip: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -244,6 +246,8 @@ impl ChatForm {
             effort_picker,
             model_picker_open: false,
             model_picker,
+            submit_blocked: false,
+            submit_blocked_tooltip: None,
             _subscriptions: vec![
                 composer_subscription,
                 token_budget_change_subscription,
@@ -282,6 +286,25 @@ impl ChatForm {
         self.composer.update(cx, |composer, cx| {
             composer.refresh_skill_catalog(project_root, cx)
         });
+    }
+
+    pub(crate) fn set_submit_blocked(
+        &mut self,
+        blocked: bool,
+        tooltip: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.submit_blocked == blocked && self.submit_blocked_tooltip == tooltip {
+            return;
+        }
+        self.submit_blocked = blocked;
+        self.submit_blocked_tooltip = tooltip;
+        cx.notify();
+    }
+
+    pub(crate) fn clear_after_submit(&mut self, cx: &mut Context<Self>) {
+        self.composer.update(cx, |composer, cx| composer.clear(cx));
+        cx.notify();
     }
 
     fn set_effort_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -469,7 +492,9 @@ impl ChatForm {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
-        self.composer.read(cx).can_submit() && self.selected_model_choice().is_some()
+        !self.submit_blocked
+            && self.composer.read(cx).can_submit()
+            && self.selected_model_choice().is_some()
     }
 
     fn submit_snapshot(
@@ -479,6 +504,9 @@ impl ChatForm {
         cx: &mut Context<Self>,
     ) -> Option<ChatFormSubmit> {
         if snapshot.is_empty() {
+            return None;
+        }
+        if self.submit_blocked {
             return None;
         }
         let provider_model = self.revalidate_selected_model_for_submit(window, cx)?;
@@ -528,7 +556,11 @@ impl ChatForm {
 impl Render for ChatForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let add_tooltip = cx.global::<foundation::I18n>().t("chat-form-add-tooltip");
-        let send_tooltip = cx.global::<foundation::I18n>().t("chat-form-send-tooltip");
+        let send_tooltip = self.submit_blocked_tooltip.clone().unwrap_or_else(|| {
+            cx.global::<foundation::I18n>()
+                .t("chat-form-send-tooltip")
+                .into()
+        });
         let can_submit = self.can_send(cx);
 
         v_flex()

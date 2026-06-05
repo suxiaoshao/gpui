@@ -14,6 +14,7 @@ define_lucide_icons!(
         ChevronUp => "chevron-up",
         CircleAlert => "circle-alert",
         CircleCheck => "circle-check",
+        Copy => "copy",
         Database => "database",
         Cloud => "cloud",
         Cpu => "cpu",
