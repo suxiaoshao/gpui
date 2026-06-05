@@ -6,17 +6,39 @@
 timeline 渲染的具体实现方案。
 
 创建时间：2026-06-05。
+最后状态同步：2026-06-06。
 
-当前状态：已实现首版并通过验证。实现范围围绕本文档列出的文件、组件、数据流和验证项推进；
-未回到旧 `app/ai-chat` 的 `messages` table、legacy tab/draft store，也未在 GPUI 层重新实现 agent loop。
+当前状态：已实现首版并推送到 `origin/codex/issue-159-ai-chat2-ui`，head 为
+`dba4f7c`（`Implement ai-chat2 agent conversation page`）。GitHub #159 仍 open，当前分支暂无 PR。
+实现范围围绕本文档列出的文件、组件、数据流和验证项推进；未回到旧 `app/ai-chat` 的
+`messages` table、legacy tab/draft store，也未在 GPUI 层重新实现 agent loop。
 
-实现时间：2026-06-05。
+实现时间：2026-06-05 至 2026-06-06。
 
 已验证：
 
-- `cargo check -p ai-chat-db -p ai-chat-agent -p ai-chat2`
-- `cargo test -p ai-chat-db -p ai-chat-agent -p ai-chat2`
+- `cargo fmt`
+- `cargo check -p ai-chat2`
+- `cargo test -p ai-chat2 timestamp_label`
+- `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`
 - `git diff --check`
+
+首版已落地：
+
+- New Conversation 发送后创建 fresh conversation、首条 user item，并打开右侧 conversation page。
+- 无项目发送时创建每会话独立 scratch project，并继续按无项目对话展示。
+- Conversation page 使用顶部 timeline + 底部无项目选择器 ChatForm；运行中禁用发送按钮。
+- Runtime store 接真实 `AgentRuntime`，通过 observer 事件刷新 timeline。
+- Timeline 使用 `gpui-component::List`，按 user bubble、agent final markdown/details collapse 渲染。
+- 消息 hover action 已补 copy/time；复制成功按钮切 `Check` 两秒，失败弹通知。
+- 时间显示按 Codex app 规则实现：当天只显示时间，最近 1-6 天显示星期+时间，更早显示月日+时间。
+
+仍未完成：
+
+- stop/cancel、retry/resend UI。
+- prompt selector、attachments/multimodal input、Temporary Conversation runtime。
+- approval approve/deny action 和 rich tool UI。
+- streaming delta 的更细粒度展示、last item preview、完整 project metadata/status UI。
 
 ## 目标行为
 

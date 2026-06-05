@@ -7,10 +7,12 @@
 Agent conversation page 专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-agent-conversation-page.md`。
 
-最后同步时间：2026-06-05。
+最后同步时间：2026-06-06。
 
-当前实现基线：`codex/issue-137-llm-abstractions`。上一轮 source branch
-`codex/issue-159-ai-chat2-ui` 已通过 PR #164 合入，远程 source branch 已删除；后续 #159 增量应从集成分支重新开分支。
+当前实现基线：`codex/issue-137-llm-abstractions`。上一轮 foundation 已通过 PR #164 合入集成分支。
+当前增量分支为 `codex/issue-159-ai-chat2-ui`，远程 head 为 `dba4f7c`
+（`Implement ai-chat2 agent conversation page`），已推送到 `origin`，暂无 PR。该分支与
+`origin/codex/issue-137-llm-abstractions` 当前各有 1 个独有 commit，后续仍需要开 PR 合入集成分支。
 
 当前状态：进行中。已合入的 foundation 包含基础设施壳、app chrome、file-backed logging、About、Sidebar/home
 skeleton、Home root/sidebar 结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll
@@ -28,12 +30,14 @@ fallback 和 Settings/ChatForm 渲染接线）、project-first sidebar 第一版
 project/conversation soft-delete）。GitHub #159 仍 open；PR #164 已从
 `codex/issue-159-ai-chat2-ui` 合入 `codex/issue-137-llm-abstractions`。本轮已补齐
 Sidebar action row 视觉一致性：顶部“新对话/搜索”和底部
-“设置”统一使用 hover-only shortcut badge，并把跨平台快捷键改为 GPUI `secondary` 语义。完整 project chat、
-多模态 timeline、Prompt/Shortcut settings、
-manual provider model editor、真实 agent runtime 和真实 Temporary Conversation
-runtime 仍未完成。本轮新增 Agent Conversation Page 专项计划，固定 New Conversation
-发送、匿名 scratch project、真实 conversation create/send、agent runtime observer 和
-canonical timeline 渲染的 implementation-ready 方案；当前仅更新开发文档，尚未实现产品代码。
+“设置”统一使用 hover-only shortcut badge，并把跨平台快捷键改为 GPUI `secondary` 语义。
+Agent Conversation Page 首版已在 `dba4f7c` 实现：New Conversation 发送后创建 fresh conversation
+和首条 user item；无项目发送创建每会话 scratch project；sidebar 即时刷新并打开右侧 conversation page；
+conversation page 使用 `gpui-component::List` timeline + 底部 ChatForm；运行中禁用发送按钮；
+真实 `AgentRuntime` 通过 observer 事件刷新页面；timeline 支持 user bubble、agent final markdown/details
+collapse、hover copy/time、Codex-style timestamp、复制成功按钮 `Check` 两秒和失败通知。完整多模态
+timeline、Prompt/Shortcut settings、manual provider model editor、cancel/retry/resend、approval action、
+rich tool UI 和真实 Temporary Conversation runtime 仍未完成。
 
 已完成提交：
 
@@ -57,6 +61,7 @@ canonical timeline 渲染的 implementation-ready 方案；当前仅更新开发
 - 本轮实现：provider brand assets / `ProviderVisual` / app-assets proc macro refactor
 - 本轮实现：project-first sidebar 第一版和 Sidebar shortcut action row polish
 - `4eb9e5e fix(ai-chat2): satisfy clippy on foundation branch`
+- `dba4f7c Implement ai-chat2 agent conversation page`
 
 ## 状态定义
 
@@ -136,8 +141,8 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Temporary Conversation window | `app/ai-chat2/src/app/placeholder_windows.rs` | 只显示“临时对话运行时暂不接入”。 | 接入真实 temporary chat、prompt/model/provider 和 agent run。 |
 | temporary hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 `last_pressed` 和 tracing/log event。 | 打开/切换真实 temporary conversation。 |
 | shortcut hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 diagnostics 和 tracing/log event。 | 按 shortcut 的 prompt/provider/model/input/action 执行 agent run。 |
-| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | New Conversation 默认页已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。model picker 已读取 fresh DB enabled provider/model cache，reasoning selector 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，支持 level、boolean、always-on 和 token budget，`SendRequested` 已携带 `ChatFormSubmit`。`+` 仍是 local event，prompt selector、attachments 和 agent loop 仍未接。 | Agent conversation page 专项计划已固定：`issue-159-ai-chat2-agent-conversation-page.md`。下一步先接真实 conversation create、send/run 和 timeline；prompt selector、附件、cancel/retry/resend 后续继续补。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
-| Project-first sidebar | `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md` | 已完成第一版：顶部新对话/搜索入口、底部设置入口、置顶对话/项目、项目展开、项目更多菜单、conversation search、conversation route、project/conversation soft-delete，以及 shortcut action row 视觉对齐已接线。 | Agent conversation page 专项计划已固定真实 conversation create/send 后的 sidebar 即时刷新；后续继续补 last item preview 和更完整的 project metadata/status UI。 |
+| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | New Conversation 默认页已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。model picker 已读取 fresh DB enabled provider/model cache，reasoning selector 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，支持 level、boolean、always-on 和 token budget，`SendRequested` 已携带 `ChatFormSubmit`。Agent Conversation Page 首版已消费 `ChatFormSubmit` 创建/追加 conversation 并启动真实 run；运行中只禁用发送按钮，不禁用输入。 | `+` 仍是 local event；prompt selector、附件、cancel/retry/resend 后续继续补。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| Project-first sidebar | `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md` | 已完成第一版：顶部新对话/搜索入口、底部设置入口、置顶对话/项目、项目展开、项目更多菜单、conversation search、conversation route、project/conversation soft-delete，以及 shortcut action row 视觉对齐已接线。Agent Conversation Page 首版已接 New Conversation 发送后的 sidebar 即时刷新，并把 scratch project conversation 归入无项目区。 | 后续继续补 last item preview 和更完整的 project metadata/status UI。 |
 
 ## 基础设施 / 本地状态 / 可观测性
 
@@ -159,21 +164,21 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
   尚未实现，后续实现时必须以此为约束：确认 hotkey 时应先 parse/register 成功再写入 app settings，或在注册失败时回滚已写入的
   settings/default input，避免启动后继续加载不可用 hotkey。
 
-## 后端已具备但 UI 未接
+## 后端能力 / UI 接线状态
 
-| 能力 | 后端位置 | UI 缺口 |
+| 能力 | 后端位置 | UI 状态 |
 | --- | --- | --- |
-| projects | `ai-chat-db` repositories / fresh schema | Settings 已可列出 normal projects 并添加文件夹项目；New Conversation 默认页已可选择 normal project、添加现有文件夹、支持不使用项目，并按选择持久化或清空 `default_project_id`。仍没有 project sidebar、open folder、recent projects 或 scratch project runtime。 |
-| conversations | `ai-chat-db` repositories / fresh schema | sidebar 已有 conversation route/search/delete 第一版；真实 create/send runtime 专项计划已固定在 `issue-159-ai-chat2-agent-conversation-page.md`，尚未实现。 |
-| canonical timeline | `conversation_items` | Agent conversation page 专项计划已固定按 `seq` 渲染 timeline、user bubble、agent final/details collapse 和 observer invalidation；尚未实现。 |
+| projects | `ai-chat-db` repositories / fresh schema | Settings 已可列出 normal projects 并添加文件夹项目；New Conversation 默认页已可选择 normal project、添加现有文件夹、支持不使用项目，并按选择持久化或清空 `default_project_id`。Agent Conversation Page 首版已在无项目发送时创建每会话 scratch project，并让其 conversation 归入无项目区。仍缺 open folder、recent projects 和更完整 project metadata/status UI。 |
+| conversations | `ai-chat-db` repositories / fresh schema | 已实现首版：New Conversation 创建 conversation + 首条 user item，已有 conversation 可追加 user item；sidebar 已有 conversation route/search/delete 第一版。 |
+| canonical timeline | `conversation_items` | 已实现首版：Conversation page 按 snapshot 渲染 `gpui-component::List` timeline、user bubble、agent final markdown/details collapse 和 observer invalidation。多模态/rich output 后续继续补。 |
 | attachments | `attachments` + typed payloads | 没有 file/image/audio attach、preview、generated output 或 storage UI。 |
-| agent runs | `ai-chat-agent::AgentRuntime` + `agent_runs` | Agent conversation page 专项计划已固定真实 run 启动、active run send disabled 和 runtime observer；cancel/retry/resend UI 仍留后续。 |
-| provider steps | `provider_steps` | Composer 已能选择 DB-backed provider/model 作为后续 run 输入；仍没有 provider step debug surface、continuation display 或真实 run 接线。 |
-| tool invocations | `tool_invocations` + `ToolRegistry` | Agent conversation page 专项计划已固定 v1 compact tool call/result details 从 `conversation_items` 渲染；完整 rich tool UI 留后续。 |
+| agent runs | `ai-chat-agent::AgentRuntime` + `agent_runs` | 已实现首版：New Conversation 和 Conversation page 发送会启动真实 `AgentRuntime`，runtime observer 触发页面 reload，active run 期间 send disabled。cancel/retry/resend UI 仍留后续。 |
+| provider steps | `provider_steps` | Composer 已能选择 DB-backed provider/model 作为 run 输入，Agent Conversation Page 首版已启动真实 run 并由 agent persistence 写入 provider steps；仍没有 provider step debug surface 或 continuation display。 |
+| tool invocations | `tool_invocations` + `ToolRegistry` | 已实现首版：v1 compact tool call/result details 从 `conversation_items` 渲染。完整 rich tool UI 留后续。 |
 | approvals | `approval_decisions` + agent runtime | 没有 approval prompt、approve/deny/cancel/expired UI。 |
 | usage | `usage_events` | 没有 token/usage summary 或 rollup UI。 |
 | prompts | `prompts` | 没有 prompt CRUD、selection、snapshot display。 |
-| providers | `providers` | Provider settings 第一阶段已实现：`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。已接 Settings Provider 页、Provider i18n、未保存 provider 默认 disabled、provider enabled 保存、保存前本地校验、未保存状态标签、GPUI credentials secret write/read、`ListState` provider list、provider list panel/row separator 视觉、provider brand logo / fallback visual，以及 Composer 侧 enabled provider/model 读取。仍缺 manual model editor、Rig completion client validation 和 agent runtime 接线。 |
+| providers | `providers` | Provider settings 第一阶段已实现：`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。已接 Settings Provider 页、Provider i18n、未保存 provider 默认 disabled、provider enabled 保存、保存前本地校验、未保存状态标签、GPUI credentials secret write/read、`ListState` provider list、provider list panel/row separator 视觉、provider brand logo / fallback visual，以及 Composer 侧 enabled provider/model 读取。Agent Conversation Page 首版已抽出 provider secret read helper，并按已保存 provider/model dispatch agent runtime。仍缺 manual model editor、manual capability override 和 Rig completion client validation。 |
 | provider models | `provider_models` | 已补 per-model enabled DB 合同、Settings 内 model enabled toggle、Provider 双栏独立滚动布局、右侧 detail 整体滚动、`ListState` model list、真实远端模型刷新、保留 enabled 的 fetch upsert、provider-specific capability source/enrichment，以及 Composer model picker 读取/搜索/能力标签/reasoning selector/provider logo。manual model editor 和 manual capability override persistence 仍未完成。 |
 | app settings | `app_settings` | General/Appearance 已消费 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；Provider settings 第一阶段已落地并有专项文档继续跟踪，Prompt/Shortcut settings 仍未接。 |
 | file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
@@ -183,12 +188,12 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 
 | 区域 | 事项 |
 | --- | --- |
-| Project navigation | New Conversation 默认页已有 default/no-project selector；project-first sidebar 第一版已实现项目列表、置顶、展开、菜单、显示目录、重命名和移除。仍缺 recent projects、scratch project runtime 和更完整的 project metadata/status UI。 |
-| Conversation navigation | conversation list、new conversation 入口、delete、search/filter 和右侧 conversation route 已实现第一版；真实 conversation create/send runtime 和 conversation page timeline 专项计划已固定，仍缺 title edit、status display、last item preview。 |
-| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生，model picker row/trigger 已接 provider logo visual。Agent conversation page 专项计划已固定 conversation create/send/run 接线；真实工作仍包括 prompt selector、多 part input、capability warning、附件、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
-| Timeline text | Agent conversation page 专项计划已固定 user bubble、assistant final markdown、copy hover 和 `gpui-component::List` 虚拟列表；streaming delta、multi-block rich assistant output 和 export affordance 后续继续补。 |
-| Reasoning | Agent conversation page 专项计划已固定 agent details 默认展开/收起规则和 markdown reasoning block；multiple reasoning blocks、provider-specific gating 的完整体验后续继续补。 |
-| Tools | Agent conversation page 专项计划已固定 local/MCP/provider-hosted tool call/result 的 v1 compact details；progress、structured output rich view、attachment result 和 tool name collision display 后续继续补。 |
+| Project navigation | New Conversation 默认页已有 default/no-project selector；project-first sidebar 第一版已实现项目列表、置顶、展开、菜单、显示目录、重命名和移除；无项目发送时每会话 scratch project 已实现首版。仍缺 recent projects 和更完整的 project metadata/status UI。 |
+| Conversation navigation | conversation list、new conversation 入口、delete、search/filter 和右侧 conversation route 已实现第一版；New Conversation 发送后的 conversation create/open 和已有 conversation send 已实现首版；仍缺 title edit、status display、last item preview。 |
+| Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生，model picker row/trigger 已接 provider logo visual。Agent Conversation Page 首版已接 conversation create/send/run；真实工作仍包括 prompt selector、多 part input、capability warning、附件、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
+| Timeline text | 已实现首版：user bubble、assistant final markdown、copy hover、Codex-style timestamp 和 `gpui-component::List` 虚拟列表；streaming delta、multi-block rich assistant output 和 export affordance 后续继续补。 |
+| Reasoning | 已实现首版：agent details 默认展开/收起规则和 markdown/text details block；multiple reasoning blocks、provider-specific gating 的完整体验后续继续补。 |
+| Tools | 已实现首版：local/MCP/provider-hosted tool call/result 的 v1 compact details；progress、structured output rich view、attachment result 和 tool name collision display 后续继续补。 |
 | Approvals | approval request card、approve/deny/cancel actions、pending/expired/decided states、recovery after restart。 |
 | Status and errors | queued/running/waiting/completed/failed/canceled 状态、retry/cancel affordance、user-visible error item。 |
 | Usage | per-run usage summary、provider/model token counts、usage event rollup display。 |
@@ -232,7 +237,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | conversation list/search | `features/home/search.rs` / `search_list.rs` | 未开始 | 需要基于 fresh conversations 和 `conversation_items.search_text` 后续设计。 |
 | delete confirmation | `components/delete_confirm.rs` | 未开始 | project/conversation/prompt/provider/shortcut 等 destructive actions 需要新的确认策略。 |
 | conversation export | `features/home/export.rs` | 未开始 | 新 export 应读取 canonical `conversation_items`。 |
-| chat form | `components/chat_form.rs` | 占位 | `ai-chat2` 已有 ChatForm 视觉外框、真实 `ComposerEditor` 第一版输入内核、DB-backed provider/model picker 和 provider-neutral reasoning selector，并已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；仍不接 prompt selector、attachments、conversation create 或 agent loop；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| chat form | `components/chat_form.rs` | 已替代 | `ai-chat2` 已有 ChatForm 视觉外框、真实 `ComposerEditor` 第一版输入内核、DB-backed provider/model picker 和 provider-neutral reasoning selector，并已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；Agent Conversation Page 首版已接 conversation create/send 和 agent run；仍不接 prompt selector、attachments、cancel/retry/resend；新 composer 不应暴露 conversation mode/template controls；真实输入进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 | chat form provider ext settings | `components/chat_form/ext_settings.rs` | 已有专项计划 | Provider settings 专项计划已固定 capability cache 和 typed extension 的来源；composer 接线仍未实现。 |
 | mode select | `components/chat_form/mode_select.rs` | 不照搬 | 新模型所有 conversation 都 contextual。 |
 | template picker | `components/chat_form/template_picker.rs` | 不照搬 | 新 UI 使用 prompt selector。 |
@@ -553,3 +558,18 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   和测试计划。
 - 本次仅新增/更新开发文档，未实现产品代码；`app/ai-chat2` 仍未接真实 conversation create/send
   runtime 或 timeline 渲染。
+
+2026-06-06 Agent Conversation Page 首版实现记录：
+
+- live GitHub 状态：#137、#155-#159 仍 open；当前 `codex/issue-159-ai-chat2-ui` 暂无 PR。
+- 远程分支状态：`origin/codex/issue-159-ai-chat2-ui` head 为 `dba4f7c`
+  `Implement ai-chat2 agent conversation page`；相对 `origin/codex/issue-137-llm-abstractions`
+  的 `git rev-list --left-right --count` 为 `1 1`，说明当前增量尚未进入集成分支。
+- 本轮实现 New Conversation 发送后创建 conversation/user item、无项目 scratch project、sidebar 即时刷新、
+  conversation page、已有 conversation 继续发送、真实 `AgentRuntime` 启动、runtime observer 刷新、
+  `gpui-component::List` timeline、user bubble、agent final markdown/details collapse、hover copy/time、
+  Codex-style timestamp、复制成功 `Check` 两秒和失败通知。
+- 仍未实现 stop/cancel、retry/resend、prompt selector、attachments/multimodal input、approval action、
+  rich tool UI、Temporary Conversation runtime、last item preview 和完整 project status UI。
+- 验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 timestamp_label`、
+  `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`、`git diff --check`。
