@@ -670,8 +670,10 @@ mod tests {
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
     use ai_chat_core::{
-        ContentPart, ProviderModelMetadata, ProviderSecretRefs, ProviderSettingFieldValue,
-        ProviderSettingValue, ProviderSettingsPayload, conservative_model_capabilities,
+        CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
+        ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
+        ProviderSettingsPayload, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
+        ReasoningSelectionSnapshot, TokenBudgetSelectionMode, conservative_model_capabilities,
     };
     use ai_chat_db::{NewProvider, NewProviderModel};
     use gpui::{
@@ -762,6 +764,32 @@ mod tests {
         assert_eq!(second_submit.provider_model.model_id, "gpt-5-mini");
     }
 
+    #[gpui::test]
+    fn submit_revalidation_preserves_custom_token_budget(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_reasoning_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                let input = form.token_budget_input.clone();
+                form.apply_custom_token_budget(2048, &input, window, cx);
+            });
+        });
+
+        let submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("selected model can be submitted after revalidation");
+
+        assert_eq!(
+            submit.reasoning_selection,
+            Some(ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: Some(2048),
+            })
+        );
+    }
+
     fn choice(provider_id: &str, model_id: &str) -> ProviderModelChoice {
         ProviderModelChoice {
             provider_id: provider_id.to_string(),
@@ -790,6 +818,30 @@ mod tests {
                         provider_model_for_test(&provider.id, "gpt-5"),
                         provider_model_for_test(&provider.id, "gpt-5-mini"),
                     ],
+                )
+                .unwrap();
+        });
+        dir
+    }
+
+    fn init_chat_form_reasoning_test(cx: &mut TestAppContext) -> TempDir {
+        let dir = tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            state::providers::init(cx);
+            crate::foundation::i18n::init(cx);
+
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            repository
+                .replace_fetched_provider_models(
+                    &provider.id,
+                    vec![provider_model_with_capabilities(
+                        &provider.id,
+                        "claude-3-7-sonnet",
+                        token_budget_capabilities(),
+                    )],
                 )
                 .unwrap();
         });
@@ -851,18 +903,50 @@ mod tests {
     }
 
     fn provider_model_for_test(provider_id: &str, model_id: &str) -> NewProviderModel {
+        provider_model_with_capabilities(
+            provider_id,
+            model_id,
+            conservative_model_capabilities("openai"),
+        )
+    }
+
+    fn provider_model_with_capabilities(
+        provider_id: &str,
+        model_id: &str,
+        capabilities: ModelCapabilitiesSnapshot,
+    ) -> NewProviderModel {
         NewProviderModel {
             provider_id: provider_id.to_string(),
             model_id: model_id.to_string(),
             display_name: None,
             enabled: true,
-            capabilities: conservative_model_capabilities("openai"),
+            capabilities,
             metadata: ProviderModelMetadata {
                 display_name: None,
                 family: None,
                 raw: None,
             },
         }
+    }
+
+    fn token_budget_capabilities() -> ModelCapabilitiesSnapshot {
+        let mut capabilities = conservative_model_capabilities("anthropic");
+        capabilities.reasoning = Some(ReasoningCapabilitySnapshot {
+            default_effort: "4096".to_string(),
+            efforts: vec!["4096".to_string()],
+            summaries: true,
+            control: Some(ReasoningControlSnapshot::TokenBudget {
+                min: Some(1024),
+                max: None,
+                default_value: Some(4096),
+                dynamic_supported: false,
+                off_supported: false,
+            }),
+            source: CapabilitySourceSnapshot::Manual {
+                source: "test".to_string(),
+            },
+        });
+        capabilities
     }
 
     fn test_snapshot(text: &str) -> ComposerSnapshot {

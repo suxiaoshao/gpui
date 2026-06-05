@@ -55,7 +55,15 @@ pub(crate) fn reasoning_selection_is_valid(
     reasoning: Option<&ReasoningCapabilitySnapshot>,
     selection: &ReasoningSelectionSnapshot,
 ) -> bool {
-    reasoning_selections(reasoning).contains(selection)
+    let Some(reasoning) = reasoning else {
+        return false;
+    };
+
+    if let Some(control) = reasoning.control.as_ref() {
+        return selection_is_valid_for_control(control, selection);
+    }
+
+    legacy_level_selections(reasoning).contains(selection)
 }
 
 pub(crate) fn token_budget_bounds(
@@ -180,6 +188,78 @@ fn selections_for_control(control: &ReasoningControlSnapshot) -> Vec<ReasoningSe
             }
             selections
         }
+    }
+}
+
+fn selection_is_valid_for_control(
+    control: &ReasoningControlSnapshot,
+    selection: &ReasoningSelectionSnapshot,
+) -> bool {
+    match control {
+        ReasoningControlSnapshot::None => false,
+        ReasoningControlSnapshot::Boolean { .. } => {
+            matches!(selection, ReasoningSelectionSnapshot::Boolean { .. })
+        }
+        ReasoningControlSnapshot::Levels { values, .. }
+        | ReasoningControlSnapshot::AdaptiveLevels { values, .. } => match selection {
+            ReasoningSelectionSnapshot::Level { value } => values
+                .iter()
+                .any(|candidate| normalized_matches(candidate, value)),
+            _ => false,
+        },
+        ReasoningControlSnapshot::TokenBudget {
+            min,
+            max,
+            dynamic_supported,
+            off_supported,
+            ..
+        } => token_budget_selection_is_valid(
+            *min,
+            *max,
+            *dynamic_supported,
+            *off_supported,
+            selection,
+        ),
+        ReasoningControlSnapshot::AlwaysOn { .. } => {
+            matches!(selection, ReasoningSelectionSnapshot::AlwaysOn)
+        }
+        ReasoningControlSnapshot::Composite { controls } => match selection {
+            ReasoningSelectionSnapshot::Composite { selections } => {
+                !selections.is_empty()
+                    && selections.iter().all(|selection| {
+                        controls
+                            .iter()
+                            .any(|control| selection_is_valid_for_control(control, selection))
+                    })
+            }
+            _ => controls
+                .iter()
+                .any(|control| selection_is_valid_for_control(control, selection)),
+        },
+    }
+}
+
+fn token_budget_selection_is_valid(
+    min: Option<u32>,
+    max: Option<u32>,
+    dynamic_supported: bool,
+    off_supported: bool,
+    selection: &ReasoningSelectionSnapshot,
+) -> bool {
+    match selection {
+        ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Off,
+            value: None,
+        } => off_supported,
+        ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Dynamic,
+            value: None,
+        } => dynamic_supported,
+        ReasoningSelectionSnapshot::TokenBudget {
+            mode: TokenBudgetSelectionMode::Custom,
+            value: Some(value),
+        } => min.map_or(true, |min| *value >= min) && max.map_or(true, |max| *value <= max),
+        _ => false,
     }
 }
 
@@ -458,6 +538,39 @@ mod tests {
                 value: None,
             })
         );
+    }
+
+    #[test]
+    fn token_budget_custom_values_validate_by_bounds() {
+        let reasoning = reasoning(ReasoningControlSnapshot::TokenBudget {
+            min: Some(1024),
+            max: Some(8192),
+            default_value: Some(4096),
+            dynamic_supported: false,
+            off_supported: false,
+        });
+
+        assert!(reasoning_selection_is_valid(
+            Some(&reasoning),
+            &ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: Some(2048),
+            }
+        ));
+        assert!(!reasoning_selection_is_valid(
+            Some(&reasoning),
+            &ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: Some(512),
+            }
+        ));
+        assert!(!reasoning_selection_is_valid(
+            Some(&reasoning),
+            &ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Dynamic,
+                value: None,
+            }
+        ));
     }
 
     #[test]
