@@ -6,12 +6,13 @@
 timeline 渲染的具体实现方案。
 
 创建时间：2026-06-05。
-最后状态同步：2026-06-06。
+最后状态同步：2026-06-08。
 
-当前状态：已实现首版并推送到 `origin/codex/issue-159-ai-chat2-ui`，head 为
-`dba4f7c`（`Implement ai-chat2 agent conversation page`）。GitHub #159 仍 open，当前分支暂无 PR。
-实现范围围绕本文档列出的文件、组件、数据流和验证项推进；未回到旧 `app/ai-chat` 的
-`messages` table、legacy tab/draft store，也未在 GPUI 层重新实现 agent loop。
+当前状态：Agent Conversation Page 首版已实现，首版提交为 `dba4f7c`
+（`Implement ai-chat2 agent conversation page`）。后续 #159 分支已继续整理 fresh DB sidebar 状态列化；
+仍需要开 PR 合入 `codex/issue-137-llm-abstractions`。实现范围围绕本文档列出的文件、组件、
+数据流和验证项推进；未回到旧 `app/ai-chat` 的 `messages` table、legacy tab/draft store，
+也未在 GPUI 层重新实现 agent loop。
 
 实现时间：2026-06-05 至 2026-06-06。
 
