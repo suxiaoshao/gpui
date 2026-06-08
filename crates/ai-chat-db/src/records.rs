@@ -17,6 +17,8 @@ pub struct ProjectRecord {
     pub path: String,
     pub display_name: String,
     pub kind: ProjectKind,
+    pub pinned: bool,
+    pub removed: bool,
     pub metadata: ProjectMetadata,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -28,6 +30,8 @@ pub struct NewProject {
     pub path: String,
     pub display_name: String,
     pub kind: ProjectKind,
+    pub pinned: bool,
+    pub removed: bool,
     pub metadata: ProjectMetadata,
 }
 
@@ -37,6 +41,7 @@ pub struct ConversationRecord {
     pub project_id: ProjectId,
     pub title: String,
     pub status: ConversationStatus,
+    pub pinned: bool,
     pub prompt_id: Option<PromptId>,
     pub default_provider_id: Option<ProviderId>,
     pub default_model_id: Option<ProviderModelId>,
@@ -53,6 +58,7 @@ pub struct ConversationRecord {
 pub struct NewConversation {
     pub project_id: ProjectId,
     pub title: String,
+    pub pinned: bool,
     pub prompt_id: Option<PromptId>,
     pub default_provider_id: Option<ProviderId>,
     pub default_model_id: Option<ProviderModelId>,

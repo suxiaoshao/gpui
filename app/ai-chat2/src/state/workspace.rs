@@ -204,15 +204,8 @@ impl AiChat2WorkspaceStore {
         pinned: bool,
         cx: &mut Context<Self>,
     ) -> ai_chat_db::Result<ConversationRecord> {
-        let repository = database::repository(cx);
-        let conversation = repository
-            .get_conversation(conversation_id)?
-            .ok_or_else(|| {
-                ai_chat_db::DbError::Invariant(format!("conversation {conversation_id} missing"))
-            })?;
-        let mut metadata = conversation.metadata;
-        metadata.pinned = pinned;
-        let conversation = repository.update_conversation_metadata(conversation_id, metadata)?;
+        let conversation =
+            database::repository(cx).set_conversation_pinned(conversation_id, pinned)?;
         self.reload_sidebar(cx);
         Ok(conversation)
     }
@@ -276,10 +269,10 @@ fn build_sidebar_snapshot(
     cx: &App,
 ) -> ai_chat_db::Result<SidebarSnapshot> {
     let repository = database::repository(cx);
-    let all_projects = repository.list_projects()?;
-    let mut normal_projects = all_projects
+    let visible_projects = repository.list_visible_projects()?;
+    let mut normal_projects = visible_projects
         .iter()
-        .filter(|project| project.kind == ProjectKind::Normal && !project.metadata.removed)
+        .filter(|project| project.kind == ProjectKind::Normal)
         .cloned()
         .collect::<Vec<_>>();
     normal_projects.sort_by(|left, right| {
@@ -293,9 +286,9 @@ fn build_sidebar_snapshot(
         .iter()
         .map(|project| project.id.clone())
         .collect::<HashSet<_>>();
-    let scratch_project_ids = all_projects
+    let scratch_project_ids = visible_projects
         .iter()
-        .filter(|project| project.kind == ProjectKind::Scratch && !project.metadata.removed)
+        .filter(|project| project.kind == ProjectKind::Scratch)
         .map(|project| project.id.clone())
         .collect::<HashSet<_>>();
     let mut conversations_by_project: HashMap<ProjectId, Vec<SidebarConversationNode>> =
@@ -363,9 +356,8 @@ fn visible_project_headers(
     cx: &App,
 ) -> ai_chat_db::Result<HashMap<ProjectId, SidebarProjectHeader>> {
     Ok(database::repository(cx)
-        .list_projects()?
+        .list_visible_projects()?
         .into_iter()
-        .filter(|project| !project.metadata.removed)
         .map(|project| (project.id.clone(), project_header(&project)))
         .collect())
 }
@@ -376,7 +368,7 @@ fn project_header(project: &ProjectRecord) -> SidebarProjectHeader {
         path: PathBuf::from(&project.path),
         display_name: project.display_name.clone().into(),
         updated_at: project.updated_at.unix_timestamp_nanos(),
-        pinned: project.metadata.pinned,
+        pinned: project.pinned,
     }
 }
 
@@ -387,7 +379,7 @@ fn conversation_node(conversation: ConversationRecord) -> SidebarConversationNod
         project_id: conversation.project_id,
         title: conversation.title.into(),
         updated_at: conversation.updated_at.unix_timestamp_nanos(),
-        pinned: conversation.metadata.pinned,
+        pinned: conversation.pinned,
     }
 }
 

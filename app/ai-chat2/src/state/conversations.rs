@@ -74,6 +74,7 @@ pub(crate) fn create_conversation(
     let conversation = NewConversation {
         project_id: project.id.clone(),
         title: conversation_title(&request.title_seed, cx.global::<I18n>()),
+        pinned: false,
         prompt_id: None,
         default_provider_id: Some(request.provider_model.provider_id.clone()),
         default_model_id: Some(request.provider_model.model_id.clone()),
@@ -255,7 +256,6 @@ fn empty_conversation_metadata() -> ConversationMetadata {
     ConversationMetadata {
         summary: None,
         tags: Vec::new(),
-        pinned: false,
     }
 }
 

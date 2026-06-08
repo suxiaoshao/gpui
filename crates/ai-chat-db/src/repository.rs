@@ -18,7 +18,7 @@ use diesel::{
     sql_types::Text,
     upsert::excluded,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -60,6 +60,8 @@ impl FreshRepository {
                 path: input.path,
                 display_name: input.display_name,
                 kind: db_label(&input.kind)?,
+                pinned: input.pinned,
+                removed: input.removed,
                 metadata_json: to_json(&input.metadata)?,
                 created_at: now,
                 updated_at: now,
@@ -102,12 +104,30 @@ impl FreshRepository {
             .collect()
     }
 
-    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
-        Ok(self
-            .list_projects()?
+    pub fn list_visible_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .filter(projects::removed.eq(false))
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
             .into_iter()
-            .filter(|project| project.kind == ProjectKind::Normal && !project.metadata.removed)
-            .collect())
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        let normal = db_label(&ProjectKind::Normal)?;
+        projects::table
+            .filter(projects::kind.eq(normal))
+            .filter(projects::removed.eq(false))
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
     }
 
     pub fn update_project_metadata(
@@ -139,12 +159,27 @@ impl FreshRepository {
     }
 
     pub fn set_project_removed(&self, id: &str, removed: bool) -> Result<ProjectRecord> {
-        let project = self
-            .get_project(id)?
-            .ok_or_else(|| DbError::Invariant(format!("project {id} is missing")))?;
-        let mut metadata = project.metadata;
-        metadata.removed = removed;
-        self.update_project_metadata(id, metadata)
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::removed.eq(removed),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_project_pinned(&self, id: &str, pinned: bool) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::pinned.eq(pinned),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
     }
 
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
@@ -410,6 +445,7 @@ impl FreshRepository {
                 project_id: input.project_id,
                 title: input.title,
                 status: db_label(&ConversationStatus::Active)?,
+                pinned: input.pinned,
                 prompt_id: input.prompt_id,
                 default_provider_id: input.default_provider_id,
                 default_model_id: input.default_model_id,
@@ -441,6 +477,7 @@ impl FreshRepository {
                 project_id: input.conversation.project_id,
                 title: input.conversation.title,
                 status: db_label(&ConversationStatus::Active)?,
+                pinned: input.conversation.pinned,
                 prompt_id: input.conversation.prompt_id,
                 default_provider_id: input.conversation.default_provider_id,
                 default_model_id: input.conversation.default_model_id,
@@ -479,20 +516,23 @@ impl FreshRepository {
     }
 
     pub fn list_sidebar_conversations(&self) -> Result<Vec<ConversationRecord>> {
-        let visible_project_ids = self.visible_sidebar_project_ids()?;
         let active = db_label(&ConversationStatus::Active)?;
         let mut conn = self.conn()?;
-        Ok(conversations::table
+        conversations::table
             .filter(conversations::status.eq(active))
+            .filter(
+                conversations::project_id.eq_any(
+                    projects::table
+                        .filter(projects::removed.eq(false))
+                        .select(projects::id),
+                ),
+            )
             .order(conversations::updated_at.desc())
             .select(SqlConversationRow::as_select())
             .load::<SqlConversationRow>(&mut conn)?
             .into_iter()
             .map(TryInto::try_into)
-            .collect::<Result<Vec<ConversationRecord>>>()?
-            .into_iter()
-            .filter(|conversation| visible_project_ids.contains(&conversation.project_id))
-            .collect())
+            .collect()
     }
 
     pub fn update_conversation_metadata(
@@ -504,6 +544,18 @@ impl FreshRepository {
         diesel::update(conversations::table.find(id))
             .set((
                 conversations::metadata_json.eq(to_json(&metadata)?),
+                conversations::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_conversation_pinned(&self, id: &str, pinned: bool) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::pinned.eq(pinned),
                 conversations::updated_at.eq(now_string()?),
             ))
             .returning(SqlConversationRow::as_returning())
@@ -630,18 +682,11 @@ impl FreshRepository {
         })
     }
 
-    fn visible_sidebar_project_ids(&self) -> Result<HashSet<ProjectId>> {
-        Ok(self.visible_sidebar_project_map()?.into_keys().collect())
-    }
-
     fn visible_sidebar_project_map(&self) -> Result<HashMap<ProjectId, ProjectRecord>> {
         Ok(self
-            .list_projects()?
+            .list_visible_projects()?
             .into_iter()
-            .filter(|project| {
-                !project.metadata.removed
-                    && matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch)
-            })
+            .filter(|project| matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch))
             .map(|project| (project.id.clone(), project))
             .collect())
     }

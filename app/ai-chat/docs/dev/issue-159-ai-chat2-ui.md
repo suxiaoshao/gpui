@@ -7,12 +7,12 @@
 Agent conversation page 专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-agent-conversation-page.md`。
 
-最后同步时间：2026-06-06。
+最后同步时间：2026-06-08。
 
 当前实现基线：`codex/issue-137-llm-abstractions`。上一轮 foundation 已通过 PR #164 合入集成分支。
-当前增量分支为 `codex/issue-159-ai-chat2-ui`，远程 head 为 `dba4f7c`
-（`Implement ai-chat2 agent conversation page`），已推送到 `origin`，暂无 PR。该分支与
-`origin/codex/issue-137-llm-abstractions` 当前各有 1 个独有 commit，后续仍需要开 PR 合入集成分支。
+当前增量分支为 `codex/issue-159-ai-chat2-ui`。上一轮远程 head 为 `dba4f7c`
+（`Implement ai-chat2 agent conversation page`），暂无 PR；本轮继续在该分支上整理 fresh DB sidebar
+状态列化，后续仍需要开 PR 合入集成分支。
 
 当前状态：进行中。已合入的 foundation 包含基础设施壳、app chrome、file-backed logging、About、Sidebar/home
 skeleton、Home root/sidebar 结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll
@@ -37,7 +37,10 @@ conversation page 使用 `gpui-component::List` timeline + 底部 ChatForm；运
 真实 `AgentRuntime` 通过 observer 事件刷新页面；timeline 支持 user bubble、agent final markdown/details
 collapse、hover copy/time、Codex-style timestamp、复制成功按钮 `Check` 两秒和失败通知。完整多模态
 timeline、Prompt/Shortcut settings、manual provider model editor、cancel/retry/resend、approval action、
-rich tool UI 和真实 Temporary Conversation runtime 仍未完成。
+rich tool UI 和真实 Temporary Conversation runtime 仍未完成。本轮后续整理已把 sidebar 热路径的
+project/conversation pin/remove 状态从 `metadata_json` 拆到 fresh DB columns，repository 和
+`ai-chat2` 状态层直接读写列；由于 fresh DB 仍未进入 `main`，该变更按 pre-main baseline schema
+清理处理。
 
 已完成提交：
 
@@ -573,3 +576,16 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   rich tool UI、Temporary Conversation runtime、last item preview 和完整 project status UI。
 - 验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 timestamp_label`、
   `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`、`git diff --check`。
+
+2026-06-08 sidebar 状态列化记录：
+
+- 本轮把 `projects.pinned`、`projects.removed`、`conversations.pinned` 提升为 fresh DB columns，
+  `ProjectMetadata` / `ConversationMetadata` 不再保存这些 sidebar UI 状态。
+- `ai-chat-db` repository 新增直接读写列的 pin/remove API，并让 sidebar 可见性查询在 SQL 层过滤
+  removed projects。
+- `app/ai-chat2` 的 ProjectCatalogStore、WorkspaceStore、Settings Projects 和 conversation pin/delete
+  流程已切换为读取 `ProjectRecord` / `ConversationRecord` 的列化状态。
+- fresh DB 尚未合入 `main`，本轮按 pre-main baseline schema 清理处理，不承诺旧开发期 fresh DB 的
+  migration 兼容；需要保留本地开发数据时应先手动导出或重建。
+- 验证：`cargo fmt`、`cargo test -p ai-chat-db`、`cargo test -p ai-chat-core`、
+  `cargo check -p ai-chat2`、`git diff --check`。

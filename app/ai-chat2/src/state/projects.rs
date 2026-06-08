@@ -64,7 +64,7 @@ impl ProjectCatalogStore {
         let repository = database::repository(cx);
 
         if let Some(project) = repository.get_project_by_path(&project_path)? {
-            if project.metadata.removed {
+            if project.removed {
                 let restored = repository.set_project_removed(&project.id, false)?;
                 self.emit_changed(
                     ProjectCatalogChange::Added {
@@ -88,6 +88,8 @@ impl ProjectCatalogStore {
             path: project_path,
             display_name: project_display_name(&path),
             kind: ProjectKind::Normal,
+            pinned: false,
+            removed: false,
             metadata: empty_project_metadata(),
         })?;
         self.emit_changed(
@@ -116,6 +118,8 @@ impl ProjectCatalogStore {
             path: path.display().to_string(),
             display_name,
             kind: ProjectKind::Scratch,
+            pinned: false,
+            removed: false,
             metadata,
         })?;
         self.emit_changed(
@@ -150,12 +154,7 @@ impl ProjectCatalogStore {
         cx: &mut Context<Self>,
     ) -> ai_chat_db::Result<ProjectRecord> {
         let repository = database::repository(cx);
-        let project = repository.get_project(project_id)?.ok_or_else(|| {
-            ai_chat_db::DbError::Invariant(format!("project {project_id} missing"))
-        })?;
-        let mut metadata = project.metadata;
-        metadata.pinned = pinned;
-        let project = repository.update_project_metadata(project_id, metadata)?;
+        let project = repository.set_project_pinned(project_id, pinned)?;
         self.emit_changed(
             ProjectCatalogChange::PinChanged {
                 project_id: project.id.clone(),
@@ -248,8 +247,6 @@ fn empty_project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: None,
         last_active_conversation_id: None,
-        pinned: false,
-        removed: false,
     }
 }
 
@@ -281,11 +278,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_project_metadata_defaults_sidebar_flags() {
+    fn empty_project_metadata_defaults() {
         let metadata = empty_project_metadata();
 
-        assert!(!metadata.pinned);
-        assert!(!metadata.removed);
+        assert_eq!(metadata.scratch_reason, None);
+        assert_eq!(metadata.git_root, None);
+        assert_eq!(metadata.last_active_conversation_id, None);
     }
 
     #[test]

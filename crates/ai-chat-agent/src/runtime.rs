@@ -1635,12 +1635,12 @@ mod tests {
                     path: dir.path().to_string_lossy().to_string(),
                     display_name: name.to_string(),
                     kind: ProjectKind::Normal,
+                    pinned: false,
+                    removed: false,
                     metadata: ProjectMetadata {
                         scratch_reason: None,
                         git_root: Some(dir.path().to_string_lossy().to_string()),
                         last_active_conversation_id: None,
-                        pinned: false,
-                        removed: false,
                     },
                 })
                 .unwrap();
@@ -1671,13 +1671,13 @@ mod tests {
                 .insert_conversation(NewConversation {
                     project_id: project.id,
                     title: name.to_string(),
+                    pinned: false,
                     prompt_id: None,
                     default_provider_id: Some(provider.id.clone()),
                     default_model_id: Some(model.model_id.clone()),
                     metadata: ConversationMetadata {
                         summary: None,
                         tags: Vec::new(),
-                        pinned: false,
                     },
                     settings_snapshot: ConversationSettingsSnapshot {
                         prompt: None,

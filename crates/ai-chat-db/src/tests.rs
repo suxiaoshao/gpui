@@ -38,7 +38,7 @@ fn bootstrap_is_idempotent() {
     assert!(metadata.updated_at >= first_updated_at);
 
     let mut conn = second.pool().get().unwrap();
-    assert_eq!(count(&mut conn, "schema_migrations"), 2);
+    assert_eq!(count(&mut conn, "schema_migrations"), 1);
 }
 
 #[test]
@@ -126,6 +126,8 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/zeta".to_string(),
         display_name: "Zeta".to_string(),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
     })
     .unwrap();
@@ -133,6 +135,8 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/alpha-b".to_string(),
         display_name: "Alpha".to_string(),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
     })
     .unwrap();
@@ -140,12 +144,12 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/alpha-a".to_string(),
         display_name: "Alpha".to_string(),
         kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
         metadata: ProjectMetadata {
             scratch_reason: Some("temporary".to_string()),
             git_root: None,
             last_active_conversation_id: None,
-            pinned: false,
-            removed: false,
         },
     })
     .unwrap();
@@ -192,12 +196,12 @@ fn sidebar_projects_filter_scratch_and_removed_projects() {
         path: "/tmp/hidden-scratch".to_string(),
         display_name: "Hidden Scratch".to_string(),
         kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
         metadata: ProjectMetadata {
             scratch_reason: Some("no-project".to_string()),
             git_root: None,
             last_active_conversation_id: None,
-            pinned: false,
-            removed: false,
         },
     })
     .unwrap();
@@ -217,12 +221,8 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
     let repo = store.repository();
 
     let project = repo.insert_project(project("pin")).unwrap();
-    let mut project_metadata = project.metadata.clone();
-    project_metadata.pinned = true;
-    let project = repo
-        .update_project_metadata(&project.id, project_metadata)
-        .unwrap();
-    assert!(project.metadata.pinned);
+    let project = repo.set_project_pinned(&project.id, true).unwrap();
+    assert!(project.pinned);
 
     let renamed = repo
         .rename_project(&project.id, "Renamed Project".to_string())
@@ -230,13 +230,11 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
     assert_eq!(renamed.display_name, "Renamed Project");
 
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
-    let mut conversation_metadata = conversation.metadata.clone();
-    conversation_metadata.pinned = false;
     let conversation = repo
-        .update_conversation_metadata(&conversation.id, conversation_metadata)
+        .set_conversation_pinned(&conversation.id, false)
         .unwrap();
 
-    assert!(!conversation.metadata.pinned);
+    assert!(!conversation.pinned);
 }
 
 #[test]
@@ -257,12 +255,12 @@ fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
             path: "/tmp/scratch-conversation".to_string(),
             display_name: "Scratch".to_string(),
             kind: ProjectKind::Scratch,
+            pinned: false,
+            removed: false,
             metadata: ProjectMetadata {
                 scratch_reason: Some("no-project".to_string()),
                 git_root: None,
                 last_active_conversation_id: None,
-                pinned: false,
-                removed: false,
             },
         })
         .unwrap();
@@ -488,6 +486,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
     let invalid = repo.insert_conversation(NewConversation {
         project_id: "missing".to_string(),
         title: "invalid".to_string(),
+        pinned: false,
         prompt_id: None,
         default_provider_id: None,
         default_model_id: None,
@@ -1336,6 +1335,7 @@ fn typed_json_roundtrips_for_repository_records() {
         .insert_conversation(NewConversation {
             project_id: project.id.clone(),
             title: "JSON".to_string(),
+            pinned: false,
             prompt_id: Some(prompt.id.clone()),
             default_provider_id: Some(provider.id.clone()),
             default_model_id: Some(model.model_id.clone()),
@@ -1715,6 +1715,8 @@ fn project(suffix: &str) -> NewProject {
         path: format!("/tmp/ai-chat-{suffix}"),
         display_name: format!("Project {suffix}"),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
     }
 }
@@ -1724,8 +1726,6 @@ fn project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: Some("/tmp".to_string()),
         last_active_conversation_id: None,
-        pinned: false,
-        removed: false,
     }
 }
 
@@ -1733,6 +1733,7 @@ fn conversation(project: &crate::ProjectRecord) -> NewConversation {
     NewConversation {
         project_id: project.id.clone(),
         title: "Conversation".to_string(),
+        pinned: false,
         prompt_id: None,
         default_provider_id: None,
         default_model_id: None,
@@ -1745,7 +1746,6 @@ fn conversation_metadata() -> ConversationMetadata {
     ConversationMetadata {
         summary: Some("summary".to_string()),
         tags: vec!["tag".to_string()],
-        pinned: true,
     }
 }
 

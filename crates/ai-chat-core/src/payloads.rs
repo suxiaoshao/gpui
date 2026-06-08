@@ -562,10 +562,6 @@ pub struct ProjectMetadata {
     pub scratch_reason: Option<String>,
     pub git_root: Option<String>,
     pub last_active_conversation_id: Option<ConversationId>,
-    #[serde(default)]
-    pub pinned: bool,
-    #[serde(default)]
-    pub removed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -573,7 +569,6 @@ pub struct ProjectMetadata {
 pub struct ConversationMetadata {
     pub summary: Option<String>,
     pub tags: Vec<String>,
-    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -984,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_project_metadata_defaults_sidebar_flags() {
+    fn legacy_project_metadata_roundtrips_without_sidebar_flags() {
         let metadata: ProjectMetadata = serde_json::from_value(json!({
             "scratchReason": null,
             "gitRoot": "/tmp/project",
@@ -992,8 +987,9 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(!metadata.pinned);
-        assert!(!metadata.removed);
+        assert_eq!(metadata.scratch_reason, None);
+        assert_eq!(metadata.git_root, Some("/tmp/project".to_string()));
+        assert_eq!(metadata.last_active_conversation_id, None);
     }
 
     #[test]
