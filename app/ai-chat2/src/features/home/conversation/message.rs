@@ -8,7 +8,7 @@ use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, Selectable, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -51,35 +51,29 @@ pub(super) enum TimelineRow {
     Agent(Box<AgentTurnRow>),
 }
 
-#[derive(IntoElement, Clone)]
-pub(super) struct TimelineListItem {
-    row: TimelineRow,
-    is_selected: bool,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum TimelineRowKey {
+    User(String),
+    Agent(String),
 }
 
-impl TimelineListItem {
-    pub(super) fn new(row: TimelineRow) -> Self {
-        Self {
-            row,
-            is_selected: false,
+impl TimelineRow {
+    pub(super) fn key(&self) -> TimelineRowKey {
+        match self {
+            TimelineRow::User(row) => TimelineRowKey::User(row.item.id.clone()),
+            TimelineRow::Agent(row) => TimelineRowKey::Agent(
+                row.run_id
+                    .clone()
+                    .or_else(|| row.items.first().map(|item| item.id.clone()))
+                    .unwrap_or_else(|| "agent".to_string()),
+            ),
         }
     }
 }
 
-impl Selectable for TimelineListItem {
-    fn selected(mut self, selected: bool) -> Self {
-        self.is_selected = selected;
-        self
-    }
-
-    fn is_selected(&self) -> bool {
-        self.is_selected
-    }
-}
-
-impl RenderOnce for TimelineListItem {
+impl RenderOnce for TimelineRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        match self.row {
+        match self {
             TimelineRow::User(row) => (*row).render(window, cx).into_any_element(),
             TimelineRow::Agent(row) => (*row).render(window, cx).into_any_element(),
         }
@@ -202,12 +196,14 @@ impl RenderOnce for AgentTurnRow {
         let status_row = self.render_status_row(&id_suffix, cx);
         let separator = self.render_separator(&id_suffix, cx);
         let action_row = agent_action_row(
-            &id_suffix,
-            copy_text,
-            on_copy,
-            copy_tooltip,
-            copied_tooltip,
-            hover_time,
+            AgentActionRow {
+                id_suffix: id_suffix.clone(),
+                copy_text,
+                on_copy,
+                copy_tooltip,
+                copied_tooltip,
+                hover_time,
+            },
             window,
             cx,
         );
@@ -361,23 +357,23 @@ fn detail_block(item: ConversationItemRecord, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
-fn agent_action_row(
-    id_suffix: &str,
+struct AgentActionRow {
+    id_suffix: String,
     copy_text: String,
     on_copy: OnCopy,
     copy_tooltip: String,
     copied_tooltip: String,
     hover_time: String,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let action_group = format!("conversation-agent-actions-{id_suffix}");
+}
+
+fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> AnyElement {
+    let action_group = format!("conversation-agent-actions-{}", row.id_suffix);
     let copy_button = copy_button(
-        format!("conversation-copy-agent-{id_suffix}"),
-        copy_text,
-        on_copy,
-        copy_tooltip,
-        copied_tooltip,
+        format!("conversation-copy-agent-{}", row.id_suffix),
+        row.copy_text,
+        row.on_copy,
+        row.copy_tooltip,
+        row.copied_tooltip,
         window,
         cx,
     );
@@ -396,7 +392,7 @@ fn agent_action_row(
                 .opacity(0.)
                 .group_hover(action_group, |this| this.opacity(1.))
                 .child(
-                    Label::new(hover_time)
+                    Label::new(row.hover_time)
                         .text_xs()
                         .text_color(cx.theme().muted_foreground),
                 ),

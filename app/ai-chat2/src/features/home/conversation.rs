@@ -6,12 +6,12 @@ use std::{collections::HashMap, path::Path};
 
 use ai_chat_core::{AgentRunId, ConversationId};
 use ai_chat_db::AgentRunRecord;
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, StyledExt, WindowExt as NotificationWindowExt,
     label::Label,
-    list::{List, ListState},
     notification::{Notification, NotificationType},
+    scroll::ScrollableElement,
     v_flex,
 };
 use tracing::{Level, event};
@@ -27,7 +27,8 @@ pub(crate) struct ConversationPage {
     conversation_id: ConversationId,
     snapshot: Result<Option<ConversationLoadSnapshot>, String>,
     chat_form: Entity<ChatForm>,
-    timeline: Entity<ListState<timeline::ConversationTimelineDelegate>>,
+    timeline: ListState,
+    timeline_rows: timeline::ConversationTimelineRows,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
     runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
@@ -60,13 +61,9 @@ impl ConversationPage {
             .and_then(Option::as_ref)
             .map(|snapshot| timeline::build_rows(snapshot, &HashMap::new(), on_toggle, on_copy))
             .unwrap_or_default();
-        let timeline = cx.new(|cx| {
-            ListState::new(
-                timeline::ConversationTimelineDelegate::new(rows),
-                window,
-                cx,
-            )
-        });
+        let timeline = ListState::new(rows.len(), ListAlignment::Top, px(2048.)).measure_all();
+        timeline.scroll_to_end();
+        let timeline_rows = timeline::ConversationTimelineRows::new(rows);
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
@@ -94,6 +91,7 @@ impl ConversationPage {
             snapshot,
             chat_form,
             timeline,
+            timeline_rows,
             expanded_agent_runs: HashMap::new(),
             runtime,
             _subscriptions: vec![chat_form_subscription, runtime_subscription],
@@ -126,6 +124,8 @@ impl ConversationPage {
                     chat_form.clear_after_submit(cx);
                 });
                 self.reload(window, cx);
+                self.timeline.set_follow_mode(FollowMode::Tail);
+                self.timeline.scroll_to_end();
                 state::workspace::workspace(cx).update(cx, |workspace, cx| {
                     workspace.reload_sidebar(cx);
                 });
@@ -191,7 +191,7 @@ impl ConversationPage {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.snapshot = load_snapshot(&self.conversation_id, cx);
         self.refresh_chat_form_context(cx);
-        self.sync_timeline(window, cx);
+        self.sync_timeline(window, cx, None);
         self.sync_submit_blocked(cx);
         cx.notify();
     }
@@ -208,7 +208,12 @@ impl ConversationPage {
         });
     }
 
-    fn sync_timeline(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_timeline(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+        remeasure_hint: Option<message::TimelineRowKey>,
+    ) {
         let page = cx.entity().downgrade();
         let (on_toggle, on_copy) = timeline::callback_pair(
             {
@@ -230,10 +235,13 @@ impl ConversationPage {
                 timeline::build_rows(snapshot, &self.expanded_agent_runs, on_toggle, on_copy)
             })
             .unwrap_or_default();
-        self.timeline.update(cx, |timeline, cx| {
-            timeline.delegate_mut().set_rows(rows);
-            cx.notify();
-        });
+        let previous_keys = self.timeline_rows.set_rows(rows);
+        sync_timeline_list(
+            &self.timeline,
+            &previous_keys,
+            self.timeline_rows.keys(),
+            remeasure_hint.as_ref(),
+        );
     }
 
     fn sync_submit_blocked(&mut self, cx: &mut Context<Self>) {
@@ -259,8 +267,14 @@ impl ConversationPage {
             .get(&agent_run_id)
             .copied()
             .unwrap_or_else(|| self.default_agent_run_expanded(&agent_run_id));
-        self.expanded_agent_runs.insert(agent_run_id, !current);
-        self.sync_timeline(window, cx);
+        self.timeline.set_follow_mode(FollowMode::Normal);
+        self.expanded_agent_runs
+            .insert(agent_run_id.clone(), !current);
+        self.sync_timeline(
+            window,
+            cx,
+            Some(message::TimelineRowKey::Agent(agent_run_id)),
+        );
         cx.notify();
     }
 
@@ -319,6 +333,9 @@ impl Render for ConversationPage {
             return self.render_missing(cx);
         }
 
+        let timeline = self.timeline.clone();
+        let page = cx.entity().downgrade();
+
         v_flex()
             .id("ai-chat2-conversation-page")
             .size_full()
@@ -326,11 +343,40 @@ impl Render for ConversationPage {
             .overflow_hidden()
             .bg(cx.theme().background)
             .child(
-                v_flex()
+                div()
                     .flex_1()
                     .min_h_0()
+                    .w_full()
+                    .relative()
                     .overflow_hidden()
-                    .child(List::new(&self.timeline).large().flex_1()),
+                    .map(|this| {
+                        if self.timeline_rows.is_empty() {
+                            return this.child(
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .py_8()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        Label::new(cx.global::<I18n>().t("conversation-empty"))
+                                            .text_sm(),
+                                    ),
+                            );
+                        }
+
+                        this.child(
+                            list(timeline.clone(), move |ix, window, cx| {
+                                page.upgrade()
+                                    .and_then(|page| page.read(cx).timeline_rows.row(ix))
+                                    .map(|row| row.render(window, cx).into_any_element())
+                                    .unwrap_or_else(|| div().into_any_element())
+                            })
+                            .size_full(),
+                        )
+                        .vertical_scrollbar(&timeline)
+                    }),
             )
             .child(
                 div()
@@ -407,5 +453,34 @@ fn push_conversation_notification(
             .message(message.into())
             .with_type(notification_type),
         cx,
+    );
+}
+
+fn sync_timeline_list(
+    list_state: &ListState,
+    previous_keys: &[message::TimelineRowKey],
+    next_keys: &[message::TimelineRowKey],
+    remeasure_hint: Option<&message::TimelineRowKey>,
+) {
+    if previous_keys == next_keys {
+        if let Some(row_ix) = remeasure_hint
+            .and_then(|key| next_keys.iter().position(|current_key| current_key == key))
+        {
+            list_state.remeasure_items(row_ix..row_ix + 1);
+        } else {
+            list_state.remeasure();
+        }
+        return;
+    }
+
+    let first_diff = previous_keys
+        .iter()
+        .zip(next_keys.iter())
+        .position(|(previous, next)| previous != next)
+        .unwrap_or_else(|| previous_keys.len().min(next_keys.len()));
+
+    list_state.splice(
+        first_diff..previous_keys.len(),
+        next_keys.len().saturating_sub(first_diff),
     );
 }

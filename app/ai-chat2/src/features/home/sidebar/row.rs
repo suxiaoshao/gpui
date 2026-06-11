@@ -179,9 +179,9 @@ impl RenderOnce for ProjectSidebarRow {
             })
             .child(
                 Icon::new(if self.node.is_expanded {
-                    IconName::ChevronDown
+                    IconName::FolderOpen
                 } else {
-                    IconName::ChevronRight
+                    IconName::Folder
                 })
                 .size_4()
                 .flex_none(),
@@ -308,7 +308,6 @@ impl RenderOnce for ConversationSidebarRow {
                     workspace.open_conversation(conversation_id.clone(), cx);
                 });
             })
-            .child(Icon::new(IconName::MessageSquare).size_4().flex_none())
             .child(
                 h_flex().flex_1().items_center().min_w_0().child(
                     Label::new(self.conversation.title.clone())

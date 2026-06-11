@@ -1083,7 +1083,8 @@ impl EntityInputHandler for ComposerEditor {
         };
         self.preferred_column = None;
         self.preferred_x = None;
-        self.invalidate_layout();
+        // macOS queries IME candidate bounds immediately after marked-text updates.
+        // Keep the previous layout available until paint replaces it with a fresh one.
         self.refresh_tokens();
         self.request_cursor_visible(cx);
         cx.notify();
@@ -1312,6 +1313,38 @@ mod tests {
                 editor.unmark_text(window, cx);
                 editor.on_undo(&ComposerUndo, window, cx);
                 assert_eq!(editor.text, "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn ime_marked_text_keeps_candidate_bounds_available(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| editor_with_skills(&[], window, cx))
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        resize_editor(&mut cx, 320., 500.);
+        let element_bounds =
+            editor.read_with(&cx, |editor, _| editor.last_layout.as_ref().unwrap().bounds);
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+
+                let bounds = editor
+                    .bounds_for_range(2..2, element_bounds, window, cx)
+                    .expect("IME candidate bounds should stay available during composition");
+
+                assert!(bounds.left() >= element_bounds.left());
+                assert!(bounds.top() >= element_bounds.top());
             });
         });
     }

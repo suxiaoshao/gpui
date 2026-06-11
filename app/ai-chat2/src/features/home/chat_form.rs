@@ -32,6 +32,11 @@ use thinking_effort::{
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
 pub(super) const COMPOSER_BUTTON_ICON_SIZE: f32 = 18.;
 pub(super) const COMPOSER_BUTTON_RADIUS: f32 = 999.;
+const COMPOSER_INPUT_HORIZONTAL_PADDING: f32 = 12.;
+const COMPOSER_INPUT_TOP_PADDING: f32 = 12.;
+const COMPOSER_INPUT_BOTTOM_MARGIN: f32 = 4.;
+const COMPOSER_FOOTER_HORIZONTAL_PADDING: f32 = 8.;
+const COMPOSER_FOOTER_BOTTOM_MARGIN: f32 = 8.;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -567,8 +572,6 @@ impl Render for ChatForm {
             .id("ai-chat2-chat-form-preview")
             .w_full()
             .relative()
-            .gap(px(2.))
-            .p(px(8.))
             .rounded(px(25.))
             .border_1()
             .border_color(cx.theme().input)
@@ -587,7 +590,9 @@ impl Render for ChatForm {
                 div()
                     .w_full()
                     .min_h(px(56.))
-                    .pt(px(6.))
+                    .px(px(COMPOSER_INPUT_HORIZONTAL_PADDING))
+                    .pt(px(COMPOSER_INPUT_TOP_PADDING))
+                    .mb(px(COMPOSER_INPUT_BOTTOM_MARGIN))
                     .child(self.composer.clone()),
             )
             .child(
@@ -595,6 +600,8 @@ impl Render for ChatForm {
                     .w_full()
                     .items_center()
                     .min_h(px(COMPOSER_BUTTON_SIZE))
+                    .px(px(COMPOSER_FOOTER_HORIZONTAL_PADDING))
+                    .mb(px(COMPOSER_FOOTER_BOTTOM_MARGIN))
                     .child(
                         h_flex()
                             .items_center()

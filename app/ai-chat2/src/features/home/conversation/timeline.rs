@@ -5,70 +5,43 @@ use std::{
 
 use ai_chat_core::AgentRunId;
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
-use gpui::*;
-use gpui_component::{
-    ActiveTheme, IndexPath, h_flex,
-    label::Label,
-    list::{ListDelegate, ListState},
-};
+use gpui::{App, Window};
 
-use crate::{foundation::I18n, state::conversations::ConversationLoadSnapshot};
+use crate::state::conversations::ConversationLoadSnapshot;
 
 use super::{
     format,
-    message::{AgentTurnRow, OnCopy, OnToggleAgent, TimelineListItem, TimelineRow, UserMessageRow},
+    message::{AgentTurnRow, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow},
 };
 
-pub(super) struct ConversationTimelineDelegate {
+pub(super) struct ConversationTimelineRows {
     rows: Vec<TimelineRow>,
+    keys: Vec<TimelineRowKey>,
 }
 
-impl ConversationTimelineDelegate {
+impl ConversationTimelineRows {
     pub(super) fn new(rows: Vec<TimelineRow>) -> Self {
-        Self { rows }
+        let keys = row_keys(&rows);
+        Self { rows, keys }
     }
 
-    pub(super) fn set_rows(&mut self, rows: Vec<TimelineRow>) {
+    pub(super) fn set_rows(&mut self, rows: Vec<TimelineRow>) -> Vec<TimelineRowKey> {
+        let previous_keys = std::mem::take(&mut self.keys);
+        self.keys = row_keys(&rows);
         self.rows = rows;
-    }
-}
-
-impl ListDelegate for ConversationTimelineDelegate {
-    type Item = TimelineListItem;
-
-    fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.rows.len()
+        previous_keys
     }
 
-    fn render_item(
-        &mut self,
-        ix: IndexPath,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        self.rows.get(ix.row).cloned().map(TimelineListItem::new)
+    pub(super) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
     }
 
-    fn set_selected_index(
-        &mut self,
-        _ix: Option<IndexPath>,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) {
+    pub(super) fn row(&self, ix: usize) -> Option<TimelineRow> {
+        self.rows.get(ix).cloned()
     }
 
-    fn render_empty(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .justify_center()
-            .py_8()
-            .text_color(cx.theme().muted_foreground)
-            .child(Label::new(cx.global::<I18n>().t("conversation-empty")).text_sm())
-            .into_any_element()
+    pub(super) fn keys(&self) -> &[TimelineRowKey] {
+        &self.keys
     }
 }
 
@@ -142,6 +115,10 @@ pub(super) fn build_rows(
             ))),
         })
         .collect()
+}
+
+fn row_keys(rows: &[TimelineRow]) -> Vec<TimelineRowKey> {
+    rows.iter().map(TimelineRow::key).collect()
 }
 
 enum PendingTimelineRow {

@@ -33,7 +33,7 @@ Sidebar action row 视觉一致性：顶部“新对话/搜索”和底部
 “设置”统一使用 hover-only shortcut badge，并把跨平台快捷键改为 GPUI `secondary` 语义。
 Agent Conversation Page 首版已在 `dba4f7c` 实现：New Conversation 发送后创建 fresh conversation
 和首条 user item；无项目发送创建每会话 scratch project；sidebar 即时刷新并打开右侧 conversation page；
-conversation page 使用 `gpui-component::List` timeline + 底部 ChatForm；运行中禁用发送按钮；
+conversation page 使用 GPUI 原生 `ListState` / `list` timeline + 显式滚动条 + 底部 ChatForm；运行中禁用发送按钮；
 真实 `AgentRuntime` 通过 observer 事件刷新页面；timeline 支持 user bubble、agent final markdown/details
 collapse、hover copy/time、Codex-style timestamp、复制成功按钮 `Check` 两秒和失败通知。完整多模态
 timeline、Prompt/Shortcut settings、manual provider model editor、cancel/retry/resend、approval action、
@@ -173,7 +173,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | --- | --- | --- |
 | projects | `ai-chat-db` repositories / fresh schema | Settings 已可列出 normal projects 并添加文件夹项目；New Conversation 默认页已可选择 normal project、添加现有文件夹、支持不使用项目，并按选择持久化或清空 `default_project_id`。Agent Conversation Page 首版已在无项目发送时创建每会话 scratch project，并让其 conversation 归入无项目区。仍缺 open folder、recent projects 和更完整 project metadata/status UI。 |
 | conversations | `ai-chat-db` repositories / fresh schema | 已实现首版：New Conversation 创建 conversation + 首条 user item，已有 conversation 可追加 user item；sidebar 已有 conversation route/search/delete 第一版。 |
-| canonical timeline | `conversation_items` | 已实现首版：Conversation page 按 snapshot 渲染 `gpui-component::List` timeline、user bubble、agent final markdown/details collapse 和 observer invalidation。多模态/rich output 后续继续补。 |
+| canonical timeline | `conversation_items` | 已实现首版：Conversation page 按 snapshot 渲染 GPUI 原生 `ListState` / `list` timeline、显式滚动条、user bubble、agent final markdown/details collapse 和 observer invalidation。多模态/rich output 后续继续补。 |
 | attachments | `attachments` + typed payloads | 没有 file/image/audio attach、preview、generated output 或 storage UI。 |
 | agent runs | `ai-chat-agent::AgentRuntime` + `agent_runs` | 已实现首版：New Conversation 和 Conversation page 发送会启动真实 `AgentRuntime`，runtime observer 触发页面 reload，active run 期间 send disabled。cancel/retry/resend UI 仍留后续。 |
 | provider steps | `provider_steps` | Composer 已能选择 DB-backed provider/model 作为 run 输入，Agent Conversation Page 首版已启动真实 run 并由 agent persistence 写入 provider steps；仍没有 provider step debug surface 或 continuation display。 |
@@ -194,7 +194,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Project navigation | New Conversation 默认页已有 default/no-project selector；project-first sidebar 第一版已实现项目列表、置顶、展开、菜单、显示目录、重命名和移除；无项目发送时每会话 scratch project 已实现首版。仍缺 recent projects 和更完整的 project metadata/status UI。 |
 | Conversation navigation | conversation list、new conversation 入口、delete、search/filter 和右侧 conversation route 已实现第一版；New Conversation 发送后的 conversation create/open 和已有 conversation send 已实现首版；仍缺 title edit、status display、last item preview。 |
 | Composer | 已有 Home 右侧视觉外框和 `ComposerEditor` 第一版输入内核，已补 cursor、scroll 和 Unicode/grapheme-aware 编辑；provider/model data source 已接 fresh DB enabled cache，reasoning selector 已从 provider model capability 派生，model picker row/trigger 已接 provider logo visual。Agent Conversation Page 首版已接 conversation create/send/run；真实工作仍包括 prompt selector、多 part input、capability warning、附件、cancel、retry、resend 和 `$` completion UI。输入内核专项清单见 `issue-159-ai-chat2-composer-editor.md`。 |
-| Timeline text | 已实现首版：user bubble、assistant final markdown、copy hover、Codex-style timestamp 和 `gpui-component::List` 虚拟列表；streaming delta、multi-block rich assistant output 和 export affordance 后续继续补。 |
+| Timeline text | 已实现首版：user bubble、assistant final markdown、copy hover、Codex-style timestamp 和 GPUI 原生 `ListState` / `list` 虚拟列表；streaming delta、multi-block rich assistant output 和 export affordance 后续继续补。 |
 | Reasoning | 已实现首版：agent details 默认展开/收起规则和 markdown/text details block；multiple reasoning blocks、provider-specific gating 的完整体验后续继续补。 |
 | Tools | 已实现首版：local/MCP/provider-hosted tool call/result 的 v1 compact details；progress、structured output rich view、attachment result 和 tool name collision display 后续继续补。 |
 | Approvals | approval request card、approve/deny/cancel actions、pending/expired/decided states、recovery after restart。 |
@@ -556,8 +556,8 @@ Codex-style project tray 颜色/层级 polish 后已运行：
 
 - 新增 `app/ai-chat/docs/dev/issue-159-ai-chat2-agent-conversation-page.md`，固定 New Conversation
   发送后立即创建 conversation、无项目时每会话创建匿名 scratch project、sidebar 即时刷新、右侧打开
-  conversation page、启动真实 `AgentRuntime`、runtime observer invalidation、`gpui-component::List`
-  timeline、user bubble、agent final markdown/details collapse、hover copy/time、i18n、icon、Cargo feature
+  conversation page、启动真实 `AgentRuntime`、runtime observer invalidation、GPUI 原生 timeline
+  计划、user bubble、agent final markdown/details collapse、hover copy/time、i18n、icon、Cargo feature
   和测试计划。
 - 本次仅新增/更新开发文档，未实现产品代码；`app/ai-chat2` 仍未接真实 conversation create/send
   runtime 或 timeline 渲染。
@@ -570,7 +570,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   的 `git rev-list --left-right --count` 为 `1 1`，说明当前增量尚未进入集成分支。
 - 本轮实现 New Conversation 发送后创建 conversation/user item、无项目 scratch project、sidebar 即时刷新、
   conversation page、已有 conversation 继续发送、真实 `AgentRuntime` 启动、runtime observer 刷新、
-  `gpui-component::List` timeline、user bubble、agent final markdown/details collapse、hover copy/time、
+  GPUI 原生 `ListState` / `list` timeline 和显式滚动条、user bubble、agent final markdown/details collapse、hover copy/time、
   Codex-style timestamp、复制成功 `Check` 两秒和失败通知。
 - 仍未实现 stop/cancel、retry/resend、prompt selector、attachments/multimodal input、approval action、
   rich tool UI、Temporary Conversation runtime、last item preview 和完整 project status UI。

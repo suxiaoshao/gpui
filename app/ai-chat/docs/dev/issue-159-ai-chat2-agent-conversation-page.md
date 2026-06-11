@@ -6,13 +6,15 @@
 timeline 渲染的具体实现方案。
 
 创建时间：2026-06-05。
-最后状态同步：2026-06-08。
+最后状态同步：2026-06-10。
 
 当前状态：Agent Conversation Page 首版已实现，首版提交为 `dba4f7c`
-（`Implement ai-chat2 agent conversation page`）。后续 #159 分支已继续整理 fresh DB sidebar 状态列化；
-仍需要开 PR 合入 `codex/issue-137-llm-abstractions`。实现范围围绕本文档列出的文件、组件、
-数据流和验证项推进；未回到旧 `app/ai-chat` 的 `messages` table、legacy tab/draft store，
-也未在 GPUI 层重新实现 agent loop。
+（`Implement ai-chat2 agent conversation page`）。后续 #159 分支已继续整理 fresh DB sidebar 状态列化，
+并已把 conversation timeline 从 `gpui-component::List` 调整为 GPUI 原生 `ListState` / `list`
+和 `vertical_scrollbar`，对齐旧 `ai-chat` conversation detail 的滚动模型；仍需要开 PR 合入
+`codex/issue-137-llm-abstractions`。实现范围围绕本文档列出的文件、组件、数据流和验证项推进；
+未回到旧 `app/ai-chat` 的 `messages` table、legacy tab/draft store，也未在 GPUI 层重新实现
+agent loop。
 
 实现时间：2026-06-05 至 2026-06-06。
 
@@ -23,6 +25,7 @@ timeline 渲染的具体实现方案。
 - `cargo test -p ai-chat2 timestamp_label`
 - `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`
 - `git diff --check`
+- 2026-06-10 timeline scroll/list 修正：`cargo fmt`、`cargo check -p ai-chat2`
 
 首版已落地：
 
@@ -30,7 +33,8 @@ timeline 渲染的具体实现方案。
 - 无项目发送时创建每会话独立 scratch project，并继续按无项目对话展示。
 - Conversation page 使用顶部 timeline + 底部无项目选择器 ChatForm；运行中禁用发送按钮。
 - Runtime store 接真实 `AgentRuntime`，通过 observer 事件刷新 timeline。
-- Timeline 使用 `gpui-component::List`，按 user bubble、agent final markdown/details collapse 渲染。
+- Timeline 使用 GPUI 原生 `ListState` / `list` + `vertical_scrollbar`，按 user bubble、
+  agent final markdown/details collapse 渲染。
 - 消息 hover action 已补 copy/time；复制成功按钮切 `Check` 两秒，失败弹通知。
 - 时间显示按 Codex app 规则实现：当天只显示时间，最近 1-6 天显示星期+时间，更早显示月日+时间。
 
@@ -118,8 +122,9 @@ crates/ai-chat-db/src/
   - 拥有 `conversation_id`、`ConversationLoadSnapshot`、`Entity<ChatForm>`、timeline state、runtime subscription。
   - 负责 bottom ChatForm 的 send event，向已有 conversation 追加 user item 并启动新 run。
 - `features/home/conversation/timeline.rs`
-  - 定义 `ConversationTimeline`、`TimelineListDelegate`、`TimelineRow`。
-  - 使用 `gpui-component::list::{List, ListState}` 作为虚拟列表，不直接用 `v_virtual_list`。
+  - 定义 `ConversationTimelineRows`、`TimelineRow` 和稳定 row key。
+  - Conversation page 持有 GPUI 原生 `ListState`，用 `gpui::list` 渲染 row，并在外层挂
+    `vertical_scrollbar`。
 - `features/home/conversation/message.rs`
   - 定义 `UserMessageBubble`、`AgentTurnView`、`AgentDetailsView`。
   - 只处理渲染和 hover action，不直接读 DB。
@@ -409,7 +414,7 @@ AgentRuntime / PersistenceContext writes DB
   -> ConversationRuntimeStore receives event on foreground
   -> emits ConversationRuntimeEvent::ConversationChanged
   -> ConversationPage reloads ConversationLoadSnapshot
-  -> TimelineListDelegate rebuilds rows from items + runs
+  -> ConversationTimelineRows rebuilds rows from items + runs
 ```
 
 规则：
@@ -449,10 +454,13 @@ pub(crate) enum TimelineRow {
 
 列表实现：
 
-- 使用 `gpui-component::list::{List, ListState}`。
-- `TimelineListDelegate` 持有 `Vec<TimelineRow>` 和展开状态 key。
+- 使用 GPUI 原生 `ListState` / `list`，不使用 `gpui-component::List`；provider/model picker
+  这类可搜索/可选择数据列表仍可继续使用组件库 List。
+- `ConversationTimelineRows` 持有 `Vec<TimelineRow>` 和稳定 row key，page 持有原生 `ListState`。
+- 外层容器通过 `vertical_scrollbar(&list_state)` 显式挂滚动条。
 - row render 不直接访问 repository。
-- 新消息到达时默认滚到底部；用户正在上方查看历史时不强行滚动，后续再补“跳到底部” affordance。
+- 新消息到达时依赖 `FollowMode::Tail` 在底部跟随；用户正在上方查看历史时不强行滚动，后续再补
+  “跳到底部” affordance。
 
 ## UI 组件细节
 
