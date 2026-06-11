@@ -343,6 +343,48 @@ impl AgentRuntime {
         run_saved_provider_model(self, request, provider, secrets, observer).await
     }
 
+    pub fn cancel_run(
+        &self,
+        agent_run_id: &str,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<Option<AgentRunRecord>> {
+        let Some(run) = self.repo.get_agent_run(agent_run_id)? else {
+            return Ok(None);
+        };
+        if is_terminal_agent_run_status(run.status) {
+            return Ok(Some(run));
+        }
+
+        let error = run_error("canceled", "runtime canceled", false, None);
+        self.finalize_active_provider_steps(&run.id, ProviderStepStatus::Canceled, error.clone())?;
+        self.finalize_active_tool_invocations(
+            &run.id,
+            &run.conversation_id,
+            ToolInvocationStatus::Canceled,
+            error,
+        )?;
+        let output = AgentRunOutput {
+            final_item_id: self.latest_assistant_item_id_for_run(&run)?,
+            stopped_reason: AgentStoppedReason::Canceled,
+        };
+        let run = self.repo.update_agent_run_status(
+            &run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Canceled,
+                output: Some(output),
+                error: None,
+            },
+        )?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: run.id.clone(),
+                status: AgentRunStatus::Canceled,
+            },
+        );
+        Ok(Some(run))
+    }
+
     fn finalize_active_tool_invocations(
         &self,
         agent_run_id: &str,
@@ -415,7 +457,12 @@ impl AgentRuntime {
         Ok(item.id)
     }
 
-    fn fail_active_provider_steps(&self, agent_run_id: &str, error: RunErrorPayload) -> Result<()> {
+    fn finalize_active_provider_steps(
+        &self,
+        agent_run_id: &str,
+        status: ProviderStepStatus,
+        error: RunErrorPayload,
+    ) -> Result<()> {
         for step in self.repo.provider_steps_for_run(agent_run_id)? {
             if !matches!(
                 step.status,
@@ -427,7 +474,7 @@ impl AgentRuntime {
             self.repo.update_provider_step_status(
                 &step.id,
                 UpdateProviderStepStatus {
-                    status: ProviderStepStatus::Failed,
+                    status,
                     response_snapshot: None,
                     state_snapshot: None,
                     error: Some(error.clone()),
@@ -435,6 +482,32 @@ impl AgentRuntime {
             )?;
         }
         Ok(())
+    }
+
+    fn fail_active_provider_steps(&self, agent_run_id: &str, error: RunErrorPayload) -> Result<()> {
+        self.finalize_active_provider_steps(agent_run_id, ProviderStepStatus::Failed, error)
+    }
+
+    fn latest_assistant_item_id_for_run(
+        &self,
+        run: &AgentRunRecord,
+    ) -> Result<Option<ConversationItemId>> {
+        Ok(self
+            .repo
+            .conversation_items(&run.conversation_id)?
+            .into_iter()
+            .rev()
+            .find(|item| {
+                item.agent_run_id.as_deref() == Some(run.id.as_str())
+                    && matches!(
+                        item.payload,
+                        ConversationItemPayload::Message {
+                            role: TranscriptRole::Assistant,
+                            ..
+                        }
+                    )
+            })
+            .map(|item| item.id))
     }
 
     fn mark_setup_failed(
@@ -660,6 +733,13 @@ fn emit_runtime(observer: Option<&AgentRuntimeObserver>, event: AgentRuntimeEven
     if let Some(observer) = observer {
         observer.emit(event);
     }
+}
+
+fn is_terminal_agent_run_status(status: AgentRunStatus) -> bool {
+    matches!(
+        status,
+        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
+    )
 }
 
 fn prompt_preamble(prompt: Option<&PromptContent>) -> Option<String> {
@@ -1286,6 +1366,107 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(approval.status, ApprovalStatus::Pending);
+        assert!(tool_result_texts(&fixture).is_empty());
+    }
+
+    #[test]
+    fn cancel_running_run_terminalizes_active_children_without_run_error() {
+        let fixture = Fixture::new("cancel-running");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
+        let provider_step =
+            insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
+        let invocation = insert_tool_invocation(
+            &fixture,
+            &agent_run.id,
+            Some(provider_step.id.clone()),
+            ToolInvocationStatus::Running,
+        );
+        let assistant_item = fixture
+            .repo
+            .append_conversation_item(NewConversationItem {
+                conversation_id: fixture.conversation.id.clone(),
+                status: ConversationItemStatus::Completed,
+                agent_run_id: Some(agent_run.id.clone()),
+                provider_step_id: Some(provider_step.id.clone()),
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationItemPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    content: vec![ContentPart::Text {
+                        text: "partial answer".to_string(),
+                    }],
+                },
+            })
+            .unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = AgentRuntimeObserver::new({
+            let events = events.clone();
+            move |event| {
+                events.lock().unwrap().push(event);
+            }
+        });
+
+        let canceled = runtime
+            .cancel_run(&agent_run.id, Some(&observer))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(canceled.status, AgentRunStatus::Canceled);
+        assert!(canceled.error.is_none());
+        assert_eq!(
+            canceled.output.as_ref().unwrap().stopped_reason,
+            AgentStoppedReason::Canceled
+        );
+        assert_eq!(
+            canceled.output.as_ref().unwrap().final_item_id.as_deref(),
+            Some(assistant_item.id.as_str())
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run.id.clone(),
+                status: AgentRunStatus::Canceled,
+            }]
+        );
+
+        let provider_step = fixture
+            .repo
+            .get_provider_step(&provider_step.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(provider_step.status, ProviderStepStatus::Canceled);
+        assert_eq!(provider_step.error.as_ref().unwrap().code, "canceled");
+        let invocation = fixture
+            .repo
+            .get_tool_invocation(&invocation.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
+        assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
+        assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
+    }
+
+    #[test]
+    fn cancel_terminal_run_is_idempotent() {
+        let fixture = Fixture::new("cancel-terminal");
+        let runtime = AgentRuntime::new(fixture.repo.clone());
+        let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Completed);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = AgentRuntimeObserver::new({
+            let events = events.clone();
+            move |event| {
+                events.lock().unwrap().push(event);
+            }
+        });
+
+        let unchanged = runtime
+            .cancel_run(&agent_run.id, Some(&observer))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(unchanged.status, AgentRunStatus::Completed);
+        assert!(events.lock().unwrap().is_empty());
         assert!(tool_result_texts(&fixture).is_empty());
     }
 

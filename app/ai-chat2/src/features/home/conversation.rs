@@ -2,9 +2,12 @@ pub(crate) mod format;
 mod message;
 mod timeline;
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
-use ai_chat_core::{AgentRunId, ConversationId};
+use ai_chat_core::{AgentRunId, ConversationId, ConversationItemId};
 use ai_chat_db::AgentRunRecord;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -12,6 +15,7 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
+    text::TextViewState,
     v_flex,
 };
 use tracing::{Level, event};
@@ -29,9 +33,38 @@ pub(crate) struct ConversationPage {
     chat_form: Entity<ChatForm>,
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
+    message_text_states: Vec<MessageTextState>,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
     runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
+}
+
+struct MessageTextState {
+    id: ConversationItemId,
+    state: Entity<TextViewState>,
+    source: String,
+    _subscription: Subscription,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MessageTextUpdate<'a> {
+    Unchanged,
+    Append(&'a str),
+    Replace,
+}
+
+fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'a> {
+    if previous == next {
+        return MessageTextUpdate::Unchanged;
+    }
+
+    if let Some(delta) = next.strip_prefix(previous)
+        && !delta.is_empty()
+    {
+        return MessageTextUpdate::Append(delta);
+    }
+
+    MessageTextUpdate::Replace
 }
 
 impl ConversationPage {
@@ -43,33 +76,17 @@ impl ConversationPage {
         let chat_form = cx.new(|cx| ChatForm::new(window, cx));
         let runtime = state::conversation_runtime::runtime(cx);
         let snapshot = load_snapshot(&conversation_id, cx);
-        let page = cx.entity().downgrade();
-        let (on_toggle, on_copy) = timeline::callback_pair(
-            {
-                let page = page.clone();
-                move |agent_run_id, window, cx| {
-                    let _ = page.update(cx, |page, cx| {
-                        page.toggle_agent_run(agent_run_id.clone(), window, cx);
-                    });
-                }
-            },
-            copy_to_clipboard,
-        );
-        let rows = snapshot
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .map(|snapshot| timeline::build_rows(snapshot, &HashMap::new(), on_toggle, on_copy))
-            .unwrap_or_default();
-        let timeline = ListState::new(rows.len(), ListAlignment::Top, px(2048.)).measure_all();
-        timeline.scroll_to_end();
-        let timeline_rows = timeline::ConversationTimelineRows::new(rows);
+        let timeline = ListState::new(0, ListAlignment::Top, px(2048.)).measure_all();
+        let timeline_rows = timeline::ConversationTimelineRows::new(Vec::new());
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
             |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
                 ChatFormEvent::SendRequested(submit) => {
                     page.submit_message((**submit).clone(), window, cx);
+                }
+                ChatFormEvent::StopRequested => {
+                    page.stop_agent_run(cx);
                 }
                 ChatFormEvent::AddRequested => {}
             },
@@ -92,12 +109,16 @@ impl ConversationPage {
             chat_form,
             timeline,
             timeline_rows,
+            message_text_states: Vec::new(),
             expanded_agent_runs: HashMap::new(),
             runtime,
             _subscriptions: vec![chat_form_subscription, runtime_subscription],
         };
         page.refresh_chat_form_context(cx);
-        page.sync_submit_blocked(cx);
+        page.sync_message_text_states(cx);
+        page.sync_timeline(window, cx, None);
+        page.timeline.scroll_to_end();
+        page.sync_agent_running(cx);
         page
     }
 
@@ -191,8 +212,9 @@ impl ConversationPage {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.snapshot = load_snapshot(&self.conversation_id, cx);
         self.refresh_chat_form_context(cx);
+        self.sync_message_text_states(cx);
         self.sync_timeline(window, cx, None);
-        self.sync_submit_blocked(cx);
+        self.sync_agent_running(cx);
         cx.notify();
     }
 
@@ -232,7 +254,13 @@ impl ConversationPage {
             .ok()
             .and_then(Option::as_ref)
             .map(|snapshot| {
-                timeline::build_rows(snapshot, &self.expanded_agent_runs, on_toggle, on_copy)
+                timeline::build_rows(
+                    snapshot,
+                    &self.expanded_agent_runs,
+                    &self.message_text_state_map(),
+                    on_toggle,
+                    on_copy,
+                )
             })
             .unwrap_or_default();
         let previous_keys = self.timeline_rows.set_rows(rows);
@@ -244,15 +272,102 @@ impl ConversationPage {
         );
     }
 
-    fn sync_submit_blocked(&mut self, cx: &mut Context<Self>) {
-        let running = self.runtime.read(cx).is_running(&self.conversation_id);
-        let tooltip = running.then(|| {
-            cx.global::<I18n>()
-                .t("conversation-send-disabled-running")
-                .into()
+    fn sync_message_text_states(&mut self, cx: &mut Context<Self>) {
+        let sources = self
+            .snapshot
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map(|snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        let source = format::item_markdown(item);
+                        (!source.is_empty()).then(|| (item.id.clone(), source))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let next_ids = sources
+            .iter()
+            .map(|(item_id, _)| item_id.clone())
+            .collect::<HashSet<_>>();
+
+        for (item_id, source) in sources {
+            self.ensure_message_text_state(item_id, &source, cx);
+        }
+
+        self.message_text_states
+            .retain(|entry| next_ids.contains(&entry.id));
+    }
+
+    fn ensure_message_text_state(
+        &mut self,
+        item_id: ConversationItemId,
+        source: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self
+            .message_text_states
+            .iter_mut()
+            .find(|entry| entry.id == item_id)
+        {
+            match message_text_update(&entry.source, source) {
+                MessageTextUpdate::Unchanged => {}
+                MessageTextUpdate::Append(delta) => {
+                    let delta = delta.to_owned();
+                    entry
+                        .state
+                        .update(cx, |state, cx| state.push_str(&delta, cx));
+                    entry.source.clear();
+                    entry.source.push_str(source);
+                }
+                MessageTextUpdate::Replace => {
+                    entry
+                        .state
+                        .update(cx, |state, cx| state.set_text(source, cx));
+                    entry.source.clear();
+                    entry.source.push_str(source);
+                }
+            }
+            return;
+        }
+
+        let state = cx.new(|cx| TextViewState::markdown(source, cx));
+        let observed_item_id = item_id.clone();
+        let subscription = cx.observe(&state, move |page, _, cx| {
+            if let Some(row_ix) = page.timeline_rows.row_index_for_item(&observed_item_id) {
+                page.timeline.remeasure_items(row_ix..row_ix + 1);
+                cx.notify();
+            }
         });
+
+        self.message_text_states.push(MessageTextState {
+            id: item_id,
+            state,
+            source: source.to_owned(),
+            _subscription: subscription,
+        });
+    }
+
+    fn message_text_state_map(&self) -> HashMap<ConversationItemId, Entity<TextViewState>> {
+        self.message_text_states
+            .iter()
+            .map(|entry| (entry.id.clone(), entry.state.clone()))
+            .collect()
+    }
+
+    fn sync_agent_running(&mut self, cx: &mut Context<Self>) {
+        let running = self.runtime.read(cx).is_running(&self.conversation_id);
         self.chat_form.update(cx, |chat_form, cx| {
-            chat_form.set_submit_blocked(running, tooltip, cx);
+            chat_form.set_agent_running(running, cx);
+        });
+    }
+
+    fn stop_agent_run(&mut self, cx: &mut Context<Self>) {
+        self.runtime.update(cx, |runtime, cx| {
+            runtime.stop_run(&self.conversation_id, cx);
         });
     }
 
@@ -483,4 +598,33 @@ fn sync_timeline_list(
         first_diff..previous_keys.len(),
         next_keys.len().saturating_sub(first_diff),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MessageTextUpdate, message_text_update};
+
+    #[test]
+    fn message_text_update_detects_unchanged_source() {
+        assert_eq!(
+            message_text_update("hello", "hello"),
+            MessageTextUpdate::Unchanged
+        );
+    }
+
+    #[test]
+    fn message_text_update_detects_append_only_source() {
+        assert_eq!(
+            message_text_update("hello", "hello world"),
+            MessageTextUpdate::Append(" world")
+        );
+    }
+
+    #[test]
+    fn message_text_update_replaces_non_append_source() {
+        assert_eq!(
+            message_text_update("hello world", "hello markdown"),
+            MessageTextUpdate::Replace
+        );
+    }
 }

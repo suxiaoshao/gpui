@@ -1,9 +1,10 @@
 use std::{
+    collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
 
-use ai_chat_core::AgentRunId;
+use ai_chat_core::{AgentRunId, ConversationItemId};
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
@@ -12,7 +13,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    text::TextView,
+    text::{TextView, TextViewState},
     v_flex,
 };
 
@@ -69,6 +70,13 @@ impl TimelineRow {
             ),
         }
     }
+
+    pub(super) fn contains_item(&self, item_id: &ConversationItemId) -> bool {
+        match self {
+            TimelineRow::User(row) => &row.item.id == item_id,
+            TimelineRow::Agent(row) => row.items.iter().any(|item| &item.id == item_id),
+        }
+    }
 }
 
 impl RenderOnce for TimelineRow {
@@ -83,6 +91,7 @@ impl RenderOnce for TimelineRow {
 #[derive(Clone)]
 pub(super) struct UserMessageRow {
     pub(super) item: ConversationItemRecord,
+    pub(super) text_state: Option<Entity<TextViewState>>,
     pub(super) on_copy: OnCopy,
 }
 
@@ -132,13 +141,11 @@ impl RenderOnce for UserMessageRow {
                             .border_1()
                             .border_color(cx.theme().primary.opacity(0.18))
                             .text_color(cx.theme().foreground)
-                            .child(
-                                TextView::markdown(
-                                    format!("conversation-user-message-markdown-{}", self.item.id),
-                                    &markdown,
-                                )
-                                .selectable(true),
-                            ),
+                            .child(markdown_view(
+                                format!("conversation-user-message-markdown-{}", self.item.id),
+                                self.text_state,
+                                &markdown,
+                            )),
                     )
                     .child(
                         h_flex()
@@ -165,6 +172,7 @@ pub(super) struct AgentTurnRow {
     pub(super) run: Option<AgentRunRecord>,
     pub(super) items: Vec<ConversationItemRecord>,
     pub(super) final_item: Option<ConversationItemRecord>,
+    pub(super) text_states: HashMap<ConversationItemId, Entity<TextViewState>>,
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
     pub(super) on_copy: OnCopy,
@@ -212,6 +220,10 @@ impl RenderOnce for AgentTurnRow {
             .as_ref()
             .map(format::item_markdown)
             .unwrap_or_default();
+        let final_text_state = self
+            .final_item
+            .as_ref()
+            .and_then(|item| self.text_states.get(&item.id).cloned());
 
         v_flex()
             .id(format!("conversation-agent-row-{id_suffix}"))
@@ -231,13 +243,11 @@ impl RenderOnce for AgentTurnRow {
                         .max_w(px(760.))
                         .min_w_0()
                         .text_color(cx.theme().foreground)
-                        .child(
-                            TextView::markdown(
-                                format!("conversation-agent-final-markdown-{id_suffix}"),
-                                &final_markdown,
-                            )
-                            .selectable(true),
-                        ),
+                        .child(markdown_view(
+                            format!("conversation-agent-final-markdown-{id_suffix}"),
+                            final_text_state,
+                            &final_markdown,
+                        )),
                 )
             })
             .child(action_row)
@@ -316,17 +326,25 @@ impl AgentTurnRow {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let text_states = self.text_states.clone();
 
         v_flex()
             .max_w(px(760.))
             .min_w_0()
             .gap_2()
-            .children(detail_items.into_iter().map(|item| detail_block(item, cx)))
+            .children(detail_items.into_iter().map(|item| {
+                let text_state = text_states.get(&item.id).cloned();
+                detail_block(item, text_state, cx)
+            }))
             .into_any_element()
     }
 }
 
-fn detail_block(item: ConversationItemRecord, cx: &mut App) -> AnyElement {
+fn detail_block(
+    item: ConversationItemRecord,
+    text_state: Option<Entity<TextViewState>>,
+    cx: &mut App,
+) -> AnyElement {
     let label = payload_label(&item);
     let markdown = format::item_markdown(&item);
 
@@ -346,15 +364,29 @@ fn detail_block(item: ConversationItemRecord, cx: &mut App) -> AnyElement {
                 .text_color(cx.theme().muted_foreground),
         )
         .when(!markdown.is_empty(), |this| {
-            this.child(
-                TextView::markdown(
-                    format!("conversation-agent-detail-markdown-{}", item.id),
-                    &markdown,
-                )
-                .selectable(true),
-            )
+            this.child(markdown_view(
+                format!("conversation-agent-detail-markdown-{}", item.id),
+                text_state,
+                &markdown,
+            ))
         })
         .into_any_element()
+}
+
+fn markdown_view(
+    id: impl Into<ElementId>,
+    text_state: Option<Entity<TextViewState>>,
+    fallback_markdown: &str,
+) -> AnyElement {
+    if let Some(text_state) = text_state {
+        TextView::new(&text_state)
+            .selectable(true)
+            .into_any_element()
+    } else {
+        TextView::markdown(id, fallback_markdown)
+            .selectable(true)
+            .into_any_element()
+    }
 }
 
 struct AgentActionRow {

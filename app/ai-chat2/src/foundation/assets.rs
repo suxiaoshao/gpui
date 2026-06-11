@@ -41,6 +41,7 @@ define_lucide_icons!(
         Settings => "settings",
         MessageSquare => "message-square",
         Sparkles => "sparkles",
+        Square => "square",
         SquarePen => "square-pen",
         Trash => "trash",
         X => "x",
@@ -324,6 +325,10 @@ mod tests {
             SharedString::from("icons/search.svg")
         );
         assert_eq!(IconName::Send.path(), SharedString::from("icons/send.svg"));
+        assert_eq!(
+            IconName::Square.path(),
+            SharedString::from("icons/square.svg")
+        );
         assert_eq!(
             IconName::Trash.path(),
             SharedString::from("icons/trash.svg")

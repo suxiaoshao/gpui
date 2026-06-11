@@ -38,11 +38,12 @@ const COMPOSER_INPUT_BOTTOM_MARGIN: f32 = 4.;
 const COMPOSER_FOOTER_HORIZONTAL_PADDING: f32 = 8.;
 const COMPOSER_FOOTER_BOTTOM_MARGIN: f32 = 8.;
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::enum_variant_names)]
 #[derive(Clone)]
 pub(crate) enum ChatFormEvent {
     AddRequested,
     SendRequested(Box<ChatFormSubmit>),
+    StopRequested,
 }
 
 impl EventEmitter<ChatFormEvent> for ChatForm {}
@@ -52,6 +53,12 @@ pub(crate) struct ChatFormSubmit {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+}
+
+#[derive(Debug, PartialEq)]
+enum ChatFormPrimaryButtonAction {
+    Send(Box<ChatFormSubmit>),
+    Stop,
 }
 
 pub(crate) struct ChatForm {
@@ -64,8 +71,7 @@ pub(crate) struct ChatForm {
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
-    submit_blocked: bool,
-    submit_blocked_tooltip: Option<SharedString>,
+    agent_running: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -251,8 +257,7 @@ impl ChatForm {
             effort_picker,
             model_picker_open: false,
             model_picker,
-            submit_blocked: false,
-            submit_blocked_tooltip: None,
+            agent_running: false,
             _subscriptions: vec![
                 composer_subscription,
                 token_budget_change_subscription,
@@ -293,17 +298,11 @@ impl ChatForm {
         });
     }
 
-    pub(crate) fn set_submit_blocked(
-        &mut self,
-        blocked: bool,
-        tooltip: Option<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.submit_blocked == blocked && self.submit_blocked_tooltip == tooltip {
+    pub(crate) fn set_agent_running(&mut self, running: bool, cx: &mut Context<Self>) {
+        if self.agent_running == running {
             return;
         }
-        self.submit_blocked = blocked;
-        self.submit_blocked_tooltip = tooltip;
+        self.agent_running = running;
         cx.notify();
     }
 
@@ -497,7 +496,7 @@ impl ChatForm {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
-        !self.submit_blocked
+        !self.agent_running
             && self.composer.read(cx).can_submit()
             && self.selected_model_choice().is_some()
     }
@@ -511,7 +510,7 @@ impl ChatForm {
         if snapshot.is_empty() {
             return None;
         }
-        if self.submit_blocked {
+        if self.agent_running {
             return None;
         }
         let provider_model = self.revalidate_selected_model_for_submit(window, cx)?;
@@ -520,6 +519,32 @@ impl ChatForm {
             provider_model,
             reasoning_selection: self.selected_reasoning_selection.clone(),
         })
+    }
+
+    fn primary_button_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ChatFormPrimaryButtonAction> {
+        if self.agent_running {
+            return Some(ChatFormPrimaryButtonAction::Stop);
+        }
+
+        let snapshot = self.composer.read(cx).snapshot();
+        self.submit_snapshot(snapshot, window, cx)
+            .map(|submit| ChatFormPrimaryButtonAction::Send(Box::new(submit)))
+    }
+
+    fn emit_primary_button_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.primary_button_action(window, cx) {
+            Some(ChatFormPrimaryButtonAction::Send(submit)) => {
+                cx.emit(ChatFormEvent::SendRequested(submit));
+            }
+            Some(ChatFormPrimaryButtonAction::Stop) => {
+                cx.emit(ChatFormEvent::StopRequested);
+            }
+            None => {}
+        }
     }
 
     pub(super) fn selected_model_label(&self, i18n: &foundation::I18n) -> SharedString {
@@ -561,11 +586,9 @@ impl ChatForm {
 impl Render for ChatForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let add_tooltip = cx.global::<foundation::I18n>().t("chat-form-add-tooltip");
-        let send_tooltip = self.submit_blocked_tooltip.clone().unwrap_or_else(|| {
-            cx.global::<foundation::I18n>()
-                .t("chat-form-send-tooltip")
-                .into()
-        });
+        let send_tooltip = cx.global::<foundation::I18n>().t("chat-form-send-tooltip");
+        let stop_tooltip = cx.global::<foundation::I18n>().t("chat-form-stop-tooltip");
+        let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
 
         v_flex()
@@ -633,26 +656,35 @@ impl Render for ChatForm {
                             .min_w_0()
                             .child(self.render_model_selector(cx))
                             .child(
-                                Button::new("chat-form-send")
-                                    .primary()
-                                    .with_size(px(COMPOSER_BUTTON_SIZE))
-                                    .size(px(COMPOSER_BUTTON_SIZE))
-                                    .p(px(0.))
-                                    .rounded(px(COMPOSER_BUTTON_RADIUS))
-                                    .disabled(!can_submit)
-                                    .child(
-                                        Icon::new(IconName::Send)
-                                            .with_size(px(COMPOSER_BUTTON_ICON_SIZE)),
-                                    )
-                                    .tooltip(send_tooltip)
-                                    .on_click(cx.listener(|form, _, window, cx| {
-                                        let snapshot = form.composer.read(cx).snapshot();
-                                        if let Some(submit) =
-                                            form.submit_snapshot(snapshot, window, cx)
-                                        {
-                                            cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
-                                        }
-                                    })),
+                                Button::new(if agent_running {
+                                    "chat-form-stop"
+                                } else {
+                                    "chat-form-send"
+                                })
+                                .primary()
+                                .with_size(px(COMPOSER_BUTTON_SIZE))
+                                .size(px(COMPOSER_BUTTON_SIZE))
+                                .p(px(0.))
+                                .rounded(px(COMPOSER_BUTTON_RADIUS))
+                                .disabled(!agent_running && !can_submit)
+                                .child(
+                                    Icon::new(if agent_running {
+                                        IconName::Square
+                                    } else {
+                                        IconName::Send
+                                    })
+                                    .with_size(px(COMPOSER_BUTTON_ICON_SIZE)),
+                                )
+                                .tooltip(if agent_running {
+                                    stop_tooltip
+                                } else {
+                                    send_tooltip
+                                })
+                                .on_click(cx.listener(
+                                    |form, _, window, cx| {
+                                        form.emit_primary_button_action(window, cx);
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -698,7 +730,7 @@ fn model_empty_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatForm,
+        ChatForm, ChatFormPrimaryButtonAction,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
         model_empty_label, selected_model_choice_in,
     };
@@ -827,6 +859,34 @@ mod tests {
                 value: Some(2048),
             })
         );
+    }
+
+    #[gpui::test]
+    fn running_agent_blocks_submit_and_primary_button_stops(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.set_agent_running(true, cx);
+            });
+        });
+
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_none());
+        let action = cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.primary_button_action(window, cx))
+        });
+        assert_eq!(action, Some(ChatFormPrimaryButtonAction::Stop));
+
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.set_agent_running(false, cx);
+            });
+        });
+
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_some());
     }
 
     fn choice(provider_id: &str, model_id: &str) -> ProviderModelChoice {

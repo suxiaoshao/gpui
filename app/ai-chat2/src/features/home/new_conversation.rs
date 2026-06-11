@@ -105,6 +105,7 @@ impl NewConversationPage {
                 ChatFormEvent::SendRequested(submit) => {
                     page.submit_new_conversation((**submit).clone(), window, cx);
                 }
+                ChatFormEvent::StopRequested => {}
                 ChatFormEvent::AddRequested => {}
             },
         );

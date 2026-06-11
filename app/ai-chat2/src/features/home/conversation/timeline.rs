@@ -3,9 +3,10 @@ use std::{
     rc::Rc,
 };
 
-use ai_chat_core::AgentRunId;
+use ai_chat_core::{AgentRunId, ConversationItemId};
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
-use gpui::{App, Window};
+use gpui::{App, Entity, Window};
+use gpui_component::text::TextViewState;
 
 use crate::state::conversations::ConversationLoadSnapshot;
 
@@ -43,11 +44,16 @@ impl ConversationTimelineRows {
     pub(super) fn keys(&self) -> &[TimelineRowKey] {
         &self.keys
     }
+
+    pub(super) fn row_index_for_item(&self, item_id: &ConversationItemId) -> Option<usize> {
+        self.rows.iter().position(|row| row.contains_item(item_id))
+    }
 }
 
 pub(super) fn build_rows(
     snapshot: &ConversationLoadSnapshot,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
+    text_states: &HashMap<ConversationItemId, Entity<TextViewState>>,
     on_toggle: OnToggleAgent,
     on_copy: OnCopy,
 ) -> Vec<TimelineRow> {
@@ -90,6 +96,7 @@ pub(super) fn build_rows(
         .into_iter()
         .map(|row| match row {
             PendingTimelineRow::User(item) => TimelineRow::User(Box::new(UserMessageRow {
+                text_state: text_states.get(&item.id).cloned(),
                 item,
                 on_copy: on_copy.clone(),
             })),
@@ -101,6 +108,7 @@ pub(super) fn build_rows(
                     run,
                     items,
                     expanded_agent_runs,
+                    text_states,
                     on_toggle.clone(),
                     on_copy.clone(),
                 )))
@@ -110,6 +118,7 @@ pub(super) fn build_rows(
                 None,
                 vec![item],
                 expanded_agent_runs,
+                text_states,
                 on_toggle.clone(),
                 on_copy.clone(),
             ))),
@@ -132,6 +141,7 @@ fn agent_turn_row(
     run: Option<AgentRunRecord>,
     items: Vec<ConversationItemRecord>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
+    text_states: &HashMap<ConversationItemId, Entity<TextViewState>>,
     on_toggle: OnToggleAgent,
     on_copy: OnCopy,
 ) -> AgentTurnRow {
@@ -149,6 +159,7 @@ fn agent_turn_row(
         run,
         items,
         final_item,
+        text_states: text_states.clone(),
         expanded,
         on_toggle,
         on_copy,
