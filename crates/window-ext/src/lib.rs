@@ -21,6 +21,17 @@ use windows::Win32::{
 #[cfg(target_os = "windows")]
 use windows::core::BOOL;
 
+#[cfg(any(target_os = "macos", test))]
+const NORMAL_WINDOW_LEVEL: i32 = 0;
+#[cfg(any(target_os = "macos", test))]
+const FLOATING_WINDOW_LEVEL: i32 = 3;
+#[cfg(any(target_os = "macos", test))]
+const MODAL_PANEL_WINDOW_LEVEL: i32 = 8;
+#[cfg(any(target_os = "macos", test))]
+const POP_UP_MENU_WINDOW_LEVEL: i32 = 101;
+#[cfg(target_os = "macos")]
+const LEGACY_FLOATING_WINDOW_LEVEL: i32 = 5;
+
 #[derive(Error, Debug)]
 pub enum WindowExtError {
     #[error("Failed to get NSWindow, {}",.0)]
@@ -37,10 +48,20 @@ pub enum WindowExtError {
     FailedSetBounds,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowLevel {
+    Normal,
+    Floating,
+    ModalPanel,
+    PopUpMenu,
+    Custom(i32),
+}
+
 pub trait WindowExt {
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
     fn show_without_activation(&self) -> Result<(), WindowExtError>;
+    fn set_window_level(&self, level: WindowLevel) -> Result<(), WindowExtError>;
     fn set_floating(&self) -> Result<(), WindowExtError>;
     fn set_crosshair_cursor_rect(&self) -> Result<(), WindowExtError>;
     fn clear_cursor_rects(&self) -> Result<(), WindowExtError>;
@@ -135,6 +156,24 @@ impl WindowExt for Window {
         Ok(())
     }
 
+    fn set_window_level(&self, level: WindowLevel) -> Result<(), WindowExtError> {
+        #[cfg(target_os = "macos")]
+        {
+            let raw_window = get_raw_window(self)?;
+            if let RawWindowHandle::AppKit(handle) = raw_window {
+                let ns_window = get_ns_window(handle)?;
+                ns_window.setLevel(macos_window_level_value(level) as _);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = level;
+        }
+
+        Ok(())
+    }
+
     fn set_floating(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {
@@ -143,7 +182,9 @@ impl WindowExt for Window {
                 #[cfg(target_os = "macos")]
                 {
                     let ns_window = get_ns_window(handle)?;
-                    ns_window.setLevel(5 as _);
+                    ns_window.setLevel(macos_window_level_value(WindowLevel::Custom(
+                        LEGACY_FLOATING_WINDOW_LEVEL,
+                    )) as _);
                     let ns_app = NSApplication::sharedApplication(
                         MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
                     );
@@ -280,6 +321,17 @@ impl WindowExt for Window {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn macos_window_level_value(level: WindowLevel) -> i32 {
+    match level {
+        WindowLevel::Normal => NORMAL_WINDOW_LEVEL,
+        WindowLevel::Floating => FLOATING_WINDOW_LEVEL,
+        WindowLevel::ModalPanel => MODAL_PANEL_WINDOW_LEVEL,
+        WindowLevel::PopUpMenu => POP_UP_MENU_WINDOW_LEVEL,
+        WindowLevel::Custom(value) => value,
+    }
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn logical_bounds_to_device_rect(
     bounds: Bounds<Pixels>,
@@ -396,8 +448,37 @@ fn resolve_screen_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::{logical_bounds_to_device_rect, resolve_target_scale_factor};
+    use super::{
+        FLOATING_WINDOW_LEVEL, MODAL_PANEL_WINDOW_LEVEL, NORMAL_WINDOW_LEVEL,
+        POP_UP_MENU_WINDOW_LEVEL, WindowLevel, logical_bounds_to_device_rect,
+        macos_window_level_value, resolve_target_scale_factor,
+    };
     use gpui::{bounds, point, px, size};
+
+    #[test]
+    fn window_level_named_variants_match_macos_values() {
+        assert_eq!(
+            macos_window_level_value(WindowLevel::Normal),
+            NORMAL_WINDOW_LEVEL
+        );
+        assert_eq!(
+            macos_window_level_value(WindowLevel::Floating),
+            FLOATING_WINDOW_LEVEL
+        );
+        assert_eq!(
+            macos_window_level_value(WindowLevel::ModalPanel),
+            MODAL_PANEL_WINDOW_LEVEL
+        );
+        assert_eq!(
+            macos_window_level_value(WindowLevel::PopUpMenu),
+            POP_UP_MENU_WINDOW_LEVEL
+        );
+    }
+
+    #[test]
+    fn window_level_custom_preserves_value() {
+        assert_eq!(macos_window_level_value(WindowLevel::Custom(9)), 9);
+    }
 
     #[test]
     fn logical_bounds_to_device_rect_scales_coordinates_and_size() {

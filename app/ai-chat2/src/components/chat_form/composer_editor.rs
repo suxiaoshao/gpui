@@ -33,7 +33,7 @@ use self::{
     token::{ComposerSkill, ComposerToken, parse_skill_tokens, skills_from_catalog},
 };
 
-const KEY_CONTEXT: &str = "AiChat2ComposerEditor";
+pub(super) const KEY_CONTEXT: &str = "AiChat2ComposerEditor";
 
 actions!(
     ai_chat2_composer_editor,

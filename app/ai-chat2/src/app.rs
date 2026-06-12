@@ -3,7 +3,7 @@ pub(crate) mod menus;
 pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
 
-use crate::features::{home::HomeView, settings::SettingsView, temporary::TemporaryWindow};
+use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{database, errors::AiChat2Error, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
@@ -252,9 +252,6 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
             let _ = with_root_view::<SettingsView, _>(root, cx, |view, cx| {
-                view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
-            });
-            let _ = with_root_view::<TemporaryWindow, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
         });

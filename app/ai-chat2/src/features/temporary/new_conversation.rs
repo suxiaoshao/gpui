@@ -1,9 +1,6 @@
-use crate::{
-    components::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
-    foundation::I18n,
-};
+use crate::components::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit};
 use gpui::*;
-use gpui_component::{ActiveTheme, StyledExt, label::Label, v_flex};
+use gpui_component::v_flex;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone)]
@@ -55,7 +52,7 @@ impl TemporaryNewConversationPane {
 }
 
 impl Render for TemporaryNewConversationPane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("ai-chat2-temporary-new-conversation")
             .size_full()
@@ -70,14 +67,6 @@ impl Render for TemporaryNewConversationPane {
                     .w_full()
                     .max_w(px(780.))
                     .items_center()
-                    .gap(px(28.))
-                    .child(
-                        Label::new(cx.global::<I18n>().t("temporary-new-conversation-title"))
-                            .text_center()
-                            .text_size(px(24.))
-                            .font_medium()
-                            .text_color(cx.theme().foreground),
-                    )
                     .child(self.chat_form.clone()),
             )
     }

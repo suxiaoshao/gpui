@@ -1,9 +1,6 @@
 use std::rc::Rc;
 
-use crate::{
-    foundation::{I18n, assets::IconName, conversation_format},
-    state::temporary::TemporaryConversationNode,
-};
+use crate::{foundation::assets::IconName, state::temporary::TemporaryConversationNode};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Icon, IndexPath, Selectable, h_flex,
@@ -11,7 +8,6 @@ use gpui_component::{
     list::{ListDelegate, ListState},
     v_flex,
 };
-use time::OffsetDateTime;
 
 type OnSelect = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
@@ -50,14 +46,12 @@ impl RenderOnce for TemporaryConversationListItem {
         let node = self.node;
         let row_ix = self.row_ix;
         let on_select = self.on_select;
-        let updated_at = updated_at_label(node.updated_at, cx.global::<I18n>());
 
         h_flex()
             .id(format!("temporary-conversation-row-{}", node.id))
             .w_full()
-            .min_h(px(52.))
+            .min_h(px(40.))
             .items_center()
-            .gap_3()
             .px_3()
             .py_2()
             .cursor_pointer()
@@ -69,32 +63,11 @@ impl RenderOnce for TemporaryConversationListItem {
                 on_select(row_ix, window, cx);
             })
             .child(
-                div()
-                    .flex()
-                    .size_8()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
-                    .child(
-                        Icon::new(IconName::MessageSquare)
-                            .size_4()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .child(
-                v_flex()
+                Label::new(node.title.clone())
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
-                    .child(Label::new(node.title.clone()).text_sm().truncate())
-                    .child(
-                        Label::new(updated_at)
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate(),
-                    ),
+                    .text_sm()
+                    .truncate(),
             )
     }
 }
@@ -196,10 +169,4 @@ impl ListDelegate for TemporaryConversationListDelegate {
             (self.on_select)(ix.row, window, cx);
         }
     }
-}
-
-fn updated_at_label(updated_at: i128, i18n: &I18n) -> String {
-    OffsetDateTime::from_unix_timestamp_nanos(updated_at)
-        .map(|time| conversation_format::timestamp_label(time, i18n))
-        .unwrap_or_default()
 }

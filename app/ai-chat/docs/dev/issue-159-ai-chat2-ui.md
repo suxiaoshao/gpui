@@ -9,7 +9,7 @@ Agent conversation page 专项计划见
 Temporary Conversation Window 专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。
 
-最后同步时间：2026-06-11。
+最后同步时间：2026-06-12。
 
 当前实现基线：`codex/issue-137-llm-abstractions`。上一轮 foundation 已通过 PR #164 合入集成分支。
 当前增量分支为 `codex/issue-159-ai-chat2-ui`。上一轮远程 head 为 `dba4f7c`
@@ -44,7 +44,10 @@ collapse、hover copy/time、Codex-style timestamp、复制成功按钮 `Check` 
 rich tool UI 仍未完成；真实 Temporary Conversation Window 首版已实现：顶部单行搜索、no-project
 conversation 列表、右侧 new/detail、键盘 focus、`secondary-n` 和真实 agent run 已接线。Temporary 首版已把
 Home-only 的 ChatForm、composer/picker、conversation detail/timeline 和纯格式化函数抽到
-`components` / `foundation` / `state`，避免 `features/temporary` 横向调用 `features/home`。
+`components` / `foundation` / `state`，避免 `features/temporary` 横向调用 `features/home`。2026-06-12
+已补齐 macOS IME 层级修复：Temporary Window 保留 `WindowKind::PopUp` 的 popup lifecycle，但通过
+`window-ext` 将实际 window level 从 `NSPopUpWindowLevel = 101` 覆盖到 `NSModalPanelWindowLevel = 8`，
+对齐 Raycast/uTools 搜索窗层级带，避免输入法候选窗被 101 层级干扰。
 本轮后续整理已把 sidebar 热路径的
 project/conversation pin/remove 状态从 `metadata_json` 拆到 fresh DB columns，repository 和
 `ai-chat2` 状态层直接读写列；由于 fresh DB 仍未进入 `main`，该变更按 pre-main baseline schema
@@ -75,6 +78,8 @@ project/conversation pin/remove 状态从 `metadata_json` 拆到 fresh DB column
 - `dba4f7c Implement ai-chat2 agent conversation page`
 - 本轮实现：Codex-style stop generation（ChatForm stop 按钮、100ms grace、run key 防迟到 finish、
   `AgentRuntime::cancel_run` 终态化 run/provider step/tool invocation）
+- 本轮实现：Temporary Window macOS IME 层级修复（保留 `WindowKind::PopUp` 生命周期，实际 window
+  level 从 `NSPopUpWindowLevel = 101` 覆盖到 `NSModalPanelWindowLevel = 8`）
 
 ## 状态定义
 
@@ -148,7 +153,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | `xtask bundle ai-chat2` | `crates/xtask/src/cli.rs` | `BundleApp::AiChat2` 已加入，CLI parse test 已覆盖。 |
 | ComposerEditor v1 | `app/ai-chat2/src/components/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、cursor blink/styling、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、soft wrap、内部滚动、Unicode/grapheme-aware movement/delete/word boundary、`$skill-name` token 和 `ComposerSnapshot`。 |
 | Settings shell + General/Appearance/Projects | `app/ai-chat2/src/features/settings.rs` / `settings/{general,appearance,projects,layout}.rs` | 已搬运旧 app 的 Settings shell 体验：titlebar menu、搜索、可调 sidebar、page frame、General language/HTTP proxy/temporary hotkey/config file，Appearance theme mode、主题预览网格、Material You color picker/add/delete；Projects 可列出 normal projects 并通过系统目录选择器添加项目，不显示 scratch/anonymous project。 |
-| Temporary Conversation window | `app/ai-chat2/src/app/temporary_window.rs` / `features/temporary.rs` / `state/temporary.rs` | 已实现首版：菜单打开/复用真实窗口；global temporary hotkey 恢复 toggle；窗口外壳已迁移为 popup-like、不可 resize、按鼠标所在 display 定位/移动；顶部单行搜索，左侧仅列 visible scratch/no-project active conversations，右侧复用 `ConversationDetailPage` 或无项目 `ChatForm` 新对话；搜索、上下选择、Tab 到 composer、`secondary-n` 到新对话和发送后创建 scratch conversation + agent run 已接线。迁移记录见 `issue-159-ai-chat2-temporary-window.md`。 |
+| Temporary Conversation window | `app/ai-chat2/src/app/temporary_window.rs` / `features/temporary.rs` / `state/temporary.rs` | 已实现首版：菜单打开/复用真实窗口；global temporary hotkey 恢复 toggle；窗口外壳已迁移为 popup-like、不可 resize、按鼠标所在 display 定位/移动，失去 activation 时隐藏并进入延迟 remove；macOS 实际 window level 已从 `NSPopUpWindowLevel = 101` 覆盖到 `NSModalPanelWindowLevel = 8`，对齐 launcher 搜索窗层级并修复 IME 候选窗干扰；顶部单行搜索，左侧仅列 visible scratch/no-project active conversations，右侧复用 `ConversationDetailPage` 或无项目 `ChatForm` 新对话；搜索、上下选择、Tab 到 composer、`secondary-n` 到新对话和发送后创建 scratch conversation + agent run 已接线。迁移记录见 `issue-159-ai-chat2-temporary-window.md`。 |
 | shared chat/conversation components | `app/ai-chat2/src/components/{chat_form,conversation_detail,picker}.rs` / `foundation/conversation_format.rs` | 已从 Home-only 模块抽到共享层，Home 和 Temporary 都从 `components` / `foundation` 消费；Temporary 不横向依赖 `features/home`。 |
 
 ## 占位
@@ -215,7 +220,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Attachments and multimodal | image/file/audio input、generated files/images、preview/download/open, provider unsupported-state messaging。 |
 | Settings | General/Appearance/Projects 已实现；Provider settings 第一阶段已实现并补齐 i18n/default disabled/滚动布局/save validation/secret credentials/model fetch/ListState lists/provider list panel polish/provider brand visual；Composer 空状态可 deep-link 到 Provider settings；仍缺 manual provider model editor、Rig completion validation、prompts、shortcuts 和 tool/MCP policy。 |
 | Shortcuts | shortcut CRUD、input source selection、prompt/provider/model binding、capability validation、registration/runtime status。 |
-| Temporary chat | real temporary conversation window、selected text/screenshot input、save/promote to conversation。 |
+| Temporary chat | Temporary Conversation Window 首版已完成；仍缺 selected text/screenshot input、save/promote to conversation。 |
 | Screenshot/input capture | screenshot overlay、OCR fallback、image-capable model data URL path、unsupported model warnings。 |
 | Legacy access | read-only legacy viewer、manual export/import 或 backup-only policy；当前没有任何 legacy data UI。 |
 | Export/import | fresh conversation export、generated output export、legacy manual import/export。 |
@@ -259,7 +264,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | model select | `components/chat_form/model_select.rs` | 已完成 | `ai-chat2` model picker 已接 fresh `providers` / `provider_models` cache、enabled filtering、provider 分组、capability tags、search 和 reasoning selection derivation；发送事件先携带 snapshot，真实 conversation/run 接线留给后续。 |
 | message rendering | `components/message.rs` | 未开始 | 新 timeline 要覆盖 reasoning/tool/approval/status/usage/attachments。 |
 | temporary chat | `features/temporary.rs` / `app/temporary_window.rs` | 已替代 legacy 首版 | 真实窗口、no-project 历史、搜索、new/detail 和 agent run 已接线；selected text/screenshot input、save/promote to normal conversation 仍未接。 |
-| temporary window runtime | `features/temporary.rs` / `state/hotkey.rs` | 部分实现 | 已恢复旧版 global temporary hotkey toggle、popup-like window 外壳、鼠标所在显示器定位/移动、macOS 前台 app restore、延迟隐藏和非 resizable 语义；默认尺寸保留 `960x620`。tray、shortcut execution、selected text/screenshot input 和 save/promote flow 仍未实现。迁移记录见 `issue-159-ai-chat2-temporary-window.md`。 |
+| temporary window runtime | `features/temporary.rs` / `state/hotkey.rs` | 部分实现 | 已恢复旧版 global temporary hotkey toggle、popup-like window 外壳、鼠标所在显示器定位/移动、失去 activation 后隐藏/延迟 remove、macOS 前台 app restore 和非 resizable 语义；默认尺寸保留 `960x620`。tray、shortcut execution、selected text/screenshot input 和 save/promote flow 仍未实现。迁移记录见 `issue-159-ai-chat2-temporary-window.md`。 |
 | hotkey backend/registry | `features/hotkey/backend.rs` / `registry.rs` | 部分实现 | `ai-chat2` 已有初始注册、temporary hotkey 设置后重注册、内存 diagnostics 和 temporary window dispatch；快捷键状态 UI 与 shortcut 执行仍未实现。 |
 | shortcut execution flow | `features/hotkey/shortcut_flow.rs` | 未开始 | 未执行 selected text、clipboard fallback、screenshot input、prompt/provider/model/action 和通知状态。 |
 | screenshot/OCR shortcut | `features/screenshot.rs` / `features/screenshot/overlay.rs` | 未开始 | 新快捷键只记录 diagnostics，不执行 screenshot overlay、OCR fallback 或 image input。 |

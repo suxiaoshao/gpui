@@ -24,8 +24,17 @@ text/screenshot input 或 save/promote flow。
 - Temporary hotkey 语义已迁移：global temporary hotkey 恢复 toggle，窗口可见时隐藏，不可见时显示或创建；
   App menu 入口仍保持 open/reveal，不负责隐藏窗口。
 - 窗口外壳已迁移：Temporary Window 使用 `WindowKind::PopUp`、透明或弱化 titlebar、不可 resize、按鼠标所在
-  display 定位或移动；已有窗口 reveal 时也会重新定位。默认尺寸保留 `app/ai-chat2` 的 `960x620`，不复刻旧
+  display 定位或移动；已有窗口 reveal 时也会重新定位。窗口失去 activation 时会隐藏并进入 600 秒延迟 remove；
+  用户在其他应用或其他窗口继续工作时不会保留可见临时窗口。默认尺寸保留 `app/ai-chat2` 的 `960x620`，不复刻旧
   `app/ai-chat` 的 `800x600`，以适配当前左右分栏内容。
+- IME 候选窗层级修复已完成：旧 `app/ai-chat` 和新 `app/ai-chat2` temporary window 都使用 GPUI
+  `WindowKind::PopUp` 时，会被 macOS backend 映射到 `NSPopUpWindowLevel = 101`；这个层级明显高于
+  Raycast/uTools 这类 launcher 搜索窗，并会干扰输入法候选窗显示。2026-06-12 本轮保留
+  `WindowKind::PopUp` 的 popup lifecycle / nonactivating panel / all-spaces 行为，但通过
+  `window-ext::WindowExt::set_window_level(WindowLevel::ModalPanel)` 把实际 window level 覆盖到
+  `NSModalPanelWindowLevel = 8`。本机参考：Raycast 搜索窗实测 layer 8；uTools launcher 实测 layer 9
+  （Electron `modal-panel + 1`）。当前选择 exact Raycast layer 8；如果后续 IME 仍异常，再单独评估
+  `ModalPanel + 1`。
 - Temporary hotkey 设置保存一致性已修复：Settings 保存时先 parse/register runtime，成功后才写 fresh DB
   app settings；注册失败不关闭 dialog、不写 DB，DB 保存失败时尝试把 runtime 回滚到 previous hotkey。
 
@@ -94,7 +103,7 @@ provider/model picker、reasoning selector、conversation detail/timeline 和纯
 
 ```text
 app/ai-chat2/src/app/
-├── temporary_window.rs          # 真实临时窗口 open/reveal/titlebar/root 入口
+├── temporary_window.rs          # 真实临时窗口 open/reveal/window shell/root 入口
 └── placeholder_windows.rs       # 删除 Temporary 分支后只保留仍需的 placeholder，或后续整体移除
 
 app/ai-chat2/src/components.rs   # 增加 chat_form / conversation_detail / picker 模块声明
@@ -187,7 +196,6 @@ enum TemporaryWindowRoute {
 
 struct TemporaryWindow {
     focus_handle: FocusHandle,
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
     search_input: Entity<InputState>,
     list: Entity<ListState<TemporaryConversationListDelegate>>,
     query: String,
@@ -371,7 +379,8 @@ TemporaryNewConversationPane components::chat_form::ChatFormEvent::SendRequested
 ### 窗口根
 
 - 使用 `Root::new(view, window, cx)`，和主窗口/placeholder 保持一致。
-- 使用 `TitleBar::new()` + `title_bar_content(...)`，保留非 macOS menu bar。
+- 不渲染内部 `TitleBar::new()` titlebar row；临时窗口内容区域从顶部搜索框开始，非 macOS
+  component menu bar 不在该窗口内部单独占一行。OS/window title 仍保留为系统窗口标识。
 - 使用 `Root::render_sheet_layer`、`Root::render_dialog_layer`、`Root::render_notification_layer`，保证
   provider picker、notification 和后续 dialog 能在临时窗口内正常显示。
 
@@ -388,12 +397,11 @@ TemporaryNewConversationPane components::chat_form::ChatFormEvent::SendRequested
 ### 左侧列表
 
 - 组件：`gpui_component::list::{List, ListState, ListDelegate}`。
-- row icon：`IconName::MessageSquare`。
 - 空态 icon：`IconName::SquarePen`。
 - row 内容：
   - title 单行 truncate。
-  - updated time 可选显示，使用 `foundation::conversation_format::timestamp_label`；实现时从
-    `features/home/conversation/format.rs` 移出，不能复制一份时间格式化。
+  - 不显示 conversation icon；列表范围固定是 conversation，不需要重复视觉提示。
+  - 不显示 updated time；左栏保持更轻的标题列表。
   - 当前选中行使用 theme accent/selected 背景。
 - 不显示 pin/delete hover action；这些是后续范围。
 
@@ -419,7 +427,6 @@ TemporaryNewConversationPane components::chat_form::ChatFormEvent::SendRequested
 ## Icons
 
 - 搜索输入 prefix：`IconName::Search`。
-- 历史 conversation row：`IconName::MessageSquare`。
 - 新对话按钮/空态：`IconName::SquarePen`。
 - 加载失败/错误空态：`IconName::CircleAlert`，如果当前 app-local `IconName` 没有该图标，则先补 app-local
   Lucide enum/asset 声明；不要手写 SVG。
@@ -447,16 +454,18 @@ Key bindings：
 搜索输入 focused 时处理：
 
 - `MoveUp` / `MoveDown`：来自 `gpui_component::input` action，移动列表 selection，并 `cx.stop_propagation()`。
-- `Tab`：如果 GPUI 没有现成 action，使用 key binding 映射到 app-local action `FocusTemporaryDetailInput`；
-  该 action 只在搜索 input focused 时生效。
+- `Tab`：使用 key binding 映射到 app-local action `ToggleTemporaryInputFocus`；搜索 input focused 时 focus
+  右侧当前 composer，右侧 composer focused 时回到搜索 input。
 - `Enter`：confirm 当前 selection；右侧已同步时仍 stop propagation，避免触发 composer send。
 
 Focus 规则：
 
 - 创建窗口后 defer focus 到 `search_input`。
 - reveal 已有窗口后 focus 到 `search_input`。
+- 窗口 activation 恢复时 focus 到 `search_input`；窗口失去 activation 时调用 temporary lifecycle 的 delayed
+  hide/remove，不在 `features/temporary` 内直接持有关闭状态。
 - `secondary-n` 后 focus 到右侧 new conversation `components::chat_form::ChatForm` composer。
-- `tab` 后 focus 到右侧当前 route 的 composer。
+- `tab` 在搜索 input 和右侧当前 route composer 之间切换 focus。
 - 选择历史 conversation 后不自动把 focus 从搜索框拿走；用户可以继续用上下键浏览。
 
 ## i18n
@@ -468,7 +477,6 @@ temporary-window-title
 temporary-search-placeholder
 temporary-empty-conversations
 temporary-no-results
-temporary-new-conversation-title
 temporary-load-failed
 ```
 
@@ -479,7 +487,6 @@ temporary-window-title = Temporary Conversation
 temporary-search-placeholder = Search conversations
 temporary-empty-conversations = No temporary conversations
 temporary-no-results = No matching conversations
-temporary-new-conversation-title = New temporary conversation
 temporary-load-failed = Load temporary conversations failed
 ```
 
@@ -490,12 +497,11 @@ temporary-window-title = 临时对话
 temporary-search-placeholder = 搜索临时对话
 temporary-empty-conversations = 暂无临时对话
 temporary-no-results = 没有匹配的临时对话
-temporary-new-conversation-title = 新建临时对话
 temporary-load-failed = 加载临时对话失败
 ```
 
-`placeholder-temporary-body` 不应再出现在真实窗口中；可保留 key 以兼容旧代码删除前的编译过程，但真实 UI
-不能继续显示“运行时暂不接入”。
+`temporary-new-conversation-title` 和 `placeholder-temporary-body` 不应再出现在真实窗口中；可保留 key 以兼容
+旧代码删除前的编译过程，但真实 UI 不能继续显示页面 title 或“运行时暂不接入”。
 
 ## 实现顺序
 

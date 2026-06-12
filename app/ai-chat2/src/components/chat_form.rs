@@ -31,6 +31,7 @@ use thinking_effort::{
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
 pub(super) const COMPOSER_BUTTON_ICON_SIZE: f32 = 18.;
 pub(super) const COMPOSER_BUTTON_RADIUS: f32 = 999.;
+pub(crate) const COMPOSER_EDITOR_KEY_CONTEXT: &str = composer_editor::KEY_CONTEXT;
 const COMPOSER_INPUT_HORIZONTAL_PADDING: f32 = 12.;
 const COMPOSER_INPUT_TOP_PADDING: f32 = 12.;
 const COMPOSER_INPUT_BOTTOM_MARGIN: f32 = 4.;

@@ -5,8 +5,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::{
-    app::{menus, title_bar_menu},
-    components::{chat_form::ChatFormSubmit, conversation_detail::ConversationDetailPage},
+    app::{menus, temporary_window},
+    components::{
+        chat_form::{COMPOSER_EDITOR_KEY_CONTEXT, ChatFormSubmit},
+        conversation_detail::ConversationDetailPage,
+    },
     foundation::{self, I18n, assets::IconName},
     state,
     state::temporary::TemporaryConversationNode,
@@ -14,7 +17,7 @@ use crate::{
 use ai_chat_core::ConversationId;
 use gpui::{actions, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Root, Sizable, StyledExt, TitleBar, WindowExt as _, h_flex,
+    ActiveTheme, Icon, IndexPath, Root, Sizable, WindowExt as _, h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
     label::Label,
     list::{List, ListState},
@@ -35,7 +38,7 @@ actions!(
     ai_chat2_temporary,
     [
         OpenTemporaryNewConversation,
-        FocusTemporaryDetailInput,
+        ToggleTemporaryInputFocus,
         FocusTemporarySearch
     ]
 );
@@ -47,7 +50,12 @@ pub(crate) fn init(cx: &mut App) {
             OpenTemporaryNewConversation,
             Some(KEY_CONTEXT),
         ),
-        KeyBinding::new("tab", FocusTemporaryDetailInput, Some(KEY_CONTEXT)),
+        KeyBinding::new("tab", ToggleTemporaryInputFocus, Some(KEY_CONTEXT)),
+        KeyBinding::new(
+            "tab",
+            ToggleTemporaryInputFocus,
+            Some(COMPOSER_EDITOR_KEY_CONTEXT),
+        ),
         KeyBinding::new("secondary-f", FocusTemporarySearch, Some(KEY_CONTEXT)),
     ]);
 }
@@ -60,7 +68,6 @@ enum TemporaryWindowRoute {
 
 pub(crate) struct TemporaryWindow {
     focus_handle: FocusHandle,
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     search_input: Entity<InputState>,
     list: Entity<ListState<TemporaryConversationListDelegate>>,
     query: String,
@@ -79,7 +86,6 @@ impl TemporaryWindow {
         state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("temporary-search-placeholder"))
@@ -114,7 +120,6 @@ impl TemporaryWindow {
 
         Self {
             focus_handle,
-            app_menu_bar,
             search_input,
             list,
             query: String::new(),
@@ -128,6 +133,13 @@ impl TemporaryWindow {
             _subscriptions: vec![
                 search_subscription,
                 new_conversation_subscription,
+                cx.observe_window_activation(window, |this, window, cx| {
+                    if window.is_window_active() {
+                        this.focus_search_input(window, cx);
+                    } else {
+                        temporary_window::request_hide_for_window_activation(window, cx);
+                    }
+                }),
                 cx.observe_window_appearance(window, |_state, window, cx| {
                     state::theme::apply_current_theme(window, cx);
                     cx.refresh_windows();
@@ -143,7 +155,6 @@ impl TemporaryWindow {
                     foundation::init_i18n(cx);
                     menus::sync_app_menus(cx);
                     state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
                     this.search_input.update(cx, |input, cx| {
                         input.set_placeholder(
                             cx.global::<I18n>().t("temporary-search-placeholder"),
@@ -155,11 +166,6 @@ impl TemporaryWindow {
                 }),
             ],
         }
-    }
-
-    pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
-        self.app_menu_bar
-            .update(cx, |app_menu_bar, cx| app_menu_bar.reload(cx));
     }
 
     pub(crate) fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -365,16 +371,16 @@ impl TemporaryWindow {
         cx.stop_propagation();
     }
 
-    fn focus_detail_input(
+    fn toggle_input_focus(
         &mut self,
-        _: &FocusTemporaryDetailInput,
+        _: &ToggleTemporaryInputFocus,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.search_input.focus_handle(cx).is_focused(window) {
-            return;
+        match tab_focus_target(self.search_input.focus_handle(cx).is_focused(window)) {
+            TemporaryTabTarget::RouteComposer => self.focus_route_composer(window, cx),
+            TemporaryTabTarget::Search => self.focus_search_input(window, cx),
         }
-        self.focus_route_composer(window, cx);
         cx.stop_propagation();
     }
 
@@ -489,11 +495,6 @@ impl TemporaryWindow {
     }
 
     fn render_left_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let count_label = if self.conversations.is_empty() {
-            None
-        } else {
-            Some(format!("{}", self.conversations.len()))
-        };
         let last_error = self.last_error.clone();
 
         v_flex()
@@ -503,29 +504,6 @@ impl TemporaryWindow {
             .border_r_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
-            .child(
-                h_flex()
-                    .h(px(36.))
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Label::new(cx.global::<I18n>().t("temporary-history-title"))
-                            .text_xs()
-                            .font_medium()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate(),
-                    )
-                    .when_some(count_label, |this, count| {
-                        this.child(
-                            Label::new(count)
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    }),
-            )
             .when_some(last_error, |this, error| {
                 this.child(
                     h_flex()
@@ -589,16 +567,8 @@ impl Render for TemporaryWindow {
             .on_action(cx.listener(Self::on_search_move_down))
             .on_action(cx.listener(Self::on_search_enter))
             .on_action(cx.listener(Self::open_new_conversation))
-            .on_action(cx.listener(Self::focus_detail_input))
+            .on_action(cx.listener(Self::toggle_input_focus))
             .on_action(cx.listener(Self::focus_search))
-            .child(
-                div()
-                    .child(
-                        TitleBar::new()
-                            .child(title_bar_content(self.app_menu_bar.clone(), title.clone())),
-                    )
-                    .flex_initial(),
-            )
             .child(
                 div()
                     .w_full()
@@ -642,6 +612,20 @@ enum ReloadSelection {
     Conversation(ConversationId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemporaryTabTarget {
+    RouteComposer,
+    Search,
+}
+
+fn tab_focus_target(search_focused: bool) -> TemporaryTabTarget {
+    if search_focused {
+        TemporaryTabTarget::RouteComposer
+    } else {
+        TemporaryTabTarget::Search
+    }
+}
+
 fn load_no_project_conversations(
     query: &str,
     cx: &App,
@@ -667,30 +651,6 @@ fn selection_after_delta(current: Option<usize>, count: usize, delta: isize) -> 
     })
 }
 
-fn title_bar_content(
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
-    title: impl Into<SharedString>,
-) -> impl IntoElement {
-    h_flex()
-        .w_full()
-        .h_full()
-        .min_w_0()
-        .overflow_hidden()
-        .when(menus::should_render_component_menu_bar(), |this| {
-            this.child(title_bar_menu::title_bar_leading(app_menu_bar))
-        })
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .justify_center()
-                .overflow_hidden()
-                .pr_2()
-                .child(Label::new(title).text_sm().font_medium().truncate()),
-        )
-}
-
 fn push_temporary_notification(
     window: &mut Window,
     cx: &mut App,
@@ -709,7 +669,7 @@ fn push_temporary_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::selection_after_delta;
+    use super::{TemporaryTabTarget, selection_after_delta, tab_focus_target};
 
     #[test]
     fn temporary_selection_wraps_up_and_down() {
@@ -722,5 +682,11 @@ mod tests {
     #[test]
     fn temporary_selection_handles_empty_list() {
         assert_eq!(selection_after_delta(None, 0, 1), None);
+    }
+
+    #[test]
+    fn tab_toggles_between_search_and_route_composer() {
+        assert_eq!(tab_focus_target(true), TemporaryTabTarget::RouteComposer);
+        assert_eq!(tab_focus_target(false), TemporaryTabTarget::Search);
     }
 }

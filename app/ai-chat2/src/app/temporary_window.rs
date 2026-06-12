@@ -8,9 +8,10 @@ use platform_ext::app::{
     NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app,
 };
 use tracing::{Level, event};
-use window_ext::WindowExt as _;
+use window_ext::{WindowExt as _, WindowLevel};
 
 const TEMPORARY_WINDOW_SIZE: Size<Pixels> = size(px(960.), px(620.));
+const TEMPORARY_WINDOW_LEVEL: WindowLevel = WindowLevel::ModalPanel;
 
 struct TemporaryWindowLifecycleState {
     delay_close: Option<Task<()>>,
@@ -41,6 +42,21 @@ pub(crate) fn open_temporary_window(cx: &mut App) {
 pub(crate) fn toggle_temporary_window(cx: &mut App) {
     let _ = with_lifecycle_state(cx, |state, cx| {
         state.toggle_temporary_window(cx);
+    });
+}
+
+pub(crate) fn request_hide_for_window_activation(window: &mut Window, cx: &mut App) {
+    let is_visible = window.is_visible().unwrap_or(false);
+    if !should_hide_for_window_activation(window.is_window_active(), is_visible) {
+        return;
+    }
+
+    request_hide_with_delay(window, cx);
+}
+
+pub(crate) fn request_hide_with_delay(window: &mut Window, cx: &mut App) {
+    let _ = with_lifecycle_state(cx, |state, cx| {
+        state.delay_or_hide_temporary_window(window, cx);
     });
 }
 
@@ -110,6 +126,7 @@ impl TemporaryWindowLifecycleState {
                 ..Default::default()
             },
             |window, cx| {
+                set_temporary_window_level(window);
                 let view = cx.new(|cx| TemporaryWindow::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
@@ -131,6 +148,7 @@ impl TemporaryWindowLifecycleState {
         cx: &mut Context<Root>,
     ) {
         self.delay_close = None;
+        set_temporary_window_level(window);
         let target_display_id = target_display_id(cx);
         let target_bounds = recentered_bounds_for_display(
             target_display_id,
@@ -176,6 +194,17 @@ impl TemporaryWindowLifecycleState {
         if self.front_app.is_none() {
             self.front_app = record_frontmost_app();
         }
+    }
+}
+
+fn set_temporary_window_level(window: &mut Window) {
+    if let Err(err) = window.set_window_level(TEMPORARY_WINDOW_LEVEL) {
+        event!(
+            Level::ERROR,
+            error = ?err,
+            level = ?TEMPORARY_WINDOW_LEVEL,
+            "set ai-chat2 temporary window level failed"
+        );
     }
 }
 
@@ -314,13 +343,19 @@ fn preserve_or_fallback_size(
     }
 }
 
+fn should_hide_for_window_activation(is_active: bool, is_visible: bool) -> bool {
+    !is_active && is_visible
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DisplaySnapshot, TEMPORARY_WINDOW_SIZE, display_id_for_mouse_location,
-        preserve_or_fallback_size,
+        DisplaySnapshot, TEMPORARY_WINDOW_LEVEL, TEMPORARY_WINDOW_SIZE,
+        display_id_for_mouse_location, preserve_or_fallback_size,
+        should_hide_for_window_activation,
     };
     use gpui::{Bounds, point, px, size};
+    use window_ext::WindowLevel;
 
     fn display(
         id: u64,
@@ -386,5 +421,17 @@ mod tests {
             preserve_or_fallback_size(current, display, TEMPORARY_WINDOW_SIZE),
             TEMPORARY_WINDOW_SIZE
         );
+    }
+
+    #[test]
+    fn window_activation_hide_only_applies_to_visible_inactive_window() {
+        assert!(should_hide_for_window_activation(false, true));
+        assert!(!should_hide_for_window_activation(true, true));
+        assert!(!should_hide_for_window_activation(false, false));
+    }
+
+    #[test]
+    fn temporary_window_level_matches_launcher_modal_panel() {
+        assert_eq!(TEMPORARY_WINDOW_LEVEL, WindowLevel::ModalPanel);
     }
 }
