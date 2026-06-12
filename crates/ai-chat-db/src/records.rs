@@ -336,6 +336,14 @@ pub struct NewPrompt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UpdatePrompt {
+    pub name: String,
+    pub content: PromptContent,
+    pub enabled: bool,
+    pub sort_order: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShortcutRecord {
     pub id: ShortcutId,
     pub hotkey: String,

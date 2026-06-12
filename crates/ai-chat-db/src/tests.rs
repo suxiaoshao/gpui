@@ -2,7 +2,7 @@ use crate::{
     FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
     NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    UpdatePrompt, UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -1650,6 +1650,60 @@ fn provider_repository_can_insert_with_preallocated_id() {
 }
 
 #[test]
+fn prompt_repository_lists_updates_and_deletes_prompt_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let second = repo
+        .insert_prompt(NewPrompt {
+            name: "Second".to_string(),
+            content: PromptContent {
+                text: "Second prompt".to_string(),
+            },
+            enabled: true,
+            sort_order: 20,
+        })
+        .unwrap();
+    let first = repo
+        .insert_prompt(NewPrompt {
+            name: "First".to_string(),
+            content: PromptContent {
+                text: "First prompt".to_string(),
+            },
+            enabled: true,
+            sort_order: 10,
+        })
+        .unwrap();
+
+    let listed = repo.list_prompts().unwrap();
+    assert_eq!(
+        listed.iter().map(|prompt| &prompt.id).collect::<Vec<_>>(),
+        vec![&first.id, &second.id]
+    );
+
+    let updated = repo
+        .update_prompt(
+            &first.id,
+            UpdatePrompt {
+                name: "Updated".to_string(),
+                content: PromptContent {
+                    text: "Updated prompt".to_string(),
+                },
+                enabled: false,
+                sort_order: 30,
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.name, "Updated");
+    assert_eq!(updated.content.text, "Updated prompt");
+    assert!(!updated.enabled);
+    assert_eq!(updated.sort_order, 30);
+
+    assert_eq!(repo.delete_prompt(&updated.id).unwrap(), 1);
+    assert!(repo.get_prompt(&updated.id).unwrap().is_none());
+}
+
+#[test]
 fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -1944,12 +1998,7 @@ fn prompt() -> NewPrompt {
 
 fn prompt_content() -> PromptContent {
     PromptContent {
-        messages: vec![PromptMessage {
-            role: TranscriptRole::System,
-            content: vec![ContentPart::Text {
-                text: "You are useful.".to_string(),
-            }],
-        }],
+        text: "You are useful.".to_string(),
     }
 }
 

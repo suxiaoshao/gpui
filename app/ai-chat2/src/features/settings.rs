@@ -22,6 +22,7 @@ mod appearance;
 mod general;
 mod layout;
 mod projects;
+mod prompts;
 mod provider;
 
 use self::{
@@ -31,6 +32,7 @@ use self::{
         SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
     },
     projects::ProjectsSettingsPage,
+    prompts::PromptsSettingsPage,
     provider::ProviderSettingsPage,
 };
 
@@ -51,6 +53,7 @@ pub(crate) struct SettingsView {
     appearance_settings: Entity<AppearanceSettingsPage>,
     provider_settings: Entity<ProviderSettingsPage>,
     projects_settings: Entity<ProjectsSettingsPage>,
+    prompts_settings: Entity<PromptsSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
@@ -72,6 +75,7 @@ impl SettingsView {
         let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
         let provider_settings = cx.new(|cx| ProviderSettingsPage::new(window, cx));
         let projects_settings = cx.new(ProjectsSettingsPage::new);
+        let prompts_settings = cx.new(|cx| PromptsSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let _subscriptions = vec![
@@ -117,6 +121,7 @@ impl SettingsView {
             appearance_settings,
             provider_settings,
             projects_settings,
+            prompts_settings,
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
@@ -199,11 +204,13 @@ impl Render for SettingsView {
                     }
                     SettingsPageKey::Provider => self.provider_settings.clone().into_any_element(),
                     SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
+                    SettingsPageKey::Prompts => self.prompts_settings.clone().into_any_element(),
                 },
             )
-            .when(active_page_key == SettingsPageKey::Provider, |frame| {
-                frame.no_outer_body_scroll()
-            })
+            .when(
+                matches!(active_page_key, SettingsPageKey::Provider),
+                |frame| frame.no_outer_body_scroll(),
+            )
             .into_any_element()
         };
         let resize_view = cx.entity().downgrade();
@@ -359,16 +366,17 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 4] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {
     let i18n = cx.global::<I18n>();
     settings_page_specs_for_i18n(i18n)
 }
 
-fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 4] {
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 5] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
     let page_projects = i18n.t("settings-page-projects");
+    let page_prompts = i18n.t("settings-page-prompts");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
     let field_http_proxy = i18n.t("field-http-proxy");
@@ -413,6 +421,14 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 4] {
             settings_search_text(
                 [page_projects.as_str()],
                 "projects project workspace folder path directory 项目 工作区 文件夹 路径",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Prompts,
+            page_prompts.clone(),
+            settings_search_text(
+                [page_prompts.as_str()],
+                "prompts prompt system developer instruction text 提示词 系统 开发者 指令 文本",
             ),
         ),
     ]
@@ -549,6 +565,23 @@ mod tests {
         assert!(settings_page_matches(provider, "Ollama"));
         assert!(settings_page_matches(provider, "提供商"));
         assert!(settings_page_matches(provider, "模型"));
+    }
+
+    #[test]
+    fn settings_prompts_page_uses_i18n_title_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let prompts = specs
+            .iter()
+            .find(|spec| spec.key == SettingsPageKey::Prompts)
+            .expect("prompts settings page exists");
+
+        assert_eq!(prompts.title.as_ref(), "提示词");
+        assert!(settings_page_matches(prompts, "prompt"));
+        assert!(settings_page_matches(prompts, "instruction"));
+        assert!(settings_page_matches(prompts, "提示词"));
+        assert!(settings_page_matches(prompts, "tishici"));
+        assert!(settings_page_matches(prompts, "tsc"));
     }
 
     #[test]

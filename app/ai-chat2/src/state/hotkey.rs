@@ -344,14 +344,13 @@ impl GlobalHotkeyState {
             return Ok(());
         }
 
-        if let Some(old_hotkey) = registered_old_hotkey.as_deref() {
-            if let Err(err) =
+        if let Some(old_hotkey) = registered_old_hotkey.as_deref()
+            && let Err(err) =
                 self.unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryConversation)
-            {
-                self.registration_errors
-                    .insert("temporary".to_string(), err.to_string());
-                return Err(err);
-            }
+        {
+            self.registration_errors
+                .insert("temporary".to_string(), err.to_string());
+            return Err(err);
         }
         self.temporary_hotkey = None;
         self.registration_errors.remove("temporary");

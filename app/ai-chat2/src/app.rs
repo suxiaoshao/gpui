@@ -116,6 +116,7 @@ fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
     database::init_store(cx)?;
     state::providers::init(cx);
     state::projects::init(cx);
+    state::prompts::init(cx);
     state::workspace::init(cx);
     state::conversation_runtime::init(cx);
     gpui_tokio::init(cx);

@@ -184,7 +184,7 @@ diesel::table! {
     prompts (id) {
         id -> Text,
         name -> Text,
-        content_json -> Json,
+        content -> Text,
         enabled -> Bool,
         sort_order -> Integer,
         created_at -> TimestamptzSqlite,

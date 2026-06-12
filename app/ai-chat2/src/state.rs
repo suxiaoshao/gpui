@@ -4,6 +4,7 @@ pub(crate) mod conversations;
 pub(crate) mod hotkey;
 pub(crate) mod layout;
 pub(crate) mod projects;
+pub(crate) mod prompts;
 pub(crate) mod provider_secrets;
 pub(crate) mod providers;
 pub(crate) mod temporary;

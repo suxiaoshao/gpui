@@ -744,18 +744,7 @@ fn is_terminal_agent_run_status(status: AgentRunStatus) -> bool {
 
 fn prompt_preamble(prompt: Option<&PromptContent>) -> Option<String> {
     let prompt = prompt?;
-    let text = prompt
-        .messages
-        .iter()
-        .filter(|message| {
-            matches!(
-                message.role,
-                TranscriptRole::System | TranscriptRole::Developer
-            )
-        })
-        .flat_map(|message| message.content.iter().filter_map(ContentPart::search_text))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = prompt.text.trim().to_string();
     (!text.is_empty()).then_some(text)
 }
 
@@ -2015,12 +2004,7 @@ mod tests {
     fn run_settings(provider_id: &str, model_id: &str) -> RunSettingsSnapshot {
         RunSettingsSnapshot {
             prompt: Some(PromptContent {
-                messages: vec![PromptMessage {
-                    role: TranscriptRole::System,
-                    content: vec![ContentPart::Text {
-                        text: "You are useful.".to_string(),
-                    }],
-                }],
+                text: "You are useful.".to_string(),
             }),
             provider_id: provider_id.to_string(),
             model_id: model_id.to_string(),

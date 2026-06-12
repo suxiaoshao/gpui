@@ -497,14 +497,7 @@ pub struct RunSettingsSnapshot {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptContent {
-    pub messages: Vec<PromptMessage>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PromptMessage {
-    pub role: TranscriptRole,
-    pub content: Vec<ContentPart>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

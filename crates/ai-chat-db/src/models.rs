@@ -435,7 +435,7 @@ pub(crate) struct SqlNewUsageEventRow {
 pub(crate) struct SqlPromptRow {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) content_json: Value,
+    pub(crate) content: String,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
     pub(crate) created_at: OffsetDateTime,
@@ -447,7 +447,7 @@ pub(crate) struct SqlPromptRow {
 pub(crate) struct SqlNewPromptRow {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) content_json: Value,
+    pub(crate) content: String,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
     pub(crate) created_at: OffsetDateTime,
@@ -808,7 +808,7 @@ impl TryFrom<SqlPromptRow> for PromptRecord {
         Ok(Self {
             id: row.id,
             name: row.name,
-            content: from_json(row.content_json)?,
+            content: PromptContent { text: row.content },
             enabled: row.enabled,
             sort_order: row.sort_order,
             created_at: row.created_at,

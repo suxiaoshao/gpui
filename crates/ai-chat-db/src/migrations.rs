@@ -64,7 +64,7 @@ CREATE TABLE providers (
 CREATE TABLE prompts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    content_json JSON NOT NULL,
+    content TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at DateTime NOT NULL,
