@@ -1,4 +1,5 @@
 pub(crate) mod assets;
+pub(crate) mod conversation_format;
 pub(crate) mod i18n;
 pub(crate) mod search;
 

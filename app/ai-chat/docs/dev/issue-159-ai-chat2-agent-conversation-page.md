@@ -49,7 +49,9 @@ ChatForm 恢复发送态。
 仍未完成：
 
 - stop/cancel 已完成；retry/resend UI 仍未完成。
-- prompt selector、attachments/multimodal input、Temporary Conversation runtime。
+- prompt selector、attachments/multimodal input、Temporary Conversation Window；Temporary Window 的具体状态见
+  `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。该能力由独立专项跟踪，不属于本 Agent
+  Conversation Page 专项的实现范围。
 - approval approve/deny action 和 rich tool UI。
 - streaming delta 的更细粒度展示、last item preview、完整 project metadata/status UI。
 
@@ -125,7 +127,7 @@ crates/ai-chat-db/src/
   - 只负责读取当前项目选择、调用 `state::conversations` service、成功后清空 composer、刷新 sidebar 和跳转 route。
   - 创建失败时必须保留 composer 输入，并通过 notification 展示错误。
 - `features/home/shell.rs`
-  - 将 `HomeRoute::Conversation(id)` 的右侧页面改为缓存 `Entity<ConversationPage>`。
+  - 将 `HomeRoute::Conversation(id)` 的右侧页面改为缓存 `Entity<ConversationDetailPage>`。
   - 缓存键是 `ConversationId`；route 反复 render 时不能重建 page 内部展开状态和 list state。
 - `features/home/conversation.rs`
   - 从 placeholder 改为 `Entity` 页面。
@@ -264,7 +266,7 @@ pub(crate) enum ConversationRuntimeEvent {
 - `finish_run` 和强制 stop 都必须校验 `ActiveRunKey`，避免用户快速启动新 run 后旧 task 迟到 finish 误删新 run。
 - Runtime store 通过 `cx.spawn`/`window.spawn` 在前台协调 UI state，通过 `gpui_tokio` 或已有 async bridge 在后台执行 provider I/O。
 - observer 收到 DB 写入或 run terminal 后，在 foreground 更新 store 并 `cx.emit(ConversationRuntimeEvent::ConversationChanged { .. })`。
-- ConversationPage 订阅 runtime store 事件，只在目标 conversation id 匹配时 reload snapshot。
+- ConversationDetailPage 订阅 runtime store 事件，只在目标 conversation id 匹配时 reload snapshot。
 
 ### `ai-chat-agent` observer
 
@@ -391,7 +393,7 @@ ChatForm Enter / Send button
   -> AiChat2WorkspaceStore::open_conversation(conversation.id)
   -> ConversationRuntimeStore::start_run
   -> AgentRuntime observer emits ConversationChanged
-  -> ConversationPage reloads snapshot
+  -> ConversationDetailPage reloads snapshot
 ```
 
 失败语义：
@@ -408,7 +410,7 @@ ChatForm Enter / Send button
 ### 既有 Conversation 继续发送
 
 ```text
-ConversationPage bottom ChatForm
+ConversationDetailPage bottom ChatForm
   -> ChatFormEvent::SendRequested(ChatFormSubmit)
   -> state::conversations::send_conversation_message
      -> repository.append_conversation_item(user message)
@@ -432,7 +434,7 @@ AgentRuntime / PersistenceContext writes DB
   -> AgentRuntimeObserver::emit(...)
   -> ConversationRuntimeStore receives event on foreground
   -> emits ConversationRuntimeEvent::ConversationChanged
-  -> ConversationPage reloads ConversationLoadSnapshot
+  -> ConversationDetailPage reloads ConversationLoadSnapshot
   -> ConversationTimelineRows rebuilds rows from items + runs
 ```
 
@@ -559,7 +561,7 @@ pub(crate) fn clear(&mut self, cx: &mut Context<Self>);
 - `can_send` 必须同时满足 composer 非空、selected model 可用、`submit_blocked == false`。
 - 父级 service 成功写 DB 后才调用 `clear_after_submit`。
 - 发送失败时不能清空 composer。
-- ConversationPage 的 ChatForm 不渲染项目选择器；项目选择器本来就在 NewConversationPage 层，保持不进入通用 ChatForm。
+- ConversationDetailPage 的 ChatForm 不渲染项目选择器；项目选择器本来就在 NewConversationPage 层，保持不进入通用 ChatForm。
 
 ## Icon 和 i18n
 
@@ -689,7 +691,7 @@ time = { version = "0.3.47", features = ["formatting", "local-offset", "serde"] 
 - active run 期间主按钮展示 stop；Enter 不触发 stop，点击 stop 发出 `StopRequested`。
 - stop 后 cancel token；100ms grace 后仍未结束则强制终态化为 `Canceled` 并发 `RunFinished`。
 - stop 后旧 run 的迟到 `finish_run` 不会误删新 run。
-- observer 收到 item append / run terminal 后 ConversationPage reload。
+- observer 收到 item append / run terminal 后 ConversationDetailPage reload。
 - 有 final assistant item 的 agent turn 默认 collapsed。
 - running/no-final agent turn 默认 expanded。
 - `已处理 {duration}` 使用 run started/completed。
@@ -702,5 +704,6 @@ time = { version = "0.3.47", features = ["formatting", "local-offset", "serde"] 
 - 不实现 prompt selector。
 - 不实现 attachments/multimodal input。
 - 不实现 full tool rich UI。
-- 不实现 Temporary Conversation runtime。
+- 不在本页实现 Temporary Conversation Window；该能力的状态见
+  `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。
 - 不新增 DB migration。

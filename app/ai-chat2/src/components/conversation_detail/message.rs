@@ -17,10 +17,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::{
-    features::home::conversation::format,
-    foundation::{I18n, assets::IconName},
-};
+use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
 pub(super) type OnCopy = Rc<dyn Fn(String, &mut Window, &mut App) -> bool + 'static>;

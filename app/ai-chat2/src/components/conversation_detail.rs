@@ -1,4 +1,3 @@
-pub(crate) mod format;
 mod message;
 mod timeline;
 
@@ -21,13 +20,12 @@ use gpui_component::{
 use tracing::{Level, event};
 
 use crate::{
-    foundation::I18n,
+    components::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
+    foundation::{I18n, conversation_format as format},
     state::{self, conversations::ConversationLoadSnapshot},
 };
 
-use super::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit};
-
-pub(crate) struct ConversationPage {
+pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
     snapshot: Result<Option<ConversationLoadSnapshot>, String>,
     chat_form: Entity<ChatForm>,
@@ -67,7 +65,7 @@ fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'
     MessageTextUpdate::Replace
 }
 
-impl ConversationPage {
+impl ConversationDetailPage {
     pub(crate) fn new(
         conversation_id: ConversationId,
         window: &mut Window,
@@ -120,6 +118,11 @@ impl ConversationPage {
         page.timeline.scroll_to_end();
         page.sync_agent_running(cx);
         page
+    }
+
+    pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chat_form
+            .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
     }
 
     fn submit_message(
@@ -442,7 +445,7 @@ impl ConversationPage {
     }
 }
 
-impl Render for ConversationPage {
+impl Render for ConversationDetailPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !matches!(self.snapshot, Ok(Some(_))) {
             return self.render_missing(cx);

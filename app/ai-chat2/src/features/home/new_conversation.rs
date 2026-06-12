@@ -20,17 +20,18 @@ use gpui_component::{
 use tracing::{Level, event};
 
 use crate::{
+    components::{
+        chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
+        picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
+    },
     foundation::{I18n, assets::IconName},
     state,
 };
 
-use super::chat_form::{
-    ChatForm, ChatFormEvent, ChatFormSubmit,
-    picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
-};
-
 const PROJECT_BAR_VISIBLE_HEIGHT: f32 = 42.;
 const PROJECT_BAR_OVERLAP: f32 = 16.;
+const PROJECT_PICKER_TRIGGER_SIZE: f32 = 28.;
+const PROJECT_PICKER_TRIGGER_RADIUS: f32 = 999.;
 
 pub(crate) struct NewConversationPage {
     chat_form: Entity<ChatForm>,
@@ -773,11 +774,11 @@ fn project_picker_trigger(
 
     Button::new(id)
         .text()
-        .with_size(px(super::chat_form::COMPOSER_BUTTON_SIZE))
-        .h(px(super::chat_form::COMPOSER_BUTTON_SIZE))
+        .with_size(px(PROJECT_PICKER_TRIGGER_SIZE))
+        .h(px(PROJECT_PICKER_TRIGGER_SIZE))
         .px(px(8.))
         .py(px(0.))
-        .rounded(px(super::chat_form::COMPOSER_BUTTON_RADIUS))
+        .rounded(px(PROJECT_PICKER_TRIGGER_RADIUS))
         .text_color(foreground)
         .hover(move |this| this.bg(hover_background).text_color(hover_foreground))
         .when(open, |this| {

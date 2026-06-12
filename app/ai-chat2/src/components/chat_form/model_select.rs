@@ -1,8 +1,8 @@
-use super::{
-    ChatForm,
-    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger_with_icon},
-};
+use super::ChatForm;
 use crate::{
+    components::picker::{
+        PickerPopoverConfig, PickerSection, picker_popover, picker_trigger_with_icon,
+    },
     features::settings,
     foundation::{
         self, I18n,

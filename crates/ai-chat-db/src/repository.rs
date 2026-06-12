@@ -535,6 +535,52 @@ impl FreshRepository {
             .collect()
     }
 
+    pub fn list_no_project_conversations(&self, query: &str) -> Result<Vec<ConversationRecord>> {
+        let active = db_label(&ConversationStatus::Active)?;
+        let scratch = db_label(&ProjectKind::Scratch)?;
+        let mut conn = self.conn()?;
+        let conversations = conversations::table
+            .filter(conversations::status.eq(active))
+            .filter(
+                conversations::project_id.eq_any(
+                    projects::table
+                        .filter(projects::removed.eq(false))
+                        .filter(projects::kind.eq(scratch))
+                        .select(projects::id),
+                ),
+            )
+            .order(conversations::updated_at.desc())
+            .select(SqlConversationRow::as_select())
+            .load::<SqlConversationRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<ConversationRecord>>>()?;
+
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(conversations);
+        }
+
+        let item_text_by_conversation = self.conversation_search_texts(
+            conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect(),
+        )?;
+
+        Ok(conversations
+            .into_iter()
+            .filter(|conversation| {
+                conversation_matches_query(
+                    conversation,
+                    None,
+                    item_text_by_conversation.get(&conversation.id),
+                    &query,
+                )
+            })
+            .collect())
+    }
+
     pub fn update_conversation_metadata(
         &self,
         id: &str,

@@ -372,7 +372,7 @@ fn project_header(project: &ProjectRecord) -> SidebarProjectHeader {
     }
 }
 
-fn conversation_node(conversation: ConversationRecord) -> SidebarConversationNode {
+pub(crate) fn conversation_node(conversation: ConversationRecord) -> SidebarConversationNode {
     debug_assert_eq!(conversation.status, ConversationStatus::Active);
     SidebarConversationNode {
         id: conversation.id,

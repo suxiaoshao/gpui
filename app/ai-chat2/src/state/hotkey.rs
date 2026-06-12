@@ -7,6 +7,7 @@ use gpui::{App, BorrowAppContext, Global, Task};
 use tracing::{Level, event};
 
 use crate::{
+    app::menus::OpenTemporaryConversation,
     database,
     errors::{AiChat2Error, AiChat2Result},
     state::AiChat2AppSettings,
@@ -115,8 +116,23 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
     let task = cx.spawn(async move |cx| {
         while let Ok(event) = rx.recv().await {
             let hotkey_id = event.id();
-            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
-                hotkeys.handle_pressed_hotkey(hotkey_id);
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                let Some(action) = hotkeys.handle_pressed_hotkey(hotkey_id) else {
+                    return;
+                };
+
+                match action {
+                    RegisteredHotkeyAction::TemporaryConversation => {
+                        cx.dispatch_action(&OpenTemporaryConversation);
+                    }
+                    RegisteredHotkeyAction::Shortcut { shortcut_id } => {
+                        event!(
+                            Level::INFO,
+                            shortcut_id = %shortcut_id,
+                            "ai-chat2 shortcut hotkey dispatch is not implemented yet"
+                        );
+                    }
+                }
             });
         }
     });
@@ -343,14 +359,14 @@ impl GlobalHotkeyState {
             .insert(shortcut.id, shortcut.hotkey);
     }
 
-    fn handle_pressed_hotkey(&mut self, hotkey_id: u32) {
+    fn handle_pressed_hotkey(&mut self, hotkey_id: u32) -> Option<RegisteredHotkeyAction> {
         let Some(action) = self.hotkey_actions.get(&hotkey_id).cloned() else {
             event!(
                 Level::INFO,
                 hotkey_id,
                 "ignoring ai-chat2 hotkey press with no registered action"
             );
-            return;
+            return None;
         };
 
         let action_label = action.label();
@@ -365,6 +381,7 @@ impl GlobalHotkeyState {
             action = %action_label,
             "recorded ai-chat2 hotkey press"
         );
+        Some(action)
     }
 
     pub(crate) fn diagnostics(&self) -> ShortcutRuntimeDiagnostics {

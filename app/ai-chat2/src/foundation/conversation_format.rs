@@ -7,7 +7,7 @@ use time::{Month, OffsetDateTime, UtcOffset, Weekday};
 
 use crate::foundation::I18n;
 
-pub(super) fn content_parts_text(content: &[ContentPart]) -> String {
+pub(crate) fn content_parts_text(content: &[ContentPart]) -> String {
     content
         .iter()
         .filter_map(ContentPart::search_text)
@@ -15,7 +15,7 @@ pub(super) fn content_parts_text(content: &[ContentPart]) -> String {
         .join("\n")
 }
 
-pub(super) fn item_markdown(item: &ConversationItemRecord) -> String {
+pub(crate) fn item_markdown(item: &ConversationItemRecord) -> String {
     match &item.payload {
         ConversationItemPayload::Message { content, .. } => content_parts_text(content),
         ConversationItemPayload::SkillActivation(skill) => {
@@ -74,7 +74,7 @@ pub(super) fn item_markdown(item: &ConversationItemRecord) -> String {
     }
 }
 
-pub(super) fn is_user_message(item: &ConversationItemRecord) -> bool {
+pub(crate) fn is_user_message(item: &ConversationItemRecord) -> bool {
     matches!(
         item.payload,
         ConversationItemPayload::Message {
@@ -84,7 +84,7 @@ pub(super) fn is_user_message(item: &ConversationItemRecord) -> bool {
     )
 }
 
-pub(super) fn is_assistant_message(item: &ConversationItemRecord) -> bool {
+pub(crate) fn is_assistant_message(item: &ConversationItemRecord) -> bool {
     matches!(
         item.payload,
         ConversationItemPayload::Message {
@@ -94,34 +94,34 @@ pub(super) fn is_assistant_message(item: &ConversationItemRecord) -> bool {
     )
 }
 
-pub(super) fn is_terminal_run(run: &AgentRunRecord) -> bool {
+pub(crate) fn is_terminal_run(run: &AgentRunRecord) -> bool {
     matches!(
         run.status,
         AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
     )
 }
 
-pub(super) fn run_completed_time(run: &AgentRunRecord) -> OffsetDateTime {
+pub(crate) fn run_completed_time(run: &AgentRunRecord) -> OffsetDateTime {
     run.completed_at
         .or(run.started_at)
         .unwrap_or(run.created_at)
 }
 
-pub(super) fn run_started_time(run: &AgentRunRecord) -> OffsetDateTime {
+pub(crate) fn run_started_time(run: &AgentRunRecord) -> OffsetDateTime {
     run.started_at.unwrap_or(run.created_at)
 }
 
-pub(super) fn run_duration_label(run: &AgentRunRecord) -> String {
+pub(crate) fn run_duration_label(run: &AgentRunRecord) -> String {
     let start = run_started_time(run);
     let end = run.completed_at.unwrap_or_else(OffsetDateTime::now_utc);
     duration_label((end - start).whole_seconds().max(0))
 }
 
-pub(super) fn elapsed_since_label(start: OffsetDateTime) -> String {
+pub(crate) fn elapsed_since_label(start: OffsetDateTime) -> String {
     duration_label((OffsetDateTime::now_utc() - start).whole_seconds().max(0))
 }
 
-pub(super) fn timestamp_label(time: OffsetDateTime, i18n: &I18n) -> String {
+pub(crate) fn timestamp_label(time: OffsetDateTime, i18n: &I18n) -> String {
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     timestamp_label_with_offset(time, OffsetDateTime::now_utc(), offset, i18n)
 }

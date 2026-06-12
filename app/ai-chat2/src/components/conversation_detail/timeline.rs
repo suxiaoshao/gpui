@@ -8,11 +8,12 @@ use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
 
-use crate::state::conversations::ConversationLoadSnapshot;
+use crate::{
+    foundation::conversation_format as format, state::conversations::ConversationLoadSnapshot,
+};
 
-use super::{
-    format,
-    message::{AgentTurnRow, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow},
+use super::message::{
+    AgentTurnRow, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow,
 };
 
 pub(super) struct ConversationTimelineRows {

@@ -1,9 +1,9 @@
 mod composer_editor;
 mod effort_select;
 mod model_select;
-pub(in crate::features::home) mod picker;
 mod thinking_effort;
 
+use crate::components::picker::PickerListDelegate;
 use crate::{
     foundation::{self, assets::IconName},
     state,
@@ -22,7 +22,6 @@ use gpui_component::{
     v_flex,
 };
 use model_select::{ModelOption, model_sections};
-use picker::PickerListDelegate;
 use std::{path::Path, rc::Rc};
 use thinking_effort::{
     computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,

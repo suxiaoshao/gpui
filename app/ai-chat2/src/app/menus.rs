@@ -1,5 +1,5 @@
 use crate::{
-    app::{about, placeholder_windows, quit_app, show_or_create_main_window},
+    app::{about, quit_app, show_or_create_main_window, temporary_window},
     features::settings,
     foundation::I18n,
 };
@@ -42,7 +42,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &About, cx: &mut App| about::open_about_window(cx));
     cx.on_action(|_: &OpenMainWindow, cx: &mut App| show_or_create_main_window(cx));
     cx.on_action(|_: &OpenTemporaryConversation, cx: &mut App| {
-        placeholder_windows::open_temporary_window(cx);
+        temporary_window::open_temporary_window(cx);
     });
     cx.on_action(|_: &OpenSettings, cx: &mut App| settings::open_settings_window_from_menu(cx));
     cx.on_action(|_: &Quit, cx: &mut App| quit_app(cx));

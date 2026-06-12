@@ -356,6 +356,89 @@ fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() 
 }
 
 #[test]
+fn no_project_conversations_only_include_visible_scratch_active_conversations() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let normal_project = repo.insert_project(project("normal-no-project")).unwrap();
+    let visible_scratch_project = repo
+        .insert_project(scratch_project("visible-no-project"))
+        .unwrap();
+    let removed_scratch_project = repo
+        .insert_project(scratch_project("removed-no-project"))
+        .unwrap();
+    repo.set_project_removed(&removed_scratch_project.id, true)
+        .unwrap();
+
+    let scratch = repo
+        .insert_conversation(conversation(&visible_scratch_project))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&visible_scratch_project))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+    let normal = repo
+        .insert_conversation(conversation(&normal_project))
+        .unwrap();
+    let removed = repo
+        .insert_conversation(conversation(&removed_scratch_project))
+        .unwrap();
+
+    let conversations = repo.list_no_project_conversations("").unwrap();
+    let ids = conversations
+        .iter()
+        .map(|conversation| conversation.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, vec![scratch.id.as_str()]);
+    assert!(!ids.contains(&deleted.id.as_str()));
+    assert!(!ids.contains(&normal.id.as_str()));
+    assert!(!ids.contains(&removed.id.as_str()));
+}
+
+#[test]
+fn no_project_search_matches_title_and_item_text_but_not_normal_project_text() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let normal_project = repo.insert_project(project("release-normal")).unwrap();
+    let scratch_project = repo
+        .insert_project(scratch_project("scratch-release-project"))
+        .unwrap();
+
+    let mut by_title = conversation(&scratch_project);
+    by_title.title = "Release notes".to_string();
+    let by_title = repo.insert_conversation(by_title).unwrap();
+
+    let mut by_item = conversation(&scratch_project);
+    by_item.title = "Scratch chat".to_string();
+    let by_item = repo.insert_conversation(by_item).unwrap();
+    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+        .unwrap();
+
+    let normal = repo
+        .insert_conversation(conversation(&normal_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&normal.id, "unique needle"))
+        .unwrap();
+
+    let title_matches = repo.list_no_project_conversations("release").unwrap();
+    assert_eq!(title_matches.len(), 1);
+    assert_eq!(title_matches[0].id, by_title.id);
+
+    let item_matches = repo.list_no_project_conversations("unique needle").unwrap();
+    assert_eq!(item_matches.len(), 1);
+    assert_eq!(item_matches[0].id, by_item.id);
+
+    let project_matches = repo
+        .list_no_project_conversations("scratch-release-project")
+        .unwrap();
+    assert!(project_matches.is_empty());
+}
+
+#[test]
 fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -1718,6 +1801,21 @@ fn project(suffix: &str) -> NewProject {
         pinned: false,
         removed: false,
         metadata: project_metadata(),
+    }
+}
+
+fn scratch_project(suffix: &str) -> NewProject {
+    NewProject {
+        path: format!("/tmp/ai-chat-{suffix}"),
+        display_name: format!("Scratch {suffix}"),
+        kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("no-project".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+        },
     }
 }
 

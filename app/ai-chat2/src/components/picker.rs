@@ -1,4 +1,3 @@
-use super::{COMPOSER_BUTTON_RADIUS, COMPOSER_BUTTON_SIZE};
 use crate::foundation::assets::IconName;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -13,13 +12,16 @@ use gpui_component::{
 };
 use std::rc::Rc;
 
+const PICKER_TRIGGER_SIZE: f32 = 28.;
+const PICKER_TRIGGER_RADIUS: f32 = 999.;
+
 type OnCancel = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 type OnConfirm<T> = Rc<dyn Fn(T, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, Debug)]
-pub(in crate::features::home) struct PickerSection<T> {
-    pub(in crate::features::home) title: Option<SharedString>,
-    pub(in crate::features::home) items: Vec<Rc<T>>,
+pub(crate) struct PickerSection<T> {
+    pub(crate) title: Option<SharedString>,
+    pub(crate) items: Vec<Rc<T>>,
 }
 
 impl<T> PickerSection<T> {
@@ -31,14 +33,14 @@ impl<T> PickerSection<T> {
         }]
     }
 
-    pub(in crate::features::home) fn untitled(items: impl IntoIterator<Item = T>) -> Self {
+    pub(crate) fn untitled(items: impl IntoIterator<Item = T>) -> Self {
         Self {
             title: None,
             items: items.into_iter().map(Rc::new).collect(),
         }
     }
 
-    pub(in crate::features::home) fn section(
+    pub(crate) fn section(
         title: impl Into<SharedString>,
         items: impl IntoIterator<Item = T>,
     ) -> Self {
@@ -49,7 +51,7 @@ impl<T> PickerSection<T> {
     }
 }
 
-pub(in crate::features::home) struct PickerListDelegate<T>
+pub(crate) struct PickerListDelegate<T>
 where
     T: SelectItem + Clone + 'static,
 {
@@ -64,7 +66,7 @@ where
 }
 
 #[derive(IntoElement, Clone)]
-pub(in crate::features::home) struct PickerListItem<T>
+pub(crate) struct PickerListItem<T>
 where
     T: SelectItem + Clone + 'static,
 {
@@ -140,7 +142,7 @@ impl<T> PickerListDelegate<T>
 where
     T: SelectItem + Clone + 'static,
 {
-    pub(in crate::features::home) fn new(
+    pub(crate) fn new(
         sections: Vec<PickerSection<T>>,
         selected_value: Option<T::Value>,
         empty_label: SharedString,
@@ -159,30 +161,24 @@ where
         }
     }
 
-    pub(in crate::features::home) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
+    pub(crate) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
         self.all_sections = sections;
         self.apply_query();
     }
 
-    pub(in crate::features::home) fn set_selected_value(
-        &mut self,
-        selected_value: Option<T::Value>,
-    ) {
+    pub(crate) fn set_selected_value(&mut self, selected_value: Option<T::Value>) {
         self.selected_value = selected_value;
     }
 
-    pub(in crate::features::home) fn set_empty_label(
-        &mut self,
-        empty_label: impl Into<SharedString>,
-    ) {
+    pub(crate) fn set_empty_label(&mut self, empty_label: impl Into<SharedString>) {
         self.empty_label = empty_label.into();
     }
 
-    pub(in crate::features::home) fn selected_index(&self) -> Option<IndexPath> {
+    pub(crate) fn selected_index(&self) -> Option<IndexPath> {
         Self::selected_index_for(&self.sections, self.selected_value.as_ref())
     }
 
-    pub(in crate::features::home) fn selected_index_for(
+    pub(crate) fn selected_index_for(
         sections: &[PickerSection<T>],
         selected_value: Option<&T::Value>,
     ) -> Option<IndexPath> {
@@ -336,7 +332,7 @@ where
     }
 }
 
-pub(in crate::features::home) fn picker_trigger(
+pub(crate) fn picker_trigger(
     id: &'static str,
     icon: IconName,
     label: impl Into<SharedString>,
@@ -345,7 +341,7 @@ pub(in crate::features::home) fn picker_trigger(
     picker_trigger_with_icon(id, Icon::new(icon).size_4().into_any_element(), label, open)
 }
 
-pub(in crate::features::home) fn picker_trigger_with_icon(
+pub(crate) fn picker_trigger_with_icon(
     id: &'static str,
     icon: AnyElement,
     label: impl Into<SharedString>,
@@ -354,11 +350,11 @@ pub(in crate::features::home) fn picker_trigger_with_icon(
     Button::new(id)
         .ghost()
         .selected(open)
-        .with_size(px(COMPOSER_BUTTON_SIZE))
-        .h(px(COMPOSER_BUTTON_SIZE))
+        .with_size(px(PICKER_TRIGGER_SIZE))
+        .h(px(PICKER_TRIGGER_SIZE))
         .px(px(8.))
         .py(px(0.))
-        .rounded(px(COMPOSER_BUTTON_RADIUS))
+        .rounded(px(PICKER_TRIGGER_RADIUS))
         .child(
             h_flex()
                 .items_center()
@@ -383,26 +379,23 @@ pub(in crate::features::home) fn picker_trigger_with_icon(
         )
 }
 
-pub(in crate::features::home) struct PickerPopoverConfig<D, F>
+pub(crate) struct PickerPopoverConfig<D, F>
 where
     D: ListDelegate + 'static,
     F: Fn(&bool, &mut Window, &mut App) + 'static,
 {
-    pub(in crate::features::home) id: &'static str,
-    pub(in crate::features::home) open: bool,
-    pub(in crate::features::home) trigger: Button,
-    pub(in crate::features::home) list: Entity<ListState<D>>,
-    pub(in crate::features::home) width: Pixels,
-    pub(in crate::features::home) max_height: Length,
-    pub(in crate::features::home) search_placeholder: Option<SharedString>,
-    pub(in crate::features::home) footer: Option<AnyElement>,
-    pub(in crate::features::home) on_open_change: F,
+    pub(crate) id: &'static str,
+    pub(crate) open: bool,
+    pub(crate) trigger: Button,
+    pub(crate) list: Entity<ListState<D>>,
+    pub(crate) width: Pixels,
+    pub(crate) max_height: Length,
+    pub(crate) search_placeholder: Option<SharedString>,
+    pub(crate) footer: Option<AnyElement>,
+    pub(crate) on_open_change: F,
 }
 
-pub(in crate::features::home) fn picker_popover<D, F>(
-    cx: &App,
-    config: PickerPopoverConfig<D, F>,
-) -> impl IntoElement
+pub(crate) fn picker_popover<D, F>(cx: &App, config: PickerPopoverConfig<D, F>) -> impl IntoElement
 where
     D: ListDelegate + 'static,
     F: Fn(&bool, &mut Window, &mut App) + 'static,

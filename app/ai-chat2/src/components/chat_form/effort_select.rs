@@ -1,9 +1,12 @@
 use super::{
     ChatForm,
-    picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
     thinking_effort::{reasoning_selection_label, reasoning_selections},
 };
-use crate::{foundation, foundation::assets::IconName};
+use crate::{
+    components::picker::{PickerPopoverConfig, PickerSection, picker_popover, picker_trigger},
+    foundation,
+    foundation::assets::IconName,
+};
 use ai_chat_core::{ModelCapabilitiesSnapshot, ReasoningSelectionSnapshot};
 use gpui::*;
 use gpui_component::{

@@ -1,5 +1,6 @@
 use crate::{
     app::{menus, title_bar_menu},
+    components::conversation_detail::ConversationDetailPage,
     foundation, state,
 };
 use ai_chat_core::ConversationId;
@@ -14,7 +15,6 @@ use std::collections::HashMap;
 
 use super::{
     actions::{OpenConversationSearch, OpenNewConversation},
-    conversation::ConversationPage,
     new_conversation::NewConversationPage,
     sidebar::{self, HomeSidebar},
 };
@@ -28,7 +28,7 @@ pub(crate) struct HomeView {
     workspace: Entity<state::AiChat2WorkspaceStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
-    conversation_pages: HashMap<ConversationId, Entity<ConversationPage>>,
+    conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -146,10 +146,12 @@ impl HomeView {
         conversation_id: ConversationId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<ConversationPage> {
+    ) -> Entity<ConversationDetailPage> {
         self.conversation_pages
             .entry(conversation_id.clone())
-            .or_insert_with(|| cx.new(|cx| ConversationPage::new(conversation_id, window, cx)))
+            .or_insert_with(|| {
+                cx.new(|cx| ConversationDetailPage::new(conversation_id, window, cx))
+            })
             .clone()
     }
 }

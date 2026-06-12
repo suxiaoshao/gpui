@@ -6,6 +6,8 @@
 侧边栏专项计划见 `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md`。
 Agent conversation page 专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-agent-conversation-page.md`。
+Temporary Conversation Window 专项计划见
+`app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。
 
 最后同步时间：2026-06-11。
 
@@ -39,7 +41,11 @@ collapse、hover copy/time、Codex-style timestamp、复制成功按钮 `Check` 
 本地增量已补齐 Codex-style stop generation：运行中 ChatForm 发送按钮切换为停止按钮，点击后 cancel
 当前 run token，并在 100ms grace 后强制把仍未结束的 run 终态化为 `Canceled`、移除 active run 并发
 `RunFinished`。完整多模态 timeline、Prompt/Shortcut settings、manual provider model editor、retry/resend、approval action、
-rich tool UI 和真实 Temporary Conversation runtime 仍未完成。本轮后续整理已把 sidebar 热路径的
+rich tool UI 仍未完成；真实 Temporary Conversation Window 首版已实现：顶部单行搜索、no-project
+conversation 列表、右侧 new/detail、键盘 focus、`secondary-n` 和真实 agent run 已接线。Temporary 首版已把
+Home-only 的 ChatForm、composer/picker、conversation detail/timeline 和纯格式化函数抽到
+`components` / `foundation` / `state`，避免 `features/temporary` 横向调用 `features/home`。
+本轮后续整理已把 sidebar 热路径的
 project/conversation pin/remove 状态从 `metadata_json` 拆到 fresh DB columns，repository 和
 `ai-chat2` 状态层直接读写列；由于 fresh DB 仍未进入 `main`，该变更按 pre-main baseline schema
 清理处理。
@@ -107,6 +113,8 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 
 - 输入框、模型选择、思考程度选择、附件入口、prompt selector、picker/list/popover、timeline item、run controls 等未来会独立演进的 UI 单元，应从第一版预览实现开始就放在对应子模块中。
 - 不能因为“本轮先做简化实现”而把多个最终独立功能堆进单个大文件；简化的是数据源和行为接线，不是模块边界。
+- 当一个 UI 单元会同时被 Home、Temporary、Shortcut、Settings 或其他窗口消费时，必须放到
+  `components`、`foundation` 或 `state` 等共享层；不要让 `features/*` 之间横向 import 对方内部模块。
 - demo / preview 数据可以临时存在，但必须用清晰命名标识，例如 `preview_*`，并与未来真实 store/provider/db 接口隔离，避免后续替换数据源时重拆 UI 结构。
 - 只有真正一次性、不会进入最终产品结构的占位 UI 才可以保持轻量；这类代码必须在模块名、类型名或状态表中明确标注为 placeholder/preview。
 
@@ -132,23 +140,23 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | New Conversation 默认页 + 项目选择器 | `app/ai-chat2/src/features/home/new_conversation.rs` | Home 右侧未选择具体对话时显示默认新对话页：中性 AI Chat 标题、现有 `ChatForm` 和仅在该页出现的项目选择器。项目选择器读取 normal projects，支持“不使用项目”，选中项目后写入 `default_project_id` 并刷新 composer skill catalog；添加项目只选择现有文件夹，不提供新建空项目。Composer 使用 opaque input surface 压住下层项目条；项目条按 Codex app 参考使用 neutral muted surface，不使用 secondary/action 色。 |
 | dock/app reopen | `app/ai-chat2/src/app.rs` | app reopen 会 show/create main window。 |
 | close-hide behavior | `app/ai-chat2/src/app.rs` | macOS/Windows 主窗口关闭时隐藏窗口。 |
-| Minimize/Zoom action | `app/ai-chat2/src/app.rs` / `placeholder_windows.rs` | 主窗口和占位窗口已处理 Window menu action。 |
+| Minimize/Zoom action | `app/ai-chat2/src/app.rs` / `features/temporary.rs` | 主窗口和 Temporary 窗口已处理 Window menu action。 |
 | bundle metadata | `app/ai-chat2/Cargo.toml` | 已有 `[package.metadata.bundle]`。 |
 | app icon | `app/ai-chat2/build-assets/icon/` | 本轮复用旧 `ai-chat` 图标作为 v1 shell icon。 |
 | macOS bundle localization | `app/ai-chat2/locales/macos/` | 已有 `en-US` 和 `zh-Hans` InfoPlist strings。 |
 | Windows icon build script | `app/ai-chat2/build.rs` | Windows build 时从 base PNG 派生 multi-frame `.ico`。 |
 | `xtask bundle ai-chat2` | `crates/xtask/src/cli.rs` | `BundleApp::AiChat2` 已加入，CLI parse test 已覆盖。 |
-| ComposerEditor v1 | `app/ai-chat2/src/features/home/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、cursor blink/styling、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、soft wrap、内部滚动、Unicode/grapheme-aware movement/delete/word boundary、`$skill-name` token 和 `ComposerSnapshot`。 |
+| ComposerEditor v1 | `app/ai-chat2/src/components/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、cursor blink/styling、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、soft wrap、内部滚动、Unicode/grapheme-aware movement/delete/word boundary、`$skill-name` token 和 `ComposerSnapshot`。 |
 | Settings shell + General/Appearance/Projects | `app/ai-chat2/src/features/settings.rs` / `settings/{general,appearance,projects,layout}.rs` | 已搬运旧 app 的 Settings shell 体验：titlebar menu、搜索、可调 sidebar、page frame、General language/HTTP proxy/temporary hotkey/config file，Appearance theme mode、主题预览网格、Material You color picker/add/delete；Projects 可列出 normal projects 并通过系统目录选择器添加项目，不显示 scratch/anonymous project。 |
+| Temporary Conversation window | `app/ai-chat2/src/app/temporary_window.rs` / `features/temporary.rs` / `state/temporary.rs` | 已实现首版：菜单和 temporary hotkey 打开/复用真实窗口；顶部单行搜索，左侧仅列 visible scratch/no-project active conversations，右侧复用 `ConversationDetailPage` 或无项目 `ChatForm` 新对话；搜索、上下选择、Tab 到 composer、`secondary-n` 到新对话和发送后创建 scratch conversation + agent run 已接线。 |
+| shared chat/conversation components | `app/ai-chat2/src/components/{chat_form,conversation_detail,picker}.rs` / `foundation/conversation_format.rs` | 已从 Home-only 模块抽到共享层，Home 和 Temporary 都从 `components` / `foundation` 消费；Temporary 不横向依赖 `features/home`。 |
 
 ## 占位
 
 | 事项 | 当前位置 | 当前行为 | 后续需要 |
 | --- | --- | --- | --- |
-| Temporary Conversation window | `app/ai-chat2/src/app/placeholder_windows.rs` | 只显示“临时对话运行时暂不接入”。 | 接入真实 temporary chat、prompt/model/provider 和 agent run。 |
-| temporary hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 `last_pressed` 和 tracing/log event。 | 打开/切换真实 temporary conversation。 |
 | shortcut hotkey action | `app/ai-chat2/src/state/hotkey.rs` | 触发后只记录 diagnostics 和 tracing/log event。 | 按 shortcut 的 prompt/provider/model/input/action 执行 agent run。 |
-| ChatForm runtime wiring | `app/ai-chat2/src/features/home/chat_form.rs` / `chat_form/*` | New Conversation 默认页已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。model picker 已读取 fresh DB enabled provider/model cache，reasoning selector 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，支持 level、boolean、always-on 和 token budget，`SendRequested` 已携带 `ChatFormSubmit`。Agent Conversation Page 首版已消费 `ChatFormSubmit` 创建/追加 conversation 并启动真实 run；运行中输入仍可编辑，主按钮切换为 stop，点击后只停止当前 conversation 的 active run。 | `+` 仍是 local event；prompt selector、附件、retry/resend 后续继续补。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
+| ChatForm runtime wiring | `app/ai-chat2/src/components/chat_form.rs` / `chat_form/*` | New Conversation 默认页和 Temporary Window 已接 Codex 风格 composer 外框和真实 `ComposerEditor`；项目选择器在页面层处理，不进入通用 ChatForm。model picker 已读取 fresh DB enabled provider/model cache，reasoning selector 从 `ModelCapabilitiesSnapshot.reasoning.control` 派生，支持 level、boolean、always-on 和 token budget，`SendRequested` 已携带 `ChatFormSubmit`。Agent Conversation Page 和 Temporary 首版已消费 `ChatFormSubmit` 创建/追加 conversation 并启动真实 run；运行中输入仍可编辑，主按钮切换为 stop，点击后只停止当前 conversation 的 active run。 | `+` 仍是 local event；prompt selector、附件、retry/resend 后续继续补。输入内核进度见 `issue-159-ai-chat2-composer-editor.md`。 |
 | Project-first sidebar | `app/ai-chat/docs/dev/issue-159-ai-chat2-sidebar.md` | 已完成第一版：顶部新对话/搜索入口、底部设置入口、置顶对话/项目、项目展开、项目更多菜单、conversation search、conversation route、project/conversation soft-delete，以及 shortcut action row 视觉对齐已接线。Agent Conversation Page 首版已接 New Conversation 发送后的 sidebar 即时刷新，并把 scratch project conversation 归入无项目区。 | 后续继续补 last item preview 和更完整的 project metadata/status UI。 |
 
 ## 基础设施 / 本地状态 / 可观测性
@@ -161,7 +169,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | file-backed logging | 已完成 | 旧 app 规范已迁移：macOS 写 `~/Library/Logs/top.sushao.ai-chat2/data.log`，非 macOS 写 local data logs。 |
 | open/copy diagnostics | 未开始 | 没有打开日志目录、复制诊断信息、导出 runtime snapshot 或用户可见 diagnostics 面板。 |
 | user-visible startup/runtime errors | 未开始 | startup init 错误已从 `app::run` 返回给进程，config parse 错误会记录并重写默认配置；仍没有统一的 UI error surface。 |
-| main/settings window placement | 已完成 | 已保存 main/settings window bounds、mode 和 display id，并复用旧 app 离屏/无效 display fallback 语义；About/Temporary placeholder 不持久化。 |
+| main/settings window placement | 已完成 | 已保存 main/settings window bounds、mode 和 display id，并复用旧 app 离屏/无效 display fallback 语义；About/Temporary 窗口暂不持久化。 |
 | hotkey diagnostics UI | 未开始 | runtime 只保留内存 diagnostics；Settings 真实页面尚未展示注册失败、最近触发或重注册状态。 |
 
 ### Hotkey UI 后续实现注意
@@ -250,9 +258,9 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | template picker | `components/chat_form/template_picker.rs` | 不照搬 | 新 UI 使用 prompt selector。 |
 | model select | `components/chat_form/model_select.rs` | 已完成 | `ai-chat2` model picker 已接 fresh `providers` / `provider_models` cache、enabled filtering、provider 分组、capability tags、search 和 reasoning selection derivation；发送事件先携带 snapshot，真实 conversation/run 接线留给后续。 |
 | message rendering | `components/message.rs` | 未开始 | 新 timeline 要覆盖 reasoning/tool/approval/status/usage/attachments。 |
-| temporary chat | `features/temporary.rs` | 占位 | 只有占位窗口；未接 selected text/screenshot/save flow。 |
-| temporary window runtime | `features/hotkey/temporary_window.rs` | 未开始 | 未实现前台 app restore、显示器定位、延迟隐藏、切换/移动真实 temporary window。 |
-| hotkey backend/registry | `features/hotkey/backend.rs` / `registry.rs` | 占位 | `ai-chat2` 已有初始注册、temporary hotkey 设置后重注册和内存 diagnostics；状态 UI 和真实执行尚未实现。 |
+| temporary chat | `features/temporary.rs` / `app/temporary_window.rs` | 已替代 legacy 首版 | 真实窗口、no-project 历史、搜索、new/detail 和 agent run 已接线；selected text/screenshot input、save/promote to normal conversation 仍未接。 |
+| temporary window runtime | `features/temporary.rs` / `state/hotkey.rs` | 部分实现 | 已实现基础打开/复用真实 temporary window，并通过 temporary hotkey dispatch menu action；前台 app restore、鼠标所在显示器定位、延迟隐藏、切换/移动窗口仍未实现。 |
+| hotkey backend/registry | `features/hotkey/backend.rs` / `registry.rs` | 部分实现 | `ai-chat2` 已有初始注册、temporary hotkey 设置后重注册、内存 diagnostics 和 temporary window dispatch；快捷键状态 UI 与 shortcut 执行仍未实现。 |
 | shortcut execution flow | `features/hotkey/shortcut_flow.rs` | 未开始 | 未执行 selected text、clipboard fallback、screenshot input、prompt/provider/model/action 和通知状态。 |
 | screenshot/OCR shortcut | `features/screenshot.rs` / `features/screenshot/overlay.rs` | 未开始 | 新快捷键只记录 diagnostics，不执行 screenshot overlay、OCR fallback 或 image input。 |
 | platform capture/display helpers | `platform/{capture,display,gpui_ext}.rs` | 未开始 | screenshot、display targeting 和 GPUI platform helpers 需要按 `ai-chat2` scope 决定复用或重写。 |
@@ -286,7 +294,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 - `cargo test -p xtask`
 - `cargo run -p xtask -- bundle ai-chat2`
 - `git diff --check`
-- bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，验证主窗口、macOS 菜单、Settings/About/Temporary 占位窗口和 Open Main。
+- bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，验证主窗口、macOS 菜单、Settings/About/Temporary 窗口和 Open Main。
 
 About 页面实现后已运行：
 
@@ -295,7 +303,7 @@ About 页面实现后已运行：
 - `cargo check -p ai-chat2`
 - `git diff --check`
 - `cargo run -p xtask -- bundle ai-chat2`
-- bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，验证 About 真实窗口、重复打开复用已有窗口、GitHub 按钮触发 URL 打开、Settings/Temporary 占位窗口仍可打开。
+- bundle GUI smoke：打开 `target/release/bundle/macos/AI Chat 2.app`，验证 About 真实窗口、重复打开复用已有窗口、GitHub 按钮触发 URL 打开、Settings/Temporary 窗口仍可打开。
 
 主页 Sidebar 骨架实现后已运行：
 
@@ -400,7 +408,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   basic parity fixes（main/settings window placement、composer focus、quit flush、config tolerance、
   default Material You visibility）、`edb4a3d` Settings Projects 列表/添加项目，以及本次 New
   Conversation 默认页、no-project 项目选择器和 Codex-style project tray polish。
-- 当前仍不接真实 project/conversation navigation、prompt/provider/model data source、agent run/timeline、
+- 当时仍不接真实 project/conversation navigation、prompt/provider/model data source、agent run/timeline、
   `$` completion UI、Shortcuts settings 或 Temporary Conversation runtime。
 - 本次包含 New Conversation 默认页、项目 selector 和视觉 polish；验证见上方记录。
 
@@ -577,8 +585,8 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   GPUI 原生 `ListState` / `list` timeline 和显式滚动条、user bubble、agent final markdown/details collapse、hover copy/time、
   Codex-style timestamp、复制成功 `Check` 两秒和失败通知。
 - 2026-06-06 记录时，stop/cancel 与 retry/resend、prompt selector、attachments/multimodal input、approval action、
-  rich tool UI、Temporary Conversation runtime、last item preview 和完整 project status UI；2026-06-11 已补
-  stop/cancel，剩余 retry/resend 等后续继续推进。
+  rich tool UI、Temporary Conversation runtime、last item preview 和完整 project status UI 尚未完成；2026-06-11
+  已补 stop/cancel 和 Temporary Conversation Window 首版，剩余 retry/resend 等后续继续推进。
 - 验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 timestamp_label`、
   `cargo test -p ai-chat-agent -p ai-chat-core -p ai-chat-db`、`git diff --check`。
 
@@ -611,3 +619,22 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   `cargo test -p ai-chat-agent cancel`、`cargo test -p ai-chat2 conversation_runtime`、
   `cargo test -p ai-chat2 chat_form`、`cargo test -p ai-chat2`、`cargo check -p ai-chat2`、
   `cargo clippy -p ai-chat2 --all-targets -- -D warnings`、`git diff --check`。
+
+2026-06-11 Temporary Conversation Window 首版实现记录：
+
+- 本轮把 Home-only `ChatForm`、composer editor、model/reasoning picker、conversation detail/timeline/message
+  和 timestamp/format helper 抽到 `components` / `foundation`，Home 与 Temporary 共享这些模块。
+- 新增 `state::temporary` 和 `FreshRepository::list_no_project_conversations`，只读取 visible
+  `ProjectKind::Scratch` 下的 active conversations；搜索匹配 conversation title 和
+  `conversation_items.search_text`，不匹配 normal project conversations。
+- 新增真实 `app::temporary_window` 和 `features::temporary`：菜单与 temporary hotkey 打开/复用窗口，
+  顶部单行搜索，左侧 `ListState` no-project 历史列表，右侧复用 `ConversationDetailPage` 或无项目
+  `ChatForm` 新对话。
+- 已接键盘流：搜索 focus 时 up/down 切换列表并同步右侧 detail，Tab 直接 focus 当前右侧 composer，
+  `secondary-n` 切到新对话并 focus composer。新对话发送走 `CreateConversationRequest { project_id:
+  None, ... }`，刷新左侧列表，打开新 conversation，并启动真实 `AgentRuntime` run。
+- 仍未做 selected text/screenshot input、save/promote to normal conversation、retry/resend、approval action、
+  attachments/multimodal input 和 rich tool UI。
+- 验证：`cargo fmt`、`cargo test -p ai-chat-db no_project`、`cargo test -p ai-chat2 temporary`、
+  `cargo test -p ai-chat2 chat_form`、`cargo test -p ai-chat2 conversation`、`cargo check -p ai-chat2`、
+  `git diff --check`。手动 GPUI UI 验证仍未运行。
