@@ -123,6 +123,7 @@ fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
     state::theme::init(cx);
     foundation::init_i18n(cx);
     title_bar_menu::init(cx);
+    temporary_window::init(cx);
     crate::features::init(cx);
     if let Err(err) = state::hotkey::init(cx) {
         event!(Level::ERROR, error = ?err, "failed to initialize ai-chat2 hotkeys");

@@ -17,6 +17,7 @@ actions!(
         About,
         OpenMainWindow,
         OpenTemporaryConversation,
+        ToggleTemporaryConversation,
         OpenSettings,
         Quit,
         Minimize,
@@ -43,6 +44,9 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &OpenMainWindow, cx: &mut App| show_or_create_main_window(cx));
     cx.on_action(|_: &OpenTemporaryConversation, cx: &mut App| {
         temporary_window::open_temporary_window(cx);
+    });
+    cx.on_action(|_: &ToggleTemporaryConversation, cx: &mut App| {
+        temporary_window::toggle_temporary_window(cx);
     });
     cx.on_action(|_: &OpenSettings, cx: &mut App| settings::open_settings_window_from_menu(cx));
     cx.on_action(|_: &Quit, cx: &mut App| quit_app(cx));

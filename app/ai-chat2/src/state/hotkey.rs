@@ -7,7 +7,7 @@ use gpui::{App, BorrowAppContext, Global, Task};
 use tracing::{Level, event};
 
 use crate::{
-    app::menus::OpenTemporaryConversation,
+    app::menus::ToggleTemporaryConversation,
     database,
     errors::{AiChat2Error, AiChat2Result},
     state::AiChat2AppSettings,
@@ -123,7 +123,7 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
 
                 match action {
                     RegisteredHotkeyAction::TemporaryConversation => {
-                        cx.dispatch_action(&OpenTemporaryConversation);
+                        cx.dispatch_action(&ToggleTemporaryConversation);
                     }
                     RegisteredHotkeyAction::Shortcut { shortcut_id } => {
                         event!(
@@ -262,10 +262,10 @@ impl GlobalHotkeyState {
 
     fn register_temporary_hotkey(&mut self, hotkey: String) -> AiChat2Result<()> {
         let result = self.register_action(&hotkey, RegisteredHotkeyAction::TemporaryConversation);
-        self.temporary_hotkey = Some(hotkey);
 
         match result {
             Ok(()) => {
+                self.temporary_hotkey = Some(hotkey);
                 self.registration_errors.remove("temporary");
                 Ok(())
             }
@@ -307,27 +307,54 @@ impl GlobalHotkeyState {
         );
 
         if old_hotkey == new_hotkey {
-            self.temporary_hotkey = new_hotkey.map(str::to_string);
+            match new_hotkey {
+                Some(new_hotkey) if self.temporary_hotkey.as_deref() != Some(new_hotkey) => {
+                    self.register_temporary_hotkey(new_hotkey.to_string())?;
+                }
+                Some(_) => {
+                    self.registration_errors.remove("temporary");
+                }
+                None => {
+                    self.temporary_hotkey = None;
+                    self.registration_errors.remove("temporary");
+                }
+            }
             return Ok(());
         }
 
-        if let Some(old_hotkey) = old_hotkey {
-            self.unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryConversation)?;
-        }
+        let registered_old_hotkey = self.temporary_hotkey.clone();
 
-        if let Some(new_hotkey) = new_hotkey
-            && let Err(err) = self.register_temporary_hotkey(new_hotkey.to_string())
-        {
-            if let Some(old_hotkey) = old_hotkey {
-                let _ = self.register_temporary_hotkey(old_hotkey.to_string());
+        if let Some(new_hotkey) = new_hotkey {
+            self.register_temporary_hotkey(new_hotkey.to_string())?;
+
+            if let Some(old_hotkey) = registered_old_hotkey
+                .as_deref()
+                .filter(|old_hotkey| *old_hotkey != new_hotkey)
+                && let Err(err) = self
+                    .unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryConversation)
+            {
+                self.registration_errors
+                    .insert("temporary".to_string(), err.to_string());
+                let _ = self
+                    .unregister_action(new_hotkey, RegisteredHotkeyAction::TemporaryConversation);
+                self.temporary_hotkey = registered_old_hotkey;
+                return Err(err);
             }
-            return Err(err);
+
+            return Ok(());
         }
 
-        if new_hotkey.is_none() {
-            self.temporary_hotkey = None;
-            self.registration_errors.remove("temporary");
+        if let Some(old_hotkey) = registered_old_hotkey.as_deref() {
+            if let Err(err) =
+                self.unregister_action(old_hotkey, RegisteredHotkeyAction::TemporaryConversation)
+            {
+                self.registration_errors
+                    .insert("temporary".to_string(), err.to_string());
+                return Err(err);
+            }
         }
+        self.temporary_hotkey = None;
+        self.registration_errors.remove("temporary");
 
         Ok(())
     }
@@ -437,12 +464,30 @@ mod tests {
         let result = hotkeys.register_temporary_hotkey("cmd+shift+".to_string());
 
         assert!(result.is_err());
+        assert_eq!(hotkeys.diagnostics().temporary_hotkey, None);
         assert!(
             hotkeys
                 .diagnostics()
                 .registration_errors
                 .contains_key("temporary")
         );
+    }
+
+    #[test]
+    fn invalid_temporary_hotkey_update_preserves_previous_runtime_hotkey() {
+        let mut hotkeys =
+            GlobalHotkeyState::new(Box::<FakeHotkeyBackend>::default(), Task::ready(()));
+        hotkeys
+            .register_temporary_hotkey("cmd+shift+j".to_string())
+            .expect("register temporary hotkey");
+
+        let result =
+            hotkeys.update_temporary_hotkey_runtime(Some("cmd+shift+j"), Some("cmd+shift+"));
+
+        assert!(result.is_err());
+        let diagnostics = hotkeys.diagnostics();
+        assert_eq!(diagnostics.temporary_hotkey.as_deref(), Some("cmd+shift+j"));
+        assert!(diagnostics.registration_errors.contains_key("temporary"));
     }
 
     #[test]

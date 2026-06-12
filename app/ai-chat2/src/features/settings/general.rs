@@ -16,6 +16,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
+use tracing::{Level, event};
 
 use super::{
     layout::{settings_group, settings_row_item},
@@ -181,26 +182,36 @@ fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &
         .temporary_hotkey()
         .map(str::to_string);
 
-    match state::config::update_app_settings(cx, |payload| {
+    if let Err(err) = state::GlobalHotkeyState::update_temporary_hotkey(
+        previous_hotkey.as_deref(),
+        next_hotkey.as_deref(),
+        cx,
+    ) {
+        let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
+        push_settings_error(window, cx, title, err);
+        return false;
+    }
+
+    if let Err(err) = state::config::update_app_settings(cx, |payload| {
         payload.temporary_hotkey = next_hotkey.clone();
     }) {
-        Ok(_) => {
-            if let Err(err) = state::GlobalHotkeyState::update_temporary_hotkey(
-                previous_hotkey.as_deref(),
-                next_hotkey.as_deref(),
-                cx,
-            ) {
-                let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
-                push_settings_error(window, cx, title, err);
-            }
-            true
+        if let Err(rollback_err) = state::GlobalHotkeyState::update_temporary_hotkey(
+            next_hotkey.as_deref(),
+            previous_hotkey.as_deref(),
+            cx,
+        ) {
+            event!(
+                Level::ERROR,
+                error = ?rollback_err,
+                "rollback ai-chat2 temporary hotkey runtime failed after settings save failure"
+            );
         }
-        Err(err) => {
-            let title = cx.global::<I18n>().t("notify-save-settings-failed");
-            push_settings_error(window, cx, title, err);
-            false
-        }
+        let title = cx.global::<I18n>().t("notify-save-settings-failed");
+        push_settings_error(window, cx, title, err);
+        return false;
     }
+
+    true
 }
 
 fn language_dropdown(cx: &mut App) -> AnyElement {
@@ -339,6 +350,7 @@ mod tests {
     use super::{language_label_key, language_options, save_temporary_hotkey};
     use crate::{
         database::FreshStoreGlobal,
+        foundation,
         state::{self, AiChat2AppSettings},
     };
     use ai_chat_core::{AppLanguage, AppSettingsPayload};
@@ -382,6 +394,42 @@ mod tests {
                     .temporary_hotkey
                     .as_deref(),
                 Some("cmd+shift+k")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_temporary_hotkey_does_not_change_settings_or_runtime(cx: &mut TestAppContext) {
+        let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            assert!(!save_temporary_hotkey(
+                Some("cmd+shift+".to_string()),
+                window,
+                cx
+            ));
+        });
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<AiChat2AppSettings>().temporary_hotkey(),
+                Some("cmd+shift+j")
+            );
+            assert_eq!(
+                state::GlobalHotkeyState::diagnostics_snapshot(cx)
+                    .temporary_hotkey
+                    .as_deref(),
+                Some("cmd+shift+j")
+            );
+            let persisted = crate::database::repository(cx)
+                .get_app_settings()
+                .expect("load app settings")
+                .expect("settings record");
+            assert_eq!(
+                persisted.settings.temporary_hotkey.as_deref(),
+                Some("cmd+shift+j")
             );
         });
     }
@@ -436,6 +484,7 @@ mod tests {
                 .set_app_settings(payload.clone())
                 .unwrap();
             cx.set_global(AiChat2AppSettings::new(payload));
+            foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
             if let Some(hotkey) = hotkey {
                 state::GlobalHotkeyState::update_temporary_hotkey(None, Some(hotkey), cx)
@@ -445,10 +494,13 @@ mod tests {
         dir
     }
 
-    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
         cx.update(|cx| {
-            cx.open_window(Default::default(), |_, cx| cx.new(|_| TestView))
-                .expect("open settings test window")
+            cx.open_window(Default::default(), |window, cx| {
+                let view = cx.new(|_| TestView);
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            })
+            .expect("open settings test window")
         })
     }
 
