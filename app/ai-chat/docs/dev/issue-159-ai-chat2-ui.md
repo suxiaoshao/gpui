@@ -14,8 +14,8 @@ Prompt 设置专项计划见
 最后同步时间：2026-06-12。
 
 当前实现基线：`codex/issue-137-llm-abstractions`。foundation 已通过 PR #164 合入集成分支。
-当前增量分支为 `codex/issue-159-ai-chat2-ui`，远程 head 为 `9f4205b`
-（`feat(ai-chat2): add prompt settings management`）；live GitHub 查询显示 #137/#159 仍 open，当前分支暂无新的
+当前增量分支为 `codex/issue-159-ai-chat2-ui`；本轮 Prompt Settings 功能提交为 `9f4205b`
+（`feat(ai-chat2): add prompt settings management`）。live GitHub 查询显示 #137/#159 仍 open，当前分支暂无新的
 open PR，后续仍需要开 PR 合入集成分支。
 
 当前状态：进行中。已合入的 foundation 包含基础设施壳、app chrome、file-backed logging、About、Sidebar/home
@@ -652,7 +652,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
 2026-06-12 Prompt Settings 第一版实现记录：
 
 - live GitHub 状态：#137 和 #159 仍 open；`codex/issue-159-ai-chat2-ui` 相关 PR 列表中只有已合入的
-  PR #164，当前远程 Prompt Settings 增量暂无新 PR；本轮已推送远程 head `9f4205b`
+  PR #164，当前远程 Prompt Settings 增量暂无新 PR；本轮功能提交为 `9f4205b`
   `feat(ai-chat2): add prompt settings management`。
 - `prompts.content_json JSON` 已按 fresh DB pre-main 规则改为 `prompts.content TEXT NOT NULL`；
   `PromptContent` 收敛为 `{ text }`，不再保留复杂 role/content-parts prompt shape。
