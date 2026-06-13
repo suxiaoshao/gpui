@@ -11,6 +11,7 @@ mod database;
 mod errors;
 mod features;
 mod foundation;
+mod platform;
 mod state;
 
 fn main() -> AiChat2Result<()> {

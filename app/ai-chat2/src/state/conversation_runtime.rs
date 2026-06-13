@@ -62,6 +62,10 @@ impl ConversationRuntimeStore {
         self.active_runs.contains_key(conversation_id)
     }
 
+    pub(crate) fn has_active_run(&self) -> bool {
+        !self.active_runs.is_empty()
+    }
+
     pub(crate) fn take_last_error(&mut self, conversation_id: &ConversationId) -> Option<String> {
         self.last_errors.remove(conversation_id)
     }

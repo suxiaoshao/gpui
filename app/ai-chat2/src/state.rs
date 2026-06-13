@@ -7,6 +7,7 @@ pub(crate) mod projects;
 pub(crate) mod prompts;
 pub(crate) mod provider_secrets;
 pub(crate) mod providers;
+pub(crate) mod shortcuts;
 pub(crate) mod temporary;
 pub(crate) mod theme;
 pub(crate) mod workspace;

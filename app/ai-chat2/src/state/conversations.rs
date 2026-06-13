@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use ai_chat_agent::{AgentRunRequest, SkillActivationRequest};
 use ai_chat_core::{
-    AgentEngineKind, AgentRuntimeSnapshot, ContentPart, ConversationId, ConversationItemPayload,
-    ConversationItemStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectId,
-    ReasoningSelectionSnapshot, RunSettingsSnapshot, ToolApprovalPolicy, ToolNameStrategy,
-    ToolPolicySnapshot, TranscriptRole,
+    AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart, ConversationId,
+    ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
+    ConversationSettingsSnapshot, ProjectId, PromptContent, PromptId, ReasoningSelectionSnapshot,
+    RunSettingsSnapshot, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, TranscriptRole,
 };
 use ai_chat_db::{
     ConversationItemRecord, ConversationTimelineRecords, ConversationWithUserItemRecord,
@@ -31,6 +31,9 @@ pub(crate) struct CreateConversationRequest {
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    pub(crate) prompt_id: Option<PromptId>,
+    pub(crate) prompt_snapshot: Option<PromptContent>,
+    pub(crate) trigger_kind: AgentRunTriggerKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,13 +72,16 @@ pub(crate) fn create_conversation(
             ))
         })?;
     let tool_policy = default_tool_policy();
-    let settings_snapshot =
-        conversation_settings_snapshot(&request.provider_model, tool_policy.clone());
+    let settings_snapshot = conversation_settings_snapshot(
+        &request.provider_model,
+        request.prompt_snapshot.clone(),
+        tool_policy.clone(),
+    );
     let conversation = NewConversation {
         project_id: project.id.clone(),
         title: conversation_title(&request.title_seed, cx.global::<I18n>()),
         pinned: false,
-        prompt_id: None,
+        prompt_id: request.prompt_id.clone(),
         default_provider_id: Some(request.provider_model.provider_id.clone()),
         default_model_id: Some(request.provider_model.model_id.clone()),
         metadata: empty_conversation_metadata(),
@@ -95,6 +101,8 @@ pub(crate) fn create_conversation(
         provider_model: request.provider_model,
         reasoning_selection: request.reasoning_selection,
         skill_requests: request.skill_requests,
+        prompt_snapshot: request.prompt_snapshot,
+        trigger_kind: request.trigger_kind,
         tool_policy,
     });
 
@@ -146,6 +154,8 @@ pub(crate) fn send_conversation_message(
         provider_model: request.provider_model,
         reasoning_selection: request.reasoning_selection,
         skill_requests: request.skill_requests,
+        prompt_snapshot: None,
+        trigger_kind: AgentRunTriggerKind::User,
         tool_policy: default_tool_policy(),
     });
 
@@ -200,6 +210,8 @@ struct RunRequestContext<'a> {
     provider_model: ProviderModelChoice,
     reasoning_selection: Option<ReasoningSelectionSnapshot>,
     skill_requests: Vec<SkillActivationRequest>,
+    prompt_snapshot: Option<PromptContent>,
+    trigger_kind: AgentRunTriggerKind,
     tool_policy: ToolPolicySnapshot,
 }
 
@@ -210,7 +222,7 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
         input.provider_model.provider_id.clone(),
         input.provider_model.model_id.clone(),
         RunSettingsSnapshot {
-            prompt: None,
+            prompt: input.prompt_snapshot.clone(),
             provider_id: input.provider_model.provider_id.clone(),
             model_id: input.provider_model.model_id.clone(),
             model_capabilities: input.provider_model.capabilities.clone(),
@@ -226,6 +238,8 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
             tool_name_strategy: ToolNameStrategy::Namespaced,
         },
     );
+    request.trigger_kind = input.trigger_kind;
+    request.prompt_snapshot = input.prompt_snapshot;
     request.skill_requests = input.skill_requests;
     request.project_root = Some(PathBuf::from(&input.project.path));
     request
@@ -233,10 +247,11 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
 
 fn conversation_settings_snapshot(
     provider_model: &ProviderModelChoice,
+    prompt: Option<PromptContent>,
     tool_policy: ToolPolicySnapshot,
 ) -> ConversationSettingsSnapshot {
     ConversationSettingsSnapshot {
-        prompt: None,
+        prompt,
         provider_id: Some(provider_model.provider_id.clone()),
         model_id: Some(provider_model.model_id.clone()),
         model_capabilities: Some(provider_model.capabilities.clone()),
@@ -244,7 +259,7 @@ fn conversation_settings_snapshot(
     }
 }
 
-fn default_tool_policy() -> ToolPolicySnapshot {
+pub(crate) fn default_tool_policy() -> ToolPolicySnapshot {
     ToolPolicySnapshot {
         approval_policy: ToolApprovalPolicy::OnRequest,
         enabled_sources: Vec::new(),

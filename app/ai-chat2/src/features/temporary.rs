@@ -420,6 +420,9 @@ impl TemporaryWindow {
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,
+            prompt_id: None,
+            prompt_snapshot: None,
+            trigger_kind: ai_chat_core::AgentRunTriggerKind::User,
         };
 
         match state::conversations::create_conversation(request, cx) {
@@ -459,6 +462,34 @@ impl TemporaryWindow {
                 );
             }
         }
+    }
+
+    pub(crate) fn open_created_conversation(
+        &mut self,
+        created: state::conversations::CreatedConversation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let conversation_id = created.record.conversation.id.clone();
+        self.query.clear();
+        self.search_input.update(cx, |input, cx| {
+            if !input.value().is_empty() {
+                input.set_value("", window, cx);
+            }
+        });
+        self.reload_conversations(
+            ReloadSelection::Conversation(conversation_id.clone()),
+            window,
+            cx,
+        );
+        self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
+        let _ = self.conversation_page(conversation_id.clone(), window, cx);
+        state::workspace::workspace(cx).update(cx, |workspace, cx| {
+            workspace.reload_sidebar(cx);
+        });
+        self.runtime.update(cx, |runtime, cx| {
+            runtime.start_run(created.run_request, window, cx);
+        });
     }
 
     fn conversation_page(

@@ -1,16 +1,29 @@
-use std::{collections::BTreeMap, str::FromStr, time::SystemTime};
+use std::{collections::BTreeMap, fs, path::PathBuf, str::FromStr, time::SystemTime};
 
-use ai_chat_core::ShortcutId;
-use ai_chat_db::ShortcutRecord;
+use ai_chat_core::{
+    AgentRunTriggerKind, AttachmentKind, AttachmentMetadata, AttachmentSource,
+    AttachmentStorageKind, ContentPart, ConversationId, ConversationItemPayload,
+    ConversationItemStatus, PromptContent, PromptId, ShortcutAction, ShortcutId,
+    ShortcutInputSource, TranscriptRole,
+};
+use ai_chat_db::{NewAttachment, ShortcutRecord};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
-use gpui::{App, BorrowAppContext, Global, Task};
+use gpui::{AnyWindowHandle, App, BorrowAppContext, Global, SharedString, Task};
+use gpui_component::{
+    Root, WindowExt as NotificationWindowExt,
+    notification::{Notification, NotificationType},
+};
+use platform_ext::{OcrError, ocr::ImageFrame};
 use tracing::{Level, event};
 
 use crate::{
-    app::menus::ToggleTemporaryConversation,
+    app::{menus::ToggleTemporaryConversation, temporary_window},
     database,
     errors::{AiChat2Error, AiChat2Result},
-    state::AiChat2AppSettings,
+    features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryWindow},
+    foundation::I18n,
+    platform::capture::CaptureError,
+    state::{self, AiChat2AppSettings, AiChat2Config, providers::ProviderModelChoice},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +116,14 @@ pub(crate) struct ShortcutRuntimeDiagnostics {
     pub(crate) last_pressed: Option<HotkeyPressDiagnostics>,
 }
 
+#[derive(Clone)]
+struct ShortcutTriggerContext {
+    shortcut: ShortcutRecord,
+    provider_model: ProviderModelChoice,
+    prompt_id: Option<PromptId>,
+    prompt_snapshot: Option<PromptContent>,
+}
+
 pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
     let (tx, rx) = smol::channel::unbounded();
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
@@ -126,11 +147,7 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
                         cx.dispatch_action(&ToggleTemporaryConversation);
                     }
                     RegisteredHotkeyAction::Shortcut { shortcut_id } => {
-                        event!(
-                            Level::INFO,
-                            shortcut_id = %shortcut_id,
-                            "ai-chat2 shortcut hotkey dispatch is not implemented yet"
-                        );
+                        hotkeys.dispatch_shortcut_trigger(shortcut_id, cx);
                     }
                 }
             });
@@ -359,30 +376,110 @@ impl GlobalHotkeyState {
     }
 
     fn register_shortcut(&mut self, shortcut: ShortcutRecord) {
-        if !shortcut.enabled {
+        if let Err(err) = self.upsert_shortcut_runtime(None, &shortcut) {
+            crate::state::shortcuts::log_shortcut_runtime_sync_error(&shortcut.id, err);
+        }
+    }
+
+    pub(crate) fn sync_shortcut_registration(
+        previous: Option<&ShortcutRecord>,
+        next: Option<&ShortcutRecord>,
+        cx: &mut App,
+    ) {
+        if !cx.has_global::<GlobalHotkeyState>() {
             return;
         }
 
+        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| match (previous, next) {
+            (None, Some(next)) => {
+                if let Err(err) = hotkeys.upsert_shortcut_runtime(None, next) {
+                    crate::state::shortcuts::log_shortcut_runtime_sync_error(&next.id, err);
+                }
+            }
+            (Some(previous), Some(next)) => {
+                if let Err(err) = hotkeys.upsert_shortcut_runtime(Some(previous), next) {
+                    crate::state::shortcuts::log_shortcut_runtime_sync_error(&next.id, err);
+                }
+            }
+            (Some(previous), None) => {
+                if let Err(err) = hotkeys.remove_shortcut_runtime(previous) {
+                    crate::state::shortcuts::log_shortcut_runtime_sync_error(&previous.id, err);
+                }
+            }
+            (None, None) => {}
+        });
+    }
+
+    fn upsert_shortcut_runtime(
+        &mut self,
+        previous: Option<&ShortcutRecord>,
+        shortcut: &ShortcutRecord,
+    ) -> AiChat2Result<()> {
         let action = RegisteredHotkeyAction::Shortcut {
             shortcut_id: shortcut.id.clone(),
         };
-        let result = self.register_action(&shortcut.hotkey, action);
-        if let Err(err) = result {
-            self.registration_errors
-                .insert(shortcut.id.clone(), err.to_string());
-            event!(
-                Level::ERROR,
-                shortcut_id = %shortcut.id,
-                hotkey = %shortcut.hotkey,
-                error = ?err,
-                "failed to register ai-chat2 shortcut hotkey"
-            );
-            return;
+        let registered_previous = previous
+            .and_then(|previous| {
+                self.registered_shortcuts
+                    .get(&previous.id)
+                    .map(|hotkey| (previous.id.clone(), hotkey.clone()))
+            })
+            .or_else(|| {
+                self.registered_shortcuts
+                    .get(&shortcut.id)
+                    .map(|hotkey| (shortcut.id.clone(), hotkey.clone()))
+            });
+        let previous_hotkey = registered_previous
+            .as_ref()
+            .map(|(_, hotkey)| hotkey.clone());
+        let should_unregister_previous = previous_hotkey
+            .as_deref()
+            .is_some_and(|old_hotkey| old_hotkey != shortcut.hotkey || !shortcut.enabled);
+
+        if let Some(old_hotkey) = previous_hotkey
+            .as_deref()
+            .filter(|_| should_unregister_previous)
+        {
+            self.unregister_action(old_hotkey, action.clone())?;
+            self.registered_shortcuts.remove(&shortcut.id);
         }
 
+        if shortcut.enabled
+            && let Err(err) = self.register_action(&shortcut.hotkey, action.clone())
+        {
+            self.registration_errors
+                .insert(shortcut.id.clone(), err.to_string());
+            if let Some((previous_id, previous_hotkey)) = registered_previous {
+                let _ = self.register_action(&previous_hotkey, action);
+                self.registered_shortcuts
+                    .insert(previous_id, previous_hotkey);
+            }
+            return Err(err);
+        }
+
+        if shortcut.enabled {
+            self.registered_shortcuts
+                .insert(shortcut.id.clone(), shortcut.hotkey.clone());
+        } else {
+            self.registered_shortcuts.remove(&shortcut.id);
+        }
         self.registration_errors.remove(&shortcut.id);
-        self.registered_shortcuts
-            .insert(shortcut.id, shortcut.hotkey);
+        Ok(())
+    }
+
+    fn remove_shortcut_runtime(&mut self, shortcut: &ShortcutRecord) -> AiChat2Result<()> {
+        let action = RegisteredHotkeyAction::Shortcut {
+            shortcut_id: shortcut.id.clone(),
+        };
+        let hotkey = self
+            .registered_shortcuts
+            .remove(&shortcut.id)
+            .unwrap_or_else(|| shortcut.hotkey.clone());
+        self.registration_errors.remove(&shortcut.id);
+        if shortcut.enabled {
+            self.unregister_action(&hotkey, action)?;
+        }
+        Ok(())
     }
 
     fn handle_pressed_hotkey(&mut self, hotkey_id: u32) -> Option<RegisteredHotkeyAction> {
@@ -410,6 +507,480 @@ impl GlobalHotkeyState {
         Some(action)
     }
 
+    fn dispatch_shortcut_trigger(&mut self, shortcut_id: ShortcutId, cx: &mut App) {
+        if screenshot_overlay::is_active(cx) {
+            event!(
+                Level::INFO,
+                shortcut_id = %shortcut_id,
+                "ignoring shortcut while screenshot overlay is active"
+            );
+            return;
+        }
+
+        if state::conversation_runtime::runtime(cx)
+            .read(cx)
+            .has_active_run()
+        {
+            self.push_notification(
+                "notify-shortcut-trigger-busy-title",
+                cx.global::<I18n>()
+                    .t("notify-shortcut-trigger-busy-message")
+                    .to_string(),
+                NotificationType::Warning,
+                cx,
+            );
+            return;
+        }
+
+        let trigger = match self.resolve_shortcut_trigger_context(shortcut_id.clone(), cx) {
+            Ok(Some(trigger)) => trigger,
+            Ok(None) => return,
+            Err(err) => {
+                self.push_notification(
+                    "notify-shortcut-trigger-model-unavailable-title",
+                    err.to_string(),
+                    NotificationType::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+
+        match trigger.shortcut.input_source {
+            ShortcutInputSource::SelectionOrClipboard => {
+                self.trigger_selection_or_clipboard_shortcut(trigger, cx);
+            }
+            ShortcutInputSource::Screenshot => {
+                if let Err(err) = screenshot_overlay::open(trigger.shortcut.clone(), cx) {
+                    self.handle_screenshot_capture_failure(err, cx);
+                }
+            }
+        }
+    }
+
+    fn resolve_shortcut_trigger_context(
+        &self,
+        shortcut_id: ShortcutId,
+        cx: &App,
+    ) -> AiChat2Result<Option<ShortcutTriggerContext>> {
+        let Some(shortcut) = database::repository(cx).get_shortcut(&shortcut_id)? else {
+            event!(
+                Level::ERROR,
+                shortcut_id = %shortcut_id,
+                "shortcut hotkey was pressed but shortcut record is missing"
+            );
+            return Ok(None);
+        };
+        if !shortcut.enabled {
+            event!(
+                Level::INFO,
+                shortcut_id = %shortcut.id,
+                "ignoring disabled shortcut hotkey"
+            );
+            return Ok(None);
+        }
+        if !matches!(shortcut.action, ShortcutAction::OpenTemporaryConversation) {
+            event!(
+                Level::ERROR,
+                shortcut_id = %shortcut.id,
+                action = ?shortcut.action,
+                "shortcut action is not supported by ai-chat2 runtime"
+            );
+            return Ok(None);
+        }
+
+        let prompt_snapshot = match shortcut.prompt_id.as_ref() {
+            Some(prompt_id) => {
+                let Some(prompt) = database::repository(cx).get_prompt(prompt_id)? else {
+                    return Err(ai_chat_db::DbError::Invariant(format!(
+                        "prompt {prompt_id} is missing"
+                    ))
+                    .into());
+                };
+                if !prompt.enabled {
+                    return Err(ai_chat_db::DbError::Invariant(format!(
+                        "prompt {prompt_id} is disabled"
+                    ))
+                    .into());
+                }
+                Some(prompt.content)
+            }
+            None => None,
+        };
+
+        let provider_id = shortcut.provider_id.as_ref().ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!("shortcut {} has no provider", shortcut.id))
+        })?;
+        let model_id = shortcut.model_id.as_ref().ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!("shortcut {} has no model", shortcut.id))
+        })?;
+        let provider_model = state::providers::enabled_provider_models(cx)?
+            .into_iter()
+            .find(|choice| &choice.provider_id == provider_id && &choice.model_id == model_id)
+            .ok_or_else(|| {
+                ai_chat_db::DbError::Invariant(format!(
+                    "model {provider_id}/{model_id} is unavailable"
+                ))
+            })?;
+
+        Ok(Some(ShortcutTriggerContext {
+            prompt_id: shortcut.prompt_id.clone(),
+            shortcut,
+            provider_model,
+            prompt_snapshot,
+        }))
+    }
+
+    fn trigger_selection_or_clipboard_shortcut(
+        &self,
+        trigger: ShortcutTriggerContext,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |cx| {
+            event!(
+                Level::INFO,
+                shortcut_id = %trigger.shortcut.id,
+                hotkey = %trigger.shortcut.hotkey,
+                "triggering selection or clipboard shortcut"
+            );
+            let selected_text =
+                smol::unblock(move || get_selected_text::get_selected_text().ok()).await;
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                match hotkeys.resolve_clipboard_fallback(selected_text, cx) {
+                    Some(text) => {
+                        let parts = vec![ContentPart::Text { text: text.clone() }];
+                        hotkeys.trigger_shortcut_with_parts(trigger, text, parts, cx);
+                    }
+                    None => hotkeys.handle_empty_shortcut_input(cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn resolve_clipboard_fallback(
+        &self,
+        selected_text: Option<String>,
+        cx: &App,
+    ) -> Option<String> {
+        let selected_text = normalized_text(selected_text);
+        if selected_text.is_some() {
+            event!(
+                Level::INFO,
+                source = "selected_text",
+                "resolved shortcut input"
+            );
+            return selected_text;
+        }
+
+        let clipboard_text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .and_then(|text| normalized_text(Some(text.to_string())));
+        if clipboard_text.is_some() {
+            event!(Level::INFO, source = "clipboard", "resolved shortcut input");
+        } else {
+            event!(
+                Level::INFO,
+                "no selected text or clipboard text available for shortcut"
+            );
+        }
+        clipboard_text
+    }
+
+    pub(crate) fn process_captured_screenshot(
+        &mut self,
+        shortcut: ShortcutRecord,
+        image: ImageFrame,
+        cx: &mut App,
+    ) {
+        if state::conversation_runtime::runtime(cx)
+            .read(cx)
+            .has_active_run()
+        {
+            self.push_notification(
+                "notify-shortcut-trigger-busy-title",
+                cx.global::<I18n>()
+                    .t("notify-shortcut-trigger-busy-message")
+                    .to_string(),
+                NotificationType::Warning,
+                cx,
+            );
+            return;
+        }
+
+        let trigger = match self.resolve_shortcut_trigger_context(shortcut.id.clone(), cx) {
+            Ok(Some(trigger)) => trigger,
+            Ok(None) => return,
+            Err(err) => {
+                self.push_notification(
+                    "notify-shortcut-trigger-model-unavailable-title",
+                    err.to_string(),
+                    NotificationType::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+
+        if trigger
+            .provider_model
+            .capabilities
+            .image_input
+            .as_ref()
+            .is_some()
+        {
+            if let Err(err) = self.trigger_shortcut_with_image(trigger, image, cx) {
+                self.push_notification(
+                    "notify-shortcut-trigger-screenshot-title",
+                    err.to_string(),
+                    NotificationType::Error,
+                    cx,
+                );
+            }
+            return;
+        }
+
+        self.trigger_screenshot_ocr_shortcut(trigger, image, cx);
+    }
+
+    fn trigger_screenshot_ocr_shortcut(
+        &self,
+        trigger: ShortcutTriggerContext,
+        image: ImageFrame,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |cx| {
+            let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image)).await;
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
+                Ok(text) => match normalized_text(Some(text)) {
+                    Some(text) => {
+                        let parts = vec![ContentPart::Text { text: text.clone() }];
+                        hotkeys.trigger_shortcut_with_parts(trigger, text, parts, cx);
+                    }
+                    None => hotkeys.handle_empty_shortcut_input(cx),
+                },
+                Err(err) => hotkeys.handle_screenshot_ocr_failure(err, cx),
+            });
+        })
+        .detach();
+    }
+
+    fn trigger_shortcut_with_image(
+        &mut self,
+        trigger: ShortcutTriggerContext,
+        image: ImageFrame,
+        cx: &mut App,
+    ) -> AiChat2Result<()> {
+        let text = cx
+            .global::<I18n>()
+            .t("shortcut-input-screenshot")
+            .to_string();
+        let png = screenshot_png_bytes(&image)
+            .map_err(|err| AiChat2Error::Window(format!("encode screenshot failed: {err}")))?;
+        let mut created = self.create_shortcut_conversation(
+            &trigger,
+            vec![ContentPart::Text { text: text.clone() }],
+            text.clone(),
+            cx,
+        )?;
+        let attachment_path = screenshot_attachment_path(
+            &created.record.conversation.id,
+            &created.record.user_item.id,
+            cx,
+        )?;
+        if let Some(parent) = attachment_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&attachment_path, &png)?;
+
+        let path_string = attachment_path.to_string_lossy().to_string();
+        let attachment = database::repository(cx).insert_attachment(NewAttachment {
+            conversation_id: created.record.conversation.id.clone(),
+            kind: AttachmentKind::Image,
+            storage_kind: AttachmentStorageKind::LocalFile,
+            mime_type: Some("image/png".to_string()),
+            name: Some("screenshot.png".to_string()),
+            path: Some(path_string.clone()),
+            external_uri: None,
+            provider_id: None,
+            provider_file_id: None,
+            sha256: None,
+            size_bytes: Some(png.len() as i64),
+            metadata: AttachmentMetadata {
+                source: AttachmentSource::LocalFile { path: path_string },
+                width: Some(image.width),
+                height: Some(image.height),
+                duration_ms: None,
+                preview_attachment_id: None,
+            },
+        })?;
+        let content = vec![
+            ContentPart::Text { text },
+            ContentPart::Image {
+                attachment_id: attachment.id,
+            },
+        ];
+        created.record.user_item = database::repository(cx).update_conversation_item_payload(
+            &created.record.user_item.id,
+            ConversationItemStatus::Completed,
+            ConversationItemPayload::Message {
+                role: TranscriptRole::User,
+                content,
+            },
+        )?;
+        self.open_created_shortcut_conversation(created, cx);
+        Ok(())
+    }
+
+    fn trigger_shortcut_with_parts(
+        &mut self,
+        trigger: ShortcutTriggerContext,
+        title_seed: String,
+        content_parts: Vec<ContentPart>,
+        cx: &mut App,
+    ) {
+        match self.create_shortcut_conversation(&trigger, content_parts, title_seed, cx) {
+            Ok(created) => self.open_created_shortcut_conversation(created, cx),
+            Err(err) => self.push_notification(
+                "notify-shortcut-trigger-model-unavailable-title",
+                err.to_string(),
+                NotificationType::Error,
+                cx,
+            ),
+        }
+    }
+
+    fn create_shortcut_conversation(
+        &self,
+        trigger: &ShortcutTriggerContext,
+        content_parts: Vec<ContentPart>,
+        title_seed: String,
+        cx: &mut App,
+    ) -> AiChat2Result<state::conversations::CreatedConversation> {
+        state::conversations::create_conversation(
+            state::conversations::CreateConversationRequest {
+                project_id: None,
+                content_parts,
+                title_seed,
+                skill_requests: Vec::new(),
+                provider_model: trigger.provider_model.clone(),
+                reasoning_selection: trigger
+                    .shortcut
+                    .settings_snapshot
+                    .reasoning_selection
+                    .clone(),
+                prompt_id: trigger.prompt_id.clone(),
+                prompt_snapshot: trigger.prompt_snapshot.clone(),
+                trigger_kind: AgentRunTriggerKind::Shortcut,
+            },
+            cx,
+        )
+    }
+
+    fn open_created_shortcut_conversation(
+        &self,
+        created: state::conversations::CreatedConversation,
+        cx: &mut App,
+    ) {
+        let Some(root) = temporary_window::open_temporary_window(cx) else {
+            event!(
+                Level::ERROR,
+                "failed to open temporary window for shortcut conversation"
+            );
+            return;
+        };
+
+        if let Err(err) = root.update(cx, |root, window, cx| {
+            let Ok(view) = root.view().clone().downcast::<TemporaryWindow>() else {
+                event!(
+                    Level::ERROR,
+                    "temporary window root did not contain TemporaryWindow view"
+                );
+                return;
+            };
+            view.update(cx, |view, cx| {
+                view.open_created_conversation(created, window, cx);
+            });
+        }) {
+            event!(
+                Level::ERROR,
+                error = ?err,
+                "failed to open shortcut conversation in temporary window"
+            );
+        }
+    }
+
+    pub(crate) fn handle_screenshot_capture_failure(&self, error: CaptureError, cx: &mut App) {
+        let Some(message) = screenshot_capture_error_message(&error) else {
+            return;
+        };
+        self.push_notification(
+            "notify-shortcut-trigger-screenshot-title",
+            message,
+            NotificationType::Error,
+            cx,
+        );
+    }
+
+    fn handle_screenshot_ocr_failure(&self, error: OcrError, cx: &mut App) {
+        self.push_notification(
+            "notify-shortcut-trigger-ocr-title",
+            screenshot_ocr_error_message(&error),
+            NotificationType::Error,
+            cx,
+        );
+    }
+
+    fn handle_empty_shortcut_input(&self, cx: &mut App) {
+        self.push_notification(
+            "notify-shortcut-trigger-empty-input-title",
+            cx.global::<I18n>()
+                .t("notify-shortcut-trigger-empty-input-message")
+                .to_string(),
+            NotificationType::Warning,
+            cx,
+        );
+    }
+
+    fn push_notification(
+        &self,
+        title_key: &'static str,
+        message: impl Into<SharedString>,
+        kind: NotificationType,
+        cx: &mut App,
+    ) {
+        let title = cx.global::<I18n>().t(title_key);
+        let notification = Notification::new()
+            .title(title)
+            .message(message.into())
+            .with_type(kind);
+
+        let window = cx
+            .active_window()
+            .and_then(|window| window.downcast::<Root>())
+            .or_else(|| {
+                cx.windows()
+                    .iter()
+                    .find_map(|window| window.downcast::<Root>())
+            });
+        let Some(window) = window else {
+            event!(
+                Level::ERROR,
+                title_key,
+                "no Root window available for shortcut notification"
+            );
+            return;
+        };
+
+        let window: AnyWindowHandle = window.into();
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(notification, cx);
+            });
+        });
+    }
+
     pub(crate) fn diagnostics(&self) -> ShortcutRuntimeDiagnostics {
         ShortcutRuntimeDiagnostics {
             temporary_hotkey: self.temporary_hotkey.clone(),
@@ -426,11 +997,62 @@ impl GlobalHotkeyState {
     }
 }
 
+fn normalized_text(text: Option<String>) -> Option<String> {
+    text.map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+fn screenshot_png_bytes(image: &ImageFrame) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
+
+    let raw = image::RgbaImage::from_raw(image.width, image.height, image.bytes_rgba8.clone())
+        .ok_or_else(|| "invalid screenshot image buffer".to_string())?;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            raw.as_raw(),
+            image.width,
+            image.height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(png)
+}
+
+fn screenshot_attachment_path(
+    conversation_id: &ConversationId,
+    user_item_id: &str,
+    cx: &App,
+) -> AiChat2Result<PathBuf> {
+    Ok(cx
+        .global::<AiChat2Config>()
+        .data_dir()?
+        .join("attachments")
+        .join(conversation_id)
+        .join(format!("{user_item_id}-screenshot.png")))
+}
+
+fn screenshot_capture_error_message(error: &CaptureError) -> Option<String> {
+    match error {
+        CaptureError::Cancelled => None,
+        _ => Some(error.to_string()),
+    }
+}
+
+fn screenshot_ocr_error_message(error: &OcrError) -> String {
+    error.to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FakeHotkeyBackend, GlobalHotkeyState};
+    use super::{
+        FakeHotkeyBackend, GlobalHotkeyState, normalized_text, screenshot_capture_error_message,
+        screenshot_ocr_error_message, screenshot_png_bytes,
+    };
+    use crate::platform::capture::CaptureError;
     use global_hotkey::hotkey::HotKey;
     use gpui::Task;
+    use platform_ext::{OcrError, ocr::ImageFrame};
     use std::str::FromStr;
 
     #[test]
@@ -503,5 +1125,62 @@ mod tests {
 
         assert_eq!(hotkeys.diagnostics().temporary_hotkey, None);
         assert!(hotkeys.diagnostics().registration_errors.is_empty());
+    }
+
+    #[test]
+    fn normalized_text_rejects_empty_and_whitespace_only_values() {
+        assert_eq!(normalized_text(None), None);
+        assert_eq!(normalized_text(Some(String::new())), None);
+        assert_eq!(normalized_text(Some("   \n\t  ".to_string())), None);
+        assert_eq!(
+            normalized_text(Some("  selected text  ".to_string())),
+            Some("selected text".to_string())
+        );
+    }
+
+    #[test]
+    fn screenshot_capture_cancellation_is_silent() {
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::Cancelled),
+            None
+        );
+    }
+
+    #[test]
+    fn screenshot_capture_failures_map_to_error_messages() {
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::PermissionDenied),
+            Some("capture permission was denied".to_string())
+        );
+        assert_eq!(
+            screenshot_capture_error_message(&CaptureError::BackendUnavailable("missing backend")),
+            Some("capture backend is unavailable: missing backend".to_string())
+        );
+    }
+
+    #[test]
+    fn screenshot_ocr_failures_map_to_error_messages() {
+        assert_eq!(
+            screenshot_ocr_error_message(&OcrError::BackendUnavailable("missing ocr")),
+            "ocr backend is unavailable: missing ocr".to_string()
+        );
+        assert_eq!(
+            screenshot_ocr_error_message(&OcrError::SystemFailure("vision failed".to_string())),
+            "ocr failed: vision failed".to_string()
+        );
+    }
+
+    #[test]
+    fn screenshot_png_bytes_encodes_rgba_frame() {
+        let image = ImageFrame {
+            width: 1,
+            height: 1,
+            scale_factor: 1.0,
+            bytes_rgba8: vec![255, 0, 0, 255],
+        };
+
+        let png = screenshot_png_bytes(&image).unwrap();
+
+        assert!(png.starts_with(&[137, 80, 78, 71]));
     }
 }

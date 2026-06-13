@@ -371,6 +371,18 @@ pub struct NewShortcut {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UpdateShortcut {
+    pub hotkey: String,
+    pub enabled: bool,
+    pub prompt_id: Option<PromptId>,
+    pub provider_id: Option<ProviderId>,
+    pub model_id: Option<ProviderModelId>,
+    pub input_source: ShortcutInputSource,
+    pub action: ShortcutAction,
+    pub settings_snapshot: RunSettingsSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderRecord {
     pub id: ProviderId,
     pub kind: String,

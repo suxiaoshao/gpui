@@ -1231,6 +1231,42 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn update_shortcut(&self, id: &str, input: UpdateShortcut) -> Result<ShortcutRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(shortcuts::table.find(id))
+            .set((
+                shortcuts::hotkey.eq(input.hotkey),
+                shortcuts::enabled.eq(input.enabled),
+                shortcuts::prompt_id.eq(input.prompt_id),
+                shortcuts::provider_id.eq(input.provider_id),
+                shortcuts::model_id.eq(input.model_id),
+                shortcuts::input_source.eq(db_label(&input.input_source)?),
+                shortcuts::action_json.eq(to_json(&input.action)?),
+                shortcuts::settings_snapshot_json.eq(to_json(&input.settings_snapshot)?),
+                shortcuts::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlShortcutRow::as_returning())
+            .get_result::<SqlShortcutRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_shortcut_enabled(&self, id: &str, enabled: bool) -> Result<ShortcutRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(shortcuts::table.find(id))
+            .set((
+                shortcuts::enabled.eq(enabled),
+                shortcuts::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlShortcutRow::as_returning())
+            .get_result::<SqlShortcutRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn delete_shortcut(&self, id: &str) -> Result<usize> {
+        let mut conn = self.conn()?;
+        Ok(diesel::delete(shortcuts::table.find(id)).execute(&mut conn)?)
+    }
+
     pub fn list_shortcuts(&self) -> Result<Vec<ShortcutRecord>> {
         let mut conn = self.conn()?;
         shortcuts::table

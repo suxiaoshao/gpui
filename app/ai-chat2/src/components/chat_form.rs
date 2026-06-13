@@ -3,8 +3,11 @@ mod effort_select;
 mod model_select;
 mod thinking_effort;
 
-use crate::components::picker::PickerListDelegate;
 use crate::{
+    components::{
+        model_picker::{ModelOption, model_sections},
+        picker::PickerListDelegate,
+    },
     foundation::{self, assets::IconName},
     state,
     state::providers::{ProviderModelChoice, ProviderModelKey},
@@ -21,7 +24,6 @@ use gpui_component::{
     list::ListState,
     v_flex,
 };
-use model_select::{ModelOption, model_sections};
 use std::{path::Path, rc::Rc};
 use thinking_effort::{
     computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,

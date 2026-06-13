@@ -172,17 +172,22 @@ pub(super) fn open_prompt_edit_dialog(
     prompt: Option<PromptRecord>,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> Entity<PromptEditDialogState> {
     let title = cx.global::<I18n>().t(mode.title_key());
     let cancel_label = cx.global::<I18n>().t("button-cancel");
     let save_label = cx.global::<I18n>().t("provider-action-save");
     let form = cx.new(|cx| PromptEditDialogState::new(mode, prompt, window, cx));
     let form_to_focus = form.clone();
+    let form_to_return = form.clone();
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title(title.clone())
             .w(px(620.))
+            .on_ok({
+                let form = form.clone();
+                move |_, window, cx| confirm_prompt_edit_dialog(&form, window, cx)
+            })
             .child(form.clone())
             .footer(
                 DialogFooter::new()
@@ -195,17 +200,7 @@ pub(super) fn open_prompt_edit_dialog(
                             Button::new("prompt-dialog-save")
                                 .primary()
                                 .icon(IconName::FilePen)
-                                .label(save_label.clone())
-                                .on_click({
-                                    let form = form.clone();
-                                    move |_, window, cx| {
-                                        let saved =
-                                            form.update(cx, |form, cx| form.save(window, cx));
-                                        if saved {
-                                            window.close_dialog(cx);
-                                        }
-                                    }
-                                }),
+                                .label(save_label.clone()),
                         ),
                     ),
             )
@@ -214,6 +209,16 @@ pub(super) fn open_prompt_edit_dialog(
     window.defer(cx, move |window, cx| {
         form_to_focus.update(cx, |form, cx| form.focus_name(window, cx));
     });
+
+    form_to_return
+}
+
+fn confirm_prompt_edit_dialog(
+    form: &Entity<PromptEditDialogState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    form.update(cx, |form, cx| form.save(window, cx))
 }
 
 pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Window, cx: &mut App) {
@@ -377,4 +382,76 @@ fn form_field(label: impl Into<SharedString>, input: impl IntoElement) -> AnyEle
         .child(Label::new(label.into()).text_sm().font_medium())
         .child(input)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PromptEditMode, confirm_prompt_edit_dialog, open_prompt_edit_dialog};
+    use crate::{database::FreshStoreGlobal, foundation, state};
+    use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_component::WindowExt;
+    use tempfile::{TempDir, tempdir};
+
+    #[gpui::test]
+    fn invalid_create_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
+        let _dir = init_prompt_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let form = cx
+            .update(|window, cx| open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx));
+
+        let saved = cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            confirm_prompt_edit_dialog(&form, window, cx)
+        });
+        assert!(!saved);
+
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+        });
+
+        assert!(form.read_with(&cx, |form, _| form.validation_error.is_some()));
+        cx.update(|_, cx| {
+            assert!(
+                crate::database::repository(cx)
+                    .list_prompts()
+                    .expect("list prompts")
+                    .is_empty()
+            );
+        });
+    }
+
+    fn init_prompt_dialog_test(cx: &mut TestAppContext) -> TempDir {
+        let dir = tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            foundation::init_i18n(cx);
+            state::prompts::init(cx);
+        });
+        dir
+    }
+
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let view = cx.new(|_| TestView);
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            })
+            .expect("open prompt dialog test window")
+        })
+    }
+
+    struct TestView;
+
+    impl Render for TestView {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
 }

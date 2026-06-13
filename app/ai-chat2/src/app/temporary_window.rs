@@ -33,10 +33,8 @@ pub(crate) fn init(cx: &mut App) {
     });
 }
 
-pub(crate) fn open_temporary_window(cx: &mut App) {
-    let _ = with_lifecycle_state(cx, |state, cx| {
-        state.ensure_temporary_window_visible(cx);
-    });
+pub(crate) fn open_temporary_window(cx: &mut App) -> Option<WindowHandle<Root>> {
+    with_lifecycle_state(cx, |state, cx| state.ensure_temporary_window_visible(cx)).flatten()
 }
 
 pub(crate) fn toggle_temporary_window(cx: &mut App) {

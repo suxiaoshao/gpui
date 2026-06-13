@@ -2,7 +2,8 @@ use crate::{
     FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
     NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdatePrompt, UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    UpdatePrompt, UpdateProvider, UpdateProviderStepStatus, UpdateShortcut,
+    UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -1547,6 +1548,37 @@ fn typed_json_roundtrips_for_repository_records() {
     let shortcuts = repo.list_shortcuts().unwrap();
     assert_eq!(shortcuts.len(), 1);
     assert_eq!(shortcuts[0].id, shortcut.id);
+
+    let updated_shortcut = repo
+        .update_shortcut(
+            &shortcut.id,
+            UpdateShortcut {
+                hotkey: "cmd+shift+k".to_string(),
+                enabled: false,
+                prompt_id: None,
+                provider_id: Some(provider.id.clone()),
+                model_id: Some(model.model_id.clone()),
+                input_source: ShortcutInputSource::Screenshot,
+                action: ShortcutAction::OpenTemporaryConversation,
+                settings_snapshot: run_settings(&provider.id, &model.model_id),
+            },
+        )
+        .unwrap();
+    assert_eq!(updated_shortcut.hotkey, "cmd+shift+k");
+    assert!(!updated_shortcut.enabled);
+    assert_eq!(updated_shortcut.prompt_id, None);
+    assert_eq!(
+        updated_shortcut.input_source,
+        ShortcutInputSource::Screenshot
+    );
+
+    let enabled_shortcut = repo
+        .set_shortcut_enabled(&updated_shortcut.id, true)
+        .unwrap();
+    assert!(enabled_shortcut.enabled);
+
+    assert_eq!(repo.delete_shortcut(&enabled_shortcut.id).unwrap(), 1);
+    assert!(repo.list_shortcuts().unwrap().is_empty());
 
     let app_settings = repo
         .set_app_settings(AppSettingsPayload {

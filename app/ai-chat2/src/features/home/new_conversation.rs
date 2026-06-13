@@ -383,6 +383,9 @@ impl NewConversationPage {
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,
+            prompt_id: None,
+            prompt_snapshot: None,
+            trigger_kind: ai_chat_core::AgentRunTriggerKind::User,
         };
         match state::conversations::create_conversation(request, cx) {
             Ok(created) => {

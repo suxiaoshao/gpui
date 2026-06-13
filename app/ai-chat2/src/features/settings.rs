@@ -24,6 +24,7 @@ mod layout;
 mod projects;
 mod prompts;
 mod provider;
+mod shortcuts;
 
 use self::{
     appearance::AppearanceSettingsPage,
@@ -34,6 +35,7 @@ use self::{
     projects::ProjectsSettingsPage,
     prompts::PromptsSettingsPage,
     provider::ProviderSettingsPage,
+    shortcuts::ShortcutsSettingsPage,
 };
 
 actions!(ai_chat2_settings, [ToggleSettings]);
@@ -54,6 +56,7 @@ pub(crate) struct SettingsView {
     provider_settings: Entity<ProviderSettingsPage>,
     projects_settings: Entity<ProjectsSettingsPage>,
     prompts_settings: Entity<PromptsSettingsPage>,
+    shortcuts_settings: Entity<ShortcutsSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
@@ -76,6 +79,7 @@ impl SettingsView {
         let provider_settings = cx.new(|cx| ProviderSettingsPage::new(window, cx));
         let projects_settings = cx.new(ProjectsSettingsPage::new);
         let prompts_settings = cx.new(|cx| PromptsSettingsPage::new(window, cx));
+        let shortcuts_settings = cx.new(|cx| ShortcutsSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let _subscriptions = vec![
@@ -122,6 +126,7 @@ impl SettingsView {
             provider_settings,
             projects_settings,
             prompts_settings,
+            shortcuts_settings,
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
@@ -205,6 +210,9 @@ impl Render for SettingsView {
                     SettingsPageKey::Provider => self.provider_settings.clone().into_any_element(),
                     SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
                     SettingsPageKey::Prompts => self.prompts_settings.clone().into_any_element(),
+                    SettingsPageKey::Shortcuts => {
+                        self.shortcuts_settings.clone().into_any_element()
+                    }
                 },
             )
             .when(
@@ -366,17 +374,18 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 6] {
     let i18n = cx.global::<I18n>();
     settings_page_specs_for_i18n(i18n)
 }
 
-fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 5] {
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
     let page_projects = i18n.t("settings-page-projects");
     let page_prompts = i18n.t("settings-page-prompts");
+    let page_shortcuts = i18n.t("settings-page-shortcuts");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
     let field_http_proxy = i18n.t("field-http-proxy");
@@ -429,6 +438,14 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 5] {
             settings_search_text(
                 [page_prompts.as_str()],
                 "prompts prompt system developer instruction text 提示词 系统 开发者 指令 文本",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Shortcuts,
+            page_shortcuts.clone(),
+            settings_search_text(
+                [page_shortcuts.as_str()],
+                "shortcuts shortcut hotkey global prompt provider model selection clipboard screenshot ocr 快捷键 全局快捷键 热键 提示词 模型 提供商 选中文字 剪贴板 截图",
             ),
         ),
     ]
@@ -582,6 +599,24 @@ mod tests {
         assert!(settings_page_matches(prompts, "提示词"));
         assert!(settings_page_matches(prompts, "tishici"));
         assert!(settings_page_matches(prompts, "tsc"));
+    }
+
+    #[test]
+    fn settings_shortcuts_page_uses_i18n_title_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let shortcuts = specs
+            .iter()
+            .find(|spec| spec.key == SettingsPageKey::Shortcuts)
+            .expect("shortcuts settings page exists");
+
+        assert_eq!(shortcuts.title.as_ref(), "快捷键");
+        assert!(settings_page_matches(shortcuts, "shortcut"));
+        assert!(settings_page_matches(shortcuts, "hotkey"));
+        assert!(settings_page_matches(shortcuts, "screenshot"));
+        assert!(settings_page_matches(shortcuts, "快捷键"));
+        assert!(settings_page_matches(shortcuts, "kuaijiejian"));
+        assert!(settings_page_matches(shortcuts, "kjj"));
     }
 
     #[test]
