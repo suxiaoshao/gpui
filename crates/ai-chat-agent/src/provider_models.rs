@@ -356,8 +356,15 @@ struct OpenRouterModelEntry {
     created: Option<u64>,
     #[serde(rename = "context_length")]
     context_length: Option<u32>,
+    architecture: Option<OpenRouterModelArchitecture>,
     #[serde(default, rename = "supported_parameters")]
     supported_parameters: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+struct OpenRouterModelArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 async fn fetch_ollama_models(
@@ -532,6 +539,11 @@ async fn fetch_openrouter_models(
                 enabled: true,
                 capabilities: capabilities_from_openrouter_model(
                     model.supported_parameters,
+                    model
+                        .architecture
+                        .as_ref()
+                        .map(|architecture| architecture.input_modalities.clone())
+                        .unwrap_or_default(),
                     raw.clone(),
                 ),
                 metadata: ProviderModelMetadata {
@@ -808,6 +820,9 @@ mod tests {
                 "name": "GPT-5",
                 "created": 1,
                 "context_length": 272000,
+                "architecture": {
+                    "input_modalities": ["text", "image", "file"]
+                },
                 "supported_parameters": ["tools", "reasoning"]
             }]
         }))
@@ -818,6 +833,13 @@ mod tests {
         assert_eq!(
             model.supported_parameters,
             vec!["tools".to_string(), "reasoning".to_string()]
+        );
+        assert_eq!(
+            model
+                .architecture
+                .as_ref()
+                .map(|architecture| architecture.input_modalities.as_slice()),
+            Some(["text".to_string(), "image".to_string(), "file".to_string()].as_slice())
         );
     }
 

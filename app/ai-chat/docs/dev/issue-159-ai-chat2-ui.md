@@ -157,7 +157,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Minimize/Zoom action | `app/ai-chat2/src/app.rs` / `features/temporary.rs` | 主窗口和 Temporary 窗口已处理 Window menu action。 |
 | bundle metadata | `app/ai-chat2/Cargo.toml` | 已有 `[package.metadata.bundle]`。 |
 | app icon | `app/ai-chat2/build-assets/icon/` | 本轮复用旧 `ai-chat` 图标作为 v1 shell icon。 |
-| macOS bundle localization | `app/ai-chat2/locales/macos/` | 已有 `en-US` 和 `zh-Hans` InfoPlist strings。 |
+| macOS bundle localization | `app/ai-chat2/locales/macos/` / `crates/xtask/src/bundle/{settings,macos}.rs` | 源码保留 `en-US` 和 `zh-Hans` InfoPlist strings；`xtask bundle` 输出为 macOS/Finder 常见的 `en.lproj` 和 `zh_CN.lproj`，并在 `Info.plist` 写入 `CFBundleDevelopmentRegion = en`、`CFBundleAllowMixedLocalizations = true`、`CFBundleLocalizations = [en, zh_CN]`，让 `NSOpenPanel` 等系统 UI 跟随系统语言。 |
 | Windows icon build script | `app/ai-chat2/build.rs` | Windows build 时从 base PNG 派生 multi-frame `.ico`。 |
 | `xtask bundle ai-chat2` | `crates/xtask/src/cli.rs` | `BundleApp::AiChat2` 已加入，CLI parse test 已覆盖。 |
 | ComposerEditor v1 | `app/ai-chat2/src/components/chat_form/composer_editor.rs` / `composer_editor/*` | 已接入 ChatForm，支持文本输入、IME range、选择/光标、cursor blink/styling、编辑快捷键、plain text 剪贴板、Enter 发送、Shift+Enter 换行、soft wrap、内部滚动、Unicode/grapheme-aware movement/delete/word boundary、`$skill-name` token 和 `ComposerSnapshot`。 |
@@ -233,7 +233,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Screenshot/input capture | shortcut screenshot overlay、capture、image-capable model attachment path 和 OCR fallback 已实现；ChatForm 多模态第一版已复用同类 image attachment 落盘/入库思路，实现通用 composer image/file attachment input。 |
 | Legacy access | read-only legacy viewer、manual export/import 或 backup-only policy；当前没有任何 legacy data UI。 |
 | Export/import | fresh conversation export、generated output export、legacy manual import/export。 |
-| Capability gating | tool calling、MCP、image/file/audio input、image generation、structured output、reasoning、provider-specific extensions；ChatForm image/file attachment 发送前 gating 已实现，并额外拦截当前 runtime 尚不能发送的二进制文件类型。 |
+| Capability gating | tool calling、MCP、image/file/audio input、image generation、structured output、reasoning、provider-specific extensions；ChatForm image/file attachment 发送前 gating 已实现，并额外拦截当前 runtime 尚不能发送的二进制文件类型。2026-06-14 已补齐多模态相关 provider model profile：OpenAI/Anthropic/Gemini/OpenRouter 的 image/file input、DeepSeek/Mistral 的 tool/structured output；Mistral vision 因当前 Rig adapter 不支持图片仍不放行。 |
 | Provider branding | 已完成第一版：Lucide v1 移除品牌图标后，`ai-chat2` 使用 app-owned runtime SVG、`ProviderLogoName` 和 `ProviderVisual` fallback；来源策略是 Simple Icons first，Simple Icons 缺失、明显过期或品牌 guideline 要求时用官方 SVG override；没有官方紧凑 SVG 或官方下载不可用时，允许使用可追溯第三方 SVG。Settings provider row/header 与 ChatForm model row/trigger 已优先显示品牌 logo。Branded built-in providers 已全覆盖；custom OpenAI-compatible 不是固定品牌，继续使用 `Server` fallback。 |
 
 ## 旧 `app/ai-chat` 对比
@@ -680,7 +680,7 @@ Codex-style project tray 颜色/层级 polish 后已运行：
   strip、`+` 菜单、`secondary-c` 粘贴板分类、拖拽 Finder/系统文件到 ChatForm、图片 preview、macOS Quick Look
   file preview fallback、attachments 表复用、agent history 多模态 content 合成、capability/runtime gating、icons、i18n、依赖和验证记录。
 - 计划已把 Codex app 解包参考落到具体样式值：attachment row 横向滚动、`8px` gap、`80px` 图片缩略图、
-  `36px` 文件 chip、remove button 尺寸/位置、`+` 菜单宽高和 preview dialog 最大尺寸，避免实现时再临时猜
+  `220px x 56px` 文件 card、`20px` remove button 和当前窗口全窗口图片 preview，避免实现时再临时猜
   margin/spacing。
 - 已补充并落地 macOS Quick Look 调研：Finder 级文件预览使用 `QuickLookUI/QLPreviewPanel`，当前在
   `crates/window-ext` 复用已有 `objc2` / AppKit / Foundation 依赖实现 bridge；`cx.open_with_system(&path)` 只作为
@@ -698,3 +698,11 @@ Codex-style project tray 颜色/层级 polish 后已运行：
 - `ChatForm` 附件相关代码已按职责拆分：`attachment_flow.rs` 负责粘贴/文件选择/drop/删除/preview/open/notification/capability support，`attachment_views.rs` 负责附件菜单、strip、图片/文件 card、remove button 和 warning 行，`attachments.rs` 保留尺寸/格式化常量，`image_preview.rs` 保留全窗口图片预览组件。
 - `chat_form.rs` 保留整体状态、提交、model/reasoning 控制和 root layout 编排，避免继续把附件操作和附件视图堆在单个文件里。
 - 补充验证：`cargo fmt --check`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 chat_form`、`cargo test -p ai-chat-agent history`、`cargo test -p ai-chat-db attachment`、`cargo test -p ai-chat-db typed_json_roundtrips_for_repository_records`、`cargo clippy -p window-ext -p ai-chat2 -p ai-chat-db -p ai-chat-agent --all-targets --all-features -- -D warnings`、`git diff --check`。
+
+2026-06-14 ChatForm 附件 polish 和 macOS 文件对话框本地化记录：
+
+- `+` 附件入口已从手写 `Popover` 改为 `gpui-component` 的 `DropdownMenu` / `PopupMenuItem`，`ChatForm` 不再持有 `attachment_menu_open` 状态；菜单项仍为“添加文件”和“从剪贴板添加”。
+- 添加文件对话框的 `PathPromptOptions.prompt` 已改为 `None`，不覆盖 `NSOpenPanel` 默认本地化 prompt；macOS 系统文件对话框语言通过 bundle localization 修正。
+- 图片附件缩略图不使用通用 card，不保留 margin/padding/1px inset；当前是固定 `80px` 外层、0 inset 内层 rounded 裁剪图片、0 inset border overlay 绘制圆角边框，删除按钮点击会阻止预览/open。
+- `xtask bundle` 的 macOS localization 输出已从源码 `en-US.lproj` / `zh-Hans.lproj` 映射为 app bundle `en.lproj` / `zh_CN.lproj`，并写入 `CFBundleAllowMixedLocalizations = true`。
+- 补充验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 chat_form`、`cargo test -p xtask bundle`、`git diff --check`、`cargo run -p xtask -- bundle ai-chat2`，并检查生成的 `Info.plist` 和 `Resources/{en,zh_CN}.lproj`。

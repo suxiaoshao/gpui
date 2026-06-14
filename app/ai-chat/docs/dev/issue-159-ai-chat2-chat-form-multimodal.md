@@ -22,17 +22,19 @@
 
 ## 当前实现
 
-- `app/ai-chat2/src/components/chat_form.rs` 已持有 pending attachments、`+` 附件菜单状态、图片 preview 状态，并接入文件选择器、从剪贴板添加、`ExternalPaths` drop、capability gating 和发送按钮 disabled reason；附件操作和附件视图已拆到 `chat_form/attachment_flow.rs` 与 `chat_form/attachment_views.rs`，root `ChatForm` 保留整体状态、提交和布局编排。
+- `app/ai-chat2/src/components/chat_form.rs` 已持有 pending attachments 和图片 preview 状态，并接入文件选择器、从剪贴板添加、`ExternalPaths` drop、capability gating 和发送按钮 disabled reason；附件操作和附件视图已拆到 `chat_form/attachment_flow.rs` 与 `chat_form/attachment_views.rs`，root `ChatForm` 保留整体状态、提交和布局编排。`+` 附件菜单不再由 `ChatForm` 保存 open state，改由 `gpui-component` `DropdownMenu` 自管理打开、关闭、focus 和键盘行为。
 - `app/ai-chat2/src/components/chat_form/image_preview.rs` 已实现当前窗口全窗口图片 preview overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll、滚动查看、右上角关闭和点击遮罩关闭。
-- `app/ai-chat2/src/components/chat_form/attachments.rs` 已集中固定 Codex app reference 得到的 strip 样式常量：`80px` 图片缩略图、`8px` gap、`36px` 文件 chip 高度、`22px` remove button、`8px` radius。
+- `app/ai-chat2/src/components/chat_form/attachments.rs` 已集中固定 Codex app reference 得到的 strip 样式常量：`80px` 图片缩略图、`8px` gap、`220px x 56px` 文件 card、`20px` remove button、`8px` radius。
 - `app/ai-chat2/src/components/chat_form/composer_editor.rs` 在 `secondary-c` 时优先识别 GPUI `ClipboardItem::{ExternalPaths, Image}`，有文件/图片时发 `PasteAttachmentRequested`，普通文本仍走原 `ComposerEditor` 粘贴。
 - 第一版未引入 `clipboard-rs`：GPUI 已提供 `ClipboardEntry::ExternalPaths` 和 `ClipboardEntry::Image`，且 macOS pasteboard 顺序已能满足 Files -> Image -> Text 判定。后续只有在 GPUI clipboard 覆盖不足时再引入 `clipboard-rs`。
 - `app/ai-chat2/src/state/attachments.rs` 已实现文件/图片分类、clipboard image pending 落盘、文件 MIME/扩展名判定、附件入库和 `ContentPart::{Image, File}` 合成；复用 fresh `attachments` 表，不新增 schema。
 - `app/ai-chat2/src/state/conversations.rs` 已把 `CreateConversationRequest` / `SendConversationMessageRequest` 扩展为接收 composer attachments，创建/追加 user item 后插入 attachment records 并回写最终 content parts。
 - `crates/ai-chat-db` 已让 `ConversationTimelineRecords` 返回 `attachments`，并新增 `conversation_attachments` 读取接口。
 - `crates/ai-chat-agent/src/history.rs` 已把 user message 的 `ContentPart::Image` 转成 Rig `UserContent::Image` base64 content，把 PDF 转成 base64 document，把文本类文件转成 UTF-8 document。当前 runtime 不支持的二进制文件会明确报 unsupported，ChatForm 也会提前禁用发送。
+- `crates/ai-chat-agent/src/model_capabilities.rs` 已同步 ChatForm 多模态所需的 provider capability profile：OpenAI GPT-5.5/GPT-5.4/GPT-5/GPT-4o/GPT-4.1/o3/o4 标记 image/file input；Claude 当前模型标记 image/file input；Gemini 2.5/3 标记 image/file input；OpenRouter 从 `/api/v1/models` 的 `architecture.input_modalities` 读取 image/file；DeepSeek v4/chat/reasoner 补齐 tool/structured output；Mistral 补齐 tool/structured output。Mistral 官方 vision models 暂不标记 image input，因为当前 Rig Mistral adapter 明确不支持 `UserContent::Image`。
 - `crates/window-ext/src/lib.rs` 已提供 `preview_file_with_quick_look(&Path)`：macOS 使用 `QLPreviewPanel` + datasource bridge 显示 Finder 同级 Quick Look；非 macOS 或 Quick Look 失败时由 ChatForm fallback 到 `cx.open_with_system(&path)`。
-- `+` 按钮现在打开附件菜单，第一版提供“添加文件”和“从剪贴板添加”；拖拽文件到整个 `ChatForm` surface 等价于添加附件。2026-06-14 已修正 attachment strip / warning / editor / footer 的纵向 flow，移除提示与输入框重叠；图片缩略图通过内层 rounded + `overflow_hidden` 裁剪，删除按钮点击会阻止打开预览。
+- `+` 按钮现在使用 `Button::dropdown_menu_with_anchor` + `PopupMenuItem` 打开附件菜单，第一版提供“添加文件”和“从剪贴板添加”；拖拽文件到整个 `ChatForm` surface 等价于添加附件。2026-06-14 已修正 attachment strip / warning / editor / footer 的纵向 flow，移除提示与输入框重叠；图片缩略图使用专用容器而非通用 card，0 inset 内层负责 rounded + `overflow_hidden` 裁剪，0 inset overlay 负责圆角边框，不引入 margin、padding 或 1px 白边；删除按钮点击会 `stop_propagation`，不会打开预览。
+- ChatForm 添加文件的 `PathPromptOptions.prompt` 已改为 `None`，避免覆盖 macOS `NSOpenPanel` 默认按钮文案；系统文件对话框整体语言依赖 app bundle localization。`xtask` 打包时把源码中的 `en-US.lproj` / `zh-Hans.lproj` 映射为 macOS 常见的 `en.lproj` / `zh_CN.lproj`，并写入 `CFBundleAllowMixedLocalizations = true` 与 `CFBundleLocalizations = ["en", "zh_CN"]`。
 
 ## 剩余边界
 
@@ -86,8 +88,8 @@
 - 附件 row 的可观察 DOM 结构是外层 `hide-scrollbar w-full overflow-x-auto`，内层 `flex min-w-max items-end gap-2`，并带 `data-composer-attachments-row`。父 composer surface 使用 `relative flex w-full flex-col gap-2`，说明附件行和文本输入之间不是独立 card，而是同一个 composer surface 内的纵向间距。
 - 普通图片 attachment 的横向动画步进是 `88px`，可推导为 `80px` 缩略图宽度 + `8px` gap。第一版 `ai-chat2` 固定采用 `80px` image thumbnail 和 `8px` attachment gap。
 - Codex app 的 appshot/pending capture 卡片使用 `composer-attachment-surface relative flex-shrink-0 overflow-hidden rounded-2xl`，目标尺寸约 `232px x 140px`，横向步进 `240px`，初始动画里 `marginRight: -8`。`ai-chat2` 第一版不做 appshot 卡片，但保留这些值作为后续截图上下文卡片参考。
-- Composer 内联的小图片/file mention 图标出现过 `h-5 w-7 shrink-0 rounded-sm border border-token-border object-cover`，约等于 `28px x 20px`。这属于 inline mention 场景；`ai-chat2` 附件 strip 的文件 chip 不照搬这个尺寸，文件 icon 固定 `18px`，chip 高度固定 `36px`。
-- remove button 独立在 `attachment-remove-button-*` bundle 中，minified 产物无 sourcemap，无法稳定还原全部 class；`ai-chat2` 第一版直接固定 remove button 为 `22px` 圆形 icon button，图片 item 使用右上角 `-6px` overlay，文件 chip 使用同尺寸 trailing icon button。
+- Composer 内联的小图片/file mention 图标出现过 `h-5 w-7 shrink-0 rounded-sm border border-token-border object-cover`，约等于 `28px x 20px`。这属于 inline mention 场景；`ai-chat2` 附件 strip 不照搬这个尺寸，当前文件附件使用 `220px x 56px` card，文件 icon 固定 `18px`。
+- remove button 独立在 `attachment-remove-button-*` bundle 中，minified 产物无 sourcemap，无法稳定还原全部 class；`ai-chat2` 当前固定 remove button 为 `20px` 圆形 ghost icon button，右上角 `4px` inset overlay，图片和文件附件均阻止 click 事件冒泡，避免删除时触发预览/open。
 - Composer state 把 image attachments、file attachments、pasted text、appshot contexts、selected text、added files 等分桶保存，而不是把所有内容塞进纯文本。
 - 粘贴/拖拽事件按 file-first 处理：如果 `clipboardData` / `dataTransfer` 包含文件，阻止默认文本粘贴；图片文件进入 image attachment，其他文件进入 file mention/attachment。
 - 图片文件判定参考实现使用 MIME 与扩展名结合：支持 `png`、`jpg`、`jpeg`、`gif`、`webp`，排除 svg、heic/heif、bmp、tiff、avif、ico、jp2 等不适合直接作为 composer image preview 的格式。
@@ -155,7 +157,7 @@ crates/window-ext/src/quick_look.rs
 
 | 模块 | 实际/计划状态 |
 | --- | --- |
-| `components/chat_form.rs` | 声明 `mod attachment_flow; mod attachment_views; mod attachments; mod image_preview;`；持有 pending composer attachments、`+` 菜单 open state、preview state、处理整体提交/能力 gating/发送按钮状态和 root layout；不直接写 DB。 |
+| `components/chat_form.rs` | 声明 `mod attachment_flow; mod attachment_views; mod attachments; mod image_preview;`；持有 composer attachments、下一附件 local id、preview attachment、处理整体提交/能力 gating/发送按钮状态和 root layout；`+` 菜单 open/dismiss/focus 由 `gpui-component` `DropdownMenu` 管理；不直接写 DB。 |
 | `components/chat_form/attachment_flow.rs` | 已落地：处理 `PasteAttachment`、当前剪贴板读取、系统文件选择器、`ExternalPaths` drop 后的 path 添加、attachment add result、remove、图片 preview 打开、文件 Quick Look/open、notification 和 capability support message。 |
 | `components/chat_form/attachment_views.rs` | 已落地：渲染 `+` 附件菜单、attachment strip、图片/文件 attachment card、remove button 和 unsupported model warning 行。 |
 | `components/chat_form/attachments.rs` | 已落地：集中定义 strip/item 尺寸常量和文件大小格式化。 |
@@ -173,28 +175,20 @@ crates/window-ext/src/quick_look.rs
 
 ## 自定义类型
 
-`state/attachments.rs` 计划定义 app 级、可测试的附件模型：
+`state/attachments.rs` 已定义 app 级、可测试的附件模型；当前实现用本地 `path` 表达文件来源，不再保留早期计划里的独立 `ComposerAttachmentSource`：
 
 ```rust
-pub(crate) type ComposerAttachmentId = u64;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ComposerAttachmentKind {
     Image,
     File,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ComposerAttachmentSource {
-    LocalFile { path: PathBuf },
-    ClipboardImage { png_path: PathBuf },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerAttachment {
-    pub(crate) local_id: ComposerAttachmentId,
+    pub(crate) local_id: u64,
     pub(crate) kind: ComposerAttachmentKind,
-    pub(crate) source: ComposerAttachmentSource,
+    pub(crate) path: PathBuf,
     pub(crate) name: String,
     pub(crate) mime_type: Option<String>,
     pub(crate) size_bytes: Option<u64>,
@@ -210,33 +204,15 @@ pub(crate) enum AttachmentCapabilityBlock {
 }
 ```
 
-`components/chat_form.rs` 的 `ChatForm` 计划新增本地字段：
+`components/chat_form.rs` 的 `ChatForm` 当前附件相关本地字段：
 
 ```rust
-pending_attachments: Vec<ComposerAttachment>,
-next_attachment_id: ComposerAttachmentId,
-attachment_menu_open: bool,
-attachment_menu: Entity<ListState<PickerListDelegate<AttachmentActionOption>>>,
-preview_attachment_id: Option<ComposerAttachmentId>,
+attachments: Vec<ComposerAttachment>,
+next_attachment_id: u64,
+preview_attachment: Option<ComposerAttachment>,
 ```
 
-`attachment_menu.rs` 计划定义：
-
-```rust
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum AttachmentActionKind {
-    AddFiles,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AttachmentActionOption {
-    pub(super) id: &'static str,
-    pub(super) kind: AttachmentActionKind,
-    pub(super) label_key: &'static str,
-    pub(super) description_key: Option<&'static str>,
-    pub(super) icon: IconName,
-}
-```
+未新增 `attachment_menu.rs` 和 `AttachmentActionOption`。当前只有两个固定菜单项，“添加文件”和“从剪贴板添加”，直接在 `attachment_views.rs` 里用 `PopupMenuItem` 渲染；菜单状态、dismiss、focus 和键盘行为由 `DropdownMenu` 承担。
 
 `attachments.rs` 计划只暴露 app-local render helper，不引入独立 `Global` 或跨 feature state：
 
@@ -350,49 +326,34 @@ pub(crate) struct ComposerSnapshot {
 - `ChatForm` surface 继续使用 `.rounded(px(25.))`、`.border_1()`、`.bg(cx.theme().input_background())`，附件 strip 插在 input surface 内部、`ComposerEditor` 上方，不进入 footer。
 - 附件 strip 使用 `h_flex` + 横向 overflow/scroll；无附件时完全不渲染，避免改变输入框上方高度和 padding。
 - 整个 `ChatForm` surface 增加 `ExternalPaths` drop target：drag-over 时通过单独 overlay child 显示轻量覆盖层；drop 后不改变 focus，不把 path 文本插入 editor。
-- 图片 item 使用 `img(path)` 缩略图、`ObjectFit::Cover`、固定 square thumbnail；点击图片主体打开 `attachment_preview` dialog。
+- 图片 item 使用专用缩略图容器，不使用通用 card：外层固定 square thumbnail 和删除按钮定位，内层 0 inset `rounded + overflow_hidden` 裁剪 `img(path).ObjectFit::Cover`，另一个 0 inset overlay 绘制圆角边框；点击图片主体打开 app 内全窗口 preview overlay。
 - 文件 item 使用 `Icon::new(IconName::File)`、文件名、size 文本和 remove button；点击主体调用 open file，不点击 remove。
 - remove 使用 `Button::new(...).ghost()` + `IconName::X`，尺寸固定，不随 hover 改变 layout；hover 只改变背景/前景色。
-- `+` 使用现有 `components::picker` 的 `picker_popover`，菜单项为“添加文件...”；后续可扩展“粘贴附件”。
-- 预览 dialog 使用 `gpui-component::dialog::Dialog` 和 `DialogClose`，内容区固定最大宽高，图片 `ObjectFit::Contain`。
+- `+` 使用 `gpui-component` `DropdownMenu` / `PopupMenuItem`，菜单项为“添加文件”和“从剪贴板添加”；不保留 app-local popover open state。
+- 图片预览使用 `chat_form/image_preview.rs` 的当前窗口全窗口 overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll 和双向滚动；不再使用固定小 dialog。
 - 错误和 unsupported model 使用现有 `gpui_component::notification::Notification`；发送按钮 tooltip 显示禁用原因。
 
 ## 样式和间距落地值
 
-附件 strip 的第一版尺寸必须落到常量，放在 `components/chat_form/attachments.rs`，不要散落在 render 链里：
+附件 strip 的当前尺寸落到常量，放在 `components/chat_form/attachments.rs`，不要散落在 render 链里：
 
 ```rust
-pub(super) const ATTACHMENT_STRIP_PADDING_X: f32 = 0.; // parent input area owns the 12px inset
-pub(super) const ATTACHMENT_STRIP_PADDING_TOP: f32 = 0.;
-pub(super) const ATTACHMENT_STRIP_PADDING_BOTTOM: f32 = 8.;
-pub(super) const ATTACHMENT_STRIP_GAP: f32 = 8.;
-pub(super) const IMAGE_ATTACHMENT_SIZE: f32 = 80.;
-pub(super) const IMAGE_ATTACHMENT_RADIUS: f32 = 14.;
-pub(super) const FILE_ATTACHMENT_HEIGHT: f32 = 36.;
-pub(super) const FILE_ATTACHMENT_MIN_WIDTH: f32 = 160.;
-pub(super) const FILE_ATTACHMENT_MAX_WIDTH: f32 = 260.;
-pub(super) const FILE_ATTACHMENT_PADDING_X: f32 = 10.;
-pub(super) const FILE_ATTACHMENT_ICON_SIZE: f32 = 18.;
-pub(super) const ATTACHMENT_REMOVE_BUTTON_SIZE: f32 = 22.;
-pub(super) const ATTACHMENT_REMOVE_BUTTON_ICON_SIZE: f32 = 14.;
-pub(super) const ATTACHMENT_REMOVE_BUTTON_OFFSET: f32 = -6.;
-pub(super) const ATTACHMENT_BORDER_RADIUS: f32 = 12.;
-pub(super) const ATTACHMENT_MENU_WIDTH: f32 = 220.;
-pub(super) const ATTACHMENT_MENU_ROW_HEIGHT: f32 = 32.;
-pub(super) const ATTACHMENT_MENU_ICON_SIZE: f32 = 16.;
-pub(super) const DROP_TARGET_INSET: f32 = 6.;
-pub(super) const DROP_TARGET_BORDER_WIDTH: f32 = 1.;
-pub(super) const DROP_TARGET_RADIUS: f32 = 20.;
-pub(super) const PREVIEW_DIALOG_MAX_WIDTH: f32 = 760.;
-pub(super) const PREVIEW_DIALOG_MAX_HEIGHT: f32 = 560.;
+pub(super) const STRIP_GAP: f32 = 8.;
+pub(super) const STRIP_BOTTOM_MARGIN: f32 = 8.;
+pub(super) const IMAGE_THUMBNAIL_SIZE: f32 = 80.;
+pub(super) const FILE_CARD_WIDTH: f32 = 220.;
+pub(super) const FILE_CARD_HEIGHT: f32 = 56.;
+pub(super) const CARD_RADIUS: f32 = 8.;
+pub(super) const REMOVE_BUTTON_SIZE: f32 = 20.;
 ```
 
 `ChatForm` input surface 结构调整为：
 
 ```text
 ChatForm surface
-  input area div
-    AttachmentStrip?        // only when pending_attachments is not empty
+  input area v_flex
+    AttachmentSupportMessage? // only when current model/runtime cannot send selected attachments
+    AttachmentStrip?        // only when attachments is not empty
     ComposerEditor
   footer row
     + / reasoning controls
@@ -401,15 +362,15 @@ ChatForm surface
 
 具体 layout 规则：
 
-- `input area div` 继续使用当前 `px(12)`、`pt(12)`、`mb(4)` 和 `min_h(56)`；附件 strip 不单独增加外层左/右 margin，直接和文本输入左边缘对齐。
-- 有附件时，strip 使用 `.w_full().overflow_x_scroll().pb(px(8.))`；strip 内层使用 `.h_flex().items_end().gap(px(8.))`，每个 item 固定宽度并 `.flex_shrink_0()` 来形成横向滚动内容。若实现时需要一个内层宽度约束，只使用当前 GPUI 已有 width/min-width API，不新增通用 layout helper。如果 GPUI 当前没有隐藏 scrollbar 的稳定 API，第一版允许显示系统滚动条，不能为了隐藏滚动条改写组件。
-- 无附件时不渲染 strip，也不保留 `pb(8)`，保持现有 composer 高度和 `ComposerEditor` 起始位置。
-- 图片 attachment item 固定 `.size(px(80.))`、`.flex_shrink_0()`、`.rounded(px(14.))`、`.border_1()`、`ObjectFit::Cover`；remove button 用 absolute overlay，右上角 offset `-6px`。
-- 文件 attachment chip 固定 `.h(px(36.))`、`.min_w(px(160.))`、`.max_w(px(260.))`、`.px(px(10.))`、`.gap(px(8.))`、`.rounded(px(12.))`、`.border_1()`、`.flex_shrink_0()`；文件名单行 truncate，size 文本使用 muted foreground。
-- 文件 chip 的 remove button 放在 trailing 位置，`.size(px(22.))`，避免 chip 高度被右上角 overlay 撑开；文件主体 click open，remove button click remove 并阻止 open。
-- `+` 菜单 popover 宽 `220px`，row 高 `32px`，icon `16px`，row 横向 padding `8px`，菜单不压缩 composer footer。
-- `ExternalPaths` drag-over overlay 是 `ChatForm` surface 内的 absolute child：默认 `.invisible()`，位置 `.top(px(6.)).right(px(6.)).bottom(px(6.)).left(px(6.))`、`.rounded(px(20.))`、`.border(px(1.))`，使用 theme accent/border 色和低透明背景；overlay 自身用 `.drag_over::<ExternalPaths>(|style, _, _, _| style.visible())` 变为可见。普通状态 invisible，不能遮挡 footer 按钮点击。
-- unsupported capability 只改变 send button disabled state 和 tooltip；不在 composer 内新增常驻 warning 行，避免附件 strip 与输入区之间出现第二条动态高度行。
+- `input area v_flex` 继续使用当前 `px(12)`、`pt(12)`、`mb(4)` 和 `min_h(56)`；warning、附件 strip 和 editor 都是 normal flow sibling，由 parent `.gap(px(STRIP_BOTTOM_MARGIN))` 管理纵向间距，不做 absolute stacking。
+- 有附件时，strip 使用 `.w_full().overflow_x_scroll()`；strip 内层使用 `.h_flex().items_end().gap(px(8.))`，每个 item 固定宽度并 `.flex_none()` 来形成横向滚动内容。若 GPUI 当前没有隐藏 scrollbar 的稳定 API，第一版允许显示系统滚动条，不能为了隐藏滚动条改写组件。
+- 无附件时不渲染 strip，也不保留占位高度，保持现有 composer 基础高度。
+- 图片 attachment item 固定 `.size(px(80.))`、`.flex_none()`、外层 `.rounded(px(8.))`；图片内容在 0 inset 内层 `.rounded(px(8.)).overflow_hidden()` 中 `ObjectFit::Cover`；圆角边框由 0 inset overlay 的 `.border_1()` 绘制，不给图片增加 padding、margin 或 1px inset。
+- 文件 attachment card 固定 `.w(px(220.))`、`.h(px(56.))`、`.p_2()`、`.gap_2()`、`.rounded(px(8.))`、`.border_1()`、`.flex_none()`；文件名单行 truncate，size 文本使用 muted foreground。
+- 图片和文件的 remove button 都是右上角 absolute overlay，`.size(px(20.))`、`.top(px(4.))`、`.right(px(4.))`；点击 remove button 会 `stop_propagation()`，避免触发图片 preview 或文件 open。
+- `+` 菜单由 `gpui-component` `DropdownMenu`/`PopupMenuItem` 渲染和管理；ChatForm 不再持有 `attachment_menu_open` 或手写 `Popover`。
+- `ExternalPaths` drag-over overlay 是 `ChatForm` surface 内的 absolute child：默认 `.invisible()`，位置 `.top_0().right_0().bottom_0().left_0()`、`.rounded(px(25.))`、`.border_1()`，使用 theme primary 色和低透明背景；overlay 自身用 `.drag_over::<ExternalPaths>(|style, _, _, _| style.visible())` 变为可见。
+- unsupported capability 会在 input area 顶部渲染 normal flow warning 行，并同步禁用 send button；这避免 warning、附件 strip、editor 和 footer 相互重叠。
 
 Codex app 参考值和 `ai-chat2` 第一版落地值对应关系：
 
@@ -421,7 +382,7 @@ Codex app 参考值和 `ai-chat2` 第一版落地值对应关系：
 | 普通 image attachment 横向步进 `88px` | image item `80px`，gap `8px`。 |
 | appshot card `232px x 140px`，步进 `240px` | 第一版不做 appshot；后续 screenshot context card 以该值为参考。 |
 | inline 小预览 `28px x 20px` | 仅作为 inline mention 参考；附件 strip 文件 icon 固定 `18px`。 |
-| remove button 单独组件 | `22px` 圆形 ghost icon button，图片 overlay，文件 chip trailing。 |
+| remove button 单独组件 | `20px` 圆形 ghost icon button，图片和文件右上角 `4px` inset overlay。 |
 
 ## Global State 和数据归属
 
@@ -557,8 +518,11 @@ Codex app 参考值和 `ai-chat2` 第一版落地值对应关系：
 - file attachment 需要 selected model 支持 `file_input`。
 - 两者同时存在时分别计算缺失能力；发送按钮禁用并显示“模型不支持图片/文件输入”原因。
 - 即使模型声明支持 file input，第一版仍会拦截当前 runtime 不能序列化的文件类型，并提示“已支持图片、PDF 和文本类文件”。这避免 zip/Office 等二进制文件被静默降级或发送后才失败。
+- provider capability 以“官方/平台声明 + 当前 runtime adapter 可发送”为准：OpenAI、Anthropic、Gemini 和 OpenRouter 的图片/文件输入已可放行；Ollama 仍以 `/api/show` 的 `vision` / `tools` 为准；DeepSeek 当前无图片输入；Mistral vision 暂被 runtime adapter 限制，后续应先补 provider adapter 或升级 Rig 后再打开 image input。
+- 不做旧 `provider_models.capabilities_json` 兼容迁移；已有缓存模型需要重新刷新 provider model list 才能得到新的 capability snapshot。
 - 不把不支持的图片/文件转换成纯文本 path，也不静默丢弃附件。
 - `+` 菜单和 paste 可以继续添加附件；gating 只阻止发送，方便用户切换模型后继续发送。
+- 添加文件使用 `PathPromptOptions { prompt: None, ... }`，不覆盖 macOS `NSOpenPanel` 默认 prompt；系统文件对话框语言由 app bundle localization 决定。
 
 ## Test Plan
 
@@ -566,6 +530,8 @@ Codex app 参考值和 `ai-chat2` 第一版落地值对应关系：
 - 已覆盖 DB tests：`conversation_timeline_records` 带出 attachments；现有 typed JSON roundtrip 覆盖 `AttachmentMetadata`。
 - 已执行验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 chat_form`、`cargo test -p ai-chat2 attachments`、`cargo test -p ai-chat-agent history`、`cargo test -p ai-chat-db attachment`、`cargo test -p ai-chat-db typed_json_roundtrips_for_repository_records`、`git diff --check`、`cargo clippy -p window-ext -p ai-chat2 -p ai-chat-db -p ai-chat-agent --all-targets --all-features -- -D warnings`。
 - 2026-06-14 结构拆分后补充验证：`cargo fmt --check`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 chat_form`、`cargo test -p ai-chat-agent history`、`cargo test -p ai-chat-db attachment`、`cargo test -p ai-chat-db typed_json_roundtrips_for_repository_records`、`cargo clippy -p window-ext -p ai-chat2 -p ai-chat-db -p ai-chat-agent --all-targets --all-features -- -D warnings`、`git diff --check`。
+- 2026-06-14 附件样式、菜单和文件对话框 polish 后补充验证：`cargo fmt`、`cargo check -p ai-chat2`、`cargo test -p ai-chat2 chat_form`、`cargo test -p xtask bundle`、`git diff --check`、`cargo run -p xtask -- bundle ai-chat2`，并检查生成的 `AI Chat 2.app/Contents/Info.plist` 和 `Resources/{en,zh_CN}.lproj`。
+- 2026-06-14 provider capability profile 修正后补充验证：`cargo fmt`、`cargo test -p ai-chat-agent model_capabilities`、`cargo test -p ai-chat-agent provider_models`。后续提交前仍需补 `cargo check -p ai-chat2` 和 `git diff --check`。
 - 仍需手动 UI 验证：粘贴截图、粘贴 Finder 图片文件、拖拽 Finder 文件到 ChatForm、粘贴 PDF/文本文件、删除附件、图片 app 内预览、macOS 文件 Quick Look panel 预览、Quick Look 失败 fallback、无附件时不显示附件行。
 - 如本轮准备提交 PR，可按 CI 预算再补 full workspace validation；当前聚焦子集已通过。
 
