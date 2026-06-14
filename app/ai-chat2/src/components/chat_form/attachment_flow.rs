@@ -40,7 +40,6 @@ impl ChatForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_attachment_menu_open(false, cx);
         let Some(item) = cx.read_from_clipboard() else {
             let message = cx
                 .global::<foundation::I18n>()
@@ -125,10 +124,6 @@ impl ChatForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_attachment_menu_open(false, cx);
-        let title = cx
-            .global::<foundation::I18n>()
-            .t("chat-form-attachment-add-files");
         let failed_title = cx
             .global::<foundation::I18n>()
             .t("chat-form-attachment-add-failed");
@@ -136,7 +131,7 @@ impl ChatForm {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some(title.into()),
+            prompt: None,
         });
         let form = cx.entity().downgrade();
 
@@ -171,14 +166,6 @@ impl ChatForm {
                 }
             })
             .detach();
-    }
-
-    pub(super) fn set_attachment_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if self.attachment_menu_open == open {
-            return;
-        }
-        self.attachment_menu_open = open;
-        cx.notify();
     }
 
     pub(super) fn open_attachment(

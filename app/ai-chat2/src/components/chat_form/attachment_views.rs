@@ -8,11 +8,11 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, Selectable, Sizable,
+    ActiveTheme, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    popover::Popover,
+    menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
 
@@ -22,59 +22,38 @@ impl ChatForm {
         let tooltip = i18n.t("chat-form-add-tooltip");
         let add_files = i18n.t("chat-form-attachment-add-files");
         let add_from_clipboard = i18n.t("chat-form-attachment-add-from-clipboard");
-        let trigger = Button::new("chat-form-add")
+        let form = cx.entity().downgrade();
+
+        Button::new("chat-form-add")
             .ghost()
-            .selected(self.attachment_menu_open)
             .with_size(px(COMPOSER_BUTTON_SIZE))
             .size(px(COMPOSER_BUTTON_SIZE))
             .p(px(0.))
             .rounded(px(COMPOSER_BUTTON_RADIUS))
             .child(Icon::new(IconName::Plus).with_size(px(COMPOSER_BUTTON_ICON_SIZE)))
-            .tooltip(tooltip);
-
-        Popover::new("chat-form-attachment-menu")
-            .anchor(Anchor::TopLeft)
-            .appearance(false)
-            .open(self.attachment_menu_open)
-            .on_open_change(cx.listener(|form, open: &bool, _window, cx| {
-                form.set_attachment_menu_open(*open, cx);
-            }))
-            .trigger(trigger)
-            .child(
-                v_flex()
-                    .w(px(220.))
-                    .occlude()
-                    .mb_1p5()
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
-                    .shadow_lg()
-                    .p_1()
-                    .gap_0p5()
-                    .child(
-                        Button::new("chat-form-attachment-add-files-action")
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .icon(IconName::Paperclip)
-                            .label(add_files)
-                            .on_click(cx.listener(|form, _, window, cx| {
+            .tooltip(tooltip)
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _window, _cx| {
+                let form_for_files = form.clone();
+                let form_for_clipboard = form.clone();
+                menu.item(
+                    PopupMenuItem::new(add_files.clone())
+                        .icon(IconName::Paperclip)
+                        .on_click(move |_, window, cx| {
+                            let _ = form_for_files.update(cx, |form, cx| {
                                 form.open_add_attachment_prompt(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("chat-form-attachment-add-clipboard-action")
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .icon(IconName::Clipboard)
-                            .label(add_from_clipboard)
-                            .on_click(cx.listener(|form, _, window, cx| {
+                            });
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(add_from_clipboard.clone())
+                        .icon(IconName::Clipboard)
+                        .on_click(move |_, window, cx| {
+                            let _ = form_for_clipboard.update(cx, |form, cx| {
                                 form.add_attachments_from_current_clipboard(window, cx);
-                            })),
-                    ),
-            )
+                            });
+                        }),
+                )
+            })
             .into_any_element()
     }
 
@@ -125,11 +104,7 @@ impl ChatForm {
             .flex_none()
             .size(px(attachments::IMAGE_THUMBNAIL_SIZE))
             .rounded(px(attachments::CARD_RADIUS))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().muted.opacity(0.28))
             .cursor(CursorStyle::PointingHand)
-            .hover(|this| this.border_color(cx.theme().primary.opacity(0.55)))
             .on_click({
                 let attachment = attachment.clone();
                 cx.listener(move |form, _, window, cx| {
@@ -139,17 +114,29 @@ impl ChatForm {
             .child(
                 div()
                     .absolute()
-                    .top(px(1.))
-                    .right(px(1.))
-                    .bottom(px(1.))
-                    .left(px(1.))
-                    .rounded(px(attachments::CARD_RADIUS - 1.))
+                    .top(px(0.))
+                    .right(px(0.))
+                    .bottom(px(0.))
+                    .left(px(0.))
+                    .rounded(px(attachments::CARD_RADIUS))
                     .overflow_hidden()
                     .child(
                         img(attachment.path.clone())
                             .size_full()
+                            .rounded(px(attachments::CARD_RADIUS))
                             .object_fit(ObjectFit::Cover),
                     ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .bottom(px(0.))
+                    .left(px(0.))
+                    .rounded(px(attachments::CARD_RADIUS))
+                    .border_1()
+                    .border_color(cx.theme().border),
             )
             .child(self.render_remove_attachment_button(
                 local_id,
