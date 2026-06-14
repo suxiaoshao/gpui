@@ -19,7 +19,6 @@ pub(super) struct PromptManagementRow {
     pub(super) id: PromptId,
     name: SharedString,
     preview: SharedString,
-    updated_label: SharedString,
     search_text: String,
 }
 
@@ -113,17 +112,12 @@ impl RenderOnce for PromptManagementEntry {
                     .min_w_0()
                     .gap_1()
                     .child(
-                        h_flex()
+                        Label::new(self.row.name)
                             .w_full()
                             .min_w_0()
-                            .gap_2()
-                            .child(Label::new(self.row.name).text_sm().font_medium().truncate())
-                            .child(
-                                Label::new(self.row.updated_label)
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground),
-                            ),
+                            .text_sm()
+                            .font_medium()
+                            .truncate(),
                     )
                     .child(
                         Label::new(self.row.preview)
@@ -178,7 +172,6 @@ pub(super) fn prompt_management_entries(prompts: &[PromptRecord]) -> Vec<PromptM
             id: prompt.id.clone(),
             name: prompt.name.clone().into(),
             preview: prompt_preview(&prompt.content.text).into(),
-            updated_label: prompt_updated_label(prompt.updated_at).into(),
             search_text: prompt_search_text(prompt),
         })
         .collect()
