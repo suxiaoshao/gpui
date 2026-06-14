@@ -1,12 +1,9 @@
 use ai_chat_agent::SkillActivationRequest;
-use ai_chat_core::{AttachmentId, ContentPart, SkillSourceKind};
+use ai_chat_core::{ContentPart, SkillSourceKind};
+
+use crate::state::attachments::ComposerAttachment;
 
 use super::token::{ComposerToken, skill_requests};
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ComposerAttachment {
-    pub(crate) attachment_id: Option<AttachmentId>,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ComposerSendPolicy {

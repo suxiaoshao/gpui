@@ -416,6 +416,7 @@ impl TemporaryWindow {
         let request = state::conversations::CreateConversationRequest {
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
+            attachments: submit.composer.attachments.clone(),
             title_seed: submit.composer.text.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,

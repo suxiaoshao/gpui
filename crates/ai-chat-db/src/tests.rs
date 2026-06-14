@@ -1809,6 +1809,45 @@ fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
 }
 
 #[test]
+fn conversation_timeline_includes_attachments() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("timeline-attachments"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let item = repo
+        .append_conversation_item(message_item(&conversation.id, "check this"))
+        .unwrap();
+    let attachment = repo
+        .insert_attachment(NewAttachment {
+            conversation_id: conversation.id.clone(),
+            kind: AttachmentKind::File,
+            storage_kind: AttachmentStorageKind::LocalFile,
+            mime_type: Some("text/plain".to_string()),
+            name: Some("notes.txt".to_string()),
+            path: Some("/tmp/notes.txt".to_string()),
+            external_uri: None,
+            provider_id: None,
+            provider_file_id: None,
+            sha256: None,
+            size_bytes: Some(42),
+            metadata: attachment_metadata(),
+        })
+        .unwrap();
+
+    let timeline = repo
+        .conversation_timeline_records(&conversation.id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(timeline.items.len(), 1);
+    assert_eq!(timeline.items[0].id, item.id);
+    assert_eq!(timeline.attachments, vec![attachment]);
+}
+
+#[test]
 fn legacy_store_files_coexist_with_fresh_database() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("history.sqlite3"), "legacy-v1").unwrap();

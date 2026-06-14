@@ -1,5 +1,9 @@
+mod attachment_flow;
+mod attachment_views;
+mod attachments;
 mod composer_editor;
 mod effort_select;
+mod image_preview;
 mod model_select;
 mod thinking_effort;
 
@@ -10,6 +14,7 @@ use crate::{
     },
     foundation::{self, assets::IconName},
     state,
+    state::attachments::ComposerAttachment,
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode};
@@ -17,10 +22,11 @@ use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 use effort_select::{EffortOption, effort_sections};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, Sizable, box_shadow,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt, box_shadow,
     button::{Button, ButtonVariants},
     h_flex,
     input::{InputEvent, InputState, NumberInputEvent, StepAction},
+    label::Label,
     list::ListState,
     v_flex,
 };
@@ -73,6 +79,10 @@ pub(crate) struct ChatForm {
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
     model_picker_open: bool,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
+    attachment_menu_open: bool,
+    attachments: Vec<ComposerAttachment>,
+    next_attachment_id: u64,
+    preview_attachment: Option<ComposerAttachment>,
     agent_running: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -195,6 +205,9 @@ impl ChatForm {
                 ComposerEditorEvent::Changed => {
                     cx.notify();
                 }
+                ComposerEditorEvent::PasteAttachmentRequested(item) => {
+                    form.add_attachments_from_clipboard(item.clone(), window, cx);
+                }
                 ComposerEditorEvent::SubmitRequested(snapshot) => {
                     if let Some(submit) = form.submit_snapshot(snapshot.clone(), window, cx) {
                         cx.emit(ChatFormEvent::SendRequested(Box::new(submit)));
@@ -259,6 +272,10 @@ impl ChatForm {
             effort_picker,
             model_picker_open: false,
             model_picker,
+            attachment_menu_open: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
+            preview_attachment: None,
             agent_running: false,
             _subscriptions: vec![
                 composer_subscription,
@@ -310,6 +327,8 @@ impl ChatForm {
 
     pub(crate) fn clear_after_submit(&mut self, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
+        self.attachments.clear();
+        self.preview_attachment = None;
         cx.notify();
     }
 
@@ -498,18 +517,24 @@ impl ChatForm {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
+        let composer_has_content = self.composer.read(cx).can_submit();
         !self.agent_running
-            && self.composer.read(cx).can_submit()
+            && (composer_has_content || !self.attachments.is_empty())
             && self.selected_model_choice().is_some()
+            && self.attachment_support_issue().is_none()
     }
 
     fn submit_snapshot(
         &mut self,
-        snapshot: ComposerSnapshot,
+        mut snapshot: ComposerSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatFormSubmit> {
+        snapshot.attachments = self.attachments.clone();
         if snapshot.is_empty() {
+            return None;
+        }
+        if self.attachment_support_issue().is_some() {
             return None;
         }
         if self.agent_running {
@@ -532,7 +557,8 @@ impl ChatForm {
             return Some(ChatFormPrimaryButtonAction::Stop);
         }
 
-        let snapshot = self.composer.read(cx).snapshot();
+        let mut snapshot = self.composer.read(cx).snapshot();
+        snapshot.attachments = self.attachments.clone();
         self.submit_snapshot(snapshot, window, cx)
             .map(|submit| ChatFormPrimaryButtonAction::Send(Box::new(submit)))
     }
@@ -587,9 +613,11 @@ impl ChatForm {
 
 impl Render for ChatForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let add_tooltip = cx.global::<foundation::I18n>().t("chat-form-add-tooltip");
         let send_tooltip = cx.global::<foundation::I18n>().t("chat-form-send-tooltip");
         let stop_tooltip = cx.global::<foundation::I18n>().t("chat-form-stop-tooltip");
+        let drop_label = cx
+            .global::<foundation::I18n>()
+            .t("chat-form-attachment-drop");
         let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
 
@@ -602,6 +630,9 @@ impl Render for ChatForm {
             .border_color(cx.theme().input)
             .bg(cx.theme().input_background())
             .text_color(cx.theme().foreground)
+            .on_drop(cx.listener(|form, paths: &ExternalPaths, window, cx| {
+                form.add_attachment_paths(paths.paths().to_vec(), window, cx);
+            }))
             .when(cx.theme().shadow, |this| {
                 this.shadow(vec![box_shadow(
                     0.,
@@ -612,12 +643,20 @@ impl Render for ChatForm {
                 )])
             })
             .child(
-                div()
+                v_flex()
                     .w_full()
                     .min_h(px(56.))
                     .px(px(COMPOSER_INPUT_HORIZONTAL_PADDING))
                     .pt(px(COMPOSER_INPUT_TOP_PADDING))
+                    .gap(px(attachments::STRIP_BOTTOM_MARGIN))
                     .mb(px(COMPOSER_INPUT_BOTTOM_MARGIN))
+                    .when_some(
+                        self.render_attachment_support_message(cx),
+                        |this, message| this.child(message),
+                    )
+                    .when(!self.attachments.is_empty(), |this| {
+                        this.child(self.render_attachments_strip(cx))
+                    })
                     .child(self.composer.clone()),
             )
             .child(
@@ -632,22 +671,7 @@ impl Render for ChatForm {
                             .items_center()
                             .gap(px(5.))
                             .min_w_0()
-                            .child(
-                                Button::new("chat-form-add")
-                                    .ghost()
-                                    .with_size(px(COMPOSER_BUTTON_SIZE))
-                                    .size(px(COMPOSER_BUTTON_SIZE))
-                                    .p(px(0.))
-                                    .rounded(px(COMPOSER_BUTTON_RADIUS))
-                                    .child(
-                                        Icon::new(IconName::Plus)
-                                            .with_size(px(COMPOSER_BUTTON_ICON_SIZE)),
-                                    )
-                                    .tooltip(add_tooltip)
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        cx.emit(ChatFormEvent::AddRequested);
-                                    })),
-                            )
+                            .child(self.render_add_attachment_menu(cx))
                             .child(self.render_effort_selector(cx)),
                     )
                     .child(div().flex_1().min_w_0())
@@ -688,6 +712,39 @@ impl Render for ChatForm {
                                     },
                                 )),
                             ),
+                    ),
+            )
+            .child(
+                div()
+                    .invisible()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .left_0()
+                    .rounded(px(25.))
+                    .border_1()
+                    .border_color(cx.theme().primary.opacity(0.55))
+                    .bg(cx.theme().primary.opacity(0.08))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .drag_over::<ExternalPaths>(|this, _, _, _| this.visible())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(attachments::CARD_RADIUS))
+                            .bg(cx.theme().background.opacity(0.92))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                Icon::new(IconName::Paperclip)
+                                    .size_4()
+                                    .text_color(cx.theme().primary),
+                            )
+                            .child(Label::new(drop_label).text_sm().font_medium()),
                     ),
             )
     }

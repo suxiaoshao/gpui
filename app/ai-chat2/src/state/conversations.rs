@@ -17,7 +17,13 @@ use crate::{
     database,
     errors::AiChat2Result,
     foundation::I18n,
-    state::{projects, providers::ProviderModelChoice},
+    state::{
+        attachments::{
+            ComposerAttachment, content_parts_with_attachments, update_user_item_with_attachments,
+        },
+        projects,
+        providers::ProviderModelChoice,
+    },
 };
 
 const DEFAULT_MAX_STEPS: u32 = 32;
@@ -27,6 +33,7 @@ const TITLE_MAX_CHARS: usize = 48;
 pub(crate) struct CreateConversationRequest {
     pub(crate) project_id: Option<ProjectId>,
     pub(crate) content_parts: Vec<ContentPart>,
+    pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) title_seed: String,
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) provider_model: ProviderModelChoice,
@@ -40,6 +47,7 @@ pub(crate) struct CreateConversationRequest {
 pub(crate) struct SendConversationMessageRequest {
     pub(crate) conversation_id: ConversationId,
     pub(crate) content_parts: Vec<ContentPart>,
+    pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
@@ -88,10 +96,22 @@ pub(crate) fn create_conversation(
         settings_snapshot,
     };
     let user_item = new_user_message_item(String::new(), request.content_parts.clone());
-    let record = repository.insert_conversation_with_user_item(NewConversationWithUserItem {
-        conversation,
-        user_item,
-    })?;
+    let mut record =
+        repository.insert_conversation_with_user_item(NewConversationWithUserItem {
+            conversation,
+            user_item,
+        })?;
+    if !request.attachments.is_empty() {
+        let content_parts = content_parts_with_attachments(
+            &record.conversation.id,
+            &record.user_item.id,
+            request.content_parts.clone(),
+            &request.attachments,
+            cx,
+        )?;
+        record.user_item =
+            update_user_item_with_attachments(&record.user_item.id, content_parts, cx)?;
+    }
     update_last_active_conversation(&project, &record.conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &record.conversation.id,
@@ -141,10 +161,20 @@ pub(crate) fn send_conversation_message(
                 request.provider_model.provider_id
             ))
         })?;
-    let item = repository.append_conversation_item(new_user_message_item(
+    let mut item = repository.append_conversation_item(new_user_message_item(
         conversation.id.clone(),
-        request.content_parts,
+        request.content_parts.clone(),
     ))?;
+    if !request.attachments.is_empty() {
+        let content_parts = content_parts_with_attachments(
+            &conversation.id,
+            &item.id,
+            request.content_parts,
+            &request.attachments,
+            cx,
+        )?;
+        item = update_user_item_with_attachments(&item.id, content_parts, cx)?;
+    }
     update_last_active_conversation(&project, &conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &conversation.id,

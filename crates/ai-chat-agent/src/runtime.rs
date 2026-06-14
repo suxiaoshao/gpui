@@ -106,8 +106,21 @@ impl AgentRuntime {
             return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
         }
 
-        let items = match self.repo.conversation_items(&request.conversation_id) {
-            Ok(items) => items,
+        let timeline = match self
+            .repo
+            .conversation_timeline_records(&request.conversation_id)
+        {
+            Ok(Some(timeline)) => timeline,
+            Ok(None) => {
+                return Err(self.mark_setup_failed(
+                    &agent_run.id,
+                    AgentRuntimeError::Invariant(format!(
+                        "conversation {} is missing",
+                        request.conversation_id
+                    )),
+                    observer.as_ref(),
+                )?);
+            }
             Err(error) => {
                 return Err(self.mark_setup_failed(
                     &agent_run.id,
@@ -116,13 +129,17 @@ impl AgentRuntime {
                 )?);
             }
         };
-        let prompt_history =
-            match build_prompt_history(&items, &request.user_item_id, &agent_run.id) {
-                Ok(prompt_history) => prompt_history,
-                Err(error) => {
-                    return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
-                }
-            };
+        let prompt_history = match build_prompt_history(
+            &timeline.items,
+            &timeline.attachments,
+            &request.user_item_id,
+            &agent_run.id,
+        ) {
+            Ok(prompt_history) => prompt_history,
+            Err(error) => {
+                return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
+            }
+        };
 
         let tool_server = ToolServer::new().run();
         let mut toolset = ToolSet::default();

@@ -715,6 +715,18 @@ impl FreshRepository {
             .collect()
     }
 
+    pub fn conversation_attachments(&self, conversation_id: &str) -> Result<Vec<AttachmentRecord>> {
+        let mut conn = self.conn()?;
+        attachments::table
+            .filter(attachments::conversation_id.eq(conversation_id))
+            .order(attachments::created_at.asc())
+            .select(SqlAttachmentRow::as_select())
+            .load::<SqlAttachmentRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
     pub fn conversation_timeline_records(
         &self,
         conversation_id: &str,
@@ -726,12 +738,14 @@ impl FreshRepository {
             DbError::Invariant(format!("project {} is missing", conversation.project_id))
         })?;
         let items = self.conversation_items(conversation_id)?;
+        let attachments = self.conversation_attachments(conversation_id)?;
         let runs = self.agent_runs_for_conversation(conversation_id)?;
 
         Ok(Some(ConversationTimelineRecords {
             conversation,
             project,
             items,
+            attachments,
             runs,
         }))
     }

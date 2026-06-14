@@ -1,3 +1,4 @@
+pub(crate) mod attachments;
 pub(crate) mod config;
 pub(crate) mod conversation_runtime;
 pub(crate) mod conversations;

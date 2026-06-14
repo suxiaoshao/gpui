@@ -5,8 +5,11 @@ mod history;
 mod snapshot;
 mod token;
 
-#[allow(unused_imports)]
-pub(crate) use snapshot::{ComposerAttachment, ComposerSendPolicy, ComposerSnapshot};
+#[cfg(test)]
+pub(crate) use snapshot::ComposerSendPolicy;
+pub(crate) use snapshot::ComposerSnapshot;
+
+use crate::state::attachments::clipboard_item_has_attachments;
 
 use std::{collections::BTreeMap, ops::Range, path::Path};
 
@@ -172,6 +175,7 @@ pub(crate) fn init(cx: &mut App) {
 #[derive(Clone, Debug)]
 pub(crate) enum ComposerEditorEvent {
     Changed,
+    PasteAttachmentRequested(ClipboardItem),
     SubmitRequested(ComposerSnapshot),
 }
 
@@ -927,9 +931,7 @@ impl ComposerEditor {
 
     fn on_submit(&mut self, _: &ComposerSubmit, _: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.snapshot();
-        if !snapshot.is_empty() {
-            cx.emit(ComposerEditorEvent::SubmitRequested(snapshot));
-        }
+        cx.emit(ComposerEditorEvent::SubmitRequested(snapshot));
     }
 
     fn on_undo(&mut self, _: &ComposerUndo, _: &mut Window, cx: &mut Context<Self>) {
@@ -963,8 +965,15 @@ impl ComposerEditor {
     }
 
     fn on_paste(&mut self, _: &ComposerPaste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, text.as_ref(), window, cx);
+        if let Some(item) = cx.read_from_clipboard() {
+            if clipboard_item_has_attachments(&item) {
+                cx.emit(ComposerEditorEvent::PasteAttachmentRequested(item));
+                return;
+            }
+
+            if let Some(text) = item.text() {
+                self.replace_text_in_range(None, text.as_ref(), window, cx);
+            }
         }
     }
 }

@@ -137,6 +137,7 @@ impl ConversationDetailPage {
         let request = state::conversations::SendConversationMessageRequest {
             conversation_id: self.conversation_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
+            attachments: submit.composer.attachments.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,

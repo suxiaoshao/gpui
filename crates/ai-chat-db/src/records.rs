@@ -83,6 +83,7 @@ pub struct ConversationTimelineRecords {
     pub conversation: ConversationRecord,
     pub project: ProjectRecord,
     pub items: Vec<ConversationItemRecord>,
+    pub attachments: Vec<AttachmentRecord>,
     pub runs: Vec<AgentRunRecord>,
 }
 

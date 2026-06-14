@@ -862,6 +862,7 @@ impl GlobalHotkeyState {
             state::conversations::CreateConversationRequest {
                 project_id: None,
                 content_parts,
+                attachments: Vec::new(),
                 title_seed,
                 skill_requests: Vec::new(),
                 provider_model: trigger.provider_model.clone(),

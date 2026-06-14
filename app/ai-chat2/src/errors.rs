@@ -20,6 +20,8 @@ pub(crate) enum AiChat2Error {
     HotkeyUnavailable(String),
     #[error("window error: {0}")]
     Window(String),
+    #[error("attachment error: {0}")]
+    Attachment(String),
 }
 
 pub(crate) type AiChat2Result<T> = Result<T, AiChat2Error>;

@@ -379,6 +379,7 @@ impl NewConversationPage {
         let request = state::conversations::CreateConversationRequest {
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
+            attachments: submit.composer.attachments.clone(),
             title_seed: submit.composer.text.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
