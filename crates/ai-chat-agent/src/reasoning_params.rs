@@ -195,7 +195,7 @@ mod tests {
     use super::*;
     use ai_chat_core::{
         ModelCapabilitiesSnapshot, ProviderCapabilityExtensionSnapshot, ProviderSettingsPayload,
-        ToolApprovalPolicy, ToolPolicySnapshot,
+        ToolApprovalMode, ToolApprovalPolicy, ToolPolicySnapshot,
     };
 
     #[test]
@@ -346,6 +346,8 @@ mod tests {
                 approval_policy: ToolApprovalPolicy::Never,
                 enabled_sources: Vec::new(),
                 max_steps: 8,
+                approval_mode: ToolApprovalMode::RequestApproval,
+                permission_scope: None,
             },
         }
     }

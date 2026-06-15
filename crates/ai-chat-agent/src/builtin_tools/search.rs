@@ -1,0 +1,411 @@
+use crate::{
+    AgentRuntimeError, LocalTool, Result, ToolDefinition, ToolExecutor, ToolRunPolicy,
+    builtin_tools::{
+        approval::{normalize_for_access, path_access_request, resolve_tool_path},
+        types::{
+            BuiltinToolContext, BuiltinToolName, FileEntryKind, FindPathInput, FindPathOutput,
+            GrepInput, GrepMatchOutput, GrepOutput, PathSearchMatchOutput, TextRangeOutput,
+            find_path_schema, grep_schema, output_with_structured,
+        },
+    },
+};
+use ai_chat_core::{ToolAccessKind, ToolExecutionPolicy, ToolInvocationOutput, ToolSource};
+use async_trait::async_trait;
+use globset::Glob;
+use grep_matcher::Matcher;
+use grep_regex::RegexMatcherBuilder;
+use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
+use ignore::WalkBuilder;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+const DEFAULT_MAX_RESULTS: usize = 200;
+
+#[derive(Clone, Debug)]
+pub struct FindPathTool {
+    context: BuiltinToolContext,
+}
+
+#[derive(Clone, Debug)]
+pub struct GrepTool {
+    context: BuiltinToolContext,
+}
+
+impl FindPathTool {
+    pub fn new(context: BuiltinToolContext) -> Self {
+        Self { context }
+    }
+}
+
+impl GrepTool {
+    pub fn new(context: BuiltinToolContext) -> Self {
+        Self { context }
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for FindPathTool {
+    async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
+        let input: FindPathInput = serde_json::from_value(arguments)?;
+        let root = search_root(input.path.as_deref(), &self.context)?;
+        let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
+        let (matches, truncated) =
+            find_path_matches(&root, &input.query, input.include_hidden, max_results)?;
+        let output = FindPathOutput {
+            query: input.query,
+            matches,
+            truncated,
+        };
+        output_with_structured(
+            format!(
+                "Found {} path match(es){}",
+                output.matches.len(),
+                if output.truncated { " (truncated)" } else { "" }
+            ),
+            output,
+        )
+    }
+}
+
+impl LocalTool for FindPathTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            source: ToolSource::Local,
+            namespace: None,
+            name: BuiltinToolName::FindPath.as_str().to_string(),
+            description: "Find files or directories by path name under the project.".to_string(),
+            parameters: find_path_schema(),
+            policy: local_tool_policy(),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for GrepTool {
+    async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
+        let input: GrepInput = serde_json::from_value(arguments)?;
+        let root = search_root(input.path.as_deref(), &self.context)?;
+        let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
+        let _context_lines = input.context_lines.unwrap_or(0);
+        let matches = grep_matches(&root, &input, max_results)?;
+        let truncated = matches.len() >= max_results;
+        let output = GrepOutput {
+            pattern: input.pattern,
+            matches,
+            truncated,
+        };
+        output_with_structured(
+            format!(
+                "Found {} code match(es){}",
+                output.matches.len(),
+                if output.truncated { " (truncated)" } else { "" }
+            ),
+            output,
+        )
+    }
+}
+
+impl LocalTool for GrepTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            source: ToolSource::Local,
+            namespace: None,
+            name: BuiltinToolName::Grep.as_str().to_string(),
+            description: "Search file contents with a regular expression.".to_string(),
+            parameters: grep_schema(),
+            policy: local_tool_policy(),
+        }
+    }
+}
+
+pub fn access_requests(
+    tool: BuiltinToolName,
+    arguments: &serde_json::Value,
+    context: &BuiltinToolContext,
+) -> Result<Vec<crate::builtin_tools::types::PathAccessRequest>> {
+    match tool {
+        BuiltinToolName::FindPath => {
+            let input: FindPathInput = serde_json::from_value(arguments.clone())?;
+            Ok(vec![path_access_request(
+                ToolAccessKind::Read,
+                input.path.unwrap_or_else(|| ".".to_string()),
+                context.project_root.as_deref(),
+                Some("find_path"),
+            )?])
+        }
+        BuiltinToolName::Grep => {
+            let input: GrepInput = serde_json::from_value(arguments.clone())?;
+            Ok(vec![path_access_request(
+                ToolAccessKind::Read,
+                input.path.unwrap_or_else(|| ".".to_string()),
+                context.project_root.as_deref(),
+                Some("grep"),
+            )?])
+        }
+        BuiltinToolName::ReadFile
+        | BuiltinToolName::ListDirectory
+        | BuiltinToolName::WriteFile
+        | BuiltinToolName::EditFile => Ok(Vec::new()),
+    }
+}
+
+fn local_tool_policy() -> ToolRunPolicy {
+    ToolRunPolicy {
+        approval_policy: ai_chat_core::ToolApprovalPolicy::Never,
+        execution_policy: ToolExecutionPolicy::Foreground,
+        timeout_ms: None,
+    }
+}
+
+fn search_root(path: Option<&str>, context: &BuiltinToolContext) -> Result<PathBuf> {
+    let path = path.unwrap_or(".");
+    let resolved = resolve_tool_path(path, context.project_root.as_deref())?;
+    normalize_for_access(&resolved)
+}
+
+fn find_path_matches(
+    root: &Path,
+    query: &str,
+    include_hidden: bool,
+    max_results: usize,
+) -> Result<(Vec<PathSearchMatchOutput>, bool)> {
+    let query_lower = query.to_lowercase();
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(!include_hidden)
+        .git_ignore(true)
+        .parents(true);
+    let mut matches = Vec::new();
+    for result in builder.build() {
+        let entry = result.map_err(|err| std::io::Error::other(err.to_string()))?;
+        let path = entry.path();
+        let path_text = path.to_string_lossy();
+        let path_lower = path_text.to_lowercase();
+        let Some(score) = path_score(&path_lower, &query_lower) else {
+            continue;
+        };
+        if matches.len() >= max_results {
+            return Ok((matches, true));
+        }
+        matches.push(PathSearchMatchOutput {
+            path: path_text.into_owned(),
+            kind: file_entry_kind(path)?,
+            score: Some(score),
+        });
+    }
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok((matches, false))
+}
+
+fn grep_matches(
+    root: &Path,
+    input: &GrepInput,
+    max_results: usize,
+) -> Result<Vec<GrepMatchOutput>> {
+    let matcher = RegexMatcherBuilder::new()
+        .case_insensitive(!input.case_sensitive.unwrap_or(true))
+        .build(&input.pattern)
+        .map_err(|err| AgentRuntimeError::Unsupported(format!("invalid grep pattern: {err}")))?;
+    let glob = match input.glob.as_deref() {
+        Some(glob) => Some(
+            Glob::new(glob)
+                .map_err(|err| AgentRuntimeError::Unsupported(format!("invalid glob: {err}")))?
+                .compile_matcher(),
+        ),
+        None => None,
+    };
+    let mut matches = Vec::new();
+    if root.is_file() {
+        search_file(root, &matcher, max_results, &mut matches)?;
+        return Ok(matches);
+    }
+
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(!input.include_hidden)
+        .git_ignore(true)
+        .parents(true);
+    for result in builder.build() {
+        if matches.len() >= max_results {
+            break;
+        }
+        let entry = result.map_err(|err| std::io::Error::other(err.to_string()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(glob) = &glob
+            && !glob.is_match(path)
+        {
+            continue;
+        }
+        search_file(path, &matcher, max_results, &mut matches)?;
+    }
+    Ok(matches)
+}
+
+fn search_file(
+    path: &Path,
+    matcher: &grep_regex::RegexMatcher,
+    max_results: usize,
+    matches: &mut Vec<GrepMatchOutput>,
+) -> Result<()> {
+    let mut searcher = SearcherBuilder::new().line_number(true).build();
+    let mut sink = CollectSink {
+        path,
+        matcher,
+        max_results,
+        matches,
+    };
+    searcher
+        .search_path(matcher, path, &mut sink)
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    Ok(())
+}
+
+struct CollectSink<'a, 'm> {
+    path: &'a Path,
+    matcher: &'m grep_regex::RegexMatcher,
+    max_results: usize,
+    matches: &'a mut Vec<GrepMatchOutput>,
+}
+
+impl Sink for CollectSink<'_, '_> {
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> std::io::Result<bool> {
+        let bytes = mat.bytes();
+        let line = String::from_utf8_lossy(bytes)
+            .trim_end_matches(['\r', '\n'])
+            .to_string();
+        let mut ranges = Vec::new();
+        self.matcher
+            .find_iter(bytes, |range| {
+                ranges.push(TextRangeOutput {
+                    start: range.start(),
+                    end: range.end(),
+                });
+                true
+            })
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        self.matches.push(GrepMatchOutput {
+            path: self.path.to_string_lossy().into_owned(),
+            line_number: mat.line_number().unwrap_or(0) as u32,
+            line,
+            ranges,
+        });
+        Ok(self.matches.len() < self.max_results)
+    }
+}
+
+fn file_entry_kind(path: &Path) -> Result<FileEntryKind> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    Ok(if file_type.is_symlink() {
+        FileEntryKind::Symlink
+    } else if file_type.is_dir() {
+        FileEntryKind::Directory
+    } else if file_type.is_file() {
+        FileEntryKind::File
+    } else {
+        FileEntryKind::Other
+    })
+}
+
+fn path_score(path: &str, query: &str) -> Option<f64> {
+    if query.is_empty() {
+        return Some(0.0);
+    }
+    if path.contains(query) {
+        return Some(1.0 + query.len() as f64 / path.len().max(1) as f64);
+    }
+    let mut chars = query.chars();
+    let mut current = chars.next()?;
+    for path_char in path.chars() {
+        if path_char == current {
+            match chars.next() {
+                Some(next) => current = next,
+                None => return Some(0.5),
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ToolExecutor;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn find_path_and_grep_use_project_root() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("README.md"), "hello docs\n").unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let found = FindPathTool::new(context.clone())
+            .execute(json!({
+                "query": "main.rs",
+                "maxResults": 5,
+            }))
+            .await
+            .unwrap();
+        let found_output: FindPathOutput =
+            serde_json::from_value(found.structured_output.unwrap().value).unwrap();
+        assert!(
+            found_output
+                .matches
+                .iter()
+                .any(|entry| entry.path.ends_with("main.rs"))
+        );
+
+        let grep = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "println",
+                "glob": "*.rs",
+                "maxResults": 5,
+            }))
+            .await
+            .unwrap();
+        let grep_output: GrepOutput =
+            serde_json::from_value(grep.structured_output.unwrap().value).unwrap();
+        assert_eq!(grep_output.matches.len(), 1);
+        assert_eq!(grep_output.matches[0].line_number, 2);
+    }
+
+    #[tokio::test]
+    async fn grep_rejects_invalid_regex_as_structured_error() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let err = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "[",
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid grep pattern"));
+    }
+}

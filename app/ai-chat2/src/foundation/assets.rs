@@ -21,6 +21,8 @@ define_lucide_icons!(
         Cpu => "cpu",
         File => "file",
         FilePen => "file-pen",
+        FileSearch => "file-search",
+        FileText => "file-text",
         Ellipsis => "ellipsis",
         ExternalLink => "external-link",
         Folder => "folder",
@@ -41,13 +43,18 @@ define_lucide_icons!(
         Send => "send",
         Server => "server",
         Settings => "settings",
+        Shield => "shield",
+        ShieldAlert => "shield-alert",
+        ShieldCheck => "shield-check",
         MessageSquare => "message-square",
         Minus => "minus",
         Paperclip => "paperclip",
         Sparkles => "sparkles",
         Square => "square",
         SquarePen => "square-pen",
+        Terminal => "terminal",
         Trash => "trash",
+        Wrench => "wrench",
         X => "x",
     }
 );
@@ -330,8 +337,20 @@ mod tests {
         );
         assert_eq!(IconName::Send.path(), SharedString::from("icons/send.svg"));
         assert_eq!(
+            IconName::Shield.path(),
+            SharedString::from("icons/shield.svg")
+        );
+        assert_eq!(
+            IconName::ShieldCheck.path(),
+            SharedString::from("icons/shield-check.svg")
+        );
+        assert_eq!(
             IconName::Square.path(),
             SharedString::from("icons/square.svg")
+        );
+        assert_eq!(
+            IconName::Terminal.path(),
+            SharedString::from("icons/terminal.svg")
         );
         assert_eq!(
             IconName::Trash.path(),

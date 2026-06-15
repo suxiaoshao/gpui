@@ -30,6 +30,7 @@ pub(crate) fn build_prompt_history(
     attachments: &[AttachmentRecord],
     user_item_id: &str,
     agent_run_id: &str,
+    parent_agent_run_id: Option<&str>,
 ) -> Result<PromptHistory> {
     let attachment_map = attachment_map(attachments);
     let user_index = items
@@ -38,6 +39,15 @@ pub(crate) fn build_prompt_history(
         .ok_or_else(|| {
             AgentRuntimeError::Invariant(format!("user item {user_item_id} is missing"))
         })?;
+    if let Some(parent_agent_run_id) = parent_agent_run_id {
+        return build_resume_prompt_history(
+            items,
+            &attachment_map,
+            user_index,
+            parent_agent_run_id,
+        );
+    }
+
     let current_run_skill_items = items[user_index + 1..]
         .iter()
         .filter(|item| {
@@ -67,6 +77,46 @@ pub(crate) fn build_prompt_history(
         .map(|item| item.id.clone())
         .collect::<Vec<_>>();
     input_item_ids.extend(current_run_skill_items.iter().map(|item| item.id.clone()));
+    Ok(PromptHistory {
+        prompt,
+        history,
+        input_item_ids,
+    })
+}
+
+fn build_resume_prompt_history(
+    items: &[ConversationItemRecord],
+    attachment_map: &AttachmentMap<'_>,
+    user_index: usize,
+    parent_agent_run_id: &str,
+) -> Result<PromptHistory> {
+    let prompt_index = items[user_index + 1..]
+        .iter()
+        .rposition(|item| {
+            item.agent_run_id.as_deref() == Some(parent_agent_run_id)
+                && matches!(item.payload, ConversationItemPayload::ToolResult(_))
+        })
+        .map(|index| user_index + 1 + index)
+        .ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "parent agent run {parent_agent_run_id} has no tool result to resume from"
+            ))
+        })?;
+    let prompt = conversation_item_to_rig_message(&items[prompt_index], attachment_map)?
+        .ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "resume prompt item {} cannot be used as prompt",
+                items[prompt_index].id
+            ))
+        })?;
+    let history = items[..prompt_index]
+        .iter()
+        .filter_map(|item| conversation_item_to_rig_message(item, attachment_map).transpose())
+        .collect::<Result<Vec<_>>>()?;
+    let input_item_ids = items[..=prompt_index]
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
     Ok(PromptHistory {
         prompt,
         history,
@@ -513,21 +563,109 @@ mod tests {
         assert!(matches!(error, AgentRuntimeError::Unsupported(_)));
     }
 
+    #[test]
+    fn resume_history_uses_parent_tool_result_as_prompt() {
+        let user = conversation_item(
+            "user-1",
+            vec![ContentPart::Text {
+                text: "write a file".to_string(),
+            }],
+        );
+        let tool_call = conversation_item_with_payload(
+            "tool-call-1",
+            2,
+            Some("run-parent"),
+            ConversationItemKind::ToolCall,
+            ConversationItemPayload::ToolCall(ToolCallItem {
+                tool_invocation_id: Some("tool-1".to_string()),
+                call_id: "call_1".to_string(),
+                source: ToolSource::Local,
+                name: "write_file".to_string(),
+                runtime_tool_name: "write_file".to_string(),
+                arguments: ToolArguments {
+                    value: serde_json::json!({
+                        "path": "notes.txt",
+                        "content": "done",
+                    }),
+                },
+            }),
+        );
+        let tool_result = conversation_item_with_payload(
+            "tool-result-1",
+            3,
+            Some("run-parent"),
+            ConversationItemKind::ToolResult,
+            ConversationItemPayload::ToolResult(ToolResultItem {
+                tool_invocation_id: Some("tool-1".to_string()),
+                call_id: "call_1".to_string(),
+                content: vec![ContentPart::Text {
+                    text: "Created notes.txt".to_string(),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: None,
+            }),
+        );
+        let items = vec![user, tool_call, tool_result];
+
+        let prompt_history =
+            build_prompt_history(&items, &[], "user-1", "run-resume", Some("run-parent")).unwrap();
+
+        assert_eq!(
+            prompt_history.input_item_ids,
+            vec![
+                "user-1".to_string(),
+                "tool-call-1".to_string(),
+                "tool-result-1".to_string()
+            ]
+        );
+        assert!(matches!(
+            prompt_history.history.first(),
+            Some(RigMessage::User { .. })
+        ));
+        assert!(matches!(
+            prompt_history.history.get(1),
+            Some(RigMessage::Assistant { content, .. })
+                if matches!(content.iter().next(), Some(AssistantContent::ToolCall(_)))
+        ));
+        assert!(matches!(
+            prompt_history.prompt,
+            RigMessage::User { content }
+                if matches!(content.iter().next(), Some(UserContent::ToolResult(result)) if result.call_id.as_deref() == Some("call_1"))
+        ));
+    }
+
     fn conversation_item(id: &str, content: Vec<ContentPart>) -> ConversationItemRecord {
-        ConversationItemRecord {
-            id: id.to_string(),
-            conversation_id: "conversation-1".to_string(),
-            seq: 1,
-            kind: ConversationItemKind::Message,
-            status: ConversationItemStatus::Completed,
-            agent_run_id: None,
-            provider_step_id: None,
-            tool_invocation_id: None,
-            provider_item_id: None,
-            payload: ConversationItemPayload::Message {
+        conversation_item_with_payload(
+            id,
+            1,
+            None,
+            ConversationItemKind::Message,
+            ConversationItemPayload::Message {
                 role: TranscriptRole::User,
                 content,
             },
+        )
+    }
+
+    fn conversation_item_with_payload(
+        id: &str,
+        seq: i32,
+        agent_run_id: Option<&str>,
+        kind: ConversationItemKind,
+        payload: ConversationItemPayload,
+    ) -> ConversationItemRecord {
+        ConversationItemRecord {
+            id: id.to_string(),
+            conversation_id: "conversation-1".to_string(),
+            seq,
+            kind,
+            status: ConversationItemStatus::Completed,
+            agent_run_id: agent_run_id.map(str::to_string),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload,
             search_text: String::new(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,

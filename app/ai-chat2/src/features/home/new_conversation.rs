@@ -384,6 +384,7 @@ impl NewConversationPage {
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,
+            approval_mode: submit.approval_mode,
             prompt_id: None,
             prompt_snapshot: None,
             trigger_kind: ai_chat_core::AgentRunTriggerKind::User,

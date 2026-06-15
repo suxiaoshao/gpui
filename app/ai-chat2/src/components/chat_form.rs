@@ -1,3 +1,4 @@
+mod approval_select;
 mod attachment_flow;
 mod attachment_views;
 mod attachments;
@@ -16,7 +17,8 @@ use crate::{
     state::attachments::ComposerAttachment,
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
-use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode};
+use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode};
+use approval_select::{ApprovalModeOption, approval_mode_sections};
 use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 use effort_select::{EffortOption, effort_sections};
 use gpui::{prelude::FluentBuilder as _, *};
@@ -60,6 +62,7 @@ pub(crate) struct ChatFormSubmit {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    pub(crate) approval_mode: ToolApprovalMode,
 }
 
 #[derive(Debug, PartialEq)]
@@ -73,9 +76,12 @@ pub(crate) struct ChatForm {
     model_choices: Result<Vec<ProviderModelChoice>, SharedString>,
     selected_model_key: Option<ProviderModelKey>,
     selected_reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    selected_approval_mode: ToolApprovalMode,
     token_budget_input: Entity<InputState>,
     effort_picker_open: bool,
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
+    approval_picker_open: bool,
+    approval_picker: Entity<ListState<PickerListDelegate<ApprovalModeOption>>>,
     model_picker_open: bool,
     model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
     attachments: Vec<ComposerAttachment>,
@@ -110,6 +116,7 @@ impl ChatForm {
         let token_budget_input = cx
             .new(|cx| InputState::new(window, cx).default_value(initial_token_budget.to_string()));
         let state = cx.entity().downgrade();
+        let selected_approval_mode = ToolApprovalMode::RequestApproval;
         let effort_sections = {
             let i18n = cx.global::<foundation::I18n>();
             effort_sections(
@@ -155,6 +162,43 @@ impl ChatForm {
                 cx,
             );
             picker.set_selected_index(effort_selected_ix, window, cx);
+            picker
+        });
+
+        let approval_sections = approval_mode_sections(cx.global::<foundation::I18n>());
+        let approval_selected_ix = PickerListDelegate::selected_index_for(
+            &approval_sections,
+            Some(&selected_approval_mode),
+        );
+        let approval_confirm = Rc::new({
+            let state = state.clone();
+            move |option: ApprovalModeOption, window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |form, cx| {
+                    form.select_approval_mode(option.mode(), window, cx);
+                });
+            }
+        });
+        let approval_cancel = Rc::new({
+            let state = state.clone();
+            move |window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |form, cx| {
+                    form.set_approval_picker_open(false, window, cx);
+                });
+            }
+        });
+        let approval_picker = cx.new(|cx| {
+            let mut picker = ListState::new(
+                PickerListDelegate::new(
+                    approval_sections,
+                    Some(selected_approval_mode),
+                    SharedString::from(""),
+                    approval_confirm,
+                    approval_cancel,
+                ),
+                window,
+                cx,
+            );
+            picker.set_selected_index(approval_selected_ix, window, cx);
             picker
         });
 
@@ -265,9 +309,12 @@ impl ChatForm {
             model_choices,
             selected_model_key,
             selected_reasoning_selection,
+            selected_approval_mode,
             token_budget_input,
             effort_picker_open: false,
             effort_picker,
+            approval_picker_open: false,
+            approval_picker,
             model_picker_open: false,
             model_picker,
             attachments: Vec::new(),
@@ -290,6 +337,12 @@ impl ChatForm {
     pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.effort_picker_open {
             self.effort_picker
+                .update(cx, |picker, cx| picker.focus(window, cx));
+            return;
+        }
+
+        if self.approval_picker_open {
+            self.approval_picker
                 .update(cx, |picker, cx| picker.focus(window, cx));
             return;
         }
@@ -338,7 +391,24 @@ impl ChatForm {
         self.effort_picker_open = open;
         if open {
             self.model_picker_open = false;
+            self.approval_picker_open = false;
             self.effort_picker
+                .update(cx, |picker, cx| picker.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn set_approval_picker_open(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.approval_picker_open = open;
+        if open {
+            self.effort_picker_open = false;
+            self.model_picker_open = false;
+            self.approval_picker
                 .update(cx, |picker, cx| picker.focus(window, cx));
         }
         cx.notify();
@@ -349,6 +419,7 @@ impl ChatForm {
         if open {
             self.reload_model_choices(window, cx);
             self.effort_picker_open = false;
+            self.approval_picker_open = false;
             self.model_picker
                 .update(cx, |picker, cx| picker.focus(window, cx));
         }
@@ -364,6 +435,21 @@ impl ChatForm {
         self.selected_reasoning_selection = Some(selection);
         self.sync_token_budget_input(window, cx);
         self.set_effort_picker_open(false, window, cx);
+    }
+
+    fn select_approval_mode(
+        &mut self,
+        mode: ToolApprovalMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_approval_mode = mode;
+        self.approval_picker.update(cx, |picker, cx| {
+            picker.delegate_mut().set_selected_value(Some(mode));
+            let selected_ix = picker.delegate().selected_index();
+            picker.set_selected_index(selected_ix, window, cx);
+        });
+        self.set_approval_picker_open(false, window, cx);
     }
 
     fn select_model(&mut self, key: ProviderModelKey, window: &mut Window, cx: &mut Context<Self>) {
@@ -542,6 +628,7 @@ impl ChatForm {
             composer: snapshot,
             provider_model,
             reasoning_selection: self.selected_reasoning_selection.clone(),
+            approval_mode: self.selected_approval_mode,
         })
     }
 
@@ -669,7 +756,8 @@ impl Render for ChatForm {
                             .gap(px(5.))
                             .min_w_0()
                             .child(self.render_add_attachment_menu(cx))
-                            .child(self.render_effort_selector(cx)),
+                            .child(self.render_effort_selector(cx))
+                            .child(self.render_approval_selector(cx)),
                     )
                     .child(div().flex_1().min_w_0())
                     .child(
@@ -800,7 +888,8 @@ mod tests {
         CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
         ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
         ProviderSettingsPayload, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
-        ReasoningSelectionSnapshot, TokenBudgetSelectionMode, conservative_model_capabilities,
+        ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode,
+        conservative_model_capabilities,
     };
     use ai_chat_db::{NewProvider, NewProviderModel};
     use gpui::{
@@ -915,6 +1004,30 @@ mod tests {
                 value: Some(2048),
             })
         );
+    }
+
+    #[gpui::test]
+    fn submit_includes_selected_approval_mode(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        let default_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("selected model can be submitted");
+        assert_eq!(
+            default_submit.approval_mode,
+            ToolApprovalMode::RequestApproval
+        );
+
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_approval_mode(ToolApprovalMode::FullAccess, window, cx);
+            });
+        });
+        let changed_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("selected model can be submitted");
+        assert_eq!(changed_submit.approval_mode, ToolApprovalMode::FullAccess);
     }
 
     #[gpui::test]

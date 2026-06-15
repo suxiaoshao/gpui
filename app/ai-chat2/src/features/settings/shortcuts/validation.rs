@@ -94,8 +94,8 @@ fn canonical_keystroke(keystroke: &Keystroke) -> String {
 mod tests {
     use super::{ShortcutValidationError, canonical_hotkey, validate_shortcut_hotkey};
     use ai_chat_core::{
-        RunSettingsSnapshot, ShortcutAction, ShortcutInputSource, ToolApprovalPolicy,
-        ToolPolicySnapshot, conservative_model_capabilities,
+        RunSettingsSnapshot, ShortcutAction, ShortcutInputSource, ToolApprovalMode,
+        ToolApprovalPolicy, ToolPolicySnapshot, conservative_model_capabilities,
     };
     use ai_chat_db::ShortcutRecord;
     use time::OffsetDateTime;
@@ -163,6 +163,8 @@ mod tests {
                     approval_policy: ToolApprovalPolicy::OnRequest,
                     enabled_sources: Vec::new(),
                     max_steps: 32,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    permission_scope: None,
                 },
             },
             created_at: OffsetDateTime::UNIX_EPOCH,

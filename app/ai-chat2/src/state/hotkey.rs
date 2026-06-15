@@ -4,7 +4,7 @@ use ai_chat_core::{
     AgentRunTriggerKind, AttachmentKind, AttachmentMetadata, AttachmentSource,
     AttachmentStorageKind, ContentPart, ConversationId, ConversationItemPayload,
     ConversationItemStatus, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource, TranscriptRole,
+    ShortcutInputSource, ToolApprovalMode, TranscriptRole,
 };
 use ai_chat_db::{NewAttachment, ShortcutRecord};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
@@ -871,6 +871,7 @@ impl GlobalHotkeyState {
                     .settings_snapshot
                     .reasoning_selection
                     .clone(),
+                approval_mode: ToolApprovalMode::RequestApproval,
                 prompt_id: trigger.prompt_id.clone(),
                 prompt_snapshot: trigger.prompt_snapshot.clone(),
                 trigger_kind: AgentRunTriggerKind::Shortcut,

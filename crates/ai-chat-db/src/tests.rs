@@ -2173,6 +2173,7 @@ fn approval_request() -> ApprovalRequestPayload {
         },
         tool_name: "read_file".to_string(),
         arguments_preview: "{\"path\":\"/tmp/notes.txt\"}".to_string(),
+        access_requests: Vec::new(),
     }
 }
 
@@ -2218,6 +2219,8 @@ fn tool_policy() -> ToolPolicySnapshot {
             },
         ],
         max_steps: 8,
+        approval_mode: ToolApprovalMode::RequestApproval,
+        permission_scope: None,
     }
 }
 

@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ai_chat_core::{AgentRunId, ConversationItemId};
+use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationItemId};
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
@@ -23,6 +23,8 @@ use super::attachments::{UserImageAttachment, render_user_image_attachments};
 
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
 pub(super) type OnCopy = Rc<dyn Fn(String, &mut Window, &mut App) -> bool + 'static>;
+pub(super) type OnApprovalDecision =
+    Rc<dyn Fn(ApprovalDecisionId, bool, &mut Window, &mut App) + 'static>;
 
 const COPIED_STATE_DURATION: Duration = Duration::from_secs(2);
 
@@ -187,6 +189,7 @@ pub(super) struct AgentTurnRow {
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
     pub(super) on_copy: OnCopy,
+    pub(super) on_approval_decision: OnApprovalDecision,
 }
 
 impl RenderOnce for AgentTurnRow {
@@ -247,7 +250,9 @@ impl RenderOnce for AgentTurnRow {
             .gap_2()
             .child(status_row)
             .child(separator)
-            .when(self.expanded, |this| this.child(self.render_details(cx)))
+            .when(self.expanded, |this| {
+                this.child(self.render_details(window, cx))
+            })
             .when(!final_markdown.is_empty(), |this| {
                 this.child(
                     div()
@@ -326,7 +331,7 @@ impl AgentTurnRow {
             .into_any_element()
     }
 
-    fn render_details(&self, cx: &mut App) -> AnyElement {
+    fn render_details(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         let detail_items = self
             .items
             .iter()
@@ -338,50 +343,43 @@ impl AgentTurnRow {
             .cloned()
             .collect::<Vec<_>>();
         let text_states = self.text_states.clone();
+        let decided_approval_ids = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.payload {
+                ai_chat_core::ConversationItemPayload::ApprovalDecision(decision) => {
+                    Some(decision.approval_decision_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let on_approval_decision = self.on_approval_decision.clone();
+        let mut blocks = Vec::with_capacity(detail_items.len());
+        for item in detail_items {
+            let text_state = text_states.get(&item.id).cloned();
+            let approval_decidable = match &item.payload {
+                ai_chat_core::ConversationItemPayload::ApprovalRequest(request) => {
+                    !decided_approval_ids.contains(&request.approval_decision_id)
+                }
+                _ => false,
+            };
+            blocks.push(super::tool_blocks::detail_block(
+                item,
+                text_state,
+                approval_decidable,
+                on_approval_decision.clone(),
+                window,
+                cx,
+            ));
+        }
 
         v_flex()
             .max_w(px(760.))
             .min_w_0()
             .gap_2()
-            .children(detail_items.into_iter().map(|item| {
-                let text_state = text_states.get(&item.id).cloned();
-                detail_block(item, text_state, cx)
-            }))
+            .children(blocks)
             .into_any_element()
     }
-}
-
-fn detail_block(
-    item: ConversationItemRecord,
-    text_state: Option<Entity<TextViewState>>,
-    cx: &mut App,
-) -> AnyElement {
-    let label = payload_label(&item);
-    let markdown = format::item_markdown(&item);
-
-    v_flex()
-        .id(format!("conversation-agent-detail-{}", item.id))
-        .min_w_0()
-        .gap_1()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border.opacity(0.7))
-        .bg(cx.theme().muted.opacity(0.28))
-        .px_3()
-        .py_2()
-        .child(
-            Label::new(label)
-                .text_xs()
-                .text_color(cx.theme().muted_foreground),
-        )
-        .when(!markdown.is_empty(), |this| {
-            this.child(markdown_view(
-                format!("conversation-agent-detail-markdown-{}", item.id),
-                text_state,
-                &markdown,
-            ))
-        })
-        .into_any_element()
 }
 
 fn markdown_view(
@@ -493,28 +491,6 @@ fn copy_button(
             .detach();
         })
         .into_any_element()
-}
-
-fn payload_label(item: &ConversationItemRecord) -> String {
-    match &item.payload {
-        ai_chat_core::ConversationItemPayload::Message { role, .. } => format!("{role:?}"),
-        ai_chat_core::ConversationItemPayload::SkillActivation(skill) => {
-            format!("Skill {}", skill.name)
-        }
-        ai_chat_core::ConversationItemPayload::Reasoning { .. } => "Reasoning".to_string(),
-        ai_chat_core::ConversationItemPayload::ToolCall(call) => {
-            format!("Tool call {}", call.runtime_tool_name)
-        }
-        ai_chat_core::ConversationItemPayload::ToolResult(result) => {
-            format!("Tool result {}", result.call_id)
-        }
-        ai_chat_core::ConversationItemPayload::ApprovalRequest(_) => "Approval request".to_string(),
-        ai_chat_core::ConversationItemPayload::ApprovalDecision(_) => {
-            "Approval decision".to_string()
-        }
-        ai_chat_core::ConversationItemPayload::Status(status) => status.label.clone(),
-        ai_chat_core::ConversationItemPayload::Error(_) => "Error".to_string(),
-    }
 }
 
 fn agent_copy_text(row: &AgentTurnRow) -> String {

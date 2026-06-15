@@ -5,7 +5,8 @@ use ai_chat_core::{
     AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart, ConversationId,
     ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
     ConversationSettingsSnapshot, ProjectId, PromptContent, PromptId, ReasoningSelectionSnapshot,
-    RunSettingsSnapshot, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, TranscriptRole,
+    RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy,
+    ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole,
 };
 use ai_chat_db::{
     ConversationItemRecord, ConversationTimelineRecords, ConversationWithUserItemRecord,
@@ -38,6 +39,7 @@ pub(crate) struct CreateConversationRequest {
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    pub(crate) approval_mode: ToolApprovalMode,
     pub(crate) prompt_id: Option<PromptId>,
     pub(crate) prompt_snapshot: Option<PromptContent>,
     pub(crate) trigger_kind: AgentRunTriggerKind,
@@ -51,6 +53,7 @@ pub(crate) struct SendConversationMessageRequest {
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    pub(crate) approval_mode: ToolApprovalMode,
 }
 
 pub(crate) struct CreatedConversation {
@@ -79,7 +82,8 @@ pub(crate) fn create_conversation(
                 request.provider_model.provider_id
             ))
         })?;
-    let tool_policy = default_tool_policy();
+    let mut tool_policy = default_tool_policy();
+    tool_policy.approval_mode = request.approval_mode;
     let settings_snapshot = conversation_settings_snapshot(
         &request.provider_model,
         request.prompt_snapshot.clone(),
@@ -186,7 +190,11 @@ pub(crate) fn send_conversation_message(
         skill_requests: request.skill_requests,
         prompt_snapshot: None,
         trigger_kind: AgentRunTriggerKind::User,
-        tool_policy: default_tool_policy(),
+        tool_policy: {
+            let mut tool_policy = default_tool_policy();
+            tool_policy.approval_mode = request.approval_mode;
+            tool_policy
+        },
     });
 
     Ok(SentConversationMessage { item, run_request })
@@ -246,6 +254,12 @@ struct RunRequestContext<'a> {
 }
 
 fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
+    let mut tool_policy = input.tool_policy;
+    tool_policy.permission_scope = Some(ToolPermissionScopeSnapshot {
+        project_roots: vec![input.project.path.clone()],
+        external_read_requires_approval: false,
+        external_write_requires_approval: true,
+    });
     let mut request = AgentRunRequest::new(
         input.conversation_id.clone(),
         input.user_item_id.to_string(),
@@ -258,7 +272,7 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
             model_capabilities: input.provider_model.capabilities.clone(),
             provider_settings: input.provider_settings.clone(),
             reasoning_selection: input.reasoning_selection,
-            tool_policy: input.tool_policy,
+            tool_policy,
         },
         AgentRuntimeSnapshot {
             engine: AgentEngineKind::Rig,
@@ -292,8 +306,10 @@ fn conversation_settings_snapshot(
 pub(crate) fn default_tool_policy() -> ToolPolicySnapshot {
     ToolPolicySnapshot {
         approval_policy: ToolApprovalPolicy::OnRequest,
-        enabled_sources: Vec::new(),
+        enabled_sources: vec![ToolSource::Local],
         max_steps: DEFAULT_MAX_STEPS,
+        approval_mode: ToolApprovalMode::RequestApproval,
+        permission_scope: None,
     }
 }
 

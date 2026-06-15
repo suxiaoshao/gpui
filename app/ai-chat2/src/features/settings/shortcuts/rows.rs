@@ -500,7 +500,7 @@ mod tests {
     use crate::state::hotkey::ShortcutRuntimeDiagnostics;
     use ai_chat_core::{
         ProviderModelMetadata, ProviderSettingsPayload, RunSettingsSnapshot, ShortcutAction,
-        ShortcutInputSource, ToolApprovalPolicy, ToolPolicySnapshot,
+        ShortcutInputSource, ToolApprovalMode, ToolApprovalPolicy, ToolPolicySnapshot,
         conservative_model_capabilities,
     };
     use ai_chat_db::{PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
@@ -564,6 +564,8 @@ mod tests {
                     approval_policy: ToolApprovalPolicy::OnRequest,
                     enabled_sources: Vec::new(),
                     max_steps: 32,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    permission_scope: None,
                 },
             },
             created_at: OffsetDateTime::UNIX_EPOCH,

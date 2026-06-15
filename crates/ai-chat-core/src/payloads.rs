@@ -650,6 +650,8 @@ pub struct ApprovalRequestPayload {
     pub tool_source: ToolSource,
     pub tool_name: String,
     pub arguments_preview: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_requests: Vec<ToolAccessRequestPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -681,12 +683,58 @@ pub enum ShortcutAction {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolApprovalMode {
+    AutoApprove,
+    RequestApproval,
+    FullAccess,
+}
+
+pub fn default_tool_approval_mode() -> ToolApprovalMode {
+    ToolApprovalMode::RequestApproval
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolPermissionScopeSnapshot {
+    pub project_roots: Vec<String>,
+    pub external_read_requires_approval: bool,
+    pub external_write_requires_approval: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccessKind {
+    Read,
+    Write,
+    Execute,
+    Network,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolAccessRequestPayload {
+    pub kind: ToolAccessKind,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_path: Option<String>,
+    #[serde(default)]
+    pub within_project: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_key: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolPolicySnapshot {
     pub approval_policy: ToolApprovalPolicy,
     pub enabled_sources: Vec<ToolSource>,
     pub max_steps: u32,
+    #[serde(default = "default_tool_approval_mode")]
+    pub approval_mode: ToolApprovalMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_scope: Option<ToolPermissionScopeSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1073,6 +1121,77 @@ mod tests {
             serde_json::from_value::<ToolInvocationInput>(value).unwrap(),
             payload
         );
+    }
+
+    #[test]
+    fn tool_policy_defaults_approval_mode_for_old_json() {
+        let payload: ToolPolicySnapshot = serde_json::from_value(json!({
+            "approvalPolicy": "on_request",
+            "enabledSources": [{ "type": "local" }],
+            "maxSteps": 8
+        }))
+        .unwrap();
+
+        assert_eq!(payload.approval_mode, ToolApprovalMode::RequestApproval);
+        assert_eq!(payload.permission_scope, None);
+    }
+
+    #[test]
+    fn tool_policy_roundtrips_approval_mode_and_scope() {
+        let payload = ToolPolicySnapshot {
+            approval_policy: ToolApprovalPolicy::OnRequest,
+            enabled_sources: vec![ToolSource::Local],
+            max_steps: 8,
+            approval_mode: ToolApprovalMode::FullAccess,
+            permission_scope: Some(ToolPermissionScopeSnapshot {
+                project_roots: vec!["/repo".to_string()],
+                external_read_requires_approval: false,
+                external_write_requires_approval: true,
+            }),
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["approvalMode"], "full_access");
+        assert_eq!(
+            serde_json::from_value::<ToolPolicySnapshot>(value).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn approval_request_defaults_access_requests_for_old_json() {
+        let payload: ApprovalRequestPayload = serde_json::from_value(json!({
+            "reason": "Needs access",
+            "toolSource": { "type": "local" },
+            "toolName": "write_file",
+            "argumentsPreview": "{\"path\":\"/tmp/out.txt\"}"
+        }))
+        .unwrap();
+
+        assert!(payload.access_requests.is_empty());
+    }
+
+    #[test]
+    fn tool_access_request_roundtrips() {
+        for kind in [
+            ToolAccessKind::Read,
+            ToolAccessKind::Write,
+            ToolAccessKind::Execute,
+            ToolAccessKind::Network,
+        ] {
+            let payload = ToolAccessRequestPayload {
+                kind,
+                target: "/tmp/out.txt".to_string(),
+                normalized_path: Some("/tmp/out.txt".to_string()),
+                within_project: false,
+                reason_key: Some("write_file".to_string()),
+            };
+            let value = serde_json::to_value(&payload).unwrap();
+            assert_eq!(
+                serde_json::from_value::<ToolAccessRequestPayload>(value).unwrap(),
+                payload
+            );
+        }
     }
 
     #[test]

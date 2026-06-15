@@ -14,8 +14,16 @@ use crate::{
 
 use super::attachments;
 use super::message::{
-    AgentTurnRow, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow,
+    AgentTurnRow, OnApprovalDecision, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey,
+    UserMessageRow,
 };
+
+#[derive(Clone)]
+pub(super) struct TimelineCallbacks {
+    on_toggle: OnToggleAgent,
+    on_copy: OnCopy,
+    on_approval_decision: OnApprovalDecision,
+}
 
 pub(super) struct ConversationTimelineRows {
     rows: Vec<TimelineRow>,
@@ -56,8 +64,7 @@ pub(super) fn build_rows(
     snapshot: &ConversationLoadSnapshot,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
     text_states: &HashMap<ConversationItemId, Entity<TextViewState>>,
-    on_toggle: OnToggleAgent,
-    on_copy: OnCopy,
+    callbacks: TimelineCallbacks,
 ) -> Vec<TimelineRow> {
     let run_by_id = snapshot
         .runs
@@ -102,7 +109,7 @@ pub(super) fn build_rows(
                 text_state: text_states.get(&item.id).cloned(),
                 image_attachments: attachments::user_image_attachments(&item, &attachments_by_id),
                 item,
-                on_copy: on_copy.clone(),
+                on_copy: callbacks.on_copy.clone(),
             })),
             PendingTimelineRow::Agent(run_id) => {
                 let items = run_items.remove(&run_id).unwrap_or_default();
@@ -113,8 +120,7 @@ pub(super) fn build_rows(
                     items,
                     expanded_agent_runs,
                     text_states,
-                    on_toggle.clone(),
-                    on_copy.clone(),
+                    callbacks.clone(),
                 )))
             }
             PendingTimelineRow::LooseAgent(item) => TimelineRow::Agent(Box::new(agent_turn_row(
@@ -123,8 +129,7 @@ pub(super) fn build_rows(
                 vec![item],
                 expanded_agent_runs,
                 text_states,
-                on_toggle.clone(),
-                on_copy.clone(),
+                callbacks.clone(),
             ))),
         })
         .collect()
@@ -146,8 +151,7 @@ fn agent_turn_row(
     items: Vec<ConversationItemRecord>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
     text_states: &HashMap<ConversationItemId, Entity<TextViewState>>,
-    on_toggle: OnToggleAgent,
-    on_copy: OnCopy,
+    callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
     let final_item = final_item_for_run(run.as_ref(), &items);
     let default_expanded = !run
@@ -165,8 +169,9 @@ fn agent_turn_row(
         final_item,
         text_states: text_states.clone(),
         expanded,
-        on_toggle,
-        on_copy,
+        on_toggle: callbacks.on_toggle,
+        on_copy: callbacks.on_copy,
+        on_approval_decision: callbacks.on_approval_decision,
     }
 }
 
@@ -190,9 +195,15 @@ fn final_item_for_run(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn callback_pair(
+pub(super) fn callbacks(
     on_toggle: impl Fn(AgentRunId, &mut Window, &mut App) + 'static,
     on_copy: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
-) -> (OnToggleAgent, OnCopy) {
-    (Rc::new(on_toggle), Rc::new(on_copy))
+    on_approval_decision: impl Fn(ai_chat_core::ApprovalDecisionId, bool, &mut Window, &mut App)
+    + 'static,
+) -> TimelineCallbacks {
+    TimelineCallbacks {
+        on_toggle: Rc::new(on_toggle),
+        on_copy: Rc::new(on_copy),
+        on_approval_decision: Rc::new(on_approval_decision),
+    }
 }

@@ -1,13 +1,14 @@
 mod attachments;
 mod message;
 mod timeline;
+mod tool_blocks;
 
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
 };
 
-use ai_chat_core::{AgentRunId, ConversationId, ConversationItemId};
+use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationId, ConversationItemId};
 use ai_chat_db::AgentRunRecord;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -142,6 +143,7 @@ impl ConversationDetailPage {
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,
+            approval_mode: submit.approval_mode,
         };
         match state::conversations::send_conversation_message(request, cx) {
             Ok(sent) => {
@@ -242,7 +244,7 @@ impl ConversationDetailPage {
         remeasure_hint: Option<message::TimelineRowKey>,
     ) {
         let page = cx.entity().downgrade();
-        let (on_toggle, on_copy) = timeline::callback_pair(
+        let callbacks = timeline::callbacks(
             {
                 let page = page.clone();
                 move |agent_run_id, window, cx| {
@@ -252,6 +254,19 @@ impl ConversationDetailPage {
                 }
             },
             copy_to_clipboard,
+            {
+                let page = page.clone();
+                move |approval_decision_id, approved, window, cx| {
+                    let _ = page.update(cx, |page, cx| {
+                        page.decide_tool_approval(
+                            approval_decision_id.clone(),
+                            approved,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+            },
         );
         let rows = self
             .snapshot
@@ -263,8 +278,7 @@ impl ConversationDetailPage {
                     snapshot,
                     &self.expanded_agent_runs,
                     &self.message_text_state_map(),
-                    on_toggle,
-                    on_copy,
+                    callbacks,
                 )
             })
             .unwrap_or_default();
@@ -373,6 +387,31 @@ impl ConversationDetailPage {
     fn stop_agent_run(&mut self, cx: &mut Context<Self>) {
         self.runtime.update(cx, |runtime, cx| {
             runtime.stop_run(&self.conversation_id, cx);
+        });
+    }
+
+    fn decide_tool_approval(
+        &mut self,
+        approval_decision_id: ApprovalDecisionId,
+        approved: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.runtime.update(cx, |runtime, cx| {
+            if approved {
+                runtime.approve_tool_invocation(
+                    self.conversation_id.clone(),
+                    approval_decision_id,
+                    window,
+                    cx,
+                );
+            } else {
+                runtime.deny_tool_invocation(
+                    self.conversation_id.clone(),
+                    approval_decision_id,
+                    cx,
+                );
+            }
         });
     }
 
@@ -622,6 +661,14 @@ mod tests {
         assert_eq!(
             message_text_update("hello", "hello world"),
             MessageTextUpdate::Append(" world")
+        );
+    }
+
+    #[test]
+    fn conversation_runtime_append_only_message_update_keeps_append_delta() {
+        assert_eq!(
+            message_text_update("streaming", "streaming output"),
+            MessageTextUpdate::Append(" output")
         );
     }
 

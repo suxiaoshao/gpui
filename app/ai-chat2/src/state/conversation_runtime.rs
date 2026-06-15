@@ -1,8 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use ai_chat_agent::{AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver};
-use ai_chat_core::{AgentRunId, AgentRunStatus, ConversationId};
+use ai_chat_core::{AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationId};
 use ai_chat_db::FreshRepository;
+use ai_chat_db::NewApprovalDecisionOutcome;
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -154,6 +155,89 @@ impl ConversationRuntimeStore {
             conversation_id: conversation_id.clone(),
         });
         cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn approve_tool_invocation(
+        &mut self,
+        conversation_id: ConversationId,
+        approval_decision_id: ApprovalDecisionId,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.active_runs.contains_key(&conversation_id) {
+            return false;
+        }
+
+        self.last_errors.remove(&conversation_id);
+        let repository = database::repository(cx);
+        let agent_run_id = match agent_run_id_for_approval(&repository, &approval_decision_id) {
+            Ok(agent_run_id) => agent_run_id,
+            Err(err) => {
+                self.last_errors
+                    .insert(conversation_id.clone(), err.to_string());
+                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+                cx.notify();
+                return false;
+            }
+        };
+        let run_key = self.next_active_run_key();
+        let (tx, rx) = smol::channel::unbounded();
+        let event_task = self.spawn_event_listener(rx, cx);
+        let store = cx.entity().downgrade();
+        let run_conversation_id = conversation_id.clone();
+        let run_task = window.spawn(cx, async move |cx| {
+            let result = approve_tool_with_runtime(repository, approval_decision_id, tx, cx).await;
+            if let Err(err) = store.update_in(cx, |store, _window, cx| {
+                store.finish_run(run_conversation_id.clone(), run_key, result, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "finish approved tool run failed");
+            }
+        });
+
+        self.active_runs.insert(
+            conversation_id.clone(),
+            ActiveRun {
+                key: run_key,
+                agent_run_id: Some(agent_run_id),
+                cancel_requested: false,
+                cancel: Box::new(|| {}),
+                _run_task: run_task,
+                _event_task: event_task,
+            },
+        );
+        cx.emit(ConversationRuntimeEvent::RunStarted {
+            conversation_id: conversation_id.clone(),
+        });
+        cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn deny_tool_invocation(
+        &mut self,
+        conversation_id: ConversationId,
+        approval_decision_id: ApprovalDecisionId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.last_errors.remove(&conversation_id);
+        let repository = database::repository(cx);
+        let result = AgentRuntime::new(repository).decide_approval(
+            &approval_decision_id,
+            NewApprovalDecisionOutcome::Denied {
+                decided_by: "user".to_string(),
+                reason: None,
+            },
+        );
+        if let Err(err) = result {
+            self.last_errors
+                .insert(conversation_id.clone(), err.to_string());
+        }
+        cx.emit(ConversationRuntimeEvent::ConversationChanged {
+            conversation_id: conversation_id.clone(),
+        });
+        cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
         cx.notify();
         true
     }
@@ -345,6 +429,47 @@ async fn run_agent_with_saved_provider(
     .map_err(|err| err.to_string())
 }
 
+async fn approve_tool_with_runtime(
+    repository: FreshRepository,
+    approval_decision_id: ApprovalDecisionId,
+    tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
+    cx: &mut AsyncWindowContext,
+) -> Result<AgentRunHandle, String> {
+    let approval_tx = tx.clone();
+    let observer = AgentRuntimeObserver::new(move |event| {
+        if let Err(err) = approval_tx.send_blocking(event) {
+            event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
+        }
+    });
+    let runtime = AgentRuntime::new(repository.clone());
+    let approval_handle = gpui_tokio::Tokio::spawn(cx, async move {
+        runtime
+            .approve_and_resume_tool(
+                &approval_decision_id,
+                "user".to_string(),
+                None,
+                Some(&observer),
+            )
+            .await
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
+
+    if approval_handle.output.stopped_reason != ai_chat_core::AgentStoppedReason::Completed {
+        return Ok(AgentRunHandle {
+            agent_run: approval_handle.agent_run,
+            output: Some(approval_handle.output),
+            events: approval_handle.events,
+            steps: approval_handle.steps,
+        });
+    }
+
+    let resume_request = resume_request_after_approval(&repository, &approval_handle.agent_run)
+        .map_err(|err| err.to_string())?;
+    run_agent_with_saved_provider(repository, resume_request, tx, cx).await
+}
+
 fn is_terminal_status(status: AgentRunStatus) -> bool {
     matches!(
         status,
@@ -364,6 +489,64 @@ fn latest_non_terminal_agent_run_id(
         .map(|run| run.id))
 }
 
+fn agent_run_id_for_approval(
+    repository: &FreshRepository,
+    approval_decision_id: &ApprovalDecisionId,
+) -> ai_chat_db::Result<AgentRunId> {
+    let approval = repository
+        .get_approval_decision(approval_decision_id)?
+        .ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!(
+                "approval decision {approval_decision_id} is missing"
+            ))
+        })?;
+    let invocation = repository
+        .get_tool_invocation(&approval.tool_invocation_id)?
+        .ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!(
+                "tool invocation {} is missing",
+                approval.tool_invocation_id
+            ))
+        })?;
+    Ok(invocation.agent_run_id)
+}
+
+fn resume_request_after_approval(
+    repository: &FreshRepository,
+    parent_run: &ai_chat_db::AgentRunRecord,
+) -> ai_chat_db::Result<AgentRunRequest> {
+    let conversation = repository
+        .get_conversation(&parent_run.conversation_id)?
+        .ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!(
+                "conversation {} is missing",
+                parent_run.conversation_id
+            ))
+        })?;
+    let project = repository
+        .get_project(&conversation.project_id)?
+        .ok_or_else(|| {
+            ai_chat_db::DbError::Invariant(format!(
+                "project {} is missing",
+                conversation.project_id
+            ))
+        })?;
+    let mut request = AgentRunRequest::new(
+        parent_run.conversation_id.clone(),
+        parent_run.input.user_item_id.clone(),
+        parent_run.input.provider_id.clone(),
+        parent_run.input.model_id.clone(),
+        parent_run.input.settings_snapshot.clone(),
+        parent_run.input.runtime_snapshot.clone(),
+    );
+    request.trigger_kind = ai_chat_core::AgentRunTriggerKind::Resume;
+    request.parent_agent_run_id = Some(parent_run.id.clone());
+    request.prompt_snapshot = parent_run.input.prompt_snapshot.clone();
+    request.project_root = Some(std::path::PathBuf::from(project.path));
+    request.guards.max_steps = parent_run.input.max_steps.max(1);
+    Ok(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,8 +555,8 @@ mod tests {
         AgentEngineKind, AgentRunInput, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
         ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
         ConversationSettingsSnapshot, ProjectKind, ProjectMetadata, ProviderSettingsPayload,
-        ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
-        conservative_model_capabilities,
+        ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, ToolSource,
+        TranscriptRole, conservative_model_capabilities,
     };
     use ai_chat_db::{NewAgentRun, NewConversation, NewConversationItem, NewProject};
     use gpui::Subscription;
@@ -546,6 +729,30 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn conversation_item_updated_emits_conversation_changed(cx: &mut gpui::TestAppContext) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
+        let conversation_id = "conversation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.handle_runtime_event(
+                    ai_chat_agent::AgentRuntimeEvent::ConversationItemUpdated {
+                        conversation_id: conversation_id.clone(),
+                        item_id: "item-1".to_string(),
+                    },
+                    cx,
+                );
+            });
+        });
+
+        let events = cx.update(|cx| recorder.read(cx).events.lock().unwrap().clone());
+        assert!(
+            events.contains(&ConversationRuntimeEvent::ConversationChanged { conversation_id })
+        );
     }
 
     #[gpui::test]
@@ -797,6 +1004,8 @@ mod tests {
             approval_policy: ToolApprovalPolicy::Never,
             enabled_sources: vec![ToolSource::Local],
             max_steps: 8,
+            approval_mode: ToolApprovalMode::RequestApproval,
+            permission_scope: None,
         }
     }
 }
