@@ -1,13 +1,10 @@
-use crate::{
-    foundation::{self, assets::IconName},
-    state::attachments::ComposerAttachment,
-};
+use crate::foundation::{self, assets::IconName};
 use fluent_bundle::FluentArgs;
 use gpui::{
-    Context, CursorStyle, InteractiveElement as _, IntoElement as _, MouseButton, ObjectFit,
-    ParentElement as _, PinchEvent, Pixels, Point, Render, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, Size, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
-    black, div, img, point, prelude::FluentBuilder as _, px, white,
+    App, AppContext as _, Context, CursorStyle, InteractiveElement as _, IntoElement as _,
+    MouseButton, ObjectFit, ParentElement as _, PinchEvent, Pixels, Point, Render, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, Size, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, Window, div, img, point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, WindowExt as ComponentWindowExt,
@@ -46,8 +43,16 @@ enum ZoomStep {
     Out,
 }
 
-pub(super) struct ImagePreview {
-    attachment: ComposerAttachment,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImagePreviewAttachment {
+    pub(crate) path: PathBuf,
+    pub(crate) name: String,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+}
+
+pub(crate) struct ImagePreview {
+    attachment: ImagePreviewAttachment,
     natural_size: Option<PreviewSize>,
     load_error: Option<String>,
     zoom_percent: Option<f32>,
@@ -55,7 +60,7 @@ pub(super) struct ImagePreview {
 }
 
 impl ImagePreview {
-    pub(super) fn new(attachment: ComposerAttachment, _cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(attachment: ImagePreviewAttachment, _cx: &mut Context<Self>) -> Self {
         let (natural_size, load_error) = natural_size_for_attachment(&attachment)
             .map(|size| (Some(size), None))
             .unwrap_or_else(|err| (None, Some(err)));
@@ -261,12 +266,12 @@ impl ImagePreview {
             .child(
                 Label::new(message)
                     .text_sm()
-                    .text_color(white().opacity(0.78)),
+                    .text_color(cx.theme().foreground),
             )
             .into_any_element()
     }
 
-    fn render_header(&self) -> gpui::AnyElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         h_flex()
             .absolute()
             .top(px(CLOSE_INSET))
@@ -275,12 +280,15 @@ impl ImagePreview {
             .px_3()
             .py_2()
             .rounded(px(999.))
-            .bg(black().opacity(0.28))
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 Label::new(self.attachment.name.clone())
                     .text_sm()
-                    .text_color(white().opacity(0.84))
+                    .text_color(cx.theme().popover_foreground)
                     .truncate(),
             )
             .into_any_element()
@@ -295,16 +303,25 @@ impl ImagePreview {
             .absolute()
             .top(px(CLOSE_INSET))
             .right(px(CLOSE_INSET))
+            .size(px(CONTROL_BUTTON_SIZE))
+            .rounded(px(999.))
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 Button::new("chat-form-image-preview-close")
                     .ghost()
                     .with_size(px(CONTROL_BUTTON_SIZE))
-                    .size(px(CONTROL_BUTTON_SIZE))
+                    .size_full()
                     .p_0()
                     .rounded(px(999.))
-                    .bg(white().opacity(0.94))
-                    .child(Icon::new(IconName::X).with_size(px(22.)))
+                    .child(
+                        Icon::new(IconName::X)
+                            .with_size(px(22.))
+                            .text_color(cx.theme().popover_foreground),
+                    )
                     .tooltip(tooltip)
                     .on_click(|_, window, cx| {
                         window.close_dialog(cx);
@@ -353,7 +370,9 @@ impl ImagePreview {
                     .px_2()
                     .py_1()
                     .rounded(px(999.))
-                    .bg(white().opacity(0.94))
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
@@ -364,7 +383,13 @@ impl ImagePreview {
                             .p_0()
                             .rounded(px(999.))
                             .disabled(!can_zoom_out)
-                            .child(Icon::new(IconName::Minus).with_size(px(20.)))
+                            .child(Icon::new(IconName::Minus).with_size(px(20.)).text_color(
+                                if can_zoom_out {
+                                    cx.theme().popover_foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                },
+                            ))
                             .tooltip(zoom_out_label)
                             .on_click(cx.listener(|preview, _, window, cx| {
                                 cx.stop_propagation();
@@ -376,7 +401,10 @@ impl ImagePreview {
                             .ghost()
                             .min_w(px(68.))
                             .h(px(CONTROL_BUTTON_SIZE))
-                            .label(format!("{}%", format_zoom_percent(zoom_percent)))
+                            .child(
+                                Label::new(format!("{}%", format_zoom_percent(zoom_percent)))
+                                    .text_color(cx.theme().popover_foreground),
+                            )
                             .tooltip(zoom_tooltip),
                     )
                     .child(
@@ -387,7 +415,13 @@ impl ImagePreview {
                             .p_0()
                             .rounded(px(999.))
                             .disabled(!can_zoom_in)
-                            .child(Icon::new(IconName::Plus).with_size(px(20.)))
+                            .child(Icon::new(IconName::Plus).with_size(px(20.)).text_color(
+                                if can_zoom_in {
+                                    cx.theme().popover_foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                },
+                            ))
                             .tooltip(zoom_in_label)
                             .on_click(cx.listener(|preview, _, window, cx| {
                                 cx.stop_propagation();
@@ -409,7 +443,7 @@ impl Render for ImagePreview {
             .size_full()
             .relative()
             .overflow_hidden()
-            .bg(black().opacity(0.88))
+            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.close_dialog(cx);
@@ -422,12 +456,38 @@ impl Render for ImagePreview {
             .when(self.natural_size.is_none(), |this| {
                 this.child(self.render_load_error(cx))
             })
-            .child(self.render_header())
+            .child(self.render_header(cx))
             .child(self.render_close_button(cx))
     }
 }
 
-fn natural_size_for_attachment(attachment: &ComposerAttachment) -> Result<PreviewSize, String> {
+pub(crate) fn open_image_preview_dialog(
+    attachment: ImagePreviewAttachment,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let preview = cx.new(|cx| ImagePreview::new(attachment, cx));
+    window.open_dialog(cx, move |dialog, window, _cx| {
+        let viewport_size = window.viewport_size();
+        dialog
+            .width(viewport_size.width)
+            .h(viewport_size.height)
+            .margin_top(px(0.))
+            .p_0()
+            .rounded(px(0.))
+            .border_0()
+            .close_button(false)
+            .overlay(false)
+            .overlay_closable(false)
+            .keyboard(true)
+            .content({
+                let preview = preview.clone();
+                move |content, _window, _cx| content.p_0().size_full().child(preview.clone())
+            })
+    });
+}
+
+fn natural_size_for_attachment(attachment: &ImagePreviewAttachment) -> Result<PreviewSize, String> {
     if let (Some(width), Some(height)) = (attachment.width, attachment.height)
         && width > 0
         && height > 0

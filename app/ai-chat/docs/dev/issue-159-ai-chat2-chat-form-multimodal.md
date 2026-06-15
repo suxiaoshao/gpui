@@ -1,8 +1,8 @@
 # Issue #159 ai-chat2 ChatForm 多模态输入实现记录
 
-本文档固定 `app/ai-chat2` 的 `ChatForm` 文件/图片附件支持计划和第一版实现记录。当前状态：第一版产品代码已落地，附件操作流、附件视图和图片预览已按子模块拆分，仍保留完整调研结论和后续增强边界。
+本文档固定 `app/ai-chat2` 的 `ChatForm` 文件/图片附件支持计划和第一版实现记录。当前状态：第一版产品代码已落地，附件操作流、附件视图已按 ChatForm 子模块拆分；图片预览已提升为共享 `components/image_preview.rs`，供 ChatForm 附件和 conversation timeline 用户图片复用；仍保留完整调研结论和后续增强边界。
 
-最后同步时间：2026-06-14。
+最后同步时间：2026-06-15。
 
 ## 目标
 
@@ -16,14 +16,14 @@
 
 ## 非目标
 
-- 第一版不实现 audio input、generated output timeline、下载管理或完整 multimodal timeline 渲染。
+- 第一版不实现 audio input、generated output timeline、下载管理或完整 multimodal timeline 渲染；conversation timeline 当前只补了 user image attachment 缩略图和点击预览。
 - 第一版不把附件二进制塞进 `conversation_items.payload_json` 或文本内容。
 - `cx.open_with_system(&path)` 不是 macOS Finder 级预览；它只作为非 macOS 行为，或 macOS Quick Look 明确失败后的可见 fallback。
 
 ## 当前实现
 
 - `app/ai-chat2/src/components/chat_form.rs` 已持有 pending attachments 和图片 preview 状态，并接入文件选择器、从剪贴板添加、`ExternalPaths` drop、capability gating 和发送按钮 disabled reason；附件操作和附件视图已拆到 `chat_form/attachment_flow.rs` 与 `chat_form/attachment_views.rs`，root `ChatForm` 保留整体状态、提交和布局编排。`+` 附件菜单不再由 `ChatForm` 保存 open state，改由 `gpui-component` `DropdownMenu` 自管理打开、关闭、focus 和键盘行为。
-- `app/ai-chat2/src/components/chat_form/image_preview.rs` 已实现当前窗口全窗口图片 preview overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll、滚动查看、右上角关闭和点击遮罩关闭。
+- `app/ai-chat2/src/components/image_preview.rs` 已实现当前窗口全窗口图片 preview overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll、滚动查看、右上角关闭和点击遮罩关闭；预览控件使用 `popover` / `popover_foreground` / `muted_foreground` 等 theme token，不硬编码白色控件。
 - `app/ai-chat2/src/components/chat_form/attachments.rs` 已集中固定 Codex app reference 得到的 strip 样式常量：`80px` 图片缩略图、`8px` gap、`220px x 56px` 文件 card、`20px` remove button、`8px` radius。
 - `app/ai-chat2/src/components/chat_form/composer_editor.rs` 在 `secondary-c` 时优先识别 GPUI `ClipboardItem::{ExternalPaths, Image}`，有文件/图片时发 `PasteAttachmentRequested`，普通文本仍走原 `ComposerEditor` 粘贴。
 - 第一版未引入 `clipboard-rs`：GPUI 已提供 `ClipboardEntry::ExternalPaths` 和 `ClipboardEntry::Image`，且 macOS pasteboard 顺序已能满足 Files -> Image -> Text 判定。后续只有在 GPUI clipboard 覆盖不足时再引入 `clipboard-rs`。
@@ -35,10 +35,11 @@
 - `crates/window-ext/src/lib.rs` 已提供 `preview_file_with_quick_look(&Path)`：macOS 使用 `QLPreviewPanel` + datasource bridge 显示 Finder 同级 Quick Look；非 macOS 或 Quick Look 失败时由 ChatForm fallback 到 `cx.open_with_system(&path)`。
 - `+` 按钮现在使用 `Button::dropdown_menu_with_anchor` + `PopupMenuItem` 打开附件菜单，第一版提供“添加文件”和“从剪贴板添加”；拖拽文件到整个 `ChatForm` surface 等价于添加附件。2026-06-14 已修正 attachment strip / warning / editor / footer 的纵向 flow，移除提示与输入框重叠；图片缩略图使用专用容器而非通用 card，0 inset 内层负责 rounded + `overflow_hidden` 裁剪，0 inset overlay 负责圆角边框，不引入 margin、padding 或 1px 白边；删除按钮点击会 `stop_propagation`，不会打开预览。
 - ChatForm 添加文件的 `PathPromptOptions.prompt` 已改为 `None`，避免覆盖 macOS `NSOpenPanel` 默认按钮文案；系统文件对话框整体语言依赖 app bundle localization。`xtask` 打包时把源码中的 `en-US.lproj` / `zh-Hans.lproj` 映射为 macOS 常见的 `en.lproj` / `zh_CN.lproj`，并写入 `CFBundleAllowMixedLocalizations = true` 与 `CFBundleLocalizations = ["en", "zh_CN"]`。
+- `app/ai-chat2/src/components/conversation_detail/attachments.rs` 已补齐 user image attachment 的 timeline 显示：按 `ContentPart::Image` 顺序从 `ConversationTimelineRecords.attachments` 取本地图片，渲染在用户文本气泡上方，点击复用共享图片 preview overlay。
 
 ## 剩余边界
 
-- 完整 timeline multimodal rendering 尚未完成；当前重点是 ChatForm 输入、DB 持久化和模型请求 content。
+- 完整 timeline multimodal rendering 尚未完成；当前只显示用户图片附件缩略图。文件附件 chip、tool/MCP 结果、思考内容、生成图片/文件、下载管理仍是后续 rich timeline 工作。
 - 文件发送第一版支持图片、PDF 和 UTF-8 文本类文件。Office、zip 等普通文件仍可作为附件添加和 Quick Look/open，但不会直接发送给模型，后续应做 provider file upload / file-id 流程。
 - 目录拖拽第一版按“不支持的非普通文件”拒绝，不做递归。
 - Audio input、generated output、下载管理不在本轮范围。
@@ -107,7 +108,8 @@ app/ai-chat2/src/components/chat_form.rs
 app/ai-chat2/src/components/chat_form/attachment_flow.rs
 app/ai-chat2/src/components/chat_form/attachment_views.rs
 app/ai-chat2/src/components/chat_form/attachments.rs
-app/ai-chat2/src/components/chat_form/image_preview.rs
+app/ai-chat2/src/components/image_preview.rs
+app/ai-chat2/src/components/conversation_detail/attachments.rs
 app/ai-chat2/src/components/chat_form/composer_editor.rs
 app/ai-chat2/src/components/chat_form/composer_editor/snapshot.rs
 app/ai-chat2/src/state.rs
@@ -157,13 +159,14 @@ crates/window-ext/src/quick_look.rs
 
 | 模块 | 实际/计划状态 |
 | --- | --- |
-| `components/chat_form.rs` | 声明 `mod attachment_flow; mod attachment_views; mod attachments; mod image_preview;`；持有 composer attachments、下一附件 local id、preview attachment、处理整体提交/能力 gating/发送按钮状态和 root layout；`+` 菜单 open/dismiss/focus 由 `gpui-component` `DropdownMenu` 管理；不直接写 DB。 |
+| `components/chat_form.rs` | 声明 `mod attachment_flow; mod attachment_views; mod attachments;`；持有 composer attachments、下一附件 local id、preview attachment、处理整体提交/能力 gating/发送按钮状态和 root layout；`+` 菜单 open/dismiss/focus 由 `gpui-component` `DropdownMenu` 管理；不直接写 DB。 |
 | `components/chat_form/attachment_flow.rs` | 已落地：处理 `PasteAttachment`、当前剪贴板读取、系统文件选择器、`ExternalPaths` drop 后的 path 添加、attachment add result、remove、图片 preview 打开、文件 Quick Look/open、notification 和 capability support message。 |
 | `components/chat_form/attachment_views.rs` | 已落地：渲染 `+` 附件菜单、attachment strip、图片/文件 attachment card、remove button 和 unsupported model warning 行。 |
 | `components/chat_form/attachments.rs` | 已落地：集中定义 strip/item 尺寸常量和文件大小格式化。 |
-| `components/chat_form/image_preview.rs` | 已落地：当前窗口全屏 overlay 图片预览组件，内部管理自然尺寸、fit zoom、zoom ramp、scroll handle、pinch/scroll 缩放和工具栏。 |
+| `components/image_preview.rs` | 已落地：共享当前窗口全屏 overlay 图片预览组件，内部管理自然尺寸、fit zoom、zoom ramp、scroll handle、pinch/scroll 缩放和工具栏；ChatForm 附件和 conversation timeline 用户图片共同复用。 |
+| `components/conversation_detail/attachments.rs` | 已落地：按 user message `ContentPart::Image` 顺序提取 image attachment record，渲染用户图片缩略图并接共享 preview。 |
 | `components/chat_form/attachment_menu.rs` | 未采用独立文件；菜单视图当前在 `attachment_views.rs`，避免只有一个小菜单时额外拆出碎片模块。 |
-| `components/chat_form/attachment_preview.rs` | 未采用该命名；图片预览实际为 `image_preview.rs`。 |
+| `components/chat_form/image_preview.rs` / `components/chat_form/attachment_preview.rs` | 未保留在 ChatForm 子模块；图片预览实际提升为 `components/image_preview.rs`，避免 conversation timeline 再复制一份预览组件。 |
 | `components/chat_form/composer_editor/snapshot.rs` | 扩展 `ComposerAttachment` 为真实附件 snapshot；`ComposerSnapshot::is_empty` 同时看文本、skills 和附件。 |
 | `platform/clipboard.rs` | 未采用独立文件；第一版直接使用 GPUI `ClipboardItem` / `ClipboardEntry`，不引入 `clipboard-rs`。 |
 | `state/attachments.rs` | 已落地：附件分类、临时 PNG 落盘、入库、`ContentPart` 合成 helper，避免 UI 直接散落 DB/file IO。 |
@@ -330,7 +333,7 @@ pub(crate) struct ComposerSnapshot {
 - 文件 item 使用 `Icon::new(IconName::File)`、文件名、size 文本和 remove button；点击主体调用 open file，不点击 remove。
 - remove 使用 `Button::new(...).ghost()` + `IconName::X`，尺寸固定，不随 hover 改变 layout；hover 只改变背景/前景色。
 - `+` 使用 `gpui-component` `DropdownMenu` / `PopupMenuItem`，菜单项为“添加文件”和“从剪贴板添加”；不保留 app-local popover open state。
-- 图片预览使用 `chat_form/image_preview.rs` 的当前窗口全窗口 overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll 和双向滚动；不再使用固定小 dialog。
+- 图片预览使用 `components/image_preview.rs` 的当前窗口全窗口 overlay，支持 fit zoom、按钮缩放、触控板 pinch/scroll 和双向滚动；不再使用固定小 dialog。
 - 错误和 unsupported model 使用现有 `gpui_component::notification::Notification`；发送按钮 tooltip 显示禁用原因。
 
 ## 样式和间距落地值

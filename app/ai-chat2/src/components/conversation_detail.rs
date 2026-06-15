@@ -1,3 +1,4 @@
+mod attachments;
 mod message;
 mod timeline;
 

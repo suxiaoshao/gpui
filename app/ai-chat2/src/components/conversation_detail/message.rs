@@ -19,6 +19,8 @@ use gpui_component::{
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
+use super::attachments::{UserImageAttachment, render_user_image_attachments};
+
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
 pub(super) type OnCopy = Rc<dyn Fn(String, &mut Window, &mut App) -> bool + 'static>;
 
@@ -88,6 +90,7 @@ impl RenderOnce for TimelineRow {
 #[derive(Clone)]
 pub(super) struct UserMessageRow {
     pub(super) item: ConversationItemRecord,
+    pub(super) image_attachments: Vec<UserImageAttachment>,
     pub(super) text_state: Option<Entity<TextViewState>>,
     pub(super) on_copy: OnCopy,
 }
@@ -96,6 +99,8 @@ impl RenderOnce for UserMessageRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let group = format!("conversation-user-message-{}", self.item.id);
         let markdown = format::item_markdown(&self.item);
+        let has_markdown = !markdown.trim().is_empty();
+        let has_image_attachments = !self.image_attachments.is_empty();
         let copy_text = markdown.clone();
         let on_copy = self.on_copy;
         let i18n = cx.global::<I18n>();
@@ -128,22 +133,31 @@ impl RenderOnce for UserMessageRow {
                     .items_end()
                     .max_w(px(680.))
                     .min_w_0()
-                    .gap_1()
-                    .child(
-                        div()
-                            .rounded(px(8.))
-                            .px_3()
-                            .py_2()
-                            .bg(cx.theme().primary.opacity(0.12))
-                            .border_1()
-                            .border_color(cx.theme().primary.opacity(0.18))
-                            .text_color(cx.theme().foreground)
-                            .child(markdown_view(
-                                format!("conversation-user-message-markdown-{}", self.item.id),
-                                self.text_state,
-                                &markdown,
-                            )),
-                    )
+                    .gap_2()
+                    .when(has_image_attachments, |this| {
+                        this.child(render_user_image_attachments(
+                            &self.item.id,
+                            self.image_attachments,
+                            cx,
+                        ))
+                    })
+                    .when(has_markdown || !has_image_attachments, |this| {
+                        this.child(
+                            div()
+                                .rounded(px(8.))
+                                .px_3()
+                                .py_2()
+                                .bg(cx.theme().primary.opacity(0.12))
+                                .border_1()
+                                .border_color(cx.theme().primary.opacity(0.18))
+                                .text_color(cx.theme().foreground)
+                                .child(markdown_view(
+                                    format!("conversation-user-message-markdown-{}", self.item.id),
+                                    self.text_state,
+                                    &markdown,
+                                )),
+                        )
+                    })
                     .child(
                         h_flex()
                             .h(px(24.))

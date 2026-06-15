@@ -12,6 +12,7 @@ use crate::{
     foundation::conversation_format as format, state::conversations::ConversationLoadSnapshot,
 };
 
+use super::attachments;
 use super::message::{
     AgentTurnRow, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow,
 };
@@ -64,6 +65,7 @@ pub(super) fn build_rows(
         .cloned()
         .map(|run| (run.id.clone(), run))
         .collect::<HashMap<_, _>>();
+    let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
     let mut run_items: HashMap<AgentRunId, Vec<ConversationItemRecord>> = HashMap::new();
     let mut pending_rows = Vec::new();
     let mut seen_runs = HashSet::new();
@@ -98,6 +100,7 @@ pub(super) fn build_rows(
         .map(|row| match row {
             PendingTimelineRow::User(item) => TimelineRow::User(Box::new(UserMessageRow {
                 text_state: text_states.get(&item.id).cloned(),
+                image_attachments: attachments::user_image_attachments(&item, &attachments_by_id),
                 item,
                 on_copy: on_copy.clone(),
             })),

@@ -3,7 +3,6 @@ mod attachment_views;
 mod attachments;
 mod composer_editor;
 mod effort_select;
-mod image_preview;
 mod model_select;
 mod thinking_effort;
 

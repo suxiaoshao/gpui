@@ -1,5 +1,6 @@
-use super::{ChatForm, image_preview};
+use super::ChatForm;
 use crate::{
+    components::image_preview::{self, ImagePreviewAttachment},
     foundation, state,
     state::attachments::{
         AttachmentAddResult, ComposerAttachment, ComposerAttachmentKind,
@@ -190,25 +191,16 @@ impl ChatForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let preview = cx.new(|cx| image_preview::ImagePreview::new(attachment.clone(), cx));
-        window.open_dialog(cx, move |dialog, window, _cx| {
-            let viewport_size = window.viewport_size();
-            dialog
-                .width(viewport_size.width)
-                .h(viewport_size.height)
-                .margin_top(px(0.))
-                .p_0()
-                .rounded(px(0.))
-                .border_0()
-                .close_button(false)
-                .overlay(false)
-                .overlay_closable(false)
-                .keyboard(true)
-                .content({
-                    let preview = preview.clone();
-                    move |content, _window, _cx| content.p_0().size_full().child(preview.clone())
-                })
-        });
+        image_preview::open_image_preview_dialog(
+            ImagePreviewAttachment {
+                path: attachment.path.clone(),
+                name: attachment.name.clone(),
+                width: attachment.width,
+                height: attachment.height,
+            },
+            window,
+            cx,
+        );
         self.preview_attachment = Some(attachment);
     }
 
