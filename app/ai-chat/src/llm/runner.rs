@@ -6,7 +6,7 @@ use crate::{
 };
 use futures::pin_mut;
 
-pub trait ProviderRunRunner {
+pub(crate) trait ProviderRunRunner {
     fn get_provider(&self) -> &str;
     fn get_config(&self) -> &AiChatConfig;
     fn run_request(&self) -> &ProviderRunRequest;

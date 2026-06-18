@@ -9,7 +9,10 @@ use ai_chat_db::{
     ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
 };
 use rig_core::{
-    agent::{HookAction, PromptHook, ToolCallHookAction},
+    agent::{
+        HookAction, InvalidToolCallContext, InvalidToolCallHookAction, PromptHook,
+        ToolCallHookAction,
+    },
     completion::{AssistantContent, CompletionModel, CompletionResponse},
 };
 use tokio::time::timeout;
@@ -158,6 +161,20 @@ impl PersistenceContext {
         match self.append_error_tool_result_and_update_tool_invocation(invocation, status, error) {
             Ok(model_text) => ToolCallHookAction::skip(model_text),
             Err(error) => ToolCallHookAction::terminate(error.to_string()),
+        }
+    }
+
+    pub(super) fn append_recoverable_invalid_tool_error(
+        &self,
+        invocation: &ToolInvocationRecord,
+        status: ToolInvocationStatus,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> InvalidToolCallHookAction {
+        let error = run_error(code, message, true, None);
+        match self.append_error_tool_result_and_update_tool_invocation(invocation, status, error) {
+            Ok(model_text) => InvalidToolCallHookAction::skip(model_text),
+            Err(_) => InvalidToolCallHookAction::fail(),
         }
     }
 
@@ -381,6 +398,62 @@ where
             }
         }
         HookAction::cont()
+    }
+
+    async fn on_invalid_tool_call(
+        &self,
+        context: &InvalidToolCallContext,
+    ) -> InvalidToolCallHookAction {
+        if self.context.cancellation_token.is_cancelled() {
+            return InvalidToolCallHookAction::fail();
+        }
+
+        let args = context.args.as_deref().unwrap_or("");
+        let guard_action = self.context.check_tool_guard(&context.tool_name, args);
+        if !matches!(guard_action, ToolCallHookAction::Continue) {
+            return InvalidToolCallHookAction::fail();
+        }
+
+        let internal_call_id = context
+            .internal_call_id
+            .as_deref()
+            .or(context.tool_call_id.as_deref())
+            .unwrap_or(&context.tool_name);
+        let call_id = context
+            .tool_call_id
+            .clone()
+            .unwrap_or_else(|| internal_call_id.to_string());
+        let arguments = context
+            .args
+            .as_deref()
+            .map(|args| {
+                serde_json::from_str::<serde_json::Value>(args)
+                    .unwrap_or_else(|_| serde_json::Value::String(args.to_string()))
+            })
+            .unwrap_or(serde_json::Value::Null);
+        let invocation = match self.context.insert_tool_invocation_and_append_call(
+            internal_call_id,
+            ToolInvocationStatus::Running,
+            ToolInvocationInput {
+                source: ToolSource::Local,
+                namespace: None,
+                tool_name: context.tool_name.clone(),
+                runtime_tool_name: context.tool_name.clone(),
+                call_id,
+                arguments: ToolArguments { value: arguments },
+                approval_policy: ToolApprovalPolicy::Never,
+                execution_policy: ToolExecutionPolicy::Foreground,
+            },
+        ) {
+            Ok(invocation) => invocation,
+            Err(_) => return InvalidToolCallHookAction::fail(),
+        };
+        self.context.append_recoverable_invalid_tool_error(
+            &invocation,
+            ToolInvocationStatus::Failed,
+            "tool_not_found",
+            format!("No tool named {} exists", context.tool_name),
+        )
     }
 
     async fn on_tool_call(

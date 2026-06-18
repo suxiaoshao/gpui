@@ -21,8 +21,8 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
@@ -31,11 +31,10 @@ ai-chat-db = { path = "./crates/ai-chat-db" }
 ai-chat-agent = { path = "./crates/ai-chat-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
-gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
-rig-core = { version = "0.37.0", features = ["rmcp"] }
+rig-core = { version = "0.38.2", features = ["rmcp"] }
 rmcp = { version = "1.7.0", features = [
   "client",
   "macros",
@@ -44,8 +43,8 @@ rmcp = { version = "1.7.0", features = [
 ] }
 
 [patch.crates-io]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui-macros = { git = "https://github.com/zed-industries/zed", package = "gpui_macros" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui-macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui_macros" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

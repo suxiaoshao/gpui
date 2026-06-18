@@ -48,7 +48,7 @@
 - 涉及 UI 图标、Lucide 图标声明、运行时资源或打包 app icon 时参考：`gpui-app-icon-usage`。
 - 涉及用户可见文案、Fluent `.ftl`、语言设置或 macOS bundle 本地化时参考：`gpui-i18n`。
 - 涉及 `crates/gpui-store` 或明确要把 app 状态接入 `gpui-store` 时参考：`gpui-store`；不要在无关任务中顺手迁移 app 状态。
-- 具体 GPUI API 按需使用对应 skill：`gpui-action`、`gpui-async`、`gpui-context`、`gpui-entity`、`gpui-event`、`gpui-focus-handle`、`gpui-global`、`gpui-layout-and-style`、`gpui-test`。
+- 具体 GPUI API 统一参考 repo-local skill：`gpui`；其中 action/keybinding、async、context、entity、event、focus、global、layout/style、element、test 等按该 skill 的 Navigation 加载对应 reference 文件。
 - 不要重复实现 `gpui-component` 已提供的表格、按钮、输入、选择器、对话框、滚动条等通用能力；只补齐组件库没有覆盖且当前 app 确实需要的局部缺口。
 - 涉及 Web / React / CSS / Tailwind / shadcn/ui 风格参考时，只吸收其设计意图与交互模式；最终必须以仓库现有的 GPUI / `gpui-component` 模式实现，不能照搬 DOM、CSS 或 React 组件习惯。
 - 常规产品界面避免无意义卡片堆砌、过度装饰渐变和多重强调色；优先用版式、对齐、间距、字号、对比度和少量有目的的动效建立层级。

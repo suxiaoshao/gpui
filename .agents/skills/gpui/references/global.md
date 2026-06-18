@@ -1,7 +1,6 @@
----
-name: gpui-global
-description: Global state management in GPUI. Use when implementing global state, app-wide configuration, or shared resources.
----
+# Global State
+
+**Contents:** [Overview](#overview) · [Quick Start](#quick-start) · [Common Use Cases](#common-use-cases) · [Best Practices](#best-practices) · [When to Use](#when-to-use)
 
 ## Overview
 
@@ -195,10 +194,3 @@ let user_entity = cx.new(|_| UserState { ... });
 - Component-specific state
 - State that changes frequently
 - State that needs notifications
-
-## Reference Documentation
-
-- **API Reference**: See [api-reference.md](references/api-reference.md)
-  - Global trait, set_global, update_global
-  - Interior mutability patterns
-  - Best practices and anti-patterns

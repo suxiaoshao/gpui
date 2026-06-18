@@ -10,7 +10,7 @@ focus 和数据流。
 当前状态：首版已实现。`app/ai-chat2/src/app/temporary_window.rs` 已替换菜单和 temporary hotkey 的
 placeholder 打开路径，`features/temporary.rs` 已接顶部单行搜索、左侧 no-project conversation 列表、
 右侧 new/detail、键盘 focus 和真实 `AgentRuntime` run。旧
-`app/ai-chat2/src/app/placeholder_windows.rs` 已从模块树摘除，后续可整体删除旧占位文件。本轮不修改旧
+`app/ai-chat2/src/app/placeholder_windows.rs` 已从模块树摘除并删除。本轮不修改旧
 `app/ai-chat` legacy temporary chat，也不引入纯内存 ephemeral chat。
 
 实现时间：2026-06-11。
@@ -104,7 +104,6 @@ provider/model picker、reasoning selector、conversation detail/timeline 和纯
 ```text
 app/ai-chat2/src/app/
 ├── temporary_window.rs          # 真实临时窗口 open/reveal/window shell/root 入口
-└── placeholder_windows.rs       # 删除 Temporary 分支后只保留仍需的 placeholder，或后续整体移除
 
 app/ai-chat2/src/components.rs   # 增加 chat_form / conversation_detail / picker 模块声明
 app/ai-chat2/src/components/

@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI Store"
+  short_description: "GPUI reactive store crate guidance"
+  default_prompt: "Use $gpui-store to update gpui-store state flow or integration guidance."

@@ -5,7 +5,7 @@ description: GPUI application development conventions for this gpui workspace. U
 
 # GPUI App Development
 
-Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI skills for API details and `gpui-component-usage` for component selection.
+Use this skill for workspace-specific GPUI app decisions. Use `gpui` for framework API details and `gpui-component-usage` for component selection.
 
 ## Workflow
 
@@ -15,16 +15,7 @@ Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI s
 4. Use `gpui-app-icon-usage` when changing UI icons, runtime assets, or bundle app icons.
 5. Use `gpui-i18n` when adding or changing user-facing text, Fluent locale files, language settings, or macOS bundle localization.
 6. Use `gpui-store` only when changing `crates/gpui-store` or deliberately integrating it into app state.
-7. Load specific GPUI API skills only when needed:
-   - Actions and keybindings: `gpui-action`
-   - Async tasks: `gpui-async`
-   - Context and windows: `gpui-context`
-   - Entity state: `gpui-entity`
-   - Events/subscriptions: `gpui-event`
-   - Focus and keyboard navigation: `gpui-focus-handle`
-   - Global state: `gpui-global`
-   - Layout and styling: `gpui-layout-and-style`
-   - Tests: `gpui-test`
+7. Load `gpui` only when framework API details are needed, then use its Navigation to select the relevant reference file for actions/keybindings, async tasks, context/windows, entity state, events/subscriptions, focus, global state, layout/styling, elements, or tests.
 8. Keep app behavior tied to local validation: run focused tests/checks for the touched app and use `gpui-computer-use-debugging` when runtime UI behavior matters.
 
 ## Workspace Rules

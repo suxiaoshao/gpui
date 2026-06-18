@@ -1719,6 +1719,7 @@ mod tests {
         assert!(!secret_input_event_marks_dirty(&InputEvent::Blur));
         assert!(!secret_input_event_marks_dirty(&InputEvent::PressEnter {
             secondary: false,
+            shift: false,
         }));
     }
 

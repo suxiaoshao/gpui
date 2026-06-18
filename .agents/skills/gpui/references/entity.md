@@ -1,7 +1,6 @@
----
-name: gpui-entity
-description: Entity management and state handling in GPUI. Use when working with entities, managing component state, coordinating between components, handling async operations with state updates, or implementing reactive patterns. Entities provide safe concurrent access to application state.
----
+# Entity State Management
+
+**Contents:** [Overview](#overview) · [Quick Start](#quick-start) · [Core Principles](#core-principles) · [Common Use Cases](#common-use-cases) · [Extended References](#reference-documentation)
 
 ## Overview
 
@@ -70,16 +69,16 @@ impl MyComponent {
 
 ### Async Operations
 
+When calling `cx.spawn` from `Context<Self>`, the closure receives `(WeakEntity<Self>, &mut AsyncApp)`:
+
 ```rust
 impl MyComponent {
     fn fetch_data(&mut self, cx: &mut Context<Self>) {
-        let weak_self = cx.entity().downgrade();
-
-        cx.spawn(async move |cx| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             let data = fetch_from_api().await;
 
-            // Update entity safely
-            let _ = weak_self.update(cx, |state, cx| {
+            // Update entity safely via the weak reference
+            let _ = this.update(cx, |state, cx| {
                 state.data = Some(data);
                 cx.notify();
             });
@@ -213,26 +212,7 @@ fn render_item(&mut self, ix: IndexPath, window: &mut Window, cx: &mut Context<L
 
 ## Reference Documentation
 
-### Complete API Documentation
-- **Entity API**: See [api-reference.md](references/api-reference.md)
-  - Entity types, methods, lifecycle
-  - Context methods, async operations
-  - Error handling, type conversions
-
-### Implementation Guides
-- **Patterns**: See [patterns.md](references/patterns.md)
-  - Model-view separation, state management
-  - Cross-entity communication, async operations
-  - Observer pattern, event subscription
-  - Pattern selection guide
-
-- **Best Practices**: See [best-practices.md](references/best-practices.md)
-  - Avoiding common pitfalls, memory leaks
-  - Performance optimization, batching updates
-  - Lifecycle management, cleanup
-  - Async best practices, testing
-
-- **Advanced Patterns**: See [advanced.md](references/advanced.md)
-  - Entity collections, registry pattern
-  - Debounced/throttled updates, state machines
-  - Entity snapshots, transactions, pools
+- **API**: See [entity-api.md](entity-api.md) — entity types, methods, lifecycle, error handling
+- **Patterns**: See [entity-patterns.md](entity-patterns.md) — model-view, cross-entity communication, observer
+- **Best Practices**: See [entity-best-practices.md](entity-best-practices.md) — pitfalls, memory, performance, async
+- **Advanced**: See [entity-advanced.md](entity-advanced.md) — collections, registry, debounce, state machines

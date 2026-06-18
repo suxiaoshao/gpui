@@ -7,7 +7,7 @@ description: Use when implementing, reviewing, debugging, or integrating the gpu
 
 Use this skill for `crates/gpui-store` itself and for app code that is deliberately adopting `gpui-store`.
 
-Do not use this skill just because code has ordinary GPUI entity state. Use `gpui-entity`, `gpui-global`, or the app's existing state pattern unless the task is specifically about `gpui-store`.
+Do not use this skill just because code has ordinary GPUI entity state. Use `gpui` for entity/global framework guidance, or the app's existing state pattern, unless the task is specifically about `gpui-store`.
 
 ## Required Reading
 

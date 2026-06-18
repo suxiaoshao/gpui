@@ -1,7 +1,6 @@
----
-name: gpui-focus-handle
-description: Focus management and keyboard navigation in GPUI. Use when handling focus, focus handles, or keyboard navigation. Enables keyboard-driven interfaces with proper focus tracking and navigation between focusable elements.
----
+# Focus & Keyboard Navigation
+
+**Contents:** [Overview](#overview) · [Quick Start](#quick-start) · [Focus Events](#focus-events) · [Keyboard Navigation](#keyboard-navigation) · [Common Patterns](#common-patterns) · [Best Practices](#best-practices)
 
 ## Overview
 
@@ -223,10 +222,3 @@ div()
 div()
     .on_action(cx.listener(Self::on_enter))
 ```
-
-## Reference Documentation
-
-- **API Reference**: See [api-reference.md](references/api-reference.md)
-  - FocusHandle API, focus management
-  - Events, keyboard navigation
-  - Best practices

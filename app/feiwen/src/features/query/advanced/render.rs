@@ -279,7 +279,7 @@ fn condition_table_head(label: &'static str, width: f32) -> TableHead {
 fn condition_value_table_head(label: &'static str) -> TableHead {
     TableHead::new()
         .min_w(px(0.))
-        .flex_grow()
+        .flex_grow(1.0)
         .child(Label::new(label).text_xs().truncate())
 }
 
@@ -294,7 +294,7 @@ fn condition_table_cell(width: f32, child: impl IntoElement) -> TableCell {
 fn condition_value_table_cell(child: impl IntoElement) -> TableCell {
     TableCell::new()
         .min_w(px(0.))
-        .flex_grow()
+        .flex_grow(1.0)
         .child(div().w_full().min_w_0().child(child))
 }
 
@@ -687,7 +687,7 @@ fn sort_header_cell(label: &'static str, width: f32) -> impl IntoElement {
 fn sort_field_header_cell(label: &'static str) -> impl IntoElement {
     div()
         .min_w(px(0.))
-        .flex_grow()
+        .flex_grow(1.0)
         .px(px(8.))
         .py(px(6.))
         .flex()
@@ -710,7 +710,7 @@ fn sort_fixed_cell(width: f32, child: impl IntoElement) -> impl IntoElement {
 fn sort_field_cell(child: impl IntoElement) -> impl IntoElement {
     div()
         .min_w(px(0.))
-        .flex_grow()
+        .flex_grow(1.0)
         .px(px(8.))
         .py(px(6.))
         .flex()
