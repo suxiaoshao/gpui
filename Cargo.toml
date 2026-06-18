@@ -11,6 +11,7 @@ members = [
   "crates/ai-chat-agent",
   "crates/ai-chat-core",
   "crates/ai-chat-db",
+  "crates/gpui-store",
   "crates/gpui-tokio",
   "crates/platform-ext",
   "crates/window-ext",
@@ -30,6 +31,7 @@ ai-chat-db = { path = "./crates/ai-chat-db" }
 ai-chat-agent = { path = "./crates/ai-chat-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
+gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }

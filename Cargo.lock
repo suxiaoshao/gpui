@@ -4962,6 +4962,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-store"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "gpui-tokio"
 version = "0.1.0"
 dependencies = [
