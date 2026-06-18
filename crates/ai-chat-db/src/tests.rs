@@ -111,6 +111,7 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
         "skill_roots",
         "mcp_servers",
         "mcp_tools",
+        "app_settings",
         "conversation_item_fts",
     ] {
         assert!(!tables.contains(disallowed));
@@ -1579,31 +1580,6 @@ fn typed_json_roundtrips_for_repository_records() {
 
     assert_eq!(repo.delete_shortcut(&enabled_shortcut.id).unwrap(), 1);
     assert!(repo.list_shortcuts().unwrap().is_empty());
-
-    let app_settings = repo
-        .set_app_settings(AppSettingsPayload {
-            language: AppLanguage::Chinese,
-            theme: AppThemeSettings {
-                mode: AppThemeMode::System,
-                light_theme: Some("preset:Default Light".to_string()),
-                dark_theme: Some("preset:Default Dark".to_string()),
-                custom_theme_colors: vec!["#3271AE".to_string()],
-            },
-            temporary_hotkey: Some("cmd+shift+j".to_string()),
-            http_proxy: Some("http://127.0.0.1:8080".to_string()),
-            default_project_id: Some(project.id.clone()),
-        })
-        .unwrap();
-    assert_eq!(app_settings.settings.language, AppLanguage::Chinese);
-    assert_eq!(
-        app_settings.settings.temporary_hotkey.as_deref(),
-        Some("cmd+shift+j")
-    );
-    assert_eq!(
-        app_settings.settings.http_proxy.as_deref(),
-        Some("http://127.0.0.1:8080")
-    );
-    assert_eq!(app_settings.settings.default_project_id, Some(project.id));
 }
 
 #[test]

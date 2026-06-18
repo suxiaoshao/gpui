@@ -1,26 +1,38 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
-use ai_chat_core::{AppLanguage, AppSettingsPayload, AppThemeSettings, ProjectId};
+use ai_chat_agent::{
+    McpConfigLayer, McpServerConfig, McpServerTransport, McpStdioTransport,
+    McpStreamableHttpTransport,
+};
+use ai_chat_core::{
+    AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
+    ProviderModelId, ReasoningSelectionSnapshot, ToolApprovalMode, default_tool_approval_mode,
+};
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 
 use crate::{
     app::APP_NAME,
-    database,
     errors::{AiChat2Error, AiChat2Result},
 };
 
 const CONFIG_FILE_NAME: &str = "config.toml";
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct AiChat2Config {
     pub(crate) storage: StorageConfig,
+    pub(crate) app_settings: AppSettingsConfig,
+    pub(crate) chat_form: ChatFormConfig,
+    pub(crate) mcp_servers: BTreeMap<String, McpServerTomlConfig>,
+    #[serde(skip)]
+    config_path: Option<PathBuf>,
 }
 
 impl Global for AiChat2Config {}
@@ -31,12 +43,121 @@ pub(crate) struct StorageConfig {
     pub(crate) data_dir: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct AppSettingsConfig {
+    pub(crate) language: AppLanguage,
+    pub(crate) theme: AppThemeConfig,
+    pub(crate) temporary_hotkey: Option<String>,
+    pub(crate) http_proxy: Option<String>,
+    pub(crate) default_project_id: Option<ProjectId>,
+}
+
+impl Default for AppSettingsConfig {
+    fn default() -> Self {
+        Self::from(AppSettingsPayload::default())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct AppThemeConfig {
+    pub(crate) mode: AppThemeMode,
+    pub(crate) light_theme: Option<String>,
+    pub(crate) dark_theme: Option<String>,
+    pub(crate) custom_theme_colors: Vec<String>,
+}
+
+impl Default for AppThemeConfig {
+    fn default() -> Self {
+        Self::from(AppThemeSettings::default())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct ChatFormConfig {
+    pub(crate) model: Option<ChatFormModelConfig>,
+    pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    #[serde(default = "default_tool_approval_mode")]
+    pub(crate) approval_mode: ToolApprovalMode,
+}
+
+impl Default for ChatFormConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            reasoning_selection: None,
+            approval_mode: default_tool_approval_mode(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ChatFormModelConfig {
+    pub(crate) provider_id: ProviderId,
+    pub(crate) model_id: ProviderModelId,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct McpServerTomlConfig {
+    #[serde(default = "default_mcp_server_enabled")]
+    pub(crate) enabled: bool,
+    pub(crate) display_name: Option<String>,
+    pub(crate) transport: McpTransportKind,
+    pub(crate) command: Option<String>,
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    pub(crate) url: Option<String>,
+    #[serde(default)]
+    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) oauth: Option<toml::Value>,
+    #[serde(default)]
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) cwd: Option<PathBuf>,
+}
+
+impl Default for McpServerTomlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_mcp_server_enabled(),
+            display_name: None,
+            transport: McpTransportKind::Stdio,
+            command: None,
+            args: Vec::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            oauth: None,
+            env: BTreeMap::new(),
+            cwd: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum McpTransportKind {
+    #[default]
+    Stdio,
+    StreamableHttp,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AiChat2AppSettings {
     payload: AppSettingsPayload,
 }
 
 impl Global for AiChat2AppSettings {}
+
+impl PartialEq for AiChat2Config {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage == other.storage
+            && self.app_settings == other.app_settings
+            && self.chat_form == other.chat_form
+            && self.mcp_servers == other.mcp_servers
+    }
+}
 
 impl AiChat2Config {
     pub(crate) fn load_or_create() -> AiChat2Result<Self> {
@@ -46,17 +167,26 @@ impl AiChat2Config {
 
     fn load_or_create_from_path(path: &Path) -> AiChat2Result<Self> {
         match fs::read_to_string(path) {
-            Ok(source) => match toml::from_str(&source) {
-                Ok(config) => Ok(config),
+            Ok(source) => match toml::from_str::<Self>(&source) {
+                Ok(mut config) => {
+                    config.config_path = Some(path.to_path_buf());
+                    Ok(config)
+                }
                 Err(err) => {
                     event!(Level::ERROR, error = ?err, "parse ai-chat2 config.toml failed");
-                    let config = Self::default();
+                    let config = Self {
+                        config_path: Some(path.to_path_buf()),
+                        ..Default::default()
+                    };
                     config.save_to_path(path)?;
                     Ok(config)
                 }
             },
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                let config = Self::default();
+                let config = Self {
+                    config_path: Some(path.to_path_buf()),
+                    ..Default::default()
+                };
                 config.save_to_path(path)?;
                 Ok(config)
             }
@@ -83,12 +213,56 @@ impl AiChat2Config {
         }
     }
 
+    pub(crate) fn app_settings_payload(&self) -> AppSettingsPayload {
+        self.app_settings.payload()
+    }
+
+    pub(crate) fn mcp_config_layer(&self) -> AiChat2Result<McpConfigLayer> {
+        let mut servers = Vec::new();
+        for (server_id, server) in &self.mcp_servers {
+            if server.enabled {
+                servers.push(server.to_agent_config(server_id)?);
+            }
+        }
+        Ok(McpConfigLayer { servers })
+    }
+
+    fn save(&self) -> AiChat2Result<()> {
+        let path = match self.config_path.as_ref() {
+            Some(path) => path.clone(),
+            None => Self::path()?,
+        };
+        self.save_to_path(&path)
+    }
+
     fn save_to_path(&self, path: &Path) -> AiChat2Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, toml::to_string_pretty(self)?)?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_app_settings_for_test(
+        config_path: PathBuf,
+        payload: AppSettingsPayload,
+    ) -> Self {
+        Self {
+            app_settings: AppSettingsConfig::from(payload),
+            config_path: Some(config_path),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_from_path_for_test(path: &Path) -> AiChat2Result<Self> {
+        Self::load_or_create_from_path(path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn save_for_test(&self) -> AiChat2Result<()> {
+        self.save()
     }
 }
 
@@ -99,10 +273,6 @@ impl AiChat2AppSettings {
 
     pub(crate) fn language(&self) -> AppLanguage {
         self.payload.language
-    }
-
-    pub(crate) fn payload(&self) -> &AppSettingsPayload {
-        &self.payload
     }
 
     pub(crate) fn theme(&self) -> &AppThemeSettings {
@@ -122,36 +292,154 @@ impl AiChat2AppSettings {
     }
 }
 
+impl AppSettingsConfig {
+    fn payload(&self) -> AppSettingsPayload {
+        AppSettingsPayload {
+            language: self.language,
+            theme: self.theme.settings(),
+            temporary_hotkey: self.temporary_hotkey.clone(),
+            http_proxy: self.http_proxy.clone(),
+            default_project_id: self.default_project_id.clone(),
+        }
+    }
+}
+
+impl From<AppSettingsPayload> for AppSettingsConfig {
+    fn from(payload: AppSettingsPayload) -> Self {
+        Self {
+            language: payload.language,
+            theme: AppThemeConfig::from(payload.theme),
+            temporary_hotkey: payload.temporary_hotkey,
+            http_proxy: payload.http_proxy,
+            default_project_id: payload.default_project_id,
+        }
+    }
+}
+
+impl AppThemeConfig {
+    fn settings(&self) -> AppThemeSettings {
+        AppThemeSettings {
+            mode: self.mode,
+            light_theme: self.light_theme.clone(),
+            dark_theme: self.dark_theme.clone(),
+            custom_theme_colors: self.custom_theme_colors.clone(),
+        }
+    }
+}
+
+impl From<AppThemeSettings> for AppThemeConfig {
+    fn from(settings: AppThemeSettings) -> Self {
+        Self {
+            mode: settings.mode,
+            light_theme: settings.light_theme,
+            dark_theme: settings.dark_theme,
+            custom_theme_colors: settings.custom_theme_colors,
+        }
+    }
+}
+
+impl McpServerTomlConfig {
+    fn to_agent_config(&self, server_id: &str) -> AiChat2Result<McpServerConfig> {
+        let transport = match self.transport {
+            McpTransportKind::Stdio => {
+                let command = self.command.clone().ok_or_else(|| {
+                    AiChat2Error::Config(format!("mcp server `{server_id}` is missing command"))
+                })?;
+                McpServerTransport::Stdio(McpStdioTransport {
+                    command,
+                    args: self.args.clone(),
+                })
+            }
+            McpTransportKind::StreamableHttp => {
+                let url = self.url.clone().ok_or_else(|| {
+                    AiChat2Error::Config(format!("mcp server `{server_id}` is missing url"))
+                })?;
+                McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
+                    url,
+                    headers: self.headers.clone(),
+                    oauth: self.oauth.as_ref().map(toml_value_to_json).transpose()?,
+                })
+            }
+        };
+
+        Ok(McpServerConfig {
+            server_id: server_id.to_string(),
+            display_name: self.display_name.clone(),
+            transport,
+            env: self.env.clone(),
+            cwd: self.cwd.clone(),
+        })
+    }
+}
+
+fn toml_value_to_json(value: &toml::Value) -> AiChat2Result<serde_json::Value> {
+    serde_json::to_value(value)
+        .map_err(|err| AiChat2Error::Config(format!("invalid MCP OAuth config: {err}")))
+}
+
+fn default_mcp_server_enabled() -> bool {
+    true
+}
+
 pub(crate) fn update_app_settings(
     cx: &mut App,
     update: impl FnOnce(&mut AppSettingsPayload),
 ) -> AiChat2Result<AppSettingsPayload> {
-    let mut payload = cx.global::<AiChat2AppSettings>().payload().clone();
+    let mut config = cx.global::<AiChat2Config>().clone();
+    let mut payload = config.app_settings_payload();
+    let previous = payload.clone();
     update(&mut payload);
-    database::repository(cx).set_app_settings(payload.clone())?;
-    cx.set_global(AiChat2AppSettings::new(payload.clone()));
-    cx.refresh_windows();
+
+    if payload != previous {
+        config.app_settings = AppSettingsConfig::from(payload.clone());
+        config.save()?;
+        cx.set_global(config);
+        cx.set_global(AiChat2AppSettings::new(payload.clone()));
+        cx.refresh_windows();
+    }
+
     Ok(payload)
+}
+
+pub(crate) fn update_chat_form_config(
+    cx: &mut App,
+    update: impl FnOnce(&mut ChatFormConfig),
+) -> AiChat2Result<ChatFormConfig> {
+    let mut config = cx.global::<AiChat2Config>().clone();
+    let mut chat_form = config.chat_form.clone();
+    update(&mut chat_form);
+
+    if chat_form != config.chat_form {
+        config.chat_form = chat_form.clone();
+        config.save()?;
+        cx.set_global(config);
+    }
+
+    Ok(chat_form)
 }
 
 pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
     let config = AiChat2Config::load_or_create()?;
-    event!(Level::INFO, data_dir = ?config.data_dir()?, "loaded ai-chat2 config");
+    let data_dir = config.data_dir()?;
+    let enabled_mcp_servers = match config.mcp_config_layer() {
+        Ok(layer) => layer.servers.len(),
+        Err(err) => {
+            event!(Level::ERROR, error = ?err, "parse ai-chat2 MCP config failed");
+            0
+        }
+    };
+    event!(
+        Level::INFO,
+        data_dir = ?data_dir,
+        enabled_mcp_servers,
+        "loaded ai-chat2 config"
+    );
     cx.set_global(config);
     Ok(())
 }
 
 pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
-    let repository = database::repository(cx);
-    let payload = match repository.get_app_settings()? {
-        Some(record) => record.settings,
-        None => {
-            let payload = AppSettingsPayload::default();
-            repository.set_app_settings(payload.clone())?;
-            payload
-        }
-    };
-
+    let payload = cx.global::<AiChat2Config>().app_settings_payload();
     let settings = AiChat2AppSettings::new(payload);
     event!(
         Level::INFO,
@@ -168,24 +456,66 @@ pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AiChat2AppSettings, AiChat2Config, StorageConfig};
-    use ai_chat_core::{AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings};
+    use super::{
+        AiChat2AppSettings, AiChat2Config, ChatFormConfig, ChatFormModelConfig, StorageConfig,
+        update_app_settings, update_chat_form_config,
+    };
+    use ai_chat_agent::McpServerTransport;
+    use ai_chat_core::{
+        AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings,
+        ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode,
+    };
+    use gpui::TestAppContext;
     use std::path::PathBuf;
 
     #[test]
-    fn toml_config_only_stores_machine_local_storage() {
+    fn toml_config_stores_storage_and_app_settings() {
         let config = AiChat2Config {
             storage: StorageConfig {
                 data_dir: Some(PathBuf::from("/tmp/ai-chat2")),
             },
+            app_settings: AppSettingsPayload {
+                language: AppLanguage::Chinese,
+                theme: AppThemeSettings {
+                    mode: AppThemeMode::Light,
+                    light_theme: Some("preset:Default Light".to_string()),
+                    dark_theme: Some("preset:Default Dark".to_string()),
+                    custom_theme_colors: vec!["#3271AE".to_string()],
+                },
+                temporary_hotkey: Some("cmd+shift+j".to_string()),
+                http_proxy: Some("http://127.0.0.1:8080".to_string()),
+                default_project_id: Some("project-1".to_string()),
+            }
+            .into(),
+            chat_form: ChatFormConfig {
+                model: Some(ChatFormModelConfig {
+                    provider_id: "provider-1".to_string(),
+                    model_id: "gpt-5".to_string(),
+                }),
+                reasoning_selection: Some(ReasoningSelectionSnapshot::TokenBudget {
+                    mode: TokenBudgetSelectionMode::Custom,
+                    value: Some(2048),
+                }),
+                approval_mode: ToolApprovalMode::FullAccess,
+            },
+            ..Default::default()
         };
 
         let serialized = toml::to_string(&config).unwrap();
 
         assert!(serialized.contains("[storage]"));
         assert!(serialized.contains("data_dir"));
-        assert!(!serialized.contains("language"));
-        assert!(!serialized.contains("theme"));
+        assert!(serialized.contains("[app_settings]"));
+        assert!(serialized.contains(r#"language = "zh-CN""#));
+        assert!(serialized.contains(r#"temporary_hotkey = "cmd+shift+j""#));
+        assert!(serialized.contains("[app_settings.theme]"));
+        assert!(serialized.contains("custom_theme_colors"));
+        assert!(serialized.contains("[chat_form]"));
+        assert!(serialized.contains(r#"approval_mode = "full_access""#));
+        assert!(serialized.contains("[chat_form.model]"));
+        assert!(serialized.contains(r#"provider_id = "provider-1""#));
+        assert!(serialized.contains("[chat_form.reasoning_selection]"));
+        assert!(serialized.contains(r#"type = "tokenBudget""#));
         assert_eq!(
             toml::from_str::<AiChat2Config>(&serialized).unwrap(),
             config
@@ -201,18 +531,64 @@ unknown_top_level = true
 [storage]
 data_dir = "/tmp/ai-chat2"
 unknown_storage = "kept by newer app"
+
+[app_settings]
+language = "zh-CN"
+unknown_app_setting = true
+
+[app_settings.theme]
+mode = "dark"
+unknown_theme_setting = "kept by newer app"
+
+[chat_form]
+approval_mode = "auto_approve"
+unknown_chat_form_setting = "kept by newer app"
+
+[chat_form.model]
+provider_id = "provider-1"
+model_id = "gpt-5"
+unknown_model_setting = true
 "#,
         )
         .unwrap();
 
         assert_eq!(
-            config,
-            AiChat2Config {
-                storage: StorageConfig {
-                    data_dir: Some(PathBuf::from("/tmp/ai-chat2")),
-                },
+            config.storage,
+            StorageConfig {
+                data_dir: Some(PathBuf::from("/tmp/ai-chat2")),
             }
         );
+        assert_eq!(config.app_settings.language, AppLanguage::Chinese);
+        assert_eq!(config.app_settings.theme.mode, AppThemeMode::Dark);
+        assert_eq!(
+            config.chat_form.approval_mode,
+            ToolApprovalMode::AutoApprove
+        );
+        assert_eq!(
+            config
+                .chat_form
+                .model
+                .as_ref()
+                .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+            Some(("provider-1", "gpt-5"))
+        );
+    }
+
+    #[test]
+    fn new_toml_config_writes_default_app_settings() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("config.toml");
+
+        let config = AiChat2Config::load_or_create_from_path(&path).expect("create config");
+
+        assert_eq!(config, AiChat2Config::default());
+        let source = std::fs::read_to_string(&path).expect("read config");
+        assert!(source.contains("[app_settings]"));
+        assert!(source.contains(r#"language = "system""#));
+        assert!(source.contains("[app_settings.theme]"));
+        assert!(source.contains(r#"mode = "system""#));
+        assert!(source.contains("[chat_form]"));
+        assert!(source.contains(r#"approval_mode = "request_approval""#));
     }
 
     #[test]
@@ -226,11 +602,12 @@ unknown_storage = "kept by newer app"
         assert_eq!(config, AiChat2Config::default());
         let source = std::fs::read_to_string(&path).expect("read rewritten config");
         assert!(toml::from_str::<AiChat2Config>(&source).is_ok());
+        assert!(source.contains("[app_settings]"));
         assert!(!source.contains("not = [valid"));
     }
 
     #[test]
-    fn app_settings_expose_typed_db_preferences() {
+    fn app_settings_expose_typed_config_preferences() {
         let settings = AiChat2AppSettings::new(AppSettingsPayload {
             language: AppLanguage::Chinese,
             theme: AppThemeSettings {
@@ -250,5 +627,112 @@ unknown_storage = "kept by newer app"
             settings.default_project_id().map(String::as_str),
             Some("project-1")
         );
+    }
+
+    #[test]
+    fn mcp_config_layer_filters_disabled_servers_and_maps_transports() {
+        let config = toml::from_str::<AiChat2Config>(
+            r#"
+[mcp_servers.filesystem]
+enabled = true
+display_name = "Filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+cwd = "/tmp"
+
+[mcp_servers.filesystem.env]
+NODE_ENV = "production"
+
+[mcp_servers.linear]
+enabled = false
+transport = "streamable_http"
+url = "https://example.com/mcp"
+
+[mcp_servers.linear.headers]
+Authorization = "Bearer ${LINEAR_MCP_TOKEN}"
+
+[mcp_servers.docs]
+transport = "streamable_http"
+url = "https://docs.example.com/mcp"
+
+[mcp_servers.docs.headers]
+X-Docs = "enabled"
+"#,
+        )
+        .unwrap();
+
+        let layer = config.mcp_config_layer().unwrap();
+
+        assert_eq!(layer.servers.len(), 2);
+        assert_eq!(layer.servers[0].server_id, "docs");
+        assert_eq!(layer.servers[0].display_name, None);
+        match &layer.servers[0].transport {
+            McpServerTransport::StreamableHttp(http) => {
+                assert_eq!(http.url, "https://docs.example.com/mcp");
+                assert_eq!(
+                    http.headers.get("X-Docs").map(String::as_str),
+                    Some("enabled")
+                );
+            }
+            McpServerTransport::Stdio(_) => panic!("expected streamable HTTP transport"),
+        }
+        assert_eq!(layer.servers[1].server_id, "filesystem");
+        assert_eq!(layer.servers[1].display_name.as_deref(), Some("Filesystem"));
+        assert_eq!(
+            layer.servers[1].env.get("NODE_ENV").map(String::as_str),
+            Some("production")
+        );
+        match &layer.servers[1].transport {
+            McpServerTransport::Stdio(stdio) => {
+                assert_eq!(stdio.command, "npx");
+                assert_eq!(stdio.args.len(), 3);
+            }
+            McpServerTransport::StreamableHttp(_) => panic!("expected stdio transport"),
+        }
+    }
+
+    #[gpui::test]
+    fn noop_app_settings_update_does_not_persist(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("config.toml");
+        let payload = AppSettingsPayload::default();
+        let config = AiChat2Config::with_app_settings_for_test(path.clone(), payload.clone());
+        config.save_for_test().expect("save config");
+        let before = std::fs::read_to_string(&path).expect("read config before");
+
+        let result = cx.update(|cx| {
+            cx.set_global(config);
+            update_app_settings(cx, |_| {}).expect("update settings")
+        });
+
+        let after = std::fs::read_to_string(&path).expect("read config after");
+        assert_eq!(result, payload);
+        assert_eq!(after, before);
+    }
+
+    #[gpui::test]
+    fn noop_chat_form_update_does_not_persist(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("config.toml");
+        let mut config = AiChat2Config {
+            config_path: Some(path.clone()),
+            ..Default::default()
+        };
+        config.chat_form.approval_mode = ToolApprovalMode::FullAccess;
+        config.save_for_test().expect("save config");
+        let before = std::fs::read_to_string(&path).expect("read config before");
+
+        let chat_form = cx.update(|cx| {
+            cx.set_global(config);
+            update_chat_form_config(cx, |config| {
+                config.approval_mode = ToolApprovalMode::FullAccess;
+            })
+            .expect("update chat form")
+        });
+
+        let after = std::fs::read_to_string(&path).expect("read config after");
+        assert_eq!(chat_form.approval_mode, ToolApprovalMode::FullAccess);
+        assert_eq!(after, before);
     }
 }

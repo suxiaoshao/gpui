@@ -15,6 +15,7 @@ use crate::{
     foundation::{self, assets::IconName},
     state,
     state::attachments::ComposerAttachment,
+    state::config::{ChatFormConfig, ChatFormModelConfig},
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode};
@@ -36,6 +37,7 @@ use thinking_effort::{
     computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,
     reasoning_selections, token_budget_bounds,
 };
+use tracing::{Level, event};
 
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
 pub(super) const COMPOSER_BUTTON_ICON_SIZE: f32 = 18.;
@@ -101,22 +103,35 @@ impl ChatForm {
         let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
         composer.update(cx, |composer, cx| composer.focus(window, cx));
         let model_choices = load_model_choices(cx);
-        let selected_model_key = model_choices
-            .as_ref()
-            .ok()
-            .and_then(|choices| choices.first().map(ProviderModelChoice::key));
-        let selected_reasoning_selection =
-            selected_model_choice_in(&model_choices, selected_model_key.as_ref()).and_then(
-                |choice| {
-                    computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
+        let chat_form_config = cx.global::<state::AiChat2Config>().chat_form.clone();
+        let selected_model_key =
+            configured_model_key_in(&model_choices, chat_form_config.model.as_ref()).or_else(
+                || {
+                    model_choices
+                        .as_ref()
+                        .ok()
+                        .and_then(|choices| choices.first().map(ProviderModelChoice::key))
                 },
             );
+        let selected_reasoning_selection = initial_reasoning_selection(
+            &model_choices,
+            selected_model_key.as_ref(),
+            chat_form_config.reasoning_selection.as_ref(),
+        );
         let initial_token_budget =
             initial_token_budget_value(&model_choices, selected_model_key.as_ref());
         let token_budget_input = cx
             .new(|cx| InputState::new(window, cx).default_value(initial_token_budget.to_string()));
         let state = cx.entity().downgrade();
-        let selected_approval_mode = ToolApprovalMode::RequestApproval;
+        let selected_approval_mode = chat_form_config.approval_mode;
+        if model_choices.is_ok() {
+            persist_chat_form_config(
+                selected_model_key.as_ref(),
+                selected_reasoning_selection.as_ref(),
+                selected_approval_mode,
+                cx,
+            );
+        }
         let effort_sections = {
             let i18n = cx.global::<foundation::I18n>();
             effort_sections(
@@ -433,6 +448,7 @@ impl ChatForm {
         cx: &mut Context<Self>,
     ) {
         self.selected_reasoning_selection = Some(selection);
+        self.save_chat_form_config(cx);
         self.sync_token_budget_input(window, cx);
         self.set_effort_picker_open(false, window, cx);
     }
@@ -444,6 +460,7 @@ impl ChatForm {
         cx: &mut Context<Self>,
     ) {
         self.selected_approval_mode = mode;
+        self.save_chat_form_config(cx);
         self.approval_picker.update(cx, |picker, cx| {
             picker.delegate_mut().set_selected_value(Some(mode));
             let selected_ix = picker.delegate().selected_index();
@@ -457,6 +474,7 @@ impl ChatForm {
         self.selected_reasoning_selection = self.selected_model_choice().and_then(|choice| {
             computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
         });
+        self.save_chat_form_config(cx);
         self.sync_token_budget_input(window, cx);
         self.sync_effort_picker(window, cx);
         self.set_model_picker_open(false, window, cx);
@@ -537,6 +555,9 @@ impl ChatForm {
                 computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref())
             });
         }
+        if self.model_choices.is_ok() {
+            self.save_chat_form_config(cx);
+        }
         self.sync_model_picker(window, cx);
         self.sync_token_budget_input(window, cx);
         self.sync_effort_picker(window, cx);
@@ -595,8 +616,18 @@ impl ChatForm {
             mode: TokenBudgetSelectionMode::Custom,
             value: Some(value),
         });
+        self.save_chat_form_config(cx);
         self.sync_effort_picker(window, cx);
         cx.notify();
+    }
+
+    fn save_chat_form_config(&self, cx: &mut Context<Self>) {
+        persist_chat_form_config(
+            self.selected_model_key.as_ref(),
+            self.selected_reasoning_selection.as_ref(),
+            self.selected_approval_mode,
+            cx,
+        );
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
@@ -851,6 +882,54 @@ fn selected_model_choice_in<'a>(
         .find(|choice| &choice.key() == key)
 }
 
+fn configured_model_key_in(
+    choices: &Result<Vec<ProviderModelChoice>, SharedString>,
+    model: Option<&ChatFormModelConfig>,
+) -> Option<ProviderModelKey> {
+    let model = model?;
+    let key = ProviderModelKey {
+        provider_id: model.provider_id.clone(),
+        model_id: model.model_id.clone(),
+    };
+    selected_model_choice_in(choices, Some(&key)).map(|_| key)
+}
+
+fn initial_reasoning_selection(
+    choices: &Result<Vec<ProviderModelChoice>, SharedString>,
+    key: Option<&ProviderModelKey>,
+    configured: Option<&ReasoningSelectionSnapshot>,
+) -> Option<ReasoningSelectionSnapshot> {
+    let choice = selected_model_choice_in(choices, key)?;
+    configured
+        .filter(|selection| {
+            reasoning_selection_is_valid(choice.capabilities.reasoning.as_ref(), selection)
+        })
+        .cloned()
+        .or_else(|| computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref()))
+}
+
+fn persist_chat_form_config(
+    model_key: Option<&ProviderModelKey>,
+    reasoning_selection: Option<&ReasoningSelectionSnapshot>,
+    approval_mode: ToolApprovalMode,
+    cx: &mut App,
+) {
+    let model = model_key.map(|key| ChatFormModelConfig {
+        provider_id: key.provider_id.clone(),
+        model_id: key.model_id.clone(),
+    });
+    let reasoning_selection = reasoning_selection.cloned();
+    if let Err(err) =
+        state::config::update_chat_form_config(cx, move |config: &mut ChatFormConfig| {
+            config.model = model;
+            config.reasoning_selection = reasoning_selection;
+            config.approval_mode = approval_mode;
+        })
+    {
+        event!(Level::ERROR, error = ?err, "save chat form config failed");
+    }
+}
+
 fn initial_token_budget_value(
     choices: &Result<Vec<ProviderModelChoice>, SharedString>,
     key: Option<&ProviderModelKey>,
@@ -882,6 +961,7 @@ mod tests {
         database::{self, FreshStoreGlobal},
         foundation::I18n,
         state,
+        state::config::ChatFormModelConfig,
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
     use ai_chat_core::{
@@ -895,6 +975,7 @@ mod tests {
     use gpui::{
         App, AppContext as _, SharedString, TestAppContext, VisualTestContext, WindowHandle,
     };
+    use std::path::PathBuf;
     use tempfile::{TempDir, tempdir};
 
     #[test]
@@ -1031,6 +1112,93 @@ mod tests {
     }
 
     #[gpui::test]
+    fn chat_form_initializes_from_config_preferences(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let provider_id = cx.update(|cx| provider_id_for_kind(cx, "openai"));
+        cx.update(|cx| {
+            state::config::update_chat_form_config(cx, |config| {
+                config.model = Some(ChatFormModelConfig {
+                    provider_id,
+                    model_id: "gpt-5-mini".to_string(),
+                });
+                config.approval_mode = ToolApprovalMode::FullAccess;
+            })
+            .unwrap();
+        });
+
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
+        let submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("configured model can be submitted");
+        assert_eq!(submit.approval_mode, ToolApprovalMode::FullAccess);
+    }
+
+    #[gpui::test]
+    fn selecting_model_and_approval_mode_persists_config(cx: &mut TestAppContext) {
+        let dir = init_chat_form_test(cx);
+        let config_path = test_config_path(&dir);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+        let provider_id = cx.update(|_, cx| provider_id_for_kind(cx, "openai"));
+
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.select_model(
+                    ProviderModelKey {
+                        provider_id: provider_id.clone(),
+                        model_id: "gpt-5-mini".to_string(),
+                    },
+                    window,
+                    cx,
+                );
+                form.select_approval_mode(ToolApprovalMode::FullAccess, window, cx);
+            });
+        });
+
+        let config =
+            state::AiChat2Config::load_from_path_for_test(&config_path).expect("reload config");
+        assert_eq!(
+            config
+                .chat_form
+                .model
+                .as_ref()
+                .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+            Some((provider_id.as_str(), "gpt-5-mini"))
+        );
+        assert_eq!(config.chat_form.approval_mode, ToolApprovalMode::FullAccess);
+    }
+
+    #[gpui::test]
+    fn custom_token_budget_persists_config(cx: &mut TestAppContext) {
+        let dir = init_chat_form_reasoning_test(cx);
+        let config_path = test_config_path(&dir);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                let input = form.token_budget_input.clone();
+                form.apply_custom_token_budget(2048, &input, window, cx);
+            });
+        });
+
+        let config =
+            state::AiChat2Config::load_from_path_for_test(&config_path).expect("reload config");
+        assert_eq!(
+            config.chat_form.reasoning_selection,
+            Some(ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: Some(2048),
+            })
+        );
+    }
+
+    #[gpui::test]
     fn running_agent_blocks_submit_and_primary_button_stops(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = open_chat_form_window(cx);
@@ -1074,7 +1242,9 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            state::providers::init(cx);
+            cx.set_global(
+                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap(),
+            );
             crate::foundation::i18n::init(cx);
 
             let repository = database::repository(cx);
@@ -1088,6 +1258,7 @@ mod tests {
                     ],
                 )
                 .unwrap();
+            state::providers::init(cx);
         });
         dir
     }
@@ -1097,7 +1268,9 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            state::providers::init(cx);
+            cx.set_global(
+                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap(),
+            );
             crate::foundation::i18n::init(cx);
 
             let repository = database::repository(cx);
@@ -1112,6 +1285,7 @@ mod tests {
                     )],
                 )
                 .unwrap();
+            state::providers::init(cx);
         });
         dir
     }
@@ -1150,6 +1324,10 @@ mod tests {
             .find(|provider| provider.kind == kind)
             .expect("provider exists")
             .id
+    }
+
+    fn test_config_path(dir: &TempDir) -> PathBuf {
+        dir.path().join("config.toml")
     }
 
     fn provider_for_test() -> NewProvider {

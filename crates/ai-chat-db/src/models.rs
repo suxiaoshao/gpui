@@ -545,25 +545,6 @@ pub(crate) struct SqlNewProviderModelRow {
     pub(crate) updated_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = app_settings)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct SqlAppSettingsRow {
-    pub(crate) id: String,
-    pub(crate) settings_json: Value,
-    pub(crate) created_at: OffsetDateTime,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = app_settings)]
-pub(crate) struct SqlNewAppSettingsRow {
-    pub(crate) id: String,
-    pub(crate) settings_json: Value,
-    pub(crate) created_at: OffsetDateTime,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
 impl TryFrom<SqlSchemaMetadataRow> for SchemaMetadataRecord {
     type Error = DbError;
 
@@ -867,19 +848,6 @@ impl TryFrom<SqlProviderModelRow> for ProviderModelRecord {
             capabilities: from_json(row.capabilities_json)?,
             metadata: from_json(row.metadata_json)?,
             fetched_at: row.fetched_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
-    }
-}
-
-impl TryFrom<SqlAppSettingsRow> for AppSettingsRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlAppSettingsRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            settings: from_json(row.settings_json)?,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

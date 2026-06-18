@@ -435,11 +435,3 @@ pub struct NewProviderModel {
     pub capabilities: ModelCapabilitiesSnapshot,
     pub metadata: ProviderModelMetadata,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AppSettingsRecord {
-    pub id: String,
-    pub settings: AppSettingsPayload,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}

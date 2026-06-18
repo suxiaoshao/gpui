@@ -236,18 +236,8 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    app_settings (id) {
-        id -> Text,
-        settings_json -> Json,
-        created_at -> TimestamptzSqlite,
-        updated_at -> TimestamptzSqlite,
-    }
-}
-
 diesel::allow_tables_to_appear_in_same_query!(
     agent_runs,
-    app_settings,
     approval_decisions,
     attachments,
     conversation_items,

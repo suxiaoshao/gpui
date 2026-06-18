@@ -2,6 +2,8 @@
 pub(crate) enum AiChat2Error {
     #[error("could not resolve ai-chat2 config directory")]
     ConfigDirUnavailable,
+    #[error("config error: {0}")]
+    Config(String),
     #[error("log file not found")]
     LogFileNotFound,
     #[error("file system error: {0}")]

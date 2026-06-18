@@ -233,13 +233,6 @@ CREATE TABLE shortcuts (
     updated_at DateTime NOT NULL
 );
 
-CREATE TABLE app_settings (
-    id TEXT PRIMARY KEY DEFAULT 'default',
-    settings_json JSON NOT NULL DEFAULT '{}',
-    created_at DateTime NOT NULL,
-    updated_at DateTime NOT NULL
-);
-
 CREATE INDEX idx_conversations_project_id ON conversations(project_id);
 CREATE INDEX idx_conversation_items_conversation_seq ON conversation_items(conversation_id, seq);
 CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);

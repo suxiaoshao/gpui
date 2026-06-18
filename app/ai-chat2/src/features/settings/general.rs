@@ -362,7 +362,7 @@ mod tests {
     use crate::{
         database::FreshStoreGlobal,
         foundation,
-        state::{self, AiChat2AppSettings},
+        state::{self, AiChat2AppSettings, AiChat2Config},
     };
     use ai_chat_core::{AppLanguage, AppSettingsPayload};
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
@@ -384,7 +384,7 @@ mod tests {
 
     #[gpui::test]
     fn save_temporary_hotkey_updates_config_and_runtime(cx: &mut TestAppContext) {
-        let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -408,11 +408,15 @@ mod tests {
                 Some("cmd+shift+k")
             );
         });
+        assert_eq!(
+            persisted_settings(&dir).temporary_hotkey.as_deref(),
+            Some("cmd+shift+k")
+        );
     }
 
     #[gpui::test]
     fn invalid_temporary_hotkey_does_not_change_settings_or_runtime(cx: &mut TestAppContext) {
-        let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -435,20 +439,16 @@ mod tests {
                     .as_deref(),
                 Some("cmd+shift+j")
             );
-            let persisted = crate::database::repository(cx)
-                .get_app_settings()
-                .expect("load app settings")
-                .expect("settings record");
-            assert_eq!(
-                persisted.settings.temporary_hotkey.as_deref(),
-                Some("cmd+shift+j")
-            );
         });
+        assert_eq!(
+            persisted_settings(&dir).temporary_hotkey.as_deref(),
+            Some("cmd+shift+j")
+        );
     }
 
     #[gpui::test]
     fn invalid_temporary_hotkey_confirm_keeps_dialog_open(cx: &mut TestAppContext) {
-        let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -480,15 +480,11 @@ mod tests {
                     .as_deref(),
                 Some("cmd+shift+j")
             );
-            let persisted = crate::database::repository(cx)
-                .get_app_settings()
-                .expect("load app settings")
-                .expect("settings record");
-            assert_eq!(
-                persisted.settings.temporary_hotkey.as_deref(),
-                Some("cmd+shift+")
-            );
         });
+        assert_eq!(
+            persisted_settings(&dir).temporary_hotkey.as_deref(),
+            Some("cmd+shift+")
+        );
     }
 
     #[gpui::test]
@@ -511,7 +507,7 @@ mod tests {
 
     #[gpui::test]
     fn save_temporary_hotkey_can_clear_config_and_runtime(cx: &mut TestAppContext) {
-        let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -526,10 +522,12 @@ mod tests {
                 None
             );
         });
+        assert_eq!(persisted_settings(&dir).temporary_hotkey, None);
     }
 
     fn init_hotkey_settings_test(cx: &mut TestAppContext, hotkey: Option<&str>) -> TempDir {
         let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
@@ -537,9 +535,9 @@ mod tests {
                 temporary_hotkey: hotkey.map(str::to_string),
                 ..Default::default()
             };
-            crate::database::repository(cx)
-                .set_app_settings(payload.clone())
-                .unwrap();
+            let config = AiChat2Config::with_app_settings_for_test(config_path, payload.clone());
+            config.save_for_test().expect("save test config");
+            cx.set_global(config);
             cx.set_global(AiChat2AppSettings::new(payload));
             foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
@@ -549,6 +547,12 @@ mod tests {
             }
         });
         dir
+    }
+
+    fn persisted_settings(dir: &TempDir) -> AppSettingsPayload {
+        AiChat2Config::load_from_path_for_test(&dir.path().join("config.toml"))
+            .expect("load persisted config")
+            .app_settings_payload()
     }
 
     fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {

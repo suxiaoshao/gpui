@@ -4,9 +4,9 @@ use crate::{
     models::*,
     records::*,
     schema::{
-        agent_runs, app_settings, approval_decisions, attachments, conversation_items,
-        conversations, projects, prompts, provider_models, provider_steps, providers, shortcuts,
-        tool_invocations, usage_events,
+        agent_runs, approval_decisions, attachments, conversation_items, conversations, projects,
+        prompts, provider_models, provider_steps, providers, shortcuts, tool_invocations,
+        usage_events,
     },
 };
 use ai_chat_core::*;
@@ -1292,37 +1292,6 @@ impl FreshRepository {
             .collect()
     }
 
-    pub fn set_app_settings(&self, settings: AppSettingsPayload) -> Result<AppSettingsRecord> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let row = SqlNewAppSettingsRow {
-                id: "default".to_string(),
-                settings_json: to_json(&settings)?,
-                created_at: now,
-                updated_at: now,
-            };
-            diesel::insert_into(app_settings::table)
-                .values(&row)
-                .on_conflict(app_settings::id)
-                .do_update()
-                .set((
-                    app_settings::settings_json.eq(excluded(app_settings::settings_json)),
-                    app_settings::updated_at.eq(excluded(app_settings::updated_at)),
-                ))
-                .returning(SqlAppSettingsRow::as_returning())
-                .get_result::<SqlAppSettingsRow>(conn)?
-                .try_into()
-        })
-    }
-
-    pub fn get_app_settings(&self) -> Result<Option<AppSettingsRecord>> {
-        let mut conn = self.conn()?;
-        app_settings_row(&mut conn)?
-            .map(TryInto::try_into)
-            .transpose()
-    }
-
     fn conn(&self) -> Result<PooledConnection<ConnectionManager<SqliteConnection>>> {
         let mut conn = self.pool.get()?;
         conn.batch_execute("PRAGMA foreign_keys = ON;")?;
@@ -1436,14 +1405,6 @@ fn approval_decision_row(
     Ok(approval_decisions::table
         .find(id)
         .select(SqlApprovalDecisionRow::as_select())
-        .first(conn)
-        .optional()?)
-}
-
-fn app_settings_row(conn: &mut SqliteConnection) -> Result<Option<SqlAppSettingsRow>> {
-    Ok(app_settings::table
-        .find("default")
-        .select(SqlAppSettingsRow::as_select())
         .first(conn)
         .optional()?)
 }
