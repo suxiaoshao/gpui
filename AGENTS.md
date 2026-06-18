@@ -4,18 +4,28 @@
 
 ## 1. 仓库概览
 
-- 本仓库是基于 `GPUI` 的 Rust workspace，包含多个独立桌面应用和少量共享 crate。
+- 本仓库是基于 `GPUI` 的 Rust workspace，包含多个独立桌面应用和共享 crate。
 - workspace 成员：
   - `app/ai-chat`
+  - `app/ai-chat2`
   - `app/feiwen`
   - `app/http-client`
   - `app/novel-download`
+  - `crates/ai-chat-agent`
+  - `crates/ai-chat-core`
+  - `crates/ai-chat-db`
+  - `crates/app-assets`
+  - `crates/app-assets-macros`
+  - `crates/app-theme`
+  - `crates/gpui-store`
+  - `crates/gpui-tokio`
+  - `crates/platform-ext`
   - `crates/window-ext`
   - `crates/xtask`
 - 技术基线：
   - Rust Edition: `2024`
   - 推荐 Rust: `1.92+`
-  - 关键依赖：`gpui = 0.2.2`、`gpui-component = 0.5.1`、`gpui-component-assets = 0.5.1`
+  - 关键依赖通过 workspace 统一声明；当前 `gpui` / `gpui_platform` 来自 `zed-industries/zed` git，`gpui-component` / `gpui-component-assets` 来自 `longbridge/gpui-component` git。
 
 ## 2. 代码修改原则
 
@@ -36,10 +46,13 @@
 - GPUI app 结构、本仓库模块边界、资源位置和验证默认规则优先参考 repo-local skill：`gpui-app-development`。
 - 编写 UI 时默认优先使用 `gpui-component` 现成组件；组件选择、文档/story/API 检查和 Web/shadcn 风格转译规则参考：`gpui-component-usage`。
 - 涉及 UI 图标、Lucide 图标声明、运行时资源或打包 app icon 时参考：`gpui-app-icon-usage`。
+- 涉及用户可见文案、Fluent `.ftl`、语言设置或 macOS bundle 本地化时参考：`gpui-i18n`。
+- 涉及 `crates/gpui-store` 或明确要把 app 状态接入 `gpui-store` 时参考：`gpui-store`；不要在无关任务中顺手迁移 app 状态。
 - 具体 GPUI API 按需使用对应 skill：`gpui-action`、`gpui-async`、`gpui-context`、`gpui-entity`、`gpui-event`、`gpui-focus-handle`、`gpui-global`、`gpui-layout-and-style`、`gpui-test`。
 - 不要重复实现 `gpui-component` 已提供的表格、按钮、输入、选择器、对话框、滚动条等通用能力；只补齐组件库没有覆盖且当前 app 确实需要的局部缺口。
 - 涉及 Web / React / CSS / Tailwind / shadcn/ui 风格参考时，只吸收其设计意图与交互模式；最终必须以仓库现有的 GPUI / `gpui-component` 模式实现，不能照搬 DOM、CSS 或 React 组件习惯。
 - 常规产品界面避免无意义卡片堆砌、过度装饰渐变和多重强调色；优先用版式、对齐、间距、字号、对比度和少量有目的的动效建立层级。
+- runtime 资源、本地化资源和打包资源不要混放：运行时资源走 app-local assets / `with_assets(...)`，文案走 `locales/{en-US,zh-CN}/main.ftl`，macOS bundle 文案走 `locales/macos/*/InfoPlist.strings`，app icon 走 `build-assets/icon/app-icon.png`。
 
 ## 4. 提权与 GitHub 规则
 
@@ -75,4 +88,5 @@
 - 应用入口通常位于 `app/{name}/src/main.rs`。
 - 公共能力优先放在 `crates/window-ext` 等共享 crate，避免在多个 app 中复制实现。
 - `ai-chat` 使用 Diesel + SQLite；涉及数据层变更时要同步检查 migration、schema 和 service 映射。
+- `ai-chat-agent` 的 provider 运行时优先以 `rig-core` 和当前 adapter 代码为准；不要为 OpenAI/Ollama 等 provider 原生 API 维护 repo-local skill，除非当前实现明确绕过 Rig 且需要专门的本地流程。
 - `ai-chat` 运行时资源在 `app/ai-chat/assets/`，打包资源在 `app/ai-chat/build-assets/`；不要混用。
