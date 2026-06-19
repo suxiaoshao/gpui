@@ -69,8 +69,8 @@ provider/model、reasoning selection 和 approval mode 默认值写入 `[chat_fo
 config global，`PromptCatalogStore` 已改为 `SharedStore<PromptCatalogState, PromptCatalogSource>`
 的 DB projection。后续不做 wholesale migration，`state.toml`、providers、projects、workspace
 sidebar 和 conversation runtime/timeline 仍逐项评估。
-2026-06-20 已把 PR #164 后的 24 个提交作为阶段 PR #165 提交 review，head 为 `d0c2217`
-（`Refine gpui-store backend API`）。提交前补充验证为 `cargo fmt --check`、
+2026-06-20 已把 PR #164 后的 24 个功能提交作为阶段 PR #165 提交 review，创建时功能 head 为
+`d0c2217`（`Refine gpui-store backend API`）；PR 创建后追加本文档状态同步提交。提交前补充验证为 `cargo fmt --check`、
 `git diff --check origin/codex/issue-137-llm-abstractions...HEAD`、
 `cargo check -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store`、
 `cargo test -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store` 和
