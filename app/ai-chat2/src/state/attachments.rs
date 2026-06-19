@@ -15,7 +15,7 @@ use gpui::{App, ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use crate::{
     database,
     errors::{AiChat2Error, AiChat2Result},
-    state::config::AiChat2Config,
+    state::config,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,19 +444,13 @@ fn clipboard_image_format(format: ImageFormat) -> Option<(&'static str, &'static
 }
 
 fn attachment_store_dir(conversation_id: &ConversationId, cx: &App) -> AiChat2Result<PathBuf> {
-    Ok(cx
-        .global::<AiChat2Config>()
-        .data_dir()?
+    Ok(config::data_dir(cx)?
         .join("attachments")
         .join(conversation_id))
 }
 
 fn pending_attachment_dir(cx: &App) -> AiChat2Result<PathBuf> {
-    Ok(cx
-        .global::<AiChat2Config>()
-        .data_dir()?
-        .join("attachments")
-        .join("pending"))
+    Ok(config::data_dir(cx)?.join("attachments").join("pending"))
 }
 
 fn stored_attachment_path(

@@ -725,7 +725,7 @@ fn project_sections(
 }
 
 fn default_project_id(cx: &App) -> Option<ProjectId> {
-    cx.global::<state::AiChat2AppSettings>()
+    state::config::app_settings(cx)
         .default_project_id()
         .cloned()
 }

@@ -1,6 +1,6 @@
 ---
 name: gpui-store
-description: Use when implementing, reviewing, debugging, or integrating the gpui-store crate. Covers LocalStore vs SharedStore ownership, StoreSelection and StoreBinding, StoreSource external synchronization, and GPUI notification semantics.
+description: Use when implementing, reviewing, debugging, or integrating the gpui-store crate. Covers LocalStore vs SharedStore ownership, StoreSelection and StoreBinding, StoreBackend synchronization and commit semantics, and GPUI notification behavior.
 ---
 
 # GPUI Store
@@ -22,58 +22,65 @@ Before integrating `gpui-store` into an app, also read the current app state flo
 ## Core Model
 
 - `StoreState` is a marker trait. Domain state stays a normal Rust type.
-- Users update state directly with `set`, `update`, `update_if`, or `StoreBinding`.
-- The store owns equality checks, revision bumps, `cx.notify()`, selector refresh, and write-back coordination.
+- Memory-only users update state directly with `set`, `update`, `update_if`, or memory `StoreBinding`.
+- Committed backend users update state through `try_set`, `try_update`, `try_update_if`,
+  `try_update_field`, or committed `StoreBinding`.
+- The store owns equality checks, revision bumps, `cx.notify()`, selector refresh, and commit coordination.
 - `StoreSelection<T>` is a read-only subscribed snapshot.
-- `StoreBinding<T>` is a writable subscribed snapshot for lens-like fields.
-- `StoreSource<S>` is the external synchronization extension point. Users implement it for files, databases, S3, HTTP, keychain, repository projections, or app-specific backends.
-- Source type is orthogonal to ownership: both `LocalStore` and `SharedStore` can be memory-only or source-backed.
+- `StoreBinding<T, Error = Infallible>` is a writable subscribed snapshot for lens-like fields.
+- `StoreBackend<S>` is the external synchronization extension point. Users implement it for files, databases, S3, HTTP, keychain, repository projections, or app-specific backends.
+- `StoreCommitBackend<S>` is the optional committed write capability. Only implement it when generic local drafts can be safely committed through the backend.
+- Backend type is orthogonal to ownership: both `LocalStore` and `SharedStore` can be memory-only or backend-backed.
 
 ## Ownership Choice
 
-Use `LocalStore<S, Source>` when:
+Use `LocalStore<S, Backend>` when:
 
 - One component owns the state.
 - Other components do not need to subscribe to it directly.
 - The owner's `cx.notify()` is the correct render invalidation boundary.
-- Source lifecycle should be tied to the owner component.
+- Backend lifecycle should be tied to the owner component.
 
-Use `SharedStore<S, Source>` when:
+Use `SharedStore<S, Backend>` when:
 
 - Multiple components need to read or write the same state.
 - The store needs its own GPUI entity lifetime.
 - The store may be installed as an app global.
-- Source lifecycle should outlive any single consumer component.
+- Backend lifecycle should outlive any single consumer component.
 
-Do not create a `SharedStore` only because state is persisted. Persistence is a `StoreSource` concern, not an ownership concern.
+Do not create a `SharedStore` only because state is persisted. Persistence is a `StoreBackend` / `StoreCommitBackend` concern, not an ownership concern.
 
 ## Selection And Binding
 
 - Use `StoreSelection<T>` for derived values with no meaningful inverse write: filtered rows, counts, booleans, labels, and computed view models.
 - Use `StoreBinding<T>` for writable fields where the setter updates the same value that the getter observes.
-- `StoreBinding::set` writes a requested value into the backing store. The final truth is the getter result after the setter runs.
+- Memory `StoreBinding::set` writes a requested value into the backing store. Committed bindings use `try_set` / `try_update` and must handle backend errors.
 - If a setter normalizes, clamps, or maps the requested value, the binding is valid as long as the getter-observable value changes when the update should count.
-- If an update changes unrelated state while the binding getter returns the same value, use store-level `update_if` instead of `StoreBinding`.
+- If an update changes unrelated state while the binding getter returns the same value, use store-level `update_if` / `try_update_if` instead of `StoreBinding`.
 - `StoreSelection<T>` and `StoreBinding<T>` are owner-bound handles that keep subscriptions. They should feel like read smart pointers, but they should not expose mutable references.
 
-## StoreSource Rules
+## StoreBackend Rules
 
-- Implement `StoreSource<S>` for backend synchronization. Do not add built-in file, database, S3, or HTTP store kinds unless there is a reusable adapter with clear value.
+- Implement `StoreBackend<S>` for backend synchronization. Do not add built-in file, database, S3, or HTTP store kinds unless there is a reusable adapter with clear value.
 - `load` hydrates initial state.
 - `subscribe` registers external change notifications when the backend can push updates.
 - `load_after_event` converts an external event into a snapshot.
 - `reconcile` mutates store state from a snapshot and returns whether it really changed.
-- `write_snapshot` persists local changed updates.
-- `StoreSourcePolicy` describes synchronization semantics, not backend type.
+- Implement `StoreCommitBackend<S>` only when local draft updates should be committed generically.
+- Committed writes must clone a draft, commit it, then update the store after success. A commit error must leave the store unchanged and must not notify.
+- Projection backends should usually implement only `StoreBackend<S>` and refresh with `refresh_from_backend` or `sync_snapshot` after domain repository commands.
+- `StoreBackendBuilder` is a convenience adapter. Prefer `reconcile_replace` and
+  `reconcile_field` before writing hand-rolled equality/replacement closures.
 
-Current `StoreSourceFuture<T, Error>` is a synchronous `Result<T, Error>` alias. Do not assume async source I/O without first updating the crate design and tests.
+Current `StoreBackendFuture<T, Error>` is a synchronous `Result<T, Error>` alias. Do not assume async backend I/O without first updating the crate design and tests.
 
 ## GPUI Semantics
 
 - Only call `cx.notify()` when the store or selected snapshot really changed.
 - Keep store mutations inside GPUI contexts.
 - Avoid render-time reads from unrelated entities. Use `StoreSelection` snapshots for subscribed render data.
-- Keep subscriptions and source handles owned by the store handle or owner component so they are dropped with the correct lifecycle.
+- Use `observe_select` / `observe_select_in` for selected side effects instead of observing whole store entities when only one field matters.
+- Keep subscriptions and backend handles owned by the store handle or owner component so they are dropped with the correct lifecycle.
 
 ## Validation
 

@@ -106,6 +106,7 @@ impl TemporaryWindow {
         );
         let new_conversation = cx.new(|cx| TemporaryNewConversationPane::new(window, cx));
         let runtime = state::conversation_runtime::runtime(cx);
+        let config_store = state::config::store(cx);
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let new_conversation_subscription = cx.subscribe_in(
@@ -151,19 +152,29 @@ impl TemporaryWindow {
                         cx.refresh_windows();
                     },
                 ),
-                cx.observe_global_in::<state::AiChat2AppSettings>(window, |this, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
-                    state::theme::apply_current_theme(window, cx);
-                    this.search_input.update(cx, |input, cx| {
-                        input.set_placeholder(
-                            cx.global::<I18n>().t("temporary-search-placeholder"),
-                            window,
-                            cx,
-                        );
-                    });
-                    cx.refresh_windows();
-                }),
+                config_store.observe_select_in(
+                    cx,
+                    window,
+                    |config| {
+                        (
+                            config.app_settings.language,
+                            config.app_settings.theme.clone(),
+                        )
+                    },
+                    |this, _settings, window, cx| {
+                        foundation::init_i18n(cx);
+                        menus::sync_app_menus(cx);
+                        state::theme::apply_current_theme(window, cx);
+                        this.search_input.update(cx, |input, cx| {
+                            input.set_placeholder(
+                                cx.global::<I18n>().t("temporary-search-placeholder"),
+                                window,
+                                cx,
+                            );
+                        });
+                        cx.refresh_windows();
+                    },
+                ),
             ],
         }
     }

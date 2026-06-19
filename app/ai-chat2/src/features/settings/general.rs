@@ -2,7 +2,7 @@ use crate::{
     app::{self, menus},
     components::hotkey_input::{HotkeyInput, format_hotkey_label, string_to_keystroke},
     foundation::{self, I18n, assets::IconName},
-    state::{self, AiChat2AppSettings, AiChat2Config},
+    state::{self, AiChat2Config},
 };
 use ai_chat_core::AppLanguage;
 use gpui::*;
@@ -83,8 +83,7 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> AnyElement {
 }
 
 fn temporary_hotkey_control(_window: &mut Window, cx: &mut App) -> AnyElement {
-    let current_hotkey = cx
-        .global::<AiChat2AppSettings>()
+    let current_hotkey = state::config::app_settings(cx)
         .temporary_hotkey()
         .map(str::to_string);
     let has_hotkey = current_hotkey.is_some();
@@ -129,8 +128,7 @@ fn open_temporary_hotkey_dialog(window: &mut Window, cx: &mut App) -> Entity<Hot
             i18n.t("provider-action-save"),
         )
     };
-    let current_hotkey = cx
-        .global::<AiChat2AppSettings>()
+    let current_hotkey = state::config::app_settings(cx)
         .temporary_hotkey()
         .and_then(string_to_keystroke);
     let hotkey_input = cx.new(|cx| {
@@ -185,8 +183,7 @@ fn confirm_temporary_hotkey_dialog(
 }
 
 fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &mut App) -> bool {
-    let previous_hotkey = cx
-        .global::<AiChat2AppSettings>()
+    let previous_hotkey = state::config::app_settings(cx)
         .temporary_hotkey()
         .map(str::to_string);
 
@@ -223,7 +220,7 @@ fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &
 }
 
 fn language_dropdown(cx: &mut App) -> AnyElement {
-    let current_language = cx.global::<AiChat2AppSettings>().language();
+    let current_language = state::config::app_settings(cx).language();
     let language_options = language_options()
         .into_iter()
         .map(|language| {
@@ -280,8 +277,7 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
 }
 
 fn app_http_proxy_input(window: &mut Window, cx: &mut App) -> AnyElement {
-    let initial_value = cx
-        .global::<AiChat2AppSettings>()
+    let initial_value = state::config::app_settings(cx)
         .http_proxy()
         .map(str::to_string)
         .unwrap_or_default();
@@ -362,7 +358,7 @@ mod tests {
     use crate::{
         database::FreshStoreGlobal,
         foundation,
-        state::{self, AiChat2AppSettings, AiChat2Config},
+        state::{self, AiChat2Config},
     };
     use ai_chat_core::{AppLanguage, AppSettingsPayload};
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
@@ -398,7 +394,7 @@ mod tests {
 
         cx.update(|_, cx| {
             assert_eq!(
-                cx.global::<AiChat2AppSettings>().temporary_hotkey(),
+                state::config::app_settings(cx).temporary_hotkey(),
                 Some("cmd+shift+k")
             );
             assert_eq!(
@@ -430,7 +426,7 @@ mod tests {
 
         cx.update(|_, cx| {
             assert_eq!(
-                cx.global::<AiChat2AppSettings>().temporary_hotkey(),
+                state::config::app_settings(cx).temporary_hotkey(),
                 Some("cmd+shift+j")
             );
             assert_eq!(
@@ -471,7 +467,7 @@ mod tests {
 
         cx.update(|_, cx| {
             assert_eq!(
-                cx.global::<AiChat2AppSettings>().temporary_hotkey(),
+                state::config::app_settings(cx).temporary_hotkey(),
                 Some("cmd+shift+")
             );
             assert_eq!(
@@ -493,7 +489,7 @@ mod tests {
 
         cx.update(|cx| {
             assert_eq!(
-                cx.global::<AiChat2AppSettings>().temporary_hotkey(),
+                state::config::app_settings(cx).temporary_hotkey(),
                 Some("cmd+shift+j")
             );
             assert_eq!(
@@ -516,7 +512,7 @@ mod tests {
         });
 
         cx.update(|_, cx| {
-            assert_eq!(cx.global::<AiChat2AppSettings>().temporary_hotkey(), None);
+            assert_eq!(state::config::app_settings(cx).temporary_hotkey(), None);
             assert_eq!(
                 state::GlobalHotkeyState::diagnostics_snapshot(cx).temporary_hotkey,
                 None
@@ -537,8 +533,7 @@ mod tests {
             };
             let config = AiChat2Config::with_app_settings_for_test(config_path, payload.clone());
             config.save_for_test().expect("save test config");
-            cx.set_global(config);
-            cx.set_global(AiChat2AppSettings::new(payload));
+            state::config::install_for_test(cx, config).expect("install config store");
             foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
             if let Some(hotkey) = hotkey {

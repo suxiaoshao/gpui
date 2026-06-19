@@ -82,6 +82,7 @@ impl SettingsView {
         let shortcuts_settings = cx.new(|cx| ShortcutsSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
+        let config_store = state::config::store(cx);
         let _subscriptions = vec![
             cx.subscribe_in(
                 &settings_search_input,
@@ -111,13 +112,23 @@ impl SettingsView {
                     cx.refresh_windows();
                 },
             ),
-            cx.observe_global_in::<state::AiChat2AppSettings>(window, |this, window, cx| {
-                foundation::init_i18n(cx);
-                menus::sync_app_menus(cx);
-                state::theme::apply_current_theme(window, cx);
-                this.reload_app_menu_bar(cx);
-                cx.refresh_windows();
-            }),
+            config_store.observe_select_in(
+                cx,
+                window,
+                |config| {
+                    (
+                        config.app_settings.language,
+                        config.app_settings.theme.clone(),
+                    )
+                },
+                |this, _settings, window, cx| {
+                    foundation::init_i18n(cx);
+                    menus::sync_app_menus(cx);
+                    state::theme::apply_current_theme(window, cx);
+                    this.reload_app_menu_bar(cx);
+                    cx.refresh_windows();
+                },
+            ),
         ];
         Self {
             focus_handle,

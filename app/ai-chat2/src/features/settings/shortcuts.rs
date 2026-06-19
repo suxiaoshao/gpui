@@ -68,8 +68,14 @@ impl ShortcutsSettingsPage {
         let shortcut_subscription =
             cx.subscribe_in(&shortcut_catalog, window, Self::on_shortcut_catalog_event);
         let prompt_catalog = state::prompts::catalog(cx);
-        let prompt_subscription =
-            cx.subscribe_in(&prompt_catalog, window, Self::on_prompt_catalog_event);
+        let prompt_subscription = prompt_catalog.observe_select_in(
+            cx,
+            window,
+            |state| state.prompts().to_vec(),
+            |page, _catalog, window, cx| {
+                page.reload_snapshot(window, cx);
+            },
+        );
         let provider_catalog = state::providers::catalog(cx);
         let provider_subscription =
             cx.subscribe_in(&provider_catalog, window, Self::on_provider_catalog_event);
@@ -112,16 +118,6 @@ impl ShortcutsSettingsPage {
         &mut self,
         _: &Entity<state::shortcuts::ShortcutCatalogStore>,
         _: &state::shortcuts::ShortcutCatalogEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reload_snapshot(window, cx);
-    }
-
-    fn on_prompt_catalog_event(
-        &mut self,
-        _: &Entity<state::prompts::PromptCatalogStore>,
-        _: &state::prompts::PromptCatalogEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

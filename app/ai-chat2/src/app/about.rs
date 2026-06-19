@@ -134,6 +134,7 @@ impl AboutWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let config_store = state::config::store(cx);
 
         Self {
             focus_handle,
@@ -151,13 +152,23 @@ impl AboutWindow {
                         cx.refresh_windows();
                     },
                 ),
-                cx.observe_global_in::<state::AiChat2AppSettings>(window, |this, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
-                    state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
-                    cx.refresh_windows();
-                }),
+                config_store.observe_select_in(
+                    cx,
+                    window,
+                    |config| {
+                        (
+                            config.app_settings.language,
+                            config.app_settings.theme.clone(),
+                        )
+                    },
+                    |this, _settings, window, cx| {
+                        foundation::init_i18n(cx);
+                        menus::sync_app_menus(cx);
+                        state::theme::apply_current_theme(window, cx);
+                        this.reload_app_menu_bar(cx);
+                        cx.refresh_windows();
+                    },
+                ),
             ],
         }
     }

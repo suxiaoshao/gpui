@@ -4,7 +4,7 @@ use ai_chat_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use ai_chat_db::{NewProject, ProjectRecord};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
 
-use crate::{database, errors::AiChat2Result, foundation::I18n, state::AiChat2Config};
+use crate::{database, errors::AiChat2Result, foundation::I18n, state::config};
 
 const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
 const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
@@ -212,11 +212,7 @@ pub(crate) fn insert_existing_folder_project(
 
 pub(crate) fn create_anonymous_scratch_project(cx: &mut App) -> AiChat2Result<ProjectRecord> {
     let id = new_id();
-    let path = cx
-        .global::<AiChat2Config>()
-        .data_dir()?
-        .join(SCRATCH_PROJECTS_DIR)
-        .join(&id);
+    let path = config::data_dir(cx)?.join(SCRATCH_PROJECTS_DIR).join(&id);
     std::fs::create_dir_all(&path)?;
     let display_name = cx.global::<I18n>().t("anonymous-project-name");
     Ok(catalog(cx).update(cx, |catalog, cx| {

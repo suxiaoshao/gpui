@@ -23,7 +23,7 @@ use crate::{
     features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryWindow},
     foundation::I18n,
     platform::capture::CaptureError,
-    state::{self, AiChat2AppSettings, AiChat2Config, providers::ProviderModelChoice},
+    state::{self, config, providers::ProviderModelChoice},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,8 +260,7 @@ impl GlobalHotkeyState {
     }
 
     fn load_initial_shortcuts(&mut self, cx: &mut App) -> AiChat2Result<()> {
-        if let Some(hotkey) = cx
-            .global::<AiChat2AppSettings>()
+        if let Some(hotkey) = config::app_settings(cx)
             .temporary_hotkey()
             .map(str::to_string)
             && let Err(err) = self.register_temporary_hotkey(hotkey)
@@ -1026,9 +1025,7 @@ fn screenshot_attachment_path(
     user_item_id: &str,
     cx: &App,
 ) -> AiChat2Result<PathBuf> {
-    Ok(cx
-        .global::<AiChat2Config>()
-        .data_dir()?
+    Ok(config::data_dir(cx)?
         .join("attachments")
         .join(conversation_id)
         .join(format!("{user_item_id}-screenshot.png")))

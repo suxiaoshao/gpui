@@ -13,7 +13,11 @@ use ai_chat_core::{
     AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
     ProviderModelId, ReasoningSelectionSnapshot, ToolApprovalMode, default_tool_approval_mode,
 };
-use gpui::{App, Global};
+use gpui::{App, AppContext};
+use gpui_store::{
+    SharedStore, StoreBackend, StoreBackendFuture, StoreBackendId, StoreCommitAck,
+    StoreCommitBackend, StoreState,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 
@@ -35,7 +39,20 @@ pub(crate) struct AiChat2Config {
     config_path: Option<PathBuf>,
 }
 
-impl Global for AiChat2Config {}
+impl StoreState for AiChat2Config {}
+
+pub(crate) type AiChat2ConfigStore = SharedStore<AiChat2Config, AiChat2ConfigBackend>;
+
+#[derive(Clone, Debug)]
+pub(crate) struct AiChat2ConfigBackend {
+    path: PathBuf,
+}
+
+impl AiChat2ConfigBackend {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
@@ -148,8 +165,6 @@ pub(crate) struct AiChat2AppSettings {
     payload: AppSettingsPayload,
 }
 
-impl Global for AiChat2AppSettings {}
-
 impl PartialEq for AiChat2Config {
     fn eq(&self, other: &Self) -> bool {
         self.storage == other.storage
@@ -159,12 +174,41 @@ impl PartialEq for AiChat2Config {
     }
 }
 
-impl AiChat2Config {
-    pub(crate) fn load_or_create() -> AiChat2Result<Self> {
-        let path = Self::path()?;
-        Self::load_or_create_from_path(&path)
+impl StoreBackend<AiChat2Config> for AiChat2ConfigBackend {
+    type Snapshot = AiChat2Config;
+    type Event = ();
+    type Subscription = ();
+    type Error = AiChat2Error;
+
+    fn backend_id(&self) -> StoreBackendId {
+        StoreBackendId::new(format!("file:{}", self.path.display()))
     }
 
+    fn load(&self) -> StoreBackendFuture<Option<Self::Snapshot>, Self::Error> {
+        Ok(Some(AiChat2Config::load_or_create_from_path(&self.path)?))
+    }
+
+    fn reconcile(&self, state: &mut AiChat2Config, snapshot: Self::Snapshot) -> bool {
+        if *state == snapshot {
+            return false;
+        }
+
+        *state = snapshot;
+        true
+    }
+}
+
+impl StoreCommitBackend<AiChat2Config> for AiChat2ConfigBackend {
+    fn commit_snapshot(
+        &self,
+        draft: &AiChat2Config,
+    ) -> StoreBackendFuture<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
+        draft.save_to_path(&self.path)?;
+        Ok(Some(StoreCommitAck::with_snapshot(draft.clone())))
+    }
+}
+
+impl AiChat2Config {
     fn load_or_create_from_path(path: &Path) -> AiChat2Result<Self> {
         match fs::read_to_string(path) {
             Ok(source) => match toml::from_str::<Self>(&source) {
@@ -227,6 +271,7 @@ impl AiChat2Config {
         Ok(McpConfigLayer { servers })
     }
 
+    #[cfg(test)]
     fn save(&self) -> AiChat2Result<()> {
         let path = match self.config_path.as_ref() {
             Some(path) => path.clone(),
@@ -290,6 +335,24 @@ impl AiChat2AppSettings {
     pub(crate) fn default_project_id(&self) -> Option<&ProjectId> {
         self.payload.default_project_id.as_ref()
     }
+}
+
+pub(crate) fn store(cx: &impl AppContext) -> AiChat2ConfigStore {
+    AiChat2ConfigStore::global(cx)
+}
+
+pub(crate) fn read<R>(cx: &impl AppContext, f: impl FnOnce(&AiChat2Config) -> R) -> R {
+    store(cx).read(cx, f)
+}
+
+pub(crate) fn data_dir(cx: &impl AppContext) -> AiChat2Result<PathBuf> {
+    read(cx, AiChat2Config::data_dir)
+}
+
+pub(crate) fn app_settings(cx: &impl AppContext) -> AiChat2AppSettings {
+    read(cx, |config| {
+        AiChat2AppSettings::new(config.app_settings_payload())
+    })
 }
 
 impl AppSettingsConfig {
@@ -385,43 +448,49 @@ pub(crate) fn update_app_settings(
     cx: &mut App,
     update: impl FnOnce(&mut AppSettingsPayload),
 ) -> AiChat2Result<AppSettingsPayload> {
-    let mut config = cx.global::<AiChat2Config>().clone();
-    let mut payload = config.app_settings_payload();
-    let previous = payload.clone();
-    update(&mut payload);
+    let config_store = store(cx);
+    let mut next_payload = config_store.read(cx, AiChat2Config::app_settings_payload);
+    let store_update = config_store.try_update(cx, |config| {
+        let mut payload = config.app_settings_payload();
+        update(&mut payload);
+        next_payload = payload.clone();
+        config.app_settings = AppSettingsConfig::from(payload);
+    })?;
 
-    if payload != previous {
-        config.app_settings = AppSettingsConfig::from(payload.clone());
-        config.save()?;
-        cx.set_global(config);
-        cx.set_global(AiChat2AppSettings::new(payload.clone()));
+    if store_update.changed_state() {
         cx.refresh_windows();
     }
 
-    Ok(payload)
+    Ok(next_payload)
 }
 
+#[cfg(test)]
 pub(crate) fn update_chat_form_config(
     cx: &mut App,
     update: impl FnOnce(&mut ChatFormConfig),
 ) -> AiChat2Result<ChatFormConfig> {
-    let mut config = cx.global::<AiChat2Config>().clone();
-    let mut chat_form = config.chat_form.clone();
-    update(&mut chat_form);
-
-    if chat_form != config.chat_form {
-        config.chat_form = chat_form.clone();
-        config.save()?;
-        cx.set_global(config);
-    }
-
-    Ok(chat_form)
+    let config_store = store(cx);
+    let mut next_chat_form = config_store.read_cloned(cx, |config| &config.chat_form);
+    config_store.try_update_field(
+        cx,
+        |config| &mut config.chat_form,
+        |chat_form| {
+            update(chat_form);
+            next_chat_form = chat_form.clone();
+        },
+    )?;
+    Ok(next_chat_form)
 }
 
 pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
-    let config = AiChat2Config::load_or_create()?;
-    let data_dir = config.data_dir()?;
-    let enabled_mcp_servers = match config.mcp_config_layer() {
+    let path = AiChat2Config::path()?;
+    let config_store = AiChat2ConfigStore::install_global_with_backend(
+        cx,
+        AiChat2Config::default(),
+        AiChat2ConfigBackend::new(path),
+    )?;
+    let data_dir = data_dir(cx)?;
+    let enabled_mcp_servers = match config_store.read(cx, AiChat2Config::mcp_config_layer) {
         Ok(layer) => layer.servers.len(),
         Err(err) => {
             event!(Level::ERROR, error = ?err, "parse ai-chat2 MCP config failed");
@@ -434,13 +503,11 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
         enabled_mcp_servers,
         "loaded ai-chat2 config"
     );
-    cx.set_global(config);
     Ok(())
 }
 
 pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
-    let payload = cx.global::<AiChat2Config>().app_settings_payload();
-    let settings = AiChat2AppSettings::new(payload);
+    let settings = app_settings(cx);
     event!(
         Level::INFO,
         language = ?settings.language(),
@@ -450,7 +517,13 @@ pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
         default_project_id = ?settings.default_project_id(),
         "loaded ai-chat2 app settings"
     );
-    cx.set_global(settings);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn install_for_test(cx: &mut App, config: AiChat2Config) -> AiChat2Result<()> {
+    let path = config.config_path.clone().unwrap_or(AiChat2Config::path()?);
+    AiChat2ConfigStore::install_global_with_backend(cx, config, AiChat2ConfigBackend::new(path))?;
     Ok(())
 }
 
@@ -458,7 +531,7 @@ pub(crate) fn init_app_settings(cx: &mut App) -> AiChat2Result<()> {
 mod tests {
     use super::{
         AiChat2AppSettings, AiChat2Config, ChatFormConfig, ChatFormModelConfig, StorageConfig,
-        update_app_settings, update_chat_form_config,
+        install_for_test, update_app_settings, update_chat_form_config,
     };
     use ai_chat_agent::McpServerTransport;
     use ai_chat_core::{
@@ -702,7 +775,7 @@ X-Docs = "enabled"
         let before = std::fs::read_to_string(&path).expect("read config before");
 
         let result = cx.update(|cx| {
-            cx.set_global(config);
+            install_for_test(cx, config).expect("install config store");
             update_app_settings(cx, |_| {}).expect("update settings")
         });
 
@@ -724,7 +797,7 @@ X-Docs = "enabled"
         let before = std::fs::read_to_string(&path).expect("read config before");
 
         let chat_form = cx.update(|cx| {
-            cx.set_global(config);
+            install_for_test(cx, config).expect("install config store");
             update_chat_form_config(cx, |config| {
                 config.approval_mode = ToolApprovalMode::FullAccess;
             })

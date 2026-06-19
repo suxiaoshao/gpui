@@ -12,11 +12,14 @@ use crate::{
         model_picker::{ModelOption, model_sections},
         picker::PickerListDelegate,
     },
+    errors::AiChat2Error,
     foundation::{self, assets::IconName},
     state,
-    state::attachments::ComposerAttachment,
-    state::config::{ChatFormConfig, ChatFormModelConfig},
     state::providers::{ProviderModelChoice, ProviderModelKey},
+    state::{
+        attachments::ComposerAttachment,
+        config::{ChatFormConfig, ChatFormModelConfig},
+    },
 };
 use ai_chat_core::{ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode};
 use approval_select::{ApprovalModeOption, approval_mode_sections};
@@ -32,6 +35,7 @@ use gpui_component::{
     list::ListState,
     v_flex,
 };
+use gpui_store::StoreBinding;
 use std::{path::Path, rc::Rc};
 use thinking_effort::{
     computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,
@@ -79,6 +83,7 @@ pub(crate) struct ChatForm {
     selected_model_key: Option<ProviderModelKey>,
     selected_reasoning_selection: Option<ReasoningSelectionSnapshot>,
     selected_approval_mode: ToolApprovalMode,
+    chat_form_config: StoreBinding<ChatFormConfig, AiChat2Error>,
     token_budget_input: Entity<InputState>,
     effort_picker_open: bool,
     effort_picker: Entity<ListState<PickerListDelegate<EffortOption>>>,
@@ -103,9 +108,17 @@ impl ChatForm {
         let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
         composer.update(cx, |composer, cx| composer.focus(window, cx));
         let model_choices = load_model_choices(cx);
-        let chat_form_config = cx.global::<state::AiChat2Config>().chat_form.clone();
+        let config_store = state::config::store(cx);
+        let chat_form_config = config_store.bind_committed(
+            cx,
+            |config| config.chat_form.clone(),
+            |config, chat_form| {
+                config.chat_form = chat_form;
+            },
+        );
+        let configured_chat_form = chat_form_config.get().clone();
         let selected_model_key =
-            configured_model_key_in(&model_choices, chat_form_config.model.as_ref()).or_else(
+            configured_model_key_in(&model_choices, configured_chat_form.model.as_ref()).or_else(
                 || {
                     model_choices
                         .as_ref()
@@ -116,22 +129,14 @@ impl ChatForm {
         let selected_reasoning_selection = initial_reasoning_selection(
             &model_choices,
             selected_model_key.as_ref(),
-            chat_form_config.reasoning_selection.as_ref(),
+            configured_chat_form.reasoning_selection.as_ref(),
         );
         let initial_token_budget =
             initial_token_budget_value(&model_choices, selected_model_key.as_ref());
         let token_budget_input = cx
             .new(|cx| InputState::new(window, cx).default_value(initial_token_budget.to_string()));
         let state = cx.entity().downgrade();
-        let selected_approval_mode = chat_form_config.approval_mode;
-        if model_choices.is_ok() {
-            persist_chat_form_config(
-                selected_model_key.as_ref(),
-                selected_reasoning_selection.as_ref(),
-                selected_approval_mode,
-                cx,
-            );
-        }
+        let selected_approval_mode = configured_chat_form.approval_mode;
         let effort_sections = {
             let i18n = cx.global::<foundation::I18n>();
             effort_sections(
@@ -319,12 +324,13 @@ impl ChatForm {
             },
         );
 
-        Self {
+        let form = Self {
             composer,
             model_choices,
             selected_model_key,
             selected_reasoning_selection,
             selected_approval_mode,
+            chat_form_config,
             token_budget_input,
             effort_picker_open: false,
             effort_picker,
@@ -342,7 +348,13 @@ impl ChatForm {
                 token_budget_step_subscription,
                 provider_catalog_subscription,
             ],
+        };
+
+        if form.model_choices.is_ok() {
+            form.save_chat_form_config(cx);
         }
+
+        form
     }
 
     fn selected_model_choice(&self) -> Option<&ProviderModelChoice> {
@@ -622,12 +634,23 @@ impl ChatForm {
     }
 
     fn save_chat_form_config(&self, cx: &mut Context<Self>) {
-        persist_chat_form_config(
-            self.selected_model_key.as_ref(),
-            self.selected_reasoning_selection.as_ref(),
-            self.selected_approval_mode,
-            cx,
-        );
+        let model = self
+            .selected_model_key
+            .as_ref()
+            .map(|key| ChatFormModelConfig {
+                provider_id: key.provider_id.clone(),
+                model_id: key.model_id.clone(),
+            });
+        let reasoning_selection = self.selected_reasoning_selection.clone();
+        let approval_mode = self.selected_approval_mode;
+
+        if let Err(err) = self.chat_form_config.try_update(cx, move |config| {
+            config.model = model;
+            config.reasoning_selection = reasoning_selection;
+            config.approval_mode = approval_mode;
+        }) {
+            event!(Level::ERROR, error = ?err, "save chat form config failed");
+        }
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
@@ -906,28 +929,6 @@ fn initial_reasoning_selection(
         })
         .cloned()
         .or_else(|| computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref()))
-}
-
-fn persist_chat_form_config(
-    model_key: Option<&ProviderModelKey>,
-    reasoning_selection: Option<&ReasoningSelectionSnapshot>,
-    approval_mode: ToolApprovalMode,
-    cx: &mut App,
-) {
-    let model = model_key.map(|key| ChatFormModelConfig {
-        provider_id: key.provider_id.clone(),
-        model_id: key.model_id.clone(),
-    });
-    let reasoning_selection = reasoning_selection.cloned();
-    if let Err(err) =
-        state::config::update_chat_form_config(cx, move |config: &mut ChatFormConfig| {
-            config.model = model;
-            config.reasoning_selection = reasoning_selection;
-            config.approval_mode = approval_mode;
-        })
-    {
-        event!(Level::ERROR, error = ?err, "save chat form config failed");
-    }
 }
 
 fn initial_token_budget_value(
@@ -1242,9 +1243,9 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            cx.set_global(
-                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap(),
-            );
+            let config =
+                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap();
+            state::config::install_for_test(cx, config).expect("install config store");
             crate::foundation::i18n::init(cx);
 
             let repository = database::repository(cx);
@@ -1268,9 +1269,9 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            cx.set_global(
-                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap(),
-            );
+            let config =
+                state::AiChat2Config::load_from_path_for_test(&test_config_path(&dir)).unwrap();
+            state::config::install_for_test(cx, config).expect("install config store");
             crate::foundation::i18n::init(cx);
 
             let repository = database::repository(cx);

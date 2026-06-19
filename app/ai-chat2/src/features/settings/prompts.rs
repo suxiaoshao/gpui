@@ -13,8 +13,9 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
+use gpui_store::StoreSelection;
 
-use super::{layout::settings_empty_message, push_settings_error};
+use super::push_settings_error;
 use dialog::{PromptEditMode, open_prompt_delete_confirm, open_prompt_edit_dialog};
 use rows::{
     PromptManagementEntry, PromptManagementRow, filter_prompt_entries, prompt_management_entries,
@@ -25,7 +26,7 @@ mod rows;
 
 pub(super) struct PromptsSettingsPage {
     search_input: Entity<InputState>,
-    prompts: Result<Vec<PromptRecord>, String>,
+    prompts: StoreSelection<Vec<PromptRecord>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -35,30 +36,17 @@ impl PromptsSettingsPage {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("prompt-search-placeholder"))
         });
-        let prompts = match Self::load_prompts(cx) {
-            Ok(prompts) => Ok(prompts),
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-prompts-failed");
-                let message = err.to_string();
-                push_settings_error(window, cx, title, message.clone());
-                Err(message)
-            }
-        };
+        let prompt_catalog = state::prompts::catalog(cx);
+        let prompts =
+            prompt_catalog.select_cloned(cx, state::prompts::PromptCatalogState::prompt_records);
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        let prompt_catalog = state::prompts::catalog(cx);
-        let catalog_subscription =
-            cx.subscribe_in(&prompt_catalog, window, Self::on_prompt_catalog_event);
 
         Self {
             search_input,
             prompts,
-            _subscriptions: vec![search_subscription, catalog_subscription],
+            _subscriptions: vec![search_subscription],
         }
-    }
-
-    fn load_prompts(cx: &App) -> ai_chat_db::Result<Vec<PromptRecord>> {
-        state::prompts::list_prompts(cx)
     }
 
     fn on_search_input_event(
@@ -73,44 +61,12 @@ impl PromptsSettingsPage {
         }
     }
 
-    fn on_prompt_catalog_event(
-        &mut self,
-        _: &Entity<state::prompts::PromptCatalogStore>,
-        _: &state::prompts::PromptCatalogEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reload_prompts(window, cx);
-    }
-
-    fn reload_prompts(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match Self::load_prompts(cx) {
-            Ok(prompts) => {
-                self.prompts = Ok(prompts);
-                cx.notify();
-                true
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-prompts-failed");
-                let message = err.to_string();
-                self.prompts = Err(message.clone());
-                push_settings_error(window, cx, title, message);
-                cx.notify();
-                false
-            }
-        }
-    }
-
     fn current_query(&self, cx: &App) -> String {
         self.search_input.read(cx).value().trim().to_string()
     }
 
     fn prompt_by_id(&self, prompt_id: &PromptId) -> Option<&PromptRecord> {
-        self.prompts
-            .as_ref()
-            .ok()?
-            .iter()
-            .find(|prompt| &prompt.id == prompt_id)
+        self.prompts.iter().find(|prompt| &prompt.id == prompt_id)
     }
 
     fn open_add_prompt_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -266,13 +222,10 @@ impl PromptsSettingsPage {
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match &self.prompts {
-            Err(err) => {
-                let load_failed = cx.global::<I18n>().t("notify-load-prompts-failed");
-                settings_empty_message(format!("{load_failed}: {err}"))
-            }
-            Ok(prompts) if prompts.is_empty() => self.render_empty_prompts(cx),
-            Ok(prompts) => self.render_prompt_rows(prompts, window, cx),
+        if self.prompts.is_empty() {
+            self.render_empty_prompts(cx)
+        } else {
+            self.render_prompt_rows(&self.prompts, window, cx)
         }
     }
 }

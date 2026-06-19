@@ -428,7 +428,7 @@ mod tests {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
             foundation::init_i18n(cx);
-            state::prompts::init(cx);
+            state::prompts::init(cx).expect("init prompt catalog");
         });
         dir
     }

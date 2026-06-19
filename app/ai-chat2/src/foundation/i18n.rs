@@ -4,7 +4,7 @@ use gpui::{App, Global};
 use std::collections::HashMap;
 use unic_langid::LanguageIdentifier;
 
-use crate::state::AiChat2AppSettings;
+use crate::state::config;
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
 const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
@@ -36,10 +36,11 @@ impl I18n {
     }
 
     fn from_settings(cx: &App) -> Self {
-        let language = cx
-            .try_global::<AiChat2AppSettings>()
-            .map(AiChat2AppSettings::language)
-            .unwrap_or_default();
+        let language = if cx.has_global::<config::AiChat2ConfigStore>() {
+            config::app_settings(cx).language()
+        } else {
+            AppLanguage::default()
+        };
         Self::new(locale_for_language(language))
     }
 

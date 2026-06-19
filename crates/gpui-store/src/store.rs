@@ -159,6 +159,25 @@ impl<S> StoreCore<S> {
         }
     }
 
+    pub fn replace(&mut self, state: S) -> StoreUpdate
+    where
+        S: PartialEq,
+    {
+        self.replace_with_origin(StoreUpdateOrigin::Local, state)
+    }
+
+    pub fn replace_with_origin(&mut self, origin: StoreUpdateOrigin, state: S) -> StoreUpdate
+    where
+        S: PartialEq,
+    {
+        if self.state == state {
+            return StoreUpdate::unchanged(self.revision, origin);
+        }
+
+        self.state = state;
+        self.mark_changed(origin)
+    }
+
     pub fn mark_external_changed(&mut self) -> StoreUpdate {
         self.mark_changed(StoreUpdateOrigin::External)
     }

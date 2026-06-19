@@ -119,7 +119,7 @@ impl<T> StoreSelection<T> {
     ) -> Self
     where
         S: StoreState,
-        Source: crate::StoreSource<S>,
+        Source: crate::StoreBackend<S>,
         Owner: 'static,
         T: PartialEq + 'static,
     {

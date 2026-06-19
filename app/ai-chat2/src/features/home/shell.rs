@@ -39,6 +39,7 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
+        let config_store = state::config::store(cx);
         let workspace = state::workspace::workspace(cx);
         let sidebar = cx.new(HomeSidebar::new);
         let new_conversation = cx.new(|cx| NewConversationPage::new(window, cx));
@@ -91,13 +92,23 @@ impl HomeView {
                         cx.refresh_windows();
                     },
                 ),
-                cx.observe_global_in::<state::AiChat2AppSettings>(window, |this, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
-                    state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
-                    cx.refresh_windows();
-                }),
+                config_store.observe_select_in(
+                    cx,
+                    window,
+                    |config| {
+                        (
+                            config.app_settings.language,
+                            config.app_settings.theme.clone(),
+                        )
+                    },
+                    |this, _settings, window, cx| {
+                        foundation::init_i18n(cx);
+                        menus::sync_app_menus(cx);
+                        state::theme::apply_current_theme(window, cx);
+                        this.reload_app_menu_bar(cx);
+                        cx.refresh_windows();
+                    },
+                ),
             ],
         }
     }

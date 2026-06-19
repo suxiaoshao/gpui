@@ -90,9 +90,9 @@ app/ai-chat2/src/features/settings.rs
 
 app/ai-chat2/src/features/settings/prompts.rs
   - `PromptsSettingsPage` 顶层 entity
-  - 页面管理行列表、search input、load/reload、create/edit/view/delete orchestration
-  - 订阅 `state::prompts::PromptCatalogStore`，保存或删除后统一 reload
-  - 只持有 `search_input: Entity<InputState>` 和 prompt records，不直接散落 SQL 或数据库连接
+  - 页面管理行列表、search input、create/edit/view/delete orchestration
+  - 通过 `PromptCatalogStore` 的 `StoreSelection<Vec<PromptRecord>>` 订阅 prompt rows snapshot
+  - 只持有 `search_input: Entity<InputState>` 和派生 prompt records selection，不直接散落 SQL 或数据库连接
 
 app/ai-chat2/src/features/settings/prompts/rows.rs
   - `PromptManagementRow`
@@ -113,9 +113,9 @@ app/ai-chat2/src/state.rs
   - 增加 `pub(crate) mod prompts;`
 
 app/ai-chat2/src/state/prompts.rs
-  - `PromptCatalogGlobal(Entity<PromptCatalogStore>)`
-  - `PromptCatalogEvent::Changed(PromptCatalogChange)`
-  - `PromptCatalogChange::{Created, Updated, Deleted}`
+  - `PromptCatalogStore = gpui_store::SharedStore<PromptCatalogState, PromptCatalogSource>`
+  - `PromptCatalogSource` 从 fresh DB `prompts` 表加载 projection snapshot
+  - `PromptCatalogState { prompts: Vec<PromptRecord> }`
   - `list_prompts(cx)`、`create_prompt(cx, name, text)`、`update_prompt(cx, id, name, text)`、
     `delete_prompt(cx, id)`
   - Settings、后续 Composer prompt selector 和 Shortcut settings 都必须通过该 state 层写入
@@ -167,10 +167,10 @@ SettingsView
   -> row click / View action
   -> preview dialog
   -> edit/delete action
-  -> PromptCatalogStore create/update/delete
+  -> state::prompts create/update/delete
   -> FreshRepository insert/update/delete
-  -> PromptCatalogEvent::Changed
-  -> PromptsSettingsPage reloads records
+  -> PromptCatalogStore syncs committed DB rows
+  -> PromptsSettingsPage observes StoreSelection
 ```
 
 保存规则：

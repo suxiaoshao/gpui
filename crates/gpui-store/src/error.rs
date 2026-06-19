@@ -1,23 +1,23 @@
 use std::fmt;
 
-use crate::StoreSourceId;
+use crate::StoreBackendId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StoreSourceUnsupported {
-    source_id: StoreSourceId,
+pub struct StoreBackendUnsupported {
+    backend_id: StoreBackendId,
     operation: &'static str,
 }
 
-impl StoreSourceUnsupported {
-    pub fn new(source_id: StoreSourceId, operation: &'static str) -> Self {
+impl StoreBackendUnsupported {
+    pub fn new(backend_id: StoreBackendId, operation: &'static str) -> Self {
         Self {
-            source_id,
+            backend_id,
             operation,
         }
     }
 
-    pub fn source_id(&self) -> &StoreSourceId {
-        &self.source_id
+    pub fn backend_id(&self) -> &StoreBackendId {
+        &self.backend_id
     }
 
     pub fn operation(&self) -> &'static str {
@@ -25,14 +25,14 @@ impl StoreSourceUnsupported {
     }
 }
 
-impl fmt::Display for StoreSourceUnsupported {
+impl fmt::Display for StoreBackendUnsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "store source '{}' does not support {}",
-            self.source_id, self.operation
+            "store backend '{}' does not support {}",
+            self.backend_id, self.operation
         )
     }
 }
 
-impl std::error::Error for StoreSourceUnsupported {}
+impl std::error::Error for StoreBackendUnsupported {}

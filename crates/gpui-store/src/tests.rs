@@ -7,8 +7,8 @@ use std::{
 use gpui::{App, AppContext as _, TestAppContext};
 
 use crate::{
-    LocalStore, SharedStore, StoreBinding, StoreSelection, StoreSource, StoreSourceCallback,
-    StoreSourceId, StoreSourcePolicy, StoreSourceWriteAck, StoreState, test_support::NotifyCounter,
+    LocalStore, SharedStore, StoreBackend, StoreBackendCallback, StoreBackendId, StoreBinding,
+    StoreCommitAck, StoreCommitBackend, StoreSelection, StoreState, test_support::NotifyCounter,
 };
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -189,25 +189,25 @@ fn binding_writes_back_to_store_and_refreshes_snapshot(cx: &mut TestAppContext) 
 }
 
 #[derive(Clone)]
-struct FakeSource {
-    inner: Rc<RefCell<FakeSourceInner>>,
+struct FakeBackend {
+    inner: Rc<RefCell<FakeBackendInner>>,
 }
 
-struct FakeSourceInner {
+struct FakeBackendInner {
     snapshot: i32,
-    callbacks: Vec<StoreSourceCallback<()>>,
+    callbacks: Vec<StoreBackendCallback<()>>,
     reconcile_calls: usize,
-    write_calls: usize,
+    commit_calls: usize,
 }
 
-impl FakeSource {
+impl FakeBackend {
     fn new(snapshot: i32) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(FakeSourceInner {
+            inner: Rc::new(RefCell::new(FakeBackendInner {
                 snapshot,
                 callbacks: Vec::new(),
                 reconcile_calls: 0,
-                write_calls: 0,
+                commit_calls: 0,
             })),
         }
     }
@@ -233,23 +233,19 @@ impl FakeSource {
         self.inner.borrow().reconcile_calls
     }
 
-    fn write_calls(&self) -> usize {
-        self.inner.borrow().write_calls
+    fn commit_calls(&self) -> usize {
+        self.inner.borrow().commit_calls
     }
 }
 
-impl StoreSource<TestState> for FakeSource {
+impl StoreBackend<TestState> for FakeBackend {
     type Snapshot = i32;
     type Event = ();
     type Subscription = ();
     type Error = String;
 
-    fn source_id(&self) -> StoreSourceId {
-        StoreSourceId::new("fake")
-    }
-
-    fn policy(&self) -> StoreSourcePolicy {
-        StoreSourcePolicy::ExternalBacked
+    fn backend_id(&self) -> StoreBackendId {
+        StoreBackendId::new("fake")
     }
 
     fn load(&self) -> Result<Option<Self::Snapshot>, Self::Error> {
@@ -258,7 +254,7 @@ impl StoreSource<TestState> for FakeSource {
 
     fn subscribe(
         &self,
-        on_change: StoreSourceCallback<Self::Event>,
+        on_change: StoreBackendCallback<Self::Event>,
     ) -> Result<Option<Self::Subscription>, Self::Error> {
         self.inner.borrow_mut().callbacks.push(on_change);
         Ok(Some(()))
@@ -273,23 +269,76 @@ impl StoreSource<TestState> for FakeSource {
         state.external_value = snapshot;
         true
     }
+}
 
-    fn write_snapshot(
+#[derive(Clone)]
+struct FakeCommitBackend {
+    backend: FakeBackend,
+}
+
+impl FakeCommitBackend {
+    fn new(snapshot: i32) -> Self {
+        Self {
+            backend: FakeBackend::new(snapshot),
+        }
+    }
+
+    fn emit(&self, cx: &mut App) {
+        self.backend.emit(cx);
+    }
+
+    fn reconcile_calls(&self) -> usize {
+        self.backend.reconcile_calls()
+    }
+
+    fn commit_calls(&self) -> usize {
+        self.backend.commit_calls()
+    }
+}
+
+impl StoreBackend<TestState> for FakeCommitBackend {
+    type Snapshot = i32;
+    type Event = ();
+    type Subscription = ();
+    type Error = String;
+
+    fn backend_id(&self) -> StoreBackendId {
+        self.backend.backend_id()
+    }
+
+    fn load(&self) -> Result<Option<Self::Snapshot>, Self::Error> {
+        self.backend.load()
+    }
+
+    fn subscribe(
         &self,
-        state: &TestState,
-    ) -> Result<Option<StoreSourceWriteAck<Self::Snapshot>>, Self::Error> {
-        let mut inner = self.inner.borrow_mut();
-        inner.write_calls += 1;
-        inner.snapshot = state.count;
-        Ok(Some(StoreSourceWriteAck::with_snapshot(inner.snapshot)))
+        on_change: StoreBackendCallback<Self::Event>,
+    ) -> Result<Option<Self::Subscription>, Self::Error> {
+        self.backend.subscribe(on_change)
+    }
+
+    fn reconcile(&self, state: &mut TestState, snapshot: Self::Snapshot) -> bool {
+        self.backend.reconcile(state, snapshot)
+    }
+}
+
+impl StoreCommitBackend<TestState> for FakeCommitBackend {
+    fn commit_snapshot(
+        &self,
+        draft: &TestState,
+    ) -> Result<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
+        let mut inner = self.backend.inner.borrow_mut();
+        inner.commit_calls += 1;
+        inner.snapshot = draft.count;
+        Ok(Some(StoreCommitAck::with_snapshot(inner.snapshot)))
     }
 }
 
 #[gpui::test]
-fn source_equal_event_does_not_reconcile_or_notify(cx: &mut TestAppContext) {
-    let fake = FakeSource::new(5);
+fn backend_equal_event_does_not_reconcile_or_notify(cx: &mut TestAppContext) {
+    let fake = FakeBackend::new(5);
     let (store, counter) = cx.update(|cx| {
-        let store = SharedStore::new_with_source(cx, TestState::default(), fake.clone()).unwrap();
+        let store = SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap();
         let counter = cx.new(|cx| NotifyCounter::new(store.entity(), cx));
         (store, counter)
     });
@@ -309,10 +358,10 @@ fn source_equal_event_does_not_reconcile_or_notify(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn source_changed_event_reconciles_and_notifies(cx: &mut TestAppContext) {
-    let fake = FakeSource::new(5);
+fn backend_changed_event_reconciles_and_notifies(cx: &mut TestAppContext) {
+    let fake = FakeBackend::new(5);
     let (store, counter) = cx.update(|cx| {
-        let store = SharedStore::new_with_source(cx, TestState::default(), fake.clone()).unwrap();
+        let store = SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap();
         let counter = cx.new(|cx| NotifyCounter::new(store.entity(), cx));
         (store, counter)
     });
@@ -332,16 +381,18 @@ fn source_changed_event_reconciles_and_notifies(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn source_write_back_runs_once_and_filters_ack_snapshot(cx: &mut TestAppContext) {
-    let fake = FakeSource::new(0);
-    let store = cx
-        .update(|cx| SharedStore::new_with_source(cx, TestState::default(), fake.clone()).unwrap());
-
-    cx.update(|cx| {
-        store.set(cx, |state| &mut state.count, 11);
+fn committed_backend_commit_runs_once_and_filters_ack_snapshot(cx: &mut TestAppContext) {
+    let fake = FakeCommitBackend::new(0);
+    let store = cx.update(|cx| {
+        SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap()
     });
 
-    assert_eq!(fake.write_calls(), 1);
+    cx.update(|cx| {
+        store.try_set(cx, |state| &mut state.count, 11).unwrap();
+    });
+
+    assert_eq!(fake.commit_calls(), 1);
+    assert_eq!(fake.reconcile_calls(), 2);
     assert_eq!(
         cx.update(|cx| {
             store
@@ -353,20 +404,20 @@ fn source_write_back_runs_once_and_filters_ack_snapshot(cx: &mut TestAppContext)
 
     cx.update(|cx| fake.emit(cx));
 
-    assert_eq!(fake.reconcile_calls(), 1);
-    assert_eq!(fake.write_calls(), 1);
+    assert_eq!(fake.reconcile_calls(), 2);
+    assert_eq!(fake.commit_calls(), 1);
 }
 
-struct LocalSourceOwner {
-    store: LocalStore<TestState, FakeSource>,
+struct LocalBackendOwner {
+    store: LocalStore<TestState, FakeBackend>,
 }
 
 #[gpui::test]
-fn local_store_can_load_from_source(cx: &mut TestAppContext) {
-    let fake = FakeSource::new(6);
+fn local_store_can_load_from_backend(cx: &mut TestAppContext) {
+    let fake = FakeBackend::new(6);
     let owner = cx.update(|cx| {
-        cx.new(|cx| LocalSourceOwner {
-            store: LocalStore::with_source(cx, TestState::default(), fake.clone()).unwrap(),
+        cx.new(|cx| LocalBackendOwner {
+            store: LocalStore::with_backend(cx, TestState::default(), fake.clone()).unwrap(),
         })
     });
 
@@ -378,16 +429,16 @@ fn local_store_can_load_from_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn local_store_source_event_uses_owner_accessor(cx: &mut TestAppContext) {
-    let fake = FakeSource::new(6);
+fn local_store_backend_event_uses_owner_accessor(cx: &mut TestAppContext) {
+    let fake = FakeBackend::new(6);
     let (owner, counter) = cx.update(|cx| {
         let owner = cx.new(|cx| {
             let mut store =
-                LocalStore::with_source(cx, TestState::default(), fake.clone()).unwrap();
+                LocalStore::with_backend(cx, TestState::default(), fake.clone()).unwrap();
             store
-                .subscribe(cx, |owner: &mut LocalSourceOwner| &mut owner.store)
+                .subscribe(cx, |owner: &mut LocalBackendOwner| &mut owner.store)
                 .unwrap();
-            LocalSourceOwner { store }
+            LocalBackendOwner { store }
         });
         let counter = cx.new(|cx| NotifyCounter::new(owner.clone(), cx));
         (owner, counter)
@@ -410,7 +461,7 @@ fn local_store_source_event_uses_owner_accessor(cx: &mut TestAppContext) {
 static ASSERT_SEND_SYNC_NOT_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
-fn source_does_not_require_send_or_sync() {
+fn backend_does_not_require_send_or_sync() {
     ASSERT_SEND_SYNC_NOT_REQUIRED.store(1, Ordering::SeqCst);
     assert_eq!(ASSERT_SEND_SYNC_NOT_REQUIRED.load(Ordering::SeqCst), 1);
 }
