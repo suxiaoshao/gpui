@@ -151,6 +151,32 @@ pub(crate) fn prepare_message_attachments(
     Ok(prepared)
 }
 
+pub(crate) fn write_pending_image_attachment(
+    pending_file_name: &str,
+    name: String,
+    bytes: &[u8],
+    mime_type: String,
+    dimensions: (u32, u32),
+    local_id: u64,
+    cx: &App,
+) -> AiChat2Result<ComposerAttachment> {
+    let pending_dir = pending_attachment_dir(cx)?;
+    fs::create_dir_all(&pending_dir)?;
+    let path = pending_dir.join(sanitize_file_name(pending_file_name));
+    fs::write(&path, bytes)?;
+
+    Ok(ComposerAttachment {
+        local_id,
+        kind: ComposerAttachmentKind::Image,
+        path,
+        name,
+        mime_type: Some(mime_type),
+        size_bytes: Some(bytes.len() as u64),
+        width: Some(dimensions.0),
+        height: Some(dimensions.1),
+    })
+}
+
 pub(crate) fn cleanup_stored_attachment_files(paths: &[PathBuf]) {
     for path in paths {
         if let Err(err) = fs::remove_file(path)
@@ -246,22 +272,18 @@ fn add_attachment_from_clipboard_image(
         .map_err(|err| AiChat2Error::Attachment(format!("decode clipboard image failed: {err}")))?;
     let local_id = allocate_local_id(next_local_id);
     let name = format!("clipboard-image-{local_id}.{extension}");
-    let pending_dir = pending_attachment_dir(cx)?;
-    fs::create_dir_all(&pending_dir)?;
-    let path = pending_dir.join(&name);
-    fs::write(&path, image.bytes())?;
+    let attachment = write_pending_image_attachment(
+        &name,
+        name.clone(),
+        image.bytes(),
+        mime_type.to_string(),
+        (width, height),
+        local_id,
+        cx,
+    )?;
 
     Ok(AttachmentAddResult {
-        attachments: vec![ComposerAttachment {
-            local_id,
-            kind: ComposerAttachmentKind::Image,
-            path,
-            name,
-            mime_type: Some(mime_type.to_string()),
-            size_bytes: Some(image.bytes().len() as u64),
-            width: Some(width),
-            height: Some(height),
-        }],
+        attachments: vec![attachment],
         rejected: Vec::new(),
     })
 }

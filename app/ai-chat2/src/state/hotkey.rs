@@ -1,12 +1,10 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, str::FromStr, time::SystemTime};
+use std::{collections::BTreeMap, str::FromStr, time::SystemTime};
 
 use ai_chat_core::{
-    AgentRunTriggerKind, AttachmentKind, AttachmentMetadata, AttachmentSource,
-    AttachmentStorageKind, ContentPart, ConversationId, ConversationItemPayload,
-    ConversationItemStatus, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource, ToolApprovalMode, TranscriptRole,
+    AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
+    ShortcutInputSource, ToolApprovalMode, new_id,
 };
-use ai_chat_db::{NewAttachment, ShortcutRecord};
+use ai_chat_db::ShortcutRecord;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::{AnyWindowHandle, App, BorrowAppContext, Global, SharedString, Task};
 use gpui_component::{
@@ -23,7 +21,12 @@ use crate::{
     features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryWindow},
     foundation::I18n,
     platform::capture::CaptureError,
-    state::{self, config, providers::ProviderModelChoice},
+    state::{
+        self,
+        attachments::{ComposerAttachment, write_pending_image_attachment},
+        config,
+        providers::ProviderModelChoice,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -777,56 +780,13 @@ impl GlobalHotkeyState {
             .to_string();
         let png = screenshot_png_bytes(&image)
             .map_err(|err| AiChat2Error::Window(format!("encode screenshot failed: {err}")))?;
-        let mut created = self.create_shortcut_conversation(
+        let attachment = screenshot_composer_attachment(&image, &png, cx)?;
+        let created = self.create_shortcut_conversation(
             &trigger,
             vec![ContentPart::Text { text: text.clone() }],
+            vec![attachment],
             text.clone(),
             cx,
-        )?;
-        let attachment_path = screenshot_attachment_path(
-            &created.record.conversation.id,
-            &created.record.user_item.id,
-            cx,
-        )?;
-        if let Some(parent) = attachment_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&attachment_path, &png)?;
-
-        let path_string = attachment_path.to_string_lossy().to_string();
-        let attachment = database::repository(cx).insert_attachment(NewAttachment {
-            conversation_id: created.record.conversation.id.clone(),
-            kind: AttachmentKind::Image,
-            storage_kind: AttachmentStorageKind::LocalFile,
-            mime_type: Some("image/png".to_string()),
-            name: Some("screenshot.png".to_string()),
-            path: Some(path_string.clone()),
-            external_uri: None,
-            provider_id: None,
-            provider_file_id: None,
-            sha256: None,
-            size_bytes: Some(png.len() as i64),
-            metadata: AttachmentMetadata {
-                source: AttachmentSource::LocalFile { path: path_string },
-                width: Some(image.width),
-                height: Some(image.height),
-                duration_ms: None,
-                preview_attachment_id: None,
-            },
-        })?;
-        let content = vec![
-            ContentPart::Text { text },
-            ContentPart::Image {
-                attachment_id: attachment.id,
-            },
-        ];
-        created.record.user_item = database::repository(cx).update_conversation_item_payload(
-            &created.record.user_item.id,
-            ConversationItemStatus::Completed,
-            ConversationItemPayload::Message {
-                role: TranscriptRole::User,
-                content,
-            },
         )?;
         self.open_created_shortcut_conversation(created, cx);
         Ok(())
@@ -839,7 +799,9 @@ impl GlobalHotkeyState {
         content_parts: Vec<ContentPart>,
         cx: &mut App,
     ) {
-        match self.create_shortcut_conversation(&trigger, content_parts, title_seed, cx) {
+        let result =
+            self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
+        match result {
             Ok(created) => self.open_created_shortcut_conversation(created, cx),
             Err(err) => self.push_notification(
                 "notify-shortcut-trigger-model-unavailable-title",
@@ -854,6 +816,7 @@ impl GlobalHotkeyState {
         &self,
         trigger: &ShortcutTriggerContext,
         content_parts: Vec<ContentPart>,
+        attachments: Vec<ComposerAttachment>,
         title_seed: String,
         cx: &mut App,
     ) -> AiChat2Result<state::conversations::CreatedConversation> {
@@ -861,7 +824,7 @@ impl GlobalHotkeyState {
             state::conversations::CreateConversationRequest {
                 project_id: None,
                 content_parts,
-                attachments: Vec::new(),
+                attachments,
                 title_seed,
                 skill_requests: Vec::new(),
                 provider_model: trigger.provider_model.clone(),
@@ -1020,15 +983,20 @@ fn screenshot_png_bytes(image: &ImageFrame) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-fn screenshot_attachment_path(
-    conversation_id: &ConversationId,
-    user_item_id: &str,
+fn screenshot_composer_attachment(
+    image: &ImageFrame,
+    png: &[u8],
     cx: &App,
-) -> AiChat2Result<PathBuf> {
-    Ok(config::data_dir(cx)?
-        .join("attachments")
-        .join(conversation_id)
-        .join(format!("{user_item_id}-screenshot.png")))
+) -> AiChat2Result<ComposerAttachment> {
+    write_pending_image_attachment(
+        &format!("screenshot-{}.png", new_id()),
+        "screenshot.png".to_string(),
+        png,
+        "image/png".to_string(),
+        (image.width, image.height),
+        0,
+        cx,
+    )
 }
 
 fn screenshot_capture_error_message(error: &CaptureError) -> Option<String> {
@@ -1046,13 +1014,17 @@ fn screenshot_ocr_error_message(error: &OcrError) -> String {
 mod tests {
     use super::{
         FakeHotkeyBackend, GlobalHotkeyState, normalized_text, screenshot_capture_error_message,
-        screenshot_ocr_error_message, screenshot_png_bytes,
+        screenshot_composer_attachment, screenshot_ocr_error_message, screenshot_png_bytes,
     };
-    use crate::platform::capture::CaptureError;
+    use crate::{
+        platform::capture::CaptureError,
+        state::{AiChat2Config, attachments::ComposerAttachmentKind, config},
+    };
     use global_hotkey::hotkey::HotKey;
-    use gpui::Task;
+    use gpui::{Task, TestAppContext};
     use platform_ext::{OcrError, ocr::ImageFrame};
-    use std::str::FromStr;
+    use std::{fs, str::FromStr};
+    use tempfile::Builder as TempDirBuilder;
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {
@@ -1181,5 +1153,46 @@ mod tests {
         let png = screenshot_png_bytes(&image).unwrap();
 
         assert!(png.starts_with(&[137, 80, 78, 71]));
+    }
+
+    #[gpui::test]
+    fn screenshot_composer_attachment_writes_pending_image(cx: &mut TestAppContext) {
+        let temp_root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let dir = TempDirBuilder::new()
+            .prefix("ai-chat2-hotkey-screenshot-")
+            .tempdir_in(temp_root)
+            .unwrap();
+        cx.update(|cx| {
+            let mut config =
+                AiChat2Config::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
+            config.storage.data_dir = Some(dir.path().join("data"));
+            config.save_for_test().unwrap();
+            config::install_for_test(cx, config).unwrap();
+        });
+        let image = ImageFrame {
+            width: 1,
+            height: 1,
+            scale_factor: 1.0,
+            bytes_rgba8: vec![255, 0, 0, 255],
+        };
+        let png = screenshot_png_bytes(&image).unwrap();
+
+        let attachment = cx.update(|cx| screenshot_composer_attachment(&image, &png, cx).unwrap());
+
+        assert_eq!(attachment.local_id, 0);
+        assert_eq!(attachment.kind, ComposerAttachmentKind::Image);
+        assert_eq!(attachment.name, "screenshot.png");
+        assert_eq!(attachment.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(attachment.size_bytes, Some(png.len() as u64));
+        assert_eq!(attachment.width, Some(1));
+        assert_eq!(attachment.height, Some(1));
+        assert!(
+            attachment
+                .path
+                .starts_with(dir.path().join("data/attachments/pending"))
+        );
+        assert_eq!(fs::read(attachment.path).unwrap(), png);
     }
 }
