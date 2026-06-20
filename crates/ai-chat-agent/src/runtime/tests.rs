@@ -29,7 +29,7 @@ use rmcp::{
     service::RequestContext,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::{future::pending, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
@@ -956,6 +956,7 @@ async fn approved_builtin_tool_executes_and_completes_run() {
             &approval.id,
             "user".to_string(),
             Some("ok".to_string()),
+            Duration::from_secs(120),
             crate::AgentCancellationToken::new(),
             None,
         )
@@ -1020,6 +1021,7 @@ async fn approved_builtin_tool_cancellation_stops_before_execution() {
             &approval.id,
             "user".to_string(),
             Some("stop".to_string()),
+            Duration::from_secs(120),
             cancellation_token,
             None,
         )
@@ -1046,6 +1048,28 @@ async fn approved_builtin_tool_cancellation_stops_before_execution() {
     assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
     let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
     assert_eq!(agent_run.status, AgentRunStatus::Canceled);
+}
+
+#[tokio::test]
+async fn approved_builtin_tool_timeout_returns_failed_error_result() {
+    let (output, status, error) =
+        super::approval_resume::approved_builtin_tool_result_from_execution(
+            "pending_tool",
+            pending::<Result<Option<ToolInvocationOutput>>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+
+    let error = error.expect("timeout should produce run error");
+    assert_eq!(status, ToolInvocationStatus::Failed);
+    assert_eq!(error.code, "tool_timeout");
+    assert_eq!(error.message, "tool execution timed out");
+    assert!(error.retryable);
+    assert!(output.is_error);
+    assert_eq!(
+        output.content[0].search_text(),
+        Some("tool execution timed out")
+    );
 }
 
 #[test]

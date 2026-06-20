@@ -4,10 +4,12 @@ use crate::{
     foundation, state,
 };
 use ai_chat_core::ConversationId;
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Root, StyledExt, TitleBar, h_flex,
+    ActiveTheme, Root, StyledExt, TitleBar, WindowExt as _, h_flex,
     label::Label,
+    notification::{Notification, NotificationType},
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -29,6 +31,7 @@ pub(crate) struct HomeView {
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
+    config_load_error_notified: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -54,6 +57,7 @@ impl HomeView {
             sidebar,
             new_conversation,
             conversation_pages: HashMap::new(),
+            config_load_error_notified: false,
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
@@ -121,6 +125,29 @@ impl HomeView {
     pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_conversation
             .update(cx, |page, cx| page.focus_primary(window, cx));
+    }
+
+    pub(crate) fn notify_config_load_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.config_load_error_notified {
+            return;
+        }
+
+        let Some(load_error) = state::config::config_load_error(cx) else {
+            return;
+        };
+        self.config_load_error_notified = true;
+
+        let i18n = cx.global::<foundation::I18n>();
+        let mut args = FluentArgs::new();
+        args.set("path", load_error.path_display());
+        args.set("error", load_error.message().to_string());
+        window.push_notification(
+            Notification::new()
+                .title(i18n.t("config-load-error-title"))
+                .message(i18n.t_with_args("config-load-error-message", &args))
+                .with_type(NotificationType::Error),
+            cx,
+        );
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {

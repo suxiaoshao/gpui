@@ -203,7 +203,10 @@ fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Roo
     window.activate_window();
 
     let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
-        view.update(cx, |view, cx| view.focus_chat_form(window, cx));
+        view.update(cx, |view, cx| {
+            view.focus_chat_form(window, cx);
+            view.notify_config_load_error(window, cx);
+        });
     });
 }
 

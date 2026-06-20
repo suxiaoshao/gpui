@@ -2,6 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use ai_chat_agent::{
     AgentCancellationToken, AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver,
+    RuntimeGuards,
 };
 use ai_chat_core::{AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationId};
 use ai_chat_db::FreshRepository;
@@ -465,6 +466,7 @@ async fn approve_tool_with_runtime(
                 &approval_decision_id,
                 "user".to_string(),
                 None,
+                RuntimeGuards::default().tool_timeout,
                 approval_cancellation_token,
                 Some(&observer),
             )

@@ -9,6 +9,8 @@ use ai_chat_db::{
     AgentRunRecord, ApprovalDecisionRecord, NewApprovalDecisionOutcome, NewConversationItem,
     ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
 };
+use std::{future::Future, time::Duration};
+use tokio::time::timeout;
 
 impl AgentRuntime {
     pub async fn approve_and_resume_tool(
@@ -16,6 +18,7 @@ impl AgentRuntime {
         approval_decision_id: &str,
         decided_by: String,
         reason: Option<String>,
+        tool_timeout: Duration,
         cancellation_token: AgentCancellationToken,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<ApprovalResumeOutcome> {
@@ -162,50 +165,16 @@ impl AgentRuntime {
             );
         }
 
-        let (tool_output, tool_status, tool_error) =
-            match crate::builtin_tools::registry::execute_builtin_tool(
+        let (tool_output, tool_status, tool_error) = approved_builtin_tool_result_from_execution(
+            &running_invocation.tool_name,
+            crate::builtin_tools::registry::execute_builtin_tool(
                 &running_invocation.tool_name,
                 running_invocation.input.arguments.value.clone(),
                 policy,
-            )
-            .await
-            {
-                Ok(Some(output)) => {
-                    let error = output.is_error.then(|| {
-                        run_error("tool_error", tool_output_to_model_text(&output), true, None)
-                    });
-                    let status = if output.is_error {
-                        ToolInvocationStatus::Failed
-                    } else {
-                        ToolInvocationStatus::Succeeded
-                    };
-                    (output, status, error)
-                }
-                Ok(None) => {
-                    let error = run_error(
-                        "tool_error",
-                        format!(
-                            "built-in tool {} is not registered",
-                            running_invocation.tool_name
-                        ),
-                        true,
-                        None,
-                    );
-                    (
-                        error_tool_output(error.message.clone()),
-                        ToolInvocationStatus::Failed,
-                        Some(error),
-                    )
-                }
-                Err(error) => {
-                    let error = run_error("tool_error", error.to_string(), true, None);
-                    (
-                        error_tool_output(error.message.clone()),
-                        ToolInvocationStatus::Failed,
-                        Some(error),
-                    )
-                }
-            };
+            ),
+            tool_timeout,
+        )
+        .await;
         if cancellation_token.is_cancelled() {
             return self.cancel_approved_tool_resume(
                 updated_approval,
@@ -547,5 +516,58 @@ impl AgentRuntime {
             TerminalApproval::Pending => {}
         }
         Ok(updated)
+    }
+}
+
+pub(super) async fn approved_builtin_tool_result_from_execution(
+    tool_name: &str,
+    execution: impl Future<Output = Result<Option<ToolInvocationOutput>>>,
+    tool_timeout: Duration,
+) -> (
+    ToolInvocationOutput,
+    ToolInvocationStatus,
+    Option<RunErrorPayload>,
+) {
+    match timeout(tool_timeout, execution).await {
+        Ok(Ok(Some(output))) => {
+            let error = output
+                .is_error
+                .then(|| run_error("tool_error", tool_output_to_model_text(&output), true, None));
+            let status = if output.is_error {
+                ToolInvocationStatus::Failed
+            } else {
+                ToolInvocationStatus::Succeeded
+            };
+            (output, status, error)
+        }
+        Ok(Ok(None)) => {
+            let error = run_error(
+                "tool_error",
+                format!("built-in tool {tool_name} is not registered"),
+                true,
+                None,
+            );
+            (
+                error_tool_output(error.message.clone()),
+                ToolInvocationStatus::Failed,
+                Some(error),
+            )
+        }
+        Ok(Err(error)) => {
+            let error = run_error("tool_error", error.to_string(), true, None);
+            (
+                error_tool_output(error.message.clone()),
+                ToolInvocationStatus::Failed,
+                Some(error),
+            )
+        }
+        Err(_) => {
+            let error = run_error("tool_timeout", "tool execution timed out", true, None);
+            (
+                error_tool_output(error.message.clone()),
+                ToolInvocationStatus::Failed,
+                Some(error),
+            )
+        }
     }
 }

@@ -180,6 +180,7 @@ mod tests {
     fn formatted_messages_are_localized() {
         let mut args = FluentArgs::new();
         args.set("path", "/tmp/ai-chat2");
+        args.set("error", "expected table");
 
         assert_ne!(
             I18n::for_locale_tag("en-US").t_with_args("status-data-dir", &args),
@@ -188,6 +189,22 @@ mod tests {
         assert_ne!(
             I18n::for_locale_tag("zh-CN").t_with_args("status-data-dir", &args),
             "status-data-dir"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t_with_args("config-load-error-message", &args),
+            "config-load-error-message"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t_with_args("config-load-error-message", &args),
+            "config-load-error-message"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t("config-load-error-title"),
+            "config-load-error-title"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t("config-load-error-title"),
+            "config-load-error-title"
         );
     }
 }

@@ -36,6 +36,8 @@ pub(crate) struct AiChat2Config {
     pub(crate) chat_form: ChatFormConfig,
     pub(crate) mcp_servers: BTreeMap<String, McpServerTomlConfig>,
     #[serde(skip)]
+    load_error: Option<AiChat2ConfigLoadError>,
+    #[serde(skip)]
     config_path: Option<PathBuf>,
 }
 
@@ -51,6 +53,37 @@ pub(crate) struct AiChat2ConfigBackend {
 impl AiChat2ConfigBackend {
     fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AiChat2ConfigLoadError {
+    path: PathBuf,
+    message: String,
+}
+
+impl AiChat2ConfigLoadError {
+    fn new(path: PathBuf, error: toml::de::Error) -> Self {
+        Self {
+            path,
+            message: error.to_string(),
+        }
+    }
+
+    pub(crate) fn path_display(&self) -> String {
+        self.path.display().to_string()
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn save_blocked_message(&self) -> String {
+        format!(
+            "config.toml is invalid; fix {} before saving settings: {}",
+            self.path.display(),
+            self.message
+        )
     }
 }
 
@@ -171,6 +204,7 @@ impl PartialEq for AiChat2Config {
             && self.app_settings == other.app_settings
             && self.chat_form == other.chat_form
             && self.mcp_servers == other.mcp_servers
+            && self.load_error == other.load_error
     }
 }
 
@@ -203,6 +237,10 @@ impl StoreCommitBackend<AiChat2Config> for AiChat2ConfigBackend {
         &self,
         draft: &AiChat2Config,
     ) -> StoreBackendFuture<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
+        if let Some(load_error) = draft.load_error.as_ref() {
+            return Err(AiChat2Error::Config(load_error.save_blocked_message()));
+        }
+
         draft.save_to_path(&self.path)?;
         Ok(Some(StoreCommitAck::with_snapshot(draft.clone())))
     }
@@ -218,12 +256,11 @@ impl AiChat2Config {
                 }
                 Err(err) => {
                     event!(Level::ERROR, error = ?err, "parse ai-chat2 config.toml failed");
-                    let config = Self {
+                    Ok(Self {
+                        load_error: Some(AiChat2ConfigLoadError::new(path.to_path_buf(), err)),
                         config_path: Some(path.to_path_buf()),
                         ..Default::default()
-                    };
-                    config.save_to_path(path)?;
-                    Ok(config)
+                    })
                 }
             },
             Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -353,6 +390,10 @@ pub(crate) fn app_settings(cx: &impl AppContext) -> AiChat2AppSettings {
     read(cx, |config| {
         AiChat2AppSettings::new(config.app_settings_payload())
     })
+}
+
+pub(crate) fn config_load_error(cx: &impl AppContext) -> Option<AiChat2ConfigLoadError> {
+    read(cx, |config| config.load_error.clone())
 }
 
 impl AppSettingsConfig {
@@ -530,8 +571,8 @@ pub(crate) fn install_for_test(cx: &mut App, config: AiChat2Config) -> AiChat2Re
 #[cfg(test)]
 mod tests {
     use super::{
-        AiChat2AppSettings, AiChat2Config, ChatFormConfig, ChatFormModelConfig, StorageConfig,
-        install_for_test, update_app_settings, update_chat_form_config,
+        AiChat2AppSettings, AiChat2Config, AppSettingsConfig, ChatFormConfig, ChatFormModelConfig,
+        StorageConfig, install_for_test, update_app_settings, update_chat_form_config,
     };
     use ai_chat_agent::McpServerTransport;
     use ai_chat_core::{
@@ -665,18 +706,51 @@ unknown_model_setting = true
     }
 
     #[test]
-    fn malformed_toml_config_rewrites_default_config() {
+    fn malformed_toml_config_preserves_file_and_returns_diagnostic_default() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "not = [valid").expect("write malformed config");
 
         let config = AiChat2Config::load_or_create_from_path(&path).expect("load fallback config");
 
-        assert_eq!(config, AiChat2Config::default());
-        let source = std::fs::read_to_string(&path).expect("read rewritten config");
-        assert!(toml::from_str::<AiChat2Config>(&source).is_ok());
-        assert!(source.contains("[app_settings]"));
-        assert!(!source.contains("not = [valid"));
+        assert_eq!(config.storage, StorageConfig::default());
+        assert_eq!(config.app_settings, AppSettingsConfig::default());
+        assert_eq!(config.chat_form, ChatFormConfig::default());
+        assert!(config.mcp_servers.is_empty());
+        let load_error = config.load_error.expect("load error");
+        assert_eq!(load_error.path_display(), path.display().to_string());
+        assert!(!load_error.message().is_empty());
+        let source = std::fs::read_to_string(&path).expect("read preserved config");
+        assert_eq!(source, "not = [valid");
+    }
+
+    #[gpui::test]
+    fn malformed_toml_config_blocks_later_config_writes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("config.toml");
+        let malformed_source = "not = [valid";
+        std::fs::write(&path, malformed_source).expect("write malformed config");
+        let config = AiChat2Config::load_or_create_from_path(&path).expect("load fallback config");
+
+        let (settings_error, chat_form_error) = cx.update(|cx| {
+            install_for_test(cx, config).expect("install config store");
+            let settings_error = update_app_settings(cx, |payload| {
+                payload.http_proxy = Some("http://127.0.0.1:8080".to_string());
+            })
+            .expect_err("settings update should fail")
+            .to_string();
+            let chat_form_error = update_chat_form_config(cx, |config| {
+                config.approval_mode = ToolApprovalMode::FullAccess;
+            })
+            .expect_err("chat form update should fail")
+            .to_string();
+            (settings_error, chat_form_error)
+        });
+
+        assert!(settings_error.contains("config.toml is invalid"));
+        assert!(chat_form_error.contains("config.toml is invalid"));
+        let source = std::fs::read_to_string(&path).expect("read preserved config");
+        assert_eq!(source, malformed_source);
     }
 
     #[test]
