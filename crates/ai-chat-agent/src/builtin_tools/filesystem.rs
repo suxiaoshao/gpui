@@ -207,6 +207,11 @@ impl LocalTool for WriteFileTool {
 impl ToolExecutor for EditFileTool {
     async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
         let input: EditFileInput = serde_json::from_value(arguments)?;
+        if input.old_text.is_empty() {
+            return Ok(error_output(
+                "oldText must not be empty for edit_file".to_string(),
+            ));
+        }
         let path = normalized_path(&input.path, &self.context)?;
         let old_content = fs::read_to_string(&path)?;
         let count = old_content.matches(&input.old_text).count() as u32;
@@ -487,6 +492,37 @@ mod tests {
             serde_json::from_value(edit.structured_output.unwrap().value).unwrap();
         assert_eq!(edit_output.replacements, 1);
         assert!(edit_output.diff.contains("gamma"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_empty_old_text_without_changing_file() {
+        let dir = tempdir().unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, "alpha\nbeta\n").unwrap();
+
+        let edit = EditFileTool::new(context)
+            .execute(json!({
+                "path": "notes.txt",
+                "oldText": "",
+                "newText": "inserted",
+                "replaceAll": true,
+            }))
+            .await
+            .unwrap();
+
+        assert!(edit.is_error);
+        assert!(edit.structured_output.is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), "alpha\nbeta\n");
+    }
+
+    #[test]
+    fn edit_file_schema_requires_non_empty_old_text() {
+        let schema = edit_file_schema();
+
+        assert_eq!(schema["properties"]["oldText"]["minLength"], json!(1));
     }
 
     #[tokio::test]

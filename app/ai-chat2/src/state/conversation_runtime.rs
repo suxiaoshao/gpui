@@ -35,10 +35,17 @@ pub(crate) struct ConversationRuntimeStore {
 struct ActiveRun {
     key: ActiveRunKey,
     agent_run_id: Option<AgentRunId>,
+    phase: ActiveRunPhase,
     cancel_requested: bool,
     cancel: Box<dyn Fn() + Send + Sync>,
     _run_task: Task<()>,
     _event_task: Task<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveRunPhase {
+    Running,
+    WaitingForApproval,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +155,7 @@ impl ConversationRuntimeStore {
             ActiveRun {
                 key: run_key,
                 agent_run_id: None,
+                phase: ActiveRunPhase::Running,
                 cancel_requested: false,
                 cancel,
                 _run_task: run_task,
@@ -169,10 +177,6 @@ impl ConversationRuntimeStore {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.active_runs.contains_key(&conversation_id) {
-            return false;
-        }
-
         self.last_errors.remove(&conversation_id);
         let repository = database::repository(cx);
         let agent_run_id = match agent_run_id_for_approval(&repository, &approval_decision_id) {
@@ -185,6 +189,14 @@ impl ConversationRuntimeStore {
                 return false;
             }
         };
+        if let Some(active) = self.active_runs.get(&conversation_id)
+            && (active.agent_run_id.as_ref() != Some(&agent_run_id)
+                || active.phase != ActiveRunPhase::WaitingForApproval
+                || active.cancel_requested)
+        {
+            return false;
+        }
+
         let run_key = self.next_active_run_key();
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
@@ -213,6 +225,7 @@ impl ConversationRuntimeStore {
             ActiveRun {
                 key: run_key,
                 agent_run_id: Some(agent_run_id),
+                phase: ActiveRunPhase::Running,
                 cancel_requested: false,
                 cancel,
                 _run_task: run_task,
@@ -246,6 +259,7 @@ impl ConversationRuntimeStore {
             self.last_errors
                 .insert(conversation_id.clone(), err.to_string());
         }
+        self.active_runs.remove(&conversation_id);
         cx.emit(ConversationRuntimeEvent::ConversationChanged {
             conversation_id: conversation_id.clone(),
         });
@@ -346,6 +360,18 @@ impl ConversationRuntimeStore {
         };
         if active.key != run_key {
             return false;
+        }
+
+        if let Ok(handle) = &result
+            && handle.agent_run.status == AgentRunStatus::WaitingForApproval
+        {
+            if let Some(active) = self.active_runs.get_mut(&conversation_id) {
+                active.agent_run_id = Some(handle.agent_run.id.clone());
+                active.phase = ActiveRunPhase::WaitingForApproval;
+            }
+            cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+            cx.notify();
+            return true;
         }
 
         let cancel_requested = self
@@ -629,6 +655,7 @@ mod tests {
         ActiveRun {
             key,
             agent_run_id: None,
+            phase: ActiveRunPhase::Running,
             cancel_requested,
             cancel: Box::new(move || {
                 cancel_count.fetch_add(1, Ordering::SeqCst);
@@ -692,6 +719,7 @@ mod tests {
                     ActiveRun {
                         key: ActiveRunKey(0),
                         agent_run_id: None,
+                        phase: ActiveRunPhase::Running,
                         cancel_requested: false,
                         cancel: cancel_with_token(cancellation_token.clone()),
                         _run_task: Task::ready(()),
@@ -787,6 +815,59 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn finish_run_keeps_waiting_for_approval_active(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
+        let (conversation_id, agent_run) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
+            (conversation_id, agent_run)
+        });
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.active_runs.insert(
+                    conversation_id.clone(),
+                    active_run(ActiveRunKey(0), Arc::new(AtomicUsize::new(0)), false),
+                );
+                assert!(store.finish_run(
+                    conversation_id.clone(),
+                    ActiveRunKey(0),
+                    Ok(AgentRunHandle {
+                        agent_run: agent_run.clone(),
+                        output: None,
+                        events: Vec::new(),
+                        steps: Vec::new(),
+                    }),
+                    cx
+                ));
+
+                let active = store
+                    .active_runs
+                    .get(&conversation_id)
+                    .expect("waiting approval remains active");
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run.id));
+                assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
+            });
+        });
+
+        let events = cx.update(|cx| recorder.read(cx).events.lock().unwrap().clone());
+        assert!(
+            events.contains(&ConversationRuntimeEvent::ConversationChanged {
+                conversation_id: conversation_id.clone(),
+            })
+        );
+        assert!(!events.contains(&ConversationRuntimeEvent::RunFinished { conversation_id }));
     }
 
     #[gpui::test]

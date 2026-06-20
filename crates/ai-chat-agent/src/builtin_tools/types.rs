@@ -298,7 +298,7 @@ pub fn edit_file_schema() -> Value {
         "additionalProperties": false,
         "properties": {
             "path": { "type": "string" },
-            "oldText": { "type": "string" },
+            "oldText": { "type": "string", "minLength": 1 },
             "newText": { "type": "string" },
             "replaceAll": { "type": "boolean" },
             "expectedReplacements": { "type": "integer", "minimum": 1 },
