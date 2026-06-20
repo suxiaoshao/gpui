@@ -182,12 +182,9 @@ pub(crate) fn conversation_item_to_rig_message(
             "Previous run error [{}]: {}",
             error.code, error.message
         ))),
-        ConversationItemPayload::ApprovalDecision(item) => Some(RigMessage::system(format!(
-            "Tool approval decision: approved={} reason={}",
-            item.decision.approved,
-            item.decision.reason.clone().unwrap_or_default()
-        ))),
-        ConversationItemPayload::ApprovalRequest(_) | ConversationItemPayload::Status(_) => None,
+        ConversationItemPayload::ApprovalRequest(_)
+        | ConversationItemPayload::ApprovalDecision(_)
+        | ConversationItemPayload::Status(_) => None,
     })
 }
 
@@ -592,7 +589,7 @@ mod tests {
         );
         let tool_result = conversation_item_with_payload(
             "tool-result-1",
-            3,
+            4,
             Some("run-parent"),
             ConversationItemKind::ToolResult,
             ConversationItemPayload::ToolResult(ToolResultItem {
@@ -606,7 +603,21 @@ mod tests {
                 raw_output: None,
             }),
         );
-        let items = vec![user, tool_call, tool_result];
+        let approval_decision = conversation_item_with_payload(
+            "approval-decision-1",
+            3,
+            Some("run-parent"),
+            ConversationItemKind::ApprovalDecision,
+            ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
+                approval_decision_id: "approval-1".to_string(),
+                decision: ApprovalDecisionPayload {
+                    approved: true,
+                    decided_by: "user".to_string(),
+                    reason: Some("ok".to_string()),
+                },
+            }),
+        );
+        let items = vec![user, tool_call, approval_decision, tool_result];
 
         let prompt_history =
             build_prompt_history(&items, &[], "user-1", "run-resume", Some("run-parent")).unwrap();
@@ -616,9 +627,11 @@ mod tests {
             vec![
                 "user-1".to_string(),
                 "tool-call-1".to_string(),
+                "approval-decision-1".to_string(),
                 "tool-result-1".to_string()
             ]
         );
+        assert_eq!(prompt_history.history.len(), 2);
         assert!(matches!(
             prompt_history.history.first(),
             Some(RigMessage::User { .. })
