@@ -504,11 +504,28 @@ impl FreshRepository {
         &self,
         input: NewConversationWithUserItem,
     ) -> Result<ConversationWithUserItemRecord> {
+        self.insert_conversation_with_user_item_with_id(new_id(), input)
+    }
+
+    pub fn insert_conversation_with_user_item_with_id(
+        &self,
+        id: ConversationId,
+        input: NewConversationWithUserItem,
+    ) -> Result<ConversationWithUserItemRecord> {
+        self.insert_conversation_with_user_item_with_id_and_attachments(id, input, Vec::new())
+    }
+
+    pub fn insert_conversation_with_user_item_with_id_and_attachments(
+        &self,
+        id: ConversationId,
+        input: NewConversationWithUserItem,
+        attachments: Vec<NewAttachment>,
+    ) -> Result<ConversationWithUserItemRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
             let new_conversation_row = SqlNewConversationRow {
-                id: new_id(),
+                id,
                 project_id: input.conversation.project_id,
                 title: input.conversation.title,
                 status: db_label(&ConversationStatus::Active)?,
@@ -531,6 +548,7 @@ impl FreshRepository {
                 .try_into()?;
             let mut user_item = input.user_item;
             user_item.conversation_id = new_conversation_row.id;
+            insert_attachments_into_message_item_with_conn(conn, &mut user_item, attachments)?;
             let user_item = append_conversation_item_with_conn(conn, user_item)?;
             let conversation = conversation_row(conn, &conversation.id)?
                 .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
@@ -703,6 +721,18 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| append_conversation_item_with_conn(conn, input))
     }
 
+    pub fn append_conversation_item_with_attachments(
+        &self,
+        mut input: NewConversationItem,
+        attachments: Vec<NewAttachment>,
+    ) -> Result<ConversationItemRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
+            append_conversation_item_with_conn(conn, input)
+        })
+    }
+
     pub fn conversation_items(&self, conversation_id: &str) -> Result<Vec<ConversationItemRecord>> {
         let mut conn = self.conn()?;
         conversation_items::table
@@ -817,31 +847,7 @@ impl FreshRepository {
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let row = SqlNewAttachmentRow {
-                id: new_id(),
-                conversation_id: input.conversation_id,
-                kind: db_label(&input.kind)?,
-                storage_kind: db_label(&input.storage_kind)?,
-                mime_type: input.mime_type,
-                name: input.name,
-                path: input.path,
-                external_uri: input.external_uri,
-                provider_id: input.provider_id,
-                provider_file_id: input.provider_file_id,
-                sha256: input.sha256,
-                size_bytes: input.size_bytes,
-                metadata_json: to_json(&input.metadata)?,
-                created_at: now,
-                updated_at: now,
-            };
-            diesel::insert_into(attachments::table)
-                .values(&row)
-                .returning(SqlAttachmentRow::as_returning())
-                .get_result::<SqlAttachmentRow>(conn)?
-                .try_into()
-        })
+        conn.immediate_transaction(|conn| insert_attachment_with_conn(conn, input))
     }
 
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
@@ -1472,6 +1478,75 @@ fn append_conversation_item_with_conn(
         ))
         .execute(conn)?;
     item.try_into()
+}
+
+fn insert_attachments_into_message_item_with_conn(
+    conn: &mut SqliteConnection,
+    item: &mut NewConversationItem,
+    attachments: Vec<NewAttachment>,
+) -> Result<()> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    let ConversationItemPayload::Message { content, .. } = &mut item.payload else {
+        return Err(DbError::Invariant(
+            "attachments can only be added to message items".to_string(),
+        ));
+    };
+
+    for attachment in attachments {
+        if attachment.conversation_id != item.conversation_id {
+            return Err(DbError::Invariant(
+                "attachment conversation does not match message conversation".to_string(),
+            ));
+        }
+        let record = insert_attachment_with_conn(conn, attachment)?;
+        content.push(content_part_for_attachment(&record));
+    }
+    Ok(())
+}
+
+fn content_part_for_attachment(attachment: &AttachmentRecord) -> ContentPart {
+    match attachment.kind {
+        AttachmentKind::Image => ContentPart::Image {
+            attachment_id: attachment.id.clone(),
+        },
+        AttachmentKind::File => ContentPart::File {
+            attachment_id: attachment.id.clone(),
+        },
+        AttachmentKind::Audio | AttachmentKind::Attachment => ContentPart::Attachment {
+            attachment_id: attachment.id.clone(),
+        },
+    }
+}
+
+fn insert_attachment_with_conn(
+    conn: &mut SqliteConnection,
+    input: NewAttachment,
+) -> Result<AttachmentRecord> {
+    let now = now_string()?;
+    let row = SqlNewAttachmentRow {
+        id: new_id(),
+        conversation_id: input.conversation_id,
+        kind: db_label(&input.kind)?,
+        storage_kind: db_label(&input.storage_kind)?,
+        mime_type: input.mime_type,
+        name: input.name,
+        path: input.path,
+        external_uri: input.external_uri,
+        provider_id: input.provider_id,
+        provider_file_id: input.provider_file_id,
+        sha256: input.sha256,
+        size_bytes: input.size_bytes,
+        metadata_json: to_json(&input.metadata)?,
+        created_at: now,
+        updated_at: now,
+    };
+    diesel::insert_into(attachments::table)
+        .values(&row)
+        .returning(SqlAttachmentRow::as_returning())
+        .get_result::<SqlAttachmentRow>(conn)?
+        .try_into()
 }
 
 fn conversation_matches_query(

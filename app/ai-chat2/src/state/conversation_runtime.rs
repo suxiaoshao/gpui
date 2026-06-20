@@ -1,6 +1,8 @@
 use std::{collections::HashMap, time::Duration};
 
-use ai_chat_agent::{AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver};
+use ai_chat_agent::{
+    AgentCancellationToken, AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver,
+};
 use ai_chat_core::{AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationId};
 use ai_chat_db::FreshRepository;
 use ai_chat_db::NewApprovalDecisionOutcome;
@@ -187,8 +189,17 @@ impl ConversationRuntimeStore {
         let event_task = self.spawn_event_listener(rx, cx);
         let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
+        let cancellation_token = AgentCancellationToken::new();
+        let cancel = cancel_with_token(cancellation_token.clone());
         let run_task = window.spawn(cx, async move |cx| {
-            let result = approve_tool_with_runtime(repository, approval_decision_id, tx, cx).await;
+            let result = approve_tool_with_runtime(
+                repository,
+                approval_decision_id,
+                cancellation_token,
+                tx,
+                cx,
+            )
+            .await;
             if let Err(err) = store.update_in(cx, |store, _window, cx| {
                 store.finish_run(run_conversation_id.clone(), run_key, result, cx);
             }) {
@@ -202,7 +213,7 @@ impl ConversationRuntimeStore {
                 key: run_key,
                 agent_run_id: Some(agent_run_id),
                 cancel_requested: false,
-                cancel: Box::new(|| {}),
+                cancel,
                 _run_task: run_task,
                 _event_task: event_task,
             },
@@ -393,6 +404,10 @@ impl ConversationRuntimeStore {
     }
 }
 
+fn cancel_with_token(cancellation_token: AgentCancellationToken) -> Box<dyn Fn() + Send + Sync> {
+    Box::new(move || cancellation_token.cancel())
+}
+
 pub(crate) fn init(cx: &mut App) {
     let store = cx.new(|_| ConversationRuntimeStore::new());
     cx.set_global(ConversationRuntimeGlobal(store));
@@ -432,6 +447,7 @@ async fn run_agent_with_saved_provider(
 async fn approve_tool_with_runtime(
     repository: FreshRepository,
     approval_decision_id: ApprovalDecisionId,
+    cancellation_token: AgentCancellationToken,
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
 ) -> Result<AgentRunHandle, String> {
@@ -442,12 +458,14 @@ async fn approve_tool_with_runtime(
         }
     });
     let runtime = AgentRuntime::new(repository.clone());
+    let approval_cancellation_token = cancellation_token.clone();
     let approval_handle = gpui_tokio::Tokio::spawn(cx, async move {
         runtime
             .approve_and_resume_tool(
                 &approval_decision_id,
                 "user".to_string(),
                 None,
+                approval_cancellation_token,
                 Some(&observer),
             )
             .await
@@ -465,8 +483,18 @@ async fn approve_tool_with_runtime(
         });
     }
 
-    let resume_request = resume_request_after_approval(&repository, &approval_handle.agent_run)
+    if cancellation_token.is_cancelled() {
+        return Ok(AgentRunHandle {
+            agent_run: approval_handle.agent_run,
+            output: Some(approval_handle.output),
+            events: approval_handle.events,
+            steps: approval_handle.steps,
+        });
+    }
+
+    let mut resume_request = resume_request_after_approval(&repository, &approval_handle.agent_run)
         .map_err(|err| err.to_string())?;
+    resume_request.cancellation_token = cancellation_token;
     run_agent_with_saved_provider(repository, resume_request, tx, cx).await
 }
 
@@ -646,6 +674,34 @@ mod tests {
         });
 
         assert_eq!(cancel_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[gpui::test]
+    fn stop_run_cancels_token_backed_active_run(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let conversation_id = "conversation-1".to_string();
+        let cancellation_token = AgentCancellationToken::new();
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.active_runs.insert(
+                    conversation_id.clone(),
+                    ActiveRun {
+                        key: ActiveRunKey(0),
+                        agent_run_id: None,
+                        cancel_requested: false,
+                        cancel: cancel_with_token(cancellation_token.clone()),
+                        _run_task: Task::ready(()),
+                        _event_task: Task::ready(()),
+                    },
+                );
+
+                assert!(store.stop_run(&conversation_id, cx));
+            });
+        });
+
+        assert!(cancellation_token.is_cancelled());
     }
 
     #[gpui::test]

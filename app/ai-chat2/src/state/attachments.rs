@@ -5,15 +5,13 @@ use std::{
 };
 
 use ai_chat_core::{
-    AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ContentPart,
-    ConversationId, ConversationItemPayload, ConversationItemStatus, TranscriptRole,
+    AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
 };
-use ai_chat_db::ConversationItemRecord;
 use ai_chat_db::NewAttachment;
 use gpui::{App, ClipboardEntry, ClipboardItem, Image, ImageFormat};
+use tracing::{Level, event};
 
 use crate::{
-    database,
     errors::{AiChat2Error, AiChat2Result},
     state::config,
 };
@@ -46,6 +44,12 @@ pub(crate) struct RejectedAttachment {
 pub(crate) struct AttachmentAddResult {
     pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) rejected: Vec<RejectedAttachment>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PreparedMessageAttachments {
+    pub(crate) new_attachments: Vec<NewAttachment>,
+    pub(crate) stored_paths: Vec<PathBuf>,
 }
 
 pub(crate) fn clipboard_item_has_attachments(item: &ClipboardItem) -> bool {
@@ -93,29 +97,34 @@ pub(crate) fn add_attachments_from_paths(
     Ok(result)
 }
 
-pub(crate) fn content_parts_with_attachments(
+pub(crate) fn prepare_message_attachments(
     conversation_id: &ConversationId,
-    user_item_id: &str,
-    mut content_parts: Vec<ContentPart>,
+    storage_prefix: &str,
     attachments: &[ComposerAttachment],
     cx: &App,
-) -> AiChat2Result<Vec<ContentPart>> {
+) -> AiChat2Result<PreparedMessageAttachments> {
     if attachments.is_empty() {
-        return Ok(content_parts);
+        return Ok(PreparedMessageAttachments::default());
     }
 
     let attachment_dir = attachment_store_dir(conversation_id, cx)?;
     fs::create_dir_all(&attachment_dir)?;
 
+    let mut prepared = PreparedMessageAttachments::default();
     for attachment in attachments {
-        let stored_path = stored_attachment_path(&attachment_dir, user_item_id, attachment);
-        fs::copy(&attachment.path, &stored_path)?;
+        let stored_path = stored_attachment_path(&attachment_dir, storage_prefix, attachment);
+        if let Err(err) = fs::copy(&attachment.path, &stored_path) {
+            cleanup_stored_attachment_files(&prepared.stored_paths);
+            let _ = fs::remove_file(&stored_path);
+            return Err(err.into());
+        }
+        prepared.stored_paths.push(stored_path.clone());
         let path_string = stored_path.to_string_lossy().to_string();
         let kind = match attachment.kind {
             ComposerAttachmentKind::Image => AttachmentKind::Image,
             ComposerAttachmentKind::File => AttachmentKind::File,
         };
-        let record = database::repository(cx).insert_attachment(NewAttachment {
+        prepared.new_attachments.push(NewAttachment {
             conversation_id: conversation_id.clone(),
             kind,
             storage_kind: AttachmentStorageKind::LocalFile,
@@ -136,33 +145,25 @@ pub(crate) fn content_parts_with_attachments(
                 duration_ms: None,
                 preview_attachment_id: None,
             },
-        })?;
-        content_parts.push(match attachment.kind {
-            ComposerAttachmentKind::Image => ContentPart::Image {
-                attachment_id: record.id,
-            },
-            ComposerAttachmentKind::File => ContentPart::File {
-                attachment_id: record.id,
-            },
         });
     }
 
-    Ok(content_parts)
+    Ok(prepared)
 }
 
-pub(crate) fn update_user_item_with_attachments(
-    user_item_id: &str,
-    content_parts: Vec<ContentPart>,
-    cx: &App,
-) -> AiChat2Result<ConversationItemRecord> {
-    Ok(database::repository(cx).update_conversation_item_payload(
-        user_item_id,
-        ConversationItemStatus::Completed,
-        ConversationItemPayload::Message {
-            role: TranscriptRole::User,
-            content: content_parts,
-        },
-    )?)
+pub(crate) fn cleanup_stored_attachment_files(paths: &[PathBuf]) {
+    for path in paths {
+        if let Err(err) = fs::remove_file(path)
+            && path.exists()
+        {
+            event!(
+                Level::WARN,
+                path = %path.display(),
+                error = %err,
+                "failed to clean up prepared attachment file"
+            );
+        }
+    }
 }
 
 pub(crate) fn model_support_issue(

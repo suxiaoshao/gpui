@@ -1,12 +1,13 @@
 use super::{AgentRuntime, emit_runtime, error_tool_output};
 use crate::{
-    AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, ApprovalResumeOutcome,
-    Result, persistence::run_error, tool_registry::tool_output_to_model_text,
+    AgentCancellationToken, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
+    ApprovalResumeOutcome, Result, persistence::run_error,
+    tool_registry::tool_output_to_model_text,
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    ApprovalDecisionRecord, NewApprovalDecisionOutcome, NewConversationItem, ToolInvocationRecord,
-    UpdateAgentRunStatus, UpdateToolInvocationStatus,
+    AgentRunRecord, ApprovalDecisionRecord, NewApprovalDecisionOutcome, NewConversationItem,
+    ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
 };
 
 impl AgentRuntime {
@@ -15,6 +16,7 @@ impl AgentRuntime {
         approval_decision_id: &str,
         decided_by: String,
         reason: Option<String>,
+        cancellation_token: AgentCancellationToken,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<ApprovalResumeOutcome> {
         let approval = self
@@ -108,6 +110,15 @@ impl AgentRuntime {
         if let Some(item_id) = decision_item_id {
             steps.push(AgentStep::ConversationItem(item_id));
         }
+        if cancellation_token.is_cancelled() {
+            return self.cancel_approved_tool_resume(
+                updated_approval,
+                &agent_run,
+                &invocation,
+                steps,
+                observer,
+            );
+        }
 
         let running_run = self.repo.update_agent_run_status(
             &agent_run.id,
@@ -141,6 +152,15 @@ impl AgentRuntime {
             },
         );
         steps.push(AgentStep::ToolInvocation(running_invocation.id.clone()));
+        if cancellation_token.is_cancelled() {
+            return self.cancel_approved_tool_resume(
+                updated_approval,
+                &running_run,
+                &running_invocation,
+                steps,
+                observer,
+            );
+        }
 
         let (tool_output, tool_status, tool_error) =
             match crate::builtin_tools::registry::execute_builtin_tool(
@@ -186,6 +206,15 @@ impl AgentRuntime {
                     )
                 }
             };
+        if cancellation_token.is_cancelled() {
+            return self.cancel_approved_tool_resume(
+                updated_approval,
+                &running_run,
+                &running_invocation,
+                steps,
+                observer,
+            );
+        }
 
         let tool_result_item_id = self.append_tool_result_and_update_tool_invocation(
             &agent_run.conversation_id,
@@ -240,6 +269,55 @@ impl AgentRuntime {
             agent_run,
             output,
             events,
+            steps,
+        })
+    }
+
+    fn cancel_approved_tool_resume(
+        &self,
+        approval: ApprovalDecisionRecord,
+        agent_run: &AgentRunRecord,
+        invocation: &ToolInvocationRecord,
+        mut steps: Vec<AgentStep>,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<ApprovalResumeOutcome> {
+        let error = run_error("canceled", "runtime canceled", false, None);
+        let tool_result_item_id = self.append_error_tool_result_and_update_tool_invocation(
+            &agent_run.conversation_id,
+            invocation,
+            ToolInvocationStatus::Canceled,
+            error,
+        )?;
+        steps.push(AgentStep::ConversationItem(tool_result_item_id.clone()));
+        let output = AgentRunOutput {
+            final_item_id: Some(tool_result_item_id),
+            stopped_reason: AgentStoppedReason::Canceled,
+        };
+        let agent_run = self.repo.update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Canceled,
+                output: Some(output.clone()),
+                error: None,
+            },
+        )?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run.id.clone(),
+                status: AgentRunStatus::Canceled,
+            },
+        );
+        Ok(ApprovalResumeOutcome {
+            approval,
+            agent_run,
+            output,
+            events: vec![
+                AgentRunEvent::ToolInvocationFinished {
+                    tool_invocation_id: invocation.id.clone(),
+                },
+                AgentRunEvent::Canceled,
+            ],
             steps,
         })
     }

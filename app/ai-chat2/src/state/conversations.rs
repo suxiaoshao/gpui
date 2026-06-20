@@ -6,7 +6,7 @@ use ai_chat_core::{
     ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
     ConversationSettingsSnapshot, ProjectId, PromptContent, PromptId, ReasoningSelectionSnapshot,
     RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy,
-    ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole,
+    ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole, new_id,
 };
 use ai_chat_db::{
     ConversationItemRecord, ConversationTimelineRecords, ConversationWithUserItemRecord,
@@ -20,7 +20,7 @@ use crate::{
     foundation::I18n,
     state::{
         attachments::{
-            ComposerAttachment, content_parts_with_attachments, update_user_item_with_attachments,
+            ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments,
         },
         projects,
         providers::ProviderModelChoice,
@@ -72,7 +72,6 @@ pub(crate) fn create_conversation(
     request: CreateConversationRequest,
     cx: &mut App,
 ) -> AiChat2Result<CreatedConversation> {
-    let project = project_for_new_conversation(request.project_id.as_ref(), cx)?;
     let repository = database::repository(cx);
     let provider = repository
         .get_provider(&request.provider_model.provider_id)?
@@ -89,6 +88,17 @@ pub(crate) fn create_conversation(
         request.prompt_snapshot.clone(),
         tool_policy.clone(),
     );
+    let conversation_id = new_id();
+    let prepared_attachments =
+        prepare_message_attachments(&conversation_id, &new_id(), &request.attachments, cx)?;
+    let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
+    let project = match project_for_new_conversation(request.project_id.as_ref(), cx) {
+        Ok(project) => project,
+        Err(err) => {
+            cleanup_stored_attachment_files(&attachment_cleanup_paths);
+            return Err(err);
+        }
+    };
     let conversation = NewConversation {
         project_id: project.id.clone(),
         title: conversation_title(&request.title_seed, cx.global::<I18n>()),
@@ -99,23 +109,21 @@ pub(crate) fn create_conversation(
         metadata: empty_conversation_metadata(),
         settings_snapshot,
     };
-    let user_item = new_user_message_item(String::new(), request.content_parts.clone());
-    let mut record =
-        repository.insert_conversation_with_user_item(NewConversationWithUserItem {
+    let user_item = new_user_message_item(conversation_id.clone(), request.content_parts.clone());
+    let record = match repository.insert_conversation_with_user_item_with_id_and_attachments(
+        conversation_id,
+        NewConversationWithUserItem {
             conversation,
             user_item,
-        })?;
-    if !request.attachments.is_empty() {
-        let content_parts = content_parts_with_attachments(
-            &record.conversation.id,
-            &record.user_item.id,
-            request.content_parts.clone(),
-            &request.attachments,
-            cx,
-        )?;
-        record.user_item =
-            update_user_item_with_attachments(&record.user_item.id, content_parts, cx)?;
-    }
+        },
+        prepared_attachments.new_attachments,
+    ) {
+        Ok(record) => record,
+        Err(err) => {
+            cleanup_stored_attachment_files(&attachment_cleanup_paths);
+            return Err(err.into());
+        }
+    };
     update_last_active_conversation(&project, &record.conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &record.conversation.id,
@@ -165,20 +173,19 @@ pub(crate) fn send_conversation_message(
                 request.provider_model.provider_id
             ))
         })?;
-    let mut item = repository.append_conversation_item(new_user_message_item(
-        conversation.id.clone(),
-        request.content_parts.clone(),
-    ))?;
-    if !request.attachments.is_empty() {
-        let content_parts = content_parts_with_attachments(
-            &conversation.id,
-            &item.id,
-            request.content_parts,
-            &request.attachments,
-            cx,
-        )?;
-        item = update_user_item_with_attachments(&item.id, content_parts, cx)?;
-    }
+    let prepared_attachments =
+        prepare_message_attachments(&conversation.id, &new_id(), &request.attachments, cx)?;
+    let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
+    let item = match repository.append_conversation_item_with_attachments(
+        new_user_message_item(conversation.id.clone(), request.content_parts.clone()),
+        prepared_attachments.new_attachments,
+    ) {
+        Ok(item) => item,
+        Err(err) => {
+            cleanup_stored_attachment_files(&attachment_cleanup_paths);
+            return Err(err.into());
+        }
+    };
     update_last_active_conversation(&project, &conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &conversation.id,
@@ -345,8 +352,20 @@ fn conversation_title(seed: &str, i18n: &I18n) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::conversation_title;
-    use crate::foundation::I18n;
+    use super::*;
+    use crate::{
+        database::{self, FreshStoreGlobal},
+        foundation::I18n,
+        state::{AiChat2Config, attachments::ComposerAttachmentKind},
+    };
+    use ai_chat_core::{
+        ModelCapabilitiesSnapshot, ProjectKind, ProjectMetadata, ProviderSecretRefs,
+        ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
+        conservative_model_capabilities,
+    };
+    use ai_chat_db::{NewConversation, NewProject, NewProvider, ProjectRecord};
+    use gpui::TestAppContext;
+    use tempfile::{TempDir, tempdir};
 
     #[test]
     fn conversation_title_uses_first_non_empty_line() {
@@ -360,5 +379,209 @@ mod tests {
         let i18n = I18n::english_for_test();
 
         assert_eq!(conversation_title("  ", &i18n), "New conversation");
+    }
+
+    #[gpui::test]
+    fn send_message_does_not_persist_user_item_when_attachment_copy_fails(cx: &mut TestAppContext) {
+        let dir = init_conversations_test(cx);
+        let (conversation_id, provider_model, initial_item_count) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            let provider_model = provider_model_choice(&provider.id);
+            let conversation_id = insert_conversation(&repository, &provider_model);
+            let initial_item_count = repository
+                .conversation_items(&conversation_id)
+                .unwrap()
+                .len();
+            (conversation_id, provider_model, initial_item_count)
+        });
+        let missing_path = dir.path().join("missing-attachment.txt");
+
+        let result = cx.update(|cx| {
+            send_conversation_message(
+                SendConversationMessageRequest {
+                    conversation_id: conversation_id.clone(),
+                    content_parts: vec![ContentPart::Text {
+                        text: "send with missing attachment".to_string(),
+                    }],
+                    attachments: vec![ComposerAttachment {
+                        local_id: 1,
+                        kind: ComposerAttachmentKind::File,
+                        path: missing_path,
+                        name: "missing-attachment.txt".to_string(),
+                        mime_type: Some("text/plain".to_string()),
+                        size_bytes: Some(12),
+                        width: None,
+                        height: None,
+                    }],
+                    skill_requests: Vec::new(),
+                    provider_model,
+                    reasoning_selection: None,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                },
+                cx,
+            )
+        });
+
+        assert!(result.is_err());
+        cx.update(|cx| {
+            let repository = database::repository(cx);
+            assert_eq!(
+                repository
+                    .conversation_items(&conversation_id)
+                    .unwrap()
+                    .len(),
+                initial_item_count
+            );
+            assert!(
+                repository
+                    .conversation_attachments(&conversation_id)
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn create_conversation_does_not_persist_conversation_when_attachment_copy_fails(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = init_conversations_test(cx);
+        let provider_model = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            provider_model_choice(&provider.id)
+        });
+        let missing_path = dir.path().join("missing-new-conversation.txt");
+
+        let result = cx.update(|cx| {
+            create_conversation(
+                CreateConversationRequest {
+                    project_id: None,
+                    content_parts: vec![ContentPart::Text {
+                        text: "new conversation with missing attachment".to_string(),
+                    }],
+                    attachments: vec![ComposerAttachment {
+                        local_id: 1,
+                        kind: ComposerAttachmentKind::File,
+                        path: missing_path,
+                        name: "missing-new-conversation.txt".to_string(),
+                        mime_type: Some("text/plain".to_string()),
+                        size_bytes: Some(12),
+                        width: None,
+                        height: None,
+                    }],
+                    title_seed: "new conversation with missing attachment".to_string(),
+                    skill_requests: Vec::new(),
+                    provider_model,
+                    reasoning_selection: None,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    prompt_id: None,
+                    prompt_snapshot: None,
+                    trigger_kind: AgentRunTriggerKind::User,
+                },
+                cx,
+            )
+        });
+
+        assert!(result.is_err());
+        cx.update(|cx| {
+            assert!(
+                database::repository(cx)
+                    .list_sidebar_conversations()
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    fn init_conversations_test(cx: &mut TestAppContext) -> TempDir {
+        let dir = tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            let mut config =
+                AiChat2Config::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
+            config.storage.data_dir = Some(dir.path().join("data"));
+            crate::state::config::install_for_test(cx, config).unwrap();
+            crate::foundation::i18n::init(cx);
+        });
+        dir
+    }
+
+    fn insert_conversation(
+        repository: &ai_chat_db::FreshRepository,
+        provider_model: &ProviderModelChoice,
+    ) -> ConversationId {
+        let project = insert_project(repository);
+        repository
+            .insert_conversation(NewConversation {
+                project_id: project.id,
+                title: "Conversation Test".to_string(),
+                pinned: false,
+                prompt_id: None,
+                default_provider_id: Some(provider_model.provider_id.clone()),
+                default_model_id: Some(provider_model.model_id.clone()),
+                metadata: empty_conversation_metadata(),
+                settings_snapshot: conversation_settings_snapshot(
+                    provider_model,
+                    None,
+                    default_tool_policy(),
+                ),
+            })
+            .unwrap()
+            .id
+    }
+
+    fn insert_project(repository: &ai_chat_db::FreshRepository) -> ProjectRecord {
+        repository
+            .insert_project(NewProject {
+                path: format!("/tmp/ai-chat2-conversation-test-{}", new_id()),
+                display_name: "Conversation Test".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap()
+    }
+
+    fn provider_for_test() -> NewProvider {
+        NewProvider {
+            kind: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            enabled: true,
+            settings: ProviderSettingsPayload {
+                provider_kind: "openai".to_string(),
+                fields: vec![ProviderSettingFieldValue {
+                    key: "base_url".to_string(),
+                    value: ProviderSettingValue::String {
+                        value: "https://api.openai.com/v1".to_string(),
+                    },
+                }],
+            },
+            secret_refs: ProviderSecretRefs { refs: Vec::new() },
+        }
+    }
+
+    fn provider_model_choice(provider_id: &str) -> ProviderModelChoice {
+        ProviderModelChoice {
+            provider_id: provider_id.to_string(),
+            provider_kind: "openai".to_string(),
+            provider_display_name: "OpenAI".to_string(),
+            model_id: "gpt-5".to_string(),
+            model_display_name: None,
+            capabilities: model_capabilities(),
+        }
+    }
+
+    fn model_capabilities() -> ModelCapabilitiesSnapshot {
+        let mut capabilities = conservative_model_capabilities("openai");
+        capabilities.file_input =
+            Some(ai_chat_core::FileInputCapabilitySnapshot { max_files: Some(4) });
+        capabilities
     }
 }

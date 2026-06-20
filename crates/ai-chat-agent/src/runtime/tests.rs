@@ -10,6 +10,7 @@ use ai_chat_db::{
 };
 use async_trait::async_trait;
 use rig_core::{
+    OneOrMany,
     agent::{PromptHook, ToolCallHookAction},
     completion::{
         AssistantContent, CompletionError, CompletionRequest, CompletionResponse,
@@ -320,6 +321,35 @@ async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() 
         .unwrap();
     assert_eq!(provider_steps.len(), 1);
     assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+}
+
+#[tokio::test]
+async fn non_streaming_cancellation_before_response_persistence_marks_run_canceled() {
+    let fixture = Fixture::new("non-streaming-cancel");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let request = fixture.request();
+    let model = CancelDuringCompletionModel {
+        cancellation_token: request.cancellation_token.clone(),
+    };
+
+    let handle = runtime.run_with_model(request, model).await.unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    assert_eq!(
+        handle.output.as_ref().unwrap().stopped_reason,
+        AgentStoppedReason::Canceled
+    );
+    let items = fixture
+        .repo
+        .conversation_items(&fixture.conversation.id)
+        .unwrap();
+    assert!(!items.iter().any(|item| matches!(
+        item.payload,
+        ConversationItemPayload::Message {
+            role: TranscriptRole::Assistant,
+            ..
+        }
+    )));
 }
 
 #[tokio::test]
@@ -926,6 +956,7 @@ async fn approved_builtin_tool_executes_and_completes_run() {
             &approval.id,
             "user".to_string(),
             Some("ok".to_string()),
+            crate::AgentCancellationToken::new(),
             None,
         )
         .await
@@ -974,6 +1005,47 @@ async fn approved_builtin_tool_executes_and_completes_run() {
                         .is_some_and(|text| text.contains("approved.txt"))
         )
     }));
+}
+
+#[tokio::test]
+async fn approved_builtin_tool_cancellation_stops_before_execution() {
+    let fixture = Fixture::new("approved-builtin-canceled");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let (agent_run, invocation, approval) = insert_waiting_builtin_write_approval(&fixture);
+    let cancellation_token = crate::AgentCancellationToken::new();
+    cancellation_token.cancel();
+
+    let outcome = runtime
+        .approve_and_resume_tool(
+            &approval.id,
+            "user".to_string(),
+            Some("stop".to_string()),
+            cancellation_token,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.approval.status, ApprovalStatus::Approved);
+    assert_eq!(outcome.agent_run.status, AgentRunStatus::Canceled);
+    assert_eq!(outcome.output.stopped_reason, AgentStoppedReason::Canceled);
+    assert!(!fixture.dir.path().join("approved.txt").exists());
+
+    let approval = fixture
+        .repo
+        .get_approval_decision(&approval.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.status, ApprovalStatus::Approved);
+    let invocation = fixture
+        .repo
+        .get_tool_invocation(&invocation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
+    assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
+    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+    assert_eq!(agent_run.status, AgentRunStatus::Canceled);
 }
 
 #[test]
@@ -1829,6 +1901,46 @@ impl CompletionModel for ReasoningStreamModel {
 #[derive(Clone)]
 struct CancelAfterTextStreamModel {
     cancellation_token: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+struct CancelDuringCompletionModel {
+    cancellation_token: tokio_util::sync::CancellationToken,
+}
+
+impl CompletionModel for CancelDuringCompletionModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        self.cancellation_token.cancel();
+        Ok(CompletionResponse {
+            choice: OneOrMany::one(AssistantContent::text("late response")),
+            usage: Usage::new(),
+            raw_response: MockResponse::new(),
+            message_id: None,
+        })
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        Err(CompletionError::ProviderError(
+            "cancel-during-completion model only supports completion".to_string(),
+        ))
+    }
 }
 
 impl CompletionModel for CancelAfterTextStreamModel {

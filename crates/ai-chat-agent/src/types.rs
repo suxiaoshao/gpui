@@ -6,6 +6,8 @@ use rig_core::completion::CompletionModel;
 use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+pub type AgentCancellationToken = CancellationToken;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeGuards {
     pub max_steps: u32,
@@ -43,7 +45,7 @@ pub struct AgentRunRequest {
     pub provider_tools: Vec<rig_core::completion::ProviderToolDefinition>,
     pub project_root: Option<PathBuf>,
     pub guards: RuntimeGuards,
-    pub cancellation_token: CancellationToken,
+    pub cancellation_token: AgentCancellationToken,
 }
 
 impl AgentRunRequest {

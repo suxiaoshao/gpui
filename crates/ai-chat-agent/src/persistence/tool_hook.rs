@@ -357,6 +357,10 @@ where
         _prompt: &rig_core::completion::Message,
         response: &CompletionResponse<M::Response>,
     ) -> HookAction {
+        if self.context.cancellation_token.is_cancelled() {
+            return HookAction::terminate("runtime canceled");
+        }
+
         let provider_step_id = mutex_clone(&self.context.last_provider_step_id);
         for content in response.choice.iter() {
             let payload = match content {

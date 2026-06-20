@@ -265,16 +265,27 @@ impl AgentRuntime {
                             .as_ref()
                             .map(|response| response.response())
                             .filter(|text| !text.is_empty());
-                        accumulator.finish(ConversationItemStatus::Completed, final_text)?;
-                        let usage = final_response
-                            .as_ref()
-                            .map(|response| response.usage())
-                            .unwrap_or_else(Usage::new);
-                        context.finish_current_streaming_provider_step(
-                            final_raw_response.as_ref(),
-                            usage,
-                        )?;
-                        break Ok(AgentStoppedReason::Completed);
+                        if request.cancellation_token.is_cancelled() {
+                            accumulator.finish(ConversationItemStatus::Canceled, final_text)?;
+                            let _ = context.cancel_current_provider_step(run_error(
+                                "canceled",
+                                "runtime canceled",
+                                false,
+                                None,
+                            ));
+                            break Ok(AgentStoppedReason::Canceled);
+                        } else {
+                            accumulator.finish(ConversationItemStatus::Completed, final_text)?;
+                            let usage = final_response
+                                .as_ref()
+                                .map(|response| response.usage())
+                                .unwrap_or_else(Usage::new);
+                            context.finish_current_streaming_provider_step(
+                                final_raw_response.as_ref(),
+                                usage,
+                            )?;
+                            break Ok(AgentStoppedReason::Completed);
+                        }
                     }
                 }
             }
@@ -294,14 +305,26 @@ impl AgentRuntime {
 
         match execution {
             Ok(stopped_reason) => {
+                let final_status = if stopped_reason == AgentStoppedReason::Canceled
+                    || request.cancellation_token.is_cancelled()
+                {
+                    AgentRunStatus::Canceled
+                } else {
+                    AgentRunStatus::Completed
+                };
+                let final_stopped_reason = if final_status == AgentRunStatus::Canceled {
+                    AgentStoppedReason::Canceled
+                } else {
+                    stopped_reason
+                };
                 let output = AgentRunOutput {
                     final_item_id: context.final_item_id(),
-                    stopped_reason,
+                    stopped_reason: final_stopped_reason,
                 };
                 let agent_run = self.repo.update_agent_run_status(
                     &agent_run.id,
                     UpdateAgentRunStatus {
-                        status: AgentRunStatus::Completed,
+                        status: final_status,
                         output: Some(output.clone()),
                         error: None,
                     },
@@ -310,13 +333,17 @@ impl AgentRuntime {
                     observer.as_ref(),
                     AgentRuntimeEvent::AgentRunStatusChanged {
                         agent_run_id: agent_run.id.clone(),
-                        status: AgentRunStatus::Completed,
+                        status: final_status,
                     },
                 );
                 let mut events = context.events();
-                events.push(AgentRunEvent::Completed {
-                    output: output.clone(),
-                });
+                if final_status == AgentRunStatus::Canceled {
+                    events.push(AgentRunEvent::Canceled);
+                } else {
+                    events.push(AgentRunEvent::Completed {
+                        output: output.clone(),
+                    });
+                }
                 Ok(AgentRunHandle {
                     agent_run,
                     output: Some(output),
