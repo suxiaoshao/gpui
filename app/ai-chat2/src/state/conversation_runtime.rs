@@ -11,7 +11,7 @@ use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, G
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
 
-use crate::{database, state::provider_secrets::ProviderSecretStore};
+use crate::{database, errors::AiChat2Result, state::provider_secrets::ProviderSecretStore};
 
 const STOP_GRACE: Duration = Duration::from_millis(100);
 
@@ -456,9 +456,18 @@ fn cancel_with_token(cancellation_token: AgentCancellationToken) -> Box<dyn Fn()
     Box::new(move || cancellation_token.cancel())
 }
 
-pub(crate) fn init(cx: &mut App) {
+pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
+    let recovered = AgentRuntime::new(database::repository(cx)).recover_interrupted_runs()?;
+    if !recovered.is_empty() {
+        event!(
+            Level::WARN,
+            recovered_count = recovered.len(),
+            "recovered interrupted ai-chat2 agent runs"
+        );
+    }
     let store = cx.new(|_| ConversationRuntimeStore::new());
     cx.set_global(ConversationRuntimeGlobal(store));
+    Ok(())
 }
 
 pub(crate) fn runtime(cx: &App) -> Entity<ConversationRuntimeStore> {
@@ -713,6 +722,30 @@ mod tests {
             phase: ActiveRunPhase::WaitingForApproval,
             ..active_run(key, cancel_count, false)
         }
+    }
+
+    #[gpui::test]
+    fn init_recovers_persisted_running_runs(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let (conversation_id, agent_run_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            (conversation_id, agent_run_id)
+        });
+
+        cx.update(|cx| {
+            init(cx).expect("initialize conversation runtime");
+            let repository = database::repository(cx);
+            let agent_run = repository
+                .get_agent_run(&agent_run_id)
+                .expect("load recovered run")
+                .expect("recovered run exists");
+            assert_eq!(agent_run.status, AgentRunStatus::Failed);
+            assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
+            assert!(!runtime(cx).read(cx).is_running(&conversation_id));
+        });
     }
 
     #[gpui::test]

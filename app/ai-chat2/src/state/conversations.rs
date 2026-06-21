@@ -9,8 +9,9 @@ use ai_chat_core::{
     ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole, new_id,
 };
 use ai_chat_db::{
-    ConversationItemRecord, ConversationTimelineRecords, ConversationWithUserItemRecord,
-    NewConversation, NewConversationItem, NewConversationWithUserItem, ProjectRecord,
+    ConversationItemRecord, ConversationRecord, ConversationTimelineRecords,
+    ConversationWithUserItemRecord, FreshRepository, NewConversation, NewConversationItem,
+    NewConversationWithUserItem, ProjectRecord,
 };
 use gpui::App;
 
@@ -173,6 +174,7 @@ pub(crate) fn send_conversation_message(
                 request.provider_model.provider_id
             ))
         })?;
+    let prompt_snapshot = follow_up_prompt_snapshot(&conversation, &repository)?;
     let prepared_attachments =
         prepare_message_attachments(&conversation.id, &new_id(), &request.attachments, cx)?;
     let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
@@ -195,7 +197,7 @@ pub(crate) fn send_conversation_message(
         provider_model: request.provider_model,
         reasoning_selection: request.reasoning_selection,
         skill_requests: request.skill_requests,
-        prompt_snapshot: None,
+        prompt_snapshot,
         trigger_kind: AgentRunTriggerKind::User,
         tool_policy: {
             let mut tool_policy = default_tool_policy();
@@ -205,6 +207,22 @@ pub(crate) fn send_conversation_message(
     });
 
     Ok(SentConversationMessage { item, run_request })
+}
+
+fn follow_up_prompt_snapshot(
+    conversation: &ConversationRecord,
+    repository: &FreshRepository,
+) -> ai_chat_db::Result<Option<PromptContent>> {
+    if let Some(prompt) = conversation.settings_snapshot.prompt.clone() {
+        return Ok(Some(prompt));
+    }
+    let Some(prompt_id) = conversation.prompt_id.as_ref() else {
+        return Ok(None);
+    };
+    Ok(repository
+        .get_prompt(prompt_id)?
+        .filter(|prompt| prompt.enabled)
+        .map(|prompt| prompt.content))
 }
 
 pub(crate) fn load_conversation(
@@ -363,7 +381,7 @@ mod tests {
         ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
         conservative_model_capabilities,
     };
-    use ai_chat_db::{NewConversation, NewProject, NewProvider, ProjectRecord};
+    use ai_chat_db::{NewConversation, NewProject, NewPrompt, NewProvider, ProjectRecord};
     use gpui::TestAppContext;
     use tempfile::{TempDir, tempdir};
 
@@ -495,6 +513,120 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn send_message_reuses_conversation_prompt_snapshot(cx: &mut TestAppContext) {
+        let _dir = init_conversations_test(cx);
+        let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            let provider_model = provider_model_choice(&provider.id);
+            let prompt = repository
+                .insert_prompt(NewPrompt {
+                    name: "Shortcut Prompt".to_string(),
+                    content: PromptContent {
+                        text: "current prompt text".to_string(),
+                    },
+                    enabled: true,
+                    sort_order: 10,
+                })
+                .unwrap();
+            let expected_prompt = PromptContent {
+                text: "snapshot prompt text".to_string(),
+            };
+            let conversation_id = insert_conversation_with_prompt(
+                &repository,
+                &provider_model,
+                Some(prompt.id),
+                Some(expected_prompt.clone()),
+            );
+            (conversation_id, provider_model, expected_prompt)
+        });
+
+        let sent = cx
+            .update(|cx| {
+                send_conversation_message(
+                    SendConversationMessageRequest {
+                        conversation_id,
+                        content_parts: vec![ContentPart::Text {
+                            text: "follow up".to_string(),
+                        }],
+                        attachments: Vec::new(),
+                        skill_requests: Vec::new(),
+                        provider_model,
+                        reasoning_selection: None,
+                        approval_mode: ToolApprovalMode::RequestApproval,
+                    },
+                    cx,
+                )
+            })
+            .unwrap();
+
+        assert_eq!(
+            sent.run_request.prompt_snapshot,
+            Some(expected_prompt.clone())
+        );
+        assert_eq!(
+            sent.run_request.settings_snapshot.prompt,
+            Some(expected_prompt)
+        );
+    }
+
+    #[gpui::test]
+    fn send_message_falls_back_to_prompt_id_when_snapshot_is_missing(cx: &mut TestAppContext) {
+        let _dir = init_conversations_test(cx);
+        let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            let provider_model = provider_model_choice(&provider.id);
+            let prompt = repository
+                .insert_prompt(NewPrompt {
+                    name: "Fallback Prompt".to_string(),
+                    content: PromptContent {
+                        text: "fallback prompt text".to_string(),
+                    },
+                    enabled: true,
+                    sort_order: 10,
+                })
+                .unwrap();
+            let expected_prompt = prompt.content.clone();
+            let conversation_id = insert_conversation_with_prompt(
+                &repository,
+                &provider_model,
+                Some(prompt.id),
+                None,
+            );
+            (conversation_id, provider_model, expected_prompt)
+        });
+
+        let sent = cx
+            .update(|cx| {
+                send_conversation_message(
+                    SendConversationMessageRequest {
+                        conversation_id,
+                        content_parts: vec![ContentPart::Text {
+                            text: "follow up".to_string(),
+                        }],
+                        attachments: Vec::new(),
+                        skill_requests: Vec::new(),
+                        provider_model,
+                        reasoning_selection: None,
+                        approval_mode: ToolApprovalMode::RequestApproval,
+                    },
+                    cx,
+                )
+            })
+            .unwrap();
+
+        assert_eq!(
+            sent.run_request.prompt_snapshot,
+            Some(expected_prompt.clone())
+        );
+        assert_eq!(
+            sent.run_request.settings_snapshot.prompt,
+            Some(expected_prompt)
+        );
+    }
+
     fn init_conversations_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
@@ -512,19 +644,28 @@ mod tests {
         repository: &ai_chat_db::FreshRepository,
         provider_model: &ProviderModelChoice,
     ) -> ConversationId {
+        insert_conversation_with_prompt(repository, provider_model, None, None)
+    }
+
+    fn insert_conversation_with_prompt(
+        repository: &ai_chat_db::FreshRepository,
+        provider_model: &ProviderModelChoice,
+        prompt_id: Option<PromptId>,
+        prompt_snapshot: Option<PromptContent>,
+    ) -> ConversationId {
         let project = insert_project(repository);
         repository
             .insert_conversation(NewConversation {
                 project_id: project.id,
                 title: "Conversation Test".to_string(),
                 pinned: false,
-                prompt_id: None,
+                prompt_id,
                 default_provider_id: Some(provider_model.provider_id.clone()),
                 default_model_id: Some(provider_model.model_id.clone()),
                 metadata: empty_conversation_metadata(),
                 settings_snapshot: conversation_settings_snapshot(
                     provider_model,
-                    None,
+                    prompt_snapshot,
                     default_tool_policy(),
                 ),
             })

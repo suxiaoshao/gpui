@@ -14,6 +14,8 @@ pub(crate) enum AiChat2Error {
     TomlSerialize(#[from] toml::ser::Error),
     #[error("database error: {0}")]
     Database(#[from] ai_chat_db::DbError),
+    #[error("agent runtime error: {0}")]
+    AgentRuntime(#[from] ai_chat_agent::AgentRuntimeError),
     #[error("global hotkey error: {0}")]
     GlobalHotkey(#[from] global_hotkey::Error),
     #[error("hotkey parse error: {0}")]
