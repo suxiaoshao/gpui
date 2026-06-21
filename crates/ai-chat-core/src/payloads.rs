@@ -1,6 +1,6 @@
 use crate::{
-    AgentRunId, ApprovalDecisionId, AttachmentId, ConversationId, ConversationItemId, ProjectId,
-    ProviderId, ProviderModelId, ProviderStepId, ToolInvocationId,
+    AgentRunId, AttachmentId, ConversationId, ConversationItemId, ProjectId, ProviderId,
+    ProviderModelId, ProviderStepId, ToolInvocationId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -75,7 +75,6 @@ pub enum AgentRunTriggerKind {
 pub enum AgentRunStatus {
     Queued,
     Running,
-    WaitingForApproval,
     Completed,
     Failed,
     Canceled,
@@ -391,7 +390,7 @@ pub enum AgentRunEvent {
         tool_invocation_id: ToolInvocationId,
     },
     ApprovalRequested {
-        approval_decision_id: ApprovalDecisionId,
+        tool_invocation_id: ToolInvocationId,
     },
     ToolInvocationFinished {
         tool_invocation_id: ToolInvocationId,
@@ -631,7 +630,6 @@ pub enum ToolExecutionPolicy {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalRequestItem {
-    pub approval_decision_id: ApprovalDecisionId,
     pub tool_invocation_id: ToolInvocationId,
     pub request: ApprovalRequestPayload,
 }
@@ -639,7 +637,7 @@ pub struct ApprovalRequestItem {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalDecisionItem {
-    pub approval_decision_id: ApprovalDecisionId,
+    pub tool_invocation_id: ToolInvocationId,
     pub decision: ApprovalDecisionPayload,
 }
 

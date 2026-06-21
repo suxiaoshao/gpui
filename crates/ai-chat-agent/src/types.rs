@@ -1,6 +1,6 @@
 use crate::{Result, ToolRegistry};
 use ai_chat_core::*;
-use ai_chat_db::{AgentRunRecord, ApprovalDecisionRecord};
+use ai_chat_db::{AgentRunRecord, ToolInvocationRecord};
 use async_trait::async_trait;
 use rig_core::completion::CompletionModel;
 use std::{path::PathBuf, sync::Arc};
@@ -85,21 +85,29 @@ impl AgentRunRequest {
 pub enum AgentStep {
     ProviderStep(ProviderStepId),
     ToolInvocation(ToolInvocationId),
-    Approval(ApprovalDecisionId),
     ConversationItem(ConversationItemId),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentRunHandleStatus {
+    Finished,
+    WaitingForApproval {
+        tool_invocation_id: ToolInvocationId,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentRunHandle {
     pub agent_run: AgentRunRecord,
     pub output: Option<AgentRunOutput>,
+    pub status: AgentRunHandleStatus,
     pub events: Vec<AgentRunEvent>,
     pub steps: Vec<AgentStep>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ApprovalResumeOutcome {
-    pub approval: ApprovalDecisionRecord,
+    pub tool_invocation: ToolInvocationRecord,
     pub agent_run: AgentRunRecord,
     pub output: AgentRunOutput,
     pub events: Vec<AgentRunEvent>,

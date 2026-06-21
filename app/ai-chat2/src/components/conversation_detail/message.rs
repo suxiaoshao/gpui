@@ -5,8 +5,7 @@ use std::{
 };
 
 use ai_chat_core::{
-    AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationItemId, RunErrorPayload,
-    ToolInvocationId,
+    AgentRunId, AgentRunStatus, ConversationItemId, RunErrorPayload, ToolInvocationId,
 };
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
@@ -27,7 +26,7 @@ use super::attachments::{UserImageAttachment, render_user_image_attachments};
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
 pub(super) type OnCopy = Rc<dyn Fn(String, &mut Window, &mut App) -> bool + 'static>;
 pub(super) type OnApprovalDecision =
-    Rc<dyn Fn(ApprovalDecisionId, bool, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(ToolInvocationId, bool, &mut Window, &mut App) + 'static>;
 
 const COPIED_STATE_DURATION: Duration = Duration::from_secs(2);
 
@@ -346,12 +345,12 @@ impl AgentTurnRow {
             .cloned()
             .collect::<Vec<_>>();
         let text_states = self.text_states.clone();
-        let decided_approval_ids = self
+        let decided_tool_invocation_ids = self
             .items
             .iter()
             .filter_map(|item| match &item.payload {
                 ai_chat_core::ConversationItemPayload::ApprovalDecision(decision) => {
-                    Some(decision.approval_decision_id.clone())
+                    Some(decision.tool_invocation_id.clone())
                 }
                 _ => None,
             })
@@ -374,7 +373,7 @@ impl AgentTurnRow {
                 ai_chat_core::ConversationItemPayload::ApprovalRequest(request) => {
                     approval_request_decidable(
                         request,
-                        &decided_approval_ids,
+                        &decided_tool_invocation_ids,
                         &terminal_tool_invocation_ids,
                     )
                 }
@@ -401,10 +400,10 @@ impl AgentTurnRow {
 
 fn approval_request_decidable(
     request: &ai_chat_core::ApprovalRequestItem,
-    decided_approval_ids: &HashSet<ApprovalDecisionId>,
+    decided_tool_invocation_ids: &HashSet<ToolInvocationId>,
     terminal_tool_invocation_ids: &HashSet<ToolInvocationId>,
 ) -> bool {
-    !decided_approval_ids.contains(&request.approval_decision_id)
+    !decided_tool_invocation_ids.contains(&request.tool_invocation_id)
         && !terminal_tool_invocation_ids.contains(&request.tool_invocation_id)
 }
 
@@ -582,9 +581,7 @@ fn agent_terminal_status_label(
         AgentRunStatus::Completed => "conversation-agent-processed",
         AgentRunStatus::Failed => "conversation-agent-failed",
         AgentRunStatus::Canceled => "conversation-agent-canceled",
-        AgentRunStatus::Queued | AgentRunStatus::Running | AgentRunStatus::WaitingForApproval => {
-            "conversation-agent-processing"
-        }
+        AgentRunStatus::Queued | AgentRunStatus::Running => "conversation-agent-processing",
     };
     duration_arg_label(i18n, key, format::run_duration_label(run))
 }
@@ -631,7 +628,6 @@ mod tests {
 
     fn approval_request() -> ApprovalRequestItem {
         ApprovalRequestItem {
-            approval_decision_id: "approval-1".to_string(),
             tool_invocation_id: "tool-1".to_string(),
             request: ApprovalRequestPayload {
                 reason: "needs approval".to_string(),
@@ -646,7 +642,7 @@ mod tests {
     #[test]
     fn approval_request_is_not_decidable_after_decision_item() {
         let request = approval_request();
-        let decided_approval_ids = HashSet::from([request.approval_decision_id.clone()]);
+        let decided_approval_ids = HashSet::from([request.tool_invocation_id.clone()]);
         let terminal_tool_invocation_ids = HashSet::new();
 
         assert!(!approval_request_decidable(

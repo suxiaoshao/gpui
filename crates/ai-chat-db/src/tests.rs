@@ -1,9 +1,9 @@
 use crate::{
-    FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
-    NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
-    NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdatePrompt, UpdateProvider, UpdateProviderStepStatus, UpdateShortcut,
-    UpdateToolInvocationStatus,
+    FreshStore, NewAgentRun, NewAttachment, NewConversation, NewConversationItem, NewProject,
+    NewPrompt, NewProvider, NewProviderModel, NewProviderStep, NewShortcut, NewToolInvocation,
+    NewToolInvocationApproval, NewUsageEvent, ToolInvocationApproval,
+    ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt, UpdateProvider,
+    UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -461,14 +461,14 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
-        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'canceled'))"
+        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled'))"
     ));
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
 
     let conversation_items_sql = table_sql(&mut conn, "conversation_items");
     assert!(conversation_items_sql.contains(
-        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error'))"
+        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'status', 'error'))"
     ));
     assert!(conversation_items_sql.contains(
         "status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval'))"
@@ -478,6 +478,15 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     assert!(tool_invocations_sql.contains(
         "status TEXT NOT NULL CHECK (status IN ('requested', 'awaiting_approval', 'running', 'succeeded', 'failed', 'denied', 'canceled'))"
     ));
+    assert!(tool_invocations_sql.contains("approval_json JSON"));
+    assert!(
+        store
+            .repository()
+            .table_names()
+            .unwrap()
+            .iter()
+            .all(|name| name != "approval_decisions")
+    );
 }
 
 #[test]
@@ -1058,7 +1067,7 @@ fn provider_step_validates_input_item_ownership() {
 }
 
 #[test]
-fn approval_outcome_derives_status_and_decision_columns() {
+fn tool_invocation_approval_derives_status_and_decision_columns() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -1104,7 +1113,7 @@ fn approval_outcome_derives_status_and_decision_columns() {
         .insert_tool_invocation(NewToolInvocation {
             agent_run_id: agent_run.id,
             provider_step_id: Some(provider_step.id),
-            status: ToolInvocationStatus::Denied,
+            status: ToolInvocationStatus::Requested,
             input: tool_input(),
             output: None,
             error: None,
@@ -1112,40 +1121,55 @@ fn approval_outcome_derives_status_and_decision_columns() {
         .unwrap();
 
     let pending = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: pending_tool.id,
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
-        })
+        .request_tool_invocation_approval(
+            &pending_tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
+            },
+        )
         .unwrap();
-    assert_eq!(pending.status, ApprovalStatus::Pending);
-    assert!(pending.decision.is_none());
-    assert!(pending.decided_at.is_none());
+    let pending_approval = pending.approval.unwrap();
+    assert_eq!(pending.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(pending_approval.status, ApprovalStatus::Pending);
+    assert!(pending_approval.decision.is_none());
+    assert!(pending_approval.decided_at.is_none());
 
     let denied = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: denied_tool.id,
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Denied {
+        .request_tool_invocation_approval(
+            &denied_tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
+            },
+        )
+        .unwrap();
+    let denied = repo
+        .update_tool_invocation_approval(
+            &denied.id,
+            ToolInvocationApprovalOutcome::Denied {
                 decided_by: "user".to_string(),
                 reason: Some("no".to_string()),
             },
-        })
+            ToolInvocationStatus::Denied,
+        )
         .unwrap();
-    assert_eq!(denied.status, ApprovalStatus::Denied);
+    let denied_approval = denied.approval.unwrap();
+    assert_eq!(denied.status, ToolInvocationStatus::Denied);
+    assert_eq!(denied_approval.status, ApprovalStatus::Denied);
     assert_eq!(
-        denied.decision,
+        denied_approval.decision,
         Some(ApprovalDecisionPayload {
             approved: false,
             decided_by: "user".to_string(),
             reason: Some("no".to_string()),
         })
     );
-    assert!(denied.decided_at.is_some());
+    assert!(denied_approval.decided_at.is_some());
 }
 
 #[test]
-fn execution_status_updates_and_pending_approval_queries_roundtrip() {
+fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -1222,28 +1246,35 @@ fn execution_status_updates_and_pending_approval_queries_roundtrip() {
         })
         .unwrap();
     let approval = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: tool.id.clone(),
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
-        })
-        .unwrap();
-    assert_eq!(
-        repo.pending_approval_decisions().unwrap(),
-        vec![approval.clone()]
-    );
-
-    let approved = repo
-        .update_approval_decision(
-            &approval.id,
-            NewApprovalDecisionOutcome::Approved {
-                decided_by: "user".to_string(),
-                reason: Some("ok".to_string()),
+        .request_tool_invocation_approval(
+            &tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
             },
         )
         .unwrap();
-    assert_eq!(approved.status, ApprovalStatus::Approved);
-    assert!(repo.pending_approval_decisions().unwrap().is_empty());
+    assert_eq!(approval.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Pending)
+    );
+
+    let approved = repo
+        .update_tool_invocation_approval(
+            &approval.id,
+            ToolInvocationApprovalOutcome::Approved {
+                decided_by: "user".to_string(),
+                reason: Some("ok".to_string()),
+            },
+            ToolInvocationStatus::Running,
+        )
+        .unwrap();
+    assert_eq!(approved.status, ToolInvocationStatus::Running);
+    assert_eq!(
+        approved.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Approved)
+    );
 
     let succeeded_tool = repo
         .update_tool_invocation_status(
@@ -1257,6 +1288,13 @@ fn execution_status_updates_and_pending_approval_queries_roundtrip() {
         .unwrap();
     assert_eq!(succeeded_tool.status, ToolInvocationStatus::Succeeded);
     assert_eq!(succeeded_tool.output, Some(tool_output()));
+    assert_eq!(
+        succeeded_tool
+            .approval
+            .as_ref()
+            .and_then(|approval| approval.decision.as_ref()),
+        Some(&approval_decision())
+    );
     assert!(succeeded_tool.started_at.is_some());
     assert!(succeeded_tool.completed_at.is_some());
 
@@ -1504,18 +1542,24 @@ fn typed_json_roundtrips_for_repository_records() {
     assert_eq!(tool.output, Some(tool_output()));
 
     let approval = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: tool.id.clone(),
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Approved {
-                decided_by: "user".to_string(),
-                reason: Some("ok".to_string()),
-            },
-        })
+        .record_tool_invocation_approval(
+            &tool.id,
+            approved_tool_invocation_approval(),
+            ToolInvocationStatus::Succeeded,
+        )
         .unwrap();
-    assert_eq!(approval.request, approval_request());
-    assert_eq!(approval.status, ApprovalStatus::Approved);
-    assert_eq!(approval.decision, Some(approval_decision()));
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| &approval.request),
+        Some(&approval_request())
+    );
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Approved)
+    );
+    assert_eq!(
+        approval.approval.and_then(|approval| approval.decision),
+        Some(approval_decision())
+    );
 
     let usage = repo
         .insert_usage_event(NewUsageEvent {
@@ -2158,6 +2202,18 @@ fn approval_decision() -> ApprovalDecisionPayload {
         approved: true,
         decided_by: "user".to_string(),
         reason: Some("ok".to_string()),
+    }
+}
+
+fn approved_tool_invocation_approval() -> ToolInvocationApproval {
+    let now = time::OffsetDateTime::now_utc();
+    ToolInvocationApproval {
+        status: ApprovalStatus::Approved,
+        request: approval_request(),
+        decision: Some(approval_decision()),
+        requested_at: now,
+        decided_at: Some(now),
+        expires_at: None,
     }
 }
 

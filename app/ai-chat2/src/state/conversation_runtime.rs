@@ -1,12 +1,12 @@
 use std::{collections::HashMap, time::Duration};
 
 use ai_chat_agent::{
-    AgentCancellationToken, AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver,
-    RuntimeGuards,
+    AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntime,
+    AgentRuntimeObserver, RuntimeGuards,
 };
-use ai_chat_core::{AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationId};
+use ai_chat_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
 use ai_chat_db::FreshRepository;
-use ai_chat_db::NewApprovalDecisionOutcome;
+use ai_chat_db::ToolInvocationApprovalOutcome;
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -169,13 +169,14 @@ impl ConversationRuntimeStore {
     pub(crate) fn approve_tool_invocation(
         &mut self,
         conversation_id: ConversationId,
-        approval_decision_id: ApprovalDecisionId,
+        tool_invocation_id: ToolInvocationId,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
         self.last_errors.remove(&conversation_id);
         let repository = database::repository(cx);
-        let agent_run_id = match agent_run_id_for_approval(&repository, &approval_decision_id) {
+        let agent_run_id = match agent_run_id_for_tool_invocation(&repository, &tool_invocation_id)
+        {
             Ok(agent_run_id) => agent_run_id,
             Err(err) => {
                 self.last_errors
@@ -199,7 +200,7 @@ impl ConversationRuntimeStore {
         let run_task = window.spawn(cx, async move |cx| {
             let result = approve_tool_with_runtime(
                 repository,
-                approval_decision_id,
+                tool_invocation_id,
                 cancellation_token,
                 tx,
                 cx,
@@ -235,12 +236,13 @@ impl ConversationRuntimeStore {
     pub(crate) fn deny_tool_invocation(
         &mut self,
         conversation_id: ConversationId,
-        approval_decision_id: ApprovalDecisionId,
+        tool_invocation_id: ToolInvocationId,
         cx: &mut Context<Self>,
     ) -> bool {
         self.last_errors.remove(&conversation_id);
         let repository = database::repository(cx);
-        let agent_run_id = match agent_run_id_for_approval(&repository, &approval_decision_id) {
+        let agent_run_id = match agent_run_id_for_tool_invocation(&repository, &tool_invocation_id)
+        {
             Ok(agent_run_id) => agent_run_id,
             Err(err) => {
                 self.last_errors
@@ -255,8 +257,8 @@ impl ConversationRuntimeStore {
         }
 
         let result = AgentRuntime::new(repository).decide_approval(
-            &approval_decision_id,
-            NewApprovalDecisionOutcome::Denied {
+            &tool_invocation_id,
+            ToolInvocationApprovalOutcome::Denied {
                 decided_by: "user".to_string(),
                 reason: None,
             },
@@ -383,11 +385,17 @@ impl ConversationRuntimeStore {
             return false;
         }
 
-        if let Ok(handle) = &result
-            && handle.agent_run.status == AgentRunStatus::WaitingForApproval
+        if let Ok(AgentRunHandle {
+            agent_run,
+            status:
+                AgentRunHandleStatus::WaitingForApproval {
+                    tool_invocation_id: _,
+                },
+            ..
+        }) = &result
         {
             if let Some(active) = self.active_runs.get_mut(&conversation_id) {
-                active.agent_run_id = Some(handle.agent_run.id.clone());
+                active.agent_run_id = Some(agent_run.id.clone());
                 active.phase = ActiveRunPhase::WaitingForApproval;
             }
             cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
@@ -524,7 +532,7 @@ async fn run_agent_with_saved_provider(
 
 async fn approve_tool_with_runtime(
     repository: FreshRepository,
-    approval_decision_id: ApprovalDecisionId,
+    tool_invocation_id: ToolInvocationId,
     cancellation_token: AgentCancellationToken,
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
@@ -540,7 +548,7 @@ async fn approve_tool_with_runtime(
     let approval_handle = gpui_tokio::Tokio::spawn(cx, async move {
         runtime
             .approve_and_resume_tool(
-                &approval_decision_id,
+                &tool_invocation_id,
                 "user".to_string(),
                 None,
                 RuntimeGuards::default().tool_timeout,
@@ -557,6 +565,7 @@ async fn approve_tool_with_runtime(
         return Ok(AgentRunHandle {
             agent_run: approval_handle.agent_run,
             output: Some(approval_handle.output),
+            status: AgentRunHandleStatus::Finished,
             events: approval_handle.events,
             steps: approval_handle.steps,
         });
@@ -566,6 +575,7 @@ async fn approve_tool_with_runtime(
         return Ok(AgentRunHandle {
             agent_run: approval_handle.agent_run,
             output: Some(approval_handle.output),
+            status: AgentRunHandleStatus::Finished,
             events: approval_handle.events,
             steps: approval_handle.steps,
         });
@@ -596,23 +606,15 @@ fn latest_non_terminal_agent_run_id(
         .map(|run| run.id))
 }
 
-fn agent_run_id_for_approval(
+fn agent_run_id_for_tool_invocation(
     repository: &FreshRepository,
-    approval_decision_id: &ApprovalDecisionId,
+    tool_invocation_id: &ToolInvocationId,
 ) -> ai_chat_db::Result<AgentRunId> {
-    let approval = repository
-        .get_approval_decision(approval_decision_id)?
-        .ok_or_else(|| {
-            ai_chat_db::DbError::Invariant(format!(
-                "approval decision {approval_decision_id} is missing"
-            ))
-        })?;
     let invocation = repository
-        .get_tool_invocation(&approval.tool_invocation_id)?
+        .get_tool_invocation(tool_invocation_id)?
         .ok_or_else(|| {
             ai_chat_db::DbError::Invariant(format!(
-                "tool invocation {} is missing",
-                approval.tool_invocation_id
+                "tool invocation {tool_invocation_id} is missing"
             ))
         })?;
     Ok(invocation.agent_run_id)
@@ -668,8 +670,8 @@ mod tests {
         conservative_model_capabilities,
     };
     use ai_chat_db::{
-        NewAgentRun, NewApprovalDecision, NewConversation, NewConversationItem, NewProject,
-        NewToolInvocation,
+        NewAgentRun, NewConversation, NewConversationItem, NewProject, NewToolInvocation,
+        NewToolInvocationApproval, ToolInvocationApprovalOutcome,
     };
     use gpui::{Subscription, WindowHandle};
     use std::sync::{
@@ -775,16 +777,9 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
-            let approval_id = insert_approval_for_run(
-                &repository,
-                &agent_run_id,
-                NewApprovalDecisionOutcome::Pending { expires_at: None },
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let approval_id = insert_approval_for_run(&repository, &agent_run_id, None);
             (conversation_id, agent_run_id, approval_id)
         });
 
@@ -799,18 +794,22 @@ mod tests {
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
             assert!(!runtime(cx).read(cx).is_running(&conversation_id));
 
-            let approval = repository
-                .get_approval_decision(&approval_id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(approval.status, ApprovalStatus::Canceled);
-            assert!(approval.decision.is_none());
             let invocation = repository
-                .get_tool_invocation(&approval.tool_invocation_id)
+                .get_tool_invocation(&approval_id)
                 .unwrap()
                 .unwrap();
             assert_eq!(invocation.status, ToolInvocationStatus::Failed);
             assert_eq!(invocation.error.as_ref().unwrap().code, "interrupted");
+            assert_eq!(
+                invocation.approval.as_ref().map(|approval| approval.status),
+                Some(ApprovalStatus::Canceled)
+            );
+            assert!(
+                invocation
+                    .approval
+                    .as_ref()
+                    .is_some_and(|approval| approval.decision.is_none())
+            );
             assert_eq!(
                 tool_result_texts(&repository, &conversation_id),
                 vec!["agent run was interrupted before reaching a terminal state".to_string()]
@@ -966,11 +965,8 @@ mod tests {
         let (conversation_id, agent_run) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
             let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
             (conversation_id, agent_run)
         });
@@ -987,6 +983,9 @@ mod tests {
                     Ok(AgentRunHandle {
                         agent_run: agent_run.clone(),
                         output: None,
+                        status: AgentRunHandleStatus::WaitingForApproval {
+                            tool_invocation_id: "tool-1".to_string(),
+                        },
                         events: Vec::new(),
                         steps: Vec::new(),
                     }),
@@ -1018,16 +1017,9 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
-            let approval_id = insert_approval_for_run(
-                &repository,
-                &agent_run_id,
-                NewApprovalDecisionOutcome::Pending { expires_at: None },
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let approval_id = insert_approval_for_run(&repository, &agent_run_id, None);
             (conversation_id, agent_run_id, approval_id)
         });
 
@@ -1053,11 +1045,15 @@ mod tests {
 
         cx.update(|cx| {
             let repository = database::repository(cx);
-            let approval = repository
-                .get_approval_decision(&approval_id)
+            let invocation = repository
+                .get_tool_invocation(&approval_id)
                 .unwrap()
                 .unwrap();
-            assert_eq!(approval.status, ApprovalStatus::Denied);
+            assert_eq!(invocation.status, ToolInvocationStatus::Denied);
+            assert_eq!(
+                invocation.approval.as_ref().map(|approval| approval.status),
+                Some(ApprovalStatus::Denied)
+            );
         });
     }
 
@@ -1071,16 +1067,9 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
-            let approval_id = insert_approval_for_run(
-                &repository,
-                &agent_run_id,
-                NewApprovalDecisionOutcome::Pending { expires_at: None },
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let approval_id = insert_approval_for_run(&repository, &agent_run_id, None);
             (conversation_id, agent_run_id, approval_id)
         });
 
@@ -1102,18 +1091,17 @@ mod tests {
 
         cx.update(|cx| {
             let repository = database::repository(cx);
-            let approval = repository
-                .get_approval_decision(&approval_id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(approval.status, ApprovalStatus::Pending);
             let invocation = repository
-                .get_tool_invocation(&approval.tool_invocation_id)
+                .get_tool_invocation(&approval_id)
                 .unwrap()
                 .unwrap();
             assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+            assert_eq!(
+                invocation.approval.as_ref().map(|approval| approval.status),
+                Some(ApprovalStatus::Pending)
+            );
             let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
-            assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+            assert_eq!(agent_run.status, AgentRunStatus::Running);
             assert!(!store.read(cx).is_running(&conversation_id));
             store.update(cx, |store, _cx| {
                 assert!(store.take_last_error(&conversation_id).is_none());
@@ -1128,16 +1116,9 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
-            let approval_id = insert_approval_for_run(
-                &repository,
-                &agent_run_id,
-                NewApprovalDecisionOutcome::Pending { expires_at: None },
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let approval_id = insert_approval_for_run(&repository, &agent_run_id, None);
             (conversation_id, agent_run_id, approval_id)
         });
 
@@ -1155,18 +1136,17 @@ mod tests {
 
         cx.update(|cx| {
             let repository = database::repository(cx);
-            let approval = repository
-                .get_approval_decision(&approval_id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(approval.status, ApprovalStatus::Pending);
             let invocation = repository
-                .get_tool_invocation(&approval.tool_invocation_id)
+                .get_tool_invocation(&approval_id)
                 .unwrap()
                 .unwrap();
             assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+            assert_eq!(
+                invocation.approval.as_ref().map(|approval| approval.status),
+                Some(ApprovalStatus::Pending)
+            );
             let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
-            assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+            assert_eq!(agent_run.status, AgentRunStatus::Running);
         });
     }
 
@@ -1177,18 +1157,15 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
             let approval_id = insert_approval_for_run(
                 &repository,
                 &agent_run_id,
-                NewApprovalDecisionOutcome::Approved {
+                Some(ToolInvocationApprovalOutcome::Approved {
                     decided_by: "user".to_string(),
                     reason: None,
-                },
+                }),
             );
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1227,18 +1204,15 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = database::repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id = insert_agent_run(
-                &repository,
-                &conversation_id,
-                AgentRunStatus::WaitingForApproval,
-            );
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
             let approval_id = insert_approval_for_run(
                 &repository,
                 &agent_run_id,
-                NewApprovalDecisionOutcome::Approved {
+                Some(ToolInvocationApprovalOutcome::Approved {
                     decided_by: "user".to_string(),
                     reason: None,
-                },
+                }),
             );
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1536,8 +1510,8 @@ mod tests {
     fn insert_approval_for_run(
         repository: &FreshRepository,
         agent_run_id: &AgentRunId,
-        outcome: NewApprovalDecisionOutcome,
-    ) -> ApprovalDecisionId {
+        outcome: Option<ToolInvocationApprovalOutcome>,
+    ) -> ToolInvocationId {
         let invocation = repository
             .insert_tool_invocation(NewToolInvocation {
                 agent_run_id: agent_run_id.clone(),
@@ -1559,20 +1533,33 @@ mod tests {
                 error: None,
             })
             .unwrap();
-        repository
-            .insert_approval_decision(NewApprovalDecision {
-                tool_invocation_id: invocation.id,
-                request: ApprovalRequestPayload {
-                    reason: "approve echo".to_string(),
-                    tool_source: ToolSource::Local,
-                    tool_name: "echo".to_string(),
-                    arguments_preview: "{\"text\":\"hi\"}".to_string(),
-                    access_requests: Vec::new(),
+        let invocation = repository
+            .request_tool_invocation_approval(
+                &invocation.id,
+                NewToolInvocationApproval {
+                    request: ApprovalRequestPayload {
+                        reason: "approve echo".to_string(),
+                        tool_source: ToolSource::Local,
+                        tool_name: "echo".to_string(),
+                        arguments_preview: "{\"text\":\"hi\"}".to_string(),
+                        access_requests: Vec::new(),
+                    },
+                    expires_at: None,
                 },
-                outcome,
-            })
-            .unwrap()
-            .id
+            )
+            .unwrap();
+        if let Some(outcome) = outcome {
+            repository
+                .update_tool_invocation_approval(
+                    &invocation.id,
+                    outcome,
+                    ToolInvocationStatus::AwaitingApproval,
+                )
+                .unwrap()
+                .id
+        } else {
+            invocation.id
+        }
     }
 
     fn tool_result_texts(

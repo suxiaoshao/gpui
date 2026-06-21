@@ -5,8 +5,8 @@ use crate::{
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    NewApprovalDecision, NewApprovalDecisionOutcome, NewConversationItem, NewToolInvocation,
-    ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
+    NewConversationItem, NewToolInvocation, NewToolInvocationApproval, ToolInvocationApproval,
+    ToolInvocationRecord, UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::{
@@ -232,18 +232,6 @@ impl PersistenceContext {
         arguments_preview: String,
         access_requests: Vec<ToolAccessRequestPayload>,
     ) -> Result<()> {
-        self.repo.update_tool_invocation_status(
-            &invocation.id,
-            UpdateToolInvocationStatus {
-                status: ToolInvocationStatus::AwaitingApproval,
-                output: None,
-                error: None,
-            },
-        )?;
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         let request = ApprovalRequestPayload {
             reason,
             tool_source: definition.source.clone(),
@@ -251,32 +239,23 @@ impl PersistenceContext {
             arguments_preview,
             access_requests,
         };
-        let approval = self.repo.insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: invocation.id.clone(),
-            request: request.clone(),
-            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
-        })?;
-        self.push_step(AgentStep::Approval(approval.id.clone()));
-        self.push_event(AgentRunEvent::ApprovalRequested {
-            approval_decision_id: approval.id.clone(),
-        });
-        let payload = ConversationItemPayload::ApprovalRequest(ApprovalRequestItem {
-            approval_decision_id: approval.id,
-            tool_invocation_id: invocation.id.clone(),
-            request,
-        });
-        self.append_tool_item(invocation.id.clone(), payload)?;
-        self.repo.update_agent_run_status(
-            &self.agent_run_id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::WaitingForApproval,
-                output: None,
-                error: None,
+        self.repo.request_tool_invocation_approval(
+            &invocation.id,
+            NewToolInvocationApproval {
+                request,
+                expires_at: None,
             },
         )?;
-        self.emit_runtime(AgentRuntimeEvent::AgentRunStatusChanged {
+        mutex_replace(
+            &self.waiting_tool_invocation_id,
+            Some(invocation.id.clone()),
+        );
+        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
             agent_run_id: self.agent_run_id.clone(),
-            status: AgentRunStatus::WaitingForApproval,
+            tool_invocation_id: invocation.id.clone(),
+        });
+        self.push_event(AgentRunEvent::ApprovalRequested {
+            tool_invocation_id: invocation.id.clone(),
         });
         Ok(())
     }
@@ -291,8 +270,9 @@ impl PersistenceContext {
         if access_requests.is_empty() {
             return Ok(());
         }
-        let approval = self.repo.insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: invocation.id.clone(),
+        let now = time::OffsetDateTime::now_utc();
+        let approval = ToolInvocationApproval {
+            status: ApprovalStatus::Approved,
             request: ApprovalRequestPayload {
                 reason: "Auto-approved by current approval mode".to_string(),
                 tool_source: definition.source.clone(),
@@ -300,18 +280,17 @@ impl PersistenceContext {
                 arguments_preview,
                 access_requests,
             },
-            outcome: NewApprovalDecisionOutcome::Approved {
+            decision: Some(ApprovalDecisionPayload {
+                approved: true,
                 decided_by: "auto".to_string(),
                 reason: Some("Auto-approved by current approval mode".to_string()),
-            },
-        })?;
-        if let Some(decision) = approval.decision {
-            let payload = ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
-                approval_decision_id: approval.id,
-                decision,
-            });
-            self.append_tool_item(invocation.id.clone(), payload)?;
-        }
+            }),
+            requested_at: now,
+            decided_at: Some(now),
+            expires_at: None,
+        };
+        self.repo
+            .record_tool_invocation_approval(&invocation.id, approval, invocation.status)?;
         Ok(())
     }
 

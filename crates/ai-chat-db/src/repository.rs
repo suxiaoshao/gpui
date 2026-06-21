@@ -4,9 +4,8 @@ use crate::{
     models::*,
     records::*,
     schema::{
-        agent_runs, approval_decisions, attachments, conversation_items, conversations, projects,
-        prompts, provider_models, provider_steps, providers, shortcuts, tool_invocations,
-        usage_events,
+        agent_runs, attachments, conversation_items, conversations, projects, prompts,
+        provider_models, provider_steps, providers, shortcuts, tool_invocations, usage_events,
     },
 };
 use ai_chat_core::*;
@@ -770,6 +769,10 @@ impl FreshRepository {
         let items = self.conversation_items(conversation_id)?;
         let attachments = self.conversation_attachments(conversation_id)?;
         let runs = self.agent_runs_for_conversation(conversation_id)?;
+        let mut tool_invocations = Vec::new();
+        for run in &runs {
+            tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
+        }
 
         Ok(Some(ConversationTimelineRecords {
             conversation,
@@ -777,6 +780,7 @@ impl FreshRepository {
             items,
             attachments,
             runs,
+            tool_invocations,
         }))
     }
 
@@ -1046,6 +1050,7 @@ impl FreshRepository {
                 input_json: to_json(&input.input)?,
                 output_json: to_json_opt(&input.output)?,
                 error_json: to_json_opt(&input.error)?,
+                approval_json: None,
                 created_at: now,
                 started_at: next_started_at(None, input.status, now),
                 completed_at: next_tool_invocation_completed_at(None, input.status, now),
@@ -1105,73 +1110,82 @@ impl FreshRepository {
         })
     }
 
-    pub fn insert_approval_decision(
+    pub fn append_conversation_item_and_update_tool_invocation_full(
         &self,
-        input: NewApprovalDecision,
-    ) -> Result<ApprovalDecisionRecord> {
+        item: NewConversationItem,
+        tool_invocation_id: &str,
+        update: UpdateToolInvocationStatus,
+        approval: Option<ToolInvocationApproval>,
+    ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let outcome = approval_outcome_columns(input.outcome, &now)?;
-            let row = SqlNewApprovalDecisionRow {
-                id: new_id(),
-                tool_invocation_id: input.tool_invocation_id,
-                status: db_label(&outcome.status)?,
-                request_json: to_json(&input.request)?,
-                decision_json: to_json_opt(&outcome.decision)?,
-                requested_at: now,
-                decided_at: outcome.decided_at,
-                expires_at: outcome.expires_at,
-            };
-            diesel::insert_into(approval_decisions::table)
-                .values(&row)
-                .returning(SqlApprovalDecisionRow::as_returning())
-                .get_result::<SqlApprovalDecisionRow>(conn)?
-                .try_into()
+            let item = append_conversation_item_with_conn(conn, item)?;
+            let invocation =
+                update_tool_invocation_full_with_conn(conn, tool_invocation_id, update, approval)?;
+            Ok((item, invocation))
         })
     }
 
-    pub fn get_approval_decision(&self, id: &str) -> Result<Option<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decision_row(&mut conn, id)?
-            .map(TryInto::try_into)
-            .transpose()
-    }
-
-    pub fn approval_decisions_for_tool(
-        &self,
-        tool_invocation_id: &str,
-    ) -> Result<Vec<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decisions::table
-            .filter(approval_decisions::tool_invocation_id.eq(tool_invocation_id))
-            .order(approval_decisions::requested_at.asc())
-            .select(SqlApprovalDecisionRow::as_select())
-            .load::<SqlApprovalDecisionRow>(&mut conn)?
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect()
-    }
-
-    pub fn pending_approval_decisions(&self) -> Result<Vec<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decisions::table
-            .filter(approval_decisions::status.eq(db_label(&ApprovalStatus::Pending)?))
-            .order(approval_decisions::requested_at.asc())
-            .select(SqlApprovalDecisionRow::as_select())
-            .load::<SqlApprovalDecisionRow>(&mut conn)?
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect()
-    }
-
-    pub fn update_approval_decision(
+    pub fn request_tool_invocation_approval(
         &self,
         id: &str,
-        outcome: NewApprovalDecisionOutcome,
-    ) -> Result<ApprovalDecisionRecord> {
+        approval: NewToolInvocationApproval,
+    ) -> Result<ToolInvocationRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| update_approval_decision_with_conn(conn, id, outcome))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let approval = ToolInvocationApproval {
+                status: ApprovalStatus::Pending,
+                request: approval.request,
+                decision: None,
+                requested_at: now,
+                decided_at: None,
+                expires_at: approval.expires_at,
+            };
+            update_tool_invocation_approval_with_conn(
+                conn,
+                id,
+                ToolInvocationStatus::AwaitingApproval,
+                Some(approval),
+            )
+        })
+    }
+
+    pub fn record_tool_invocation_approval(
+        &self,
+        id: &str,
+        approval: ToolInvocationApproval,
+        status: ToolInvocationStatus,
+    ) -> Result<ToolInvocationRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))
+        })
+    }
+
+    pub fn update_tool_invocation_approval(
+        &self,
+        id: &str,
+        outcome: ToolInvocationApprovalOutcome,
+        status: ToolInvocationStatus,
+    ) -> Result<ToolInvocationRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let existing = load_tool_invocation_row(conn, id)?;
+            let mut approval: ToolInvocationApproval =
+                from_json_opt(existing.approval_json.clone())?.ok_or_else(|| {
+                    DbError::Invariant(format!("tool invocation {id} has no approval"))
+                })?;
+            if approval.status != ApprovalStatus::Pending {
+                return Err(DbError::Invariant(format!(
+                    "tool invocation {id} approval is {:?}, not pending",
+                    approval.status
+                )));
+            }
+            let now = now_string()?;
+            apply_approval_outcome(&mut approval, outcome, now);
+            update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))
+        })
     }
 
     pub fn insert_usage_event(&self, input: NewUsageEvent) -> Result<UsageEventRecord> {
@@ -1404,17 +1418,6 @@ fn tool_invocation_row(
         .optional()?)
 }
 
-fn approval_decision_row(
-    conn: &mut SqliteConnection,
-    id: &str,
-) -> Result<Option<SqlApprovalDecisionRow>> {
-    Ok(approval_decisions::table
-        .find(id)
-        .select(SqlApprovalDecisionRow::as_select())
-        .first(conn)
-        .optional()?)
-}
-
 fn load_agent_run_row(conn: &mut SqliteConnection, id: &str) -> Result<SqlAgentRunRow> {
     agent_runs::table
         .find(id)
@@ -1640,32 +1643,49 @@ fn update_tool_invocation_status_with_conn(
         .try_into()
 }
 
-fn update_approval_decision_with_conn(
+fn update_tool_invocation_full_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
-    outcome: NewApprovalDecisionOutcome,
-) -> Result<ApprovalDecisionRecord> {
-    let existing = approval_decision_row(conn, id)?
-        .ok_or_else(|| DbError::Invariant(format!("approval decision {id} is missing")))?;
-    let status: ApprovalStatus = db_label_parse(existing.status)?;
-    if status != ApprovalStatus::Pending {
-        return Err(DbError::Invariant(format!(
-            "approval decision {id} is {status:?}, not pending"
-        )));
-    }
-
+    update: UpdateToolInvocationStatus,
+    approval: Option<ToolInvocationApproval>,
+) -> Result<ToolInvocationRecord> {
+    let existing = load_tool_invocation_row(conn, id)?;
     let now = now_string()?;
-    let outcome = approval_outcome_columns(outcome, &now)?;
-    let changes = SqlApprovalDecisionChanges {
-        status: db_label(&outcome.status)?,
-        decision_json: to_json_opt(&outcome.decision)?,
-        decided_at: outcome.decided_at,
-        expires_at: outcome.expires_at,
+    let changes = SqlToolInvocationFullChanges {
+        status: db_label(&update.status)?,
+        output_json: to_json_opt(&update.output)?,
+        error_json: to_json_opt(&update.error)?,
+        approval_json: to_json_opt(&approval)?,
+        started_at: next_started_at(existing.started_at, update.status, now),
+        completed_at: next_tool_invocation_completed_at(existing.completed_at, update.status, now),
+        updated_at: now,
     };
-    diesel::update(approval_decisions::table.find(id))
+    diesel::update(tool_invocations::table.find(id))
         .set(&changes)
-        .returning(SqlApprovalDecisionRow::as_returning())
-        .get_result::<SqlApprovalDecisionRow>(conn)?
+        .returning(SqlToolInvocationRow::as_returning())
+        .get_result::<SqlToolInvocationRow>(conn)?
+        .try_into()
+}
+
+fn update_tool_invocation_approval_with_conn(
+    conn: &mut SqliteConnection,
+    id: &str,
+    status: ToolInvocationStatus,
+    approval: Option<ToolInvocationApproval>,
+) -> Result<ToolInvocationRecord> {
+    let existing = load_tool_invocation_row(conn, id)?;
+    let now = now_string()?;
+    let changes = SqlToolInvocationApprovalChanges {
+        status: db_label(&status)?,
+        approval_json: to_json_opt(&approval)?,
+        started_at: next_started_at(existing.started_at, status, now),
+        completed_at: next_tool_invocation_completed_at(existing.completed_at, status, now),
+        updated_at: now,
+    };
+    diesel::update(tool_invocations::table.find(id))
+        .set(&changes)
+        .returning(SqlToolInvocationRow::as_returning())
+        .get_result::<SqlToolInvocationRow>(conn)?
         .try_into()
 }
 
@@ -1809,57 +1829,39 @@ fn validate_provider_step_input_items(
     Ok(())
 }
 
-fn approval_outcome_columns(
-    outcome: NewApprovalDecisionOutcome,
-    now: &OffsetDateTime,
-) -> Result<ApprovalOutcomeColumns> {
-    Ok(match outcome {
-        NewApprovalDecisionOutcome::Pending { expires_at } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Pending,
-            decision: None,
-            decided_at: None,
-            expires_at,
-        },
-        NewApprovalDecisionOutcome::Approved { decided_by, reason } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Approved,
-            decision: Some(ApprovalDecisionPayload {
+fn apply_approval_outcome(
+    approval: &mut ToolInvocationApproval,
+    outcome: ToolInvocationApprovalOutcome,
+    now: OffsetDateTime,
+) {
+    match outcome {
+        ToolInvocationApprovalOutcome::Approved { decided_by, reason } => {
+            approval.status = ApprovalStatus::Approved;
+            approval.decision = Some(ApprovalDecisionPayload {
                 approved: true,
                 decided_by,
                 reason,
-            }),
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Denied { decided_by, reason } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Denied,
-            decision: Some(ApprovalDecisionPayload {
+            });
+        }
+        ToolInvocationApprovalOutcome::Denied { decided_by, reason } => {
+            approval.status = ApprovalStatus::Denied;
+            approval.decision = Some(ApprovalDecisionPayload {
                 approved: false,
                 decided_by,
                 reason,
-            }),
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Expired => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Expired,
-            decision: None,
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Canceled => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Canceled,
-            decision: None,
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-    })
-}
-
-struct ApprovalOutcomeColumns {
-    status: ApprovalStatus,
-    decision: Option<ApprovalDecisionPayload>,
-    decided_at: Option<OffsetDateTime>,
-    expires_at: Option<OffsetDateTime>,
+            });
+        }
+        ToolInvocationApprovalOutcome::Expired => {
+            approval.status = ApprovalStatus::Expired;
+            approval.decision = None;
+        }
+        ToolInvocationApprovalOutcome::Canceled => {
+            approval.status = ApprovalStatus::Canceled;
+            approval.decision = None;
+        }
+    }
+    approval.decided_at = Some(now);
+    approval.expires_at = None;
 }
 
 trait ExecutionStatusTiming {

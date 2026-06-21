@@ -3,8 +3,14 @@ use std::{
     rc::Rc,
 };
 
-use ai_chat_core::{AgentRunId, ConversationItemId};
-use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
+use ai_chat_core::{
+    AgentRunId, ApprovalDecisionItem, ApprovalRequestItem, ApprovalStatus, ConversationItemId,
+    ConversationItemKind, ConversationItemPayload, ConversationItemStatus, ToolInvocationId,
+    ToolInvocationStatus,
+};
+use ai_chat_db::{
+    AgentRunRecord, ConversationItemRecord, ToolInvocationApproval, ToolInvocationRecord,
+};
 use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
 
@@ -74,8 +80,15 @@ pub(super) fn build_rows(
         .collect::<HashMap<_, _>>();
     let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
     let mut run_items: HashMap<AgentRunId, Vec<ConversationItemRecord>> = HashMap::new();
+    let mut run_tool_invocations: HashMap<AgentRunId, Vec<ToolInvocationRecord>> = HashMap::new();
     let mut pending_rows = Vec::new();
     let mut seen_runs = HashSet::new();
+    for invocation in &snapshot.tool_invocations {
+        run_tool_invocations
+            .entry(invocation.agent_run_id.clone())
+            .or_default()
+            .push(invocation.clone());
+    }
 
     for item in &snapshot.items {
         if format::is_user_message(item) {
@@ -113,11 +126,13 @@ pub(super) fn build_rows(
             })),
             PendingTimelineRow::Agent(run_id) => {
                 let items = run_items.remove(&run_id).unwrap_or_default();
+                let tool_invocations = run_tool_invocations.remove(&run_id).unwrap_or_default();
                 let run = run_by_id.get(&run_id).cloned();
                 TimelineRow::Agent(Box::new(agent_turn_row(
                     Some(run_id),
                     run,
                     items,
+                    tool_invocations,
                     expanded_agent_runs,
                     text_states,
                     callbacks.clone(),
@@ -127,6 +142,7 @@ pub(super) fn build_rows(
                 None,
                 None,
                 vec![item],
+                Vec::new(),
                 expanded_agent_runs,
                 text_states,
                 callbacks.clone(),
@@ -149,10 +165,12 @@ fn agent_turn_row(
     run_id: Option<AgentRunId>,
     run: Option<AgentRunRecord>,
     items: Vec<ConversationItemRecord>,
+    tool_invocations: Vec<ToolInvocationRecord>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
     text_states: &HashMap<ConversationItemId, Entity<TextViewState>>,
     callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
+    let items = items_with_derived_approvals(items, &tool_invocations);
     let final_item = final_item_for_run(run.as_ref(), &items);
     let default_expanded = !run.as_ref().is_some_and(format::is_terminal_run);
     let expanded = run_id
@@ -196,12 +214,149 @@ fn final_item_for_run(
 pub(super) fn callbacks(
     on_toggle: impl Fn(AgentRunId, &mut Window, &mut App) + 'static,
     on_copy: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
-    on_approval_decision: impl Fn(ai_chat_core::ApprovalDecisionId, bool, &mut Window, &mut App)
-    + 'static,
+    on_approval_decision: impl Fn(ToolInvocationId, bool, &mut Window, &mut App) + 'static,
 ) -> TimelineCallbacks {
     TimelineCallbacks {
         on_toggle: Rc::new(on_toggle),
         on_copy: Rc::new(on_copy),
         on_approval_decision: Rc::new(on_approval_decision),
+    }
+}
+
+fn items_with_derived_approvals(
+    items: Vec<ConversationItemRecord>,
+    tool_invocations: &[ToolInvocationRecord],
+) -> Vec<ConversationItemRecord> {
+    let approvals_by_invocation = tool_invocations
+        .iter()
+        .filter_map(|invocation| {
+            invocation
+                .approval
+                .as_ref()
+                .map(|approval| (invocation.id.clone(), (invocation, approval)))
+        })
+        .collect::<HashMap<_, _>>();
+    if approvals_by_invocation.is_empty() {
+        return items;
+    }
+
+    let mut rows = Vec::with_capacity(items.len() + approvals_by_invocation.len() * 2);
+    let mut inserted = HashSet::new();
+    for item in items {
+        let tool_invocation_id = item.tool_invocation_id.clone();
+        rows.push(item.clone());
+        let Some(tool_invocation_id) = tool_invocation_id else {
+            continue;
+        };
+        if !matches!(item.payload, ConversationItemPayload::ToolCall(_)) {
+            continue;
+        }
+        let Some((invocation, approval)) = approvals_by_invocation.get(&tool_invocation_id) else {
+            continue;
+        };
+        inserted.insert(tool_invocation_id);
+        push_derived_approval_rows(&mut rows, &item, invocation, approval);
+    }
+
+    for (tool_invocation_id, (invocation, approval)) in approvals_by_invocation {
+        if inserted.contains(&tool_invocation_id) {
+            continue;
+        }
+        if let Some(base) = rows
+            .iter()
+            .find(|item| item.agent_run_id.as_ref() == Some(&invocation.agent_run_id))
+            .cloned()
+        {
+            push_derived_approval_rows(&mut rows, &base, invocation, approval);
+        }
+    }
+
+    rows
+}
+
+fn push_derived_approval_rows(
+    rows: &mut Vec<ConversationItemRecord>,
+    base: &ConversationItemRecord,
+    invocation: &ToolInvocationRecord,
+    approval: &ToolInvocationApproval,
+) {
+    rows.push(derived_approval_request(base, invocation, approval));
+    if approval.decision.is_some() {
+        rows.push(derived_approval_decision(base, invocation, approval));
+    }
+}
+
+fn derived_approval_request(
+    base: &ConversationItemRecord,
+    invocation: &ToolInvocationRecord,
+    approval: &ToolInvocationApproval,
+) -> ConversationItemRecord {
+    let status = if invocation.status == ToolInvocationStatus::AwaitingApproval
+        && approval.status == ApprovalStatus::Pending
+    {
+        ConversationItemStatus::WaitingForApproval
+    } else {
+        ConversationItemStatus::Completed
+    };
+    derived_approval_item(
+        base,
+        invocation,
+        format!("{}:approval-request", invocation.id),
+        ConversationItemKind::ApprovalRequest,
+        status,
+        ConversationItemPayload::ApprovalRequest(ApprovalRequestItem {
+            tool_invocation_id: invocation.id.clone(),
+            request: approval.request.clone(),
+        }),
+        approval.requested_at,
+    )
+}
+
+fn derived_approval_decision(
+    base: &ConversationItemRecord,
+    invocation: &ToolInvocationRecord,
+    approval: &ToolInvocationApproval,
+) -> ConversationItemRecord {
+    let decision = approval
+        .decision
+        .clone()
+        .expect("approval decision row requires decision payload");
+    derived_approval_item(
+        base,
+        invocation,
+        format!("{}:approval-decision", invocation.id),
+        ConversationItemKind::ApprovalDecision,
+        ConversationItemStatus::Completed,
+        ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
+            tool_invocation_id: invocation.id.clone(),
+            decision,
+        }),
+        approval.decided_at.unwrap_or(approval.requested_at),
+    )
+}
+
+fn derived_approval_item(
+    base: &ConversationItemRecord,
+    invocation: &ToolInvocationRecord,
+    id: ConversationItemId,
+    kind: ConversationItemKind,
+    status: ConversationItemStatus,
+    payload: ConversationItemPayload,
+    timestamp: time::OffsetDateTime,
+) -> ConversationItemRecord {
+    ConversationItemRecord {
+        id,
+        conversation_id: base.conversation_id.clone(),
+        seq: base.seq,
+        kind,
+        status,
+        agent_run_id: Some(invocation.agent_run_id.clone()),
+        provider_step_id: invocation.provider_step_id.clone(),
+        tool_invocation_id: Some(invocation.id.clone()),
+        provider_item_id: None,
+        search_text: payload.search_text(),
+        payload,
+        created_at: timestamp,
+        updated_at: timestamp,
     }
 }

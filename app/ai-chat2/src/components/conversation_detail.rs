@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationId, ConversationItemId};
+use ai_chat_core::{AgentRunId, ConversationId, ConversationItemId, ToolInvocationId};
 use ai_chat_db::AgentRunRecord;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -256,14 +256,9 @@ impl ConversationDetailPage {
             copy_to_clipboard,
             {
                 let page = page.clone();
-                move |approval_decision_id, approved, window, cx| {
+                move |tool_invocation_id, approved, window, cx| {
                     let _ = page.update(cx, |page, cx| {
-                        page.decide_tool_approval(
-                            approval_decision_id.clone(),
-                            approved,
-                            window,
-                            cx,
-                        );
+                        page.decide_tool_approval(tool_invocation_id.clone(), approved, window, cx);
                     });
                 }
             },
@@ -392,7 +387,7 @@ impl ConversationDetailPage {
 
     fn decide_tool_approval(
         &mut self,
-        approval_decision_id: ApprovalDecisionId,
+        tool_invocation_id: ToolInvocationId,
         approved: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -401,16 +396,12 @@ impl ConversationDetailPage {
             if approved {
                 runtime.approve_tool_invocation(
                     self.conversation_id.clone(),
-                    approval_decision_id,
+                    tool_invocation_id,
                     window,
                     cx,
                 );
             } else {
-                runtime.deny_tool_invocation(
-                    self.conversation_id.clone(),
-                    approval_decision_id,
-                    cx,
-                );
+                runtime.deny_tool_invocation(self.conversation_id.clone(), tool_invocation_id, cx);
             }
         });
     }

@@ -6,7 +6,7 @@ use crate::{
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    AgentRunRecord, ApprovalDecisionRecord, NewApprovalDecisionOutcome, NewConversationItem,
+    AgentRunRecord, NewConversationItem, ToolInvocationApproval, ToolInvocationApprovalOutcome,
     ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
 };
 use std::{future::Future, time::Duration};
@@ -15,43 +15,14 @@ use tokio::time::timeout;
 impl AgentRuntime {
     pub async fn approve_and_resume_tool(
         &self,
-        approval_decision_id: &str,
+        tool_invocation_id: &str,
         decided_by: String,
         reason: Option<String>,
         tool_timeout: Duration,
         cancellation_token: AgentCancellationToken,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<ApprovalResumeOutcome> {
-        let approval = self
-            .repo
-            .get_approval_decision(approval_decision_id)?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!(
-                    "approval decision {approval_decision_id} is missing"
-                ))
-            })?;
-        if approval.status != ApprovalStatus::Pending {
-            return Err(AgentRuntimeError::Invariant(format!(
-                "approval decision {approval_decision_id} is {:?}, not pending",
-                approval.status
-            )));
-        }
-
-        let invocation = self
-            .repo
-            .get_tool_invocation(&approval.tool_invocation_id)?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!(
-                    "tool invocation {} is missing",
-                    approval.tool_invocation_id
-                ))
-            })?;
-        if invocation.status != ToolInvocationStatus::AwaitingApproval {
-            return Err(AgentRuntimeError::Invariant(format!(
-                "tool invocation {} is {:?}, not awaiting approval",
-                invocation.id, invocation.status
-            )));
-        }
+        let invocation = self.pending_approval_invocation(tool_invocation_id)?;
         if !matches!(invocation.source, ToolSource::Local) {
             return Err(AgentRuntimeError::Unsupported(format!(
                 "approved resume only supports local built-in tools, got {:?}",
@@ -59,22 +30,7 @@ impl AgentRuntime {
             )));
         }
 
-        let agent_run = self
-            .repo
-            .get_agent_run(&invocation.agent_run_id)?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!(
-                    "agent run {} is missing",
-                    invocation.agent_run_id
-                ))
-            })?;
-        if agent_run.status != AgentRunStatus::WaitingForApproval {
-            return Err(AgentRuntimeError::Invariant(format!(
-                "agent run {} is {:?}, not waiting for approval",
-                agent_run.id, agent_run.status
-            )));
-        }
-
+        let agent_run = self.agent_run_for_approval(&invocation)?;
         let policy = &agent_run.input.settings_snapshot.tool_policy;
         let access_requests = crate::builtin_tools::registry::access_requests_for_builtin_tool(
             &invocation.tool_name,
@@ -99,53 +55,10 @@ impl AgentRuntime {
             | crate::builtin_tools::approval::ToolPermissionDecision::Ask { .. } => {}
         }
 
-        let updated_approval = self.repo.update_approval_decision(
-            approval_decision_id,
-            NewApprovalDecisionOutcome::Approved { decided_by, reason },
-        )?;
-        let decision_item_id = self.append_approval_decision_item(
-            &agent_run.conversation_id,
-            &invocation,
-            &updated_approval,
-            observer,
-        )?;
-        let mut steps = vec![AgentStep::Approval(updated_approval.id.clone())];
-        if let Some(item_id) = decision_item_id {
-            steps.push(AgentStep::ConversationItem(item_id));
-        }
-        if cancellation_token.is_cancelled() {
-            return self.cancel_approved_tool_resume(
-                updated_approval,
-                &agent_run,
-                &invocation,
-                steps,
-                observer,
-            );
-        }
-
-        let running_run = self.repo.update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Running,
-                output: None,
-                error: None,
-            },
-        )?;
-        emit_runtime(
-            observer,
-            AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id: running_run.id.clone(),
-                status: AgentRunStatus::Running,
-            },
-        );
-
-        let running_invocation = self.repo.update_tool_invocation_status(
-            &invocation.id,
-            UpdateToolInvocationStatus {
-                status: ToolInvocationStatus::Running,
-                output: None,
-                error: None,
-            },
+        let running_invocation = self.repo.update_tool_invocation_approval(
+            tool_invocation_id,
+            ToolInvocationApprovalOutcome::Approved { decided_by, reason },
+            ToolInvocationStatus::Running,
         )?;
         emit_runtime(
             observer,
@@ -154,11 +67,10 @@ impl AgentRuntime {
                 tool_invocation_id: running_invocation.id.clone(),
             },
         );
-        steps.push(AgentStep::ToolInvocation(running_invocation.id.clone()));
+        let mut steps = vec![AgentStep::ToolInvocation(running_invocation.id.clone())];
         if cancellation_token.is_cancelled() {
             return self.cancel_approved_tool_resume(
-                updated_approval,
-                &running_run,
+                &agent_run,
                 &running_invocation,
                 steps,
                 observer,
@@ -177,32 +89,31 @@ impl AgentRuntime {
         .await;
         if cancellation_token.is_cancelled() {
             return self.cancel_approved_tool_resume(
-                updated_approval,
-                &running_run,
+                &agent_run,
                 &running_invocation,
                 steps,
                 observer,
             );
         }
 
-        let tool_result_item_id = self.append_tool_result_and_update_tool_invocation(
-            &agent_run.conversation_id,
-            &running_invocation,
-            tool_status,
-            tool_output,
-            tool_error.clone(),
-            observer,
-        )?;
+        let (tool_result_item_id, finished_invocation) = self
+            .append_tool_result_and_update_tool_invocation(
+                &agent_run.conversation_id,
+                &running_invocation,
+                tool_status,
+                tool_output,
+                tool_error.clone(),
+                observer,
+            )?;
         steps.push(AgentStep::ConversationItem(tool_result_item_id.clone()));
         let output = AgentRunOutput {
             final_item_id: Some(tool_result_item_id),
             stopped_reason: AgentStoppedReason::Completed,
         };
-        let final_status = AgentRunStatus::Completed;
         let agent_run = self.repo.update_agent_run_status(
             &agent_run.id,
             UpdateAgentRunStatus {
-                status: final_status,
+                status: AgentRunStatus::Completed,
                 output: Some(output.clone()),
                 error: None,
             },
@@ -211,18 +122,20 @@ impl AgentRuntime {
             observer,
             AgentRuntimeEvent::AgentRunStatusChanged {
                 agent_run_id: agent_run.id.clone(),
-                status: final_status,
+                status: AgentRunStatus::Completed,
             },
         );
-        let mut events = vec![AgentRunEvent::ToolInvocationFinished {
-            tool_invocation_id: running_invocation.id,
-        }];
-        events.push(AgentRunEvent::Completed {
-            output: output.clone(),
-        });
+        let events = vec![
+            AgentRunEvent::ToolInvocationFinished {
+                tool_invocation_id: finished_invocation.id.clone(),
+            },
+            AgentRunEvent::Completed {
+                output: output.clone(),
+            },
+        ];
 
         Ok(ApprovalResumeOutcome {
-            approval: updated_approval,
+            tool_invocation: finished_invocation,
             agent_run,
             output,
             events,
@@ -232,7 +145,6 @@ impl AgentRuntime {
 
     fn cancel_approved_tool_resume(
         &self,
-        approval: ApprovalDecisionRecord,
         agent_run: &AgentRunRecord,
         invocation: &ToolInvocationRecord,
         mut steps: Vec<AgentStep>,
@@ -245,6 +157,15 @@ impl AgentRuntime {
             ToolInvocationStatus::Canceled,
             error,
         )?;
+        let tool_invocation = self
+            .repo
+            .get_tool_invocation(&invocation.id)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "tool invocation {} is missing",
+                    invocation.id
+                ))
+            })?;
         steps.push(AgentStep::ConversationItem(tool_result_item_id.clone()));
         let output = AgentRunOutput {
             final_item_id: Some(tool_result_item_id),
@@ -266,7 +187,7 @@ impl AgentRuntime {
             },
         );
         Ok(ApprovalResumeOutcome {
-            approval,
+            tool_invocation,
             agent_run,
             output,
             events: vec![
@@ -279,39 +200,6 @@ impl AgentRuntime {
         })
     }
 
-    fn append_approval_decision_item(
-        &self,
-        conversation_id: &str,
-        invocation: &ToolInvocationRecord,
-        approval: &ApprovalDecisionRecord,
-        observer: Option<&AgentRuntimeObserver>,
-    ) -> Result<Option<ConversationItemId>> {
-        let Some(decision) = approval.decision.as_ref() else {
-            return Ok(None);
-        };
-        let payload = ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
-            approval_decision_id: approval.id.clone(),
-            decision: decision.clone(),
-        });
-        let item = self.repo.append_conversation_item(NewConversationItem {
-            conversation_id: conversation_id.to_string(),
-            status: ConversationItemStatus::Completed,
-            agent_run_id: Some(invocation.agent_run_id.clone()),
-            provider_step_id: invocation.provider_step_id.clone(),
-            tool_invocation_id: Some(invocation.id.clone()),
-            provider_item_id: None,
-            payload,
-        })?;
-        emit_runtime(
-            observer,
-            AgentRuntimeEvent::ConversationItemAppended {
-                conversation_id: conversation_id.to_string(),
-                item_id: item.id.clone(),
-            },
-        );
-        Ok(Some(item.id))
-    }
-
     fn append_tool_result_and_update_tool_invocation(
         &self,
         conversation_id: &str,
@@ -320,7 +208,7 @@ impl AgentRuntime {
         output: ToolInvocationOutput,
         error: Option<RunErrorPayload>,
         observer: Option<&AgentRuntimeObserver>,
-    ) -> Result<ConversationItemId> {
+    ) -> Result<(ConversationItemId, ToolInvocationRecord)> {
         let payload = ConversationItemPayload::ToolResult(ToolResultItem {
             tool_invocation_id: Some(invocation.id.clone()),
             call_id: invocation.call_id.clone(),
@@ -329,9 +217,9 @@ impl AgentRuntime {
             structured_output: output.structured_output.clone(),
             raw_output: output.raw_output.clone(),
         });
-        let (item, _) = self
+        let (item, invocation) = self
             .repo
-            .append_conversation_item_and_update_tool_invocation(
+            .append_conversation_item_and_update_tool_invocation_full(
                 NewConversationItem {
                     conversation_id: conversation_id.to_string(),
                     status: ConversationItemStatus::Completed,
@@ -347,6 +235,7 @@ impl AgentRuntime {
                     output: Some(output),
                     error,
                 },
+                invocation.approval.clone(),
             )?;
         emit_runtime(
             observer,
@@ -362,53 +251,110 @@ impl AgentRuntime {
                 tool_invocation_id: invocation.id.clone(),
             },
         );
-        Ok(item.id)
+        Ok((item.id, invocation))
     }
 
     pub fn decide_approval(
         &self,
-        approval_decision_id: &str,
-        outcome: NewApprovalDecisionOutcome,
-    ) -> Result<ApprovalDecisionRecord> {
-        enum TerminalApproval {
-            Denied { message: String },
-            Canceled,
-            Expired,
-            Pending,
+        tool_invocation_id: &str,
+        outcome: ToolInvocationApprovalOutcome,
+    ) -> Result<ToolInvocationRecord> {
+        if matches!(outcome, ToolInvocationApprovalOutcome::Approved { .. }) {
+            return Err(AgentRuntimeError::Unsupported(
+                "approved tool resume must use approve_and_resume_tool".to_string(),
+            ));
         }
 
-        let terminal = match &outcome {
-            NewApprovalDecisionOutcome::Approved { .. } => {
-                return Err(AgentRuntimeError::Unsupported(
-                    "approved tool resume is not implemented in v1".to_string(),
-                ));
-            }
-            NewApprovalDecisionOutcome::Denied { reason, .. } => TerminalApproval::Denied {
-                message: reason
-                    .clone()
-                    .unwrap_or_else(|| "Tool call denied by user".to_string()),
-            },
-            NewApprovalDecisionOutcome::Canceled => TerminalApproval::Canceled,
-            NewApprovalDecisionOutcome::Expired => TerminalApproval::Expired,
-            NewApprovalDecisionOutcome::Pending { .. } => TerminalApproval::Pending,
+        let invocation = self.pending_approval_invocation(tool_invocation_id)?;
+        let agent_run = self.agent_run_for_approval(&invocation)?;
+        let (status, error, stopped_reason, run_status, run_error_payload) =
+            terminal_approval_result(&outcome);
+        let approval = approval_after_outcome(&invocation, outcome)?;
+        let output = ToolInvocationOutput {
+            content: vec![ContentPart::Text {
+                text: error.message.clone(),
+            }],
+            structured_output: None,
+            raw_output: None,
+            is_error: true,
         };
-        let approval = self
+        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+            tool_invocation_id: Some(invocation.id.clone()),
+            call_id: invocation.call_id.clone(),
+            content: output.content.clone(),
+            is_error: true,
+            structured_output: None,
+            raw_output: None,
+        });
+        let (item, invocation) = self
             .repo
-            .get_approval_decision(approval_decision_id)?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!(
-                    "approval decision {approval_decision_id} is missing"
-                ))
-            })?;
+            .append_conversation_item_and_update_tool_invocation_full(
+                NewConversationItem {
+                    conversation_id: agent_run.conversation_id.clone(),
+                    status: ConversationItemStatus::Completed,
+                    agent_run_id: Some(invocation.agent_run_id.clone()),
+                    provider_step_id: invocation.provider_step_id.clone(),
+                    tool_invocation_id: Some(invocation.id.clone()),
+                    provider_item_id: None,
+                    payload,
+                },
+                &invocation.id,
+                UpdateToolInvocationStatus {
+                    status,
+                    output: Some(output),
+                    error: Some(error.clone()),
+                },
+                Some(approval),
+            )?;
+        let output = AgentRunOutput {
+            final_item_id: Some(item.id),
+            stopped_reason,
+        };
+        self.repo.update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: run_status,
+                output: Some(output),
+                error: run_error_payload.then_some(error),
+            },
+        )?;
+        Ok(invocation)
+    }
+
+    fn pending_approval_invocation(
+        &self,
+        tool_invocation_id: &str,
+    ) -> Result<ToolInvocationRecord> {
         let invocation = self
             .repo
-            .get_tool_invocation(&approval.tool_invocation_id)?
+            .get_tool_invocation(tool_invocation_id)?
             .ok_or_else(|| {
                 AgentRuntimeError::Invariant(format!(
-                    "tool invocation {} is missing",
-                    approval.tool_invocation_id
+                    "tool invocation {tool_invocation_id} is missing"
                 ))
             })?;
+        if invocation.status != ToolInvocationStatus::AwaitingApproval {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "tool invocation {} is {:?}, not awaiting approval",
+                invocation.id, invocation.status
+            )));
+        }
+        let approval = invocation.approval.as_ref().ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "tool invocation {} has no approval",
+                invocation.id
+            ))
+        })?;
+        if approval.status != ApprovalStatus::Pending {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "tool invocation {} approval is {:?}, not pending",
+                invocation.id, approval.status
+            )));
+        }
+        Ok(invocation)
+    }
+
+    fn agent_run_for_approval(&self, invocation: &ToolInvocationRecord) -> Result<AgentRunRecord> {
         let agent_run = self
             .repo
             .get_agent_run(&invocation.agent_run_id)?
@@ -420,96 +366,98 @@ impl AgentRuntime {
             })?;
         if is_terminal_agent_run_status(agent_run.status) {
             return Err(AgentRuntimeError::Invariant(format!(
-                "agent run {} is {:?}, cannot decide approval {}",
-                agent_run.id, agent_run.status, approval_decision_id
+                "agent run {} is {:?}, cannot decide tool invocation {}",
+                agent_run.id, agent_run.status, invocation.id
             )));
         }
-        let updated = self
-            .repo
-            .update_approval_decision(approval_decision_id, outcome)?;
-        if let Some(decision) = updated.decision.as_ref() {
-            let payload = ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
-                approval_decision_id: updated.id.clone(),
-                decision: decision.clone(),
-            });
-            self.repo.append_conversation_item(NewConversationItem {
-                conversation_id: agent_run.conversation_id.clone(),
-                status: ConversationItemStatus::Completed,
-                agent_run_id: Some(invocation.agent_run_id.clone()),
-                provider_step_id: invocation.provider_step_id.clone(),
-                tool_invocation_id: Some(invocation.id.clone()),
-                provider_item_id: None,
-                payload,
-            })?;
-        }
+        Ok(agent_run)
+    }
+}
 
-        match terminal {
-            TerminalApproval::Denied { message } => {
-                let error = run_error("approval_denied", message, false, None);
-                let item_id = self.append_error_tool_result_and_update_tool_invocation(
-                    &agent_run.conversation_id,
-                    &invocation,
-                    ToolInvocationStatus::Denied,
-                    error.clone(),
-                )?;
-                let output = AgentRunOutput {
-                    final_item_id: Some(item_id),
-                    stopped_reason: AgentStoppedReason::Failed,
-                };
-                self.repo.update_agent_run_status(
-                    &agent_run.id,
-                    UpdateAgentRunStatus {
-                        status: AgentRunStatus::Failed,
-                        output: Some(output),
-                        error: Some(error),
-                    },
-                )?;
-            }
-            TerminalApproval::Canceled => {
-                let error = run_error("approval_canceled", "Tool approval canceled", false, None);
-                let item_id = self.append_error_tool_result_and_update_tool_invocation(
-                    &agent_run.conversation_id,
-                    &invocation,
-                    ToolInvocationStatus::Canceled,
-                    error,
-                )?;
-                let output = AgentRunOutput {
-                    final_item_id: Some(item_id),
-                    stopped_reason: AgentStoppedReason::Canceled,
-                };
-                self.repo.update_agent_run_status(
-                    &agent_run.id,
-                    UpdateAgentRunStatus {
-                        status: AgentRunStatus::Canceled,
-                        output: Some(output),
-                        error: None,
-                    },
-                )?;
-            }
-            TerminalApproval::Expired => {
-                let error = run_error("approval_expired", "Tool approval expired", true, None);
-                let item_id = self.append_error_tool_result_and_update_tool_invocation(
-                    &agent_run.conversation_id,
-                    &invocation,
-                    ToolInvocationStatus::Failed,
-                    error.clone(),
-                )?;
-                let output = AgentRunOutput {
-                    final_item_id: Some(item_id),
-                    stopped_reason: AgentStoppedReason::Failed,
-                };
-                self.repo.update_agent_run_status(
-                    &agent_run.id,
-                    UpdateAgentRunStatus {
-                        status: AgentRunStatus::Failed,
-                        output: Some(output),
-                        error: Some(error),
-                    },
-                )?;
-            }
-            TerminalApproval::Pending => {}
+fn approval_after_outcome(
+    invocation: &ToolInvocationRecord,
+    outcome: ToolInvocationApprovalOutcome,
+) -> Result<ToolInvocationApproval> {
+    let mut approval = invocation.approval.clone().ok_or_else(|| {
+        AgentRuntimeError::Invariant(format!("tool invocation {} has no approval", invocation.id))
+    })?;
+    if approval.status != ApprovalStatus::Pending {
+        return Err(AgentRuntimeError::Invariant(format!(
+            "tool invocation {} approval is {:?}, not pending",
+            invocation.id, approval.status
+        )));
+    }
+    let now = time::OffsetDateTime::now_utc();
+    match outcome {
+        ToolInvocationApprovalOutcome::Approved { decided_by, reason } => {
+            approval.status = ApprovalStatus::Approved;
+            approval.decision = Some(ApprovalDecisionPayload {
+                approved: true,
+                decided_by,
+                reason,
+            });
         }
-        Ok(updated)
+        ToolInvocationApprovalOutcome::Denied { decided_by, reason } => {
+            approval.status = ApprovalStatus::Denied;
+            approval.decision = Some(ApprovalDecisionPayload {
+                approved: false,
+                decided_by,
+                reason,
+            });
+        }
+        ToolInvocationApprovalOutcome::Expired => {
+            approval.status = ApprovalStatus::Expired;
+            approval.decision = None;
+        }
+        ToolInvocationApprovalOutcome::Canceled => {
+            approval.status = ApprovalStatus::Canceled;
+            approval.decision = None;
+        }
+    }
+    approval.decided_at = Some(now);
+    approval.expires_at = None;
+    Ok(approval)
+}
+
+fn terminal_approval_result(
+    outcome: &ToolInvocationApprovalOutcome,
+) -> (
+    ToolInvocationStatus,
+    RunErrorPayload,
+    AgentStoppedReason,
+    AgentRunStatus,
+    bool,
+) {
+    match outcome {
+        ToolInvocationApprovalOutcome::Denied { reason, .. } => (
+            ToolInvocationStatus::Denied,
+            run_error(
+                "approval_denied",
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "Tool call denied by user".to_string()),
+                false,
+                None,
+            ),
+            AgentStoppedReason::Failed,
+            AgentRunStatus::Failed,
+            true,
+        ),
+        ToolInvocationApprovalOutcome::Canceled => (
+            ToolInvocationStatus::Canceled,
+            run_error("approval_canceled", "Tool approval canceled", false, None),
+            AgentStoppedReason::Canceled,
+            AgentRunStatus::Canceled,
+            false,
+        ),
+        ToolInvocationApprovalOutcome::Expired => (
+            ToolInvocationStatus::Failed,
+            run_error("approval_expired", "Tool approval expired", true, None),
+            AgentStoppedReason::Failed,
+            AgentRunStatus::Failed,
+            true,
+        ),
+        ToolInvocationApprovalOutcome::Approved { .. } => unreachable!(),
     }
 }
 

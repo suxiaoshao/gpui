@@ -1,6 +1,6 @@
 use crate::{
-    AgentRunHandle, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver,
-    AgentStep, ProviderSecretValues, Result, SkillCatalog, SkillLoader,
+    AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent,
+    AgentRuntimeObserver, AgentStep, ProviderSecretValues, Result, SkillCatalog, SkillLoader,
     history::build_prompt_history,
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
     provider_models::run_saved_provider_model,
@@ -8,8 +8,7 @@ use crate::{
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    AgentRunRecord, FreshRepository, NewApprovalDecisionOutcome, NewConversationItem,
-    ProviderRecord, UpdateAgentRunStatus,
+    AgentRunRecord, FreshRepository, NewConversationItem, ProviderRecord, UpdateAgentRunStatus,
 };
 use futures::StreamExt;
 use rig_core::{
@@ -235,12 +234,7 @@ impl AgentRuntime {
                     }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
-                        let run_status = self
-                            .repo
-                            .get_agent_run(&agent_run.id)?
-                            .map(|run| run.status)
-                            .unwrap_or(AgentRunStatus::Failed);
-                        if run_status == AgentRunStatus::WaitingForApproval {
+                        if context.waiting_tool_invocation_id().is_some() {
                             accumulator.finish(ConversationItemStatus::Completed, None)?;
                             context.finish_current_streaming_provider_step(
                                 final_raw_response.as_ref(),
@@ -352,17 +346,13 @@ impl AgentRuntime {
                 Ok(AgentRunHandle {
                     agent_run,
                     output: Some(output),
+                    status: AgentRunHandleStatus::Finished,
                     events,
                     steps: context.steps(),
                 })
             }
             Err(error) => {
-                let status = self
-                    .repo
-                    .get_agent_run(&agent_run.id)?
-                    .map(|run| run.status)
-                    .unwrap_or(AgentRunStatus::Failed);
-                if status == AgentRunStatus::WaitingForApproval {
+                if let Some(tool_invocation_id) = context.waiting_tool_invocation_id() {
                     let events = context.events();
                     let agent_run = self.repo.get_agent_run(&agent_run.id)?.ok_or_else(|| {
                         AgentRuntimeError::Invariant("agent run disappeared".to_string())
@@ -370,6 +360,7 @@ impl AgentRuntime {
                     return Ok(AgentRunHandle {
                         agent_run,
                         output: None,
+                        status: AgentRunHandleStatus::WaitingForApproval { tool_invocation_id },
                         events,
                         steps: context.steps(),
                     });
@@ -402,6 +393,7 @@ impl AgentRuntime {
                     return Ok(AgentRunHandle {
                         agent_run,
                         output: Some(output),
+                        status: AgentRunHandleStatus::Finished,
                         events,
                         steps: context.steps(),
                     });
@@ -455,6 +447,7 @@ impl AgentRuntime {
                 Ok(AgentRunHandle {
                     agent_run,
                     output,
+                    status: AgentRunHandleStatus::Finished,
                     events,
                     steps: context.steps(),
                 })
@@ -538,6 +531,7 @@ impl AgentRuntime {
         Ok(AgentRunHandle {
             agent_run,
             output: Some(output),
+            status: AgentRunHandleStatus::Finished,
             events: vec![AgentRunEvent::Failed { error: payload }],
             steps: vec![AgentStep::ConversationItem(item.id)],
         })
@@ -557,7 +551,6 @@ impl AgentRuntime {
 
         let error = run_error("canceled", "runtime canceled", false, None);
         self.finalize_active_provider_steps(&run.id, ProviderStepStatus::Canceled, error.clone())?;
-        self.cancel_pending_tool_approvals(&run.id)?;
         self.finalize_active_tool_invocations(
             &run.id,
             &run.conversation_id,
@@ -588,11 +581,7 @@ impl AgentRuntime {
 
     pub fn recover_interrupted_runs(&self) -> Result<Vec<AgentRunRecord>> {
         let mut recovered = Vec::new();
-        for status in [
-            AgentRunStatus::Queued,
-            AgentRunStatus::Running,
-            AgentRunStatus::WaitingForApproval,
-        ] {
+        for status in [AgentRunStatus::Queued, AgentRunStatus::Running] {
             for run in self.repo.agent_runs_by_status(status)? {
                 let error = run_error(
                     "interrupted",
@@ -601,7 +590,6 @@ impl AgentRuntime {
                     None,
                 );
                 self.fail_active_provider_steps(&run.id, error.clone())?;
-                self.cancel_pending_tool_approvals(&run.id)?;
                 self.finalize_active_tool_invocations(
                     &run.id,
                     &run.conversation_id,
@@ -619,20 +607,6 @@ impl AgentRuntime {
             }
         }
         Ok(recovered)
-    }
-
-    fn cancel_pending_tool_approvals(&self, agent_run_id: &str) -> Result<()> {
-        for invocation in self.repo.tool_invocations_for_run(agent_run_id)? {
-            for approval in self.repo.approval_decisions_for_tool(&invocation.id)? {
-                if approval.status == ApprovalStatus::Pending {
-                    self.repo.update_approval_decision(
-                        &approval.id,
-                        NewApprovalDecisionOutcome::Canceled,
-                    )?;
-                }
-            }
-        }
-        Ok(())
     }
 
     fn activate_skills(&self, request: &AgentRunRequest, agent_run_id: &str) -> Result<()> {

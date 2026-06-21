@@ -116,8 +116,8 @@ fn approval_action_buttons(
     let ConversationItemPayload::ApprovalRequest(request) = payload else {
         return None;
     };
-    let approve_id = request.approval_decision_id.clone();
-    let deny_id = request.approval_decision_id.clone();
+    let approve_id = request.tool_invocation_id.clone();
+    let deny_id = request.tool_invocation_id.clone();
     let approve = cx.global::<I18n>().t("conversation-approval-approve");
     let deny = cx.global::<I18n>().t("conversation-approval-deny");
     let approve_callback = on_approval_decision.clone();

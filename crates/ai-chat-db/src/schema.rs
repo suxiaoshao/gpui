@@ -141,23 +141,11 @@ diesel::table! {
         input_json -> Json,
         output_json -> Nullable<Json>,
         error_json -> Nullable<Json>,
+        approval_json -> Nullable<Json>,
         created_at -> TimestamptzSqlite,
         started_at -> Nullable<TimestamptzSqlite>,
         completed_at -> Nullable<TimestamptzSqlite>,
         updated_at -> TimestamptzSqlite,
-    }
-}
-
-diesel::table! {
-    approval_decisions (id) {
-        id -> Text,
-        tool_invocation_id -> Text,
-        status -> Text,
-        request_json -> Json,
-        decision_json -> Nullable<Json>,
-        requested_at -> TimestamptzSqlite,
-        decided_at -> Nullable<TimestamptzSqlite>,
-        expires_at -> Nullable<TimestamptzSqlite>,
     }
 }
 
@@ -238,7 +226,6 @@ diesel::table! {
 
 diesel::allow_tables_to_appear_in_same_query!(
     agent_runs,
-    approval_decisions,
     attachments,
     conversation_items,
     conversations,

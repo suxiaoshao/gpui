@@ -30,6 +30,7 @@ pub(crate) struct PersistenceContext {
     input_item_ids: Arc<Mutex<Vec<ConversationItemId>>>,
     last_provider_step_id: Arc<Mutex<Option<ProviderStepId>>>,
     final_item_id: Arc<Mutex<Option<ConversationItemId>>>,
+    waiting_tool_invocation_id: Arc<Mutex<Option<ToolInvocationId>>>,
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
@@ -69,6 +70,7 @@ impl PersistenceContext {
             input_item_ids: Arc::new(Mutex::new(input_item_ids)),
             last_provider_step_id: Arc::new(Mutex::new(None)),
             final_item_id: Arc::new(Mutex::new(None)),
+            waiting_tool_invocation_id: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(Vec::new())),
             steps: Arc::new(Mutex::new(Vec::new())),
             tool_definitions: Arc::new(
@@ -108,6 +110,10 @@ impl PersistenceContext {
 
     pub(crate) fn final_item_id(&self) -> Option<ConversationItemId> {
         mutex_clone(&self.final_item_id)
+    }
+
+    pub(crate) fn waiting_tool_invocation_id(&self) -> Option<ToolInvocationId> {
+        mutex_clone(&self.waiting_tool_invocation_id)
     }
 }
 

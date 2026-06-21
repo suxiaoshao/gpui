@@ -85,6 +85,7 @@ pub struct ConversationTimelineRecords {
     pub items: Vec<ConversationItemRecord>,
     pub attachments: Vec<AttachmentRecord>,
     pub runs: Vec<AgentRunRecord>,
+    pub tool_invocations: Vec<ToolInvocationRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,6 +234,7 @@ pub struct ToolInvocationRecord {
     pub input: ToolInvocationInput,
     pub output: Option<ToolInvocationOutput>,
     pub error: Option<RunErrorPayload>,
+    pub approval: Option<ToolInvocationApproval>,
     pub created_at: OffsetDateTime,
     pub started_at: Option<OffsetDateTime>,
     pub completed_at: Option<OffsetDateTime>,
@@ -256,10 +258,8 @@ pub struct UpdateToolInvocationStatus {
     pub error: Option<RunErrorPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApprovalDecisionRecord {
-    pub id: ApprovalDecisionId,
-    pub tool_invocation_id: ToolInvocationId,
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolInvocationApproval {
     pub status: ApprovalStatus,
     pub request: ApprovalRequestPayload,
     pub decision: Option<ApprovalDecisionPayload>,
@@ -269,17 +269,13 @@ pub struct ApprovalDecisionRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NewApprovalDecision {
-    pub tool_invocation_id: ToolInvocationId,
+pub struct NewToolInvocationApproval {
     pub request: ApprovalRequestPayload,
-    pub outcome: NewApprovalDecisionOutcome,
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum NewApprovalDecisionOutcome {
-    Pending {
-        expires_at: Option<OffsetDateTime>,
-    },
+pub enum ToolInvocationApprovalOutcome {
     Approved {
         decided_by: String,
         reason: Option<String>,

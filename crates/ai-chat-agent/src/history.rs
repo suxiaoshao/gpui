@@ -609,7 +609,7 @@ mod tests {
             Some("run-parent"),
             ConversationItemKind::ApprovalDecision,
             ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
-                approval_decision_id: "approval-1".to_string(),
+                tool_invocation_id: "tool-1".to_string(),
                 decision: ApprovalDecisionPayload {
                     approved: true,
                     decided_by: "user".to_string(),

@@ -4,8 +4,8 @@ use crate::{
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    AgentRunRecord, NewConversationItem, ToolInvocationRecord, UpdateAgentRunStatus,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    AgentRunRecord, NewConversationItem, ToolInvocationApproval, ToolInvocationRecord,
+    UpdateAgentRunStatus, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 
 impl AgentRuntime {
@@ -59,9 +59,10 @@ impl AgentRuntime {
             structured_output: None,
             raw_output: None,
         });
+        let approval = terminalized_pending_approval(invocation);
         let (item, _) = self
             .repo
-            .append_conversation_item_and_update_tool_invocation(
+            .append_conversation_item_and_update_tool_invocation_full(
                 NewConversationItem {
                     conversation_id: conversation_id.to_string(),
                     status: ConversationItemStatus::Completed,
@@ -77,6 +78,7 @@ impl AgentRuntime {
                     output: Some(output),
                     error: Some(error),
                 },
+                approval,
             )?;
         Ok(item.id)
     }
@@ -161,4 +163,17 @@ impl AgentRuntime {
         );
         Ok(error)
     }
+}
+
+fn terminalized_pending_approval(
+    invocation: &ToolInvocationRecord,
+) -> Option<ToolInvocationApproval> {
+    let mut approval = invocation.approval.clone()?;
+    if approval.status == ApprovalStatus::Pending {
+        approval.status = ApprovalStatus::Canceled;
+        approval.decision = None;
+        approval.decided_at = Some(time::OffsetDateTime::now_utc());
+        approval.expires_at = None;
+    }
+    Some(approval)
 }
