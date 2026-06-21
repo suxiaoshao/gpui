@@ -513,7 +513,11 @@ impl AgentRuntime {
 
     pub fn recover_interrupted_runs(&self) -> Result<Vec<AgentRunRecord>> {
         let mut recovered = Vec::new();
-        for status in [AgentRunStatus::Queued, AgentRunStatus::Running] {
+        for status in [
+            AgentRunStatus::Queued,
+            AgentRunStatus::Running,
+            AgentRunStatus::WaitingForApproval,
+        ] {
             for run in self.repo.agent_runs_by_status(status)? {
                 let error = run_error(
                     "interrupted",
@@ -522,6 +526,7 @@ impl AgentRuntime {
                     None,
                 );
                 self.fail_active_provider_steps(&run.id, error.clone())?;
+                self.cancel_pending_tool_approvals(&run.id)?;
                 self.finalize_active_tool_invocations(
                     &run.id,
                     &run.conversation_id,

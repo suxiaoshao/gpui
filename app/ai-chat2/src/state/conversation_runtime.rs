@@ -189,11 +189,7 @@ impl ConversationRuntimeStore {
                 return false;
             }
         };
-        if let Some(active) = self.active_runs.get(&conversation_id)
-            && (active.agent_run_id.as_ref() != Some(&agent_run_id)
-                || active.phase != ActiveRunPhase::WaitingForApproval
-                || active.cancel_requested)
-        {
+        if !self.active_waiting_approval_matches(&conversation_id, &agent_run_id) {
             return false;
         }
 
@@ -258,11 +254,7 @@ impl ConversationRuntimeStore {
                 return false;
             }
         };
-        if let Some(active) = self.active_runs.get(&conversation_id)
-            && (active.agent_run_id.as_ref() != Some(&agent_run_id)
-                || active.phase != ActiveRunPhase::WaitingForApproval
-                || active.cancel_requested)
-        {
+        if !self.active_waiting_approval_matches(&conversation_id, &agent_run_id) {
             return false;
         }
 
@@ -293,6 +285,18 @@ impl ConversationRuntimeStore {
         let key = ActiveRunKey(self.next_run_key);
         self.next_run_key = self.next_run_key.wrapping_add(1);
         key
+    }
+
+    fn active_waiting_approval_matches(
+        &self,
+        conversation_id: &ConversationId,
+        agent_run_id: &AgentRunId,
+    ) -> bool {
+        self.active_runs.get(conversation_id).is_some_and(|active| {
+            active.agent_run_id.as_ref() == Some(agent_run_id)
+                && active.phase == ActiveRunPhase::WaitingForApproval
+                && !active.cancel_requested
+        })
     }
 
     fn spawn_event_listener(
@@ -650,7 +654,7 @@ mod tests {
         NewAgentRun, NewApprovalDecision, NewConversation, NewConversationItem, NewProject,
         NewToolInvocation,
     };
-    use gpui::Subscription;
+    use gpui::{Subscription, WindowHandle};
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -745,6 +749,55 @@ mod tests {
             assert_eq!(agent_run.status, AgentRunStatus::Failed);
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
             assert!(!runtime(cx).read(cx).is_running(&conversation_id));
+        });
+    }
+
+    #[gpui::test]
+    fn init_recovers_persisted_waiting_approval_runs(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Pending { expires_at: None },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        cx.update(|cx| {
+            init(cx).expect("initialize conversation runtime");
+            let repository = database::repository(cx);
+            let agent_run = repository
+                .get_agent_run(&agent_run_id)
+                .expect("load recovered run")
+                .expect("recovered run exists");
+            assert_eq!(agent_run.status, AgentRunStatus::Failed);
+            assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
+            assert!(!runtime(cx).read(cx).is_running(&conversation_id));
+
+            let approval = repository
+                .get_approval_decision(&approval_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(approval.status, ApprovalStatus::Canceled);
+            assert!(approval.decision.is_none());
+            let invocation = repository
+                .get_tool_invocation(&approval.tool_invocation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+            assert_eq!(invocation.error.as_ref().unwrap().code, "interrupted");
+            assert_eq!(
+                tool_result_texts(&repository, &conversation_id),
+                vec!["agent run was interrupted before reaching a terminal state".to_string()]
+            );
         });
     }
 
@@ -988,6 +1041,115 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(approval.status, ApprovalStatus::Denied);
+        });
+    }
+
+    #[gpui::test]
+    fn approve_tool_invocation_without_active_waiting_run_is_ignored(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let window = open_runtime_test_window(cx);
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Pending { expires_at: None },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        let approved = cx.update(|cx| {
+            window
+                .update(cx, |_view, window, cx| {
+                    store.update(cx, |store, cx| {
+                        store.approve_tool_invocation(
+                            conversation_id.clone(),
+                            approval_id.clone(),
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .unwrap()
+        });
+        assert!(!approved);
+
+        cx.update(|cx| {
+            let repository = database::repository(cx);
+            let approval = repository
+                .get_approval_decision(&approval_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(approval.status, ApprovalStatus::Pending);
+            let invocation = repository
+                .get_tool_invocation(&approval.tool_invocation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+            let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
+            assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+            assert!(!store.read(cx).is_running(&conversation_id));
+            store.update(cx, |store, _cx| {
+                assert!(store.take_last_error(&conversation_id).is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deny_tool_invocation_without_active_waiting_run_is_ignored(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Pending { expires_at: None },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                assert!(!store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    approval_id.clone(),
+                    cx
+                ));
+                assert!(!store.active_runs.contains_key(&conversation_id));
+                assert!(store.take_last_error(&conversation_id).is_none());
+            });
+        });
+
+        cx.update(|cx| {
+            let repository = database::repository(cx);
+            let approval = repository
+                .get_approval_decision(&approval_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(approval.status, ApprovalStatus::Pending);
+            let invocation = repository
+                .get_tool_invocation(&approval.tool_invocation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+            let agent_run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
+            assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
         });
     }
 
@@ -1249,6 +1411,25 @@ mod tests {
         dir
     }
 
+    fn open_runtime_test_window(cx: &mut gpui::TestAppContext) -> WindowHandle<TestView> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |_window, cx| cx.new(|_| TestView))
+                .expect("open runtime test window")
+        })
+    }
+
+    struct TestView;
+
+    impl gpui::Render for TestView {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
     fn insert_conversation_with_user_item(repository: &FreshRepository) -> ConversationId {
         let project = repository
             .insert_project(NewProject {
@@ -1375,6 +1556,26 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    fn tool_result_texts(
+        repository: &FreshRepository,
+        conversation_id: &ConversationId,
+    ) -> Vec<String> {
+        repository
+            .conversation_items(conversation_id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|item| match item.payload {
+                ConversationItemPayload::ToolResult(result) => Some(result.content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                ContentPart::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect()
     }
 
     fn conversation_settings() -> ConversationSettingsSnapshot {

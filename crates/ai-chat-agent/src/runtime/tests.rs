@@ -1377,29 +1377,44 @@ fn recovery_fails_active_child_execution_rows() {
 }
 
 #[test]
-fn recovery_keeps_waiting_for_approval_runs_resumable() {
+fn recovery_fails_waiting_approval_runs() {
     let fixture = Fixture::new("recovery-waiting");
     let runtime = AgentRuntime::new(fixture.repo.clone());
     let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
 
     let recovered = runtime.recover_interrupted_runs().unwrap();
-    assert!(recovered.is_empty());
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, AgentRunStatus::Failed);
+    assert_eq!(recovered[0].error.as_ref().unwrap().code, "interrupted");
 
     let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::WaitingForApproval);
+    assert_eq!(agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
     let invocation = fixture
         .repo
         .get_tool_invocation(&invocation.id)
         .unwrap()
         .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+    assert_eq!(invocation.error.as_ref().unwrap().code, "interrupted");
     let approval = fixture
         .repo
         .get_approval_decision(&approval.id)
         .unwrap()
         .unwrap();
-    assert_eq!(approval.status, ApprovalStatus::Pending);
-    assert!(tool_result_texts(&fixture).is_empty());
+    assert_eq!(approval.status, ApprovalStatus::Canceled);
+    assert!(approval.decision.is_none());
+    assert!(
+        fixture
+            .repo
+            .pending_approval_decisions()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        tool_result_texts(&fixture),
+        vec!["agent run was interrupted before reaching a terminal state".to_string()]
+    );
 }
 
 #[test]
