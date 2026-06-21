@@ -1,4 +1,5 @@
 use super::{PersistenceContext, completion_request_error, run_error};
+use crate::AgentRuntimeError;
 use rig_core::{
     completion::{CompletionModel, CompletionRequest, CompletionResponse},
     streaming::StreamingCompletionResponse,
@@ -64,6 +65,14 @@ where
             .map_err(completion_request_error)?;
 
         let response = self.inner.completion(request).await;
+        if context.cancellation_token.is_cancelled() {
+            let payload = run_error("canceled", "runtime canceled", false, None);
+            context
+                .cancel_provider_step(&provider_step.id, payload)
+                .map_err(completion_request_error)?;
+            return Err(completion_request_error(AgentRuntimeError::Canceled));
+        }
+
         match response {
             Ok(response) => {
                 context

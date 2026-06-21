@@ -417,6 +417,18 @@ async fn non_streaming_cancellation_before_response_persistence_marks_run_cancel
             ..
         }
     )));
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+    assert_eq!(provider_steps[0].error.as_ref().unwrap().code, "canceled");
+    let usage_events = fixture
+        .repo
+        .usage_events_for_provider_step(&provider_steps[0].id)
+        .unwrap();
+    assert!(usage_events.is_empty());
 }
 
 #[tokio::test]
