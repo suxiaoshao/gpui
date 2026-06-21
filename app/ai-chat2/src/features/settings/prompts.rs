@@ -65,8 +65,13 @@ impl PromptsSettingsPage {
         self.search_input.read(cx).value().trim().to_string()
     }
 
-    fn prompt_by_id(&self, prompt_id: &PromptId) -> Option<&PromptRecord> {
-        self.prompts.iter().find(|prompt| &prompt.id == prompt_id)
+    fn prompt_by_id(&self, prompt_id: &PromptId) -> Option<PromptRecord> {
+        self.prompts.read(|prompts| {
+            prompts
+                .iter()
+                .find(|prompt| &prompt.id == prompt_id)
+                .cloned()
+        })
     }
 
     fn open_add_prompt_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -79,7 +84,7 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(prompt) = self.prompt_by_id(&prompt_id).cloned() else {
+        let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
             return;
@@ -93,7 +98,7 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(prompt) = self.prompt_by_id(&prompt_id).cloned() else {
+        let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
             return;
@@ -107,7 +112,7 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(prompt) = self.prompt_by_id(&prompt_id).cloned() else {
+        let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
             return;
@@ -222,10 +227,11 @@ impl PromptsSettingsPage {
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.prompts.is_empty() {
+        let prompts = self.prompts.snapshot();
+        if prompts.is_empty() {
             self.render_empty_prompts(cx)
         } else {
-            self.render_prompt_rows(&self.prompts, window, cx)
+            self.render_prompt_rows(prompts.as_slice(), window, cx)
         }
     }
 }

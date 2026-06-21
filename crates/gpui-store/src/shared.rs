@@ -496,9 +496,9 @@ where
         cx.observe(&entity, move |owner, observed, cx| {
             let next_snapshot =
                 observed.read_with(cx, |runtime, _| observed_selector(runtime.state()));
-            if observed_snapshot.get() != &next_snapshot {
+            if observed_snapshot.read(|snapshot| snapshot != &next_snapshot) {
                 observed_snapshot.replace(next_snapshot);
-                observe(owner, observed_snapshot.get(), cx);
+                observed_snapshot.read(|snapshot| observe(owner, snapshot, cx));
             }
         })
     }
@@ -524,9 +524,9 @@ where
         cx.observe_in(&entity, window, move |owner, observed, window, cx| {
             let next_snapshot =
                 observed.read_with(cx, |runtime, _| observed_selector(runtime.state()));
-            if observed_snapshot.get() != &next_snapshot {
+            if observed_snapshot.read(|snapshot| snapshot != &next_snapshot) {
                 observed_snapshot.replace(next_snapshot);
-                observe(owner, observed_snapshot.get(), window, cx);
+                observed_snapshot.read(|snapshot| observe(owner, snapshot, window, cx));
             }
         })
     }

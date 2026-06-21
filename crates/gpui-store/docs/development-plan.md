@@ -347,7 +347,7 @@ SharedStore<S, DbProjectionBackend>  -> shared read-only database projection
 
 ```rust
 pub struct StoreSelection<T> {
-    snapshot: T,
+    snapshot: Rc<SnapshotCell<T>>,
     // hidden selected entity / subscription handles
 }
 ```
@@ -362,21 +362,21 @@ pub struct StoreSelection<T> {
 
 `StoreSelection<T>` 的 owner notify 必须由库自动处理。用户不应该再手写 `cx.observe(selected, ...)`。
 
-`StoreSelection<T>` 应当表现为只读智能指针：
+`StoreSelection<T>` 不暴露 `&T` 到可替换的内部存储。公开读取必须让调用方显式选择
+owned snapshot 或闭包内短借用：
 
 ```rust
-impl<T> Deref for StoreSelection<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.get()
-    }
+impl<T> StoreSelection<T> {
+    pub fn snapshot(&self) -> Rc<T>;
+    pub fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R;
+    pub fn cloned(&self) -> T
+    where
+        T: Clone;
 }
 ```
 
-允许通过 method-call deref 直接使用 snapshot，例如 `self.rows.iter()`、
-`self.query.is_empty()`、`self.model.as_ref()`。bool snapshot 需要写
-`*self.can_submit`，不能依赖 `if self.can_submit` 自动解引用。
+需要跨后续 store notification 保留旧值时，用 `snapshot() -> Rc<T>`。只在当前表达式
+读取时，用 `read(|value| ...)`。需要 owned value 时，用 `cloned()`。
 
 ### Selected Observer
 
@@ -471,7 +471,7 @@ store capability。
 
 ```rust
 pub struct StoreBinding<T, Error = Infallible> {
-    snapshot: T,
+    snapshot: Rc<SnapshotCell<T>>,
     // hidden store handle, getter, setter, subscription handles
 }
 ```
@@ -480,7 +480,11 @@ pub struct StoreBinding<T, Error = Infallible> {
 
 ```rust
 impl<T, Error> StoreBinding<T, Error> {
-    pub fn get(&self) -> &T;
+    pub fn snapshot(&self) -> Rc<T>;
+    pub fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R;
+    pub fn cloned(&self) -> T
+    where
+        T: Clone;
     pub fn store_revision(&self) -> StoreRevision;
 }
 
@@ -532,31 +536,20 @@ binding.try_set(value)
 
 `StoreBinding` 不拥有第二份 source of truth。它的 snapshot 是 cache，写入永远回到 store。
 
-`StoreBinding<T, E>` 也应当表现为只读智能指针：
-
-```rust
-impl<T, E> Deref for StoreBinding<T, E> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.get()
-    }
-}
-```
-
-但 `StoreBinding<T, E>` 不能实现 `DerefMut`。可写能力必须经过 `set/update` 或
+`StoreBinding<T, E>` 不能实现 `Deref` / `AsRef` / `Borrow` / `DerefMut`。这些 trait
+会把内部 snapshot 暴露成没有 owned guard 的 `&T`，或允许绕过 store 直接修改。可写能力必须经过 `set/update` 或
 `try_set/try_update` 回到 store，否则会绕过 changed detection、revision、owner
 notify 和 backend commit。
 
-### StoreSelection / StoreBinding Trait 策略
+### StoreSelection / StoreBinding 读取与 Trait 策略
 
 推荐实现：
 
-| Trait | `StoreSelection<T>` | `StoreBinding<T, E>` | 说明 |
+| API / Trait | `StoreSelection<T>` | `StoreBinding<T, E>` | 说明 |
 | --- | --- | --- | --- |
-| `Deref<Target = T>` | yes | yes | 读体验像智能指针，支持 method-call deref。 |
-| `AsRef<T>` | yes | yes | 方便传给接收引用的 API。 |
-| `Borrow<T>` | yes | yes | 方便 map/set 等标准库 API。 |
+| `snapshot() -> Rc<T>` | yes | yes | 让调用方显式持有可跨后续更新存活的旧 snapshot。 |
+| `read(|&T| ...)` | yes | yes | 只在闭包内短暂借用当前 snapshot。 |
+| `cloned() -> T` | `T: Clone` | `T: Clone` | 需要 owned value 时的便捷 API。 |
 | `Debug` | `T: Debug` | `T: Debug` | 转发给 snapshot。 |
 | `Display` | `T: Display` | `T: Display` | 转发给 snapshot。 |
 | `PartialEq` | `T: PartialEq` | `T: PartialEq` | 按 snapshot 比较。 |
@@ -566,6 +559,7 @@ notify 和 backend commit。
 
 | Trait | 原因 |
 | --- | --- |
+| `Deref` / `AsRef<T>` / `Borrow<T>` | 会暴露没有 owned snapshot guard 的 `&T`；后续 store notification 可能替换内部 snapshot。 |
 | `DerefMut` / `BorrowMut` | 会允许绕过 store 直接改 snapshot。 |
 | `Copy` | handle 持有订阅和 cached snapshot，不是 plain value。 |
 | 默认 `Clone` | owner-bound 订阅被 clone 后语义不清楚。 |
@@ -581,7 +575,7 @@ StoreBindingHandle<T, E>
 组件字段中的 `StoreSelection<T>` / `StoreBinding<T, E>` 默认不 clone。需要值副本时显式 clone snapshot：
 
 ```rust
-let value = self.binding.get().clone();
+let value = self.binding.cloned();
 ```
 
 ## Store Backend
@@ -1043,14 +1037,18 @@ external event owned by SharedStore
   变化时执行 callback。
 - 新增 `SharedStore::observe_select_in(cx, window, selector, callback)`，用于需要
   `Window` 的 selected side effect。
-- 新增 `StoreBinding<T, Error = Infallible>`，memory binding 支持 `get/set/update`。
+- 新增 `StoreBinding<T, Error = Infallible>`，memory binding 支持
+  `snapshot/read/cloned/set/update`。
 - committed binding 目标支持 `try_set/try_update`，并通过类型参数携带 backend error。
 - 确保 `StoreBinding::set` 写回 store，而不是只改自身 snapshot。
-- `StoreSelection<T>` / `StoreBinding<T, E>` 实现只读智能指针 trait：`Deref`、`AsRef`、`Borrow`、`Debug`、`Display`、`PartialEq`、`Eq`。
-- 明确不实现 `DerefMut`、`BorrowMut`、`Copy` 和默认 `Clone`。
+- `StoreSelection<T>` / `StoreBinding<T, E>` 通过 `snapshot() -> Rc<T>`、`read(...)`
+  和 `cloned()` 读取 snapshot。
+- `StoreSelection<T>` / `StoreBinding<T, E>` 实现 `Debug`、`Display`、`PartialEq`、`Eq`
+  这类不暴露长期引用的 trait。
+- 明确不实现 `Deref`、`AsRef`、`Borrow`、`DerefMut`、`BorrowMut`、`Copy` 和默认 `Clone`。
 - 测试 unrelated store update 不 notify selection owner。
-- 测试 `StoreBinding<T, E>` method-call deref 不需要 `.get()`，但写入只能通过
-  `set/update` 或 `try_set/try_update`。
+- 测试旧的 owned snapshot 在后续 store 更新后仍然可读，但写入只能通过 `set/update`
+  或 `try_set/try_update`。
 
 ### Phase 4: StoreSource Trait and StoreSourceBuilder Adapter
 
@@ -1150,7 +1148,10 @@ external event owned by SharedStore
 - `observe_select_in` 在 selected output 变化时能拿到 `Window` 并调用 callback。
 - `StoreBinding<T>::set` 更新 memory store，并通过订阅刷新自身 snapshot。
 - `StoreBinding<T, E>::try_set` 通过 committed runtime 写入并返回 backend error。
-- `StoreSelection<T>` / `StoreBinding<T, E>` 的 `Deref`、`AsRef`、`Borrow` 和 comparison trait 转发到 snapshot。
+- `StoreSelection<T>` / `StoreBinding<T, E>` 的 `snapshot()` 返回 owned `Rc<T>`，旧 snapshot
+  在后续 store 更新后仍然安全可读。
+- `StoreSelection<T>` / `StoreBinding<T, E>` 的 `read`、`cloned` 和 comparison trait
+  转发到当前 snapshot。
 - 不能通过 `StoreBinding<T, E>` 取得 mutable reference 绕过 store。
 - external backend initial load 相同 state 不 notify。
 - external backend event 相同 snapshot 不 reconcile。

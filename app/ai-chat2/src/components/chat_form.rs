@@ -116,7 +116,7 @@ impl ChatForm {
                 config.chat_form = chat_form;
             },
         );
-        let configured_chat_form = chat_form_config.get().clone();
+        let configured_chat_form = chat_form_config.cloned();
         let selected_model_key =
             configured_model_key_in(&model_choices, configured_chat_form.model.as_ref()).or_else(
                 || {

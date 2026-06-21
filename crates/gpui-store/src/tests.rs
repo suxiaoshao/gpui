@@ -130,7 +130,7 @@ fn selection_notifies_owner_only_when_snapshot_changes(cx: &mut TestAppContext) 
     });
 
     assert_eq!(
-        cx.update(|cx| owner.read_with(cx, |owner, _| *owner.count)),
+        cx.update(|cx| owner.read_with(cx, |owner, _| owner.count.read(|count| *count))),
         0
     );
     assert_eq!(
@@ -143,7 +143,7 @@ fn selection_notifies_owner_only_when_snapshot_changes(cx: &mut TestAppContext) 
     });
 
     assert_eq!(
-        cx.update(|cx| owner.read_with(cx, |owner, _| *owner.count)),
+        cx.update(|cx| owner.read_with(cx, |owner, _| owner.count.read(|count| *count))),
         7
     );
     assert_eq!(
@@ -154,6 +154,10 @@ fn selection_notifies_owner_only_when_snapshot_changes(cx: &mut TestAppContext) 
 
 struct BindingOwner {
     count: StoreBinding<i32>,
+}
+
+struct LabelBindingOwner {
+    label: StoreBinding<String>,
 }
 
 #[gpui::test]
@@ -172,7 +176,7 @@ fn binding_writes_back_to_store_and_refreshes_snapshot(cx: &mut TestAppContext) 
     assert!(update.changed_state());
     assert_eq!(cx.update(|cx| store.read(cx, |state| state.count)), 9);
     assert_eq!(
-        cx.update(|cx| owner.read_with(cx, |owner, _| *owner.count)),
+        cx.update(|cx| owner.read_with(cx, |owner, _| owner.count.read(|count| *count))),
         9
     );
     assert_eq!(
@@ -185,6 +189,73 @@ fn binding_writes_back_to_store_and_refreshes_snapshot(cx: &mut TestAppContext) 
     assert_eq!(
         cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
         1
+    );
+}
+
+#[gpui::test]
+fn binding_owned_snapshot_survives_store_replacement(cx: &mut TestAppContext) {
+    let owner = cx.update(|cx| {
+        let store = SharedStore::new(
+            cx,
+            TestState {
+                label: "old".to_string(),
+                ..TestState::default()
+            },
+        );
+        cx.new(|cx| LabelBindingOwner {
+            label: store.bind(
+                cx,
+                |state| state.label.clone(),
+                |state, label| state.label = label,
+            ),
+        })
+    });
+
+    let old_snapshot = cx.update(|cx| owner.read_with(cx, |owner, _| owner.label.snapshot()));
+
+    cx.update(|cx| {
+        owner.update(cx, |owner, cx| {
+            owner.label.set(cx, "new".to_string());
+        });
+    });
+
+    assert_eq!(old_snapshot.as_str(), "old");
+    assert_eq!(
+        cx.update(|cx| owner.read_with(cx, |owner, _| owner.label.cloned())),
+        "new"
+    );
+}
+
+struct LabelSelectionOwner {
+    label: StoreSelection<String>,
+}
+
+#[gpui::test]
+fn selection_owned_snapshot_survives_store_replacement(cx: &mut TestAppContext) {
+    let (store, owner) = cx.update(|cx| {
+        let store = SharedStore::new(
+            cx,
+            TestState {
+                label: "old".to_string(),
+                ..TestState::default()
+            },
+        );
+        let owner = cx.new(|cx| LabelSelectionOwner {
+            label: store.select(cx, |state| state.label.clone()),
+        });
+        (store, owner)
+    });
+
+    let old_snapshot = cx.update(|cx| owner.read_with(cx, |owner, _| owner.label.snapshot()));
+
+    cx.update(|cx| {
+        store.set(cx, |state| &mut state.label, "new".to_string());
+    });
+
+    assert_eq!(old_snapshot.as_str(), "old");
+    assert_eq!(
+        cx.update(|cx| owner.read_with(cx, |owner, _| owner.label.cloned())),
+        "new"
     );
 }
 

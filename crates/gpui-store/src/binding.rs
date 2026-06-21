@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, cell::Cell, convert::Infallible, fmt, ops::Deref, rc::Rc};
+use std::{cell::Cell, convert::Infallible, fmt, rc::Rc};
 
 use gpui::{App, Context, Subscription};
 
@@ -17,8 +17,19 @@ pub struct StoreBinding<T, Error = Infallible> {
 }
 
 impl<T, Error> StoreBinding<T, Error> {
-    pub fn get(&self) -> &T {
-        self.snapshot.get()
+    pub fn snapshot(&self) -> Rc<T> {
+        self.snapshot.snapshot()
+    }
+
+    pub fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        self.snapshot.read(read)
+    }
+
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.read(Clone::clone)
     }
 
     pub fn store_revision(&self) -> StoreRevision {
@@ -58,7 +69,7 @@ where
             });
             observed_revision.set(next_revision);
 
-            if observed_snapshot.get() != &next_snapshot {
+            if observed_snapshot.read(|snapshot| snapshot != &next_snapshot) {
                 observed_snapshot.replace(next_snapshot);
                 cx.notify();
             }
@@ -148,7 +159,7 @@ where
     where
         Owner: 'static,
     {
-        let mut value = self.get().clone();
+        let mut value = self.cloned();
         update(&mut value);
         self.try_set(cx, value)
     }
@@ -179,41 +190,23 @@ where
     }
 }
 
-impl<T, Error> Deref for StoreBinding<T, Error> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.get()
-    }
-}
-
-impl<T, Error> AsRef<T> for StoreBinding<T, Error> {
-    fn as_ref(&self) -> &T {
-        self.get()
-    }
-}
-
-impl<T, Error> Borrow<T> for StoreBinding<T, Error> {
-    fn borrow(&self) -> &T {
-        self.get()
-    }
-}
-
 impl<T: fmt::Debug, Error> fmt::Debug for StoreBinding<T, Error> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.get().fmt(f)
+        self.read(|value| value.fmt(f))
     }
 }
 
 impl<T: fmt::Display, Error> fmt::Display for StoreBinding<T, Error> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.get().fmt(f)
+        self.read(|value| value.fmt(f))
     }
 }
 
 impl<T: PartialEq, Error> PartialEq for StoreBinding<T, Error> {
     fn eq(&self, other: &Self) -> bool {
-        self.get() == other.get()
+        let left = self.snapshot();
+        let right = other.snapshot();
+        left.as_ref() == right.as_ref()
     }
 }
 
@@ -221,6 +214,6 @@ impl<T: Eq, Error> Eq for StoreBinding<T, Error> {}
 
 impl<T: PartialEq, Error> PartialEq<T> for StoreBinding<T, Error> {
     fn eq(&self, other: &T) -> bool {
-        self.get() == other
+        self.read(|value| value == other)
     }
 }

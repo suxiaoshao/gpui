@@ -46,47 +46,52 @@ Internal design notes live in
 | `MemoryBackend` | Default backend for memory-only stores. |
 | `StoreUpdate` | `{ changed, revision, origin }` result for a mutation. |
 
-## Pointer-Like Snapshots
+## Owned Snapshot Reads
 
-`StoreSelection<T>` and `StoreBinding<T>` should feel like smart read pointers to their
-current snapshot.
-
-They should implement:
+`StoreSelection<T>` and `StoreBinding<T>` hold subscribed snapshots. Store
+notifications can replace the current snapshot, so the public API should not
+hand out long-lived references into replaceable storage. Instead, reads are
+explicit:
 
 ```rust
-impl<T> Deref for StoreSelection<T> {
-    type Target = T;
+let model = self.model.snapshot(); // Rc<T>, safe to keep as an old snapshot
 
-    fn deref(&self) -> &T {
-        self.get()
-    }
+self.model.read(|model| {
+    // Short borrow scoped to this closure.
+});
+
+let model = self.model.cloned(); // T: Clone
+```
+
+This keeps React-like stale snapshots safe: a component can hold an old `Rc<T>`
+while later store notifications install a newer snapshot.
+
+Rendering code should choose either a held snapshot or a scoped read:
+
+```rust
+self.model.read(|model| {
+    model
+        .as_ref()
+        .map(|model| model.display_label())
+        .unwrap_or_else(|| "No model".into())
+})
+
+let rows = self.rows.snapshot();
+for row in rows.iter() {
+    render_row(row);
 }
 
-impl<T> Deref for StoreBinding<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.get()
-    }
+if self.can_submit.read(|can_submit| *can_submit) {
+    render_submit_button();
 }
 ```
 
-This keeps rendering code concise:
-
-```rust
-self.model.as_ref()
-self.rows.iter()
-self.query.is_empty()
-*self.can_submit
-```
-
-Use `*self.can_submit` for boolean snapshots. Rust method-call deref works for
-methods like `iter`, `as_ref`, and `is_empty`, but `if self.can_submit` does not
-coerce through `Deref`.
-
-`StoreBinding<T>` should not implement `DerefMut`. Mutating through `&mut T` would
-bypass the backing store and break equality checks, revision updates,
-notifications, and backend commit.
+`StoreSelection<T>` and `StoreBinding<T>` should not implement `Deref`,
+`AsRef<T>`, or `Borrow<T>`. Those traits all expose `&T` without making the
+caller hold the `Rc<T>` snapshot that keeps the value alive. `StoreBinding<T>`
+also should not implement `DerefMut`; mutating through `&mut T` would bypass the
+backing store and break equality checks, revision updates, notifications, and
+backend commit.
 
 Memory-only writes stay explicit:
 
@@ -106,22 +111,24 @@ self.query.try_update(cx, |query| {
 })?;
 ```
 
-Recommended convenience traits:
+Recommended read surface:
 
-| Trait | `StoreSelection<T>` | `StoreBinding<T>` | Reason |
+| API / Trait | `StoreSelection<T>` | `StoreBinding<T>` | Reason |
 | --- | --- | --- | --- |
-| `Deref<Target = T>` | yes | yes | Read ergonomics and method-call deref. |
-| `AsRef<T>` / `Borrow<T>` | yes | yes | Interop with APIs that take borrowed values. |
-| `Debug` / `Display` | when `T` supports it | when `T` supports it | Forward to the snapshot. |
-| `PartialEq` / `Eq` | when `T` supports it | when `T` supports it | Compare snapshots. |
+| `snapshot() -> Rc<T>` | yes | yes | Hold an immutable snapshot safely across later store updates. |
+| `read(|&T| ...)` | yes | yes | Borrow current snapshot only for the closure duration. |
+| `cloned() -> T` | `T: Clone` | `T: Clone` | Convenience for owned value clones. |
+| `Debug` / `Display` | when `T` supports it | when `T` supports it | Forward to the current snapshot. |
+| `PartialEq` / `Eq` | when `T` supports it | when `T` supports it | Compare current snapshots. |
+| `Deref` / `AsRef<T>` / `Borrow<T>` | no | no | Would expose references without an owned snapshot guard. |
 | `DerefMut` / `BorrowMut` | no | no | Would bypass store updates. |
 | `Copy` | no | no | Handles own subscriptions and cached snapshots. |
 | `Clone` | avoid by default | avoid by default | Cloning owner-bound subscriptions is ambiguous. |
 
-To clone the value, clone the snapshot explicitly:
+To clone the value, use `cloned()`:
 
 ```rust
-let model = self.model.get().clone();
+let model = self.model.cloned();
 ```
 
 If cloneable handles are needed later, they should be a separate type, such as
@@ -270,10 +277,12 @@ impl ChatForm {
     }
 
     fn render_model_label(&self) -> SharedString {
-        self.model
-            .as_ref()
-            .map(|model| model.display_label())
-            .unwrap_or_else(|| "No model".into())
+        self.model.read(|model| {
+            model
+                .as_ref()
+                .map(|model| model.display_label())
+                .unwrap_or_else(|| "No model".into())
+        })
     }
 }
 ```
@@ -335,14 +344,15 @@ impl PromptList {
 `StoreSelection<T>` should not have `set`. A filtered list, count, boolean predicate,
 or formatted label cannot be generically written back to the store.
 
-Because `StoreSelection<T>` derefs to `T`, rendering can read it directly:
+Rendering can hold an owned snapshot for the duration of the render path:
 
 ```rust
-for row in self.rows.iter() {
+let rows = self.rows.snapshot();
+for row in rows.iter() {
     render_prompt_row(row);
 }
 
-if *self.has_results {
+if self.has_results.read(|has_results| *has_results) {
     render_results();
 }
 ```

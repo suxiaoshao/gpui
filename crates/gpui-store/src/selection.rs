@@ -1,8 +1,6 @@
 use std::{
-    borrow::Borrow,
-    cell::{Cell, UnsafeCell},
+    cell::{Cell, RefCell},
     fmt,
-    ops::Deref,
     rc::Rc,
 };
 
@@ -11,29 +9,27 @@ use gpui::Subscription;
 use crate::{StoreRevision, StoreState};
 
 pub(crate) struct SnapshotCell<T> {
-    value: UnsafeCell<T>,
+    value: RefCell<Rc<T>>,
 }
 
 impl<T> SnapshotCell<T> {
     pub(crate) fn new(value: T) -> Self {
         Self {
-            value: UnsafeCell::new(value),
+            value: RefCell::new(Rc::new(value)),
         }
     }
 
-    pub(crate) fn get(&self) -> &T {
-        // The store runs on GPUI's single-threaded app executor. This cell never
-        // exposes `&mut T`; updates replace the snapshot only inside GPUI
-        // notification callbacks.
-        unsafe { &*self.value.get() }
+    pub(crate) fn snapshot(&self) -> Rc<T> {
+        self.value.borrow().clone()
+    }
+
+    pub(crate) fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        let snapshot = self.snapshot();
+        read(snapshot.as_ref())
     }
 
     pub(crate) fn replace(&self, value: T) {
-        // No mutable reference is handed out by the public API. Mutation is
-        // serialized by GPUI callbacks and direct store operations.
-        unsafe {
-            *self.value.get() = value;
-        }
+        *self.value.borrow_mut() = Rc::new(value);
     }
 }
 
@@ -56,8 +52,19 @@ impl<T> StoreSelection<T> {
         }
     }
 
-    pub fn get(&self) -> &T {
-        self.snapshot.get()
+    pub fn snapshot(&self) -> Rc<T> {
+        self.snapshot.snapshot()
+    }
+
+    pub fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        self.snapshot.read(read)
+    }
+
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.read(Clone::clone)
     }
 
     pub fn store_revision(&self) -> StoreRevision {
@@ -65,41 +72,23 @@ impl<T> StoreSelection<T> {
     }
 }
 
-impl<T> Deref for StoreSelection<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.get()
-    }
-}
-
-impl<T> AsRef<T> for StoreSelection<T> {
-    fn as_ref(&self) -> &T {
-        self.get()
-    }
-}
-
-impl<T> Borrow<T> for StoreSelection<T> {
-    fn borrow(&self) -> &T {
-        self.get()
-    }
-}
-
 impl<T: fmt::Debug> fmt::Debug for StoreSelection<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.get().fmt(f)
+        self.read(|value| value.fmt(f))
     }
 }
 
 impl<T: fmt::Display> fmt::Display for StoreSelection<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.get().fmt(f)
+        self.read(|value| value.fmt(f))
     }
 }
 
 impl<T: PartialEq> PartialEq for StoreSelection<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.get() == other.get()
+        let left = self.snapshot();
+        let right = other.snapshot();
+        left.as_ref() == right.as_ref()
     }
 }
 
@@ -107,7 +96,7 @@ impl<T: Eq> Eq for StoreSelection<T> {}
 
 impl<T: PartialEq> PartialEq<T> for StoreSelection<T> {
     fn eq(&self, other: &T) -> bool {
-        self.get() == other
+        self.read(|value| value == other)
     }
 }
 
@@ -140,7 +129,7 @@ impl<T> StoreSelection<T> {
             });
             observed_revision.set(next_revision);
 
-            if observed_snapshot.get() != &next_snapshot {
+            if observed_snapshot.read(|snapshot| snapshot != &next_snapshot) {
                 observed_snapshot.replace(next_snapshot);
                 cx.notify();
             }
