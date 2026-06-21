@@ -139,27 +139,6 @@ impl PersistenceContext {
         self.cancel_provider_step(&provider_step_id, error)
     }
 
-    pub(super) fn complete_streaming_provider_step(&self, provider_step_id: &str) -> Result<()> {
-        self.repo.update_provider_step_status(
-            provider_step_id,
-            UpdateProviderStepStatus {
-                status: ProviderStepStatus::Completed,
-                response_snapshot: Some(ProviderStepResponseSnapshot {
-                    provider_run_id: None,
-                    output_item_ids: Vec::new(),
-                    response_body: None,
-                }),
-                state_snapshot: None,
-                error: None,
-            },
-        )?;
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: provider_step_id.to_string(),
-        });
-        Ok(())
-    }
-
     pub(super) fn finish_streaming_provider_step<M>(
         &self,
         provider_step_id: &str,

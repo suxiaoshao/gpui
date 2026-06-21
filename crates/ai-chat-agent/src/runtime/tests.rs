@@ -138,6 +138,55 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 }
 
 #[tokio::test]
+async fn streaming_provider_step_stays_running_until_final_event() {
+    let fixture = Fixture::new("streaming-step-running");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let repo = fixture.repo.clone();
+    let request = fixture.streaming_request();
+    let task = tokio::spawn(async move {
+        runtime
+            .run_with_model(
+                request,
+                DelayedFinalStreamModel {
+                    delay: Duration::from_millis(100),
+                },
+            )
+            .await
+    });
+
+    let mut observed_step = None;
+    for _ in 0..50 {
+        for run in repo.agent_runs_by_status(AgentRunStatus::Running).unwrap() {
+            let steps = repo.provider_steps_for_run(&run.id).unwrap();
+            if let Some(step) = steps.first() {
+                observed_step = Some((run.id.clone(), step.clone()));
+                break;
+            }
+        }
+        if observed_step.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let (agent_run_id, provider_step) =
+        observed_step.expect("streaming provider step should be inserted before final response");
+    assert_eq!(provider_step.status, ProviderStepStatus::Running);
+    assert!(provider_step.response_snapshot.is_none());
+    assert!(provider_step.completed_at.is_none());
+
+    let handle = task.await.unwrap().unwrap();
+    assert_eq!(handle.agent_run.id, agent_run_id);
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+    let provider_step = repo
+        .get_provider_step(&provider_step.id)
+        .unwrap()
+        .expect("provider step should still exist");
+    assert_eq!(provider_step.status, ProviderStepStatus::Completed);
+    assert!(provider_step.response_snapshot.is_some());
+}
+
+#[tokio::test]
 async fn streaming_reasoning_delta_updates_single_reasoning_item() {
     let fixture = Fixture::new("streaming-reasoning");
     let runtime = AgentRuntime::new(fixture.repo.clone());
@@ -1004,6 +1053,75 @@ async fn approved_builtin_tool_executes_and_completes_run() {
                     && result.content[0]
                         .search_text()
                         .is_some_and(|text| text.contains("approved.txt"))
+        )
+    }));
+}
+
+#[tokio::test]
+async fn approved_builtin_tool_error_result_completes_for_model_resume() {
+    let fixture = Fixture::new("approved-builtin-error");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    std::fs::write(fixture.dir.path().join("approved.txt"), "existing\n").unwrap();
+    let (agent_run, invocation, approval) = insert_waiting_builtin_write_approval(&fixture);
+
+    let outcome = runtime
+        .approve_and_resume_tool(
+            &approval.id,
+            "user".to_string(),
+            Some("ok".to_string()),
+            Duration::from_secs(120),
+            crate::AgentCancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.approval.status, ApprovalStatus::Approved);
+    assert_eq!(outcome.agent_run.status, AgentRunStatus::Completed);
+    assert_eq!(outcome.output.stopped_reason, AgentStoppedReason::Completed);
+    assert_eq!(outcome.agent_run.error, None);
+    assert!(outcome.events.iter().any(|event| {
+        matches!(
+            event,
+            AgentRunEvent::Completed { output }
+                if output.stopped_reason == AgentStoppedReason::Completed
+        )
+    }));
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, AgentRunEvent::Failed { .. }))
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.dir.path().join("approved.txt")).unwrap(),
+        "existing\n"
+    );
+
+    let invocation = fixture
+        .repo
+        .get_tool_invocation(&invocation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(invocation.status, ToolInvocationStatus::Failed);
+    assert_eq!(invocation.error.as_ref().unwrap().code, "tool_error");
+    assert!(invocation.output.as_ref().unwrap().is_error);
+    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+    assert_eq!(agent_run.status, AgentRunStatus::Completed);
+    assert_eq!(agent_run.error, None);
+    let items = fixture
+        .repo
+        .conversation_items(&fixture.conversation.id)
+        .unwrap();
+    assert!(items.iter().any(|item| {
+        matches!(
+            &item.payload,
+            ConversationItemPayload::ToolResult(result)
+                if result.call_id == "call_approval"
+                    && result.is_error
+                    && result.content[0]
+                        .search_text()
+                        .is_some_and(|text| text.contains("Refusing to overwrite existing file"))
         )
     }));
 }
@@ -1995,6 +2113,57 @@ impl CompletionModel for ReasoningStreamModel {
                 usage,
             ))),
         ]));
+        Ok(StreamingCompletionResponse::stream(stream))
+    }
+}
+
+#[derive(Clone)]
+struct DelayedFinalStreamModel {
+    delay: Duration,
+}
+
+impl CompletionModel for DelayedFinalStreamModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            delay: Duration::from_millis(0),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "delayed-final stream model only supports streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        let delay = self.delay;
+        let stream = futures::stream::unfold(false, move |finished| async move {
+            if finished {
+                None
+            } else {
+                tokio::time::sleep(delay).await;
+                let mut usage = Usage::new();
+                usage.total_tokens = 11;
+                Some((
+                    Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
+                        usage,
+                    ))),
+                    true,
+                ))
+            }
+        });
+        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
         Ok(StreamingCompletionResponse::stream(stream))
     }
 }

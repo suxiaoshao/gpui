@@ -196,23 +196,15 @@ impl AgentRuntime {
         steps.push(AgentStep::ConversationItem(tool_result_item_id.clone()));
         let output = AgentRunOutput {
             final_item_id: Some(tool_result_item_id),
-            stopped_reason: if tool_error.is_some() {
-                AgentStoppedReason::Failed
-            } else {
-                AgentStoppedReason::Completed
-            },
+            stopped_reason: AgentStoppedReason::Completed,
         };
-        let final_status = if tool_error.is_some() {
-            AgentRunStatus::Failed
-        } else {
-            AgentRunStatus::Completed
-        };
+        let final_status = AgentRunStatus::Completed;
         let agent_run = self.repo.update_agent_run_status(
             &agent_run.id,
             UpdateAgentRunStatus {
                 status: final_status,
                 output: Some(output.clone()),
-                error: tool_error.clone(),
+                error: None,
             },
         )?;
         emit_runtime(
@@ -225,13 +217,9 @@ impl AgentRuntime {
         let mut events = vec![AgentRunEvent::ToolInvocationFinished {
             tool_invocation_id: running_invocation.id,
         }];
-        if let Some(error) = tool_error {
-            events.push(AgentRunEvent::Failed { error });
-        } else {
-            events.push(AgentRunEvent::Completed {
-                output: output.clone(),
-            });
-        }
+        events.push(AgentRunEvent::Completed {
+            output: output.clone(),
+        });
 
         Ok(ApprovalResumeOutcome {
             approval: updated_approval,

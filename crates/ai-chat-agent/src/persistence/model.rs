@@ -94,10 +94,7 @@ where
             .map_err(completion_request_error)?;
         let response = self.inner.stream(request).await;
         match response {
-            Ok(response) => {
-                let _ = context.complete_streaming_provider_step(&provider_step.id);
-                Ok(response)
-            }
+            Ok(response) => Ok(response),
             Err(error) => {
                 let payload = run_error("provider_error", error.to_string(), true, None);
                 let _ = context.fail_provider_step(&provider_step.id, payload);
