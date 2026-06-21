@@ -324,6 +324,13 @@ async fn streaming_approval_required_preserves_partial_text() {
             .iter()
             .any(|item| { matches!(item.payload, ConversationItemPayload::ApprovalRequest(_)) })
     );
+
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Completed);
 }
 
 #[tokio::test]

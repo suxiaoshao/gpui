@@ -242,6 +242,10 @@ impl AgentRuntime {
                             .unwrap_or(AgentRunStatus::Failed);
                         if run_status == AgentRunStatus::WaitingForApproval {
                             accumulator.finish(ConversationItemStatus::Completed, None)?;
+                            context.finish_current_streaming_provider_step(
+                                final_raw_response.as_ref(),
+                                Usage::new(),
+                            )?;
                         } else if request.cancellation_token.is_cancelled() {
                             accumulator.finish(ConversationItemStatus::Canceled, None)?;
                             let _ = context.cancel_current_provider_step(run_error(
