@@ -4,8 +4,8 @@ use crate::{
         approval::{normalize_for_access, path_access_request, resolve_tool_path},
         types::{
             BuiltinToolContext, BuiltinToolName, FileEntryKind, FindPathInput, FindPathOutput,
-            GrepInput, GrepMatchOutput, GrepOutput, PathSearchMatchOutput, TextRangeOutput,
-            find_path_schema, grep_schema, output_with_structured,
+            GrepContextLineOutput, GrepInput, GrepMatchOutput, GrepOutput, PathSearchMatchOutput,
+            TextRangeOutput, find_path_schema, grep_schema, output_with_structured,
         },
     },
 };
@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use globset::Glob;
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
+use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
 use ignore::WalkBuilder;
 use std::{
     fs,
@@ -88,8 +88,8 @@ impl ToolExecutor for GrepTool {
         let input: GrepInput = serde_json::from_value(arguments)?;
         let root = search_root(input.path.as_deref(), &self.context)?;
         let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
-        let _context_lines = input.context_lines.unwrap_or(0);
-        let matches = grep_matches(&root, &input, max_results)?;
+        let context_lines = input.context_lines.unwrap_or(0);
+        let matches = grep_matches(&root, &input, max_results, context_lines)?;
         let truncated = matches.len() >= max_results;
         let output = GrepOutput {
             pattern: input.pattern,
@@ -209,6 +209,7 @@ fn grep_matches(
     root: &Path,
     input: &GrepInput,
     max_results: usize,
+    context_lines: u32,
 ) -> Result<Vec<GrepMatchOutput>> {
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(!input.case_sensitive.unwrap_or(true))
@@ -224,7 +225,7 @@ fn grep_matches(
     };
     let mut matches = Vec::new();
     if root.is_file() {
-        search_file(root, &matcher, max_results, &mut matches)?;
+        search_file(root, &matcher, max_results, context_lines, &mut matches)?;
         return Ok(matches);
     }
 
@@ -247,7 +248,7 @@ fn grep_matches(
         {
             continue;
         }
-        search_file(path, &matcher, max_results, &mut matches)?;
+        search_file(path, &matcher, max_results, context_lines, &mut matches)?;
     }
     Ok(matches)
 }
@@ -256,13 +257,22 @@ fn search_file(
     path: &Path,
     matcher: &grep_regex::RegexMatcher,
     max_results: usize,
+    context_lines: u32,
     matches: &mut Vec<GrepMatchOutput>,
 ) -> Result<()> {
-    let mut searcher = SearcherBuilder::new().line_number(true).build();
+    let context_lines = context_lines as usize;
+    let mut searcher = SearcherBuilder::new()
+        .line_number(true)
+        .before_context(context_lines)
+        .after_context(context_lines)
+        .build();
     let mut sink = CollectSink {
         path,
         matcher,
         max_results,
+        context_lines,
+        pending_context_before: Vec::new(),
+        last_match_index: None,
         matches,
     };
     searcher
@@ -275,6 +285,9 @@ struct CollectSink<'a, 'm> {
     path: &'a Path,
     matcher: &'m grep_regex::RegexMatcher,
     max_results: usize,
+    context_lines: usize,
+    pending_context_before: Vec<GrepContextLineOutput>,
+    last_match_index: Option<usize>,
     matches: &'a mut Vec<GrepMatchOutput>,
 }
 
@@ -282,10 +295,12 @@ impl Sink for CollectSink<'_, '_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> std::io::Result<bool> {
+        if self.matches.len() >= self.max_results {
+            return Ok(false);
+        }
+
         let bytes = mat.bytes();
-        let line = String::from_utf8_lossy(bytes)
-            .trim_end_matches(['\r', '\n'])
-            .to_string();
+        let line = grep_line_text(bytes);
         let mut ranges = Vec::new();
         self.matcher
             .find_iter(bytes, |range| {
@@ -301,9 +316,55 @@ impl Sink for CollectSink<'_, '_> {
             line_number: mat.line_number().unwrap_or(0) as u32,
             line,
             ranges,
+            context_before: std::mem::take(&mut self.pending_context_before),
+            context_after: Vec::new(),
         });
+        self.last_match_index = Some(self.matches.len() - 1);
+        Ok(self.context_lines > 0 || self.matches.len() < self.max_results)
+    }
+
+    fn context(
+        &mut self,
+        _searcher: &Searcher,
+        context: &SinkContext<'_>,
+    ) -> std::io::Result<bool> {
+        let context_line = GrepContextLineOutput {
+            line_number: context.line_number().unwrap_or(0) as u32,
+            line: grep_line_text(context.bytes()),
+        };
+        match context.kind() {
+            SinkContextKind::Before => {
+                self.pending_context_before.push(context_line);
+                Ok(true)
+            }
+            SinkContextKind::After => {
+                let Some(last_match_index) = self.last_match_index else {
+                    return Ok(true);
+                };
+                if let Some(last_match) = self.matches.get_mut(last_match_index) {
+                    last_match.context_after.push(context_line);
+                }
+                Ok(self.matches.len() < self.max_results
+                    || self
+                        .matches
+                        .get(last_match_index)
+                        .map(|last_match| last_match.context_after.len() < self.context_lines)
+                        .unwrap_or(false))
+            }
+            SinkContextKind::Other => Ok(true),
+        }
+    }
+
+    fn context_break(&mut self, _searcher: &Searcher) -> std::io::Result<bool> {
+        self.pending_context_before.clear();
         Ok(self.matches.len() < self.max_results)
     }
+}
+
+fn grep_line_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches(['\r', '\n'])
+        .to_string()
 }
 
 fn file_entry_kind(path: &Path) -> Result<FileEntryKind> {
@@ -390,6 +451,54 @@ mod tests {
             serde_json::from_value(grep.structured_output.unwrap().value).unwrap();
         assert_eq!(grep_output.matches.len(), 1);
         assert_eq!(grep_output.matches[0].line_number, 2);
+        assert!(grep_output.matches[0].context_before.is_empty());
+        assert!(grep_output.matches[0].context_after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn grep_honors_context_lines() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("main.rs"),
+            [
+                "fn main() {",
+                "    let message = \"hello\";",
+                "    println!(\"{message}\");",
+                "    finish();",
+                "}",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let grep = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "println",
+                "glob": "*.rs",
+                "contextLines": 1,
+                "maxResults": 5,
+            }))
+            .await
+            .unwrap();
+        let grep_output: GrepOutput =
+            serde_json::from_value(grep.structured_output.unwrap().value).unwrap();
+
+        assert_eq!(grep_output.matches.len(), 1);
+        let grep_match = &grep_output.matches[0];
+        assert_eq!(grep_match.line_number, 3);
+        assert_eq!(grep_match.line, "    println!(\"{message}\");");
+        assert_eq!(grep_match.context_before.len(), 1);
+        assert_eq!(grep_match.context_before[0].line_number, 2);
+        assert_eq!(
+            grep_match.context_before[0].line,
+            "    let message = \"hello\";"
+        );
+        assert_eq!(grep_match.context_after.len(), 1);
+        assert_eq!(grep_match.context_after[0].line_number, 4);
+        assert_eq!(grep_match.context_after[0].line, "    finish();");
     }
 
     #[tokio::test]

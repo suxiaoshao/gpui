@@ -165,11 +165,22 @@ pub struct TextRangeOutput {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GrepContextLineOutput {
+    pub line_number: u32,
+    pub line: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GrepMatchOutput {
     pub path: String,
     pub line_number: u32,
     pub line: String,
     pub ranges: Vec<TextRangeOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_before: Vec<GrepContextLineOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_after: Vec<GrepContextLineOutput>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
