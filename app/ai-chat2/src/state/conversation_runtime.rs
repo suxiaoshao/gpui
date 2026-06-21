@@ -248,6 +248,24 @@ impl ConversationRuntimeStore {
     ) -> bool {
         self.last_errors.remove(&conversation_id);
         let repository = database::repository(cx);
+        let agent_run_id = match agent_run_id_for_approval(&repository, &approval_decision_id) {
+            Ok(agent_run_id) => agent_run_id,
+            Err(err) => {
+                self.last_errors
+                    .insert(conversation_id.clone(), err.to_string());
+                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+                cx.notify();
+                return false;
+            }
+        };
+        if let Some(active) = self.active_runs.get(&conversation_id)
+            && (active.agent_run_id.as_ref() != Some(&agent_run_id)
+                || active.phase != ActiveRunPhase::WaitingForApproval
+                || active.cancel_requested)
+        {
+            return false;
+        }
+
         let result = AgentRuntime::new(repository).decide_approval(
             &approval_decision_id,
             NewApprovalDecisionOutcome::Denied {
@@ -258,6 +276,9 @@ impl ConversationRuntimeStore {
         if let Err(err) = result {
             self.last_errors
                 .insert(conversation_id.clone(), err.to_string());
+            cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+            cx.notify();
+            return false;
         }
         self.active_runs.remove(&conversation_id);
         cx.emit(ConversationRuntimeEvent::ConversationChanged {
@@ -608,13 +629,18 @@ mod tests {
     use super::*;
     use crate::database::FreshStoreGlobal;
     use ai_chat_core::{
-        AgentEngineKind, AgentRunInput, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
-        ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
-        ConversationSettingsSnapshot, ProjectKind, ProjectMetadata, ProviderSettingsPayload,
-        ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, ToolSource,
-        TranscriptRole, conservative_model_capabilities,
+        AgentEngineKind, AgentRunInput, AgentRunTriggerKind, AgentRuntimeSnapshot,
+        ApprovalRequestPayload, ApprovalStatus, ContentPart, ConversationItemPayload,
+        ConversationItemStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
+        ProjectMetadata, ProviderSettingsPayload, ToolApprovalMode, ToolApprovalPolicy,
+        ToolArguments, ToolExecutionPolicy, ToolInvocationInput, ToolInvocationStatus,
+        ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
+        conservative_model_capabilities,
     };
-    use ai_chat_db::{NewAgentRun, NewConversation, NewConversationItem, NewProject};
+    use ai_chat_db::{
+        NewAgentRun, NewApprovalDecision, NewConversation, NewConversationItem, NewProject,
+        NewToolInvocation,
+    };
     use gpui::Subscription;
     use std::sync::{
         Arc, Mutex,
@@ -674,6 +700,18 @@ mod tests {
         ActiveRun {
             agent_run_id: Some(agent_run_id),
             ..active_run(key, cancel_count, cancel_requested)
+        }
+    }
+
+    fn active_waiting_approval_run(
+        key: ActiveRunKey,
+        agent_run_id: AgentRunId,
+        cancel_count: Arc<AtomicUsize>,
+    ) -> ActiveRun {
+        ActiveRun {
+            agent_run_id: Some(agent_run_id),
+            phase: ActiveRunPhase::WaitingForApproval,
+            ..active_run(key, cancel_count, false)
         }
     }
 
@@ -868,6 +906,157 @@ mod tests {
             })
         );
         assert!(!events.contains(&ConversationRuntimeEvent::RunFinished { conversation_id }));
+    }
+
+    #[gpui::test]
+    fn deny_tool_invocation_success_removes_matching_waiting_run(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Pending { expires_at: None },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.active_runs.insert(
+                    conversation_id.clone(),
+                    active_waiting_approval_run(
+                        ActiveRunKey(0),
+                        agent_run_id.clone(),
+                        Arc::new(AtomicUsize::new(0)),
+                    ),
+                );
+
+                assert!(store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    approval_id.clone(),
+                    cx
+                ));
+                assert!(!store.active_runs.contains_key(&conversation_id));
+            });
+        });
+
+        cx.update(|cx| {
+            let repository = database::repository(cx);
+            let approval = repository
+                .get_approval_decision(&approval_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(approval.status, ApprovalStatus::Denied);
+        });
+    }
+
+    #[gpui::test]
+    fn deny_tool_invocation_error_keeps_matching_waiting_run(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Approved {
+                    decided_by: "user".to_string(),
+                    reason: None,
+                },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.active_runs.insert(
+                    conversation_id.clone(),
+                    active_waiting_approval_run(
+                        ActiveRunKey(0),
+                        agent_run_id.clone(),
+                        Arc::new(AtomicUsize::new(0)),
+                    ),
+                );
+
+                assert!(!store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    approval_id.clone(),
+                    cx
+                ));
+                let active = store
+                    .active_runs
+                    .get(&conversation_id)
+                    .expect("failed denial must keep the active run");
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
+                assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
+                assert!(store.take_last_error(&conversation_id).is_some());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deny_tool_invocation_ignores_stale_action_for_running_resume(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id = insert_agent_run(
+                &repository,
+                &conversation_id,
+                AgentRunStatus::WaitingForApproval,
+            );
+            let approval_id = insert_approval_for_run(
+                &repository,
+                &agent_run_id,
+                NewApprovalDecisionOutcome::Approved {
+                    decided_by: "user".to_string(),
+                    reason: None,
+                },
+            );
+            (conversation_id, agent_run_id, approval_id)
+        });
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                store.active_runs.insert(
+                    conversation_id.clone(),
+                    active_run_with_agent_id(
+                        ActiveRunKey(0),
+                        agent_run_id.clone(),
+                        Arc::new(AtomicUsize::new(0)),
+                        false,
+                    ),
+                );
+
+                assert!(!store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    approval_id.clone(),
+                    cx
+                ));
+                let active = store
+                    .active_runs
+                    .get(&conversation_id)
+                    .expect("stale denial must not clear the running resume");
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
+                assert_eq!(active.phase, ActiveRunPhase::Running);
+                assert!(store.take_last_error(&conversation_id).is_none());
+            });
+        });
     }
 
     #[gpui::test]
@@ -1108,6 +1297,48 @@ mod tests {
                     },
                     max_steps: 8,
                 },
+            })
+            .unwrap()
+            .id
+    }
+
+    fn insert_approval_for_run(
+        repository: &FreshRepository,
+        agent_run_id: &AgentRunId,
+        outcome: NewApprovalDecisionOutcome,
+    ) -> ApprovalDecisionId {
+        let invocation = repository
+            .insert_tool_invocation(NewToolInvocation {
+                agent_run_id: agent_run_id.clone(),
+                provider_step_id: None,
+                status: ToolInvocationStatus::AwaitingApproval,
+                input: ToolInvocationInput {
+                    source: ToolSource::Local,
+                    namespace: None,
+                    tool_name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    call_id: "call-approval".to_string(),
+                    arguments: ToolArguments {
+                        value: serde_json::json!({"text": "hi"}),
+                    },
+                    approval_policy: ToolApprovalPolicy::OnRequest,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                },
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        repository
+            .insert_approval_decision(NewApprovalDecision {
+                tool_invocation_id: invocation.id,
+                request: ApprovalRequestPayload {
+                    reason: "approve echo".to_string(),
+                    tool_source: ToolSource::Local,
+                    tool_name: "echo".to_string(),
+                    arguments_preview: "{\"text\":\"hi\"}".to_string(),
+                    access_requests: Vec::new(),
+                },
+                outcome,
             })
             .unwrap()
             .id

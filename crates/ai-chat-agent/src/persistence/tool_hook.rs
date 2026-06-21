@@ -1,6 +1,6 @@
 use super::{PersistenceContext, error_tool_output, lock, mutex_clone, mutex_replace, run_error};
 use crate::{
-    AgentRuntimeEvent, AgentStep, RegisteredToolDefinition, Result,
+    AgentRuntimeError, AgentRuntimeEvent, AgentStep, RegisteredToolDefinition, Result,
     tool_registry::{RegisteredRuntimeTool, tool_output_to_model_text},
 };
 use ai_chat_core::*;
@@ -24,7 +24,13 @@ impl PersistenceContext {
         invocation: ToolInvocationRecord,
         arguments: serde_json::Value,
     ) -> Result<String> {
-        let execution = timeout(tool.timeout, tool.executor.execute(arguments)).await;
+        let execution = tokio::select! {
+            biased;
+            _ = self.cancellation_token.cancelled() => {
+                return Err(AgentRuntimeError::Canceled);
+            }
+            execution = timeout(tool.timeout, tool.executor.execute(arguments)) => execution,
+        };
         let (output, status, error) = match execution {
             Ok(Ok(output)) => {
                 let error = output.is_error.then(|| {
@@ -54,6 +60,9 @@ impl PersistenceContext {
                 )
             }
         };
+        if self.cancellation_token.is_cancelled() {
+            return Err(AgentRuntimeError::Canceled);
+        }
         let model_text = tool_output_to_model_text(&output);
         let payload = ConversationItemPayload::ToolResult(ToolResultItem {
             tool_invocation_id: Some(invocation.id.clone()),

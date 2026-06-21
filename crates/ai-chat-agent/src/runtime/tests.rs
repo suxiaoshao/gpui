@@ -530,6 +530,41 @@ async fn rig_tool_call_persists_tool_call_and_result() {
 }
 
 #[tokio::test]
+async fn tool_execution_cancellation_does_not_persist_tool_output() {
+    let fixture = Fixture::new("tool-cancel-during-await");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let mut request = fixture.request();
+    request.guards.tool_timeout = Duration::from_millis(50);
+    request
+        .tool_registry
+        .register_local_tool(CancelDuringTool {
+            cancellation_token: request.cancellation_token.clone(),
+        })
+        .unwrap();
+    let model = MockCompletionModel::new([MockTurn::tool_call(
+        "call_1",
+        "cancel_during_tool",
+        json!({}),
+    )]);
+
+    let handle = runtime.run_with_model(request, model).await.unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    assert_eq!(
+        handle.output.as_ref().unwrap().stopped_reason,
+        AgentStoppedReason::Canceled
+    );
+    let invocations = fixture
+        .repo
+        .tool_invocations_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].status, ToolInvocationStatus::Canceled);
+    assert_eq!(invocations[0].error.as_ref().unwrap().code, "canceled");
+    assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
+}
+
+#[tokio::test]
 async fn tool_error_output_is_persisted_without_reconstructing_from_model_text() {
     let fixture = Fixture::new("tool-error-output");
     let runtime = AgentRuntime::new(fixture.repo.clone());
@@ -2259,6 +2294,39 @@ impl CompletionModel for CancelAfterTextStreamModel {
         });
         let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
         Ok(StreamingCompletionResponse::stream(stream))
+    }
+}
+
+#[derive(Clone)]
+struct CancelDuringTool {
+    cancellation_token: crate::AgentCancellationToken,
+}
+
+#[async_trait]
+impl ToolExecutor for CancelDuringTool {
+    async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
+        self.cancellation_token.cancel();
+        pending::<Result<ToolInvocationOutput>>().await
+    }
+}
+
+impl LocalTool for CancelDuringTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            source: ToolSource::Local,
+            namespace: None,
+            name: "cancel_during_tool".to_string(),
+            description: "Cancel the current run while the tool is still executing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            policy: ToolRunPolicy {
+                approval_policy: ToolApprovalPolicy::Never,
+                execution_policy: ToolExecutionPolicy::Foreground,
+                timeout_ms: None,
+            },
+        }
     }
 }
 
