@@ -1,4 +1,4 @@
-use super::{AgentRuntime, emit_runtime, error_tool_output};
+use super::{AgentRuntime, emit_runtime, error_tool_output, is_terminal_agent_run_status};
 use crate::{
     AgentCancellationToken, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
     ApprovalResumeOutcome, Result, persistence::run_error,
@@ -430,6 +430,12 @@ impl AgentRuntime {
                     invocation.agent_run_id
                 ))
             })?;
+        if is_terminal_agent_run_status(agent_run.status) {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "agent run {} is {:?}, cannot decide approval {}",
+                agent_run.id, agent_run.status, approval_decision_id
+            )));
+        }
         let updated = self
             .repo
             .update_approval_decision(approval_decision_id, outcome)?;

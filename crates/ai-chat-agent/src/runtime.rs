@@ -8,7 +8,8 @@ use crate::{
 };
 use ai_chat_core::*;
 use ai_chat_db::{
-    AgentRunRecord, FreshRepository, NewConversationItem, ProviderRecord, UpdateAgentRunStatus,
+    AgentRunRecord, FreshRepository, NewApprovalDecisionOutcome, NewConversationItem,
+    ProviderRecord, UpdateAgentRunStatus,
 };
 use futures::StreamExt;
 use rig_core::{
@@ -481,6 +482,7 @@ impl AgentRuntime {
 
         let error = run_error("canceled", "runtime canceled", false, None);
         self.finalize_active_provider_steps(&run.id, ProviderStepStatus::Canceled, error.clone())?;
+        self.cancel_pending_tool_approvals(&run.id)?;
         self.finalize_active_tool_invocations(
             &run.id,
             &run.conversation_id,
@@ -537,6 +539,20 @@ impl AgentRuntime {
             }
         }
         Ok(recovered)
+    }
+
+    fn cancel_pending_tool_approvals(&self, agent_run_id: &str) -> Result<()> {
+        for invocation in self.repo.tool_invocations_for_run(agent_run_id)? {
+            for approval in self.repo.approval_decisions_for_tool(&invocation.id)? {
+                if approval.status == ApprovalStatus::Pending {
+                    self.repo.update_approval_decision(
+                        &approval.id,
+                        NewApprovalDecisionOutcome::Canceled,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn activate_skills(&self, request: &AgentRunRequest, agent_run_id: &str) -> Result<()> {

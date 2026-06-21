@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     time::{Duration, Instant},
 };
 
-use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationItemId};
+use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationItemId, ToolInvocationId};
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
@@ -352,14 +352,28 @@ impl AgentTurnRow {
                 }
                 _ => None,
             })
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<HashSet<_>>();
+        let terminal_tool_invocation_ids = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.payload {
+                ai_chat_core::ConversationItemPayload::ToolResult(_) => {
+                    item.tool_invocation_id.clone()
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let on_approval_decision = self.on_approval_decision.clone();
         let mut blocks = Vec::with_capacity(detail_items.len());
         for item in detail_items {
             let text_state = text_states.get(&item.id).cloned();
             let approval_decidable = match &item.payload {
                 ai_chat_core::ConversationItemPayload::ApprovalRequest(request) => {
-                    !decided_approval_ids.contains(&request.approval_decision_id)
+                    approval_request_decidable(
+                        request,
+                        &decided_approval_ids,
+                        &terminal_tool_invocation_ids,
+                    )
                 }
                 _ => false,
             };
@@ -380,6 +394,15 @@ impl AgentTurnRow {
             .children(blocks)
             .into_any_element()
     }
+}
+
+fn approval_request_decidable(
+    request: &ai_chat_core::ApprovalRequestItem,
+    decided_approval_ids: &HashSet<ApprovalDecisionId>,
+    terminal_tool_invocation_ids: &HashSet<ToolInvocationId>,
+) -> bool {
+    !decided_approval_ids.contains(&request.approval_decision_id)
+        && !terminal_tool_invocation_ids.contains(&request.tool_invocation_id)
 }
 
 fn markdown_view(
@@ -533,4 +556,53 @@ fn duration_arg_label(i18n: &I18n, key: &str, duration: String) -> String {
     let mut args = FluentArgs::new();
     args.set("duration", duration);
     i18n.t_with_args(key, &args)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use ai_chat_core::{ApprovalRequestItem, ApprovalRequestPayload, ToolSource};
+
+    use super::approval_request_decidable;
+
+    fn approval_request() -> ApprovalRequestItem {
+        ApprovalRequestItem {
+            approval_decision_id: "approval-1".to_string(),
+            tool_invocation_id: "tool-1".to_string(),
+            request: ApprovalRequestPayload {
+                reason: "needs approval".to_string(),
+                tool_source: ToolSource::Local,
+                tool_name: "write_file".to_string(),
+                arguments_preview: "{}".to_string(),
+                access_requests: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn approval_request_is_not_decidable_after_decision_item() {
+        let request = approval_request();
+        let decided_approval_ids = HashSet::from([request.approval_decision_id.clone()]);
+        let terminal_tool_invocation_ids = HashSet::new();
+
+        assert!(!approval_request_decidable(
+            &request,
+            &decided_approval_ids,
+            &terminal_tool_invocation_ids
+        ));
+    }
+
+    #[test]
+    fn approval_request_is_not_decidable_after_terminal_tool_result() {
+        let request = approval_request();
+        let decided_approval_ids = HashSet::new();
+        let terminal_tool_invocation_ids = HashSet::from([request.tool_invocation_id.clone()]);
+
+        assert!(!approval_request_decidable(
+            &request,
+            &decided_approval_ids,
+            &terminal_tool_invocation_ids
+        ));
+    }
 }

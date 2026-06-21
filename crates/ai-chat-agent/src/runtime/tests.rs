@@ -1327,6 +1327,83 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
 }
 
 #[test]
+fn cancel_waiting_approval_cancels_pending_approval() {
+    let fixture = Fixture::new("cancel-waiting-approval");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+
+    let canceled = runtime.cancel_run(&agent_run.id, None).unwrap().unwrap();
+
+    assert_eq!(canceled.status, AgentRunStatus::Canceled);
+    assert!(canceled.error.is_none());
+    let approval = fixture
+        .repo
+        .get_approval_decision(&approval.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.status, ApprovalStatus::Canceled);
+    assert!(approval.decision.is_none());
+    assert!(
+        fixture
+            .repo
+            .pending_approval_decisions()
+            .unwrap()
+            .is_empty()
+    );
+    let invocation = fixture
+        .repo
+        .get_tool_invocation(&invocation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
+    assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
+    assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
+}
+
+#[test]
+fn decide_approval_rejects_terminal_agent_run() {
+    let fixture = Fixture::new("approval-terminal-run");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let (agent_run, invocation, approval) = insert_waiting_approval(&fixture);
+    fixture
+        .repo
+        .update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Canceled,
+                output: None,
+                error: None,
+            },
+        )
+        .unwrap();
+
+    let result = runtime.decide_approval(
+        &approval.id,
+        NewApprovalDecisionOutcome::Denied {
+            decided_by: "user".to_string(),
+            reason: None,
+        },
+    );
+
+    assert!(result.is_err());
+    let approval = fixture
+        .repo
+        .get_approval_decision(&approval.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.status, ApprovalStatus::Pending);
+    let invocation = fixture
+        .repo
+        .get_tool_invocation(&invocation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
+    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
+    assert_eq!(agent_run.status, AgentRunStatus::Canceled);
+    assert!(tool_result_texts(&fixture).is_empty());
+}
+
+#[test]
 fn cancel_terminal_run_is_idempotent() {
     let fixture = Fixture::new("cancel-terminal");
     let runtime = AgentRuntime::new(fixture.repo.clone());
