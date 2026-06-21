@@ -1,6 +1,6 @@
 use crate::{
     AgentRunHandle, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver,
-    ProviderSecretValues, Result, SkillCatalog, SkillLoader,
+    AgentStep, ProviderSecretValues, Result, SkillCatalog, SkillLoader,
     history::build_prompt_history,
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
     provider_models::run_saved_provider_model,
@@ -466,6 +466,77 @@ impl AgentRuntime {
         observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
         run_saved_provider_model(self, request, provider, secrets, observer).await
+    }
+
+    pub fn record_setup_failed_run(
+        &self,
+        request: AgentRunRequest,
+        error: impl ToString,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<AgentRunHandle> {
+        if request.cancellation_token.is_cancelled() {
+            return Err(AgentRuntimeError::Canceled);
+        }
+
+        let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(&request))?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStarted {
+                agent_run_id: agent_run.id.clone(),
+                conversation_id: agent_run.conversation_id.clone(),
+            },
+        );
+        agent_run = self.repo.update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Running,
+                output: None,
+                error: None,
+            },
+        )?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run.id.clone(),
+                status: AgentRunStatus::Running,
+            },
+        );
+
+        let payload = run_error("setup_error", error.to_string(), true, None);
+        let item = self.repo.append_conversation_item(NewConversationItem {
+            conversation_id: request.conversation_id,
+            status: ConversationItemStatus::Completed,
+            agent_run_id: Some(agent_run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationItemPayload::Error(payload.clone()),
+        })?;
+        let output = AgentRunOutput {
+            final_item_id: Some(item.id.clone()),
+            stopped_reason: AgentStoppedReason::Failed,
+        };
+        let agent_run = self.repo.update_agent_run_status(
+            &agent_run.id,
+            UpdateAgentRunStatus {
+                status: AgentRunStatus::Failed,
+                output: Some(output.clone()),
+                error: Some(payload.clone()),
+            },
+        )?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: agent_run.id.clone(),
+                status: AgentRunStatus::Failed,
+            },
+        );
+        Ok(AgentRunHandle {
+            agent_run,
+            output: Some(output),
+            events: vec![AgentRunEvent::Failed { error: payload }],
+            steps: vec![AgentStep::ConversationItem(item.id)],
+        })
     }
 
     pub fn cancel_run(

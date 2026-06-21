@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    LocalTool, McpConnector, RegisteredToolDefinition, ToolDefinition, ToolExecutor, ToolRunPolicy,
+    LocalTool, McpConnector, ProviderSecretValues, RegisteredToolDefinition, ToolDefinition,
+    ToolExecutor, ToolRunPolicy,
 };
 use ai_chat_db::{
     ApprovalDecisionRecord, ConversationItemRecord, ConversationRecord, FreshStore,
@@ -1624,6 +1625,61 @@ async fn setup_failure_marks_agent_run_failed() {
     assert_eq!(payload.code, "setup_error");
     assert!(payload.message.contains("missing-skill"));
     assert!(payload.retryable);
+}
+
+#[tokio::test]
+async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
+    let fixture = Fixture::new("saved-provider-setup-failure");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+
+    let handle = runtime
+        .run_with_saved_provider_observed(
+            fixture.request(),
+            fixture.provider.clone(),
+            ProviderSecretValues::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let error = handle.agent_run.error.as_ref().unwrap();
+    assert_eq!(error.code, "setup_error");
+    assert!(error.message.contains("missing provider secret `api_key`"));
+    assert!(error.retryable);
+    assert!(matches!(
+        handle.events.as_slice(),
+        [AgentRunEvent::Failed { error }] if error.code == "setup_error"
+    ));
+
+    let output = handle.output.as_ref().unwrap();
+    assert_eq!(output.stopped_reason, AgentStoppedReason::Failed);
+    let final_item_id = output.final_item_id.as_ref().unwrap();
+    assert_eq!(
+        handle.steps,
+        vec![AgentStep::ConversationItem(final_item_id.clone())]
+    );
+
+    let timeline = fixture
+        .repo
+        .conversation_timeline_records(&fixture.conversation.id)
+        .unwrap()
+        .unwrap();
+    let error_item = timeline
+        .items
+        .iter()
+        .find(|item| item.id == *final_item_id)
+        .unwrap();
+    assert_eq!(
+        error_item.agent_run_id.as_deref(),
+        Some(handle.agent_run.id.as_str())
+    );
+    assert!(matches!(
+        &error_item.payload,
+        ConversationItemPayload::Error(payload)
+            if payload.code == "setup_error"
+                && payload.message.contains("missing provider secret `api_key`")
+    ));
 }
 
 #[tokio::test]

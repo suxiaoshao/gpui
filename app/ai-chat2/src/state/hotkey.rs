@@ -519,21 +519,6 @@ impl GlobalHotkeyState {
             return;
         }
 
-        if state::conversation_runtime::runtime(cx)
-            .read(cx)
-            .has_active_run()
-        {
-            self.push_notification(
-                "notify-shortcut-trigger-busy-title",
-                cx.global::<I18n>()
-                    .t("notify-shortcut-trigger-busy-message")
-                    .to_string(),
-                NotificationType::Warning,
-                cx,
-            );
-            return;
-        }
-
         let trigger = match self.resolve_shortcut_trigger_context(shortcut_id.clone(), cx) {
             Ok(Some(trigger)) => trigger,
             Ok(None) => return,
@@ -696,21 +681,6 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) {
-        if state::conversation_runtime::runtime(cx)
-            .read(cx)
-            .has_active_run()
-        {
-            self.push_notification(
-                "notify-shortcut-trigger-busy-title",
-                cx.global::<I18n>()
-                    .t("notify-shortcut-trigger-busy-message")
-                    .to_string(),
-                NotificationType::Warning,
-                cx,
-            );
-            return;
-        }
-
         let trigger = match self.resolve_shortcut_trigger_context(shortcut.id.clone(), cx) {
             Ok(Some(trigger)) => trigger,
             Ok(None) => return,

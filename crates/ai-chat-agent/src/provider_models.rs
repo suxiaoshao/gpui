@@ -122,55 +122,38 @@ pub(crate) async fn run_saved_provider_model(
     observer: Option<AgentRuntimeObserver>,
 ) -> crate::Result<AgentRunHandle> {
     let model_id = request.model_id.clone();
+    macro_rules! run_with_client {
+        ($client:expr) => {
+            match $client.map_err(runtime_config_error) {
+                Ok(client) => {
+                    runtime
+                        .run_with_model_observed(
+                            request,
+                            client.completion_model(model_id),
+                            observer,
+                        )
+                        .await
+                }
+                Err(error) => runtime.record_setup_failed_run(request, error, observer.as_ref()),
+            }
+        };
+    }
+
     match provider.kind.as_str() {
-        "openai" => {
-            let client = build_openai_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "anthropic" => {
-            let client =
-                build_anthropic_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "gemini" => {
-            let client = build_gemini_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "ollama" => {
-            let client = build_ollama_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "openrouter" => {
-            let client =
-                build_openrouter_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "deepseek" => {
-            let client =
-                build_deepseek_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        "mistral" => {
-            let client = build_mistral_client(&provider, &secrets).map_err(runtime_config_error)?;
-            runtime
-                .run_with_model_observed(request, client.completion_model(model_id), observer)
-                .await
-        }
-        provider_kind => Err(AgentRuntimeError::Unsupported(format!(
-            "provider `{provider_kind}` cannot run completion models"
-        ))),
+        "openai" => run_with_client!(build_openai_client(&provider, &secrets)),
+        "anthropic" => run_with_client!(build_anthropic_client(&provider, &secrets)),
+        "gemini" => run_with_client!(build_gemini_client(&provider, &secrets)),
+        "ollama" => run_with_client!(build_ollama_client(&provider, &secrets)),
+        "openrouter" => run_with_client!(build_openrouter_client(&provider, &secrets)),
+        "deepseek" => run_with_client!(build_deepseek_client(&provider, &secrets)),
+        "mistral" => run_with_client!(build_mistral_client(&provider, &secrets)),
+        provider_kind => runtime.record_setup_failed_run(
+            request,
+            AgentRuntimeError::Unsupported(format!(
+                "provider `{provider_kind}` cannot run completion models"
+            )),
+            observer.as_ref(),
+        ),
     }
 }
 

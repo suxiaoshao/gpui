@@ -73,10 +73,6 @@ impl ConversationRuntimeStore {
         self.active_runs.contains_key(conversation_id)
     }
 
-    pub(crate) fn has_active_run(&self) -> bool {
-        !self.active_runs.is_empty()
-    }
-
     pub(crate) fn take_last_error(&mut self, conversation_id: &ConversationId) -> Option<String> {
         self.last_errors.remove(conversation_id)
     }
@@ -484,17 +480,38 @@ async fn run_agent_with_saved_provider(
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
 ) -> Result<AgentRunHandle, String> {
-    let provider = repository
-        .get_provider(&request.provider_id)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| format!("provider `{}` was not found", request.provider_id))?;
-    let secrets = ProviderSecretStore::read_values(cx, &provider.secret_refs).await?;
     let observer = AgentRuntimeObserver::new(move |event| {
         if let Err(err) = tx.send_blocking(event) {
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
-    let runtime = AgentRuntime::new(repository);
+    let runtime = AgentRuntime::new(repository.clone());
+    let provider = match repository
+        .get_provider(&request.provider_id)
+        .map_err(|err| err.to_string())?
+    {
+        Some(provider) => provider,
+        None => {
+            let message = format!("provider `{}` was not found", request.provider_id);
+            return gpui_tokio::Tokio::spawn(cx, async move {
+                runtime.record_setup_failed_run(request, message, Some(&observer))
+            })
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string());
+        }
+    };
+    let secrets = match ProviderSecretStore::read_values(cx, &provider.secret_refs).await {
+        Ok(secrets) => secrets,
+        Err(err) => {
+            return gpui_tokio::Tokio::spawn(cx, async move {
+                runtime.record_setup_failed_run(request, err, Some(&observer))
+            })
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string());
+        }
+    };
     gpui_tokio::Tokio::spawn(cx, async move {
         runtime
             .run_with_saved_provider_observed(request, provider, secrets, Some(observer))
