@@ -154,9 +154,7 @@ fn agent_turn_row(
     callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
     let final_item = final_item_for_run(run.as_ref(), &items);
-    let default_expanded = !run
-        .as_ref()
-        .is_some_and(|run| format::is_terminal_run(run) && final_item.is_some());
+    let default_expanded = !run.as_ref().is_some_and(format::is_terminal_run);
     let expanded = run_id
         .as_ref()
         .and_then(|run_id| expanded_agent_runs.get(run_id).copied())

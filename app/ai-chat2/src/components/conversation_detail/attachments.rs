@@ -8,7 +8,7 @@ use ai_chat_db::{AttachmentRecord, ConversationItemRecord};
 use gpui::*;
 use gpui_component::{ActiveTheme, h_flex};
 
-use crate::components::image_preview::{self, ImagePreviewAttachment};
+use crate::components::image_preview::{self, ImagePreviewAttachment, ImagePreviewSource};
 
 const USER_IMAGE_SIZE: f32 = 80.;
 const USER_IMAGE_GAP: f32 = 8.;
@@ -27,7 +27,7 @@ pub(super) struct UserImageAttachment {
 impl UserImageAttachment {
     fn preview_attachment(&self) -> ImagePreviewAttachment {
         ImagePreviewAttachment {
-            path: self.path.clone(),
+            source: ImagePreviewSource::Path(self.path.clone()),
             name: self.name.clone(),
             width: self.width,
             height: self.height,

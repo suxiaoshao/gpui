@@ -1,10 +1,10 @@
 use crate::foundation::{self, assets::IconName};
 use fluent_bundle::FluentArgs;
 use gpui::{
-    App, AppContext as _, Context, CursorStyle, InteractiveElement as _, IntoElement as _,
-    MouseButton, ObjectFit, ParentElement as _, PinchEvent, Pixels, Point, Render, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, Size, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, CursorStyle, Image, InteractiveElement as _,
+    IntoElement as _, MouseButton, ObjectFit, ParentElement as _, PinchEvent, Pixels, Point,
+    Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, Size, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Window, div, img, point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, WindowExt as ComponentWindowExt,
@@ -12,7 +12,7 @@ use gpui_component::{
     h_flex,
     label::Label,
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 const SIDE_INSET: f32 = 56.;
 const TOP_INSET: f32 = 52.;
@@ -44,8 +44,14 @@ enum ZoomStep {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ImagePreviewSource {
+    Path(PathBuf),
+    Image(Arc<Image>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ImagePreviewAttachment {
-    pub(crate) path: PathBuf,
+    pub(crate) source: ImagePreviewSource,
     pub(crate) name: String,
     pub(crate) width: Option<u32>,
     pub(crate) height: Option<u32>,
@@ -233,12 +239,7 @@ impl ImagePreview {
                             .w(px(image_size.width))
                             .h(px(image_size.height))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                img(self.attachment.path.clone())
-                                    .w(px(image_size.width))
-                                    .h(px(image_size.height))
-                                    .object_fit(ObjectFit::Fill),
-                            ),
+                            .child(render_preview_image(&self.attachment.source, image_size)),
                     ),
             )
             .into_any_element()
@@ -498,14 +499,51 @@ fn natural_size_for_attachment(attachment: &ImagePreviewAttachment) -> Result<Pr
         });
     }
 
-    image_dimensions(&attachment.path).map(|(width, height)| PreviewSize {
+    image_source_dimensions(&attachment.source).map(|(width, height)| PreviewSize {
         width: width as f32,
         height: height as f32,
     })
 }
 
-fn image_dimensions(path: &PathBuf) -> Result<(u32, u32), String> {
-    image::image_dimensions(path).map_err(|err| err.to_string())
+fn render_preview_image(source: &ImagePreviewSource, image_size: PreviewSize) -> AnyElement {
+    match source {
+        ImagePreviewSource::Path(path) => img(path.clone())
+            .w(px(image_size.width))
+            .h(px(image_size.height))
+            .object_fit(ObjectFit::Fill)
+            .into_any_element(),
+        ImagePreviewSource::Image(image) => img(image.clone())
+            .w(px(image_size.width))
+            .h(px(image_size.height))
+            .object_fit(ObjectFit::Fill)
+            .into_any_element(),
+    }
+}
+
+fn image_source_dimensions(source: &ImagePreviewSource) -> Result<(u32, u32), String> {
+    match source {
+        ImagePreviewSource::Path(path) => {
+            image::image_dimensions(path).map_err(|err| err.to_string())
+        }
+        ImagePreviewSource::Image(image) => {
+            use image::GenericImageView as _;
+
+            let format = match image.format() {
+                gpui::ImageFormat::Png => image::ImageFormat::Png,
+                gpui::ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+                gpui::ImageFormat::Webp => image::ImageFormat::WebP,
+                gpui::ImageFormat::Gif => image::ImageFormat::Gif,
+                gpui::ImageFormat::Svg
+                | gpui::ImageFormat::Bmp
+                | gpui::ImageFormat::Tiff
+                | gpui::ImageFormat::Ico
+                | gpui::ImageFormat::Pnm => image::ImageFormat::Png,
+            };
+            image::load_from_memory_with_format(image.bytes(), format)
+                .map(|image| image.dimensions())
+                .map_err(|err| err.to_string())
+        }
+    }
 }
 
 fn preview_size_from_pixels(size: Size<Pixels>) -> PreviewSize {

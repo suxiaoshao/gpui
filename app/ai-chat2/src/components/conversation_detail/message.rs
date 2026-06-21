@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ai_chat_core::{AgentRunId, ApprovalDecisionId, ConversationItemId, ToolInvocationId};
+use ai_chat_core::{
+    AgentRunId, AgentRunStatus, ApprovalDecisionId, ConversationItemId, RunErrorPayload,
+    ToolInvocationId,
+};
 use ai_chat_db::{AgentRunRecord, ConversationItemRecord};
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
@@ -200,21 +203,30 @@ impl RenderOnce for AgentTurnRow {
             .or_else(|| self.items.first().map(|item| item.id.clone()))
             .unwrap_or_else(|| "agent".to_string());
         let group = format!("conversation-agent-turn-{id_suffix}");
-        let copy_text = agent_copy_text(&self);
+        let copy_text = {
+            let i18n = cx.global::<I18n>();
+            agent_copy_text(&self, i18n)
+        };
         let on_copy = self.on_copy.clone();
-        let i18n = cx.global::<I18n>();
-        let copy_tooltip = i18n.t("conversation-copy-tooltip");
-        let copied_tooltip = i18n.t("conversation-copy-success");
-        let hover_time = self
-            .run
-            .as_ref()
-            .map(|run| agent_hover_time(run, i18n))
-            .unwrap_or_else(|| {
-                self.items
-                    .first()
-                    .map(|item| format::timestamp_label(item.created_at, i18n))
-                    .unwrap_or_default()
-            });
+        let (copy_tooltip, copied_tooltip, hover_time, final_markdown) = {
+            let i18n = cx.global::<I18n>();
+            let hover_time = self
+                .run
+                .as_ref()
+                .map(|run| agent_hover_time(run, i18n))
+                .unwrap_or_else(|| {
+                    self.items
+                        .first()
+                        .map(|item| format::timestamp_label(item.created_at, i18n))
+                        .unwrap_or_default()
+                });
+            (
+                i18n.t("conversation-copy-tooltip"),
+                i18n.t("conversation-copy-success"),
+                hover_time,
+                agent_final_markdown(self.final_item.as_ref(), self.run.as_ref(), i18n),
+            )
+        };
         let status_row = self.render_status_row(&id_suffix, cx);
         let separator = self.render_separator(&id_suffix, cx);
         let action_row = agent_action_row(
@@ -229,11 +241,6 @@ impl RenderOnce for AgentTurnRow {
             window,
             cx,
         );
-        let final_markdown = self
-            .final_item
-            .as_ref()
-            .map(format::item_markdown)
-            .unwrap_or_default();
         let final_text_state = self
             .final_item
             .as_ref()
@@ -274,13 +281,9 @@ impl AgentTurnRow {
     fn render_status_row(&self, id_suffix: &str, cx: &mut App) -> AnyElement {
         let i18n = cx.global::<I18n>();
         let (label, icon) = if let Some(run) = &self.run {
-            if format::is_terminal_run(run) && self.final_item.is_some() {
+            if format::is_terminal_run(run) {
                 (
-                    duration_arg_label(
-                        i18n,
-                        "conversation-agent-processed",
-                        format::run_duration_label(run),
-                    ),
+                    agent_terminal_status_label(run.status, run, i18n),
                     if self.expanded {
                         IconName::ChevronDown
                     } else {
@@ -516,18 +519,74 @@ fn copy_button(
         .into_any_element()
 }
 
-fn agent_copy_text(row: &AgentTurnRow) -> String {
-    if let Some(final_item) = &row.final_item
-        && !row.expanded
-    {
-        return format::item_markdown(final_item);
+fn agent_copy_text(row: &AgentTurnRow, i18n: &I18n) -> String {
+    let final_markdown = agent_final_markdown(row.final_item.as_ref(), row.run.as_ref(), i18n);
+    if !row.expanded && !final_markdown.trim().is_empty() {
+        return final_markdown;
     }
-    row.items
+
+    let mut parts = row
+        .items
         .iter()
         .map(format::item_markdown)
         .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        .collect::<Vec<_>>();
+    if row.final_item.is_none() && !final_markdown.trim().is_empty() {
+        parts.push(final_markdown);
+    }
+    parts.join("\n\n")
+}
+
+fn agent_final_markdown(
+    final_item: Option<&ConversationItemRecord>,
+    run: Option<&AgentRunRecord>,
+    i18n: &I18n,
+) -> String {
+    if let Some(final_item) = final_item {
+        return format::item_markdown(final_item);
+    }
+
+    let Some(run) = run else {
+        return String::new();
+    };
+    agent_run_terminal_fallback_markdown(run.status, run.error.as_ref(), i18n)
+}
+
+fn agent_run_terminal_fallback_markdown(
+    status: AgentRunStatus,
+    error: Option<&RunErrorPayload>,
+    i18n: &I18n,
+) -> String {
+    if !matches!(status, AgentRunStatus::Failed | AgentRunStatus::Canceled) {
+        return String::new();
+    }
+    if let Some(error) = error
+        && !error.message.trim().is_empty()
+    {
+        return format!("**{}:** {}", i18n.t("conversation-error"), error.message);
+    }
+
+    match status {
+        AgentRunStatus::Failed => i18n.t("conversation-agent-failed-fallback"),
+        AgentRunStatus::Canceled => i18n.t("conversation-agent-canceled-fallback"),
+        _ => String::new(),
+    }
+}
+
+fn agent_terminal_status_label(
+    status: AgentRunStatus,
+    run: &AgentRunRecord,
+    i18n: &I18n,
+) -> String {
+    let key = match status {
+        AgentRunStatus::Completed => "conversation-agent-processed",
+        AgentRunStatus::Failed => "conversation-agent-failed",
+        AgentRunStatus::Canceled => "conversation-agent-canceled",
+        AgentRunStatus::Queued | AgentRunStatus::Running | AgentRunStatus::WaitingForApproval => {
+            "conversation-agent-processing"
+        }
+    };
+    duration_arg_label(i18n, key, format::run_duration_label(run))
 }
 
 fn agent_hover_time(run: &AgentRunRecord, i18n: &I18n) -> String {
@@ -562,9 +621,13 @@ fn duration_arg_label(i18n: &I18n, key: &str, duration: String) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use ai_chat_core::{ApprovalRequestItem, ApprovalRequestPayload, ToolSource};
+    use ai_chat_core::{
+        AgentRunStatus, ApprovalRequestItem, ApprovalRequestPayload, RunErrorPayload, ToolSource,
+    };
 
-    use super::approval_request_decidable;
+    use crate::foundation::I18n;
+
+    use super::{agent_run_terminal_fallback_markdown, approval_request_decidable};
 
     fn approval_request() -> ApprovalRequestItem {
         ApprovalRequestItem {
@@ -604,5 +667,40 @@ mod tests {
             &decided_approval_ids,
             &terminal_tool_invocation_ids
         ));
+    }
+
+    #[test]
+    fn terminal_run_without_final_item_uses_run_error_fallback() {
+        let i18n = I18n::english_for_test();
+        let error = RunErrorPayload {
+            code: "setup_error".to_string(),
+            message: "missing API key".to_string(),
+            retryable: true,
+            provider: None,
+            raw: None,
+        };
+
+        assert_eq!(
+            agent_run_terminal_fallback_markdown(AgentRunStatus::Failed, Some(&error), &i18n),
+            "**Error:** missing API key"
+        );
+    }
+
+    #[test]
+    fn terminal_run_without_final_item_uses_status_fallback_when_error_is_missing() {
+        let i18n = I18n::english_for_test();
+
+        assert_eq!(
+            agent_run_terminal_fallback_markdown(AgentRunStatus::Failed, None, &i18n),
+            "Agent run failed"
+        );
+        assert_eq!(
+            agent_run_terminal_fallback_markdown(AgentRunStatus::Canceled, None, &i18n),
+            "Agent run canceled"
+        );
+        assert_eq!(
+            agent_run_terminal_fallback_markdown(AgentRunStatus::Completed, None, &i18n),
+            ""
+        );
     }
 }

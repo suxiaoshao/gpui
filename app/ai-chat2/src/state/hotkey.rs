@@ -2,11 +2,13 @@ use std::{collections::BTreeMap, str::FromStr, time::SystemTime};
 
 use ai_chat_core::{
     AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource, ToolApprovalMode, new_id,
+    ShortcutInputSource, ToolApprovalMode,
 };
 use ai_chat_db::ShortcutRecord;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
-use gpui::{AnyWindowHandle, App, BorrowAppContext, Global, SharedString, Task};
+use gpui::{
+    AnyWindowHandle, App, BorrowAppContext, Global, Image, ImageFormat, SharedString, Task,
+};
 use gpui_component::{
     Root, WindowExt as NotificationWindowExt,
     notification::{Notification, NotificationType},
@@ -23,7 +25,7 @@ use crate::{
     platform::capture::CaptureError,
     state::{
         self,
-        attachments::{ComposerAttachment, write_pending_image_attachment},
+        attachments::{ComposerAttachment, generated_image_attachment},
         config,
         providers::ProviderModelChoice,
     },
@@ -750,7 +752,7 @@ impl GlobalHotkeyState {
             .to_string();
         let png = screenshot_png_bytes(&image)
             .map_err(|err| AiChat2Error::Window(format!("encode screenshot failed: {err}")))?;
-        let attachment = screenshot_composer_attachment(&image, &png, cx)?;
+        let attachment = screenshot_composer_attachment(&image, &png)?;
         let created = self.create_shortcut_conversation(
             &trigger,
             vec![ContentPart::Text { text: text.clone() }],
@@ -956,17 +958,14 @@ fn screenshot_png_bytes(image: &ImageFrame) -> Result<Vec<u8>, String> {
 fn screenshot_composer_attachment(
     image: &ImageFrame,
     png: &[u8],
-    cx: &App,
 ) -> AiChat2Result<ComposerAttachment> {
-    write_pending_image_attachment(
-        &format!("screenshot-{}.png", new_id()),
+    Ok(generated_image_attachment(
         "screenshot.png".to_string(),
-        png,
+        Image::from_bytes(ImageFormat::Png, png.to_vec()),
         "image/png".to_string(),
         (image.width, image.height),
         0,
-        cx,
-    )
+    ))
 }
 
 fn screenshot_capture_error_message(error: &CaptureError) -> Option<String> {
@@ -988,13 +987,12 @@ mod tests {
     };
     use crate::{
         platform::capture::CaptureError,
-        state::{AiChat2Config, attachments::ComposerAttachmentKind, config},
+        state::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
     };
     use global_hotkey::hotkey::HotKey;
-    use gpui::{Task, TestAppContext};
+    use gpui::Task;
     use platform_ext::{OcrError, ocr::ImageFrame};
-    use std::{fs, str::FromStr};
-    use tempfile::Builder as TempDirBuilder;
+    use std::str::FromStr;
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {
@@ -1126,21 +1124,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn screenshot_composer_attachment_writes_pending_image(cx: &mut TestAppContext) {
-        let temp_root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
-        let dir = TempDirBuilder::new()
-            .prefix("ai-chat2-hotkey-screenshot-")
-            .tempdir_in(temp_root)
-            .unwrap();
-        cx.update(|cx| {
-            let mut config =
-                AiChat2Config::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
-            config.storage.data_dir = Some(dir.path().join("data"));
-            config.save_for_test().unwrap();
-            config::install_for_test(cx, config).unwrap();
-        });
+    fn screenshot_composer_attachment_uses_memory_image() {
         let image = ImageFrame {
             width: 1,
             height: 1,
@@ -1149,7 +1133,7 @@ mod tests {
         };
         let png = screenshot_png_bytes(&image).unwrap();
 
-        let attachment = cx.update(|cx| screenshot_composer_attachment(&image, &png, cx).unwrap());
+        let attachment = screenshot_composer_attachment(&image, &png).unwrap();
 
         assert_eq!(attachment.local_id, 0);
         assert_eq!(attachment.kind, ComposerAttachmentKind::Image);
@@ -1158,11 +1142,9 @@ mod tests {
         assert_eq!(attachment.size_bytes, Some(png.len() as u64));
         assert_eq!(attachment.width, Some(1));
         assert_eq!(attachment.height, Some(1));
-        assert!(
-            attachment
-                .path
-                .starts_with(dir.path().join("data/attachments/pending"))
-        );
-        assert_eq!(fs::read(attachment.path).unwrap(), png);
+        let ComposerAttachmentSource::GeneratedImage { image } = attachment.source else {
+            panic!("screenshot attachment should keep image bytes in memory");
+        };
+        assert_eq!(image.bytes(), png);
     }
 }

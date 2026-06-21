@@ -374,7 +374,10 @@ mod tests {
     use crate::{
         database::{self, FreshStoreGlobal},
         foundation::I18n,
-        state::{AiChat2Config, attachments::ComposerAttachmentKind},
+        state::{
+            AiChat2Config,
+            attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
+        },
     };
     use ai_chat_core::{
         ModelCapabilitiesSnapshot, ProjectKind, ProjectMetadata, ProviderSecretRefs,
@@ -425,7 +428,7 @@ mod tests {
                     attachments: vec![ComposerAttachment {
                         local_id: 1,
                         kind: ComposerAttachmentKind::File,
-                        path: missing_path,
+                        source: ComposerAttachmentSource::LocalFile { path: missing_path },
                         name: "missing-attachment.txt".to_string(),
                         mime_type: Some("text/plain".to_string()),
                         size_bytes: Some(12),
@@ -482,7 +485,7 @@ mod tests {
                     attachments: vec![ComposerAttachment {
                         local_id: 1,
                         kind: ComposerAttachmentKind::File,
-                        path: missing_path,
+                        source: ComposerAttachmentSource::LocalFile { path: missing_path },
                         name: "missing-new-conversation.txt".to_string(),
                         mime_type: Some("text/plain".to_string()),
                         size_bytes: Some(12),

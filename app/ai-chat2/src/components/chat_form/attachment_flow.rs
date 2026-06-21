@@ -3,7 +3,7 @@ use crate::{
     components::image_preview::{self, ImagePreviewAttachment},
     foundation, state,
     state::attachments::{
-        AttachmentAddResult, ComposerAttachment, ComposerAttachmentKind,
+        AttachmentAddResult, ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
         ModelAttachmentSupportIssue, add_attachments_from_clipboard as attachments_from_clipboard,
         add_attachments_from_paths, model_support_issue,
     },
@@ -24,7 +24,7 @@ impl ChatForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match attachments_from_clipboard(item, &mut self.next_attachment_id, cx) {
+        match attachments_from_clipboard(item, &mut self.next_attachment_id) {
             Ok(result) => self.apply_attachment_add_result(result, window, cx),
             Err(err) => self.push_form_notification(
                 "chat-form-attachment-paste-failed",
@@ -193,7 +193,14 @@ impl ChatForm {
     ) {
         image_preview::open_image_preview_dialog(
             ImagePreviewAttachment {
-                path: attachment.path.clone(),
+                source: match &attachment.source {
+                    ComposerAttachmentSource::LocalFile { path } => {
+                        image_preview::ImagePreviewSource::Path(path.clone())
+                    }
+                    ComposerAttachmentSource::GeneratedImage { image } => {
+                        image_preview::ImagePreviewSource::Image(image.clone())
+                    }
+                },
                 name: attachment.name.clone(),
                 width: attachment.width,
                 height: attachment.height,
@@ -210,9 +217,12 @@ impl ChatForm {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(err) = window_ext::preview_file_with_quick_look(&attachment.path) {
-            event!(Level::WARN, error = ?err, path = %attachment.path.display(), "quick look preview failed");
-            cx.open_with_system(&attachment.path);
+        let Some(path) = attachment.local_file_path() else {
+            return;
+        };
+        if let Err(err) = window_ext::preview_file_with_quick_look(path) {
+            event!(Level::WARN, error = ?err, path = %path.display(), "quick look preview failed");
+            cx.open_with_system(path);
         }
     }
 

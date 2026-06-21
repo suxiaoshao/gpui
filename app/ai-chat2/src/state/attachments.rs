@@ -2,6 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use ai_chat_core::{
@@ -23,15 +24,30 @@ pub(crate) enum ComposerAttachmentKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ComposerAttachmentSource {
+    LocalFile { path: PathBuf },
+    GeneratedImage { image: Arc<Image> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerAttachment {
     pub(crate) local_id: u64,
     pub(crate) kind: ComposerAttachmentKind,
-    pub(crate) path: PathBuf,
+    pub(crate) source: ComposerAttachmentSource,
     pub(crate) name: String,
     pub(crate) mime_type: Option<String>,
     pub(crate) size_bytes: Option<u64>,
     pub(crate) width: Option<u32>,
     pub(crate) height: Option<u32>,
+}
+
+impl ComposerAttachment {
+    pub(crate) fn local_file_path(&self) -> Option<&Path> {
+        match &self.source {
+            ComposerAttachmentSource::LocalFile { path } => Some(path),
+            ComposerAttachmentSource::GeneratedImage { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,7 +80,6 @@ pub(crate) fn clipboard_item_has_attachments(item: &ClipboardItem) -> bool {
 pub(crate) fn add_attachments_from_clipboard(
     item: ClipboardItem,
     next_local_id: &mut u64,
-    cx: &App,
 ) -> AiChat2Result<AttachmentAddResult> {
     if let Some(paths) = item.entries().iter().find_map(|entry| match entry {
         ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
@@ -77,7 +92,7 @@ pub(crate) fn add_attachments_from_clipboard(
         ClipboardEntry::Image(image) => Some(image),
         ClipboardEntry::String(_) | ClipboardEntry::ExternalPaths(_) => None,
     }) {
-        return add_attachment_from_clipboard_image(image, next_local_id, cx);
+        return add_attachment_from_clipboard_image(image, next_local_id);
     }
 
     Ok(AttachmentAddResult::default())
@@ -113,7 +128,7 @@ pub(crate) fn prepare_message_attachments(
     let mut prepared = PreparedMessageAttachments::default();
     for attachment in attachments {
         let stored_path = stored_attachment_path(&attachment_dir, storage_prefix, attachment);
-        if let Err(err) = fs::copy(&attachment.path, &stored_path) {
+        if let Err(err) = write_stored_attachment(attachment, &stored_path) {
             cleanup_stored_attachment_files(&prepared.stored_paths);
             let _ = fs::remove_file(&stored_path);
             return Err(err.into());
@@ -139,7 +154,7 @@ pub(crate) fn prepare_message_attachments(
                 .size_bytes
                 .and_then(|size| i64::try_from(size).ok()),
             metadata: AttachmentMetadata {
-                source: AttachmentSource::LocalFile { path: path_string },
+                source: attachment_source_for_record(attachment, path_string),
                 width: attachment.width,
                 height: attachment.height,
                 duration_ms: None,
@@ -151,30 +166,26 @@ pub(crate) fn prepare_message_attachments(
     Ok(prepared)
 }
 
-pub(crate) fn write_pending_image_attachment(
-    pending_file_name: &str,
+pub(crate) fn generated_image_attachment(
     name: String,
-    bytes: &[u8],
+    image: Image,
     mime_type: String,
     dimensions: (u32, u32),
     local_id: u64,
-    cx: &App,
-) -> AiChat2Result<ComposerAttachment> {
-    let pending_dir = pending_attachment_dir(cx)?;
-    fs::create_dir_all(&pending_dir)?;
-    let path = pending_dir.join(sanitize_file_name(pending_file_name));
-    fs::write(&path, bytes)?;
-
-    Ok(ComposerAttachment {
+) -> ComposerAttachment {
+    let size_bytes = image.bytes().len() as u64;
+    ComposerAttachment {
         local_id,
         kind: ComposerAttachmentKind::Image,
-        path,
+        source: ComposerAttachmentSource::GeneratedImage {
+            image: Arc::new(image),
+        },
         name,
         mime_type: Some(mime_type),
-        size_bytes: Some(bytes.len() as u64),
+        size_bytes: Some(size_bytes),
         width: Some(dimensions.0),
         height: Some(dimensions.1),
-    })
+    }
 }
 
 pub(crate) fn cleanup_stored_attachment_files(paths: &[PathBuf]) {
@@ -257,7 +268,6 @@ pub(crate) enum ModelAttachmentSupportIssue {
 fn add_attachment_from_clipboard_image(
     image: &Image,
     next_local_id: &mut u64,
-    cx: &App,
 ) -> AiChat2Result<AttachmentAddResult> {
     let Some((extension, mime_type)) = clipboard_image_format(image.format()) else {
         return Ok(AttachmentAddResult {
@@ -272,15 +282,13 @@ fn add_attachment_from_clipboard_image(
         .map_err(|err| AiChat2Error::Attachment(format!("decode clipboard image failed: {err}")))?;
     let local_id = allocate_local_id(next_local_id);
     let name = format!("clipboard-image-{local_id}.{extension}");
-    let attachment = write_pending_image_attachment(
-        &name,
+    let attachment = generated_image_attachment(
         name.clone(),
-        image.bytes(),
+        image.clone(),
         mime_type.to_string(),
         (width, height),
         local_id,
-        cx,
-    )?;
+    );
 
     Ok(AttachmentAddResult {
         attachments: vec![attachment],
@@ -308,7 +316,7 @@ fn composer_attachment_from_path(
         return Ok(ComposerAttachment {
             local_id,
             kind: ComposerAttachmentKind::Image,
-            path,
+            source: ComposerAttachmentSource::LocalFile { path },
             name,
             mime_type: Some(mime_type.to_string()),
             size_bytes: Some(metadata.len()),
@@ -321,7 +329,7 @@ fn composer_attachment_from_path(
         local_id,
         kind: ComposerAttachmentKind::File,
         mime_type: mime_type_for_path(&path).map(str::to_string),
-        path,
+        source: ComposerAttachmentSource::LocalFile { path },
         name,
         size_bytes: Some(metadata.len()),
         width: None,
@@ -406,8 +414,8 @@ fn file_attachment_model_supported(attachment: &ComposerAttachment) -> bool {
         .as_deref()
         .is_some_and(file_mime_type_model_supported)
         || attachment
-            .path
-            .extension()
+            .local_file_path()
+            .and_then(Path::extension)
             .and_then(OsStr::to_str)
             .is_some_and(file_extension_model_supported)
 }
@@ -472,10 +480,6 @@ fn attachment_store_dir(conversation_id: &ConversationId, cx: &App) -> AiChat2Re
         .join(conversation_id))
 }
 
-fn pending_attachment_dir(cx: &App) -> AiChat2Result<PathBuf> {
-    Ok(config::data_dir(cx)?.join("attachments").join("pending"))
-}
-
 fn stored_attachment_path(
     attachment_dir: &Path,
     user_item_id: &str,
@@ -487,6 +491,23 @@ fn stored_attachment_path(
         attachment.local_id,
         sanitize_file_name(&attachment.name)
     ))
+}
+
+fn write_stored_attachment(
+    attachment: &ComposerAttachment,
+    stored_path: &Path,
+) -> std::io::Result<()> {
+    match &attachment.source {
+        ComposerAttachmentSource::LocalFile { path } => fs::copy(path, stored_path).map(|_| ()),
+        ComposerAttachmentSource::GeneratedImage { image } => fs::write(stored_path, image.bytes()),
+    }
+}
+
+fn attachment_source_for_record(attachment: &ComposerAttachment, path: String) -> AttachmentSource {
+    match &attachment.source {
+        ComposerAttachmentSource::LocalFile { .. } => AttachmentSource::LocalFile { path },
+        ComposerAttachmentSource::GeneratedImage { .. } => AttachmentSource::GeneratedFile { path },
+    }
 }
 
 fn sanitize_file_name(name: &str) -> String {
@@ -549,7 +570,9 @@ mod tests {
         let image = ComposerAttachment {
             local_id: 1,
             kind: ComposerAttachmentKind::Image,
-            path: PathBuf::from("/tmp/a.png"),
+            source: ComposerAttachmentSource::LocalFile {
+                path: PathBuf::from("/tmp/a.png"),
+            },
             name: "a.png".to_string(),
             mime_type: Some("image/png".to_string()),
             size_bytes: Some(1),
@@ -584,7 +607,9 @@ mod tests {
         let zip = ComposerAttachment {
             local_id: 1,
             kind: ComposerAttachmentKind::File,
-            path: PathBuf::from("/tmp/archive.zip"),
+            source: ComposerAttachmentSource::LocalFile {
+                path: PathBuf::from("/tmp/archive.zip"),
+            },
             name: "archive.zip".to_string(),
             mime_type: Some("application/zip".to_string()),
             size_bytes: Some(1),
@@ -613,6 +638,79 @@ mod tests {
             Some(ModelAttachmentSupportIssue::UnsupportedFileType {
                 name: "archive.zip".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn generated_image_attachment_keeps_bytes_in_memory() {
+        let bytes = vec![1, 2, 3, 4];
+        let attachment = generated_image_attachment(
+            "clipboard.png".to_string(),
+            Image::from_bytes(ImageFormat::Png, bytes.clone()),
+            "image/png".to_string(),
+            (2, 2),
+            7,
+        );
+
+        assert_eq!(attachment.local_id, 7);
+        assert_eq!(attachment.kind, ComposerAttachmentKind::Image);
+        assert_eq!(attachment.local_file_path(), None);
+        let ComposerAttachmentSource::GeneratedImage { image } = attachment.source else {
+            panic!("generated image attachment should keep an in-memory image");
+        };
+        assert_eq!(image.bytes(), bytes);
+    }
+
+    #[gpui::test]
+    fn prepare_message_attachments_writes_generated_image_to_conversation_store(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::state::{AiChat2Config, config};
+
+        let temp_root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let dir = tempfile::Builder::new()
+            .prefix("ai-chat2-attachments-")
+            .tempdir_in(temp_root)
+            .unwrap();
+        cx.update(|cx| {
+            let mut config =
+                AiChat2Config::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
+            config.storage.data_dir = Some(dir.path().join("data"));
+            config.save_for_test().unwrap();
+            config::install_for_test(cx, config).unwrap();
+        });
+
+        let bytes = vec![137, 80, 78, 71];
+        let attachment = generated_image_attachment(
+            "clipboard.png".to_string(),
+            Image::from_bytes(ImageFormat::Png, bytes.clone()),
+            "image/png".to_string(),
+            (1, 1),
+            0,
+        );
+        let conversation_id = "conversation-1".to_string();
+        let prepared = cx.update(|cx| {
+            prepare_message_attachments(&conversation_id, "item-1", &[attachment], cx).unwrap()
+        });
+
+        assert_eq!(prepared.stored_paths.len(), 1);
+        let stored_path = &prepared.stored_paths[0];
+        assert!(stored_path.starts_with(dir.path().join("data/attachments/conversation-1")));
+        assert!(!stored_path.to_string_lossy().contains("/pending/"));
+        assert_eq!(fs::read(stored_path).unwrap(), bytes);
+        assert_eq!(prepared.new_attachments.len(), 1);
+        let new_attachment = &prepared.new_attachments[0];
+        assert_eq!(
+            new_attachment.path.as_deref(),
+            Some(stored_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            new_attachment.metadata.source,
+            AttachmentSource::GeneratedFile {
+                path: stored_path.to_string_lossy().to_string()
+            }
         );
     }
 }

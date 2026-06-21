@@ -4,7 +4,7 @@ use super::{
 use crate::{
     foundation,
     foundation::assets::IconName,
-    state::attachments::{ComposerAttachment, ComposerAttachmentKind},
+    state::attachments::{ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource},
 };
 use gpui::*;
 use gpui_component::{
@@ -120,12 +120,10 @@ impl ChatForm {
                     .left(px(0.))
                     .rounded(px(attachments::CARD_RADIUS))
                     .overflow_hidden()
-                    .child(
-                        img(attachment.path.clone())
-                            .size_full()
-                            .rounded(px(attachments::CARD_RADIUS))
-                            .object_fit(ObjectFit::Cover),
-                    ),
+                    .child(render_attachment_image(
+                        &attachment,
+                        attachments::CARD_RADIUS,
+                    )),
             )
             .child(
                 div()
@@ -264,5 +262,20 @@ impl ChatForm {
                 )
                 .into_any_element()
         })
+    }
+}
+
+fn render_attachment_image(attachment: &ComposerAttachment, radius: f32) -> AnyElement {
+    match &attachment.source {
+        ComposerAttachmentSource::LocalFile { path } => img(path.clone())
+            .size_full()
+            .rounded(px(radius))
+            .object_fit(ObjectFit::Cover)
+            .into_any_element(),
+        ComposerAttachmentSource::GeneratedImage { image } => img(image.clone())
+            .size_full()
+            .rounded(px(radius))
+            .object_fit(ObjectFit::Cover)
+            .into_any_element(),
     }
 }
