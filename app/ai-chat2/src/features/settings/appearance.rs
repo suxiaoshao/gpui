@@ -1,7 +1,7 @@
 use crate::{
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     foundation::{I18n, assets::IconName},
-    state::{self, AiChat2AppSettings},
+    state,
 };
 use ai_chat_core::{AppThemeMode, AppThemeSettings};
 use gpui::{prelude::FluentBuilder as _, *};
@@ -149,7 +149,7 @@ impl AppearanceSettingsPage {
         columns: u16,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let settings = cx.global::<AiChat2AppSettings>().theme().clone();
+        let settings = state::config::app_settings(cx).theme().clone();
         let custom_theme_colors = custom_theme_colors_for_choices(&settings);
         let deletable_material_theme_ids = settings
             .custom_theme_colors
@@ -413,7 +413,7 @@ impl Render for AppearanceSettingsPage {
                 i18n.t("settings-dark-themes"),
             )
         };
-        let settings = cx.global::<AiChat2AppSettings>().theme().clone();
+        let settings = state::config::app_settings(cx).theme().clone();
         let theme_mode = settings.mode;
         let light_theme_id = light_theme_id(&settings);
         let dark_theme_id = dark_theme_id(&settings);
@@ -583,8 +583,8 @@ fn delete_custom_theme_color(settings: &mut AppThemeSettings, theme_id_or_color:
 }
 
 fn default_custom_color(cx: &App) -> Hsla {
-    let colors =
-        state::theme::normalized_custom_theme_colors(cx.global::<AiChat2AppSettings>().theme());
+    let settings = state::config::app_settings(cx);
+    let colors = state::theme::normalized_custom_theme_colors(settings.theme());
     colors
         .last()
         .and_then(|color| Hsla::parse_hex(color).ok())

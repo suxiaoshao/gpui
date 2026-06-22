@@ -146,7 +146,7 @@ impl ChatForm {
                     this.on_input_change(window, cx);
                     cx.emit(ChatFormEvent::StateChanged);
                 }
-                InputEvent::PressEnter { secondary }
+                InputEvent::PressEnter { secondary, .. }
                     if !secondary && !this.running && this.can_send(cx) =>
                 {
                     cx.emit(ChatFormEvent::SendRequested);

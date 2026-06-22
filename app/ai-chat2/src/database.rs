@@ -4,7 +4,7 @@ use ai_chat_db::{FreshRepository, FreshStore};
 use gpui::{App, Global};
 use tracing::{Level, event};
 
-use crate::{errors::AiChat2Result, state::AiChat2Config};
+use crate::{errors::AiChat2Result, state::config};
 
 #[derive(Clone, Debug)]
 pub(crate) struct FreshStoreGlobal {
@@ -30,7 +30,7 @@ impl FreshStoreGlobal {
 }
 
 pub(crate) fn init_store(cx: &mut App) -> AiChat2Result<()> {
-    let data_dir = cx.global::<AiChat2Config>().data_dir()?;
+    let data_dir = config::data_dir(cx)?;
     let store = FreshStoreGlobal::open_in_dir(&data_dir)?;
     event!(
         Level::INFO,

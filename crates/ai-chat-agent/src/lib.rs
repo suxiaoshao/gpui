@@ -1,3 +1,4 @@
+mod builtin_tools;
 mod error;
 mod history;
 mod mcp;
@@ -26,5 +27,7 @@ pub use tool_registry::{
     LocalTool, RegisteredToolDefinition, ToolDefinition, ToolExecutor, ToolRegistry, ToolRunPolicy,
 };
 pub use types::{
-    AgentRunHandle, AgentRunRequest, AgentStep, CompletionModelFactory, RuntimeGuards,
+    AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest,
+    AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, ApprovalResumeOutcome,
+    CompletionModelFactory, RuntimeGuards,
 };

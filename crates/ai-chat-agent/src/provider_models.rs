@@ -1,17 +1,20 @@
 use std::collections::BTreeMap;
 
-use crate::model_capabilities::{
-    capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
-    capabilities_from_openrouter_model,
+use crate::{
+    AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeError, AgentRuntimeObserver,
+    model_capabilities::{
+        capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
+        capabilities_from_openrouter_model,
+    },
 };
 use ai_chat_core::{
     ProviderModelMetadata, ProviderRawPayload, ProviderSettingValue, ProviderSettingsPayload,
 };
-use ai_chat_db::{NewProviderModel, ProviderRecord};
+use ai_chat_db::{AgentRunRecord, NewProviderModel, ProviderRecord};
 use rig_core::{
-    client::ModelListingClient,
+    client::{CompletionClient, ModelListingClient},
     model::{Model, ModelList, ModelListingError},
-    providers::{anthropic, deepseek, mistral, openai},
+    providers::{anthropic, deepseek, gemini, mistral, ollama, openai, openrouter},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -111,6 +114,141 @@ pub async fn fetch_provider_models(
         .collect())
 }
 
+pub(crate) async fn run_saved_provider_model(
+    runtime: &AgentRuntime,
+    agent_run: AgentRunRecord,
+    request: AgentRunRequest,
+    provider: ProviderRecord,
+    secrets: ProviderSecretValues,
+    observer: Option<AgentRuntimeObserver>,
+) -> crate::Result<AgentRunHandle> {
+    let model_id = request.model_id.clone();
+    macro_rules! run_with_client {
+        ($client:expr) => {
+            match $client.map_err(runtime_config_error) {
+                Ok(client) => {
+                    runtime
+                        .run_started_with_model_observed(
+                            agent_run,
+                            request,
+                            client.completion_model(model_id),
+                            observer,
+                        )
+                        .await
+                }
+                Err(error) => {
+                    runtime.record_setup_failed_started_run(&agent_run, error, observer.as_ref())
+                }
+            }
+        };
+    }
+
+    match provider.kind.as_str() {
+        "openai" => run_with_client!(build_openai_client(&provider, &secrets)),
+        "anthropic" => run_with_client!(build_anthropic_client(&provider, &secrets)),
+        "gemini" => run_with_client!(build_gemini_client(&provider, &secrets)),
+        "ollama" => run_with_client!(build_ollama_client(&provider, &secrets)),
+        "openrouter" => run_with_client!(build_openrouter_client(&provider, &secrets)),
+        "deepseek" => run_with_client!(build_deepseek_client(&provider, &secrets)),
+        "mistral" => run_with_client!(build_mistral_client(&provider, &secrets)),
+        provider_kind => runtime.record_setup_failed_started_run(
+            &agent_run,
+            AgentRuntimeError::Unsupported(format!(
+                "provider `{provider_kind}` cannot run completion models"
+            )),
+            observer.as_ref(),
+        ),
+    }
+}
+
+fn runtime_config_error(err: ProviderModelFetchError) -> AgentRuntimeError {
+    AgentRuntimeError::Unsupported(err.to_string())
+}
+
+pub fn build_openai_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<openai::Client, ProviderModelFetchError> {
+    apply_base_url(
+        openai::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_anthropic_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<anthropic::Client, ProviderModelFetchError> {
+    apply_base_url(
+        anthropic::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_gemini_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<gemini::Client, ProviderModelFetchError> {
+    apply_base_url(
+        gemini::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_ollama_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<ollama::Client, ProviderModelFetchError> {
+    apply_base_url(
+        ollama::Client::builder().api_key(secrets.get("bearer_token").unwrap_or_default()),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_openrouter_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<openrouter::Client, ProviderModelFetchError> {
+    apply_base_url(
+        openrouter::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_deepseek_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<deepseek::Client, ProviderModelFetchError> {
+    apply_base_url(
+        deepseek::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
+pub fn build_mistral_client(
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> std::result::Result<mistral::Client, ProviderModelFetchError> {
+    apply_base_url(
+        mistral::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        &provider.settings,
+    )?
+    .build()
+    .map_err(invalid_config)
+}
+
 pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) -> NewProviderModel {
     let model_id = model.id.clone();
     let raw = serde_json::to_value(&model)
@@ -205,8 +343,15 @@ struct OpenRouterModelEntry {
     created: Option<u64>,
     #[serde(rename = "context_length")]
     context_length: Option<u32>,
+    architecture: Option<OpenRouterModelArchitecture>,
     #[serde(default, rename = "supported_parameters")]
     supported_parameters: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+struct OpenRouterModelArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 async fn fetch_ollama_models(
@@ -381,6 +526,11 @@ async fn fetch_openrouter_models(
                 enabled: true,
                 capabilities: capabilities_from_openrouter_model(
                     model.supported_parameters,
+                    model
+                        .architecture
+                        .as_ref()
+                        .map(|architecture| architecture.input_modalities.clone())
+                        .unwrap_or_default(),
                     raw.clone(),
                 ),
                 metadata: ProviderModelMetadata {
@@ -657,6 +807,9 @@ mod tests {
                 "name": "GPT-5",
                 "created": 1,
                 "context_length": 272000,
+                "architecture": {
+                    "input_modalities": ["text", "image", "file"]
+                },
                 "supported_parameters": ["tools", "reasoning"]
             }]
         }))
@@ -667,6 +820,13 @@ mod tests {
         assert_eq!(
             model.supported_parameters,
             vec!["tools".to_string(), "reasoning".to_string()]
+        );
+        assert_eq!(
+            model
+                .architecture
+                .as_ref()
+                .map(|architecture| architecture.input_modalities.as_slice()),
+            Some(["text".to_string(), "image".to_string(), "file".to_string()].as_slice())
         );
     }
 

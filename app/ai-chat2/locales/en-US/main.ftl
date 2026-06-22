@@ -20,6 +20,14 @@ app-about-license = License { $license }
 app-about-github = GitHub
 placeholder-temporary-title = Temporary Conversation
 placeholder-temporary-body = Temporary conversation runtime is intentionally not wired yet.
+temporary-window-title = Temporary Conversation
+temporary-search-placeholder = Search no-project conversations
+temporary-history-title = Scratch History
+temporary-empty-conversations = No no-project conversations yet.
+temporary-no-results = No matching no-project conversations.
+temporary-new-conversation-title = New Temporary Conversation
+temporary-load-failed = Failed to load temporary conversations
+temporary-submit-failed = Failed to start temporary conversation
 language-system = System
 language-english = English
 language-chinese = Chinese
@@ -28,6 +36,8 @@ settings-page-general = General
 settings-page-appearance = Appearance
 settings-page-provider = Provider
 settings-page-projects = Projects
+settings-page-prompts = Prompts
+settings-page-shortcuts = Shortcuts
 settings-group-basic-options = Basic Options
 settings-appearance-mode = Appearance Mode
 settings-custom-theme-color = Custom Theme Color
@@ -42,9 +52,13 @@ appearance-mode-light = Light
 appearance-mode-dark = Dark
 button-open = Open
 button-cancel = Cancel
+button-close = Close
+button-view = View
 button-edit = Edit
 button-delete = Delete
 button-add-project = Add Project
+button-add-prompt = Add Prompt
+button-add-shortcut = Add Shortcut
 button-add-material-theme = Add Material You Theme
 button-delete-material-theme = Delete Material You Theme
 provider-action-validate = Validate
@@ -53,6 +67,8 @@ provider-action-fetch-models = Fetch Models
 field-language = Language
 field-http-proxy = HTTP Proxy
 field-config-file = Config File
+config-load-error-title = Config file not loaded
+config-load-error-message = Could not parse { $path }. The original file was kept, and AI Chat 2 is using temporary default settings until you fix it. Save operations are disabled. Error: { $error }
 field-temporary-conversation-hotkey = Temporary Conversation Hotkey
 field-search-settings = Search settings
 dialog-temporary-hotkey-title = Temporary Conversation Hotkey
@@ -113,6 +129,76 @@ provider-fetch-save-first = Save this provider before fetching models.
 provider-fetch-save-changes-first = Save provider changes before fetching models.
 provider-fetch-supported-placeholder = Remote model fetch is available for this provider.
 provider-fetch-manual-only = This provider uses manually managed models.
+prompt-search-placeholder = Search prompts...
+prompt-empty = No prompts.
+prompt-search-empty = No prompts match your search.
+prompt-dialog-create-title = New Prompt
+prompt-dialog-edit-title = Edit Prompt
+prompt-dialog-view-title = Prompt
+prompt-field-name = Name
+prompt-field-content = Content
+prompt-placeholder-name = Prompt name
+prompt-placeholder-content = Write the system or developer instruction...
+prompt-delete-title = Delete Prompt
+prompt-delete-message = Delete “{ $name }”? This action cannot be undone.
+notify-load-prompts-failed = Load prompts failed
+notify-save-prompt-failed = Save prompt failed
+notify-prompt-saved = Prompt saved
+notify-delete-prompt-failed = Delete prompt failed
+notify-prompt-deleted = Prompt deleted
+prompt-validation-name-required = Prompt name is required
+prompt-validation-content-required = Prompt content is required
+shortcut-search-placeholder = Search shortcuts...
+shortcut-empty = No shortcuts.
+shortcut-search-empty = No shortcuts match your search.
+dialog-add-shortcut-title = New Shortcut
+dialog-edit-shortcut-title = Edit Shortcut
+dialog-view-shortcut-title = Shortcut
+dialog-delete-shortcut-title = Delete Shortcut
+dialog-delete-shortcut-message = Delete shortcut “{ $hotkey }”? This action cannot be undone.
+shortcut-field-hotkey = Hotkey
+shortcut-field-prompt = Prompt
+shortcut-field-model = Model
+shortcut-field-input-source = Input Source
+shortcut-field-action = Action
+shortcut-field-enabled = Enabled
+shortcut-field-updated = Updated
+shortcut-prompt-none = No prompt
+shortcut-model-unavailable = Unavailable
+shortcut-action-temporary-conversation = Temporary Conversation
+shortcut-input-selection-or-clipboard = Selection or Clipboard
+shortcut-input-screenshot = Screenshot
+shortcut-status-enabled = Enabled
+shortcut-status-disabled = Disabled
+shortcut-status-hotkey-invalid = Invalid hotkey
+shortcut-status-hotkey-conflict = Hotkey conflict
+shortcut-status-prompt-unavailable = Prompt unavailable
+shortcut-status-model-unavailable = Model unavailable
+shortcut-status-capability-mismatch = Capability mismatch
+shortcut-status-registration-failed = Registration failed
+shortcut-registration-registered = Registered
+shortcut-registration-not-registered = Not registered
+shortcut-action-reregister = Reregister
+notify-load-shortcuts-failed = Load shortcuts failed
+notify-save-shortcut-failed = Save shortcut failed
+notify-shortcut-created = Shortcut created
+notify-shortcut-updated = Shortcut updated
+notify-delete-shortcut-failed = Delete shortcut failed
+notify-shortcut-deleted = Shortcut deleted
+notify-shortcut-register-failed = Register shortcut failed
+notify-shortcut-reregistered = Shortcut reregistered
+notify-shortcut-trigger-busy-title = Shortcut ignored
+notify-shortcut-trigger-busy-message = Temporary conversation is already running.
+notify-shortcut-trigger-empty-input-title = No shortcut input
+notify-shortcut-trigger-empty-input-message = No selected text, clipboard text, or screenshot text was available.
+notify-shortcut-trigger-model-unavailable-title = Shortcut model unavailable
+notify-shortcut-trigger-screenshot-title = Screenshot shortcut failed
+notify-shortcut-trigger-ocr-title = Screenshot OCR failed
+shortcut-validation-hotkey-required = Hotkey is required
+shortcut-validation-hotkey-invalid = Use a valid modified hotkey
+shortcut-validation-temporary-conflict = This hotkey conflicts with the temporary conversation hotkey
+shortcut-validation-binding-conflict = This hotkey is already used by another shortcut
+shortcut-validation-model-required = Model is required
 notify-hotkey-register-failed = Register hotkey failed
 notify-load-projects-failed = Load projects failed
 notify-add-project-failed = Add project failed
@@ -128,10 +214,33 @@ new-conversation-project-none = No project
 new-conversation-project-search = Search projects
 new-conversation-project-empty = No matching projects
 new-conversation-project-load-failed = Load projects failed
+new-conversation-submit-failed = Create conversation failed
 chat-form-placeholder = Message AI Chat...
 chat-form-add-tooltip = Add context
 chat-form-send-tooltip = Send message
+chat-form-stop-tooltip = Stop generation
+chat-form-attachment-add-files = Add files
+chat-form-attachment-add-from-clipboard = Add from clipboard
+chat-form-attachment-add-failed = Add attachment failed
+chat-form-attachment-paste-failed = Paste attachment failed
+chat-form-attachment-clipboard-empty = Clipboard does not contain files or images.
+chat-form-attachment-remove = Remove attachment
+chat-form-attachment-drop = Drop files to attach
+chat-form-attachment-model-no-images = The selected model does not support image input.
+chat-form-attachment-model-no-files = The selected model does not support file input.
+chat-form-attachment-model-too-many-images = The selected model supports at most { $max } images.
+chat-form-attachment-model-too-many-files = The selected model supports at most { $max } files.
+chat-form-attachment-runtime-unsupported-file = { $name } cannot be sent to the model yet. This version supports images, PDFs, and text-like files.
+chat-form-image-preview-close = Close image preview
+chat-form-image-preview-zoom-in = Zoom in
+chat-form-image-preview-zoom-out = Zoom out
+chat-form-image-preview-zoom-percent = Current zoom: { $percent }%
+chat-form-image-preview-load-failed = Failed to load image
 chat-form-effort-select = Select Effort
+chat-form-approval-header = Tool Access
+chat-form-approval-auto = Auto-approve
+chat-form-approval-request = Ask
+chat-form-approval-full = Full Access
 chat-form-thinking-header = Thinking Effort
 chat-form-model-header = Model
 chat-form-effort-empty = No thinking options
@@ -193,3 +302,61 @@ sidebar-delete-conversation-failed = Delete conversation failed
 conversation-missing-title = Conversation not found
 conversation-missing-subtitle = It may have been deleted or removed from the sidebar.
 conversation-opened-subtitle = Conversation opened
+conversation-default-title = New conversation
+conversation-load-failed = Load conversation failed
+conversation-empty = No messages yet
+conversation-copy-tooltip = Copy
+conversation-copy-success = Copied
+conversation-copy-failed = Copy failed
+conversation-copy-failed-message = Could not write to the clipboard.
+conversation-timestamp-time = { $time }
+conversation-timestamp-weekday-time =
+    { $weekday ->
+        [monday] Monday
+        [tuesday] Tuesday
+        [wednesday] Wednesday
+        [thursday] Thursday
+        [friday] Friday
+        [saturday] Saturday
+        [sunday] Sunday
+       *[other] { $weekday }
+    } { $time }
+conversation-timestamp-month-day-time =
+    { $month ->
+        [january] Jan
+        [february] Feb
+        [march] Mar
+        [april] Apr
+        [may] May
+        [june] Jun
+        [july] Jul
+        [august] Aug
+        [september] Sep
+        [october] Oct
+        [november] Nov
+        [december] Dec
+       *[other] { $month }
+    } { $day }, { $time }
+conversation-user-sent-time = { $time }
+conversation-agent-started-time = Started { $time }
+conversation-agent-completed-time = Completed { $time }
+conversation-agent-processed = Processed { $duration }
+conversation-agent-failed = Failed { $duration }
+conversation-agent-canceled = Canceled { $duration }
+conversation-agent-processing = Processing { $duration }
+conversation-agent-failed-fallback = Agent run failed
+conversation-agent-canceled-fallback = Agent run canceled
+conversation-agent-details = Details
+conversation-tool-call = Tool call { $name }
+conversation-tool-result = Tool result { $name }
+conversation-approval-request = Approval request
+conversation-approval-approved = Approval approved
+conversation-approval-denied = Approval denied
+conversation-approval-approve = Approve
+conversation-approval-deny = Deny
+conversation-skill-activation = Skill { $name }
+conversation-reasoning = Reasoning
+conversation-error = Error
+conversation-send-failed = Send message failed
+conversation-run-failed = Agent run failed
+anonymous-project-name = Anonymous project

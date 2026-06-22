@@ -26,6 +26,8 @@ pub(super) enum SettingsPageKey {
     Appearance,
     Provider,
     Projects,
+    Prompts,
+    Shortcuts,
 }
 
 #[derive(Clone, Debug)]

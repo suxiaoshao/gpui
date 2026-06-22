@@ -97,7 +97,10 @@ fn init(cx: &mut App) {
     gpui_component::init(cx);
     cx.bind_keys([KeyBinding::new(
         "shift-enter",
-        input::Enter { secondary: true },
+        input::Enter {
+            secondary: true,
+            shift: true,
+        },
         Some("Input"),
     )]);
 

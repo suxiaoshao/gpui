@@ -17,6 +17,8 @@ pub struct ProjectRecord {
     pub path: String,
     pub display_name: String,
     pub kind: ProjectKind,
+    pub pinned: bool,
+    pub removed: bool,
     pub metadata: ProjectMetadata,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -28,6 +30,8 @@ pub struct NewProject {
     pub path: String,
     pub display_name: String,
     pub kind: ProjectKind,
+    pub pinned: bool,
+    pub removed: bool,
     pub metadata: ProjectMetadata,
 }
 
@@ -37,6 +41,7 @@ pub struct ConversationRecord {
     pub project_id: ProjectId,
     pub title: String,
     pub status: ConversationStatus,
+    pub pinned: bool,
     pub prompt_id: Option<PromptId>,
     pub default_provider_id: Option<ProviderId>,
     pub default_model_id: Option<ProviderModelId>,
@@ -53,11 +58,34 @@ pub struct ConversationRecord {
 pub struct NewConversation {
     pub project_id: ProjectId,
     pub title: String,
+    pub pinned: bool,
     pub prompt_id: Option<PromptId>,
     pub default_provider_id: Option<ProviderId>,
     pub default_model_id: Option<ProviderModelId>,
     pub metadata: ConversationMetadata,
     pub settings_snapshot: ConversationSettingsSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewConversationWithUserItem {
+    pub conversation: NewConversation,
+    pub user_item: NewConversationItem,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationWithUserItemRecord {
+    pub conversation: ConversationRecord,
+    pub user_item: ConversationItemRecord,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationTimelineRecords {
+    pub conversation: ConversationRecord,
+    pub project: ProjectRecord,
+    pub items: Vec<ConversationItemRecord>,
+    pub attachments: Vec<AttachmentRecord>,
+    pub runs: Vec<AgentRunRecord>,
+    pub tool_invocations: Vec<ToolInvocationRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +234,7 @@ pub struct ToolInvocationRecord {
     pub input: ToolInvocationInput,
     pub output: Option<ToolInvocationOutput>,
     pub error: Option<RunErrorPayload>,
+    pub approval: Option<ToolInvocationApproval>,
     pub created_at: OffsetDateTime,
     pub started_at: Option<OffsetDateTime>,
     pub completed_at: Option<OffsetDateTime>,
@@ -229,10 +258,8 @@ pub struct UpdateToolInvocationStatus {
     pub error: Option<RunErrorPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApprovalDecisionRecord {
-    pub id: ApprovalDecisionId,
-    pub tool_invocation_id: ToolInvocationId,
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolInvocationApproval {
     pub status: ApprovalStatus,
     pub request: ApprovalRequestPayload,
     pub decision: Option<ApprovalDecisionPayload>,
@@ -242,17 +269,13 @@ pub struct ApprovalDecisionRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NewApprovalDecision {
-    pub tool_invocation_id: ToolInvocationId,
+pub struct NewToolInvocationApproval {
     pub request: ApprovalRequestPayload,
-    pub outcome: NewApprovalDecisionOutcome,
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum NewApprovalDecisionOutcome {
-    Pending {
-        expires_at: Option<OffsetDateTime>,
-    },
+pub enum ToolInvocationApprovalOutcome {
     Approved {
         decided_by: String,
         reason: Option<String>,
@@ -310,6 +333,14 @@ pub struct NewPrompt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UpdatePrompt {
+    pub name: String,
+    pub content: PromptContent,
+    pub enabled: bool,
+    pub sort_order: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShortcutRecord {
     pub id: ShortcutId,
     pub hotkey: String,
@@ -326,6 +357,18 @@ pub struct ShortcutRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewShortcut {
+    pub hotkey: String,
+    pub enabled: bool,
+    pub prompt_id: Option<PromptId>,
+    pub provider_id: Option<ProviderId>,
+    pub model_id: Option<ProviderModelId>,
+    pub input_source: ShortcutInputSource,
+    pub action: ShortcutAction,
+    pub settings_snapshot: RunSettingsSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateShortcut {
     pub hotkey: String,
     pub enabled: bool,
     pub prompt_id: Option<PromptId>,
@@ -387,12 +430,4 @@ pub struct NewProviderModel {
     pub enabled: bool,
     pub capabilities: ModelCapabilitiesSnapshot,
     pub metadata: ProviderModelMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AppSettingsRecord {
-    pub id: String,
-    pub settings: AppSettingsPayload,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
 }

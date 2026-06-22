@@ -13,6 +13,7 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Status labels and counters | [Badge](badge.md), [Tag](tag.md) |
 | Keyboard shortcut display | [Kbd](kbd.md) |
 | Icons and media | [Icon](icon.md), [Image](image.md), [Avatar](avatar.md) |
+| Formatted text, Markdown, or HTML rendering | [TextView](text-view.md) |
 
 ## Forms and Inputs
 
@@ -47,6 +48,7 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Charts | [Chart](chart.md), [Plot](plot.md) |
 | Calendar views | [Calendar](calendar.md), [DatePicker](date-picker.md) |
 | Window chrome | [TitleBar](title-bar.md) |
+| Status bars and contextual footer regions | [StatusBar](status-bar.md) |
 | Focus management | [FocusTrap](focus-trap.md) |
 
 ## Library Primitives and Patterns

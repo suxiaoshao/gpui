@@ -4,7 +4,7 @@ use gpui::{App, Global};
 use std::collections::HashMap;
 use unic_langid::LanguageIdentifier;
 
-use crate::state::AiChat2AppSettings;
+use crate::state::config;
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
 const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
@@ -36,10 +36,11 @@ impl I18n {
     }
 
     fn from_settings(cx: &App) -> Self {
-        let language = cx
-            .try_global::<AiChat2AppSettings>()
-            .map(AiChat2AppSettings::language)
-            .unwrap_or_default();
+        let language = if cx.has_global::<config::AiChat2ConfigStore>() {
+            config::app_settings(cx).language()
+        } else {
+            AppLanguage::default()
+        };
         Self::new(locale_for_language(language))
     }
 
@@ -179,6 +180,8 @@ mod tests {
     fn formatted_messages_are_localized() {
         let mut args = FluentArgs::new();
         args.set("path", "/tmp/ai-chat2");
+        args.set("error", "expected table");
+        args.set("duration", "1s");
 
         assert_ne!(
             I18n::for_locale_tag("en-US").t_with_args("status-data-dir", &args),
@@ -187,6 +190,54 @@ mod tests {
         assert_ne!(
             I18n::for_locale_tag("zh-CN").t_with_args("status-data-dir", &args),
             "status-data-dir"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t_with_args("config-load-error-message", &args),
+            "config-load-error-message"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t_with_args("config-load-error-message", &args),
+            "config-load-error-message"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t("config-load-error-title"),
+            "config-load-error-title"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t("config-load-error-title"),
+            "config-load-error-title"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t_with_args("conversation-agent-failed", &args),
+            "conversation-agent-failed"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t_with_args("conversation-agent-failed", &args),
+            "conversation-agent-failed"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t_with_args("conversation-agent-canceled", &args),
+            "conversation-agent-canceled"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t_with_args("conversation-agent-canceled", &args),
+            "conversation-agent-canceled"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t("conversation-agent-failed-fallback"),
+            "conversation-agent-failed-fallback"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t("conversation-agent-failed-fallback"),
+            "conversation-agent-failed-fallback"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("en-US").t("conversation-agent-canceled-fallback"),
+            "conversation-agent-canceled-fallback"
+        );
+        assert_ne!(
+            I18n::for_locale_tag("zh-CN").t("conversation-agent-canceled-fallback"),
+            "conversation-agent-canceled-fallback"
         );
     }
 }

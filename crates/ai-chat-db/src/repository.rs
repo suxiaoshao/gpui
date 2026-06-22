@@ -4,9 +4,8 @@ use crate::{
     models::*,
     records::*,
     schema::{
-        agent_runs, app_settings, approval_decisions, attachments, conversation_items,
-        conversations, projects, prompts, provider_models, provider_steps, providers, shortcuts,
-        tool_invocations, usage_events,
+        agent_runs, attachments, conversation_items, conversations, projects, prompts,
+        provider_models, provider_steps, providers, shortcuts, tool_invocations, usage_events,
     },
 };
 use ai_chat_core::*;
@@ -18,7 +17,7 @@ use diesel::{
     sql_types::Text,
     upsert::excluded,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -60,6 +59,8 @@ impl FreshRepository {
                 path: input.path,
                 display_name: input.display_name,
                 kind: db_label(&input.kind)?,
+                pinned: input.pinned,
+                removed: input.removed,
                 metadata_json: to_json(&input.metadata)?,
                 created_at: now,
                 updated_at: now,
@@ -102,12 +103,30 @@ impl FreshRepository {
             .collect()
     }
 
-    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
-        Ok(self
-            .list_projects()?
+    pub fn list_visible_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        projects::table
+            .filter(projects::removed.eq(false))
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
             .into_iter()
-            .filter(|project| project.kind == ProjectKind::Normal && !project.metadata.removed)
-            .collect())
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn list_sidebar_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let mut conn = self.conn()?;
+        let normal = db_label(&ProjectKind::Normal)?;
+        projects::table
+            .filter(projects::kind.eq(normal))
+            .filter(projects::removed.eq(false))
+            .order((projects::display_name.asc(), projects::path.asc()))
+            .select(SqlProjectRow::as_select())
+            .load::<SqlProjectRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
     }
 
     pub fn update_project_metadata(
@@ -139,12 +158,27 @@ impl FreshRepository {
     }
 
     pub fn set_project_removed(&self, id: &str, removed: bool) -> Result<ProjectRecord> {
-        let project = self
-            .get_project(id)?
-            .ok_or_else(|| DbError::Invariant(format!("project {id} is missing")))?;
-        let mut metadata = project.metadata;
-        metadata.removed = removed;
-        self.update_project_metadata(id, metadata)
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::removed.eq(removed),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_project_pinned(&self, id: &str, pinned: bool) -> Result<ProjectRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(projects::table.find(id))
+            .set((
+                projects::pinned.eq(pinned),
+                projects::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlProjectRow::as_returning())
+            .get_result::<SqlProjectRow>(&mut conn)?
+            .try_into()
     }
 
     pub fn insert_provider(&self, input: NewProvider) -> Result<ProviderRecord> {
@@ -380,7 +414,7 @@ impl FreshRepository {
             let row = SqlNewPromptRow {
                 id: new_id(),
                 name: input.name,
-                content_json: to_json(&input.content)?,
+                content: input.content.text,
                 enabled: input.enabled,
                 sort_order: input.sort_order,
                 created_at: now,
@@ -401,6 +435,41 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn list_prompts(&self) -> Result<Vec<PromptRecord>> {
+        let mut conn = self.conn()?;
+        prompts::table
+            .order((
+                prompts::sort_order.asc(),
+                prompts::name.asc(),
+                prompts::created_at.asc(),
+            ))
+            .select(SqlPromptRow::as_select())
+            .load::<SqlPromptRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn update_prompt(&self, id: &str, input: UpdatePrompt) -> Result<PromptRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(prompts::table.find(id))
+            .set((
+                prompts::name.eq(input.name),
+                prompts::content.eq(input.content.text),
+                prompts::enabled.eq(input.enabled),
+                prompts::sort_order.eq(input.sort_order),
+                prompts::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlPromptRow::as_returning())
+            .get_result::<SqlPromptRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn delete_prompt(&self, id: &str) -> Result<usize> {
+        let mut conn = self.conn()?;
+        Ok(diesel::delete(prompts::table.find(id)).execute(&mut conn)?)
+    }
+
     pub fn insert_conversation(&self, input: NewConversation) -> Result<ConversationRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
@@ -410,6 +479,7 @@ impl FreshRepository {
                 project_id: input.project_id,
                 title: input.title,
                 status: db_label(&ConversationStatus::Active)?,
+                pinned: input.pinned,
                 prompt_id: input.prompt_id,
                 default_provider_id: input.default_provider_id,
                 default_model_id: input.default_model_id,
@@ -429,6 +499,67 @@ impl FreshRepository {
         })
     }
 
+    pub fn insert_conversation_with_user_item(
+        &self,
+        input: NewConversationWithUserItem,
+    ) -> Result<ConversationWithUserItemRecord> {
+        self.insert_conversation_with_user_item_with_id(new_id(), input)
+    }
+
+    pub fn insert_conversation_with_user_item_with_id(
+        &self,
+        id: ConversationId,
+        input: NewConversationWithUserItem,
+    ) -> Result<ConversationWithUserItemRecord> {
+        self.insert_conversation_with_user_item_with_id_and_attachments(id, input, Vec::new())
+    }
+
+    pub fn insert_conversation_with_user_item_with_id_and_attachments(
+        &self,
+        id: ConversationId,
+        input: NewConversationWithUserItem,
+        attachments: Vec<NewAttachment>,
+    ) -> Result<ConversationWithUserItemRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let new_conversation_row = SqlNewConversationRow {
+                id,
+                project_id: input.conversation.project_id,
+                title: input.conversation.title,
+                status: db_label(&ConversationStatus::Active)?,
+                pinned: input.conversation.pinned,
+                prompt_id: input.conversation.prompt_id,
+                default_provider_id: input.conversation.default_provider_id,
+                default_model_id: input.conversation.default_model_id,
+                last_item_seq: 0,
+                metadata_json: to_json(&input.conversation.metadata)?,
+                settings_snapshot_json: to_json(&input.conversation.settings_snapshot)?,
+                created_at: now,
+                updated_at: now,
+                archived_at: None,
+                deleted_at: None,
+            };
+            let conversation: ConversationRecord = diesel::insert_into(conversations::table)
+                .values(&new_conversation_row)
+                .returning(SqlConversationRow::as_returning())
+                .get_result::<SqlConversationRow>(conn)?
+                .try_into()?;
+            let mut user_item = input.user_item;
+            user_item.conversation_id = new_conversation_row.id;
+            insert_attachments_into_message_item_with_conn(conn, &mut user_item, attachments)?;
+            let user_item = append_conversation_item_with_conn(conn, user_item)?;
+            let conversation = conversation_row(conn, &conversation.id)?
+                .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
+                .try_into()?;
+
+            Ok(ConversationWithUserItemRecord {
+                conversation,
+                user_item,
+            })
+        })
+    }
+
     pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRecord>> {
         let mut conn = self.conn()?;
         conversation_row(&mut conn, id)?
@@ -437,19 +568,68 @@ impl FreshRepository {
     }
 
     pub fn list_sidebar_conversations(&self) -> Result<Vec<ConversationRecord>> {
-        let visible_project_ids = self.visible_sidebar_project_ids()?;
         let active = db_label(&ConversationStatus::Active)?;
         let mut conn = self.conn()?;
-        Ok(conversations::table
+        conversations::table
             .filter(conversations::status.eq(active))
+            .filter(
+                conversations::project_id.eq_any(
+                    projects::table
+                        .filter(projects::removed.eq(false))
+                        .select(projects::id),
+                ),
+            )
             .order(conversations::updated_at.desc())
             .select(SqlConversationRow::as_select())
             .load::<SqlConversationRow>(&mut conn)?
             .into_iter()
             .map(TryInto::try_into)
-            .collect::<Result<Vec<ConversationRecord>>>()?
+            .collect()
+    }
+
+    pub fn list_no_project_conversations(&self, query: &str) -> Result<Vec<ConversationRecord>> {
+        let active = db_label(&ConversationStatus::Active)?;
+        let scratch = db_label(&ProjectKind::Scratch)?;
+        let mut conn = self.conn()?;
+        let conversations = conversations::table
+            .filter(conversations::status.eq(active))
+            .filter(
+                conversations::project_id.eq_any(
+                    projects::table
+                        .filter(projects::removed.eq(false))
+                        .filter(projects::kind.eq(scratch))
+                        .select(projects::id),
+                ),
+            )
+            .order(conversations::updated_at.desc())
+            .select(SqlConversationRow::as_select())
+            .load::<SqlConversationRow>(&mut conn)?
             .into_iter()
-            .filter(|conversation| visible_project_ids.contains(&conversation.project_id))
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<ConversationRecord>>>()?;
+
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(conversations);
+        }
+
+        let item_text_by_conversation = self.conversation_search_texts(
+            conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect(),
+        )?;
+
+        Ok(conversations
+            .into_iter()
+            .filter(|conversation| {
+                conversation_matches_query(
+                    conversation,
+                    None,
+                    item_text_by_conversation.get(&conversation.id),
+                    &query,
+                )
+            })
             .collect())
     }
 
@@ -462,6 +642,18 @@ impl FreshRepository {
         diesel::update(conversations::table.find(id))
             .set((
                 conversations::metadata_json.eq(to_json(&metadata)?),
+                conversations::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_conversation_pinned(&self, id: &str, pinned: bool) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::pinned.eq(pinned),
                 conversations::updated_at.eq(now_string()?),
             ))
             .returning(SqlConversationRow::as_returning())
@@ -528,6 +720,18 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| append_conversation_item_with_conn(conn, input))
     }
 
+    pub fn append_conversation_item_with_attachments(
+        &self,
+        mut input: NewConversationItem,
+        attachments: Vec<NewAttachment>,
+    ) -> Result<ConversationItemRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
+            append_conversation_item_with_conn(conn, input)
+        })
+    }
+
     pub fn conversation_items(&self, conversation_id: &str) -> Result<Vec<ConversationItemRecord>> {
         let mut conn = self.conn()?;
         conversation_items::table
@@ -538,6 +742,46 @@ impl FreshRepository {
             .into_iter()
             .map(TryInto::try_into)
             .collect()
+    }
+
+    pub fn conversation_attachments(&self, conversation_id: &str) -> Result<Vec<AttachmentRecord>> {
+        let mut conn = self.conn()?;
+        attachments::table
+            .filter(attachments::conversation_id.eq(conversation_id))
+            .order(attachments::created_at.asc())
+            .select(SqlAttachmentRow::as_select())
+            .load::<SqlAttachmentRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn conversation_timeline_records(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationTimelineRecords>> {
+        let Some(conversation) = self.get_conversation(conversation_id)? else {
+            return Ok(None);
+        };
+        let project = self.get_project(&conversation.project_id)?.ok_or_else(|| {
+            DbError::Invariant(format!("project {} is missing", conversation.project_id))
+        })?;
+        let items = self.conversation_items(conversation_id)?;
+        let attachments = self.conversation_attachments(conversation_id)?;
+        let runs = self.agent_runs_for_conversation(conversation_id)?;
+        let mut tool_invocations = Vec::new();
+        for run in &runs {
+            tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
+        }
+
+        Ok(Some(ConversationTimelineRecords {
+            conversation,
+            project,
+            items,
+            attachments,
+            runs,
+            tool_invocations,
+        }))
     }
 
     pub fn update_conversation_item_payload(
@@ -567,18 +811,11 @@ impl FreshRepository {
         })
     }
 
-    fn visible_sidebar_project_ids(&self) -> Result<HashSet<ProjectId>> {
-        Ok(self.visible_sidebar_project_map()?.into_keys().collect())
-    }
-
     fn visible_sidebar_project_map(&self) -> Result<HashMap<ProjectId, ProjectRecord>> {
         Ok(self
-            .list_projects()?
+            .list_visible_projects()?
             .into_iter()
-            .filter(|project| {
-                !project.metadata.removed
-                    && matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch)
-            })
+            .filter(|project| matches!(project.kind, ProjectKind::Normal | ProjectKind::Scratch))
             .map(|project| (project.id.clone(), project))
             .collect())
     }
@@ -614,31 +851,7 @@ impl FreshRepository {
 
     pub fn insert_attachment(&self, input: NewAttachment) -> Result<AttachmentRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let row = SqlNewAttachmentRow {
-                id: new_id(),
-                conversation_id: input.conversation_id,
-                kind: db_label(&input.kind)?,
-                storage_kind: db_label(&input.storage_kind)?,
-                mime_type: input.mime_type,
-                name: input.name,
-                path: input.path,
-                external_uri: input.external_uri,
-                provider_id: input.provider_id,
-                provider_file_id: input.provider_file_id,
-                sha256: input.sha256,
-                size_bytes: input.size_bytes,
-                metadata_json: to_json(&input.metadata)?,
-                created_at: now,
-                updated_at: now,
-            };
-            diesel::insert_into(attachments::table)
-                .values(&row)
-                .returning(SqlAttachmentRow::as_returning())
-                .get_result::<SqlAttachmentRow>(conn)?
-                .try_into()
-        })
+        conn.immediate_transaction(|conn| insert_attachment_with_conn(conn, input))
     }
 
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
@@ -837,6 +1050,7 @@ impl FreshRepository {
                 input_json: to_json(&input.input)?,
                 output_json: to_json_opt(&input.output)?,
                 error_json: to_json_opt(&input.error)?,
+                approval_json: None,
                 created_at: now,
                 started_at: next_started_at(None, input.status, now),
                 completed_at: next_tool_invocation_completed_at(None, input.status, now),
@@ -889,6 +1103,7 @@ impl FreshRepository {
     ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
             let item = append_conversation_item_with_conn(conn, item)?;
             let invocation =
                 update_tool_invocation_status_with_conn(conn, tool_invocation_id, update)?;
@@ -896,73 +1111,83 @@ impl FreshRepository {
         })
     }
 
-    pub fn insert_approval_decision(
+    pub fn append_conversation_item_and_update_tool_invocation_full(
         &self,
-        input: NewApprovalDecision,
-    ) -> Result<ApprovalDecisionRecord> {
+        item: NewConversationItem,
+        tool_invocation_id: &str,
+        update: UpdateToolInvocationStatus,
+        approval: Option<ToolInvocationApproval>,
+    ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let outcome = approval_outcome_columns(input.outcome, &now)?;
-            let row = SqlNewApprovalDecisionRow {
-                id: new_id(),
-                tool_invocation_id: input.tool_invocation_id,
-                status: db_label(&outcome.status)?,
-                request_json: to_json(&input.request)?,
-                decision_json: to_json_opt(&outcome.decision)?,
-                requested_at: now,
-                decided_at: outcome.decided_at,
-                expires_at: outcome.expires_at,
-            };
-            diesel::insert_into(approval_decisions::table)
-                .values(&row)
-                .returning(SqlApprovalDecisionRow::as_returning())
-                .get_result::<SqlApprovalDecisionRow>(conn)?
-                .try_into()
+            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
+            let item = append_conversation_item_with_conn(conn, item)?;
+            let invocation =
+                update_tool_invocation_full_with_conn(conn, tool_invocation_id, update, approval)?;
+            Ok((item, invocation))
         })
     }
 
-    pub fn get_approval_decision(&self, id: &str) -> Result<Option<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decision_row(&mut conn, id)?
-            .map(TryInto::try_into)
-            .transpose()
-    }
-
-    pub fn approval_decisions_for_tool(
-        &self,
-        tool_invocation_id: &str,
-    ) -> Result<Vec<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decisions::table
-            .filter(approval_decisions::tool_invocation_id.eq(tool_invocation_id))
-            .order(approval_decisions::requested_at.asc())
-            .select(SqlApprovalDecisionRow::as_select())
-            .load::<SqlApprovalDecisionRow>(&mut conn)?
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect()
-    }
-
-    pub fn pending_approval_decisions(&self) -> Result<Vec<ApprovalDecisionRecord>> {
-        let mut conn = self.conn()?;
-        approval_decisions::table
-            .filter(approval_decisions::status.eq(db_label(&ApprovalStatus::Pending)?))
-            .order(approval_decisions::requested_at.asc())
-            .select(SqlApprovalDecisionRow::as_select())
-            .load::<SqlApprovalDecisionRow>(&mut conn)?
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect()
-    }
-
-    pub fn update_approval_decision(
+    pub fn request_tool_invocation_approval(
         &self,
         id: &str,
-        outcome: NewApprovalDecisionOutcome,
-    ) -> Result<ApprovalDecisionRecord> {
+        approval: NewToolInvocationApproval,
+    ) -> Result<ToolInvocationRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| update_approval_decision_with_conn(conn, id, outcome))
+        conn.immediate_transaction(|conn| {
+            let now = now_string()?;
+            let approval = ToolInvocationApproval {
+                status: ApprovalStatus::Pending,
+                request: approval.request,
+                decision: None,
+                requested_at: now,
+                decided_at: None,
+                expires_at: approval.expires_at,
+            };
+            update_tool_invocation_approval_with_conn(
+                conn,
+                id,
+                ToolInvocationStatus::AwaitingApproval,
+                Some(approval),
+            )
+        })
+    }
+
+    pub fn record_tool_invocation_approval(
+        &self,
+        id: &str,
+        approval: ToolInvocationApproval,
+        status: ToolInvocationStatus,
+    ) -> Result<ToolInvocationRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))
+        })
+    }
+
+    pub fn update_tool_invocation_approval(
+        &self,
+        id: &str,
+        outcome: ToolInvocationApprovalOutcome,
+        status: ToolInvocationStatus,
+    ) -> Result<ToolInvocationRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let existing = load_tool_invocation_row(conn, id)?;
+            let mut approval: ToolInvocationApproval =
+                from_json_opt(existing.approval_json.clone())?.ok_or_else(|| {
+                    DbError::Invariant(format!("tool invocation {id} has no approval"))
+                })?;
+            if approval.status != ApprovalStatus::Pending {
+                return Err(DbError::Invariant(format!(
+                    "tool invocation {id} approval is {:?}, not pending",
+                    approval.status
+                )));
+            }
+            let now = now_string()?;
+            apply_approval_outcome(&mut approval, outcome, now);
+            update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))
+        })
     }
 
     pub fn insert_usage_event(&self, input: NewUsageEvent) -> Result<UsageEventRecord> {
@@ -1042,6 +1267,42 @@ impl FreshRepository {
             .transpose()
     }
 
+    pub fn update_shortcut(&self, id: &str, input: UpdateShortcut) -> Result<ShortcutRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(shortcuts::table.find(id))
+            .set((
+                shortcuts::hotkey.eq(input.hotkey),
+                shortcuts::enabled.eq(input.enabled),
+                shortcuts::prompt_id.eq(input.prompt_id),
+                shortcuts::provider_id.eq(input.provider_id),
+                shortcuts::model_id.eq(input.model_id),
+                shortcuts::input_source.eq(db_label(&input.input_source)?),
+                shortcuts::action_json.eq(to_json(&input.action)?),
+                shortcuts::settings_snapshot_json.eq(to_json(&input.settings_snapshot)?),
+                shortcuts::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlShortcutRow::as_returning())
+            .get_result::<SqlShortcutRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn set_shortcut_enabled(&self, id: &str, enabled: bool) -> Result<ShortcutRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(shortcuts::table.find(id))
+            .set((
+                shortcuts::enabled.eq(enabled),
+                shortcuts::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlShortcutRow::as_returning())
+            .get_result::<SqlShortcutRow>(&mut conn)?
+            .try_into()
+    }
+
+    pub fn delete_shortcut(&self, id: &str) -> Result<usize> {
+        let mut conn = self.conn()?;
+        Ok(diesel::delete(shortcuts::table.find(id)).execute(&mut conn)?)
+    }
+
     pub fn list_shortcuts(&self) -> Result<Vec<ShortcutRecord>> {
         let mut conn = self.conn()?;
         shortcuts::table
@@ -1051,37 +1312,6 @@ impl FreshRepository {
             .into_iter()
             .map(TryInto::try_into)
             .collect()
-    }
-
-    pub fn set_app_settings(&self, settings: AppSettingsPayload) -> Result<AppSettingsRecord> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let now = now_string()?;
-            let row = SqlNewAppSettingsRow {
-                id: "default".to_string(),
-                settings_json: to_json(&settings)?,
-                created_at: now,
-                updated_at: now,
-            };
-            diesel::insert_into(app_settings::table)
-                .values(&row)
-                .on_conflict(app_settings::id)
-                .do_update()
-                .set((
-                    app_settings::settings_json.eq(excluded(app_settings::settings_json)),
-                    app_settings::updated_at.eq(excluded(app_settings::updated_at)),
-                ))
-                .returning(SqlAppSettingsRow::as_returning())
-                .get_result::<SqlAppSettingsRow>(conn)?
-                .try_into()
-        })
-    }
-
-    pub fn get_app_settings(&self) -> Result<Option<AppSettingsRecord>> {
-        let mut conn = self.conn()?;
-        app_settings_row(&mut conn)?
-            .map(TryInto::try_into)
-            .transpose()
     }
 
     fn conn(&self) -> Result<PooledConnection<ConnectionManager<SqliteConnection>>> {
@@ -1190,25 +1420,6 @@ fn tool_invocation_row(
         .optional()?)
 }
 
-fn approval_decision_row(
-    conn: &mut SqliteConnection,
-    id: &str,
-) -> Result<Option<SqlApprovalDecisionRow>> {
-    Ok(approval_decisions::table
-        .find(id)
-        .select(SqlApprovalDecisionRow::as_select())
-        .first(conn)
-        .optional()?)
-}
-
-fn app_settings_row(conn: &mut SqliteConnection) -> Result<Option<SqlAppSettingsRow>> {
-    Ok(app_settings::table
-        .find("default")
-        .select(SqlAppSettingsRow::as_select())
-        .first(conn)
-        .optional()?)
-}
-
 fn load_agent_run_row(conn: &mut SqliteConnection, id: &str) -> Result<SqlAgentRunRow> {
     agent_runs::table
         .find(id)
@@ -1274,6 +1485,75 @@ fn append_conversation_item_with_conn(
     item.try_into()
 }
 
+fn insert_attachments_into_message_item_with_conn(
+    conn: &mut SqliteConnection,
+    item: &mut NewConversationItem,
+    attachments: Vec<NewAttachment>,
+) -> Result<()> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    let ConversationItemPayload::Message { content, .. } = &mut item.payload else {
+        return Err(DbError::Invariant(
+            "attachments can only be added to message items".to_string(),
+        ));
+    };
+
+    for attachment in attachments {
+        if attachment.conversation_id != item.conversation_id {
+            return Err(DbError::Invariant(
+                "attachment conversation does not match message conversation".to_string(),
+            ));
+        }
+        let record = insert_attachment_with_conn(conn, attachment)?;
+        content.push(content_part_for_attachment(&record));
+    }
+    Ok(())
+}
+
+fn content_part_for_attachment(attachment: &AttachmentRecord) -> ContentPart {
+    match attachment.kind {
+        AttachmentKind::Image => ContentPart::Image {
+            attachment_id: attachment.id.clone(),
+        },
+        AttachmentKind::File => ContentPart::File {
+            attachment_id: attachment.id.clone(),
+        },
+        AttachmentKind::Audio | AttachmentKind::Attachment => ContentPart::Attachment {
+            attachment_id: attachment.id.clone(),
+        },
+    }
+}
+
+fn insert_attachment_with_conn(
+    conn: &mut SqliteConnection,
+    input: NewAttachment,
+) -> Result<AttachmentRecord> {
+    let now = now_string()?;
+    let row = SqlNewAttachmentRow {
+        id: new_id(),
+        conversation_id: input.conversation_id,
+        kind: db_label(&input.kind)?,
+        storage_kind: db_label(&input.storage_kind)?,
+        mime_type: input.mime_type,
+        name: input.name,
+        path: input.path,
+        external_uri: input.external_uri,
+        provider_id: input.provider_id,
+        provider_file_id: input.provider_file_id,
+        sha256: input.sha256,
+        size_bytes: input.size_bytes,
+        metadata_json: to_json(&input.metadata)?,
+        created_at: now,
+        updated_at: now,
+    };
+    diesel::insert_into(attachments::table)
+        .values(&row)
+        .returning(SqlAttachmentRow::as_returning())
+        .get_result::<SqlAttachmentRow>(conn)?
+        .try_into()
+}
+
 fn conversation_matches_query(
     conversation: &ConversationRecord,
     project: Option<&ProjectRecord>,
@@ -1297,6 +1577,9 @@ fn update_agent_run_status_with_conn(
     update: UpdateAgentRunStatus,
 ) -> Result<AgentRunRecord> {
     let existing = load_agent_run_row(conn, id)?;
+    if is_terminal_agent_run_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     let now = now_string()?;
     let changes = SqlAgentRunStatusChanges {
         status: db_label(&update.status)?,
@@ -1319,6 +1602,9 @@ fn update_provider_step_status_with_conn(
     update: UpdateProviderStepStatus,
 ) -> Result<ProviderStepRecord> {
     let existing = load_provider_step_row(conn, id)?;
+    if is_terminal_provider_step_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     if let Some(state_snapshot) = update.state_snapshot.as_ref() {
         ensure_equal(
             "provider step state provider",
@@ -1349,6 +1635,9 @@ fn update_tool_invocation_status_with_conn(
     update: UpdateToolInvocationStatus,
 ) -> Result<ToolInvocationRecord> {
     let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     let now = now_string()?;
     let changes = SqlToolInvocationStatusChanges {
         status: db_label(&update.status)?,
@@ -1365,32 +1654,62 @@ fn update_tool_invocation_status_with_conn(
         .try_into()
 }
 
-fn update_approval_decision_with_conn(
+fn update_tool_invocation_full_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
-    outcome: NewApprovalDecisionOutcome,
-) -> Result<ApprovalDecisionRecord> {
-    let existing = approval_decision_row(conn, id)?
-        .ok_or_else(|| DbError::Invariant(format!("approval decision {id} is missing")))?;
-    let status: ApprovalStatus = db_label_parse(existing.status)?;
-    if status != ApprovalStatus::Pending {
+    update: UpdateToolInvocationStatus,
+    approval: Option<ToolInvocationApproval>,
+) -> Result<ToolInvocationRecord> {
+    let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
+    let now = now_string()?;
+    let changes = SqlToolInvocationFullChanges {
+        status: db_label(&update.status)?,
+        output_json: to_json_opt(&update.output)?,
+        error_json: to_json_opt(&update.error)?,
+        approval_json: to_json_opt(&approval)?,
+        started_at: next_started_at(existing.started_at, update.status, now),
+        completed_at: next_tool_invocation_completed_at(existing.completed_at, update.status, now),
+        updated_at: now,
+    };
+    diesel::update(tool_invocations::table.find(id))
+        .set(&changes)
+        .returning(SqlToolInvocationRow::as_returning())
+        .get_result::<SqlToolInvocationRow>(conn)?
+        .try_into()
+}
+
+fn ensure_tool_invocation_not_terminal(conn: &mut SqliteConnection, id: &str) -> Result<()> {
+    let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
         return Err(DbError::Invariant(format!(
-            "approval decision {id} is {status:?}, not pending"
+            "tool invocation {id} is already terminal"
         )));
     }
+    Ok(())
+}
 
+fn update_tool_invocation_approval_with_conn(
+    conn: &mut SqliteConnection,
+    id: &str,
+    status: ToolInvocationStatus,
+    approval: Option<ToolInvocationApproval>,
+) -> Result<ToolInvocationRecord> {
+    let existing = load_tool_invocation_row(conn, id)?;
     let now = now_string()?;
-    let outcome = approval_outcome_columns(outcome, &now)?;
-    let changes = SqlApprovalDecisionChanges {
-        status: db_label(&outcome.status)?,
-        decision_json: to_json_opt(&outcome.decision)?,
-        decided_at: outcome.decided_at,
-        expires_at: outcome.expires_at,
+    let changes = SqlToolInvocationApprovalChanges {
+        status: db_label(&status)?,
+        approval_json: to_json_opt(&approval)?,
+        started_at: next_started_at(existing.started_at, status, now),
+        completed_at: next_tool_invocation_completed_at(existing.completed_at, status, now),
+        updated_at: now,
     };
-    diesel::update(approval_decisions::table.find(id))
+    diesel::update(tool_invocations::table.find(id))
         .set(&changes)
-        .returning(SqlApprovalDecisionRow::as_returning())
-        .get_result::<SqlApprovalDecisionRow>(conn)?
+        .returning(SqlToolInvocationRow::as_returning())
+        .get_result::<SqlToolInvocationRow>(conn)?
         .try_into()
 }
 
@@ -1534,57 +1853,39 @@ fn validate_provider_step_input_items(
     Ok(())
 }
 
-fn approval_outcome_columns(
-    outcome: NewApprovalDecisionOutcome,
-    now: &OffsetDateTime,
-) -> Result<ApprovalOutcomeColumns> {
-    Ok(match outcome {
-        NewApprovalDecisionOutcome::Pending { expires_at } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Pending,
-            decision: None,
-            decided_at: None,
-            expires_at,
-        },
-        NewApprovalDecisionOutcome::Approved { decided_by, reason } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Approved,
-            decision: Some(ApprovalDecisionPayload {
+fn apply_approval_outcome(
+    approval: &mut ToolInvocationApproval,
+    outcome: ToolInvocationApprovalOutcome,
+    now: OffsetDateTime,
+) {
+    match outcome {
+        ToolInvocationApprovalOutcome::Approved { decided_by, reason } => {
+            approval.status = ApprovalStatus::Approved;
+            approval.decision = Some(ApprovalDecisionPayload {
                 approved: true,
                 decided_by,
                 reason,
-            }),
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Denied { decided_by, reason } => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Denied,
-            decision: Some(ApprovalDecisionPayload {
+            });
+        }
+        ToolInvocationApprovalOutcome::Denied { decided_by, reason } => {
+            approval.status = ApprovalStatus::Denied;
+            approval.decision = Some(ApprovalDecisionPayload {
                 approved: false,
                 decided_by,
                 reason,
-            }),
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Expired => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Expired,
-            decision: None,
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-        NewApprovalDecisionOutcome::Canceled => ApprovalOutcomeColumns {
-            status: ApprovalStatus::Canceled,
-            decision: None,
-            decided_at: Some(*now),
-            expires_at: None,
-        },
-    })
-}
-
-struct ApprovalOutcomeColumns {
-    status: ApprovalStatus,
-    decision: Option<ApprovalDecisionPayload>,
-    decided_at: Option<OffsetDateTime>,
-    expires_at: Option<OffsetDateTime>,
+            });
+        }
+        ToolInvocationApprovalOutcome::Expired => {
+            approval.status = ApprovalStatus::Expired;
+            approval.decision = None;
+        }
+        ToolInvocationApprovalOutcome::Canceled => {
+            approval.status = ApprovalStatus::Canceled;
+            approval.decision = None;
+        }
+    }
+    approval.decided_at = Some(now);
+    approval.expires_at = None;
 }
 
 trait ExecutionStatusTiming {
@@ -1625,13 +1926,7 @@ fn next_agent_run_completed_at(
     status: AgentRunStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_agent_run_status(status).then_some(now))
 }
 
 fn next_provider_step_completed_at(
@@ -1639,15 +1934,7 @@ fn next_provider_step_completed_at(
     status: ProviderStepStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            ProviderStepStatus::Completed
-                | ProviderStepStatus::Failed
-                | ProviderStepStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_provider_step_status(status).then_some(now))
 }
 
 fn next_tool_invocation_completed_at(
@@ -1655,16 +1942,31 @@ fn next_tool_invocation_completed_at(
     status: ToolInvocationStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            ToolInvocationStatus::Succeeded
-                | ToolInvocationStatus::Failed
-                | ToolInvocationStatus::Denied
-                | ToolInvocationStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_tool_invocation_status(status).then_some(now))
+}
+
+fn is_terminal_agent_run_status(status: AgentRunStatus) -> bool {
+    matches!(
+        status,
+        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
+    )
+}
+
+fn is_terminal_provider_step_status(status: ProviderStepStatus) -> bool {
+    matches!(
+        status,
+        ProviderStepStatus::Completed | ProviderStepStatus::Failed | ProviderStepStatus::Canceled
+    )
+}
+
+fn is_terminal_tool_invocation_status(status: ToolInvocationStatus) -> bool {
+    matches!(
+        status,
+        ToolInvocationStatus::Succeeded
+            | ToolInvocationStatus::Failed
+            | ToolInvocationStatus::Denied
+            | ToolInvocationStatus::Canceled
+    )
 }
 
 fn ensure_equal(entity: &str, actual: &str, expected: &str) -> Result<()> {

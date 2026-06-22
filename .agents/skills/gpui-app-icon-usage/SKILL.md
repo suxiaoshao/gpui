@@ -1,6 +1,6 @@
 ---
 name: gpui-app-icon-usage
-description: Use when adding, changing, reviewing, or debugging icons and app assets in gpui workspace apps. Covers app-local Lucide IconName enums, gpui-component icon fallback, runtime assets, and bundle app icons under app/*/build-assets/icon.
+description: Use when adding, changing, reviewing, or debugging icons and app assets in gpui workspace apps. Covers app-local Lucide IconName enums, app-owned SVG icons, gpui-component icon fallback, runtime assets, and bundle app icons under app/*/build-assets/icon.
 ---
 
 # GPUI App Icon Usage
@@ -18,9 +18,11 @@ Use this skill for icon and asset decisions in apps under `app/`. Use `gpui-comp
 ## UI Icons
 
 - `ai-chat`: use the app-local `IconName` in `app/ai-chat/src/foundation/assets.rs`. Add missing Lucide variants there before using them from UI code.
+- `ai-chat2`: use the app-local `IconName` in `app/ai-chat2/src/foundation/assets.rs`. Provider logos use the app-local `ProviderLogoName` / `ProviderLogoAssets` declared with `app_assets::define_svg_icons!` and SVG files under `app/ai-chat2/assets/provider-icons/`.
 - `feiwen`: use the app-local `IconName` in `app/feiwen/src/foundation/assets.rs`, declared with `app_assets::define_lucide_icons!`.
 - `http-client` and `novel-download`: these currently register `gpui_component_assets::Assets`; default to `gpui-component` icons unless the app needs a deliberate app-local Lucide set.
 - When an app has both component icons and app-local icons, prefer app-local icons for app-owned Lucide additions and existing component icons for generic component-provided affordances.
+- App-owned SVG icon sets should be declared through `app_assets::define_svg_icons!` instead of feature modules loading raw SVG paths.
 
 ## Runtime Assets
 
@@ -40,6 +42,7 @@ Use this skill for icon and asset decisions in apps under `app/`. Use `gpui-comp
 
 - The app's current asset source is checked before adding a new pattern.
 - Lucide additions use a declared `IconName` variant and an existing Lucide slug.
+- App-owned SVG additions use `define_svg_icons!` and live under the app runtime `assets/` tree.
 - Generic component affordances use `gpui-component` icons when no app-local icon set exists.
 - Bundle app icons keep only `app-icon.png` and `.icon/icon.json` in git.
 - Runtime assets and package-time `build-assets/icon` resources are not mixed.

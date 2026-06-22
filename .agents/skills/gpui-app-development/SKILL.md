@@ -5,7 +5,7 @@ description: GPUI application development conventions for this gpui workspace. U
 
 # GPUI App Development
 
-Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI skills for API details and `gpui-component-usage` for component selection.
+Use this skill for workspace-specific GPUI app decisions. Use `gpui` for framework API details and `gpui-component-usage` for component selection.
 
 ## Workflow
 
@@ -13,27 +13,21 @@ Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI s
 2. Follow the existing module and view patterns in that app before introducing new structure.
 3. Use `gpui-component-usage` before building custom controls.
 4. Use `gpui-app-icon-usage` when changing UI icons, runtime assets, or bundle app icons.
-5. Load specific GPUI API skills only when needed:
-   - Actions and keybindings: `gpui-action`
-   - Async tasks: `gpui-async`
-   - Context and windows: `gpui-context`
-   - Entity state: `gpui-entity`
-   - Events/subscriptions: `gpui-event`
-   - Focus and keyboard navigation: `gpui-focus-handle`
-   - Global state: `gpui-global`
-   - Layout and styling: `gpui-layout-and-style`
-   - Tests: `gpui-test`
-6. Keep app behavior tied to local validation: run focused tests/checks for the touched app and use `gpui-computer-use-debugging` when runtime UI behavior matters.
+5. Use `gpui-i18n` when adding or changing user-facing text, Fluent locale files, language settings, or macOS bundle localization.
+6. Use `gpui-store` only when changing `crates/gpui-store` or deliberately integrating it into app state.
+7. Load `gpui` only when framework API details are needed, then use its Navigation to select the relevant reference file for actions/keybindings, async tasks, context/windows, entity state, events/subscriptions, focus, global state, layout/styling, elements, or tests.
+8. Keep app behavior tied to local validation: run focused tests/checks for the touched app and use `gpui-computer-use-debugging` when runtime UI behavior matters.
 
 ## Workspace Rules
 
 - App entrypoints live under `app/{name}/src/main.rs`; preserve each app's existing `app`, `foundation`, `features`, and state boundaries.
-- Put reusable cross-app behavior in shared crates such as `crates/window-ext`, `crates/platform-ext`, `crates/app-theme`, or `crates/app-assets` instead of copying it across apps.
+- Put reusable cross-app behavior in shared crates such as `crates/window-ext`, `crates/platform-ext`, `crates/app-theme`, `crates/app-assets`, or `crates/gpui-store` instead of copying it across apps.
 - Implement views with `Render` or the app's existing pattern. Use lower-level `Element` only when high-level rendering cannot express the behavior.
 - Create context-managed state with `cx.new(...)`; do not bypass GPUI context construction for entities.
 - Keep foreground UI updates and background work separated with GPUI spawn/background patterns.
 - Use `Global`, `cx.global::<T>()`, and `cx.update_global(...)` for app-wide shared state.
 - Keep runtime assets and package-time assets separate. Use `gpui-app-icon-usage` for app icons, Lucide declarations, and bundle icon resources.
+- Keep user-facing text localized through the app's `foundation::i18n` and Fluent files. Use `gpui-i18n` for locale and bundle localization details.
 
 ## State Modeling
 
@@ -42,6 +36,7 @@ Use this skill for workspace-specific GPUI app decisions. Use lower-level GPUI s
 - Avoid ineffective synchronization data such as `is_loading` plus `load_task`, `selected_id` plus a duplicated selected record, or `status == Running` plus `task: Option<Task<_>>` when the extra field carries no independent meaning.
 - Add a separate field only when it represents independent information, a durable business state, or user-visible history that cannot be derived from the existing field.
 - For GPUI tasks, store the `Task` to keep it alive or cancel it on drop. If in-flight UI state has no extra semantics, derive loading/disabled guards from `task.is_some()`. Use an underscore prefix only for fields that are intentionally held but never read.
+- For new `gpui-store` usage, choose `LocalStore` versus `SharedStore` by ownership and notification boundary. Choose `StoreSource` separately by synchronization backend. Do not migrate an app to `gpui-store` opportunistically while doing unrelated work.
 
 ## Product UI Guidance
 

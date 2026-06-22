@@ -265,7 +265,7 @@ fn render_timeline_item(
         .gap_1()
         .min_w(px(320.))
         .flex_basis(relative(0.45))
-        .flex_grow()
+        .flex_grow(1.0)
         .child(
             h_flex()
                 .items_center()

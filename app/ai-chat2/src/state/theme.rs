@@ -18,10 +18,10 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 pub(crate) fn apply_current_theme(window: &mut Window, cx: &mut App) {
-    let settings = cx.global::<crate::state::AiChat2AppSettings>().theme();
-    let mode = resolved_component_theme_mode(settings, window.appearance());
-    let theme_id = theme_id_for_component_mode(settings, mode);
-    let custom_theme_colors = normalized_custom_theme_colors(settings);
+    let settings = crate::state::config::app_settings(cx).theme().clone();
+    let mode = resolved_component_theme_mode(&settings, window.appearance());
+    let theme_id = theme_id_for_component_mode(&settings, mode);
+    let custom_theme_colors = normalized_custom_theme_colors(&settings);
     let config = {
         let registry = ThemeRegistry::global(cx);
         app_theme::resolve_theme_config(registry, mode, &theme_id, &custom_theme_colors)

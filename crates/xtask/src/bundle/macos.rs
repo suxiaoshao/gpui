@@ -303,7 +303,11 @@ fn bundle_info_plist_overrides() -> plist::Dictionary {
     let mut dict = plist::Dictionary::new();
     dict.insert(
         "CFBundleDevelopmentRegion".to_string(),
-        plist::Value::String("en-US".to_string()),
+        plist::Value::String("en".to_string()),
+    );
+    dict.insert(
+        "CFBundleAllowMixedLocalizations".to_string(),
+        plist::Value::Boolean(true),
     );
     dict.insert(
         "CFBundleLocalizations".to_string(),
@@ -398,13 +402,17 @@ mod tests {
 
         assert_eq!(
             dict.get("CFBundleDevelopmentRegion"),
-            Some(&plist::Value::String("en-US".to_string()))
+            Some(&plist::Value::String("en".to_string()))
+        );
+        assert_eq!(
+            dict.get("CFBundleAllowMixedLocalizations"),
+            Some(&plist::Value::Boolean(true))
         );
         assert_eq!(
             dict.get("CFBundleLocalizations"),
             Some(&plist::Value::Array(vec![
-                plist::Value::String("en-US".to_string()),
-                plist::Value::String("zh-Hans".to_string()),
+                plist::Value::String("en".to_string()),
+                plist::Value::String("zh_CN".to_string()),
             ]))
         );
     }

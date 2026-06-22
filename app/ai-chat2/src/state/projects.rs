@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use ai_chat_core::{ProjectId, ProjectKind, ProjectMetadata};
+use ai_chat_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use ai_chat_db::{NewProject, ProjectRecord};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
 
-use crate::database;
+use crate::{database, errors::AiChat2Result, foundation::I18n, state::config};
+
+const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
+const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
 
 #[derive(Clone)]
 pub(crate) struct ProjectCatalogGlobal(Entity<ProjectCatalogStore>);
@@ -61,7 +64,7 @@ impl ProjectCatalogStore {
         let repository = database::repository(cx);
 
         if let Some(project) = repository.get_project_by_path(&project_path)? {
-            if project.metadata.removed {
+            if project.removed {
                 let restored = repository.set_project_removed(&project.id, false)?;
                 self.emit_changed(
                     ProjectCatalogChange::Added {
@@ -85,6 +88,8 @@ impl ProjectCatalogStore {
             path: project_path,
             display_name: project_display_name(&path),
             kind: ProjectKind::Normal,
+            pinned: false,
+            removed: false,
             metadata: empty_project_metadata(),
         })?;
         self.emit_changed(
@@ -98,6 +103,32 @@ impl ProjectCatalogStore {
             project,
             was_existing: false,
         })
+    }
+
+    pub(crate) fn insert_scratch_project(
+        &mut self,
+        path: PathBuf,
+        display_name: String,
+        scratch_reason: String,
+        cx: &mut Context<Self>,
+    ) -> ai_chat_db::Result<ProjectRecord> {
+        let mut metadata = empty_project_metadata();
+        metadata.scratch_reason = Some(scratch_reason);
+        let project = database::repository(cx).insert_project(NewProject {
+            path: path.display().to_string(),
+            display_name,
+            kind: ProjectKind::Scratch,
+            pinned: false,
+            removed: false,
+            metadata,
+        })?;
+        self.emit_changed(
+            ProjectCatalogChange::Added {
+                project_id: project.id.clone(),
+            },
+            cx,
+        );
+        Ok(project)
     }
 
     pub(crate) fn rename_project(
@@ -123,12 +154,7 @@ impl ProjectCatalogStore {
         cx: &mut Context<Self>,
     ) -> ai_chat_db::Result<ProjectRecord> {
         let repository = database::repository(cx);
-        let project = repository.get_project(project_id)?.ok_or_else(|| {
-            ai_chat_db::DbError::Invariant(format!("project {project_id} missing"))
-        })?;
-        let mut metadata = project.metadata;
-        metadata.pinned = pinned;
-        let project = repository.update_project_metadata(project_id, metadata)?;
+        let project = repository.set_project_pinned(project_id, pinned)?;
         self.emit_changed(
             ProjectCatalogChange::PinChanged {
                 project_id: project.id.clone(),
@@ -184,6 +210,21 @@ pub(crate) fn insert_existing_folder_project(
     })
 }
 
+pub(crate) fn create_anonymous_scratch_project(cx: &mut App) -> AiChat2Result<ProjectRecord> {
+    let id = new_id();
+    let path = config::data_dir(cx)?.join(SCRATCH_PROJECTS_DIR).join(&id);
+    std::fs::create_dir_all(&path)?;
+    let display_name = cx.global::<I18n>().t("anonymous-project-name");
+    Ok(catalog(cx).update(cx, |catalog, cx| {
+        catalog.insert_scratch_project(
+            path,
+            display_name,
+            NO_PROJECT_SCRATCH_REASON.to_string(),
+            cx,
+        )
+    })?)
+}
+
 pub(crate) fn project_display_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -202,8 +243,6 @@ fn empty_project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: None,
         last_active_conversation_id: None,
-        pinned: false,
-        removed: false,
     }
 }
 
@@ -235,11 +274,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_project_metadata_defaults_sidebar_flags() {
+    fn empty_project_metadata_defaults() {
         let metadata = empty_project_metadata();
 
-        assert!(!metadata.pinned);
-        assert!(!metadata.removed);
+        assert_eq!(metadata.scratch_reason, None);
+        assert_eq!(metadata.git_root, None);
+        assert_eq!(metadata.last_active_conversation_id, None);
     }
 
     #[test]

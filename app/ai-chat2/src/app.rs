@@ -1,6 +1,6 @@
 pub(crate) mod about;
 pub(crate) mod menus;
-pub(crate) mod placeholder_windows;
+pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
 
 use crate::features::{home::HomeView, settings::SettingsView};
@@ -114,14 +114,18 @@ fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
     state::config::init(cx)?;
     state::layout::init(cx)?;
     database::init_store(cx)?;
+    state::conversation_runtime::init(cx)?;
     state::providers::init(cx);
     state::projects::init(cx);
+    state::prompts::init(cx)?;
+    state::shortcuts::init(cx);
     state::workspace::init(cx);
     gpui_tokio::init(cx);
     state::config::init_app_settings(cx)?;
     state::theme::init(cx);
     foundation::init_i18n(cx);
     title_bar_menu::init(cx);
+    temporary_window::init(cx);
     crate::features::init(cx);
     if let Err(err) = state::hotkey::init(cx) {
         event!(Level::ERROR, error = ?err, "failed to initialize ai-chat2 hotkeys");
@@ -199,7 +203,10 @@ fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Roo
     window.activate_window();
 
     let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
-        view.update(cx, |view, cx| view.focus_chat_form(window, cx));
+        view.update(cx, |view, cx| {
+            view.focus_chat_form(window, cx);
+            view.notify_config_load_error(window, cx);
+        });
     });
 }
 
@@ -252,13 +259,6 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
             let _ = with_root_view::<SettingsView, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
-            let _ = with_root_view::<placeholder_windows::PlaceholderWindow, _>(
-                root,
-                cx,
-                |view, cx| {
-                    view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
-                },
-            );
         });
     }
 }

@@ -20,17 +20,18 @@ use gpui_component::{
 use tracing::{Level, event};
 
 use crate::{
+    components::{
+        chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
+        picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
+    },
     foundation::{I18n, assets::IconName},
     state,
 };
 
-use super::chat_form::{
-    ChatForm,
-    picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
-};
-
 const PROJECT_BAR_VISIBLE_HEIGHT: f32 = 42.;
 const PROJECT_BAR_OVERLAP: f32 = 16.;
+const PROJECT_PICKER_TRIGGER_SIZE: f32 = 28.;
+const PROJECT_PICKER_TRIGGER_RADIUS: f32 = 999.;
 
 pub(crate) struct NewConversationPage {
     chat_form: Entity<ChatForm>,
@@ -92,10 +93,21 @@ impl NewConversationPage {
             picker
         });
         let project_catalog = state::projects::catalog(cx);
-        let subscription = cx.subscribe(
+        let project_subscription = cx.subscribe(
             &project_catalog,
             |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
                 page.reload_projects_from_catalog(cx);
+            },
+        );
+        let chat_form_subscription = cx.subscribe_in(
+            &chat_form,
+            window,
+            |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
+                ChatFormEvent::SendRequested(submit) => {
+                    page.submit_new_conversation((**submit).clone(), window, cx);
+                }
+                ChatFormEvent::StopRequested => {}
+                ChatFormEvent::AddRequested => {}
             },
         );
 
@@ -111,7 +123,7 @@ impl NewConversationPage {
             selected_project_id,
             project_picker_open: false,
             project_picker,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![project_subscription, chat_form_subscription],
         }
     }
 
@@ -356,6 +368,52 @@ impl NewConversationPage {
                 }
             })
             .detach();
+    }
+
+    fn submit_new_conversation(
+        &mut self,
+        submit: ChatFormSubmit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let request = state::conversations::CreateConversationRequest {
+            project_id: self.selected_project_id.clone(),
+            content_parts: submit.composer.content_parts.clone(),
+            attachments: submit.composer.attachments.clone(),
+            title_seed: submit.composer.text.clone(),
+            skill_requests: submit.composer.skill_requests.clone(),
+            provider_model: submit.provider_model,
+            reasoning_selection: submit.reasoning_selection,
+            approval_mode: submit.approval_mode,
+            prompt_id: None,
+            prompt_snapshot: None,
+            trigger_kind: ai_chat_core::AgentRunTriggerKind::User,
+        };
+        match state::conversations::create_conversation(request, cx) {
+            Ok(created) => {
+                let conversation_id = created.record.conversation.id.clone();
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.clear_after_submit(cx);
+                });
+                state::workspace::workspace(cx).update(cx, |workspace, cx| {
+                    workspace.reload_sidebar(cx);
+                    workspace.open_conversation(conversation_id.clone(), cx);
+                });
+                state::conversation_runtime::runtime(cx).update(cx, |runtime, cx| {
+                    runtime.start_run(created.run_request, window, cx);
+                });
+            }
+            Err(err) => {
+                let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    err.to_string(),
+                    NotificationType::Error,
+                );
+            }
+        }
     }
 
     fn insert_selected_project(
@@ -667,7 +725,7 @@ fn project_sections(
 }
 
 fn default_project_id(cx: &App) -> Option<ProjectId> {
-    cx.global::<state::AiChat2AppSettings>()
+    state::config::app_settings(cx)
         .default_project_id()
         .cloned()
 }
@@ -721,11 +779,11 @@ fn project_picker_trigger(
 
     Button::new(id)
         .text()
-        .with_size(px(super::chat_form::COMPOSER_BUTTON_SIZE))
-        .h(px(super::chat_form::COMPOSER_BUTTON_SIZE))
+        .with_size(px(PROJECT_PICKER_TRIGGER_SIZE))
+        .h(px(PROJECT_PICKER_TRIGGER_SIZE))
         .px(px(8.))
         .py(px(0.))
-        .rounded(px(super::chat_form::COMPOSER_BUTTON_RADIUS))
+        .rounded(px(PROJECT_PICKER_TRIGGER_RADIUS))
         .text_color(foreground)
         .hover(move |this| this.bg(hover_background).text_color(hover_foreground))
         .when(open, |this| {

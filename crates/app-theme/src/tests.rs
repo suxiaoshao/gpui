@@ -338,6 +338,7 @@ fn generated_material_theme_uses_soft_general_dividers() {
         for border in [
             &config.colors.border,
             &config.colors.sidebar_border,
+            &config.colors.status_bar_border,
             &config.colors.title_bar_border,
             &config.colors.table_row_border,
             &config.colors.window_border,
@@ -361,6 +362,7 @@ fn generated_material_theme_uses_distinct_tab_surface_layers() {
             colors.title_bar,
             Some(hex(scheme.surface_container_highest))
         );
+        assert_eq!(colors.status_bar, colors.title_bar);
         assert_eq!(colors.tab_bar, Some(hex(scheme.surface_container_high)));
         assert_eq!(colors.tab, Some(hex(scheme.surface_container)));
         assert_eq!(

@@ -23,6 +23,8 @@ diesel::table! {
         path -> Text,
         display_name -> Text,
         kind -> Text,
+        pinned -> Bool,
+        removed -> Bool,
         metadata_json -> Json,
         created_at -> TimestamptzSqlite,
         updated_at -> TimestamptzSqlite,
@@ -36,6 +38,7 @@ diesel::table! {
         project_id -> Text,
         title -> Text,
         status -> Text,
+        pinned -> Bool,
         prompt_id -> Nullable<Text>,
         default_provider_id -> Nullable<Text>,
         default_model_id -> Nullable<Text>,
@@ -138,23 +141,11 @@ diesel::table! {
         input_json -> Json,
         output_json -> Nullable<Json>,
         error_json -> Nullable<Json>,
+        approval_json -> Nullable<Json>,
         created_at -> TimestamptzSqlite,
         started_at -> Nullable<TimestamptzSqlite>,
         completed_at -> Nullable<TimestamptzSqlite>,
         updated_at -> TimestamptzSqlite,
-    }
-}
-
-diesel::table! {
-    approval_decisions (id) {
-        id -> Text,
-        tool_invocation_id -> Text,
-        status -> Text,
-        request_json -> Json,
-        decision_json -> Nullable<Json>,
-        requested_at -> TimestamptzSqlite,
-        decided_at -> Nullable<TimestamptzSqlite>,
-        expires_at -> Nullable<TimestamptzSqlite>,
     }
 }
 
@@ -181,7 +172,7 @@ diesel::table! {
     prompts (id) {
         id -> Text,
         name -> Text,
-        content_json -> Json,
+        content -> Text,
         enabled -> Bool,
         sort_order -> Integer,
         created_at -> TimestamptzSqlite,
@@ -233,19 +224,8 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    app_settings (id) {
-        id -> Text,
-        settings_json -> Json,
-        created_at -> TimestamptzSqlite,
-        updated_at -> TimestamptzSqlite,
-    }
-}
-
 diesel::allow_tables_to_appear_in_same_query!(
     agent_runs,
-    app_settings,
-    approval_decisions,
     attachments,
     conversation_items,
     conversations,

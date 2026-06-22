@@ -1,10 +1,12 @@
 use crate::{Result, ToolRegistry};
 use ai_chat_core::*;
-use ai_chat_db::AgentRunRecord;
+use ai_chat_db::{AgentRunRecord, ToolInvocationRecord};
 use async_trait::async_trait;
 use rig_core::completion::CompletionModel;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
+
+pub type AgentCancellationToken = CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeGuards {
@@ -43,7 +45,7 @@ pub struct AgentRunRequest {
     pub provider_tools: Vec<rig_core::completion::ProviderToolDefinition>,
     pub project_root: Option<PathBuf>,
     pub guards: RuntimeGuards,
-    pub cancellation_token: CancellationToken,
+    pub cancellation_token: AgentCancellationToken,
 }
 
 impl AgentRunRequest {
@@ -83,16 +85,78 @@ impl AgentRunRequest {
 pub enum AgentStep {
     ProviderStep(ProviderStepId),
     ToolInvocation(ToolInvocationId),
-    Approval(ApprovalDecisionId),
     ConversationItem(ConversationItemId),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentRunHandleStatus {
+    Finished,
+    WaitingForApproval {
+        tool_invocation_id: ToolInvocationId,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentRunHandle {
     pub agent_run: AgentRunRecord,
     pub output: Option<AgentRunOutput>,
+    pub status: AgentRunHandleStatus,
     pub events: Vec<AgentRunEvent>,
     pub steps: Vec<AgentStep>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalResumeOutcome {
+    pub tool_invocation: ToolInvocationRecord,
+    pub agent_run: AgentRunRecord,
+    pub output: AgentRunOutput,
+    pub events: Vec<AgentRunEvent>,
+    pub steps: Vec<AgentStep>,
+}
+
+#[derive(Clone)]
+pub struct AgentRuntimeObserver {
+    sender: Arc<dyn Fn(AgentRuntimeEvent) + Send + Sync>,
+}
+
+impl AgentRuntimeObserver {
+    pub fn new(sender: impl Fn(AgentRuntimeEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            sender: Arc::new(sender),
+        }
+    }
+
+    pub fn emit(&self, event: AgentRuntimeEvent) {
+        (self.sender)(event);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentRuntimeEvent {
+    AgentRunStarted {
+        agent_run_id: AgentRunId,
+        conversation_id: ConversationId,
+    },
+    AgentRunStatusChanged {
+        agent_run_id: AgentRunId,
+        status: AgentRunStatus,
+    },
+    ConversationItemAppended {
+        conversation_id: ConversationId,
+        item_id: ConversationItemId,
+    },
+    ConversationItemUpdated {
+        conversation_id: ConversationId,
+        item_id: ConversationItemId,
+    },
+    ProviderStepChanged {
+        agent_run_id: AgentRunId,
+        provider_step_id: ProviderStepId,
+    },
+    ToolInvocationChanged {
+        agent_run_id: AgentRunId,
+        tool_invocation_id: ToolInvocationId,
+    },
 }
 
 #[async_trait]

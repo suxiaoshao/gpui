@@ -16,16 +16,10 @@ pub(crate) struct Migration {
     pub(crate) sql: &'static str,
 }
 
-pub(crate) const MIGRATIONS: &[Migration] = &[
-    Migration {
-        name: "0001_create_fresh_schema",
-        sql: CREATE_FRESH_SCHEMA_SQL,
-    },
-    Migration {
-        name: "0002_provider_model_enabled",
-        sql: ADD_PROVIDER_MODEL_ENABLED_SQL,
-    },
-];
+pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
+    name: "0001_create_fresh_schema",
+    sql: CREATE_FRESH_SCHEMA_SQL,
+}];
 
 const CREATE_FRESH_SCHEMA_SQL: &str = r#"
 CREATE TABLE schema_migrations (
@@ -48,6 +42,8 @@ CREATE TABLE projects (
     path TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('normal', 'scratch')),
+    pinned BOOLEAN NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+    removed BOOLEAN NOT NULL DEFAULT 0 CHECK (removed IN (0, 1)),
     metadata_json JSON NOT NULL DEFAULT '{}',
     created_at DateTime NOT NULL,
     updated_at DateTime NOT NULL,
@@ -68,7 +64,7 @@ CREATE TABLE providers (
 CREATE TABLE prompts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    content_json JSON NOT NULL,
+    content TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at DateTime NOT NULL,
@@ -80,6 +76,7 @@ CREATE TABLE provider_models (
     provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     model_id TEXT NOT NULL,
     display_name TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     capabilities_json JSON NOT NULL,
     metadata_json JSON NOT NULL DEFAULT '{}',
     fetched_at DateTime NOT NULL,
@@ -93,6 +90,7 @@ CREATE TABLE conversations (
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'archived', 'deleted')),
+    pinned BOOLEAN NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
     prompt_id TEXT REFERENCES prompts(id) ON DELETE SET NULL,
     default_provider_id TEXT REFERENCES providers(id) ON DELETE SET NULL,
     default_model_id TEXT,
@@ -127,7 +125,7 @@ CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'resume', 'retry')),
-    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'canceled')),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
     output_json JSON,
     error_json JSON,
@@ -170,6 +168,7 @@ CREATE TABLE tool_invocations (
     input_json JSON NOT NULL,
     output_json JSON,
     error_json JSON,
+    approval_json JSON,
     created_at DateTime NOT NULL,
     started_at DateTime,
     completed_at DateTime,
@@ -180,7 +179,7 @@ CREATE TABLE conversation_items (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error')),
+    kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'status', 'error')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval')),
     agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
     provider_step_id TEXT REFERENCES provider_steps(id) ON DELETE SET NULL,
@@ -191,17 +190,6 @@ CREATE TABLE conversation_items (
     created_at DateTime NOT NULL,
     updated_at DateTime NOT NULL,
     UNIQUE(conversation_id, seq)
-);
-
-CREATE TABLE approval_decisions (
-    id TEXT PRIMARY KEY,
-    tool_invocation_id TEXT NOT NULL UNIQUE REFERENCES tool_invocations(id) ON DELETE CASCADE,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'canceled')),
-    request_json JSON NOT NULL,
-    decision_json JSON,
-    requested_at DateTime NOT NULL,
-    decided_at DateTime,
-    expires_at DateTime
 );
 
 CREATE TABLE usage_events (
@@ -235,24 +223,12 @@ CREATE TABLE shortcuts (
     updated_at DateTime NOT NULL
 );
 
-CREATE TABLE app_settings (
-    id TEXT PRIMARY KEY DEFAULT 'default',
-    settings_json JSON NOT NULL DEFAULT '{}',
-    created_at DateTime NOT NULL,
-    updated_at DateTime NOT NULL
-);
-
 CREATE INDEX idx_conversations_project_id ON conversations(project_id);
 CREATE INDEX idx_conversation_items_conversation_seq ON conversation_items(conversation_id, seq);
 CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);
 CREATE INDEX idx_provider_steps_agent_seq ON provider_steps(agent_run_id, seq);
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
-"#;
-
-const ADD_PROVIDER_MODEL_ENABLED_SQL: &str = r#"
-ALTER TABLE provider_models
-ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1));
 "#;
 
 #[derive(diesel::QueryableByName)]

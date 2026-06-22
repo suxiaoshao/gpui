@@ -33,7 +33,7 @@ sys-locale = "0.3.2"
 thiserror = "2.0.18"
 
 # http
-reqwest = { version = "0.13.3", features = [
+reqwest = { version = "0.13.4", features = [
     "gzip",
     "charset",
     "query"
@@ -55,7 +55,3 @@ smol = "2.0.2"
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
-
-[dev-dependencies]
-anyhow = "1.0.102"
-tokio = { version = "1.52.3", default-features = false, features = ["macros"] }

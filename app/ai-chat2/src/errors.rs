@@ -2,6 +2,8 @@
 pub(crate) enum AiChat2Error {
     #[error("could not resolve ai-chat2 config directory")]
     ConfigDirUnavailable,
+    #[error("config error: {0}")]
+    Config(String),
     #[error("log file not found")]
     LogFileNotFound,
     #[error("file system error: {0}")]
@@ -12,6 +14,8 @@ pub(crate) enum AiChat2Error {
     TomlSerialize(#[from] toml::ser::Error),
     #[error("database error: {0}")]
     Database(#[from] ai_chat_db::DbError),
+    #[error("agent runtime error: {0}")]
+    AgentRuntime(#[from] ai_chat_agent::AgentRuntimeError),
     #[error("global hotkey error: {0}")]
     GlobalHotkey(#[from] global_hotkey::Error),
     #[error("hotkey parse error: {0}")]
@@ -20,6 +24,8 @@ pub(crate) enum AiChat2Error {
     HotkeyUnavailable(String),
     #[error("window error: {0}")]
     Window(String),
+    #[error("attachment error: {0}")]
+    Attachment(String),
 }
 
 pub(crate) type AiChat2Result<T> = Result<T, AiChat2Error>;

@@ -45,6 +45,8 @@ pub(crate) struct SqlProjectRow {
     pub(crate) path: String,
     pub(crate) display_name: String,
     pub(crate) kind: String,
+    pub(crate) pinned: bool,
+    pub(crate) removed: bool,
     pub(crate) metadata_json: Value,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
@@ -58,6 +60,8 @@ pub(crate) struct SqlNewProjectRow {
     pub(crate) path: String,
     pub(crate) display_name: String,
     pub(crate) kind: String,
+    pub(crate) pinned: bool,
+    pub(crate) removed: bool,
     pub(crate) metadata_json: Value,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
@@ -72,6 +76,7 @@ pub(crate) struct SqlConversationRow {
     pub(crate) project_id: String,
     pub(crate) title: String,
     pub(crate) status: String,
+    pub(crate) pinned: bool,
     pub(crate) prompt_id: Option<String>,
     pub(crate) default_provider_id: Option<String>,
     pub(crate) default_model_id: Option<String>,
@@ -91,6 +96,7 @@ pub(crate) struct SqlNewConversationRow {
     pub(crate) project_id: String,
     pub(crate) title: String,
     pub(crate) status: String,
+    pub(crate) pinned: bool,
     pub(crate) prompt_id: Option<String>,
     pub(crate) default_provider_id: Option<String>,
     pub(crate) default_model_id: Option<String>,
@@ -307,6 +313,7 @@ pub(crate) struct SqlToolInvocationRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
+    pub(crate) approval_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
@@ -329,6 +336,7 @@ pub(crate) struct SqlNewToolInvocationRow {
     pub(crate) input_json: Value,
     pub(crate) output_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
+    pub(crate) approval_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
@@ -347,41 +355,28 @@ pub(crate) struct SqlToolInvocationStatusChanges {
     pub(crate) updated_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = approval_decisions)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct SqlApprovalDecisionRow {
-    pub(crate) id: String,
-    pub(crate) tool_invocation_id: String,
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = tool_invocations)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlToolInvocationApprovalChanges {
     pub(crate) status: String,
-    pub(crate) request_json: Value,
-    pub(crate) decision_json: Option<Value>,
-    pub(crate) requested_at: OffsetDateTime,
-    pub(crate) decided_at: Option<OffsetDateTime>,
-    pub(crate) expires_at: Option<OffsetDateTime>,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = approval_decisions)]
-pub(crate) struct SqlNewApprovalDecisionRow {
-    pub(crate) id: String,
-    pub(crate) tool_invocation_id: String,
-    pub(crate) status: String,
-    pub(crate) request_json: Value,
-    pub(crate) decision_json: Option<Value>,
-    pub(crate) requested_at: OffsetDateTime,
-    pub(crate) decided_at: Option<OffsetDateTime>,
-    pub(crate) expires_at: Option<OffsetDateTime>,
+    pub(crate) approval_json: Option<Value>,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, AsChangeset)]
-#[diesel(table_name = approval_decisions)]
+#[diesel(table_name = tool_invocations)]
 #[diesel(treat_none_as_null = true)]
-pub(crate) struct SqlApprovalDecisionChanges {
+pub(crate) struct SqlToolInvocationFullChanges {
     pub(crate) status: String,
-    pub(crate) decision_json: Option<Value>,
-    pub(crate) decided_at: Option<OffsetDateTime>,
-    pub(crate) expires_at: Option<OffsetDateTime>,
+    pub(crate) output_json: Option<Value>,
+    pub(crate) error_json: Option<Value>,
+    pub(crate) approval_json: Option<Value>,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -429,7 +424,7 @@ pub(crate) struct SqlNewUsageEventRow {
 pub(crate) struct SqlPromptRow {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) content_json: Value,
+    pub(crate) content: String,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
     pub(crate) created_at: OffsetDateTime,
@@ -441,7 +436,7 @@ pub(crate) struct SqlPromptRow {
 pub(crate) struct SqlNewPromptRow {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) content_json: Value,
+    pub(crate) content: String,
     pub(crate) enabled: bool,
     pub(crate) sort_order: i32,
     pub(crate) created_at: OffsetDateTime,
@@ -539,25 +534,6 @@ pub(crate) struct SqlNewProviderModelRow {
     pub(crate) updated_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = app_settings)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct SqlAppSettingsRow {
-    pub(crate) id: String,
-    pub(crate) settings_json: Value,
-    pub(crate) created_at: OffsetDateTime,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = app_settings)]
-pub(crate) struct SqlNewAppSettingsRow {
-    pub(crate) id: String,
-    pub(crate) settings_json: Value,
-    pub(crate) created_at: OffsetDateTime,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
 impl TryFrom<SqlSchemaMetadataRow> for SchemaMetadataRecord {
     type Error = DbError;
 
@@ -588,6 +564,8 @@ impl TryFrom<SqlProjectRow> for ProjectRecord {
             path: row.path,
             display_name: row.display_name,
             kind: db_label_parse(row.kind)?,
+            pinned: row.pinned,
+            removed: row.removed,
             metadata: from_json(row.metadata_json)?,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -605,6 +583,7 @@ impl TryFrom<SqlConversationRow> for ConversationRecord {
             project_id: row.project_id,
             title: row.title,
             status: db_label_parse(row.status)?,
+            pinned: row.pinned,
             prompt_id: row.prompt_id,
             default_provider_id: row.default_provider_id,
             default_model_id: row.default_model_id,
@@ -744,27 +723,11 @@ impl TryFrom<SqlToolInvocationRow> for ToolInvocationRecord {
             input,
             output: from_json_opt(row.output_json)?,
             error: from_json_opt(row.error_json)?,
+            approval: from_json_opt(row.approval_json)?,
             created_at: row.created_at,
             started_at: row.started_at,
             completed_at: row.completed_at,
             updated_at: row.updated_at,
-        })
-    }
-}
-
-impl TryFrom<SqlApprovalDecisionRow> for ApprovalDecisionRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlApprovalDecisionRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            tool_invocation_id: row.tool_invocation_id,
-            status: db_label_parse(row.status)?,
-            request: from_json(row.request_json)?,
-            decision: from_json_opt(row.decision_json)?,
-            requested_at: row.requested_at,
-            decided_at: row.decided_at,
-            expires_at: row.expires_at,
         })
     }
 }
@@ -799,7 +762,7 @@ impl TryFrom<SqlPromptRow> for PromptRecord {
         Ok(Self {
             id: row.id,
             name: row.name,
-            content: from_json(row.content_json)?,
+            content: PromptContent { text: row.content },
             enabled: row.enabled,
             sort_order: row.sort_order,
             created_at: row.created_at,
@@ -858,19 +821,6 @@ impl TryFrom<SqlProviderModelRow> for ProviderModelRecord {
             capabilities: from_json(row.capabilities_json)?,
             metadata: from_json(row.metadata_json)?,
             fetched_at: row.fetched_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
-    }
-}
-
-impl TryFrom<SqlAppSettingsRow> for AppSettingsRecord {
-    type Error = DbError;
-
-    fn try_from(row: SqlAppSettingsRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            settings: from_json(row.settings_json)?,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

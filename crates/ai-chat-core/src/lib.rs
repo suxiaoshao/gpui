@@ -11,7 +11,6 @@ pub type AttachmentId = String;
 pub type AgentRunId = String;
 pub type ProviderStepId = String;
 pub type ToolInvocationId = String;
-pub type ApprovalDecisionId = String;
 pub type ProviderId = String;
 pub type PromptId = String;
 pub type ProviderModelId = String;

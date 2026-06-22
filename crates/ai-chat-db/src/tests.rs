@@ -1,8 +1,9 @@
 use crate::{
-    FreshStore, NewAgentRun, NewApprovalDecision, NewApprovalDecisionOutcome, NewAttachment,
-    NewConversation, NewConversationItem, NewProject, NewPrompt, NewProvider, NewProviderModel,
-    NewProviderStep, NewShortcut, NewToolInvocation, NewUsageEvent, UpdateAgentRunStatus,
-    UpdateProvider, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    FreshStore, NewAgentRun, NewAttachment, NewConversation, NewConversationItem, NewProject,
+    NewPrompt, NewProvider, NewProviderModel, NewProviderStep, NewShortcut, NewToolInvocation,
+    NewToolInvocationApproval, NewUsageEvent, ToolInvocationApproval,
+    ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt, UpdateProvider,
+    UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
 };
 use ai_chat_core::*;
 use diesel::{
@@ -38,7 +39,7 @@ fn bootstrap_is_idempotent() {
     assert!(metadata.updated_at >= first_updated_at);
 
     let mut conn = second.pool().get().unwrap();
-    assert_eq!(count(&mut conn, "schema_migrations"), 2);
+    assert_eq!(count(&mut conn, "schema_migrations"), 1);
 }
 
 #[test]
@@ -110,6 +111,7 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
         "skill_roots",
         "mcp_servers",
         "mcp_tools",
+        "app_settings",
         "conversation_item_fts",
     ] {
         assert!(!tables.contains(disallowed));
@@ -126,6 +128,8 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/zeta".to_string(),
         display_name: "Zeta".to_string(),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
     })
     .unwrap();
@@ -133,6 +137,8 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/alpha-b".to_string(),
         display_name: "Alpha".to_string(),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
     })
     .unwrap();
@@ -140,12 +146,12 @@ fn projects_can_be_listed_in_display_order() {
         path: "/tmp/alpha-a".to_string(),
         display_name: "Alpha".to_string(),
         kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
         metadata: ProjectMetadata {
             scratch_reason: Some("temporary".to_string()),
             git_root: None,
             last_active_conversation_id: None,
-            pinned: false,
-            removed: false,
         },
     })
     .unwrap();
@@ -192,12 +198,12 @@ fn sidebar_projects_filter_scratch_and_removed_projects() {
         path: "/tmp/hidden-scratch".to_string(),
         display_name: "Hidden Scratch".to_string(),
         kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
         metadata: ProjectMetadata {
             scratch_reason: Some("no-project".to_string()),
             git_root: None,
             last_active_conversation_id: None,
-            pinned: false,
-            removed: false,
         },
     })
     .unwrap();
@@ -217,12 +223,8 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
     let repo = store.repository();
 
     let project = repo.insert_project(project("pin")).unwrap();
-    let mut project_metadata = project.metadata.clone();
-    project_metadata.pinned = true;
-    let project = repo
-        .update_project_metadata(&project.id, project_metadata)
-        .unwrap();
-    assert!(project.metadata.pinned);
+    let project = repo.set_project_pinned(&project.id, true).unwrap();
+    assert!(project.pinned);
 
     let renamed = repo
         .rename_project(&project.id, "Renamed Project".to_string())
@@ -230,13 +232,11 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
     assert_eq!(renamed.display_name, "Renamed Project");
 
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
-    let mut conversation_metadata = conversation.metadata.clone();
-    conversation_metadata.pinned = false;
     let conversation = repo
-        .update_conversation_metadata(&conversation.id, conversation_metadata)
+        .set_conversation_pinned(&conversation.id, false)
         .unwrap();
 
-    assert!(!conversation.metadata.pinned);
+    assert!(!conversation.pinned);
 }
 
 #[test]
@@ -257,12 +257,12 @@ fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
             path: "/tmp/scratch-conversation".to_string(),
             display_name: "Scratch".to_string(),
             kind: ProjectKind::Scratch,
+            pinned: false,
+            removed: false,
             metadata: ProjectMetadata {
                 scratch_reason: Some("no-project".to_string()),
                 git_root: None,
                 last_active_conversation_id: None,
-                pinned: false,
-                removed: false,
             },
         })
         .unwrap();
@@ -358,6 +358,89 @@ fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() 
 }
 
 #[test]
+fn no_project_conversations_only_include_visible_scratch_active_conversations() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let normal_project = repo.insert_project(project("normal-no-project")).unwrap();
+    let visible_scratch_project = repo
+        .insert_project(scratch_project("visible-no-project"))
+        .unwrap();
+    let removed_scratch_project = repo
+        .insert_project(scratch_project("removed-no-project"))
+        .unwrap();
+    repo.set_project_removed(&removed_scratch_project.id, true)
+        .unwrap();
+
+    let scratch = repo
+        .insert_conversation(conversation(&visible_scratch_project))
+        .unwrap();
+    let deleted = repo
+        .insert_conversation(conversation(&visible_scratch_project))
+        .unwrap();
+    repo.soft_delete_conversation(&deleted.id).unwrap();
+    let normal = repo
+        .insert_conversation(conversation(&normal_project))
+        .unwrap();
+    let removed = repo
+        .insert_conversation(conversation(&removed_scratch_project))
+        .unwrap();
+
+    let conversations = repo.list_no_project_conversations("").unwrap();
+    let ids = conversations
+        .iter()
+        .map(|conversation| conversation.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, vec![scratch.id.as_str()]);
+    assert!(!ids.contains(&deleted.id.as_str()));
+    assert!(!ids.contains(&normal.id.as_str()));
+    assert!(!ids.contains(&removed.id.as_str()));
+}
+
+#[test]
+fn no_project_search_matches_title_and_item_text_but_not_normal_project_text() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+
+    let normal_project = repo.insert_project(project("release-normal")).unwrap();
+    let scratch_project = repo
+        .insert_project(scratch_project("scratch-release-project"))
+        .unwrap();
+
+    let mut by_title = conversation(&scratch_project);
+    by_title.title = "Release notes".to_string();
+    let by_title = repo.insert_conversation(by_title).unwrap();
+
+    let mut by_item = conversation(&scratch_project);
+    by_item.title = "Scratch chat".to_string();
+    let by_item = repo.insert_conversation(by_item).unwrap();
+    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+        .unwrap();
+
+    let normal = repo
+        .insert_conversation(conversation(&normal_project))
+        .unwrap();
+    repo.append_conversation_item(message_item(&normal.id, "unique needle"))
+        .unwrap();
+
+    let title_matches = repo.list_no_project_conversations("release").unwrap();
+    assert_eq!(title_matches.len(), 1);
+    assert_eq!(title_matches[0].id, by_title.id);
+
+    let item_matches = repo.list_no_project_conversations("unique needle").unwrap();
+    assert_eq!(item_matches.len(), 1);
+    assert_eq!(item_matches[0].id, by_item.id);
+
+    let project_matches = repo
+        .list_no_project_conversations("scratch-release-project")
+        .unwrap();
+    assert!(project_matches.is_empty());
+}
+
+#[test]
 fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -378,14 +461,14 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
-        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'canceled'))"
+        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled'))"
     ));
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
 
     let conversation_items_sql = table_sql(&mut conn, "conversation_items");
     assert!(conversation_items_sql.contains(
-        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error'))"
+        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'status', 'error'))"
     ));
     assert!(conversation_items_sql.contains(
         "status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval'))"
@@ -395,6 +478,15 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     assert!(tool_invocations_sql.contains(
         "status TEXT NOT NULL CHECK (status IN ('requested', 'awaiting_approval', 'running', 'succeeded', 'failed', 'denied', 'canceled'))"
     ));
+    assert!(tool_invocations_sql.contains("approval_json JSON"));
+    assert!(
+        store
+            .repository()
+            .table_names()
+            .unwrap()
+            .iter()
+            .all(|name| name != "approval_decisions")
+    );
 }
 
 #[test]
@@ -488,6 +580,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
     let invalid = repo.insert_conversation(NewConversation {
         project_id: "missing".to_string(),
         title: "invalid".to_string(),
+        pinned: false,
         prompt_id: None,
         default_provider_id: None,
         default_model_id: None,
@@ -974,7 +1067,7 @@ fn provider_step_validates_input_item_ownership() {
 }
 
 #[test]
-fn approval_outcome_derives_status_and_decision_columns() {
+fn tool_invocation_approval_derives_status_and_decision_columns() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -1020,7 +1113,7 @@ fn approval_outcome_derives_status_and_decision_columns() {
         .insert_tool_invocation(NewToolInvocation {
             agent_run_id: agent_run.id,
             provider_step_id: Some(provider_step.id),
-            status: ToolInvocationStatus::Denied,
+            status: ToolInvocationStatus::Requested,
             input: tool_input(),
             output: None,
             error: None,
@@ -1028,40 +1121,55 @@ fn approval_outcome_derives_status_and_decision_columns() {
         .unwrap();
 
     let pending = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: pending_tool.id,
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
-        })
+        .request_tool_invocation_approval(
+            &pending_tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
+            },
+        )
         .unwrap();
-    assert_eq!(pending.status, ApprovalStatus::Pending);
-    assert!(pending.decision.is_none());
-    assert!(pending.decided_at.is_none());
+    let pending_approval = pending.approval.unwrap();
+    assert_eq!(pending.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(pending_approval.status, ApprovalStatus::Pending);
+    assert!(pending_approval.decision.is_none());
+    assert!(pending_approval.decided_at.is_none());
 
     let denied = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: denied_tool.id,
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Denied {
+        .request_tool_invocation_approval(
+            &denied_tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
+            },
+        )
+        .unwrap();
+    let denied = repo
+        .update_tool_invocation_approval(
+            &denied.id,
+            ToolInvocationApprovalOutcome::Denied {
                 decided_by: "user".to_string(),
                 reason: Some("no".to_string()),
             },
-        })
+            ToolInvocationStatus::Denied,
+        )
         .unwrap();
-    assert_eq!(denied.status, ApprovalStatus::Denied);
+    let denied_approval = denied.approval.unwrap();
+    assert_eq!(denied.status, ToolInvocationStatus::Denied);
+    assert_eq!(denied_approval.status, ApprovalStatus::Denied);
     assert_eq!(
-        denied.decision,
+        denied_approval.decision,
         Some(ApprovalDecisionPayload {
             approved: false,
             decided_by: "user".to_string(),
             reason: Some("no".to_string()),
         })
     );
-    assert!(denied.decided_at.is_some());
+    assert!(denied_approval.decided_at.is_some());
 }
 
 #[test]
-fn execution_status_updates_and_pending_approval_queries_roundtrip() {
+fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -1138,28 +1246,35 @@ fn execution_status_updates_and_pending_approval_queries_roundtrip() {
         })
         .unwrap();
     let approval = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: tool.id.clone(),
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Pending { expires_at: None },
-        })
-        .unwrap();
-    assert_eq!(
-        repo.pending_approval_decisions().unwrap(),
-        vec![approval.clone()]
-    );
-
-    let approved = repo
-        .update_approval_decision(
-            &approval.id,
-            NewApprovalDecisionOutcome::Approved {
-                decided_by: "user".to_string(),
-                reason: Some("ok".to_string()),
+        .request_tool_invocation_approval(
+            &tool.id,
+            NewToolInvocationApproval {
+                request: approval_request(),
+                expires_at: None,
             },
         )
         .unwrap();
-    assert_eq!(approved.status, ApprovalStatus::Approved);
-    assert!(repo.pending_approval_decisions().unwrap().is_empty());
+    assert_eq!(approval.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Pending)
+    );
+
+    let approved = repo
+        .update_tool_invocation_approval(
+            &approval.id,
+            ToolInvocationApprovalOutcome::Approved {
+                decided_by: "user".to_string(),
+                reason: Some("ok".to_string()),
+            },
+            ToolInvocationStatus::Running,
+        )
+        .unwrap();
+    assert_eq!(approved.status, ToolInvocationStatus::Running);
+    assert_eq!(
+        approved.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Approved)
+    );
 
     let succeeded_tool = repo
         .update_tool_invocation_status(
@@ -1173,6 +1288,13 @@ fn execution_status_updates_and_pending_approval_queries_roundtrip() {
         .unwrap();
     assert_eq!(succeeded_tool.status, ToolInvocationStatus::Succeeded);
     assert_eq!(succeeded_tool.output, Some(tool_output()));
+    assert_eq!(
+        succeeded_tool
+            .approval
+            .as_ref()
+            .and_then(|approval| approval.decision.as_ref()),
+        Some(&approval_decision())
+    );
     assert!(succeeded_tool.started_at.is_some());
     assert!(succeeded_tool.completed_at.is_some());
 
@@ -1336,6 +1458,7 @@ fn typed_json_roundtrips_for_repository_records() {
         .insert_conversation(NewConversation {
             project_id: project.id.clone(),
             title: "JSON".to_string(),
+            pinned: false,
             prompt_id: Some(prompt.id.clone()),
             default_provider_id: Some(provider.id.clone()),
             default_model_id: Some(model.model_id.clone()),
@@ -1419,18 +1542,24 @@ fn typed_json_roundtrips_for_repository_records() {
     assert_eq!(tool.output, Some(tool_output()));
 
     let approval = repo
-        .insert_approval_decision(NewApprovalDecision {
-            tool_invocation_id: tool.id.clone(),
-            request: approval_request(),
-            outcome: NewApprovalDecisionOutcome::Approved {
-                decided_by: "user".to_string(),
-                reason: Some("ok".to_string()),
-            },
-        })
+        .record_tool_invocation_approval(
+            &tool.id,
+            approved_tool_invocation_approval(),
+            ToolInvocationStatus::Succeeded,
+        )
         .unwrap();
-    assert_eq!(approval.request, approval_request());
-    assert_eq!(approval.status, ApprovalStatus::Approved);
-    assert_eq!(approval.decision, Some(approval_decision()));
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| &approval.request),
+        Some(&approval_request())
+    );
+    assert_eq!(
+        approval.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Approved)
+    );
+    assert_eq!(
+        approval.approval.and_then(|approval| approval.decision),
+        Some(approval_decision())
+    );
 
     let usage = repo
         .insert_usage_event(NewUsageEvent {
@@ -1465,30 +1594,36 @@ fn typed_json_roundtrips_for_repository_records() {
     assert_eq!(shortcuts.len(), 1);
     assert_eq!(shortcuts[0].id, shortcut.id);
 
-    let app_settings = repo
-        .set_app_settings(AppSettingsPayload {
-            language: AppLanguage::Chinese,
-            theme: AppThemeSettings {
-                mode: AppThemeMode::System,
-                light_theme: Some("preset:Default Light".to_string()),
-                dark_theme: Some("preset:Default Dark".to_string()),
-                custom_theme_colors: vec!["#3271AE".to_string()],
+    let updated_shortcut = repo
+        .update_shortcut(
+            &shortcut.id,
+            UpdateShortcut {
+                hotkey: "cmd+shift+k".to_string(),
+                enabled: false,
+                prompt_id: None,
+                provider_id: Some(provider.id.clone()),
+                model_id: Some(model.model_id.clone()),
+                input_source: ShortcutInputSource::Screenshot,
+                action: ShortcutAction::OpenTemporaryConversation,
+                settings_snapshot: run_settings(&provider.id, &model.model_id),
             },
-            temporary_hotkey: Some("cmd+shift+j".to_string()),
-            http_proxy: Some("http://127.0.0.1:8080".to_string()),
-            default_project_id: Some(project.id.clone()),
-        })
+        )
         .unwrap();
-    assert_eq!(app_settings.settings.language, AppLanguage::Chinese);
+    assert_eq!(updated_shortcut.hotkey, "cmd+shift+k");
+    assert!(!updated_shortcut.enabled);
+    assert_eq!(updated_shortcut.prompt_id, None);
     assert_eq!(
-        app_settings.settings.temporary_hotkey.as_deref(),
-        Some("cmd+shift+j")
+        updated_shortcut.input_source,
+        ShortcutInputSource::Screenshot
     );
-    assert_eq!(
-        app_settings.settings.http_proxy.as_deref(),
-        Some("http://127.0.0.1:8080")
-    );
-    assert_eq!(app_settings.settings.default_project_id, Some(project.id));
+
+    let enabled_shortcut = repo
+        .set_shortcut_enabled(&updated_shortcut.id, true)
+        .unwrap();
+    assert!(enabled_shortcut.enabled);
+
+    assert_eq!(repo.delete_shortcut(&enabled_shortcut.id).unwrap(), 1);
+    assert!(repo.list_shortcuts().unwrap().is_empty());
 }
 
 #[test]
@@ -1567,6 +1702,60 @@ fn provider_repository_can_insert_with_preallocated_id() {
 }
 
 #[test]
+fn prompt_repository_lists_updates_and_deletes_prompt_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let second = repo
+        .insert_prompt(NewPrompt {
+            name: "Second".to_string(),
+            content: PromptContent {
+                text: "Second prompt".to_string(),
+            },
+            enabled: true,
+            sort_order: 20,
+        })
+        .unwrap();
+    let first = repo
+        .insert_prompt(NewPrompt {
+            name: "First".to_string(),
+            content: PromptContent {
+                text: "First prompt".to_string(),
+            },
+            enabled: true,
+            sort_order: 10,
+        })
+        .unwrap();
+
+    let listed = repo.list_prompts().unwrap();
+    assert_eq!(
+        listed.iter().map(|prompt| &prompt.id).collect::<Vec<_>>(),
+        vec![&first.id, &second.id]
+    );
+
+    let updated = repo
+        .update_prompt(
+            &first.id,
+            UpdatePrompt {
+                name: "Updated".to_string(),
+                content: PromptContent {
+                    text: "Updated prompt".to_string(),
+                },
+                enabled: false,
+                sort_order: 30,
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.name, "Updated");
+    assert_eq!(updated.content.text, "Updated prompt");
+    assert!(!updated.enabled);
+    assert_eq!(updated.sort_order, 30);
+
+    assert_eq!(repo.delete_prompt(&updated.id).unwrap(), 1);
+    assert!(repo.get_prompt(&updated.id).unwrap().is_none());
+}
+
+#[test]
 fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
@@ -1637,6 +1826,45 @@ fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn conversation_timeline_includes_attachments() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("timeline-attachments"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let item = repo
+        .append_conversation_item(message_item(&conversation.id, "check this"))
+        .unwrap();
+    let attachment = repo
+        .insert_attachment(NewAttachment {
+            conversation_id: conversation.id.clone(),
+            kind: AttachmentKind::File,
+            storage_kind: AttachmentStorageKind::LocalFile,
+            mime_type: Some("text/plain".to_string()),
+            name: Some("notes.txt".to_string()),
+            path: Some("/tmp/notes.txt".to_string()),
+            external_uri: None,
+            provider_id: None,
+            provider_file_id: None,
+            sha256: None,
+            size_bytes: Some(42),
+            metadata: attachment_metadata(),
+        })
+        .unwrap();
+
+    let timeline = repo
+        .conversation_timeline_records(&conversation.id)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(timeline.items.len(), 1);
+    assert_eq!(timeline.items[0].id, item.id);
+    assert_eq!(timeline.attachments, vec![attachment]);
 }
 
 #[test]
@@ -1715,7 +1943,24 @@ fn project(suffix: &str) -> NewProject {
         path: format!("/tmp/ai-chat-{suffix}"),
         display_name: format!("Project {suffix}"),
         kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
         metadata: project_metadata(),
+    }
+}
+
+fn scratch_project(suffix: &str) -> NewProject {
+    NewProject {
+        path: format!("/tmp/ai-chat-{suffix}"),
+        display_name: format!("Scratch {suffix}"),
+        kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
+        metadata: ProjectMetadata {
+            scratch_reason: Some("no-project".to_string()),
+            git_root: None,
+            last_active_conversation_id: None,
+        },
     }
 }
 
@@ -1724,8 +1969,6 @@ fn project_metadata() -> ProjectMetadata {
         scratch_reason: None,
         git_root: Some("/tmp".to_string()),
         last_active_conversation_id: None,
-        pinned: false,
-        removed: false,
     }
 }
 
@@ -1733,6 +1976,7 @@ fn conversation(project: &crate::ProjectRecord) -> NewConversation {
     NewConversation {
         project_id: project.id.clone(),
         title: "Conversation".to_string(),
+        pinned: false,
         prompt_id: None,
         default_provider_id: None,
         default_model_id: None,
@@ -1745,7 +1989,6 @@ fn conversation_metadata() -> ConversationMetadata {
     ConversationMetadata {
         summary: Some("summary".to_string()),
         tags: vec!["tag".to_string()],
-        pinned: true,
     }
 }
 
@@ -1846,12 +2089,7 @@ fn prompt() -> NewPrompt {
 
 fn prompt_content() -> PromptContent {
     PromptContent {
-        messages: vec![PromptMessage {
-            role: TranscriptRole::System,
-            content: vec![ContentPart::Text {
-                text: "You are useful.".to_string(),
-            }],
-        }],
+        text: "You are useful.".to_string(),
     }
 }
 
@@ -1955,6 +2193,7 @@ fn approval_request() -> ApprovalRequestPayload {
         },
         tool_name: "read_file".to_string(),
         arguments_preview: "{\"path\":\"/tmp/notes.txt\"}".to_string(),
+        access_requests: Vec::new(),
     }
 }
 
@@ -1963,6 +2202,18 @@ fn approval_decision() -> ApprovalDecisionPayload {
         approved: true,
         decided_by: "user".to_string(),
         reason: Some("ok".to_string()),
+    }
+}
+
+fn approved_tool_invocation_approval() -> ToolInvocationApproval {
+    let now = time::OffsetDateTime::now_utc();
+    ToolInvocationApproval {
+        status: ApprovalStatus::Approved,
+        request: approval_request(),
+        decision: Some(approval_decision()),
+        requested_at: now,
+        decided_at: Some(now),
+        expires_at: None,
     }
 }
 
@@ -2000,6 +2251,8 @@ fn tool_policy() -> ToolPolicySnapshot {
             },
         ],
         max_steps: 8,
+        approval_mode: ToolApprovalMode::RequestApproval,
+        permission_scope: None,
     }
 }
 
