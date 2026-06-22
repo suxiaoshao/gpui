@@ -64,7 +64,17 @@ where
             .insert_provider_step(&request)
             .map_err(completion_request_error)?;
 
-        let response = self.inner.completion(request).await;
+        let response = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                let payload = run_error("canceled", "runtime canceled", false, None);
+                context
+                    .cancel_provider_step(&provider_step.id, payload)
+                    .map_err(completion_request_error)?;
+                return Err(completion_request_error(AgentRuntimeError::Canceled));
+            }
+            response = self.inner.completion(request) => response,
+        };
         if context.cancellation_token.is_cancelled() {
             let payload = run_error("canceled", "runtime canceled", false, None);
             context
@@ -101,7 +111,24 @@ where
         let provider_step = context
             .insert_provider_step(&request)
             .map_err(completion_request_error)?;
-        let response = self.inner.stream(request).await;
+        let response = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                let payload = run_error("canceled", "runtime canceled", false, None);
+                context
+                    .cancel_provider_step(&provider_step.id, payload)
+                    .map_err(completion_request_error)?;
+                return Err(completion_request_error(AgentRuntimeError::Canceled));
+            }
+            response = self.inner.stream(request) => response,
+        };
+        if context.cancellation_token.is_cancelled() {
+            let payload = run_error("canceled", "runtime canceled", false, None);
+            context
+                .cancel_provider_step(&provider_step.id, payload)
+                .map_err(completion_request_error)?;
+            return Err(completion_request_error(AgentRuntimeError::Canceled));
+        }
         match response {
             Ok(response) => Ok(response),
             Err(error) => {

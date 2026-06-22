@@ -79,19 +79,28 @@ impl AgentRuntime {
             + serde::de::DeserializeOwned
             + rig_core::completion::GetTokenUsage,
     {
+        let agent_run = self.begin_run(&mut request, observer.as_ref())?;
+        self.run_started_with_model_observed(agent_run, request, model, observer)
+            .await
+    }
+
+    pub fn begin_run(
+        &self,
+        request: &mut AgentRunRequest,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<AgentRunRecord> {
         if request.cancellation_token.is_cancelled() {
             return Err(AgentRuntimeError::Canceled);
         }
-
         crate::builtin_tools::registry::register_enabled_builtin_tools(
             &mut request.tool_registry,
             &request.settings_snapshot.tool_policy,
             request.project_root.as_deref(),
         )?;
         request.tool_registry.finalize_names();
-        let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(&request))?;
+        let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(request))?;
         emit_runtime(
-            observer.as_ref(),
+            observer,
             AgentRuntimeEvent::AgentRunStarted {
                 agent_run_id: agent_run.id.clone(),
                 conversation_id: agent_run.conversation_id.clone(),
@@ -106,12 +115,45 @@ impl AgentRuntime {
             },
         )?;
         emit_runtime(
-            observer.as_ref(),
+            observer,
             AgentRuntimeEvent::AgentRunStatusChanged {
                 agent_run_id: agent_run.id.clone(),
                 status: AgentRunStatus::Running,
             },
         );
+        Ok(agent_run)
+    }
+
+    pub(crate) async fn run_started_with_model_observed<M>(
+        &self,
+        agent_run: AgentRunRecord,
+        request: AgentRunRequest,
+        model: M,
+        observer: Option<AgentRuntimeObserver>,
+    ) -> Result<AgentRunHandle>
+    where
+        M: CompletionModel + 'static,
+        M::Response: serde::Serialize + serde::de::DeserializeOwned,
+        M::StreamingResponse: Clone
+            + Unpin
+            + Send
+            + Sync
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + rig_core::completion::GetTokenUsage,
+    {
+        if request.cancellation_token.is_cancelled() {
+            let agent_run = self
+                .cancel_run(&agent_run.id, observer.as_ref())?
+                .ok_or_else(|| AgentRuntimeError::Invariant("agent run disappeared".to_string()))?;
+            return Ok(AgentRunHandle {
+                agent_run,
+                output: None,
+                status: AgentRunHandleStatus::Finished,
+                events: vec![AgentRunEvent::Canceled],
+                steps: Vec::new(),
+            });
+        }
 
         if let Err(error) = self.activate_skills(&request, &agent_run.id) {
             return Err(self.mark_setup_failed(&agent_run.id, error, observer.as_ref())?);
@@ -201,17 +243,53 @@ impl AgentRuntime {
         let agent = builder.build();
 
         let execution = if request.settings_snapshot.model_capabilities.streaming {
-            let mut stream = agent
-                .stream_prompt(prompt_history.prompt)
-                .with_history(prompt_history.history)
-                .without_memory()
-                .await;
+            let stream = tokio::select! {
+                biased;
+                _ = request.cancellation_token.cancelled() => None,
+                stream = agent
+                    .stream_prompt(prompt_history.prompt)
+                    .with_history(prompt_history.history)
+                    .without_memory() => Some(stream),
+            };
+            let Some(mut stream) = stream else {
+                let _ = context.cancel_current_provider_step(run_error(
+                    "canceled",
+                    "runtime canceled",
+                    false,
+                    None,
+                ));
+                return Ok(AgentRunHandle {
+                    agent_run: self
+                        .cancel_run(&agent_run.id, observer.as_ref())?
+                        .ok_or_else(|| {
+                            AgentRuntimeError::Invariant("agent run disappeared".to_string())
+                        })?,
+                    output: None,
+                    status: AgentRunHandleStatus::Finished,
+                    events: vec![AgentRunEvent::Canceled],
+                    steps: context.steps(),
+                });
+            };
             let mut accumulator = StreamingOutputAccumulator::new(context.clone());
             let mut final_response = None;
             let mut final_raw_response = None;
 
             loop {
-                match stream.next().await {
+                let next = tokio::select! {
+                    biased;
+                    _ = request.cancellation_token.cancelled() => {
+                        accumulator.finish(ConversationItemStatus::Canceled, None)?;
+                        let _ = context.cancel_current_provider_step(run_error(
+                            "canceled",
+                            "runtime canceled",
+                            false,
+                            None,
+                        ));
+                        break Ok(AgentStoppedReason::Canceled);
+                    }
+                    next = stream.next() => next,
+                };
+                match next {
                     Some(Ok(MultiTurnStreamItem::StreamAssistantItem(item))) => match item {
                         StreamedAssistantContent::Text(text) => {
                             accumulator.append_text(&text.text)?;
@@ -289,16 +367,28 @@ impl AgentRuntime {
                 }
             }
         } else {
-            match agent
-                .prompt(prompt_history.prompt)
-                .with_history(prompt_history.history)
-                .with_tool_concurrency(request.guards.tool_concurrency)
-                .without_memory()
-                .extended_details()
-                .await
-            {
-                Ok(_response) => Ok(AgentStoppedReason::Completed),
-                Err(error) => Err(PromptExecutionError::prompt(error)),
+            let response = tokio::select! {
+                biased;
+                _ = request.cancellation_token.cancelled() => {
+                    let _ = context.cancel_current_provider_step(run_error(
+                        "canceled",
+                        "runtime canceled",
+                        false,
+                        None,
+                    ));
+                    None
+                }
+                response = agent
+                    .prompt(prompt_history.prompt)
+                    .with_history(prompt_history.history)
+                    .with_tool_concurrency(request.guards.tool_concurrency)
+                    .without_memory()
+                    .extended_details() => Some(response),
+            };
+            match response {
+                None => Ok(AgentStoppedReason::Canceled),
+                Some(Ok(_response)) => Ok(AgentStoppedReason::Completed),
+                Some(Err(error)) => Err(PromptExecutionError::prompt(error)),
             }
         };
 
@@ -316,6 +406,14 @@ impl AgentRuntime {
                 } else {
                     stopped_reason
                 };
+                if final_status == AgentRunStatus::Canceled {
+                    self.finalize_active_tool_invocations(
+                        &agent_run.id,
+                        &request.conversation_id,
+                        ToolInvocationStatus::Canceled,
+                        run_error("canceled", "runtime canceled", false, None),
+                    )?;
+                }
                 let output = AgentRunOutput {
                     final_item_id: context.final_item_id(),
                     stopped_reason: final_stopped_reason,
@@ -462,46 +560,44 @@ impl AgentRuntime {
         secrets: ProviderSecretValues,
         observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
-        run_saved_provider_model(self, request, provider, secrets, observer).await
+        let mut request = request;
+        let agent_run = self.begin_run(&mut request, observer.as_ref())?;
+        self.run_started_with_saved_provider_observed(
+            agent_run, request, provider, secrets, observer,
+        )
+        .await
+    }
+
+    pub async fn run_started_with_saved_provider_observed(
+        &self,
+        agent_run: AgentRunRecord,
+        request: AgentRunRequest,
+        provider: ProviderRecord,
+        secrets: ProviderSecretValues,
+        observer: Option<AgentRuntimeObserver>,
+    ) -> Result<AgentRunHandle> {
+        run_saved_provider_model(self, agent_run, request, provider, secrets, observer).await
     }
 
     pub fn record_setup_failed_run(
         &self,
-        request: AgentRunRequest,
+        mut request: AgentRunRequest,
         error: impl ToString,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
-        if request.cancellation_token.is_cancelled() {
-            return Err(AgentRuntimeError::Canceled);
-        }
+        let agent_run = self.begin_run(&mut request, observer)?;
+        self.record_setup_failed_started_run(&agent_run, error, observer)
+    }
 
-        let mut agent_run = self.repo.insert_agent_run(new_agent_run_input(&request))?;
-        emit_runtime(
-            observer,
-            AgentRuntimeEvent::AgentRunStarted {
-                agent_run_id: agent_run.id.clone(),
-                conversation_id: agent_run.conversation_id.clone(),
-            },
-        );
-        agent_run = self.repo.update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Running,
-                output: None,
-                error: None,
-            },
-        )?;
-        emit_runtime(
-            observer,
-            AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id: agent_run.id.clone(),
-                status: AgentRunStatus::Running,
-            },
-        );
-
+    pub fn record_setup_failed_started_run(
+        &self,
+        agent_run: &AgentRunRecord,
+        error: impl ToString,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<AgentRunHandle> {
         let payload = run_error("setup_error", error.to_string(), true, None);
         let item = self.repo.append_conversation_item(NewConversationItem {
-            conversation_id: request.conversation_id,
+            conversation_id: agent_run.conversation_id.clone(),
             status: ConversationItemStatus::Completed,
             agent_run_id: Some(agent_run.id.clone()),
             provider_step_id: None,
@@ -535,6 +631,23 @@ impl AgentRuntime {
             events: vec![AgentRunEvent::Failed { error: payload }],
             steps: vec![AgentStep::ConversationItem(item.id)],
         })
+    }
+
+    pub fn cancel_non_terminal_runs_for_conversation(
+        &self,
+        conversation_id: &str,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<Vec<AgentRunRecord>> {
+        let mut canceled = Vec::new();
+        for run in self.repo.agent_runs_for_conversation(conversation_id)? {
+            if is_terminal_agent_run_status(run.status) {
+                continue;
+            }
+            if let Some(run) = self.cancel_run(&run.id, observer)? {
+                canceled.push(run);
+            }
+        }
+        Ok(canceled)
     }
 
     pub fn cancel_run(

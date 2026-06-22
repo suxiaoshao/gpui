@@ -77,16 +77,26 @@ impl AgentRuntime {
             );
         }
 
-        let (tool_output, tool_status, tool_error) = approved_builtin_tool_result_from_execution(
-            &running_invocation.tool_name,
-            crate::builtin_tools::registry::execute_builtin_tool(
+        let (tool_output, tool_status, tool_error) = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => {
+                return self.cancel_approved_tool_resume(
+                    &agent_run,
+                    &running_invocation,
+                    steps,
+                    observer,
+                );
+            }
+            result = approved_builtin_tool_result_from_execution(
                 &running_invocation.tool_name,
-                running_invocation.input.arguments.value.clone(),
-                policy,
-            ),
-            tool_timeout,
-        )
-        .await;
+                crate::builtin_tools::registry::execute_builtin_tool(
+                    &running_invocation.tool_name,
+                    running_invocation.input.arguments.value.clone(),
+                    policy,
+                ),
+                tool_timeout,
+            ) => result,
+        };
         if cancellation_token.is_cancelled() {
             return self.cancel_approved_tool_resume(
                 &agent_run,

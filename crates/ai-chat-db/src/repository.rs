@@ -1103,6 +1103,7 @@ impl FreshRepository {
     ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
             let item = append_conversation_item_with_conn(conn, item)?;
             let invocation =
                 update_tool_invocation_status_with_conn(conn, tool_invocation_id, update)?;
@@ -1119,6 +1120,7 @@ impl FreshRepository {
     ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
             let item = append_conversation_item_with_conn(conn, item)?;
             let invocation =
                 update_tool_invocation_full_with_conn(conn, tool_invocation_id, update, approval)?;
@@ -1575,6 +1577,9 @@ fn update_agent_run_status_with_conn(
     update: UpdateAgentRunStatus,
 ) -> Result<AgentRunRecord> {
     let existing = load_agent_run_row(conn, id)?;
+    if is_terminal_agent_run_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     let now = now_string()?;
     let changes = SqlAgentRunStatusChanges {
         status: db_label(&update.status)?,
@@ -1597,6 +1602,9 @@ fn update_provider_step_status_with_conn(
     update: UpdateProviderStepStatus,
 ) -> Result<ProviderStepRecord> {
     let existing = load_provider_step_row(conn, id)?;
+    if is_terminal_provider_step_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     if let Some(state_snapshot) = update.state_snapshot.as_ref() {
         ensure_equal(
             "provider step state provider",
@@ -1627,6 +1635,9 @@ fn update_tool_invocation_status_with_conn(
     update: UpdateToolInvocationStatus,
 ) -> Result<ToolInvocationRecord> {
     let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     let now = now_string()?;
     let changes = SqlToolInvocationStatusChanges {
         status: db_label(&update.status)?,
@@ -1650,6 +1661,9 @@ fn update_tool_invocation_full_with_conn(
     approval: Option<ToolInvocationApproval>,
 ) -> Result<ToolInvocationRecord> {
     let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
+        return existing.try_into();
+    }
     let now = now_string()?;
     let changes = SqlToolInvocationFullChanges {
         status: db_label(&update.status)?,
@@ -1665,6 +1679,16 @@ fn update_tool_invocation_full_with_conn(
         .returning(SqlToolInvocationRow::as_returning())
         .get_result::<SqlToolInvocationRow>(conn)?
         .try_into()
+}
+
+fn ensure_tool_invocation_not_terminal(conn: &mut SqliteConnection, id: &str) -> Result<()> {
+    let existing = load_tool_invocation_row(conn, id)?;
+    if is_terminal_tool_invocation_status(db_label_parse(existing.status.clone())?) {
+        return Err(DbError::Invariant(format!(
+            "tool invocation {id} is already terminal"
+        )));
+    }
+    Ok(())
 }
 
 fn update_tool_invocation_approval_with_conn(
@@ -1902,13 +1926,7 @@ fn next_agent_run_completed_at(
     status: AgentRunStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_agent_run_status(status).then_some(now))
 }
 
 fn next_provider_step_completed_at(
@@ -1916,15 +1934,7 @@ fn next_provider_step_completed_at(
     status: ProviderStepStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            ProviderStepStatus::Completed
-                | ProviderStepStatus::Failed
-                | ProviderStepStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_provider_step_status(status).then_some(now))
 }
 
 fn next_tool_invocation_completed_at(
@@ -1932,16 +1942,31 @@ fn next_tool_invocation_completed_at(
     status: ToolInvocationStatus,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    existing.or_else(|| {
-        matches!(
-            status,
-            ToolInvocationStatus::Succeeded
-                | ToolInvocationStatus::Failed
-                | ToolInvocationStatus::Denied
-                | ToolInvocationStatus::Canceled
-        )
-        .then_some(now)
-    })
+    existing.or_else(|| is_terminal_tool_invocation_status(status).then_some(now))
+}
+
+fn is_terminal_agent_run_status(status: AgentRunStatus) -> bool {
+    matches!(
+        status,
+        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
+    )
+}
+
+fn is_terminal_provider_step_status(status: ProviderStepStatus) -> bool {
+    matches!(
+        status,
+        ProviderStepStatus::Completed | ProviderStepStatus::Failed | ProviderStepStatus::Canceled
+    )
+}
+
+fn is_terminal_tool_invocation_status(status: ToolInvocationStatus) -> bool {
+    matches!(
+        status,
+        ToolInvocationStatus::Succeeded
+            | ToolInvocationStatus::Failed
+            | ToolInvocationStatus::Denied
+            | ToolInvocationStatus::Canceled
+    )
 }
 
 fn ensure_equal(entity: &str, actual: &str, expected: &str) -> Result<()> {

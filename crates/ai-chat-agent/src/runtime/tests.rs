@@ -7,7 +7,8 @@ use ai_chat_db::{
     ConversationItemRecord, ConversationRecord, FreshStore, NewConversation, NewConversationItem,
     NewProject, NewProvider, NewProviderModel, NewProviderStep, NewToolInvocation,
     NewToolInvocationApproval, ProviderModelRecord, ProviderRecord, ProviderStepRecord,
-    ToolInvocationApprovalOutcome, ToolInvocationRecord,
+    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 use async_trait::async_trait;
 use rig_core::{
@@ -429,6 +430,107 @@ async fn non_streaming_cancellation_before_response_persistence_marks_run_cancel
         .usage_events_for_provider_step(&provider_steps[0].id)
         .unwrap();
     assert!(usage_events.is_empty());
+}
+
+#[tokio::test]
+async fn non_streaming_cancellation_during_provider_open_does_not_wait_for_response() {
+    let fixture = Fixture::new("non-streaming-open-cancel");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let request = fixture.request();
+    let model = CancelAndPendCompletionModel {
+        cancellation_token: request.cancellation_token.clone(),
+    };
+
+    let handle = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.run_with_model(request, model),
+    )
+    .await
+    .expect("canceled provider open should not hang")
+    .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    assert_eq!(
+        handle.output.as_ref().unwrap().stopped_reason,
+        AgentStoppedReason::Canceled
+    );
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+    assert_eq!(provider_steps[0].error.as_ref().unwrap().code, "canceled");
+}
+
+#[tokio::test]
+async fn streaming_cancellation_during_provider_open_does_not_record_provider_error() {
+    let fixture = Fixture::new("streaming-open-cancel");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let request = fixture.streaming_request();
+    let model = CancelAndPendStreamOpenModel {
+        cancellation_token: request.cancellation_token.clone(),
+    };
+
+    let handle = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.run_with_model(request, model),
+    )
+    .await
+    .expect("canceled stream open should not hang")
+    .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+    assert_eq!(provider_steps[0].error.as_ref().unwrap().code, "canceled");
+}
+
+#[tokio::test]
+async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediately() {
+    let fixture = Fixture::new("streaming-next-cancel");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let request = fixture.streaming_request();
+    let model = CancelAndPendNextStreamModel {
+        cancellation_token: request.cancellation_token.clone(),
+    };
+
+    let handle = tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.run_with_model(request, model),
+    )
+    .await
+    .expect("canceled stream next should not hang")
+    .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    let items = fixture
+        .repo
+        .conversation_items(&fixture.conversation.id)
+        .unwrap();
+    let assistant_item = items
+        .iter()
+        .find(|item| {
+            matches!(
+                item.payload,
+                ConversationItemPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert_eq!(assistant_item.status, ConversationItemStatus::Canceled);
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
 }
 
 #[tokio::test]
@@ -1564,6 +1666,59 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
 }
 
 #[test]
+fn late_provider_and_tool_completion_after_cancel_do_not_override_terminal_state() {
+    let fixture = Fixture::new("cancel-late-finish");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
+    let provider_step = insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
+    let invocation = insert_tool_invocation(
+        &fixture,
+        &agent_run.id,
+        Some(provider_step.id.clone()),
+        ToolInvocationStatus::Running,
+    );
+
+    runtime.cancel_run(&agent_run.id, None).unwrap().unwrap();
+
+    let provider_step = fixture
+        .repo
+        .update_provider_step_status(
+            &provider_step.id,
+            UpdateProviderStepStatus {
+                status: ProviderStepStatus::Completed,
+                response_snapshot: None,
+                state_snapshot: None,
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(provider_step.status, ProviderStepStatus::Canceled);
+    assert_eq!(provider_step.error.as_ref().unwrap().code, "canceled");
+
+    let invocation = fixture
+        .repo
+        .update_tool_invocation_status(
+            &invocation.id,
+            UpdateToolInvocationStatus {
+                status: ToolInvocationStatus::Succeeded,
+                output: Some(ToolInvocationOutput {
+                    content: vec![ContentPart::Text {
+                        text: "late success".to_string(),
+                    }],
+                    structured_output: None,
+                    raw_output: None,
+                    is_error: false,
+                }),
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
+    assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
+    assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
+}
+
+#[test]
 fn cancel_waiting_approval_cancels_pending_approval() {
     let fixture = Fixture::new("cancel-waiting-approval");
     let runtime = AgentRuntime::new(fixture.repo.clone());
@@ -2348,6 +2503,21 @@ struct CancelDuringCompletionModel {
     cancellation_token: tokio_util::sync::CancellationToken,
 }
 
+#[derive(Clone)]
+struct CancelAndPendCompletionModel {
+    cancellation_token: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+struct CancelAndPendStreamOpenModel {
+    cancellation_token: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+struct CancelAndPendNextStreamModel {
+    cancellation_token: tokio_util::sync::CancellationToken,
+}
+
 impl CompletionModel for CancelDuringCompletionModel {
     type Response = MockResponse;
     type StreamingResponse = MockResponse;
@@ -2380,6 +2550,110 @@ impl CompletionModel for CancelDuringCompletionModel {
         Err(CompletionError::ProviderError(
             "cancel-during-completion model only supports completion".to_string(),
         ))
+    }
+}
+
+impl CompletionModel for CancelAndPendCompletionModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        self.cancellation_token.cancel();
+        pending().await
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        Err(CompletionError::ProviderError(
+            "cancel-and-pend-completion model only supports completion".to_string(),
+        ))
+    }
+}
+
+impl CompletionModel for CancelAndPendStreamOpenModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "cancel-and-pend-stream-open model only supports streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        self.cancellation_token.cancel();
+        pending().await
+    }
+}
+
+impl CompletionModel for CancelAndPendNextStreamModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "cancel-and-pend-next stream model only supports streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        let cancellation_token = self.cancellation_token.clone();
+        let stream = futures::stream::unfold(0, move |state| {
+            let cancellation_token = cancellation_token.clone();
+            async move {
+                match state {
+                    0 => Some((Ok(RawStreamingChoice::Message("partial".to_string())), 1)),
+                    1 => {
+                        cancellation_token.cancel();
+                        pending().await
+                    }
+                    _ => None,
+                }
+            }
+        });
+        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream(stream))
     }
 }
 

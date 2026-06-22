@@ -10,7 +10,7 @@ use crate::{
 use ai_chat_core::{
     ProviderModelMetadata, ProviderRawPayload, ProviderSettingValue, ProviderSettingsPayload,
 };
-use ai_chat_db::{NewProviderModel, ProviderRecord};
+use ai_chat_db::{AgentRunRecord, NewProviderModel, ProviderRecord};
 use rig_core::{
     client::{CompletionClient, ModelListingClient},
     model::{Model, ModelList, ModelListingError},
@@ -116,6 +116,7 @@ pub async fn fetch_provider_models(
 
 pub(crate) async fn run_saved_provider_model(
     runtime: &AgentRuntime,
+    agent_run: AgentRunRecord,
     request: AgentRunRequest,
     provider: ProviderRecord,
     secrets: ProviderSecretValues,
@@ -127,14 +128,17 @@ pub(crate) async fn run_saved_provider_model(
             match $client.map_err(runtime_config_error) {
                 Ok(client) => {
                     runtime
-                        .run_with_model_observed(
+                        .run_started_with_model_observed(
+                            agent_run,
                             request,
                             client.completion_model(model_id),
                             observer,
                         )
                         .await
                 }
-                Err(error) => runtime.record_setup_failed_run(request, error, observer.as_ref()),
+                Err(error) => {
+                    runtime.record_setup_failed_started_run(&agent_run, error, observer.as_ref())
+                }
             }
         };
     }
@@ -147,8 +151,8 @@ pub(crate) async fn run_saved_provider_model(
         "openrouter" => run_with_client!(build_openrouter_client(&provider, &secrets)),
         "deepseek" => run_with_client!(build_deepseek_client(&provider, &secrets)),
         "mistral" => run_with_client!(build_mistral_client(&provider, &secrets)),
-        provider_kind => runtime.record_setup_failed_run(
-            request,
+        provider_kind => runtime.record_setup_failed_started_run(
+            &agent_run,
             AgentRuntimeError::Unsupported(format!(
                 "provider `{provider_kind}` cannot run completion models"
             )),

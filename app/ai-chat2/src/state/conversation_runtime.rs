@@ -1,19 +1,17 @@
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 use ai_chat_agent::{
     AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntime,
     AgentRuntimeObserver, RuntimeGuards,
 };
 use ai_chat_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
-use ai_chat_db::FreshRepository;
 use ai_chat_db::ToolInvocationApprovalOutcome;
+use ai_chat_db::{AgentRunRecord, FreshRepository};
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
 
 use crate::{database, errors::AiChat2Result, state::provider_secrets::ProviderSecretStore};
-
-const STOP_GRACE: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 pub(crate) struct ConversationRuntimeGlobal(Entity<ConversationRuntimeStore>);
@@ -34,11 +32,10 @@ pub(crate) struct ConversationRuntimeStore {
 
 struct ActiveRun {
     key: ActiveRunKey,
-    agent_run_id: Option<AgentRunId>,
+    agent_run_id: AgentRunId,
     phase: ActiveRunPhase,
-    cancel_requested: bool,
-    cancel: Box<dyn Fn() + Send + Sync>,
-    _run_task: Task<()>,
+    cancellation_token: AgentCancellationToken,
+    run_task: Option<Task<()>>,
     _event_task: Task<()>,
 }
 
@@ -82,44 +79,39 @@ impl ConversationRuntimeStore {
         conversation_id: &ConversationId,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active) = self.active_runs.get_mut(conversation_id) else {
+        let Some(mut active) = self.active_runs.remove(conversation_id) else {
             return false;
         };
 
-        if !active.cancel_requested {
-            (active.cancel)();
-            active.cancel_requested = true;
-            let run_key = active.key;
-            let conversation_id_for_stop = conversation_id.clone();
-            cx.spawn(async move |store, cx| {
-                cx.background_executor().timer(STOP_GRACE).await;
-                let Some(store) = store.upgrade() else {
-                    return;
-                };
-
-                store.update(cx, |store, cx| {
-                    let repository = database::repository(cx);
-                    store.force_finish_stopped_run(
-                        conversation_id_for_stop.clone(),
-                        run_key,
-                        repository,
-                        cx,
-                    );
-                });
-            })
-            .detach();
-            cx.emit(ConversationRuntimeEvent::ConversationChanged {
-                conversation_id: conversation_id.clone(),
-            });
-            cx.notify();
+        active.cancellation_token.cancel();
+        active.run_task.take();
+        let repository = database::repository(cx);
+        if let Err(err) = AgentRuntime::new(repository)
+            .cancel_non_terminal_runs_for_conversation(conversation_id, None)
+        {
+            event!(
+                Level::ERROR,
+                error = ?err,
+                conversation_id = %conversation_id,
+                agent_run_id = %active.agent_run_id,
+                "cancel active conversation runs failed"
+            );
         }
 
+        self.last_errors.remove(conversation_id);
+        cx.emit(ConversationRuntimeEvent::ConversationChanged {
+            conversation_id: conversation_id.clone(),
+        });
+        cx.emit(ConversationRuntimeEvent::RunFinished {
+            conversation_id: conversation_id.clone(),
+        });
+        cx.notify();
         true
     }
 
     pub(crate) fn start_run(
         &mut self,
-        request: AgentRunRequest,
+        mut request: AgentRunRequest,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -133,12 +125,24 @@ impl ConversationRuntimeStore {
         let repository = database::repository(cx);
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
+        let runtime = AgentRuntime::new(repository.clone());
+        let agent_run = match runtime.begin_run(&mut request, None) {
+            Ok(agent_run) => agent_run,
+            Err(err) => {
+                self.last_errors
+                    .insert(conversation_id.clone(), err.to_string());
+                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
+                cx.notify();
+                return false;
+            }
+        };
         let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
-        let cancel = Box::new(move || cancellation_token.cancel());
+        let agent_run_id = agent_run.id.clone();
         let run_task = window.spawn(cx, async move |cx| {
-            let result = run_agent_with_saved_provider(repository, request, tx, cx).await;
+            let result =
+                run_agent_with_saved_provider(repository, Some(agent_run), request, tx, cx).await;
             if let Err(err) = store.update_in(cx, |store, _window, cx| {
                 store.finish_run(run_conversation_id.clone(), run_key, result, cx);
             }) {
@@ -150,11 +154,10 @@ impl ConversationRuntimeStore {
             conversation_id.clone(),
             ActiveRun {
                 key: run_key,
-                agent_run_id: None,
+                agent_run_id,
                 phase: ActiveRunPhase::Running,
-                cancel_requested: false,
-                cancel,
-                _run_task: run_task,
+                cancellation_token,
+                run_task: Some(run_task),
                 _event_task: event_task,
             },
         );
@@ -196,7 +199,7 @@ impl ConversationRuntimeStore {
         let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = AgentCancellationToken::new();
-        let cancel = cancel_with_token(cancellation_token.clone());
+        let active_cancellation_token = cancellation_token.clone();
         let run_task = window.spawn(cx, async move |cx| {
             let result = approve_tool_with_runtime(
                 repository,
@@ -217,11 +220,10 @@ impl ConversationRuntimeStore {
             conversation_id.clone(),
             ActiveRun {
                 key: run_key,
-                agent_run_id: Some(agent_run_id),
+                agent_run_id,
                 phase: ActiveRunPhase::Running,
-                cancel_requested: false,
-                cancel,
-                _run_task: run_task,
+                cancellation_token: active_cancellation_token,
+                run_task: Some(run_task),
                 _event_task: event_task,
             },
         );
@@ -291,9 +293,8 @@ impl ConversationRuntimeStore {
         agent_run_id: &AgentRunId,
     ) -> bool {
         self.active_runs.get(conversation_id).is_some_and(|active| {
-            active.agent_run_id.as_ref() == Some(agent_run_id)
+            &active.agent_run_id == agent_run_id
                 && active.phase == ActiveRunPhase::WaitingForApproval
-                && !active.cancel_requested
         })
     }
 
@@ -327,7 +328,7 @@ impl ConversationRuntimeStore {
                 let Some(active) = self.active_runs.get_mut(&conversation_id) else {
                     return;
                 };
-                active.agent_run_id = Some(agent_run_id);
+                active.agent_run_id = agent_run_id;
                 cx.emit(ConversationRuntimeEvent::RunStarted {
                     conversation_id: conversation_id.clone(),
                 });
@@ -367,7 +368,7 @@ impl ConversationRuntimeStore {
     fn conversation_id_for_agent_run(&self, agent_run_id: &AgentRunId) -> Option<ConversationId> {
         self.active_runs
             .iter()
-            .find(|(_, active)| active.agent_run_id.as_ref() == Some(agent_run_id))
+            .find(|(_, active)| &active.agent_run_id == agent_run_id)
             .map(|(conversation_id, _)| conversation_id.clone())
     }
 
@@ -395,7 +396,7 @@ impl ConversationRuntimeStore {
         }) = &result
         {
             if let Some(active) = self.active_runs.get_mut(&conversation_id) {
-                active.agent_run_id = Some(agent_run.id.clone());
+                active.agent_run_id = agent_run.id.clone();
                 active.phase = ActiveRunPhase::WaitingForApproval;
             }
             cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
@@ -403,13 +404,8 @@ impl ConversationRuntimeStore {
             return true;
         }
 
-        let cancel_requested = self
-            .active_runs
-            .remove(&conversation_id)
-            .is_some_and(|active| active.cancel_requested);
-        if let Err(err) = result
-            && !cancel_requested
-        {
+        self.active_runs.remove(&conversation_id);
+        if let Err(err) = result {
             self.last_errors.insert(conversation_id.clone(), err);
         }
         cx.emit(ConversationRuntimeEvent::ConversationChanged {
@@ -419,49 +415,6 @@ impl ConversationRuntimeStore {
         cx.notify();
         true
     }
-
-    fn force_finish_stopped_run(
-        &mut self,
-        conversation_id: ConversationId,
-        run_key: ActiveRunKey,
-        repository: FreshRepository,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(active) = self.active_runs.get(&conversation_id) else {
-            return false;
-        };
-        if active.key != run_key || !active.cancel_requested {
-            return false;
-        }
-
-        let agent_run_id = active.agent_run_id.clone().or_else(|| {
-            match latest_non_terminal_agent_run_id(&repository, &conversation_id) {
-                Ok(agent_run_id) => agent_run_id,
-                Err(err) => {
-                    event!(Level::ERROR, error = ?err, conversation_id = %conversation_id, "load active agent run for forced stop failed");
-                    None
-                }
-            }
-        });
-        if let Some(agent_run_id) = agent_run_id
-            && let Err(err) = AgentRuntime::new(repository).cancel_run(&agent_run_id, None)
-        {
-            event!(Level::ERROR, error = ?err, agent_run_id = %agent_run_id, "cancel active agent run failed");
-        }
-
-        self.active_runs.remove(&conversation_id);
-        self.last_errors.remove(&conversation_id);
-        cx.emit(ConversationRuntimeEvent::ConversationChanged {
-            conversation_id: conversation_id.clone(),
-        });
-        cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
-        cx.notify();
-        true
-    }
-}
-
-fn cancel_with_token(cancellation_token: AgentCancellationToken) -> Box<dyn Fn() + Send + Sync> {
-    Box::new(move || cancellation_token.cancel())
 }
 
 pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
@@ -484,6 +437,7 @@ pub(crate) fn runtime(cx: &App) -> Entity<ConversationRuntimeStore> {
 
 async fn run_agent_with_saved_provider(
     repository: FreshRepository,
+    agent_run: Option<AgentRunRecord>,
     request: AgentRunRequest,
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
@@ -494,6 +448,13 @@ async fn run_agent_with_saved_provider(
         }
     });
     let runtime = AgentRuntime::new(repository.clone());
+    let mut request = request;
+    let agent_run = match agent_run {
+        Some(agent_run) => agent_run,
+        None => runtime
+            .begin_run(&mut request, Some(&observer))
+            .map_err(|err| err.to_string())?,
+    };
     let provider = match repository
         .get_provider(&request.provider_id)
         .map_err(|err| err.to_string())?
@@ -502,7 +463,7 @@ async fn run_agent_with_saved_provider(
         None => {
             let message = format!("provider `{}` was not found", request.provider_id);
             return gpui_tokio::Tokio::spawn(cx, async move {
-                runtime.record_setup_failed_run(request, message, Some(&observer))
+                runtime.record_setup_failed_started_run(&agent_run, message, Some(&observer))
             })
             .await
             .map_err(|err| err.to_string())?
@@ -513,7 +474,7 @@ async fn run_agent_with_saved_provider(
         Ok(secrets) => secrets,
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
-                runtime.record_setup_failed_run(request, err, Some(&observer))
+                runtime.record_setup_failed_started_run(&agent_run, err, Some(&observer))
             })
             .await
             .map_err(|err| err.to_string())?
@@ -522,7 +483,13 @@ async fn run_agent_with_saved_provider(
     };
     gpui_tokio::Tokio::spawn(cx, async move {
         runtime
-            .run_with_saved_provider_observed(request, provider, secrets, Some(observer))
+            .run_started_with_saved_provider_observed(
+                agent_run,
+                request,
+                provider,
+                secrets,
+                Some(observer),
+            )
             .await
     })
     .await
@@ -584,7 +551,7 @@ async fn approve_tool_with_runtime(
     let mut resume_request = resume_request_after_approval(&repository, &approval_handle.agent_run)
         .map_err(|err| err.to_string())?;
     resume_request.cancellation_token = cancellation_token;
-    run_agent_with_saved_provider(repository, resume_request, tx, cx).await
+    run_agent_with_saved_provider(repository, None, resume_request, tx, cx).await
 }
 
 fn is_terminal_status(status: AgentRunStatus) -> bool {
@@ -592,18 +559,6 @@ fn is_terminal_status(status: AgentRunStatus) -> bool {
         status,
         AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
     )
-}
-
-fn latest_non_terminal_agent_run_id(
-    repository: &FreshRepository,
-    conversation_id: &ConversationId,
-) -> ai_chat_db::Result<Option<AgentRunId>> {
-    Ok(repository
-        .agent_runs_for_conversation(conversation_id)?
-        .into_iter()
-        .rev()
-        .find(|run| !is_terminal_status(run.status))
-        .map(|run| run.id))
 }
 
 fn agent_run_id_for_tool_invocation(
@@ -674,10 +629,7 @@ mod tests {
         NewToolInvocationApproval, ToolInvocationApprovalOutcome,
     };
     use gpui::{Subscription, WindowHandle};
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::{Arc, Mutex};
     use tempfile::{TempDir, tempdir};
 
     struct RuntimeEventRecorder {
@@ -705,45 +657,36 @@ mod tests {
         }
     }
 
-    fn active_run(
+    fn active_run(key: ActiveRunKey) -> ActiveRun {
+        active_run_with_token(key, AgentCancellationToken::new())
+    }
+
+    fn active_run_with_token(
         key: ActiveRunKey,
-        cancel_count: Arc<AtomicUsize>,
-        cancel_requested: bool,
+        cancellation_token: AgentCancellationToken,
     ) -> ActiveRun {
         ActiveRun {
             key,
-            agent_run_id: None,
+            agent_run_id: "run-1".to_string(),
             phase: ActiveRunPhase::Running,
-            cancel_requested,
-            cancel: Box::new(move || {
-                cancel_count.fetch_add(1, Ordering::SeqCst);
-            }),
-            _run_task: Task::ready(()),
+            cancellation_token,
+            run_task: Some(Task::ready(())),
             _event_task: Task::ready(()),
         }
     }
 
-    fn active_run_with_agent_id(
-        key: ActiveRunKey,
-        agent_run_id: AgentRunId,
-        cancel_count: Arc<AtomicUsize>,
-        cancel_requested: bool,
-    ) -> ActiveRun {
+    fn active_run_with_agent_id(key: ActiveRunKey, agent_run_id: AgentRunId) -> ActiveRun {
         ActiveRun {
-            agent_run_id: Some(agent_run_id),
-            ..active_run(key, cancel_count, cancel_requested)
+            agent_run_id,
+            ..active_run(key)
         }
     }
 
-    fn active_waiting_approval_run(
-        key: ActiveRunKey,
-        agent_run_id: AgentRunId,
-        cancel_count: Arc<AtomicUsize>,
-    ) -> ActiveRun {
+    fn active_waiting_approval_run(key: ActiveRunKey, agent_run_id: AgentRunId) -> ActiveRun {
         ActiveRun {
-            agent_run_id: Some(agent_run_id),
+            agent_run_id,
             phase: ActiveRunPhase::WaitingForApproval,
-            ..active_run(key, cancel_count, false)
+            ..active_run(key)
         }
     }
 
@@ -818,116 +761,50 @@ mod tests {
     }
 
     #[gpui::test]
-    fn stop_run_cancels_active_run_once(cx: &mut gpui::TestAppContext) {
+    fn stop_run_cancels_active_run_immediately(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let conversation_id = "conversation-1".to_string();
-        let cancel_count = Arc::new(AtomicUsize::new(0));
-
-        cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), cancel_count.clone(), false),
-                );
-
-                assert!(store.stop_run(&conversation_id, cx));
-                assert!(store.stop_run(&conversation_id, cx));
-                assert!(
-                    store
-                        .active_runs
-                        .get(&conversation_id)
-                        .is_some_and(|run| run.cancel_requested)
-                );
-            });
-        });
-
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[gpui::test]
-    fn stop_run_cancels_token_backed_active_run(cx: &mut gpui::TestAppContext) {
-        let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let conversation_id = "conversation-1".to_string();
+        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
         let cancellation_token = AgentCancellationToken::new();
+        let (conversation_id, agent_run_id) = cx.update(|cx| {
+            let repository = database::repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let agent_run_id =
+                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            (conversation_id, agent_run_id)
+        });
 
         cx.update(|cx| {
             store.update(cx, |store, cx| {
                 store.active_runs.insert(
                     conversation_id.clone(),
                     ActiveRun {
-                        key: ActiveRunKey(0),
-                        agent_run_id: None,
-                        phase: ActiveRunPhase::Running,
-                        cancel_requested: false,
-                        cancel: cancel_with_token(cancellation_token.clone()),
-                        _run_task: Task::ready(()),
-                        _event_task: Task::ready(()),
+                        agent_run_id: agent_run_id.clone(),
+                        ..active_run_with_token(ActiveRunKey(0), cancellation_token.clone())
                     },
                 );
+                store
+                    .last_errors
+                    .insert(conversation_id.clone(), "runtime canceled".to_string());
 
                 assert!(store.stop_run(&conversation_id, cx));
+                assert!(!store.stop_run(&conversation_id, cx));
+                assert!(!store.active_runs.contains_key(&conversation_id));
+                assert!(store.take_last_error(&conversation_id).is_none());
             });
         });
 
         assert!(cancellation_token.is_cancelled());
-    }
-
-    #[gpui::test]
-    fn stop_run_removes_active_run_after_grace(cx: &mut gpui::TestAppContext) {
-        let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
-        let conversation_id = "conversation-1".to_string();
-        let cancel_count = Arc::new(AtomicUsize::new(0));
 
         cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), cancel_count.clone(), false),
-                );
-                assert!(store.stop_run(&conversation_id, cx));
-            });
-        });
-
-        cx.background_executor
-            .advance_clock(STOP_GRACE + Duration::from_millis(1));
-        cx.run_until_parked();
-
-        cx.update(|cx| {
-            store.update(cx, |store, _cx| {
-                assert!(!store.active_runs.contains_key(&conversation_id));
-            });
+            let repository = database::repository(cx);
+            let run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
+            assert_eq!(run.status, AgentRunStatus::Canceled);
+            assert!(run.error.is_none());
             let events = recorder.read(cx).events.lock().unwrap().clone();
             assert!(events.contains(&ConversationRuntimeEvent::RunFinished {
                 conversation_id: conversation_id.clone(),
             }));
-        });
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[gpui::test]
-    fn finish_run_suppresses_error_after_cancel_request(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let conversation_id = "conversation-1".to_string();
-
-        cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), Arc::new(AtomicUsize::new(0)), true),
-                );
-                store.finish_run(
-                    conversation_id.clone(),
-                    ActiveRunKey(0),
-                    Err("runtime canceled".to_string()),
-                    cx,
-                );
-
-                assert!(store.take_last_error(&conversation_id).is_none());
-            });
         });
     }
 
@@ -938,10 +815,9 @@ mod tests {
 
         cx.update(|cx| {
             store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), Arc::new(AtomicUsize::new(0)), false),
-                );
+                store
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(0)));
                 store.finish_run(
                     conversation_id.clone(),
                     ActiveRunKey(0),
@@ -973,10 +849,9 @@ mod tests {
 
         cx.update(|cx| {
             store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), Arc::new(AtomicUsize::new(0)), false),
-                );
+                store
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(0)));
                 assert!(store.finish_run(
                     conversation_id.clone(),
                     ActiveRunKey(0),
@@ -996,7 +871,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("waiting approval remains active");
-                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run.id));
+                assert_eq!(&active.agent_run_id, &agent_run.id);
                 assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
             });
         });
@@ -1027,11 +902,7 @@ mod tests {
             store.update(cx, |store, cx| {
                 store.active_runs.insert(
                     conversation_id.clone(),
-                    active_waiting_approval_run(
-                        ActiveRunKey(0),
-                        agent_run_id.clone(),
-                        Arc::new(AtomicUsize::new(0)),
-                    ),
+                    active_waiting_approval_run(ActiveRunKey(0), agent_run_id.clone()),
                 );
 
                 assert!(store.deny_tool_invocation(
@@ -1174,11 +1045,7 @@ mod tests {
             store.update(cx, |store, cx| {
                 store.active_runs.insert(
                     conversation_id.clone(),
-                    active_waiting_approval_run(
-                        ActiveRunKey(0),
-                        agent_run_id.clone(),
-                        Arc::new(AtomicUsize::new(0)),
-                    ),
+                    active_waiting_approval_run(ActiveRunKey(0), agent_run_id.clone()),
                 );
 
                 assert!(!store.deny_tool_invocation(
@@ -1190,7 +1057,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("failed denial must keep the active run");
-                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
+                assert_eq!(&active.agent_run_id, &agent_run_id);
                 assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
                 assert!(store.take_last_error(&conversation_id).is_some());
             });
@@ -1221,12 +1088,7 @@ mod tests {
             store.update(cx, |store, cx| {
                 store.active_runs.insert(
                     conversation_id.clone(),
-                    active_run_with_agent_id(
-                        ActiveRunKey(0),
-                        agent_run_id.clone(),
-                        Arc::new(AtomicUsize::new(0)),
-                        false,
-                    ),
+                    active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone()),
                 );
 
                 assert!(!store.deny_tool_invocation(
@@ -1238,7 +1100,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("stale denial must not clear the running resume");
-                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
+                assert_eq!(&active.agent_run_id, &agent_run_id);
                 assert_eq!(active.phase, ActiveRunPhase::Running);
                 assert!(store.take_last_error(&conversation_id).is_none());
             });
@@ -1276,10 +1138,9 @@ mod tests {
 
         cx.update(|cx| {
             store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(2), Arc::new(AtomicUsize::new(0)), false),
-                );
+                store
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(2)));
 
                 assert!(!store.finish_run(
                     conversation_id.clone(),
@@ -1290,107 +1151,6 @@ mod tests {
                 assert!(store.active_runs.contains_key(&conversation_id));
                 assert!(store.take_last_error(&conversation_id).is_none());
             });
-        });
-    }
-
-    #[gpui::test]
-    fn force_finish_stopped_run_cancels_active_run_and_removes_it(cx: &mut gpui::TestAppContext) {
-        let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let (conversation_id, agent_run_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
-            let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
-            (conversation_id, agent_run_id)
-        });
-
-        cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run_with_agent_id(
-                        ActiveRunKey(0),
-                        agent_run_id.clone(),
-                        Arc::new(AtomicUsize::new(0)),
-                        true,
-                    ),
-                );
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "runtime canceled".to_string());
-                let repository = database::repository(cx);
-
-                assert!(store.force_finish_stopped_run(
-                    conversation_id.clone(),
-                    ActiveRunKey(0),
-                    repository,
-                    cx
-                ));
-                assert!(!store.active_runs.contains_key(&conversation_id));
-                assert!(store.take_last_error(&conversation_id).is_none());
-            });
-        });
-
-        cx.update(|cx| {
-            let repository = database::repository(cx);
-            let run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
-            assert_eq!(run.status, AgentRunStatus::Canceled);
-            assert!(run.error.is_none());
-        });
-    }
-
-    #[gpui::test]
-    fn force_finish_stopped_run_falls_back_to_latest_non_terminal_run(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
-        let (conversation_id, completed_run_id, running_run_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
-            let conversation_id = insert_conversation_with_user_item(&repository);
-            let completed_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Completed);
-            let running_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
-            (conversation_id, completed_run_id, running_run_id)
-        });
-
-        cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.active_runs.insert(
-                    conversation_id.clone(),
-                    active_run(ActiveRunKey(0), Arc::new(AtomicUsize::new(0)), true),
-                );
-                let repository = database::repository(cx);
-
-                assert!(store.force_finish_stopped_run(
-                    conversation_id.clone(),
-                    ActiveRunKey(0),
-                    repository,
-                    cx
-                ));
-            });
-        });
-
-        cx.update(|cx| {
-            let repository = database::repository(cx);
-            assert_eq!(
-                repository
-                    .get_agent_run(&completed_run_id)
-                    .unwrap()
-                    .unwrap()
-                    .status,
-                AgentRunStatus::Completed
-            );
-            assert_eq!(
-                repository
-                    .get_agent_run(&running_run_id)
-                    .unwrap()
-                    .unwrap()
-                    .status,
-                AgentRunStatus::Canceled
-            );
         });
     }
 

@@ -79,7 +79,7 @@ impl PersistenceContext {
                     value: serde_json::json!({ "messageId": message_id }),
                 }),
         };
-        self.repo.update_provider_step_status(
+        let step = self.repo.update_provider_step_status(
             provider_step_id,
             UpdateProviderStepStatus {
                 status: ProviderStepStatus::Completed,
@@ -88,6 +88,9 @@ impl PersistenceContext {
                 error: None,
             },
         )?;
+        if step.status != ProviderStepStatus::Completed {
+            return Ok(());
+        }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
@@ -166,7 +169,7 @@ impl PersistenceContext {
             output_item_ids: Vec::new(),
             continuation: None,
         };
-        self.repo.update_provider_step_status(
+        let step = self.repo.update_provider_step_status(
             provider_step_id,
             UpdateProviderStepStatus {
                 status: ProviderStepStatus::Completed,
@@ -175,6 +178,9 @@ impl PersistenceContext {
                 error: None,
             },
         )?;
+        if step.status != ProviderStepStatus::Completed {
+            return Ok(());
+        }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
@@ -203,7 +209,7 @@ impl PersistenceContext {
         provider_step_id: &str,
         error: RunErrorPayload,
     ) -> Result<()> {
-        self.repo.update_provider_step_status(
+        let step = self.repo.update_provider_step_status(
             provider_step_id,
             UpdateProviderStepStatus {
                 status: ProviderStepStatus::Failed,
@@ -212,6 +218,9 @@ impl PersistenceContext {
                 error: Some(error.clone()),
             },
         )?;
+        if step.status != ProviderStepStatus::Failed {
+            return Ok(());
+        }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
@@ -228,7 +237,7 @@ impl PersistenceContext {
         provider_step_id: &str,
         error: RunErrorPayload,
     ) -> Result<()> {
-        self.repo.update_provider_step_status(
+        let step = self.repo.update_provider_step_status(
             provider_step_id,
             UpdateProviderStepStatus {
                 status: ProviderStepStatus::Canceled,
@@ -237,6 +246,9 @@ impl PersistenceContext {
                 error: Some(error.clone()),
             },
         )?;
+        if step.status != ProviderStepStatus::Canceled {
+            return Ok(());
+        }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
