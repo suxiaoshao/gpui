@@ -89,8 +89,7 @@ impl ToolExecutor for GrepTool {
         let root = search_root(input.path.as_deref(), &self.context)?;
         let max_results = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
         let context_lines = input.context_lines.unwrap_or(0);
-        let matches = grep_matches(&root, &input, max_results, context_lines)?;
-        let truncated = matches.len() >= max_results;
+        let (matches, truncated) = grep_matches(&root, &input, max_results, context_lines)?;
         let output = GrepOutput {
             pattern: input.pattern,
             matches,
@@ -210,7 +209,7 @@ fn grep_matches(
     input: &GrepInput,
     max_results: usize,
     context_lines: u32,
-) -> Result<Vec<GrepMatchOutput>> {
+) -> Result<(Vec<GrepMatchOutput>, bool)> {
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(!input.case_sensitive.unwrap_or(true))
         .build(&input.pattern)
@@ -224,9 +223,18 @@ fn grep_matches(
         None => None,
     };
     let mut matches = Vec::new();
+    let collection_limit = max_results.saturating_add(1);
     if root.is_file() {
-        search_file(root, &matcher, max_results, context_lines, &mut matches)?;
-        return Ok(matches);
+        search_file(
+            root,
+            &matcher,
+            collection_limit,
+            context_lines,
+            &mut matches,
+        )?;
+        let truncated = matches.len() > max_results;
+        matches.truncate(max_results);
+        return Ok((matches, truncated));
     }
 
     let mut builder = WalkBuilder::new(root);
@@ -235,7 +243,7 @@ fn grep_matches(
         .git_ignore(true)
         .parents(true);
     for result in builder.build() {
-        if matches.len() >= max_results {
+        if matches.len() >= collection_limit {
             break;
         }
         let entry = result.map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -248,9 +256,17 @@ fn grep_matches(
         {
             continue;
         }
-        search_file(path, &matcher, max_results, context_lines, &mut matches)?;
+        search_file(
+            path,
+            &matcher,
+            collection_limit,
+            context_lines,
+            &mut matches,
+        )?;
     }
-    Ok(matches)
+    let truncated = matches.len() > max_results;
+    matches.truncate(max_results);
+    Ok((matches, truncated))
 }
 
 fn search_file(
@@ -499,6 +515,45 @@ mod tests {
         assert_eq!(grep_match.context_after.len(), 1);
         assert_eq!(grep_match.context_after[0].line_number, 4);
         assert_eq!(grep_match.context_after[0].line, "    finish();");
+    }
+
+    #[tokio::test]
+    async fn grep_marks_truncated_only_after_omitting_a_match() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("main.rs"),
+            ["alpha one", "beta", "alpha two"].join("\n"),
+        )
+        .unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let exact = GrepTool::new(context.clone())
+            .execute(json!({
+                "pattern": "alpha one",
+                "glob": "*.rs",
+                "maxResults": 1,
+            }))
+            .await
+            .unwrap();
+        let exact_output: GrepOutput =
+            serde_json::from_value(exact.structured_output.unwrap().value).unwrap();
+        assert_eq!(exact_output.matches.len(), 1);
+        assert!(!exact_output.truncated);
+
+        let truncated = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "alpha",
+                "glob": "*.rs",
+                "maxResults": 1,
+            }))
+            .await
+            .unwrap();
+        let truncated_output: GrepOutput =
+            serde_json::from_value(truncated.structured_output.unwrap().value).unwrap();
+        assert_eq!(truncated_output.matches.len(), 1);
+        assert!(truncated_output.truncated);
     }
 
     #[tokio::test]
