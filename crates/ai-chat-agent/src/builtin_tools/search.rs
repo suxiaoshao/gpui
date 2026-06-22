@@ -185,15 +185,19 @@ fn find_path_matches(
         let Some(score) = path_score(&path_lower, &query_lower) else {
             continue;
         };
-        if matches.len() >= max_results {
-            return Ok((matches, true));
-        }
         matches.push(PathSearchMatchOutput {
             path: path_text.into_owned(),
             kind: file_entry_kind(path)?,
             score: Some(score),
         });
     }
+    Ok(sort_and_truncate_path_matches(matches, max_results))
+}
+
+fn sort_and_truncate_path_matches(
+    mut matches: Vec<PathSearchMatchOutput>,
+    max_results: usize,
+) -> (Vec<PathSearchMatchOutput>, bool) {
     matches.sort_by(|left, right| {
         right
             .score
@@ -201,7 +205,9 @@ fn find_path_matches(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.path.cmp(&right.path))
     });
-    Ok((matches, false))
+    let truncated = matches.len() > max_results;
+    matches.truncate(max_results);
+    (matches, truncated)
 }
 
 fn grep_matches(
@@ -554,6 +560,34 @@ mod tests {
             serde_json::from_value(truncated.structured_output.unwrap().value).unwrap();
         assert_eq!(truncated_output.matches.len(), 1);
         assert!(truncated_output.truncated);
+    }
+
+    #[test]
+    fn find_path_sorts_matches_before_truncating() {
+        let (matches, truncated) = sort_and_truncate_path_matches(
+            vec![
+                PathSearchMatchOutput {
+                    path: "/repo/src/generated/current_user_profile.rs".to_string(),
+                    kind: FileEntryKind::File,
+                    score: Some(1.1),
+                },
+                PathSearchMatchOutput {
+                    path: "/repo/src/user.rs".to_string(),
+                    kind: FileEntryKind::File,
+                    score: Some(1.5),
+                },
+                PathSearchMatchOutput {
+                    path: "/repo/tests/user_flow.rs".to_string(),
+                    kind: FileEntryKind::File,
+                    score: Some(1.3),
+                },
+            ],
+            1,
+        );
+
+        assert!(truncated);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, "/repo/src/user.rs");
     }
 
     #[tokio::test]

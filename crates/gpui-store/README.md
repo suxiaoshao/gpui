@@ -789,8 +789,8 @@ let backend = StoreBackendBuilder::new("file:settings")
     });
 ```
 
-The library should own callback wiring, weak entity upgrade, snapshot equality
-checks, and owner notification. The user owns the file watcher implementation.
+The library should own callback wiring, weak entity upgrade, state change checks,
+and owner notification. The user owns the file watcher implementation.
 
 ## Example: Database Projection
 

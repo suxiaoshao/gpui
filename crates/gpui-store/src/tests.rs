@@ -406,7 +406,7 @@ impl StoreCommitBackend<TestState> for FakeCommitBackend {
 }
 
 #[gpui::test]
-fn backend_equal_event_does_not_reconcile_or_notify(cx: &mut TestAppContext) {
+fn backend_equal_event_reconciles_without_notifying(cx: &mut TestAppContext) {
     let fake = FakeBackend::new(5);
     let (store, counter) = cx.update(|cx| {
         let store = SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap();
@@ -417,7 +417,7 @@ fn backend_equal_event_does_not_reconcile_or_notify(cx: &mut TestAppContext) {
 
     cx.update(|cx| fake.emit(cx));
 
-    assert_eq!(fake.reconcile_calls(), 1);
+    assert_eq!(fake.reconcile_calls(), 2);
     assert_eq!(
         cx.update(|cx| store.read(cx, |state| state.external_value)),
         5
@@ -452,7 +452,7 @@ fn backend_changed_event_reconciles_and_notifies(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn committed_backend_commit_runs_once_and_filters_ack_snapshot(cx: &mut TestAppContext) {
+fn committed_backend_commit_runs_once_and_reconciles_ack_snapshot(cx: &mut TestAppContext) {
     let fake = FakeCommitBackend::new(0);
     let store = cx.update(|cx| {
         SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap()
@@ -464,19 +464,111 @@ fn committed_backend_commit_runs_once_and_filters_ack_snapshot(cx: &mut TestAppC
 
     assert_eq!(fake.commit_calls(), 1);
     assert_eq!(fake.reconcile_calls(), 2);
+
+    cx.update(|cx| fake.emit(cx));
+
+    assert_eq!(fake.reconcile_calls(), 3);
+    assert_eq!(fake.commit_calls(), 1);
+}
+
+#[derive(Clone)]
+struct FakeNoSnapshotCommitBackend {
+    backend: FakeBackend,
+}
+
+impl FakeNoSnapshotCommitBackend {
+    fn new(snapshot: i32) -> Self {
+        Self {
+            backend: FakeBackend::new(snapshot),
+        }
+    }
+
+    fn emit(&self, cx: &mut App) {
+        self.backend.emit(cx);
+    }
+
+    fn reconcile_calls(&self) -> usize {
+        self.backend.reconcile_calls()
+    }
+
+    fn commit_calls(&self) -> usize {
+        self.backend.commit_calls()
+    }
+}
+
+impl StoreBackend<TestState> for FakeNoSnapshotCommitBackend {
+    type Snapshot = i32;
+    type Event = ();
+    type Subscription = ();
+    type Error = String;
+
+    fn backend_id(&self) -> StoreBackendId {
+        self.backend.backend_id()
+    }
+
+    fn load(&self) -> Result<Option<Self::Snapshot>, Self::Error> {
+        self.backend.load()
+    }
+
+    fn subscribe(
+        &self,
+        on_change: StoreBackendCallback<Self::Event>,
+    ) -> Result<Option<Self::Subscription>, Self::Error> {
+        self.backend.subscribe(on_change)
+    }
+
+    fn reconcile(&self, state: &mut TestState, snapshot: Self::Snapshot) -> bool {
+        self.backend.reconcile(state, snapshot)
+    }
+}
+
+impl StoreCommitBackend<TestState> for FakeNoSnapshotCommitBackend {
+    fn commit_snapshot(
+        &self,
+        _draft: &TestState,
+    ) -> Result<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
+        self.backend.inner.borrow_mut().commit_calls += 1;
+        Ok(Some(StoreCommitAck::without_snapshot()))
+    }
+}
+
+#[gpui::test]
+fn no_snapshot_commit_can_reconcile_later_external_snapshot(cx: &mut TestAppContext) {
+    let fake = FakeNoSnapshotCommitBackend::new(0);
+    let (store, counter) = cx.update(|cx| {
+        let store = SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap();
+        let counter = cx.new(|cx| NotifyCounter::new(store.entity(), cx));
+        (store, counter)
+    });
+    assert_eq!(fake.reconcile_calls(), 1);
+
+    cx.update(|cx| {
+        store
+            .try_set(cx, |state| &mut state.external_value, 11)
+            .unwrap();
+    });
+
+    assert_eq!(fake.commit_calls(), 1);
     assert_eq!(
-        cx.update(|cx| {
-            store
-                .entity()
-                .read_with(cx, |runtime, _| runtime.last_external_snapshot().copied())
-        }),
-        Some(11)
+        cx.update(|cx| store.read(cx, |state| state.external_value)),
+        11
+    );
+    assert_eq!(
+        cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
+        1
     );
 
     cx.update(|cx| fake.emit(cx));
 
     assert_eq!(fake.reconcile_calls(), 2);
-    assert_eq!(fake.commit_calls(), 1);
+    assert_eq!(
+        cx.update(|cx| store.read(cx, |state| state.external_value)),
+        0
+    );
+    assert_eq!(
+        cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
+        2
+    );
 }
 
 struct LocalBackendOwner {

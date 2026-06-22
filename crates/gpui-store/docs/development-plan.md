@@ -910,7 +910,6 @@ store entity notifies
 ```text
 external event owned by SharedStore
   -> backend load/get_snapshot
-  -> snapshot equals last external snapshot: stop
   -> reconcile snapshot into store state
   -> backend reconcile returns changed bool
   -> changed: revision += 1, notify store
@@ -1154,7 +1153,7 @@ external event owned by SharedStore
   转发到当前 snapshot。
 - 不能通过 `StoreBinding<T, E>` 取得 mutable reference 绕过 store。
 - external backend initial load 相同 state 不 notify。
-- external backend event 相同 snapshot 不 reconcile。
+- external backend event 相同 state 可 reconcile，但不 notify。
 - database committed snapshot reconcile 后 selection 更新。
 
 ## 待定决策

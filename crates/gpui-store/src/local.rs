@@ -12,7 +12,6 @@ where
 {
     core: StoreCore<S>,
     backend: Backend,
-    last_external_snapshot: Option<Backend::Snapshot>,
     backend_subscription: Option<Backend::Subscription>,
     last_commit_ack: Option<StoreCommitAck<Backend::Snapshot>>,
     last_error: Option<Backend::Error>,
@@ -86,7 +85,6 @@ where
         Self {
             core: StoreCore::new(initial),
             backend,
-            last_external_snapshot: None,
             backend_subscription: None,
             last_commit_ack: None,
             last_error: None,
@@ -107,10 +105,6 @@ where
 
     pub fn backend(&self) -> &Backend {
         &self.backend
-    }
-
-    pub fn last_external_snapshot(&self) -> Option<&Backend::Snapshot> {
-        self.last_external_snapshot.as_ref()
     }
 
     pub fn last_commit_ack(&self) -> Option<&StoreCommitAck<Backend::Snapshot>> {
@@ -210,20 +204,9 @@ where
     where
         Owner: 'static,
     {
-        if origin == StoreUpdateOrigin::External
-            && self
-                .last_external_snapshot
-                .as_ref()
-                .is_some_and(|last_snapshot| last_snapshot == &snapshot)
-        {
-            return StoreUpdate::unchanged(self.core.revision(), origin);
-        }
-
-        let snapshot_for_reconcile = snapshot.clone();
-        let update = self.core.update_if_with_origin(origin, |state| {
-            self.backend.reconcile(state, snapshot_for_reconcile)
-        });
-        self.last_external_snapshot = Some(snapshot);
+        let update = self
+            .core
+            .update_if_with_origin(origin, |state| self.backend.reconcile(state, snapshot));
 
         Self::notify_after_update(update, cx);
         update
