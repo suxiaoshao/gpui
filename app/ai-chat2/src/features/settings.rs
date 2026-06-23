@@ -3,7 +3,7 @@ use crate::{
         APP_NAME, menus,
         title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
-    foundation::{self, I18n},
+    foundation::{self, I18n, assets::IconName},
     state,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -25,6 +25,7 @@ mod projects;
 mod prompts;
 mod provider;
 mod shortcuts;
+mod skills;
 
 use self::{
     appearance::AppearanceSettingsPage,
@@ -36,6 +37,7 @@ use self::{
     prompts::PromptsSettingsPage,
     provider::ProviderSettingsPage,
     shortcuts::ShortcutsSettingsPage,
+    skills::SkillsSettingsPage,
 };
 
 actions!(ai_chat2_settings, [ToggleSettings]);
@@ -56,6 +58,7 @@ pub(crate) struct SettingsView {
     provider_settings: Entity<ProviderSettingsPage>,
     projects_settings: Entity<ProjectsSettingsPage>,
     prompts_settings: Entity<PromptsSettingsPage>,
+    skills_settings: Entity<SkillsSettingsPage>,
     shortcuts_settings: Entity<ShortcutsSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
@@ -79,6 +82,7 @@ impl SettingsView {
         let provider_settings = cx.new(|cx| ProviderSettingsPage::new(window, cx));
         let projects_settings = cx.new(ProjectsSettingsPage::new);
         let prompts_settings = cx.new(|cx| PromptsSettingsPage::new(window, cx));
+        let skills_settings = cx.new(|cx| SkillsSettingsPage::new(window, cx));
         let shortcuts_settings = cx.new(|cx| ShortcutsSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
@@ -137,6 +141,7 @@ impl SettingsView {
             provider_settings,
             projects_settings,
             prompts_settings,
+            skills_settings,
             shortcuts_settings,
             app_menu_bar,
             selected_page,
@@ -221,13 +226,17 @@ impl Render for SettingsView {
                     SettingsPageKey::Provider => self.provider_settings.clone().into_any_element(),
                     SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
                     SettingsPageKey::Prompts => self.prompts_settings.clone().into_any_element(),
+                    SettingsPageKey::Skills => self.skills_settings.clone().into_any_element(),
                     SettingsPageKey::Shortcuts => {
                         self.shortcuts_settings.clone().into_any_element()
                     }
                 },
             )
             .when(
-                matches!(active_page_key, SettingsPageKey::Provider),
+                matches!(
+                    active_page_key,
+                    SettingsPageKey::Provider | SettingsPageKey::Skills
+                ),
                 |frame| frame.no_outer_body_scroll(),
             )
             .into_any_element()
@@ -385,17 +394,18 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 6] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 7] {
     let i18n = cx.global::<I18n>();
     settings_page_specs_for_i18n(i18n)
 }
 
-fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 7] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
     let page_projects = i18n.t("settings-page-projects");
     let page_prompts = i18n.t("settings-page-prompts");
+    let page_skills = i18n.t("settings-page-skills");
     let page_shortcuts = i18n.t("settings-page-shortcuts");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
@@ -406,6 +416,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
     [
         SettingsPageSpec::new(
             SettingsPageKey::General,
+            IconName::Settings,
             page_general.clone(),
             settings_search_text(
                 [
@@ -421,6 +432,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
         ),
         SettingsPageSpec::new(
             SettingsPageKey::Appearance,
+            IconName::Palette,
             page_appearance.clone(),
             settings_search_text(
                 [page_appearance.as_str()],
@@ -429,6 +441,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
         ),
         SettingsPageSpec::new(
             SettingsPageKey::Provider,
+            IconName::Cloud,
             page_provider.clone(),
             settings_search_text(
                 [page_provider.as_str()],
@@ -437,6 +450,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
         ),
         SettingsPageSpec::new(
             SettingsPageKey::Projects,
+            IconName::Folder,
             page_projects.clone(),
             settings_search_text(
                 [page_projects.as_str()],
@@ -445,6 +459,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
         ),
         SettingsPageSpec::new(
             SettingsPageKey::Prompts,
+            IconName::FilePen,
             page_prompts.clone(),
             settings_search_text(
                 [page_prompts.as_str()],
@@ -452,7 +467,17 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 6] {
             ),
         ),
         SettingsPageSpec::new(
+            SettingsPageKey::Skills,
+            IconName::Sparkles,
+            page_skills.clone(),
+            settings_search_text(
+                [page_skills.as_str()],
+                "skills skill agent global catalog directory path source content markdown skill.md 技能 全局 列表 目录 路径 来源 内容",
+            ),
+        ),
+        SettingsPageSpec::new(
             SettingsPageKey::Shortcuts,
+            IconName::Keyboard,
             page_shortcuts.clone(),
             settings_search_text(
                 [page_shortcuts.as_str()],
@@ -516,7 +541,7 @@ mod tests {
         SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, settings_page_matches,
         settings_page_specs_for_i18n, settings_search_text, settings_titlebar_options,
     };
-    use crate::foundation::I18n;
+    use crate::foundation::{I18n, assets::IconName};
     use gpui::Keystroke;
     use gpui_component::TitleBar;
     use gpui_component::kbd::Kbd;
@@ -541,6 +566,7 @@ mod tests {
     fn settings_search_matches_localized_labels_and_keywords() {
         let appearance = SettingsPageSpec::new(
             SettingsPageKey::Appearance,
+            IconName::Palette,
             "外观",
             settings_search_text(["外观"], "appearance theme material"),
         );
@@ -554,11 +580,13 @@ mod tests {
     fn settings_search_matches_localized_labels_by_pinyin() {
         let general = SettingsPageSpec::new(
             SettingsPageKey::General,
+            IconName::Settings,
             "通用",
             settings_search_text(["通用"], "general"),
         );
         let appearance = SettingsPageSpec::new(
             SettingsPageKey::Appearance,
+            IconName::Palette,
             "外观",
             settings_search_text(["外观"], "appearance"),
         );
@@ -610,6 +638,24 @@ mod tests {
         assert!(settings_page_matches(prompts, "提示词"));
         assert!(settings_page_matches(prompts, "tishici"));
         assert!(settings_page_matches(prompts, "tsc"));
+    }
+
+    #[test]
+    fn settings_skills_page_uses_i18n_title_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let skills = specs
+            .iter()
+            .find(|spec| spec.key == SettingsPageKey::Skills)
+            .expect("skills settings page exists");
+
+        assert_eq!(skills.title.as_ref(), "技能");
+        assert!(settings_page_matches(skills, "skill"));
+        assert!(settings_page_matches(skills, "catalog"));
+        assert!(settings_page_matches(skills, "skill.md"));
+        assert!(settings_page_matches(skills, "技能"));
+        assert!(settings_page_matches(skills, "jineng"));
+        assert!(settings_page_matches(skills, "jn"));
     }
 
     #[test]

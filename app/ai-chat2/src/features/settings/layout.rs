@@ -1,7 +1,7 @@
 use crate::{foundation::assets::IconName, foundation::search::field_matches_query};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, StyledExt,
+    ActiveTheme, Icon, Sizable, StyledExt,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Input, InputState},
@@ -27,12 +27,14 @@ pub(super) enum SettingsPageKey {
     Provider,
     Projects,
     Prompts,
+    Skills,
     Shortcuts,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct SettingsPageSpec {
     pub(super) key: SettingsPageKey,
+    pub(super) icon: IconName,
     pub(super) title: SharedString,
     pub(super) search_text: String,
 }
@@ -40,11 +42,13 @@ pub(super) struct SettingsPageSpec {
 impl SettingsPageSpec {
     pub(super) fn new(
         key: SettingsPageKey,
+        icon: IconName,
         title: impl Into<SharedString>,
         search_text: String,
     ) -> Self {
         Self {
             key,
+            icon,
             title: title.into(),
             search_text,
         }
@@ -182,6 +186,11 @@ impl RenderOnce for SettingsNav {
                 self.pages.into_iter().map(move |page| {
                     let active = page.key == self.active_page;
                     let on_select = on_select.clone();
+                    let text_color = if active {
+                        cx.theme().sidebar_accent_foreground
+                    } else {
+                        cx.theme().sidebar_foreground
+                    };
                     h_flex()
                         .id(("settings-nav-item", page.key as usize))
                         .w_full()
@@ -189,9 +198,10 @@ impl RenderOnce for SettingsNav {
                         .h(px(32.))
                         .px_2()
                         .items_center()
+                        .gap_2()
                         .rounded(cx.theme().radius)
                         .cursor_pointer()
-                        .text_color(cx.theme().sidebar_foreground)
+                        .text_color(text_color)
                         .when(active, |this| {
                             this.bg(cx.theme().sidebar_accent)
                                 .text_color(cx.theme().sidebar_accent_foreground)
@@ -201,6 +211,7 @@ impl RenderOnce for SettingsNav {
                                 .text_color(cx.theme().sidebar_accent_foreground)
                         })
                         .on_click(move |_, window, cx| on_select(page.key, window, cx))
+                        .child(Icon::new(page.icon).with_size(px(16.)))
                         .child(
                             div()
                                 .flex_1()

@@ -10,6 +10,8 @@ Temporary Conversation Window 专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。
 Prompt 设置专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-prompt-settings.md`。
+Skill 设置专项计划见
+`app/ai-chat/docs/dev/issue-159-ai-chat2-skill-settings.md`。
 Shortcuts 设置专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-shortcut-settings.md`。
 ChatForm 多模态输入专项计划见
@@ -17,7 +19,7 @@ ChatForm 多模态输入专项计划见
 内置工具与审批专项计划见
 `app/ai-chat/docs/dev/issue-159-ai-chat2-built-in-tools-approval.md`。
 
-最后同步时间：2026-06-20。
+最后同步时间：2026-06-23。
 
 当前实现基线：`codex/issue-137-llm-abstractions`。foundation 已通过 PR #164 合入集成分支。
 当前增量分支为 `codex/issue-159-ai-chat2-ui`；阶段 PR #165
@@ -76,6 +78,11 @@ sidebar 和 conversation runtime/timeline 仍逐项评估。
 `cargo test -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store` 和
 `cargo clippy -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store --all-targets --all-features -- -D warnings`；
 未运行 full workspace build/test/clippy 或手动 GPUI UI 验证。
+2026-06-23 Skill Settings 第一版已实现：Settings 新增 `Skills` 分栏，
+展示全局 `SkillCatalog::scan(None)` catalog，提供刷新、搜索和列表内展开查看 `SKILL.md` 原始内容；
+本阶段不做 enable/disable、安装/卸载、编辑或项目级 skill 切换，也不新增数据库表。验证为
+`cargo fmt`、`cargo test -p ai-chat2 skill`、`cargo test -p ai-chat2 settings`、`cargo check -p ai-chat2`、
+`cargo clippy -p ai-chat2 --all-targets -- -D warnings` 和 `git diff --check`。
 
 已完成提交：
 
@@ -232,7 +239,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | provider models | `provider_models` | 已补 per-model enabled DB 合同、Settings 内 model enabled toggle、Provider 双栏独立滚动布局、右侧 detail 整体滚动、`ListState` model list、真实远端模型刷新、保留 enabled 的 fetch upsert、provider-specific capability source/enrichment，以及 Composer model picker 读取/搜索/能力标签/reasoning selector/provider logo。provider model fetch replace 和 enabled toggle 仍直接写入 repository 并通过 `ProviderCatalogEvent` 通知 UI reload；manual model editor 和 manual capability override persistence 仍未完成。 |
 | app settings | `config.toml` `[app_settings]` | General/Appearance 已消费并写回 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；fresh DB 不再创建 `app_settings` 表。 |
 | chat form defaults | `config.toml` `[chat_form]` | Composer 已消费并写回当前模型 provider/model id、reasoning selection 和 tool approval mode；provider/provider_models 本轮仍保持 DB-backed，`[chat_form]` 只保存选择偏好。 |
-| file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；没有 skill catalog UI、activation display 或 skill snapshot timeline UI。 |
+| file-backed skills | `ai-chat-agent::skills` | Composer 已读取 `SkillCatalog` 并在 snapshot 输出 skill activation request；Settings 全局 Skill catalog UI 第一版已实现，提供刷新、搜索和 inline raw `SKILL.md` 内容查看，详见 `app/ai-chat/docs/dev/issue-159-ai-chat2-skill-settings.md`。activation display 或 skill snapshot timeline UI 仍未实现。 |
 | MCP helpers | `config.toml` `[mcp_servers]` + `ai-chat-agent::mcp` | `config.toml` 已有 stdio / streamable HTTP MCP server 配置入口，并可转换为 `McpConfigLayer`；尚未接 MCP server 连接、connected status、tool 注册、MCP config UI 或 source-specific approval UI。 |
 
 ## 未开始 UI 清单
@@ -249,7 +256,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | Status and errors | queued/running/waiting/completed/failed/canceled 状态、retry affordance、user-visible error item。 |
 | Usage | per-run usage summary、provider/model token counts、usage event rollup display。 |
 | Attachments and multimodal | ChatForm 文件/图片粘贴、附件 strip、图片 preview、macOS Quick Look file preview fallback、attachments 表复用、Rig image/document content 合成和 provider/runtime unsupported-state messaging 已实现第一版，见 `issue-159-ai-chat2-chat-form-multimodal.md`；audio input、generated files/images、download、provider file upload 和完整 timeline multimodal rendering 仍未开始。 |
-| Settings | General/Appearance/Projects 已实现；Provider settings 第一阶段已实现并补齐 i18n/default disabled/滚动布局/save validation/secret credentials/model fetch/ListState lists/provider list panel polish/provider brand visual；Prompt Settings 第一版已实现，使用简单文本 `content TEXT`、管理页行列表、modal 查看/编辑、正文多行编辑和硬删除；Shortcuts Settings 第一版已实现；Composer 空状态可 deep-link 到 Provider settings；审批模式按产品决策放在 ChatForm 而不是 Settings；仍缺 manual provider model editor、Rig completion validation 和全局 tool/MCP policy 管理。 |
+| Settings | General/Appearance/Projects 已实现；Provider settings 第一阶段已实现并补齐 i18n/default disabled/滚动布局/save validation/secret credentials/model fetch/ListState lists/provider list panel polish/provider brand visual；Prompt Settings 第一版已实现，使用简单文本 `content TEXT`、管理页行列表、modal 查看/编辑、正文多行编辑和硬删除；Shortcuts Settings 第一版已实现；Skill Settings 第一版已实现，范围是全局 skill 列表、刷新、搜索和列表内展开查看内容，不做 enable/disable；Composer 空状态可 deep-link 到 Provider settings；审批模式按产品决策放在 ChatForm 而不是 Settings；仍缺 manual provider model editor、Rig completion validation 和全局 tool/MCP policy 管理。 |
 | Shortcuts | 已实现首版：fresh shortcut CRUD、input source selection、prompt/provider/model binding、registration/runtime status、重注册、selected text/clipboard/screenshot 自动发送 flow。详见 `issue-159-ai-chat2-shortcut-settings.md`。 |
 | Temporary chat | Temporary Conversation Window 首版已完成；shortcut 触发可创建新临时对话并启动 agent run；仍缺 save/promote to conversation。 |
 | Screenshot/input capture | shortcut screenshot overlay、capture、image-capable model attachment path 和 OCR fallback 已实现；ChatForm 多模态第一版已复用同类 image attachment 落盘/入库思路，实现通用 composer image/file attachment input。 |
