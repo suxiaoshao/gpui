@@ -13,7 +13,7 @@ use ai_chat_core::{ShortcutId, ShortcutInputSource};
 use ai_chat_db::{PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt,
+    ActiveTheme, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -64,6 +64,10 @@ impl ShortcutStatus {
         }
         .small()
         .outline()
+    }
+
+    fn should_render_row_tag(&self) -> bool {
+        !matches!(self, Self::Enabled | Self::Disabled)
     }
 }
 
@@ -168,11 +172,16 @@ impl RenderOnce for ShortcutManagementEntry {
         let on_reregister = self.on_reregister.clone();
         let on_delete = self.on_delete.clone();
         let on_toggle = self.on_toggle.clone();
-        let provider_icon = self
-            .row
-            .provider_kind
-            .as_ref()
-            .map(|kind| provider_visual_icon(provider_visual_for_kind(kind)));
+        let hotkey_label = self.row.hotkey_label.clone();
+        let status = self.row.status.clone();
+        let status_label = self.row.status_label.clone();
+        let updated_label = self.row.updated_label.clone();
+        let show_status_tag = status.should_render_row_tag();
+        let model_label = shortcut_model_label(&self.row);
+        let detail_label = shortcut_detail_label(&self.row);
+        let provider_icon = provider_visual_icon(provider_visual_for_kind(
+            self.row.provider_kind.as_deref().unwrap_or_default(),
+        ));
 
         h_flex()
             .id(format!("shortcut-settings-row-{}", self.row.id))
@@ -198,7 +207,11 @@ impl RenderOnce for ShortcutManagementEntry {
                     .justify_center()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().border.opacity(0.35))
-                    .child(Icon::new(IconName::Keyboard).text_color(cx.theme().muted_foreground)),
+                    .child(
+                        provider_icon
+                            .size_4()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
             )
             .child(
                 v_flex()
@@ -212,14 +225,18 @@ impl RenderOnce for ShortcutManagementEntry {
                             .items_center()
                             .gap_2()
                             .child(
-                                Label::new(self.row.hotkey_label)
+                                Label::new(hotkey_label)
+                                    .flex_none()
+                                    .max_w(px(240.))
                                     .text_sm()
                                     .font_medium()
                                     .truncate(),
                             )
-                            .child(self.row.status.tag().child(self.row.status_label))
+                            .when(show_status_tag, |this| {
+                                this.child(status.tag().child(status_label))
+                            })
                             .child(
-                                Label::new(self.row.updated_label)
+                                Label::new(updated_label)
                                     .flex_none()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground),
@@ -233,18 +250,14 @@ impl RenderOnce for ShortcutManagementEntry {
                             .gap_2()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(Label::new(self.row.prompt_label).truncate())
-                            .child(Label::new("->"))
-                            .when_some(provider_icon, |this, icon| {
-                                this.child(icon.size_3().text_color(cx.theme().muted_foreground))
-                            })
-                            .child(Label::new(self.row.provider_label).truncate())
-                            .child(Label::new("/"))
-                            .child(Label::new(self.row.model_label).truncate())
-                            .child(Label::new("->"))
-                            .child(Label::new(self.row.input_source_label).truncate())
-                            .child(Label::new("->"))
-                            .child(Label::new(self.row.action_label).truncate()),
+                            .child(
+                                Label::new(model_label)
+                                    .flex_none()
+                                    .max_w(px(360.))
+                                    .truncate(),
+                            )
+                            .child(Label::new("->").flex_none())
+                            .child(Label::new(detail_label).flex_1().min_w_0().truncate()),
                     ),
             )
             .child(
@@ -263,7 +276,7 @@ impl RenderOnce for ShortcutManagementEntry {
                     )
                     .child(
                         Button::new(format!("shortcut-settings-view-{view_id}"))
-                            .icon(IconName::FilePen)
+                            .icon(IconName::Eye)
                             .ghost()
                             .tooltip(view_label)
                             .on_click(move |_, window, cx| {
@@ -398,6 +411,20 @@ pub(super) fn filter_shortcut_rows(
         .collect()
 }
 
+fn shortcut_model_label(row: &ShortcutManagementRow) -> SharedString {
+    row.model_label.clone()
+}
+
+fn shortcut_detail_label(row: &ShortcutManagementRow) -> SharedString {
+    format!(
+        "{} -> {} -> {}",
+        row.prompt_label.as_ref(),
+        row.input_source_label.as_ref(),
+        row.action_label.as_ref()
+    )
+    .into()
+}
+
 pub(super) fn input_source_label(source: ShortcutInputSource, i18n: &I18n) -> String {
     match source {
         ShortcutInputSource::SelectionOrClipboard => {
@@ -496,7 +523,10 @@ fn canonical_hotkey_counts(shortcuts: &[ShortcutRecord]) -> BTreeMap<String, usi
 
 #[cfg(test)]
 mod tests {
-    use super::{ShortcutStatus, filter_shortcut_rows, shortcut_management_rows};
+    use super::{
+        ShortcutStatus, filter_shortcut_rows, shortcut_detail_label, shortcut_management_rows,
+        shortcut_model_label,
+    };
     use crate::state::hotkey::ShortcutRuntimeDiagnostics;
     use ai_chat_core::{
         ProviderModelMetadata, ProviderSettingsPayload, RunSettingsSnapshot, ShortcutAction,
@@ -520,6 +550,24 @@ mod tests {
         assert_eq!(filter_shortcut_rows(&rows, "shift").len(), 1);
         assert_eq!(filter_shortcut_rows(&rows, "gpt").len(), 1);
         assert_eq!(rows[0].status, ShortcutStatus::Enabled);
+    }
+
+    #[test]
+    fn shortcut_row_labels_prioritize_model_metadata() {
+        let i18n = crate::foundation::I18n::english_for_test();
+        let rows = shortcut_management_rows(
+            &[shortcut("shortcut-1", "super+shift+j")],
+            &[],
+            &[(provider(), vec![model(true)])],
+            &ShortcutRuntimeDiagnostics::default(),
+            &i18n,
+        );
+
+        assert_eq!(shortcut_model_label(&rows[0]).as_ref(), "gpt-5");
+        assert_eq!(
+            shortcut_detail_label(&rows[0]).as_ref(),
+            "No prompt -> Selection or Clipboard -> Temporary Conversation"
+        );
     }
 
     #[test]

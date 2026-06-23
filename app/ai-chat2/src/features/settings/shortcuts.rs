@@ -20,7 +20,7 @@ use gpui_component::{
 use super::{layout::settings_empty_message, push_settings_error};
 use choices::PromptChoice;
 use dialog::{
-    ShortcutDialogChoices, ShortcutEditMode, input_source_choices, open_shortcut_delete_confirm,
+    ShortcutDialogChoices, ShortcutEditMode, open_shortcut_delete_confirm,
     open_shortcut_edit_dialog, open_shortcut_preview_dialog,
 };
 use rows::{
@@ -183,7 +183,6 @@ impl ShortcutsSettingsPage {
             return ShortcutDialogChoices {
                 prompts: Vec::new(),
                 models: Vec::new(),
-                input_sources: input_source_choices(cx),
             };
         };
         let mut prompts = Vec::new();
@@ -200,7 +199,6 @@ impl ShortcutsSettingsPage {
         ShortcutDialogChoices {
             prompts,
             models: snapshot.model_choices.clone(),
-            input_sources: input_source_choices(cx),
         }
     }
 

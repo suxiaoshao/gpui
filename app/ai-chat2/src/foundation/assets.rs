@@ -24,6 +24,7 @@ define_lucide_icons!(
         FileSearch => "file-search",
         FileText => "file-text",
         Ellipsis => "ellipsis",
+        Eye => "eye",
         ExternalLink => "external-link",
         Folder => "folder",
         FolderMinus => "folder-minus",

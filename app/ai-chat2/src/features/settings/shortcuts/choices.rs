@@ -58,42 +58,21 @@ impl SelectItem for PromptChoice {
 pub(super) struct InputSourceChoice {
     value: ShortcutInputSource,
     label: SharedString,
-    search_text: String,
 }
 
 impl InputSourceChoice {
     pub(super) fn new(value: ShortcutInputSource, label: impl Into<SharedString>) -> Self {
-        let label = label.into();
-        let keywords = match value {
-            ShortcutInputSource::SelectionOrClipboard => {
-                "selection clipboard text selected 选中文字 剪贴板 文本"
-            }
-            ShortcutInputSource::Screenshot => "screenshot capture ocr image 截图 捕获 视觉",
-        };
         Self {
             value,
-            search_text: format!("{label} {keywords}").to_lowercase(),
-            label,
+            label: label.into(),
         }
     }
-}
 
-impl SelectItem for InputSourceChoice {
-    type Value = ShortcutInputSource;
+    pub(super) fn value(&self) -> ShortcutInputSource {
+        self.value
+    }
 
-    fn title(&self) -> SharedString {
+    pub(super) fn label(&self) -> SharedString {
         self.label.clone()
-    }
-
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(self.label.clone().into_any_element())
-    }
-
-    fn matches(&self, query: &str) -> bool {
-        field_matches_query(&self.search_text, query)
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
     }
 }

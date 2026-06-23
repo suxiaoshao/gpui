@@ -133,7 +133,7 @@ impl RenderOnce for PromptManagementEntry {
                     .gap_1()
                     .child(
                         Button::new(format!("prompt-settings-view-{view_id}"))
-                            .icon(IconName::FilePen)
+                            .icon(IconName::Eye)
                             .ghost()
                             .tooltip(view_label)
                             .on_click(move |_, window, cx| {

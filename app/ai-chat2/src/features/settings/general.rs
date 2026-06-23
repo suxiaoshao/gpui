@@ -7,14 +7,12 @@ use crate::{
 use ai_chat_core::AppLanguage;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable, WindowExt,
+    ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
-    dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     menu::{DropdownMenu, PopupMenuItem},
-    v_flex,
 };
 use tracing::{Level, event};
 
@@ -27,6 +25,145 @@ struct SettingsTextInputState {
     input: Entity<InputState>,
     last_value: String,
     _subscription: Subscription,
+}
+
+struct TemporaryHotkeyControlState {
+    editing: bool,
+    hotkey_input: Entity<HotkeyInput>,
+}
+
+impl TemporaryHotkeyControlState {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let hotkey_input = Self::new_hotkey_input(current_temporary_hotkey(cx), window, cx);
+        Self {
+            editing: false,
+            hotkey_input,
+        }
+    }
+
+    fn new_hotkey_input(
+        current_hotkey: Option<Keystroke>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<HotkeyInput> {
+        cx.new(|cx| {
+            HotkeyInput::new("temporary-hotkey-inline-input", window, cx)
+                .small()
+                .default_value(current_hotkey)
+        })
+    }
+
+    fn reset_hotkey_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hotkey_input = Self::new_hotkey_input(current_temporary_hotkey(cx), window, cx);
+    }
+
+    fn focus_hotkey_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.hotkey_input.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
+    fn start_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_hotkey_input(window, cx);
+        self.editing = true;
+        self.focus_hotkey_input(window, cx);
+        cx.notify();
+    }
+
+    fn cancel_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_hotkey_input(window, cx);
+        self.editing = false;
+        cx.notify();
+    }
+
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let next_hotkey = self.hotkey_input.read(cx).current_hotkey_string();
+        if save_temporary_hotkey(next_hotkey, window, cx) {
+            self.reset_hotkey_input(window, cx);
+            self.editing = false;
+        }
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    fn set_draft_hotkey_for_test(
+        &mut self,
+        hotkey: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.hotkey_input =
+            Self::new_hotkey_input(hotkey.and_then(string_to_keystroke), window, cx);
+    }
+}
+
+impl Render for TemporaryHotkeyControlState {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_hotkey = state::config::app_settings(cx)
+            .temporary_hotkey()
+            .map(str::to_string);
+        let has_hotkey = current_hotkey.is_some();
+        let current_label = current_hotkey
+            .as_deref()
+            .map(format_hotkey_label)
+            .unwrap_or_else(|| cx.global::<I18n>().t("hotkey-not-set").to_string());
+
+        if self.editing {
+            let save_label = cx.global::<I18n>().t("provider-action-save");
+            let cancel_label = cx.global::<I18n>().t("button-cancel");
+
+            return h_flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(self.hotkey_input.clone())
+                .child(
+                    Button::new("temporary-hotkey-inline-save")
+                        .icon(IconName::Check)
+                        .tooltip(save_label)
+                        .primary()
+                        .small()
+                        .on_click(cx.listener(|control, _, window, cx| {
+                            control.save(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("temporary-hotkey-inline-cancel")
+                        .icon(IconName::X)
+                        .tooltip(cancel_label)
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|control, _, window, cx| {
+                            control.cancel_editing(window, cx);
+                        })),
+                );
+        }
+
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .child(
+                Label::new(current_label)
+                    .text_sm()
+                    .text_color(if has_hotkey {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    }),
+            )
+            .child(
+                Button::new("temporary-hotkey-edit")
+                    .icon(IconName::Pencil)
+                    .tooltip(cx.global::<I18n>().t("button-edit"))
+                    .outline()
+                    .small()
+                    .on_click(cx.listener(|control, _, window, cx| {
+                        control.start_editing(window, cx);
+                    })),
+            )
+    }
 }
 
 pub(super) fn render(window: &mut Window, cx: &mut App) -> AnyElement {
@@ -82,104 +219,18 @@ pub(super) fn render(window: &mut Window, cx: &mut App) -> AnyElement {
     )
 }
 
-fn temporary_hotkey_control(_window: &mut Window, cx: &mut App) -> AnyElement {
-    let current_hotkey = state::config::app_settings(cx)
-        .temporary_hotkey()
-        .map(str::to_string);
-    let has_hotkey = current_hotkey.is_some();
-    let current_label = current_hotkey
-        .as_deref()
-        .map(format_hotkey_label)
-        .unwrap_or_else(|| cx.global::<I18n>().t("hotkey-not-set").to_string());
-    let edit_label = cx.global::<I18n>().t("button-edit");
-
-    h_flex()
-        .items_center()
-        .justify_end()
-        .gap_2()
-        .child(
-            Label::new(current_label)
-                .text_sm()
-                .text_color(if has_hotkey {
-                    cx.theme().foreground
-                } else {
-                    cx.theme().muted_foreground
-                }),
-        )
-        .child(
-            Button::new("temporary-hotkey-edit")
-                .icon(IconName::Pencil)
-                .label(edit_label)
-                .outline()
-                .small()
-                .on_click(|_, window, cx| {
-                    open_temporary_hotkey_dialog(window, cx);
-                }),
-        )
+fn temporary_hotkey_control(window: &mut Window, cx: &mut App) -> AnyElement {
+    window
+        .use_keyed_state("settings-temporary-hotkey-control", cx, |window, cx| {
+            TemporaryHotkeyControlState::new(window, cx)
+        })
         .into_any_element()
 }
 
-fn open_temporary_hotkey_dialog(window: &mut Window, cx: &mut App) -> Entity<HotkeyInput> {
-    let (title, cancel_label, save_label) = {
-        let i18n = cx.global::<I18n>();
-        (
-            i18n.t("dialog-temporary-hotkey-title"),
-            i18n.t("button-cancel"),
-            i18n.t("provider-action-save"),
-        )
-    };
-    let current_hotkey = state::config::app_settings(cx)
+fn current_temporary_hotkey(cx: &App) -> Option<Keystroke> {
+    state::config::app_settings(cx)
         .temporary_hotkey()
-        .and_then(string_to_keystroke);
-    let hotkey_input = cx.new(|cx| {
-        HotkeyInput::new("temporary-hotkey-dialog-input", window, cx).default_value(current_hotkey)
-    });
-    let hotkey_input_to_focus = hotkey_input.clone();
-    let hotkey_input_to_return = hotkey_input.clone();
-
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        let hotkey_input = hotkey_input.clone();
-        dialog
-            .title(title.clone())
-            .w(px(420.))
-            .on_ok({
-                let hotkey_input = hotkey_input.clone();
-                move |_, window, cx| confirm_temporary_hotkey_dialog(&hotkey_input, window, cx)
-            })
-            .child(v_flex().w_full().child(hotkey_input.clone()))
-            .footer(
-                DialogFooter::new()
-                    .child(
-                        DialogClose::new().child(
-                            Button::new("temporary-hotkey-cancel").label(cancel_label.clone()),
-                        ),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new("temporary-hotkey-save")
-                                .primary()
-                                .label(save_label.clone()),
-                        ),
-                    ),
-            )
-    });
-
-    window.defer(cx, move |window, cx| {
-        hotkey_input_to_focus.update(cx, |hotkey_input, cx| {
-            hotkey_input.focus(window, cx);
-        });
-    });
-
-    hotkey_input_to_return
-}
-
-fn confirm_temporary_hotkey_dialog(
-    hotkey_input: &Entity<HotkeyInput>,
-    window: &mut Window,
-    cx: &mut App,
-) -> bool {
-    let next_hotkey = hotkey_input.read(cx).current_hotkey_string();
-    save_temporary_hotkey(next_hotkey, window, cx)
+        .and_then(string_to_keystroke)
 }
 
 fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &mut App) -> bool {
@@ -352,8 +403,7 @@ const fn language_label_key(language: AppLanguage) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirm_temporary_hotkey_dialog, language_label_key, language_options,
-        open_temporary_hotkey_dialog, save_temporary_hotkey,
+        TemporaryHotkeyControlState, language_label_key, language_options, save_temporary_hotkey,
     };
     use crate::{
         database::FreshStoreGlobal,
@@ -362,7 +412,6 @@ mod tests {
     };
     use ai_chat_core::{AppLanguage, AppSettingsPayload};
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::WindowExt;
     use tempfile::{TempDir, tempdir};
 
     #[test]
@@ -443,7 +492,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn invalid_temporary_hotkey_confirm_keeps_dialog_open(cx: &mut TestAppContext) {
+    fn invalid_temporary_hotkey_inline_save_keeps_editor_open(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -454,15 +503,15 @@ mod tests {
             })
             .expect("seed invalid temporary hotkey setting");
         });
-        let hotkey_input = cx.update(open_temporary_hotkey_dialog);
-        let saved = cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-            confirm_temporary_hotkey_dialog(&hotkey_input, window, cx)
-        });
-        assert!(!saved);
+        let control =
+            cx.update(|window, cx| cx.new(|cx| TemporaryHotkeyControlState::new(window, cx)));
 
         cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
+            control.update(cx, |control, cx| {
+                control.start_editing(window, cx);
+                control.save(window, cx);
+                assert!(control.editing);
+            });
         });
 
         cx.update(|_, cx| {
@@ -484,10 +533,23 @@ mod tests {
     }
 
     #[gpui::test]
-    fn cleared_hotkey_draft_does_not_change_settings_until_saved(cx: &mut TestAppContext) {
+    fn inline_hotkey_cancel_discards_draft(cx: &mut TestAppContext) {
         let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let control =
+            cx.update(|window, cx| cx.new(|cx| TemporaryHotkeyControlState::new(window, cx)));
 
-        cx.update(|cx| {
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                control.start_editing(window, cx);
+                control.set_draft_hotkey_for_test(Some("cmd+shift+k"), window, cx);
+                control.cancel_editing(window, cx);
+                assert!(!control.editing);
+            });
+        });
+
+        cx.update(|_, cx| {
             assert_eq!(
                 state::config::app_settings(cx).temporary_hotkey(),
                 Some("cmd+shift+j")
@@ -499,6 +561,41 @@ mod tests {
                 Some("cmd+shift+j")
             );
         });
+    }
+
+    #[gpui::test]
+    fn inline_hotkey_save_commits_draft_and_exits_editing(cx: &mut TestAppContext) {
+        let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let control =
+            cx.update(|window, cx| cx.new(|cx| TemporaryHotkeyControlState::new(window, cx)));
+
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                control.start_editing(window, cx);
+                control.set_draft_hotkey_for_test(Some("cmd+shift+k"), window, cx);
+                control.save(window, cx);
+                assert!(!control.editing);
+            });
+        });
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                state::config::app_settings(cx).temporary_hotkey(),
+                Some("shift+super+k")
+            );
+            assert_eq!(
+                state::GlobalHotkeyState::diagnostics_snapshot(cx)
+                    .temporary_hotkey
+                    .as_deref(),
+                Some("shift+super+k")
+            );
+        });
+        assert_eq!(
+            persisted_settings(&dir).temporary_hotkey.as_deref(),
+            Some("shift+super+k")
+        );
     }
 
     #[gpui::test]
