@@ -1,4 +1,6 @@
-use crate::components::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit};
+use crate::components::chat_form::{
+    ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit,
+};
 use gpui::*;
 use gpui_component::v_flex;
 
@@ -17,7 +19,11 @@ impl EventEmitter<TemporaryNewConversationPaneEvent> for TemporaryNewConversatio
 
 impl TemporaryNewConversationPane {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
+        let chat_form = cx.new(|cx| {
+            let mut chat_form = ChatForm::new(window, cx);
+            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm);
+            chat_form
+        });
         chat_form.update(cx, |chat_form, cx| {
             chat_form.refresh_skill_catalog(None, cx);
         });

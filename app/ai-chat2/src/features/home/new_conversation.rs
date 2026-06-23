@@ -21,7 +21,7 @@ use tracing::{Level, event};
 
 use crate::{
     components::{
-        chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
+        chat_form::{ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit},
         picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
     },
     foundation::{I18n, assets::IconName},
@@ -44,7 +44,11 @@ pub(crate) struct NewConversationPage {
 
 impl NewConversationPage {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
+        let chat_form = cx.new(|cx| {
+            let mut chat_form = ChatForm::new(window, cx);
+            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm);
+            chat_form
+        });
         let projects = load_projects(cx);
         let selected_project_id = projects
             .as_ref()

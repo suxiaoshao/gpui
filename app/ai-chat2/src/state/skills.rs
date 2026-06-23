@@ -11,6 +11,12 @@ use time::OffsetDateTime;
 pub(crate) type GlobalSkillCatalogStore =
     SharedStore<GlobalSkillCatalogState, GlobalSkillCatalogBackend>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SkillCatalogScope {
+    Global,
+    Project { root: PathBuf },
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GlobalSkillCatalogState {
     entries: Vec<GlobalSkillEntry>,
@@ -170,6 +176,16 @@ pub(crate) fn load_skill_content(
         content,
         content_sha256: activation.content_sha256,
     })
+}
+
+pub(crate) fn load_catalog_entries(
+    scope: SkillCatalogScope,
+) -> ai_chat_agent::Result<Vec<GlobalSkillEntry>> {
+    let catalog = match scope {
+        SkillCatalogScope::Global => SkillCatalog::scan(None)?,
+        SkillCatalogScope::Project { root } => SkillCatalog::scan(Some(root.as_path()))?,
+    };
+    Ok(entries_from_catalog(&catalog))
 }
 
 fn load_global_skill_catalog_snapshot() -> GlobalSkillCatalogSnapshot {

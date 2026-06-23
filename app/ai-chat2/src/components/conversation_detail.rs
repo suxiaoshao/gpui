@@ -22,7 +22,9 @@ use gpui_component::{
 use tracing::{Level, event};
 
 use crate::{
-    components::chat_form::{ChatForm, ChatFormEvent, ChatFormSubmit},
+    components::chat_form::{
+        ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit,
+    },
     foundation::{I18n, conversation_format as format},
     state::{self, conversations::ConversationLoadSnapshot},
 };
@@ -73,7 +75,11 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let chat_form = cx.new(|cx| ChatForm::new(window, cx));
+        let chat_form = cx.new(|cx| {
+            let mut chat_form = ChatForm::new(window, cx);
+            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm);
+            chat_form
+        });
         let runtime = state::conversation_runtime::runtime(cx);
         let snapshot = load_snapshot(&conversation_id, cx);
         let timeline = ListState::new(0, ListAlignment::Top, px(2048.)).measure_all();

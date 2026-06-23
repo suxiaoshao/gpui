@@ -27,7 +27,7 @@ use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 use effort_select::{EffortOption, effort_sections};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, Sizable, StyledExt, box_shadow,
+    ActiveTheme, Disableable, ElementExt, Icon, Sizable, StyledExt, box_shadow,
     button::{Button, ButtonVariants},
     h_flex,
     input::{InputEvent, InputState, NumberInputEvent, StepAction},
@@ -36,7 +36,10 @@ use gpui_component::{
     v_flex,
 };
 use gpui_store::StoreBinding;
-use std::{path::Path, rc::Rc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 use thinking_effort::{
     computed_default_reasoning_selection, custom_token_budget_value, reasoning_selection_is_valid,
     reasoning_selections, token_budget_bounds,
@@ -52,6 +55,15 @@ const COMPOSER_INPUT_TOP_PADDING: f32 = 12.;
 const COMPOSER_INPUT_BOTTOM_MARGIN: f32 = 4.;
 const COMPOSER_FOOTER_HORIZONTAL_PADDING: f32 = 8.;
 const COMPOSER_FOOTER_BOTTOM_MARGIN: f32 = 8.;
+const SKILL_COMPLETION_GAP: f32 = 6.;
+const SKILL_COMPLETION_WINDOW_MARGIN: f32 = 8.;
+const SKILL_COMPLETION_MAX_HEIGHT: f32 = 360.;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChatFormSkillCompletionPlacement {
+    AboveForm,
+    BelowForm,
+}
 
 #[allow(dead_code, clippy::enum_variant_names)]
 #[derive(Clone)]
@@ -79,6 +91,8 @@ enum ChatFormPrimaryButtonAction {
 
 pub(crate) struct ChatForm {
     composer: Entity<ComposerEditor>,
+    bounds: Option<Bounds<Pixels>>,
+    skill_completion_placement: ChatFormSkillCompletionPlacement,
     model_choices: Result<Vec<ProviderModelChoice>, SharedString>,
     selected_model_key: Option<ProviderModelKey>,
     selected_reasoning_selection: Option<ReasoningSelectionSnapshot>,
@@ -95,6 +109,8 @@ pub(crate) struct ChatForm {
     next_attachment_id: u64,
     preview_attachment: Option<ComposerAttachment>,
     agent_running: bool,
+    skill_catalog_scope: state::skills::SkillCatalogScope,
+    skill_catalog_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +123,10 @@ impl ChatForm {
         let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
         let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
         composer.update(cx, |composer, cx| composer.focus(window, cx));
+        if cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
+            let entries = state::skills::catalog(cx).read_cloned(cx, |state| state.entry_records());
+            composer.update(cx, |composer, cx| composer.set_skill_entries(&entries, cx));
+        }
         let model_choices = load_model_choices(cx);
         let config_store = state::config::store(cx);
         let chat_form_config = config_store.bind_committed(
@@ -323,9 +343,34 @@ impl ChatForm {
                 }
             },
         );
+        let mut subscriptions = vec![
+            composer_subscription,
+            token_budget_change_subscription,
+            token_budget_step_subscription,
+            provider_catalog_subscription,
+        ];
+
+        if cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
+            let skill_catalog = state::skills::catalog(cx);
+            subscriptions.push(skill_catalog.observe_select_in(
+                cx,
+                window,
+                |catalog_state| catalog_state.entry_records().clone(),
+                |form, entries, _window, cx| {
+                    if matches!(
+                        form.skill_catalog_scope,
+                        state::skills::SkillCatalogScope::Global
+                    ) {
+                        form.apply_skill_catalog_entries(entries.clone(), cx);
+                    }
+                },
+            ));
+        }
 
         let form = Self {
             composer,
+            bounds: None,
+            skill_completion_placement: ChatFormSkillCompletionPlacement::BelowForm,
             model_choices,
             selected_model_key,
             selected_reasoning_selection,
@@ -342,12 +387,9 @@ impl ChatForm {
             next_attachment_id: 1,
             preview_attachment: None,
             agent_running: false,
-            _subscriptions: vec![
-                composer_subscription,
-                token_budget_change_subscription,
-                token_budget_step_subscription,
-                provider_catalog_subscription,
-            ],
+            skill_catalog_scope: state::skills::SkillCatalogScope::Global,
+            skill_catalog_task: Task::ready(()),
+            _subscriptions: subscriptions,
         };
 
         if form.model_choices.is_ok() {
@@ -355,6 +397,13 @@ impl ChatForm {
         }
 
         form
+    }
+
+    pub(crate) fn set_skill_completion_placement(
+        &mut self,
+        placement: ChatFormSkillCompletionPlacement,
+    ) {
+        self.skill_completion_placement = placement;
     }
 
     fn selected_model_choice(&self) -> Option<&ProviderModelChoice> {
@@ -389,9 +438,72 @@ impl ChatForm {
         project_root: Option<&Path>,
         cx: &mut Context<Self>,
     ) {
-        self.composer.update(cx, |composer, cx| {
-            composer.refresh_skill_catalog(project_root, cx)
+        let scope = project_root
+            .map(|root| state::skills::SkillCatalogScope::Project {
+                root: root.to_path_buf(),
+            })
+            .unwrap_or(state::skills::SkillCatalogScope::Global);
+        self.skill_catalog_scope = scope.clone();
+        match scope {
+            state::skills::SkillCatalogScope::Global => {
+                self.skill_catalog_task = Task::ready(());
+                self.sync_global_skill_catalog(cx);
+            }
+            state::skills::SkillCatalogScope::Project { root } => {
+                self.load_project_skill_catalog(root, cx);
+            }
+        }
+    }
+
+    fn sync_global_skill_catalog(&mut self, cx: &mut Context<Self>) {
+        if !cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
+            self.apply_skill_catalog_entries(Vec::new(), cx);
+            return;
+        }
+
+        let entries = state::skills::catalog(cx).read_cloned(cx, |state| state.entry_records());
+        self.apply_skill_catalog_entries(entries, cx);
+    }
+
+    fn load_project_skill_catalog(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let scope = state::skills::SkillCatalogScope::Project { root };
+        let task_scope = scope.clone();
+        let load =
+            cx.background_spawn(async move { state::skills::load_catalog_entries(task_scope) });
+
+        self.skill_catalog_task = cx.spawn(async move |form, cx| {
+            let result = load.await;
+            let Some(form) = form.upgrade() else {
+                return;
+            };
+            form.update(cx, |form, cx| {
+                if form.skill_catalog_scope != scope {
+                    return;
+                }
+
+                match result {
+                    Ok(entries) => form.apply_skill_catalog_entries(entries, cx),
+                    Err(err) => {
+                        event!(
+                            Level::ERROR,
+                            error = ?err,
+                            "load project skill catalog failed"
+                        );
+                        form.apply_skill_catalog_entries(Vec::new(), cx);
+                    }
+                }
+            });
         });
+    }
+
+    fn apply_skill_catalog_entries(
+        &mut self,
+        entries: Vec<state::skills::GlobalSkillEntry>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer
+            .update(cx, |composer, cx| composer.set_skill_entries(&entries, cx));
+        cx.notify();
     }
 
     pub(crate) fn set_agent_running(&mut self, running: bool, cx: &mut Context<Self>) {
@@ -747,10 +859,46 @@ impl ChatForm {
             .as_ref()
             .is_ok_and(|choices| !choices.is_empty())
     }
+
+    fn render_skill_completion(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(bounds) = self.bounds else {
+            return div().into_any_element();
+        };
+        let Some(layout) = skill_completion_popup_layout(
+            bounds,
+            window.viewport_size(),
+            self.skill_completion_placement,
+        ) else {
+            return div().into_any_element();
+        };
+        let panel = self.composer.update(cx, |composer, cx| {
+            composer.render_skill_completion_panel(layout.max_height, window, cx)
+        });
+
+        deferred(
+            anchored()
+                .anchor(layout.anchor)
+                .position(layout.position)
+                .offset(layout.offset)
+                .snap_to_window_with_margin(px(SKILL_COMPLETION_WINDOW_MARGIN))
+                .child(
+                    div()
+                        .debug_selector(|| "ai-chat2-skill-completion-popup".into())
+                        .w(bounds.size.width)
+                        .child(panel),
+                ),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
 }
 
 impl Render for ChatForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_tooltip = cx.global::<foundation::I18n>().t("chat-form-send-tooltip");
         let stop_tooltip = cx.global::<foundation::I18n>().t("chat-form-stop-tooltip");
         let drop_label = cx
@@ -758,11 +906,19 @@ impl Render for ChatForm {
             .t("chat-form-attachment-drop");
         let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
+        let skill_completion_open = self.composer.read(cx).skill_completion_open();
+        let form = cx.entity();
 
         v_flex()
             .id("ai-chat2-chat-form-preview")
+            .debug_selector(|| "ai-chat2-chat-form".into())
             .w_full()
             .relative()
+            .on_prepaint(move |bounds, _, cx| {
+                form.update(cx, |form, _| {
+                    form.bounds = Some(bounds);
+                });
+            })
             .rounded(px(25.))
             .border_1()
             .border_color(cx.theme().input)
@@ -886,7 +1042,51 @@ impl Render for ChatForm {
                             .child(Label::new(drop_label).text_sm().font_medium()),
                     ),
             )
+            .when(skill_completion_open, |this| {
+                this.child(self.render_skill_completion(window, cx))
+            })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SkillCompletionPopupLayout {
+    anchor: Anchor,
+    position: Point<Pixels>,
+    offset: Point<Pixels>,
+    max_height: Pixels,
+}
+
+fn skill_completion_popup_layout(
+    form_bounds: Bounds<Pixels>,
+    viewport_size: Size<Pixels>,
+    placement: ChatFormSkillCompletionPlacement,
+) -> Option<SkillCompletionPopupLayout> {
+    let gap = px(SKILL_COMPLETION_GAP);
+    let margin = px(SKILL_COMPLETION_WINDOW_MARGIN);
+    let max_height = px(SKILL_COMPLETION_MAX_HEIGHT);
+
+    let (anchor, position, offset, available_height) = match placement {
+        ChatFormSkillCompletionPlacement::AboveForm => (
+            Anchor::BottomLeft,
+            point(form_bounds.left(), form_bounds.top()),
+            point(px(0.), -gap),
+            form_bounds.top() - margin - gap,
+        ),
+        ChatFormSkillCompletionPlacement::BelowForm => (
+            Anchor::TopLeft,
+            point(form_bounds.left(), form_bounds.bottom()),
+            point(px(0.), gap),
+            viewport_size.height - form_bounds.bottom() - margin - gap,
+        ),
+    };
+
+    let max_height = available_height.max(px(0.)).min(max_height);
+    (max_height > px(0.)).then_some(SkillCompletionPopupLayout {
+        anchor,
+        position,
+        offset,
+        max_height,
+    })
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {
@@ -954,9 +1154,10 @@ fn model_empty_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatForm, ChatFormPrimaryButtonAction,
+        ChatForm, ChatFormPrimaryButtonAction, ChatFormSkillCompletionPlacement,
+        SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
-        model_empty_label, selected_model_choice_in,
+        model_empty_label, selected_model_choice_in, skill_completion_popup_layout,
     };
     use crate::{
         database::{self, FreshStoreGlobal},
@@ -969,12 +1170,13 @@ mod tests {
         CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
         ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
         ProviderSettingsPayload, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
-        ReasoningSelectionSnapshot, TokenBudgetSelectionMode, ToolApprovalMode,
+        ReasoningSelectionSnapshot, SkillSourceKind, TokenBudgetSelectionMode, ToolApprovalMode,
         conservative_model_capabilities,
     };
     use ai_chat_db::{NewProvider, NewProviderModel};
     use gpui::{
-        App, AppContext as _, SharedString, TestAppContext, VisualTestContext, WindowHandle,
+        Anchor, App, AppContext as _, Bounds, SharedString, TestAppContext, VisualTestContext,
+        WindowHandle, point, px, size,
     };
     use std::path::PathBuf;
     use tempfile::{TempDir, tempdir};
@@ -1012,6 +1214,88 @@ mod tests {
         assert_eq!(
             model_empty_label(&Err(SharedString::from("database is unavailable")), &i18n).as_ref(),
             "Failed to load models: database is unavailable"
+        );
+    }
+
+    #[test]
+    fn skill_completion_popup_layout_respects_requested_side_and_window_space() {
+        let form_bounds = Bounds::new(point(px(100.), px(400.)), size(px(600.), px(120.)));
+        let viewport = size(px(1000.), px(800.));
+
+        let above = skill_completion_popup_layout(
+            form_bounds,
+            viewport,
+            ChatFormSkillCompletionPlacement::AboveForm,
+        )
+        .unwrap();
+        assert_eq!(above.anchor, Anchor::BottomLeft);
+        assert_eq!(above.position, point(px(100.), px(400.)));
+        assert_eq!(above.offset, point(px(0.), px(-SKILL_COMPLETION_GAP)));
+        assert_eq!(above.max_height, px(SKILL_COMPLETION_MAX_HEIGHT));
+
+        let below = skill_completion_popup_layout(
+            form_bounds,
+            viewport,
+            ChatFormSkillCompletionPlacement::BelowForm,
+        )
+        .unwrap();
+        assert_eq!(below.anchor, Anchor::TopLeft);
+        assert_eq!(below.position, point(px(100.), px(520.)));
+        assert_eq!(below.offset, point(px(0.), px(SKILL_COMPLETION_GAP)));
+        assert_eq!(below.max_height, px(266.));
+    }
+
+    #[test]
+    fn skill_completion_popup_layout_skips_when_no_window_space_remains() {
+        let form_bounds = Bounds::new(point(px(100.), px(786.)), size(px(600.), px(12.)));
+        let viewport = size(px(1000.), px(800.));
+
+        assert_eq!(
+            skill_completion_popup_layout(
+                form_bounds,
+                viewport,
+                ChatFormSkillCompletionPlacement::BelowForm,
+            ),
+            None
+        );
+    }
+
+    #[gpui::test]
+    fn skill_completion_popup_matches_chat_form_bounds(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.apply_skill_catalog_entries(vec![test_skill_entry("gpui")], cx);
+            });
+        });
+        cx.simulate_input("$");
+
+        let form_bounds = cx
+            .debug_bounds("ai-chat2-chat-form")
+            .expect("chat form bounds");
+        let popup_bounds = cx
+            .debug_bounds("ai-chat2-skill-completion-popup")
+            .expect("skill completion popup bounds");
+        let viewport = cx.update(|window, _| window.viewport_size());
+
+        let width_delta =
+            (popup_bounds.size.width.as_f32() - form_bounds.size.width.as_f32()).abs();
+        assert!(
+            width_delta <= 2.,
+            "popup={popup_bounds:?}, form={form_bounds:?}",
+        );
+        assert!(
+            popup_bounds.top() >= form_bounds.bottom(),
+            "popup={popup_bounds:?}, form={form_bounds:?}",
+        );
+        assert!(
+            popup_bounds.bottom() <= viewport.height,
+            "popup={popup_bounds:?}, viewport={viewport:?}",
         );
     }
 
@@ -1289,6 +1573,17 @@ mod tests {
             state::providers::init(cx);
         });
         dir
+    }
+
+    fn test_skill_entry(name: &str) -> state::skills::GlobalSkillEntry {
+        state::skills::GlobalSkillEntry {
+            name: name.to_string(),
+            description: Some("GPUI framework knowledge".to_string()),
+            source_kind: SkillSourceKind::User,
+            skill_file_path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            directory_path: PathBuf::from(format!("/skills/{name}")),
+            search_text: format!("{name} GPUI framework knowledge /skills/{name}/SKILL.md"),
+        }
     }
 
     fn open_chat_form_window(cx: &mut TestAppContext) -> WindowHandle<ChatForm> {
