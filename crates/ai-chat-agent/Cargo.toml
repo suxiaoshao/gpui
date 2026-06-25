@@ -15,6 +15,7 @@ grep-matcher = "0.1.8"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 hex = "0.4.3"
+http = "1.4.2"
 ignore = "0.4.26"
 rig-core.workspace = true
 rmcp.workspace = true
@@ -25,7 +26,7 @@ sha2 = "0.11.0"
 similar = "3.1.1"
 thiserror = "2.0.18"
 time = { version = "0.3.49", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "1.52.3", features = ["sync", "time"] }
+tokio = { version = "1.52.3", features = ["process", "sync", "time"] }
 tokio-util = "0.7.18"
 url = "2.5.8"
 

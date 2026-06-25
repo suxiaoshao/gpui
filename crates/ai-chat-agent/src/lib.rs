@@ -13,8 +13,11 @@ mod types;
 
 pub use error::{AgentRuntimeError, Result};
 pub use mcp::{
-    McpConfigLayer, McpConnector, McpServerConfig, McpServerTransport, McpStdioTransport,
-    McpStreamableHttpTransport,
+    McpConfigLayer, McpConnector, McpOAuthStatusSnapshot, McpPreparedTools, McpRuntimeEvent,
+    McpServerConfig, McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
+    McpServerStatusSnapshot, McpServerTransport, McpServerTransportKindSnapshot, McpSessionManager,
+    McpStdioTransport, McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
+    mcp_config_hash,
 };
 pub use persistence::PersistingCompletionModel;
 pub use provider_models::{

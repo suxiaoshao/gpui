@@ -113,6 +113,7 @@ fn init(cx: &mut App) -> crate::errors::AiChat2Result<()> {
     gpui_component::init(cx);
     state::config::init(cx)?;
     state::layout::init(cx)?;
+    state::mcp::init(cx)?;
     database::init_store(cx)?;
     state::conversation_runtime::init(cx)?;
     state::providers::init(cx);

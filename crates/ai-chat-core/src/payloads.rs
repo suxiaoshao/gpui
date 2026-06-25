@@ -2,6 +2,7 @@ use crate::{
     AgentRunId, AttachmentId, ConversationId, ConversationItemId, ProjectId, ProviderId,
     ProviderModelId, ProviderStepId, ToolInvocationId,
 };
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -341,7 +342,86 @@ pub struct AgentRuntimeSnapshot {
     pub engine_version: String,
     pub skill_catalog_hash: Option<String>,
     pub mcp_config_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config_snapshot: Option<McpRuntimeConfigSnapshot>,
     pub tool_name_strategy: ToolNameStrategy,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpRuntimeConfigSnapshot {
+    pub servers: Vec<McpServerRuntimeConfigSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpServerRuntimeConfigSnapshot {
+    pub server_id: String,
+    pub display_name: Option<String>,
+    pub enabled: bool,
+    pub required: bool,
+    pub transport: McpServerTransportSnapshot,
+    pub startup_timeout_ms: u64,
+    pub tool_timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
+    pub default_tools_approval_mode: Option<McpToolApprovalModeSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, McpToolOverrideSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum McpServerTransportSnapshot {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        env: BTreeMap<String, String>,
+        env_vars: Vec<String>,
+    },
+    StreamableHttp {
+        url: String,
+        headers: BTreeMap<String, String>,
+        env_headers: BTreeMap<String, String>,
+        bearer_token_env_var: Option<String>,
+        oauth: Option<McpOAuthConfigSnapshot>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToolApprovalModeSnapshot {
+    Auto,
+    Prompt,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpToolOverrideSnapshot {
+    pub approval_mode: Option<McpToolApprovalModeSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "flow", rename_all = "snake_case", deny_unknown_fields)]
+pub enum McpOAuthConfigSnapshot {
+    AuthorizationCodePkce {
+        scopes: Vec<String>,
+        client_id: Option<String>,
+        client_metadata_url: Option<String>,
+        resource: Option<String>,
+        callback_port: Option<u16>,
+        callback_url: Option<String>,
+    },
+    ClientCredentials {
+        client_id: String,
+        client_secret_env_var: String,
+        scopes: Vec<String>,
+        resource: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1199,15 +1279,64 @@ mod tests {
             engine_version: "0.22.0".to_string(),
             skill_catalog_hash: Some("skills".to_string()),
             mcp_config_hash: Some("mcp".to_string()),
+            mcp_config_snapshot: Some(McpRuntimeConfigSnapshot {
+                servers: vec![McpServerRuntimeConfigSnapshot {
+                    server_id: "filesystem".to_string(),
+                    display_name: Some("Filesystem".to_string()),
+                    enabled: true,
+                    required: false,
+                    transport: McpServerTransportSnapshot::Stdio {
+                        command: "npx".to_string(),
+                        args: vec![
+                            "-y".to_string(),
+                            "@modelcontextprotocol/server-filesystem".to_string(),
+                            "/tmp".to_string(),
+                        ],
+                        cwd: Some("/tmp".to_string()),
+                        env: BTreeMap::from([("NODE_ENV".to_string(), "production".to_string())]),
+                        env_vars: vec!["PATH".to_string()],
+                    },
+                    startup_timeout_ms: 30_000,
+                    tool_timeout_ms: 300_000,
+                    enabled_tools: Some(vec!["read_file".to_string()]),
+                    disabled_tools: vec!["delete_file".to_string()],
+                    default_tools_approval_mode: Some(McpToolApprovalModeSnapshot::Prompt),
+                    tools: BTreeMap::from([(
+                        "read_file".to_string(),
+                        McpToolOverrideSnapshot {
+                            approval_mode: Some(McpToolApprovalModeSnapshot::Auto),
+                        },
+                    )]),
+                }],
+            }),
             tool_name_strategy: ToolNameStrategy::Namespaced,
         };
 
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["engine"], "rig");
         assert_eq!(
+            value["mcpConfigSnapshot"]["servers"][0]["serverId"],
+            "filesystem"
+        );
+        assert_eq!(
             serde_json::from_value::<AgentRuntimeSnapshot>(value).unwrap(),
             snapshot
         );
+    }
+
+    #[test]
+    fn runtime_snapshot_defaults_mcp_config_snapshot_for_old_json() {
+        let snapshot: AgentRuntimeSnapshot = serde_json::from_value(json!({
+            "engine": "rig",
+            "engineVersion": "0.22.0",
+            "skillCatalogHash": null,
+            "mcpConfigHash": "mcp",
+            "toolNameStrategy": "namespaced"
+        }))
+        .unwrap();
+
+        assert_eq!(snapshot.mcp_config_hash.as_deref(), Some("mcp"));
+        assert!(snapshot.mcp_config_snapshot.is_none());
     }
 
     #[test]

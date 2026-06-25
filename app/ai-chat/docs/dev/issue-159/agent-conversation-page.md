@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 Agent Conversation Page 专项计划
 
 本文档是 `app/ai-chat2` agent 对话落地到页面的实施计划。父级 UI 清单仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档只固定 New Conversation 发送、
+`app/ai-chat/docs/dev/issue-159/README.md`；本文档只固定 New Conversation 发送、
 真实 conversation create/send、匿名 scratch project、agent runtime 事件接线和 conversation
 timeline 渲染的具体实现方案。
 
@@ -50,7 +50,7 @@ ChatForm 恢复发送态。
 
 - stop/cancel 已完成；retry/resend UI 仍未完成。
 - prompt selector、attachments/multimodal input、Temporary Conversation Window；Temporary Window 的具体状态见
-  `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。该能力由独立专项跟踪，不属于本 Agent
+  `app/ai-chat/docs/dev/issue-159/temporary-window.md`。该能力由独立专项跟踪，不属于本 Agent
   Conversation Page 专项的实现范围。
 - approval approve/deny action 和 rich tool UI。
 - streaming delta 的更细粒度展示、last item preview、完整 project metadata/status UI。
@@ -91,7 +91,8 @@ ChatForm 恢复发送态。
 
 ```text
 app/ai-chat/docs/dev/
-└── issue-159-ai-chat2-agent-conversation-page.md
+└── issue-159/
+    └── agent-conversation-page.md
 
 app/ai-chat2/src/features/home/
 ├── conversation.rs
@@ -705,5 +706,5 @@ time = { version = "0.3.47", features = ["formatting", "local-offset", "serde"] 
 - 不实现 attachments/multimodal input。
 - 不实现 full tool rich UI。
 - 不在本页实现 Temporary Conversation Window；该能力的状态见
-  `app/ai-chat/docs/dev/issue-159-ai-chat2-temporary-window.md`。
+  `app/ai-chat/docs/dev/issue-159/temporary-window.md`。
 - 不新增 DB migration。

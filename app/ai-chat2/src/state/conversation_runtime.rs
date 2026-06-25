@@ -5,8 +5,8 @@ use ai_chat_agent::{
     AgentRuntimeObserver, RuntimeGuards,
 };
 use ai_chat_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
+use ai_chat_db::FreshRepository;
 use ai_chat_db::ToolInvocationApprovalOutcome;
-use ai_chat_db::{AgentRunRecord, FreshRepository};
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -32,7 +32,7 @@ pub(crate) struct ConversationRuntimeStore {
 
 struct ActiveRun {
     key: ActiveRunKey,
-    agent_run_id: AgentRunId,
+    agent_run_id: Option<AgentRunId>,
     phase: ActiveRunPhase,
     cancellation_token: AgentCancellationToken,
     run_task: Option<Task<()>>,
@@ -93,7 +93,7 @@ impl ConversationRuntimeStore {
                 Level::ERROR,
                 error = ?err,
                 conversation_id = %conversation_id,
-                agent_run_id = %active.agent_run_id,
+                agent_run_id = ?active.agent_run_id,
                 "cancel active conversation runs failed"
             );
         }
@@ -111,7 +111,7 @@ impl ConversationRuntimeStore {
 
     pub(crate) fn start_run(
         &mut self,
-        mut request: AgentRunRequest,
+        request: AgentRunRequest,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -125,24 +125,11 @@ impl ConversationRuntimeStore {
         let repository = database::repository(cx);
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
-        let runtime = AgentRuntime::new(repository.clone());
-        let agent_run = match runtime.begin_run(&mut request, None) {
-            Ok(agent_run) => agent_run,
-            Err(err) => {
-                self.last_errors
-                    .insert(conversation_id.clone(), err.to_string());
-                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
-                cx.notify();
-                return false;
-            }
-        };
         let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
-        let agent_run_id = agent_run.id.clone();
         let run_task = window.spawn(cx, async move |cx| {
-            let result =
-                run_agent_with_saved_provider(repository, Some(agent_run), request, tx, cx).await;
+            let result = run_agent_with_saved_provider(repository, request, tx, cx).await;
             if let Err(err) = store.update_in(cx, |store, _window, cx| {
                 store.finish_run(run_conversation_id.clone(), run_key, result, cx);
             }) {
@@ -154,7 +141,7 @@ impl ConversationRuntimeStore {
             conversation_id.clone(),
             ActiveRun {
                 key: run_key,
-                agent_run_id,
+                agent_run_id: None,
                 phase: ActiveRunPhase::Running,
                 cancellation_token,
                 run_task: Some(run_task),
@@ -220,7 +207,7 @@ impl ConversationRuntimeStore {
             conversation_id.clone(),
             ActiveRun {
                 key: run_key,
-                agent_run_id,
+                agent_run_id: Some(agent_run_id),
                 phase: ActiveRunPhase::Running,
                 cancellation_token: active_cancellation_token,
                 run_task: Some(run_task),
@@ -293,7 +280,7 @@ impl ConversationRuntimeStore {
         agent_run_id: &AgentRunId,
     ) -> bool {
         self.active_runs.get(conversation_id).is_some_and(|active| {
-            &active.agent_run_id == agent_run_id
+            active.agent_run_id.as_ref() == Some(agent_run_id)
                 && active.phase == ActiveRunPhase::WaitingForApproval
         })
     }
@@ -328,7 +315,7 @@ impl ConversationRuntimeStore {
                 let Some(active) = self.active_runs.get_mut(&conversation_id) else {
                     return;
                 };
-                active.agent_run_id = agent_run_id;
+                active.agent_run_id = Some(agent_run_id);
                 cx.emit(ConversationRuntimeEvent::RunStarted {
                     conversation_id: conversation_id.clone(),
                 });
@@ -368,7 +355,7 @@ impl ConversationRuntimeStore {
     fn conversation_id_for_agent_run(&self, agent_run_id: &AgentRunId) -> Option<ConversationId> {
         self.active_runs
             .iter()
-            .find(|(_, active)| &active.agent_run_id == agent_run_id)
+            .find(|(_, active)| active.agent_run_id.as_ref() == Some(agent_run_id))
             .map(|(conversation_id, _)| conversation_id.clone())
     }
 
@@ -396,7 +383,7 @@ impl ConversationRuntimeStore {
         }) = &result
         {
             if let Some(active) = self.active_runs.get_mut(&conversation_id) {
-                active.agent_run_id = agent_run.id.clone();
+                active.agent_run_id = Some(agent_run.id.clone());
                 active.phase = ActiveRunPhase::WaitingForApproval;
             }
             cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
@@ -437,7 +424,6 @@ pub(crate) fn runtime(cx: &App) -> Entity<ConversationRuntimeStore> {
 
 async fn run_agent_with_saved_provider(
     repository: FreshRepository,
-    agent_run: Option<AgentRunRecord>,
     request: AgentRunRequest,
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
@@ -448,13 +434,20 @@ async fn run_agent_with_saved_provider(
         }
     });
     let runtime = AgentRuntime::new(repository.clone());
-    let mut request = request;
-    let agent_run = match agent_run {
-        Some(agent_run) => agent_run,
-        None => runtime
-            .begin_run(&mut request, Some(&observer))
-            .map_err(|err| err.to_string())?,
+    let mut request = match crate::state::mcp::prepare_run_request(request, cx).await {
+        Ok(prepared) => prepared.request,
+        Err(err) => {
+            return gpui_tokio::Tokio::spawn(cx, async move {
+                runtime.record_setup_failed_run(err.request, err.message, Some(&observer))
+            })
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string());
+        }
     };
+    let agent_run = runtime
+        .begin_run(&mut request, Some(&observer))
+        .map_err(|err| err.to_string())?;
     let provider = match repository
         .get_provider(&request.provider_id)
         .map_err(|err| err.to_string())?
@@ -551,7 +544,7 @@ async fn approve_tool_with_runtime(
     let mut resume_request = resume_request_after_approval(&repository, &approval_handle.agent_run)
         .map_err(|err| err.to_string())?;
     resume_request.cancellation_token = cancellation_token;
-    run_agent_with_saved_provider(repository, None, resume_request, tx, cx).await
+    run_agent_with_saved_provider(repository, resume_request, tx, cx).await
 }
 
 fn is_terminal_status(status: AgentRunStatus) -> bool {
@@ -667,7 +660,7 @@ mod tests {
     ) -> ActiveRun {
         ActiveRun {
             key,
-            agent_run_id: "run-1".to_string(),
+            agent_run_id: Some("run-1".to_string()),
             phase: ActiveRunPhase::Running,
             cancellation_token,
             run_task: Some(Task::ready(())),
@@ -677,14 +670,14 @@ mod tests {
 
     fn active_run_with_agent_id(key: ActiveRunKey, agent_run_id: AgentRunId) -> ActiveRun {
         ActiveRun {
-            agent_run_id,
+            agent_run_id: Some(agent_run_id),
             ..active_run(key)
         }
     }
 
     fn active_waiting_approval_run(key: ActiveRunKey, agent_run_id: AgentRunId) -> ActiveRun {
         ActiveRun {
-            agent_run_id,
+            agent_run_id: Some(agent_run_id),
             phase: ActiveRunPhase::WaitingForApproval,
             ..active_run(key)
         }
@@ -779,7 +772,7 @@ mod tests {
                 store.active_runs.insert(
                     conversation_id.clone(),
                     ActiveRun {
-                        agent_run_id: agent_run_id.clone(),
+                        agent_run_id: Some(agent_run_id.clone()),
                         ..active_run_with_token(ActiveRunKey(0), cancellation_token.clone())
                     },
                 );
@@ -871,7 +864,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("waiting approval remains active");
-                assert_eq!(&active.agent_run_id, &agent_run.id);
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run.id));
                 assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
             });
         });
@@ -1057,7 +1050,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("failed denial must keep the active run");
-                assert_eq!(&active.agent_run_id, &agent_run_id);
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
                 assert_eq!(active.phase, ActiveRunPhase::WaitingForApproval);
                 assert!(store.take_last_error(&conversation_id).is_some());
             });
@@ -1100,7 +1093,7 @@ mod tests {
                     .active_runs
                     .get(&conversation_id)
                     .expect("stale denial must not clear the running resume");
-                assert_eq!(&active.agent_run_id, &agent_run_id);
+                assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
                 assert_eq!(active.phase, ActiveRunPhase::Running);
                 assert!(store.take_last_error(&conversation_id).is_none());
             });
@@ -1258,6 +1251,7 @@ mod tests {
                         engine_version: "test".to_string(),
                         skill_catalog_hash: None,
                         mcp_config_hash: None,
+                        mcp_config_snapshot: None,
                         tool_name_strategy: ToolNameStrategy::Direct,
                     },
                     max_steps: 8,

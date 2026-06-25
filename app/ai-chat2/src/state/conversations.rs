@@ -304,6 +304,7 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             skill_catalog_hash: None,
             mcp_config_hash: None,
+            mcp_config_snapshot: None,
             tool_name_strategy: ToolNameStrategy::Namespaced,
         },
     );

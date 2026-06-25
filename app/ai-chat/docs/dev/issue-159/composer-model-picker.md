@@ -1,8 +1,8 @@
 # Issue #159 ai-chat2 Composer 模型选择专项计划
 
 本文档是 `app/ai-chat2` Composer DB-backed provider/model picker 的可执行开发计划。父级 UI
-清单仍是 `app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；Provider 配置和模型缓存计划仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md`。
+清单仍是 `app/ai-chat/docs/dev/issue-159/README.md`；Provider 配置和模型缓存计划仍是
+`app/ai-chat/docs/dev/issue-159/provider-settings.md`。
 
 最后同步时间：2026-06-03。
 
@@ -172,14 +172,14 @@ display name 和 capability tokens。
 禁止新增 `mod.rs`。本阶段只改现有模块或新增同名普通 `.rs` 文件。
 
 ```text
-app/ai-chat/docs/dev/issue-159-ai-chat2-composer-model-picker.md
+app/ai-chat/docs/dev/issue-159/composer-model-picker.md
   - 本专项计划
 
-app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md
+app/ai-chat/docs/dev/issue-159/README.md
   - 把 Composer/model select 状态改为“已实现”
   - 指向本文件
 
-app/ai-chat/docs/dev/issue-159-ai-chat2-provider-settings.md
+app/ai-chat/docs/dev/issue-159/provider-settings.md
   - 把 DB-backed composer model picker 改为“已实现，继续作为后续 run 输入”
 
 app/ai-chat2/src/state/providers.rs

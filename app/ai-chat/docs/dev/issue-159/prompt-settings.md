@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 Prompt 设置专项计划
 
 本文档是 `app/ai-chat2` Prompt 设置页的可执行开发计划。父级 UI 清单仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档固定提示词数据模型、Settings
+`app/ai-chat/docs/dev/issue-159/README.md`；本文档固定提示词数据模型、Settings
 页面结构、数据库 API、GPUI 组件选型、状态流和验证要求。
 
 创建时间：2026-06-12。

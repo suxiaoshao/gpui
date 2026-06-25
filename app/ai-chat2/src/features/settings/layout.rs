@@ -29,6 +29,7 @@ pub(super) enum SettingsPageKey {
     Prompts,
     Skills,
     Shortcuts,
+    Mcp,
 }
 
 #[derive(Clone, Debug)]

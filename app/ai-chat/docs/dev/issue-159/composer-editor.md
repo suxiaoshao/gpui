@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 ComposerEditor 自研输入进度板
 
 本文档是 `app/ai-chat2` 真实输入框 `ComposerEditor` 的专项进度板。父级 UI 清单仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档只跟踪 composer 输入内核、token
+`app/ai-chat/docs/dev/issue-159/README.md`；本文档只跟踪 composer 输入内核、token
 输入、completion 和 agent loop payload 组装，不跟踪 ChatForm 外框、toolbar 或 picker 视觉预览。
 
 最后同步时间：2026-06-23。

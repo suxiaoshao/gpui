@@ -21,6 +21,7 @@ use window_ext::WindowExt as SystemWindowExt;
 mod appearance;
 mod general;
 mod layout;
+mod mcp;
 mod projects;
 mod prompts;
 mod provider;
@@ -33,6 +34,7 @@ use self::{
         SETTINGS_SIDEBAR_DEFAULT_WIDTH, SettingsPageFrame, SettingsPageKey, SettingsPageSpec,
         SettingsShell, settings_empty_message, settings_page_matches, settings_search_text,
     },
+    mcp::McpSettingsPage,
     projects::ProjectsSettingsPage,
     prompts::PromptsSettingsPage,
     provider::ProviderSettingsPage,
@@ -60,6 +62,7 @@ pub(crate) struct SettingsView {
     prompts_settings: Entity<PromptsSettingsPage>,
     skills_settings: Entity<SkillsSettingsPage>,
     shortcuts_settings: Entity<ShortcutsSettingsPage>,
+    mcp_settings: Entity<McpSettingsPage>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
@@ -84,6 +87,7 @@ impl SettingsView {
         let prompts_settings = cx.new(|cx| PromptsSettingsPage::new(window, cx));
         let skills_settings = cx.new(|cx| SkillsSettingsPage::new(window, cx));
         let shortcuts_settings = cx.new(|cx| ShortcutsSettingsPage::new(window, cx));
+        let mcp_settings = cx.new(|cx| McpSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let config_store = state::config::store(cx);
@@ -143,6 +147,7 @@ impl SettingsView {
             prompts_settings,
             skills_settings,
             shortcuts_settings,
+            mcp_settings,
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
@@ -230,12 +235,13 @@ impl Render for SettingsView {
                     SettingsPageKey::Shortcuts => {
                         self.shortcuts_settings.clone().into_any_element()
                     }
+                    SettingsPageKey::Mcp => self.mcp_settings.clone().into_any_element(),
                 },
             )
             .when(
                 matches!(
                     active_page_key,
-                    SettingsPageKey::Provider | SettingsPageKey::Skills
+                    SettingsPageKey::Provider | SettingsPageKey::Skills | SettingsPageKey::Mcp
                 ),
                 |frame| frame.no_outer_body_scroll(),
             )
@@ -394,12 +400,12 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
     };
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 7] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 8] {
     let i18n = cx.global::<I18n>();
     settings_page_specs_for_i18n(i18n)
 }
 
-fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 7] {
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 8] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
@@ -407,6 +413,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 7] {
     let page_prompts = i18n.t("settings-page-prompts");
     let page_skills = i18n.t("settings-page-skills");
     let page_shortcuts = i18n.t("settings-page-shortcuts");
+    let page_mcp = i18n.t("settings-page-mcp");
     let group_basic_options = i18n.t("settings-group-basic-options");
     let field_language = i18n.t("field-language");
     let field_http_proxy = i18n.t("field-http-proxy");
@@ -482,6 +489,15 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 7] {
             settings_search_text(
                 [page_shortcuts.as_str()],
                 "shortcuts shortcut hotkey global prompt provider model selection clipboard screenshot ocr 快捷键 全局快捷键 热键 提示词 模型 提供商 选中文字 剪贴板 截图",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Mcp,
+            IconName::Plug,
+            page_mcp.clone(),
+            settings_search_text(
+                [page_mcp.as_str()],
+                "mcp model context protocol server tool tools oauth streamable http stdio config toml 模型上下文协议 工具 服务器 配置",
             ),
         ),
     ]
@@ -674,6 +690,24 @@ mod tests {
         assert!(settings_page_matches(shortcuts, "快捷键"));
         assert!(settings_page_matches(shortcuts, "kuaijiejian"));
         assert!(settings_page_matches(shortcuts, "kjj"));
+    }
+
+    #[test]
+    fn settings_mcp_page_uses_i18n_title_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let mcp = specs
+            .iter()
+            .find(|spec| spec.key == SettingsPageKey::Mcp)
+            .expect("mcp settings page exists");
+
+        assert_eq!(mcp.title.as_ref(), "MCP");
+        assert!(settings_page_matches(mcp, "mcp"));
+        assert!(settings_page_matches(mcp, "model context protocol"));
+        assert!(settings_page_matches(mcp, "oauth"));
+        assert!(settings_page_matches(mcp, "config toml"));
+        assert!(settings_page_matches(mcp, "工具"));
+        assert!(settings_page_matches(mcp, "服务器"));
     }
 
     #[test]
