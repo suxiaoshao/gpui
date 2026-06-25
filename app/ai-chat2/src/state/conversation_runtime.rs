@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use ai_chat_agent::{
     AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntime,
-    AgentRuntimeObserver, RuntimeGuards,
+    AgentRuntimeObserver, McpSessionManager, RuntimeGuards,
 };
 use ai_chat_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
 use ai_chat_db::FreshRepository;
 use ai_chat_db::ToolInvocationApprovalOutcome;
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use smol::channel::{Receiver, Sender};
+use tokio::sync::Mutex;
 use tracing::{Level, event};
 
 use crate::{database, errors::AiChat2Result, state::provider_secrets::ProviderSecretStore};
@@ -183,6 +184,7 @@ impl ConversationRuntimeStore {
         let run_key = self.next_active_run_key();
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
+        let mcp_session_manager = crate::state::mcp::session_manager_handle(cx);
         let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = AgentCancellationToken::new();
@@ -192,6 +194,7 @@ impl ConversationRuntimeStore {
                 repository,
                 tool_invocation_id,
                 cancellation_token,
+                mcp_session_manager,
                 tx,
                 cx,
             )
@@ -494,6 +497,7 @@ async fn approve_tool_with_runtime(
     repository: FreshRepository,
     tool_invocation_id: ToolInvocationId,
     cancellation_token: AgentCancellationToken,
+    mcp_session_manager: Arc<Mutex<McpSessionManager>>,
     tx: Sender<ai_chat_agent::AgentRuntimeEvent>,
     cx: &mut AsyncWindowContext,
 ) -> Result<AgentRunHandle, String> {
@@ -503,7 +507,8 @@ async fn approve_tool_with_runtime(
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
-    let runtime = AgentRuntime::new(repository.clone());
+    let runtime =
+        AgentRuntime::new(repository.clone()).with_mcp_session_manager(mcp_session_manager);
     let approval_cancellation_token = cancellation_token.clone();
     let approval_handle = gpui_tokio::Tokio::spawn(cx, async move {
         runtime

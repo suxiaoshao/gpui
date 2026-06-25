@@ -5,6 +5,7 @@ pub(crate) mod conversations;
 pub(crate) mod hotkey;
 pub(crate) mod layout;
 pub(crate) mod mcp;
+pub(crate) mod mcp_oauth;
 pub(crate) mod projects;
 pub(crate) mod prompts;
 pub(crate) mod provider_secrets;

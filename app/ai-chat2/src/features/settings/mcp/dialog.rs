@@ -4,6 +4,7 @@ use crate::{
     state,
     state::config::{McpServerTomlConfig, McpTransportKind},
 };
+use ai_chat_agent::McpOAuthStatusSnapshot;
 use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
@@ -11,13 +12,15 @@ use gpui::{
     Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
-    ActiveTheme, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
+    h_flex,
     input::Input,
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
+    switch::Switch,
     v_flex,
 };
 
@@ -125,10 +128,13 @@ impl McpServerEditDialogState {
         let server = self
             .draft
             .merge_into_config(self.original_config.as_ref(), cx);
+        let original_config = self.original_config.clone();
+        let saved_server = server.clone();
 
         match state::config::upsert_mcp_server(cx, original_server_id.as_deref(), server_id, server)
         {
             Ok(()) => {
+                delete_stale_oauth_credentials(original_config.as_ref(), &saved_server, cx);
                 if let Some(original_server_id) = original_server_id {
                     disconnect_server(original_server_id, window, cx);
                 }
@@ -223,6 +229,206 @@ impl McpServerEditDialogState {
         cx.notify();
     }
 
+    fn set_oauth_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.draft.set_oauth_enabled(enabled);
+        self.validation_errors.clear();
+        cx.notify();
+    }
+
+    fn authorize_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(server_id) = self.mode.original_server_id().map(ToOwned::to_owned) else {
+            return;
+        };
+        state::mcp::runtime(cx).update(cx, |runtime, cx| {
+            runtime.authenticate_server(server_id, window, cx);
+        });
+    }
+
+    fn sign_out_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(server_id) = self.mode.original_server_id().map(ToOwned::to_owned) else {
+            return;
+        };
+        state::mcp::runtime(cx).update(cx, |runtime, cx| {
+            runtime.sign_out_server(server_id, window, cx);
+        });
+    }
+
+    fn render_oauth_section(
+        &self,
+        title: SharedString,
+        description: SharedString,
+        authorized_label: SharedString,
+        not_authorized_label: SharedString,
+        signing_in_label: SharedString,
+        authorization_required_label: SharedString,
+        scope_upgrade_required_label: SharedString,
+        failed_label: SharedString,
+        authorize_label: SharedString,
+        reauthorize_label: SharedString,
+        sign_out_label: SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dialog = cx.entity().downgrade();
+        let authorize_dialog = dialog.clone();
+        let sign_out_dialog = dialog.clone();
+        let enabled = self.draft.oauth_enabled;
+        let status = self.oauth_status(cx);
+        let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
+        let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
+        let can_authorize_saved_config = self.original_config.as_ref().is_some_and(|server| {
+            server.transport == McpTransportKind::StreamableHttp && server.oauth.is_some()
+        });
+        let status_text = oauth_status_text(
+            &status,
+            authorized_label,
+            not_authorized_label,
+            signing_in_label,
+            authorization_required_label,
+            scope_upgrade_required_label,
+            failed_label,
+        );
+        let status_icon = oauth_status_icon(&status);
+        let status_color = oauth_status_color(&status, cx);
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted.opacity(0.25))
+                    .p_3()
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Icon::new(IconName::Shield)
+                                    .with_size(px(18.))
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                v_flex()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .child(Label::new(title).text_sm().font_medium())
+                                    .child(
+                                        Label::new(description)
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        Switch::new("mcp-dialog-oauth-enabled")
+                            .checked(enabled)
+                            .on_click(move |checked, _window, cx| {
+                                let _ = dialog.update(cx, |dialog, cx| {
+                                    dialog.set_oauth_enabled(*checked, cx);
+                                });
+                            }),
+                    ),
+            )
+            .when(enabled, |this| {
+                this.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .p_3()
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Icon::new(status_icon)
+                                        .with_size(px(18.))
+                                        .text_color(status_color),
+                                )
+                                .child(
+                                    Label::new(status_text)
+                                        .text_sm()
+                                        .font_medium()
+                                        .line_height(relative(1.35))
+                                        .text_color(status_color),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .when(authorized, |this| {
+                                    this.child(
+                                        Button::new("mcp-dialog-oauth-sign-out")
+                                            .icon(IconName::LogOut)
+                                            .label(sign_out_label.clone())
+                                            .outline()
+                                            .disabled(!can_authorize_saved_config || signing_in)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = sign_out_dialog.update(cx, |dialog, cx| {
+                                                    dialog.sign_out_oauth(window, cx);
+                                                });
+                                            }),
+                                    )
+                                })
+                                .child(
+                                    Button::new(if authorized {
+                                        "mcp-dialog-oauth-reauthorize"
+                                    } else {
+                                        "mcp-dialog-oauth-authorize"
+                                    })
+                                    .icon(if authorized {
+                                        IconName::RefreshCcw
+                                    } else {
+                                        IconName::Shield
+                                    })
+                                    .label(if authorized {
+                                        reauthorize_label.clone()
+                                    } else {
+                                        authorize_label.clone()
+                                    })
+                                    .loading(signing_in)
+                                    .disabled(!can_authorize_saved_config || signing_in)
+                                    .when(!authorized, |button| button.primary())
+                                    .on_click(
+                                        move |_, window, cx| {
+                                            let _ = authorize_dialog.update(cx, |dialog, cx| {
+                                                dialog.authorize_oauth(window, cx);
+                                            });
+                                        },
+                                    ),
+                                ),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
+        let Some(server_id) = self.mode.original_server_id() else {
+            return McpOAuthStatusSnapshot::SignedOut;
+        };
+        state::mcp::runtime(cx)
+            .read(cx)
+            .rows(cx)
+            .into_iter()
+            .find(|row| row.server_id == server_id)
+            .map(|row| row.auth)
+            .unwrap_or(McpOAuthStatusSnapshot::SignedOut)
+    }
+
     fn field_error_messages(
         &self,
         predicate: impl Fn(&McpFormField) -> bool,
@@ -258,6 +464,17 @@ impl Render for McpServerEditDialogState {
         let add_header_label = i18n.t("mcp-action-add-header");
         let add_env_header_label = i18n.t("mcp-action-add-env-header");
         let remove_label = i18n.t("button-delete");
+        let oauth_required_title = i18n.t("mcp-oauth-required-title");
+        let oauth_required_description = i18n.t("mcp-oauth-required-description");
+        let oauth_authorized = i18n.t("mcp-oauth-authorized");
+        let oauth_not_authorized = i18n.t("mcp-oauth-not-authorized");
+        let oauth_signing_in = i18n.t("mcp-oauth-signing-in");
+        let oauth_authorization_required = i18n.t("mcp-oauth-authorization-required");
+        let oauth_scope_upgrade_required = i18n.t("mcp-oauth-scope-upgrade-required");
+        let oauth_failed = i18n.t("mcp-oauth-failed");
+        let oauth_authorize = i18n.t("mcp-oauth-authorize");
+        let oauth_reauthorize = i18n.t("mcp-oauth-reauthorize");
+        let oauth_sign_out = i18n.t("mcp-oauth-sign-out");
         let transport = self.draft.transport;
         let scroll_handle = self.content_scroll_handle.clone();
         let dialog = cx.entity().downgrade();
@@ -539,12 +756,20 @@ impl Render for McpServerEditDialogState {
                                 ),
                                 cx,
                             ))
-                            .when(
-                                self.original_config
-                                    .as_ref()
-                                    .is_some_and(|server| server.oauth.is_some()),
-                                |this| this.child(render_oauth_preserved_notice(cx)),
-                            )
+                            .child(self.render_oauth_section(
+                                oauth_required_title.into(),
+                                oauth_required_description.into(),
+                                oauth_authorized.into(),
+                                oauth_not_authorized.into(),
+                                oauth_signing_in.into(),
+                                oauth_authorization_required.into(),
+                                oauth_scope_upgrade_required.into(),
+                                oauth_failed.into(),
+                                oauth_authorize.into(),
+                                oauth_reauthorize.into(),
+                                oauth_sign_out.into(),
+                                cx,
+                            ))
                     }),
             )
             .vertical_scrollbar(&scroll_handle)
@@ -609,6 +834,33 @@ fn confirm_mcp_server_edit_dialog(
     form.update(cx, |form, cx| form.save(window, cx))
 }
 
+fn delete_stale_oauth_credentials(
+    original_config: Option<&McpServerTomlConfig>,
+    saved_server: &McpServerTomlConfig,
+    cx: &mut App,
+) {
+    let Some(original_config) = original_config else {
+        return;
+    };
+    let original_url = original_config.url.as_deref();
+    let saved_url = saved_server.url.as_deref();
+    let oauth_disabled = original_config.oauth.is_some() && saved_server.oauth.is_none();
+    let oauth_url_changed = original_config.oauth.is_some()
+        && saved_server.oauth.is_some()
+        && original_url != saved_url;
+    if oauth_disabled || oauth_url_changed {
+        if let Some(url) = original_url {
+            let _ = state::mcp_oauth::delete_credentials(url, cx);
+        }
+    }
+    if oauth_disabled
+        && let Some(url) = saved_url
+        && Some(url) != original_url
+    {
+        let _ = state::mcp_oauth::delete_credentials(url, cx);
+    }
+}
+
 pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Window, cx: &mut App) {
     let mut args = FluentArgs::new();
     args.set("server", server_id.clone());
@@ -623,17 +875,27 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
         title,
         message,
         DestructiveAction::Delete,
-        move |window, cx| match state::config::delete_mcp_server(cx, &server_id) {
-            Ok(_) => {
-                disconnect_server(server_id.clone(), window, cx);
-                window.push_notification(
-                    Notification::new()
-                        .title(deleted_title.clone())
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
+        move |window, cx| {
+            let server_before_delete =
+                state::config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
+            match state::config::delete_mcp_server(cx, &server_id) {
+                Ok(_) => {
+                    if let Some(server) = server_before_delete
+                        && server.oauth.is_some()
+                        && let Some(url) = server.url.as_deref()
+                    {
+                        let _ = state::mcp_oauth::delete_credentials(url, cx);
+                    }
+                    disconnect_server(server_id.clone(), window, cx);
+                    window.push_notification(
+                        Notification::new()
+                            .title(deleted_title.clone())
+                            .with_type(NotificationType::Success),
+                        cx,
+                    );
+                }
+                Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
             }
-            Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
         },
         window,
         cx,
@@ -644,6 +906,65 @@ fn disconnect_server(server_id: String, window: &mut Window, cx: &mut App) {
     state::mcp::runtime(cx).update(cx, |runtime, cx| {
         runtime.disconnect_server(server_id, window, cx);
     });
+}
+
+fn oauth_status_text(
+    status: &McpOAuthStatusSnapshot,
+    authorized_label: SharedString,
+    not_authorized_label: SharedString,
+    signing_in_label: SharedString,
+    authorization_required_label: SharedString,
+    scope_upgrade_required_label: SharedString,
+    failed_label: SharedString,
+) -> SharedString {
+    match status {
+        McpOAuthStatusSnapshot::Authorized { .. } => authorized_label,
+        McpOAuthStatusSnapshot::SigningIn => signing_in_label,
+        McpOAuthStatusSnapshot::AuthorizationRequired => authorization_required_label,
+        McpOAuthStatusSnapshot::ScopeUpgradeRequired { required_scope, .. }
+            if !required_scope.trim().is_empty() && required_scope != "unknown" =>
+        {
+            format!(
+                "{}: {required_scope}",
+                scope_upgrade_required_label.as_ref()
+            )
+            .into()
+        }
+        McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. } => scope_upgrade_required_label,
+        McpOAuthStatusSnapshot::Failed { message } if !message.trim().is_empty() => {
+            format!("{}: {message}", failed_label.as_ref()).into()
+        }
+        McpOAuthStatusSnapshot::Failed { .. } => failed_label,
+        McpOAuthStatusSnapshot::NotConfigured | McpOAuthStatusSnapshot::SignedOut => {
+            not_authorized_label
+        }
+    }
+}
+
+fn oauth_status_icon(status: &McpOAuthStatusSnapshot) -> IconName {
+    match status {
+        McpOAuthStatusSnapshot::Authorized { .. } => IconName::ShieldCheck,
+        McpOAuthStatusSnapshot::SigningIn => IconName::RefreshCcw,
+        McpOAuthStatusSnapshot::AuthorizationRequired
+        | McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. }
+        | McpOAuthStatusSnapshot::Failed { .. } => IconName::ShieldAlert,
+        McpOAuthStatusSnapshot::NotConfigured | McpOAuthStatusSnapshot::SignedOut => {
+            IconName::ShieldAlert
+        }
+    }
+}
+
+fn oauth_status_color(status: &McpOAuthStatusSnapshot, cx: &App) -> gpui::Hsla {
+    match status {
+        McpOAuthStatusSnapshot::Authorized { .. } => cx.theme().success,
+        McpOAuthStatusSnapshot::Failed { .. } => cx.theme().danger,
+        McpOAuthStatusSnapshot::SigningIn
+        | McpOAuthStatusSnapshot::AuthorizationRequired
+        | McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. } => cx.theme().warning,
+        McpOAuthStatusSnapshot::NotConfigured | McpOAuthStatusSnapshot::SignedOut => {
+            cx.theme().muted_foreground
+        }
+    }
 }
 
 fn transport_from_toggle_states(current: McpTransportKind, states: &[bool]) -> McpTransportKind {
@@ -730,14 +1051,6 @@ fn render_validation_summary(errors: &[McpFormValidationError], cx: &mut App) ->
                 .line_height(relative(1.35))
                 .text_color(cx.theme().danger)
         }))
-        .into_any_element()
-}
-
-fn render_oauth_preserved_notice(cx: &mut App) -> AnyElement {
-    Label::new(cx.global::<I18n>().t("mcp-oauth-preserved-notice"))
-        .text_sm()
-        .line_height(relative(1.35))
-        .text_color(cx.theme().muted_foreground)
         .into_any_element()
 }
 

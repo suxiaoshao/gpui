@@ -19,7 +19,10 @@ use tracing::{Level, event};
 
 use crate::{
     errors::AiChat2Result,
-    state::config::{self, AiChat2Config, McpTransportKind},
+    state::{
+        config::{self, AiChat2Config, McpOAuthTomlConfig, McpTransportKind},
+        mcp_oauth,
+    },
 };
 
 #[derive(Clone)]
@@ -62,6 +65,7 @@ pub(crate) struct McpRuntimeStore {
     manager: Arc<Mutex<McpSessionManager>>,
     statuses: BTreeMap<String, McpServerStatusSnapshot>,
     server_tasks: BTreeMap<String, Task<()>>,
+    oauth_tasks: BTreeMap<String, Task<()>>,
     disconnect_tasks: BTreeMap<String, Task<()>>,
     last_error: Option<String>,
     _event_task: Task<()>,
@@ -90,6 +94,7 @@ impl McpRuntimeStore {
             manager: Arc::new(Mutex::new(manager)),
             statuses: BTreeMap::new(),
             server_tasks: BTreeMap::new(),
+            oauth_tasks: BTreeMap::new(),
             disconnect_tasks: BTreeMap::new(),
             last_error: None,
             _event_task: event_task,
@@ -127,9 +132,7 @@ impl McpRuntimeStore {
                     tool_count: tools.len(),
                     tools,
                     server_info: status.and_then(|status| status.server_info.clone()),
-                    last_error: status
-                        .and_then(|status| status.last_error.clone())
-                        .or_else(|| self.last_error.clone()),
+                    last_error: status.and_then(|status| status.last_error.clone()),
                     updated_at_unix_ms: status.map(|status| status.updated_at_unix_ms),
                 }
             })
@@ -161,21 +164,24 @@ impl McpRuntimeStore {
         self.last_error = None;
         let task_server_id = server_id.clone();
         let task = window.spawn(cx, async move |cx| {
-            let result = gpui_tokio::Tokio::spawn(cx, async move {
-                let mut registry = ToolRegistry::default();
-                let mut manager = manager.lock().await;
-                let preflight_statuses = setup.preflight_statuses;
-                manager
-                    .prepare_tool_registry(&mut registry, setup.snapshot, setup.configs)
-                    .await
-                    .map(|mut prepared| {
-                        prepared.statuses.extend(preflight_statuses);
-                        prepared
-                    })
-            })
-            .await
-            .map_err(|err| err.to_string())
-            .and_then(|result| result.map_err(|err| err.to_string()));
+            let result = match attach_oauth_credentials(setup, cx).await {
+                Ok(setup) => gpui_tokio::Tokio::spawn(cx, async move {
+                    let mut registry = ToolRegistry::default();
+                    let mut manager = manager.lock().await;
+                    let preflight_statuses = setup.preflight_statuses;
+                    manager
+                        .prepare_tool_registry(&mut registry, setup.snapshot, setup.configs)
+                        .await
+                        .map(|mut prepared| {
+                            prepared.statuses.extend(preflight_statuses);
+                            prepared
+                        })
+                })
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(|result| result.map_err(|err| err.to_string())),
+                Err(err) => Err(err),
+            };
 
             if let Err(err) = store.update_in(cx, |store, _window, cx| {
                 store.finish_server_test(task_server_id, result, cx);
@@ -188,6 +194,107 @@ impl McpRuntimeStore {
         cx.notify();
     }
 
+    pub(crate) fn authenticate_server(
+        &mut self,
+        server_id: String,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server = config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
+        let Some(server) = server else {
+            self.last_error = Some(format!("MCP server `{server_id}` not found"));
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        };
+        let Some((server_url, oauth_config)) = oauth_authorization_config(&server_id, &server)
+            .map_or_else(
+                |err| {
+                    self.last_error = Some(err);
+                    None
+                },
+                Some,
+            )
+        else {
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        };
+
+        self.oauth_tasks.remove(&server_id);
+        self.set_server_auth_status(
+            server_id.clone(),
+            &server,
+            McpOAuthStatusSnapshot::SigningIn,
+            None,
+        );
+        self.last_error = None;
+        let store = cx.entity().downgrade();
+        let task_server_id = server_id.clone();
+        let task = window.spawn(cx, async move |cx| {
+            let result =
+                mcp_oauth::authorize_with_browser(server_url.clone(), oauth_config, cx).await;
+            let result = match result {
+                Ok(authorized) => {
+                    match mcp_oauth::write_credentials(&server_url, &authorized.credentials, cx)
+                        .await
+                    {
+                        Ok(()) => Ok(authorized.status),
+                        Err(err) => Err(err),
+                    }
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = store.update_in(cx, |store, _window, cx| {
+                store.finish_oauth_authorization(task_server_id, result, cx);
+            }) {
+                event!(
+                    Level::ERROR,
+                    error = ?err,
+                    "finish MCP OAuth authorization failed"
+                );
+            }
+        });
+        self.oauth_tasks.insert(server_id, task);
+        cx.emit(McpRuntimeStoreEvent::StatusChanged);
+        cx.notify();
+    }
+
+    pub(crate) fn sign_out_server(
+        &mut self,
+        server_id: String,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server = config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
+        let Some(server) = server else {
+            self.last_error = Some(format!("MCP server `{server_id}` not found"));
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        };
+        if !oauth_configured(&server) {
+            self.last_error = Some(format!("mcp server `{server_id}` does not enable OAuth"));
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        }
+        if let Some(url) = server.url.as_deref()
+            && let Err(err) = mcp_oauth::delete_credentials(url, cx)
+        {
+            self.last_error = Some(err);
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        }
+
+        self.disconnect_server(server_id.clone(), window, cx);
+        self.set_server_auth_status(server_id, &server, McpOAuthStatusSnapshot::SignedOut, None);
+        self.last_error = None;
+        cx.emit(McpRuntimeStoreEvent::StatusChanged);
+        cx.notify();
+    }
+
     pub(crate) fn disconnect_server(
         &mut self,
         server_id: String,
@@ -196,6 +303,7 @@ impl McpRuntimeStore {
     ) {
         self.statuses.remove(&server_id);
         self.server_tasks.remove(&server_id);
+        self.oauth_tasks.remove(&server_id);
         self.disconnect_tasks.remove(&server_id);
         let manager = self.manager.clone();
         let store = cx.entity().downgrade();
@@ -217,6 +325,74 @@ impl McpRuntimeStore {
         self.disconnect_tasks.insert(server_id, task);
         cx.emit(McpRuntimeStoreEvent::StatusChanged);
         cx.notify();
+    }
+
+    fn finish_oauth_authorization(
+        &mut self,
+        server_id: String,
+        result: Result<McpOAuthStatusSnapshot, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.oauth_tasks.remove(&server_id);
+        let server = config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
+        match result {
+            Ok(status) => {
+                if let Some(server) = server {
+                    self.set_server_auth_status(server_id, &server, status, None);
+                }
+                self.last_error = None;
+            }
+            Err(err) => {
+                if let Some(server) = server {
+                    self.set_server_auth_status(
+                        server_id,
+                        &server,
+                        McpOAuthStatusSnapshot::Failed {
+                            message: err.clone(),
+                        },
+                        Some(err.clone()),
+                    );
+                }
+                self.last_error = Some(err);
+            }
+        }
+        cx.emit(McpRuntimeStoreEvent::StatusChanged);
+        cx.notify();
+    }
+
+    fn set_server_auth_status(
+        &mut self,
+        server_id: String,
+        server: &config::McpServerTomlConfig,
+        auth: McpOAuthStatusSnapshot,
+        last_error: Option<String>,
+    ) {
+        let updated_at_unix_ms = now_unix_ms();
+        if let Some(status) = self.statuses.get_mut(&server_id) {
+            status.auth = auth;
+            status.last_error = last_error;
+            status.updated_at_unix_ms = updated_at_unix_ms;
+            return;
+        }
+
+        self.statuses.insert(
+            server_id.clone(),
+            McpServerStatusSnapshot {
+                server_id,
+                display_name: server.display_name.clone(),
+                transport: transport_kind_snapshot(server.transport),
+                state: if server.enabled {
+                    McpServerConnectionState::NotConnected
+                } else {
+                    McpServerConnectionState::Disabled
+                },
+                auth,
+                server_info: None,
+                tools: Vec::new(),
+                last_error,
+                updated_at_unix_ms,
+            },
+        );
     }
 
     fn finish_disconnect_server(
@@ -246,6 +422,7 @@ impl McpRuntimeStore {
                 self.apply_statuses(prepared.statuses);
             }
             Err(err) => {
+                self.set_server_failed_status(server_id, err.clone(), cx);
                 self.last_error = Some(err);
             }
         }
@@ -257,6 +434,32 @@ impl McpRuntimeStore {
         for status in statuses {
             self.statuses.insert(status.server_id.clone(), status);
         }
+    }
+
+    fn set_server_failed_status(
+        &mut self,
+        server_id: String,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
+        let server = config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
+        let Some(server) = server else {
+            return;
+        };
+        self.statuses.insert(
+            server_id.clone(),
+            McpServerStatusSnapshot {
+                server_id,
+                display_name: server.display_name.clone(),
+                transport: transport_kind_snapshot(server.transport),
+                state: McpServerConnectionState::Failed,
+                auth: oauth_error_status(&server, &message),
+                server_info: None,
+                tools: Vec::new(),
+                last_error: Some(message),
+                updated_at_unix_ms: now_unix_ms(),
+            },
+        );
     }
 
     fn spawn_event_listener(
@@ -284,11 +487,52 @@ impl McpRuntimeStore {
             McpRuntimeEvent::ToolsChanged { server_id, tools } => {
                 if let Some(status) = self.statuses.get_mut(&server_id) {
                     status.tools = tools;
+                    status.updated_at_unix_ms = now_unix_ms();
                 }
             }
             McpRuntimeEvent::OAuthChanged { server_id, status } => {
                 if let Some(server_status) = self.statuses.get_mut(&server_id) {
                     server_status.auth = status;
+                    server_status.updated_at_unix_ms = now_unix_ms();
+                }
+            }
+            McpRuntimeEvent::OAuthCredentialsChanged(snapshot) => {
+                let snapshot = *snapshot;
+                match mcp_oauth::write_credentials_detached(
+                    &snapshot.server_url,
+                    snapshot.credentials,
+                    cx,
+                ) {
+                    Ok(()) => {
+                        let server = config::read(cx, |config| {
+                            config.mcp_servers.get(&snapshot.server_id).cloned()
+                        });
+                        if let Some(server) = server {
+                            self.set_server_auth_status(
+                                snapshot.server_id,
+                                &server,
+                                snapshot.status,
+                                None,
+                            );
+                        }
+                        self.last_error = None;
+                    }
+                    Err(err) => {
+                        let server = config::read(cx, |config| {
+                            config.mcp_servers.get(&snapshot.server_id).cloned()
+                        });
+                        if let Some(server) = server {
+                            self.set_server_auth_status(
+                                snapshot.server_id,
+                                &server,
+                                McpOAuthStatusSnapshot::Failed {
+                                    message: err.clone(),
+                                },
+                                Some(err.clone()),
+                            );
+                        }
+                        self.last_error = Some(err);
+                    }
                 }
             }
         }
@@ -305,6 +549,10 @@ pub(crate) fn init(cx: &mut App) -> AiChat2Result<()> {
 
 pub(crate) fn runtime(cx: &App) -> Entity<McpRuntimeStore> {
     cx.global::<McpRuntimeGlobal>().entity()
+}
+
+pub(crate) fn session_manager_handle(cx: &App) -> Arc<Mutex<McpSessionManager>> {
+    runtime(cx).read(cx).manager.clone()
 }
 
 pub(crate) async fn prepare_run_request(
@@ -346,6 +594,13 @@ pub(crate) async fn prepare_run_request(
             });
         }
     }
+
+    let setup = match attach_oauth_credentials(setup, cx).await {
+        Ok(setup) => setup,
+        Err(message) => {
+            return Err(McpPrepareRunError { request, message });
+        }
+    };
 
     let manager = match cx.update(|_, cx| runtime(cx).read(cx).manager.clone()) {
         Ok(manager) => manager,
@@ -449,6 +704,26 @@ async fn apply_preflight_statuses(
     }) {
         event!(Level::ERROR, error = ?err, "update MCP preflight statuses failed");
     }
+}
+
+async fn attach_oauth_credentials(
+    mut setup: McpRuntimeSetup,
+    cx: &mut AsyncWindowContext,
+) -> Result<McpRuntimeSetup, String> {
+    for config in &mut setup.configs {
+        let ai_chat_agent::McpServerTransport::StreamableHttp(http) = &mut config.server.transport
+        else {
+            continue;
+        };
+        if http.oauth.is_none() {
+            continue;
+        }
+        if let Some(credentials) = mcp_oauth::read_credentials(&http.url, cx).await? {
+            http.oauth_credentials =
+                Some(serde_json::to_value(credentials).map_err(|err| err.to_string())?);
+        }
+    }
+    Ok(setup)
 }
 
 fn build_mcp_runtime_setup(
@@ -628,8 +903,74 @@ fn configured_auth_status(server: &config::McpServerTomlConfig) -> McpOAuthStatu
     }
 }
 
+fn oauth_error_status(
+    server: &config::McpServerTomlConfig,
+    message: &str,
+) -> McpOAuthStatusSnapshot {
+    if !oauth_configured(server) {
+        return McpOAuthStatusSnapshot::NotConfigured;
+    }
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("insufficient scope") {
+        return McpOAuthStatusSnapshot::ScopeUpgradeRequired {
+            required_scope: "unknown".to_string(),
+            authorization_url: String::new(),
+        };
+    }
+    if lower.contains("authorization required") || lower.contains("requires oauth authorization") {
+        return McpOAuthStatusSnapshot::AuthorizationRequired;
+    }
+    McpOAuthStatusSnapshot::Failed {
+        message: message.to_string(),
+    }
+}
+
 fn oauth_configured(server: &config::McpServerTomlConfig) -> bool {
     server.transport == McpTransportKind::StreamableHttp && server.oauth.is_some()
+}
+
+fn oauth_authorization_config(
+    server_id: &str,
+    server: &config::McpServerTomlConfig,
+) -> Result<(String, mcp_oauth::AuthorizationCodePkceConfig), String> {
+    if server.transport != McpTransportKind::StreamableHttp {
+        return Err(format!(
+            "mcp server `{server_id}` OAuth authorization is only supported for HTTP transport"
+        ));
+    }
+    let server_url = server
+        .url
+        .as_ref()
+        .filter(|url| !url.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| format!("mcp server `{server_id}` URL is required for OAuth"))?;
+    let oauth = server
+        .oauth
+        .as_ref()
+        .ok_or_else(|| format!("mcp server `{server_id}` does not enable OAuth"))?;
+
+    match oauth {
+        McpOAuthTomlConfig::AuthorizationCodePkce {
+            scopes,
+            client_id,
+            client_metadata_url,
+            callback_port,
+            callback_url,
+            ..
+        } => Ok((
+            server_url,
+            mcp_oauth::AuthorizationCodePkceConfig {
+                scopes: scopes.clone(),
+                client_id: client_id.clone(),
+                client_metadata_url: client_metadata_url.clone(),
+                callback_port: *callback_port,
+                callback_url: callback_url.clone(),
+            },
+        )),
+        McpOAuthTomlConfig::ClientCredentials { .. } => Err(format!(
+            "mcp server `{server_id}` uses OAuth client_credentials; browser authorization is not applicable"
+        )),
+    }
 }
 
 fn now_unix_ms() -> u64 {
@@ -642,7 +983,9 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::config::{McpServerTomlConfig, McpToolApprovalMode, McpTransportKind};
+    use crate::state::config::{
+        McpOAuthTomlConfig, McpServerTomlConfig, McpToolApprovalMode, McpTransportKind,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -783,6 +1126,42 @@ mod tests {
 
             assert_eq!(setup.configs[0].default_approval_mode, expected_mcp_mode);
             assert_eq!(setup.configs[0].default_approval_policy, expected_policy);
+        }
+    }
+
+    #[test]
+    fn oauth_error_status_maps_authorization_required() {
+        let server = oauth_http_server();
+
+        assert_eq!(
+            oauth_error_status(&server, "OAuth authorization required"),
+            McpOAuthStatusSnapshot::AuthorizationRequired
+        );
+    }
+
+    #[test]
+    fn oauth_error_status_maps_scope_upgrade_required() {
+        let server = oauth_http_server();
+
+        assert!(matches!(
+            oauth_error_status(&server, "Insufficient scope"),
+            McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. }
+        ));
+    }
+
+    fn oauth_http_server() -> McpServerTomlConfig {
+        McpServerTomlConfig {
+            transport: McpTransportKind::StreamableHttp,
+            url: Some("https://example.com/mcp".to_string()),
+            oauth: Some(McpOAuthTomlConfig::AuthorizationCodePkce {
+                scopes: Vec::new(),
+                client_id: None,
+                client_metadata_url: None,
+                resource: None,
+                callback_port: None,
+                callback_url: None,
+            }),
+            ..Default::default()
         }
     }
 }

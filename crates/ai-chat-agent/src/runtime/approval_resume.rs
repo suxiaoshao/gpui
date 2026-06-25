@@ -1,15 +1,16 @@
 use super::{AgentRuntime, emit_runtime, error_tool_output, is_terminal_agent_run_status};
 use crate::{
     AgentCancellationToken, AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
-    ApprovalResumeOutcome, Result, persistence::run_error,
-    tool_registry::tool_output_to_model_text,
+    ApprovalResumeOutcome, McpSessionManager, Result, ToolRegistry,
+    persistence::run_error,
+    tool_registry::{RegisteredRuntimeTool, tool_output_to_model_text},
 };
 use ai_chat_core::*;
 use ai_chat_db::{
     AgentRunRecord, NewConversationItem, ToolInvocationApproval, ToolInvocationApprovalOutcome,
     ToolInvocationRecord, UpdateAgentRunStatus, UpdateToolInvocationStatus,
 };
-use std::{future::Future, time::Duration};
+use std::{future::Future, path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
 impl AgentRuntime {
@@ -23,37 +24,11 @@ impl AgentRuntime {
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<ApprovalResumeOutcome> {
         let invocation = self.pending_approval_invocation(tool_invocation_id)?;
-        if !matches!(invocation.source, ToolSource::Local) {
-            return Err(AgentRuntimeError::Unsupported(format!(
-                "approved resume only supports local built-in tools, got {:?}",
-                invocation.source
-            )));
-        }
-
         let agent_run = self.agent_run_for_approval(&invocation)?;
-        let policy = &agent_run.input.settings_snapshot.tool_policy;
-        let access_requests = crate::builtin_tools::registry::access_requests_for_builtin_tool(
-            &invocation.tool_name,
-            &invocation.input.arguments.value,
-            policy,
-        )?
-        .ok_or_else(|| {
-            AgentRuntimeError::Unsupported(format!(
-                "approved resume only supports built-in local tools, got {}",
-                invocation.tool_name
-            ))
-        })?;
-        let evaluator =
-            crate::builtin_tools::approval::ToolPermissionEvaluator::from_policy(policy, None)?;
-        match evaluator.evaluate(&access_requests) {
-            crate::builtin_tools::approval::ToolPermissionDecision::Deny { reason } => {
-                return Err(AgentRuntimeError::Invariant(format!(
-                    "approved tool call is denied by policy: {reason}"
-                )));
-            }
-            crate::builtin_tools::approval::ToolPermissionDecision::Allow { .. }
-            | crate::builtin_tools::approval::ToolPermissionDecision::Ask { .. } => {}
-        }
+        let runtime_tool = self
+            .runtime_tool_for_approval(&agent_run, &invocation, tool_timeout)
+            .await?;
+        validate_approved_local_tool_permissions(&agent_run, &invocation)?;
 
         let running_invocation = self.repo.update_tool_invocation_approval(
             tool_invocation_id,
@@ -87,14 +62,12 @@ impl AgentRuntime {
                     observer,
                 );
             }
-            result = approved_builtin_tool_result_from_execution(
-                &running_invocation.tool_name,
-                crate::builtin_tools::registry::execute_builtin_tool(
-                    &running_invocation.tool_name,
-                    running_invocation.input.arguments.value.clone(),
-                    policy,
-                ),
-                tool_timeout,
+            result = approved_tool_result_from_execution(
+                runtime_tool
+                    .runtime_tool
+                    .executor
+                    .execute(running_invocation.input.arguments.value.clone()),
+                runtime_tool.runtime_tool.timeout,
             ) => result,
         };
         if cancellation_token.is_cancelled() {
@@ -382,6 +355,131 @@ impl AgentRuntime {
         }
         Ok(agent_run)
     }
+
+    async fn runtime_tool_for_approval(
+        &self,
+        agent_run: &AgentRunRecord,
+        invocation: &ToolInvocationRecord,
+        default_tool_timeout: Duration,
+    ) -> Result<ApprovedRuntimeTool> {
+        let mut registry = ToolRegistry::default();
+        let mut owned_mcp_manager = None;
+        crate::builtin_tools::registry::register_enabled_builtin_tools(
+            &mut registry,
+            &agent_run.input.settings_snapshot.tool_policy,
+            approval_project_root(agent_run).as_deref(),
+        )?;
+        if let Some(snapshot) = agent_run.input.runtime_snapshot.mcp_config_snapshot.clone() {
+            if let Some(expected_hash) = agent_run.input.runtime_snapshot.mcp_config_hash.as_ref() {
+                let actual_hash = crate::mcp_config_hash(&snapshot)?;
+                if &actual_hash != expected_hash {
+                    return Err(AgentRuntimeError::Invariant(format!(
+                        "agent run {} MCP config hash mismatch: expected {expected_hash}, got {actual_hash}",
+                        agent_run.id
+                    )));
+                }
+            }
+            if let Some(manager) = &self.mcp_session_manager {
+                manager
+                    .lock()
+                    .await
+                    .prepare_tool_registry_from_snapshot(
+                        &mut registry,
+                        snapshot,
+                        &agent_run.input.settings_snapshot,
+                    )
+                    .await?;
+            } else {
+                let manager = owned_mcp_manager.get_or_insert_with(McpSessionManager::new);
+                manager
+                    .prepare_tool_registry_from_snapshot(
+                        &mut registry,
+                        snapshot,
+                        &agent_run.input.settings_snapshot,
+                    )
+                    .await?;
+            }
+        } else if matches!(invocation.source, ToolSource::Mcp { .. }) {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "agent run {} has no MCP config snapshot for approved MCP tool {}",
+                agent_run.id, invocation.runtime_tool_name
+            )));
+        }
+        registry.finalize_names();
+        let Some(runtime_tool) = registry
+            .runtime_tools(default_tool_timeout)
+            .into_iter()
+            .find(|tool| tool.definition.runtime_tool_name == invocation.runtime_tool_name)
+        else {
+            return Err(AgentRuntimeError::Unsupported(format!(
+                "approved resume cannot find runtime executor for tool {}",
+                invocation.runtime_tool_name
+            )));
+        };
+        if runtime_tool.definition.source != invocation.source
+            || runtime_tool.definition.tool_name != invocation.tool_name
+        {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "approved resume tool definition mismatch for {}",
+                invocation.runtime_tool_name
+            )));
+        }
+        Ok(ApprovedRuntimeTool {
+            runtime_tool,
+            _owned_mcp_manager: owned_mcp_manager,
+        })
+    }
+}
+
+struct ApprovedRuntimeTool {
+    runtime_tool: RegisteredRuntimeTool,
+    _owned_mcp_manager: Option<McpSessionManager>,
+}
+
+fn approval_project_root(agent_run: &AgentRunRecord) -> Option<PathBuf> {
+    agent_run
+        .input
+        .settings_snapshot
+        .tool_policy
+        .permission_scope
+        .as_ref()
+        .and_then(|scope| scope.project_roots.first())
+        .map(PathBuf::from)
+}
+
+fn validate_approved_local_tool_permissions(
+    agent_run: &AgentRunRecord,
+    invocation: &ToolInvocationRecord,
+) -> Result<()> {
+    if !matches!(invocation.source, ToolSource::Local) {
+        return Ok(());
+    }
+    let policy = &agent_run.input.settings_snapshot.tool_policy;
+    let access_requests = crate::builtin_tools::registry::access_requests_for_builtin_tool(
+        &invocation.tool_name,
+        &invocation.input.arguments.value,
+        policy,
+    )?
+    .ok_or_else(|| {
+        AgentRuntimeError::Unsupported(format!(
+            "approved resume only supports built-in local tools, got {}",
+            invocation.tool_name
+        ))
+    })?;
+    let fallback_project_root = approval_project_root(agent_run);
+    let evaluator = crate::builtin_tools::approval::ToolPermissionEvaluator::from_policy(
+        policy,
+        fallback_project_root.as_deref(),
+    )?;
+    match evaluator.evaluate(&access_requests) {
+        crate::builtin_tools::approval::ToolPermissionDecision::Deny { reason } => {
+            Err(AgentRuntimeError::Invariant(format!(
+                "approved tool call is denied by policy: {reason}"
+            )))
+        }
+        crate::builtin_tools::approval::ToolPermissionDecision::Allow { .. }
+        | crate::builtin_tools::approval::ToolPermissionDecision::Ask { .. } => Ok(()),
+    }
 }
 
 fn approval_after_outcome(
@@ -471,9 +569,8 @@ fn terminal_approval_result(
     }
 }
 
-pub(super) async fn approved_builtin_tool_result_from_execution(
-    tool_name: &str,
-    execution: impl Future<Output = Result<Option<ToolInvocationOutput>>>,
+async fn approved_tool_result_from_execution(
+    execution: impl Future<Output = Result<ToolInvocationOutput>>,
     tool_timeout: Duration,
 ) -> (
     ToolInvocationOutput,
@@ -481,7 +578,7 @@ pub(super) async fn approved_builtin_tool_result_from_execution(
     Option<RunErrorPayload>,
 ) {
     match timeout(tool_timeout, execution).await {
-        Ok(Ok(Some(output))) => {
+        Ok(Ok(output)) => {
             let error = output
                 .is_error
                 .then(|| run_error("tool_error", tool_output_to_model_text(&output), true, None));
@@ -491,19 +588,6 @@ pub(super) async fn approved_builtin_tool_result_from_execution(
                 ToolInvocationStatus::Succeeded
             };
             (output, status, error)
-        }
-        Ok(Ok(None)) => {
-            let error = run_error(
-                "tool_error",
-                format!("built-in tool {tool_name} is not registered"),
-                true,
-                None,
-            );
-            (
-                error_tool_output(error.message.clone()),
-                ToolInvocationStatus::Failed,
-                Some(error),
-            )
         }
         Ok(Err(error)) => {
             let error = run_error("tool_error", error.to_string(), true, None);
@@ -522,4 +606,28 @@ pub(super) async fn approved_builtin_tool_result_from_execution(
             )
         }
     }
+}
+
+#[cfg(test)]
+pub(super) async fn approved_builtin_tool_result_from_execution(
+    tool_name: &str,
+    execution: impl Future<Output = Result<Option<ToolInvocationOutput>>>,
+    tool_timeout: Duration,
+) -> (
+    ToolInvocationOutput,
+    ToolInvocationStatus,
+    Option<RunErrorPayload>,
+) {
+    let tool_name = tool_name.to_string();
+    approved_tool_result_from_execution(
+        async move {
+            execution.await?.ok_or_else(|| {
+                AgentRuntimeError::Unsupported(format!(
+                    "built-in tool {tool_name} is not registered"
+                ))
+            })
+        },
+        tool_timeout,
+    )
+    .await
 }

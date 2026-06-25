@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{
     foundation::I18n,
-    state::config::{McpServerTomlConfig, McpTransportKind},
+    state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind},
 };
 use gpui::{App, AppContext as _, Entity, Window};
 use gpui_component::input::InputState;
@@ -83,6 +83,7 @@ pub(super) struct McpServerFormDraft {
     pub(super) bearer_token_env_var_input: Entity<InputState>,
     pub(super) headers: Vec<KeyValueDraftRow>,
     pub(super) env_headers: Vec<KeyValueDraftRow>,
+    pub(super) oauth_enabled: bool,
 }
 
 impl McpServerFormDraft {
@@ -165,6 +166,7 @@ impl McpServerFormDraft {
                 window,
                 cx,
             ),
+            oauth_enabled: server.oauth.is_some(),
         }
     }
 
@@ -195,16 +197,33 @@ impl McpServerFormDraft {
                     .filter_map(|row| (!row.value.is_empty()).then_some(row.value))
                     .collect();
                 server.cwd = optional_input(&self.cwd_input, cx).map(PathBuf::from);
+                server.oauth = None;
             }
             McpTransportKind::StreamableHttp => {
                 server.url = optional_input(&self.url_input, cx);
                 server.bearer_token_env_var = optional_input(&self.bearer_token_env_var_input, cx);
                 server.headers = key_value_map(&self.headers, false, cx);
                 server.env_headers = key_value_map(&self.env_headers, false, cx);
+                server.oauth = self.oauth_enabled.then(|| {
+                    server.oauth.clone().unwrap_or_else(|| {
+                        McpOAuthTomlConfig::AuthorizationCodePkce {
+                            scopes: Vec::new(),
+                            client_id: None,
+                            client_metadata_url: None,
+                            resource: None,
+                            callback_port: None,
+                            callback_url: None,
+                        }
+                    })
+                });
             }
         }
 
         server
+    }
+
+    pub(super) fn set_oauth_enabled(&mut self, enabled: bool) {
+        self.oauth_enabled = enabled;
     }
 
     pub(super) fn add_string_row(

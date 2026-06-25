@@ -2071,6 +2071,148 @@ async fn tool_history_replay_preserves_provider_call_ids() {
     assert_eq!(tool_result.call_id.as_deref(), Some("call_previous"));
 }
 
+#[tokio::test]
+async fn deepseek_thinking_resume_textualizes_tool_history() {
+    let fixture = Fixture::new("deepseek-resume-history");
+    let parent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Completed);
+    fixture
+        .repo
+        .append_conversation_item(NewConversationItem {
+            conversation_id: fixture.conversation.id.clone(),
+            status: ConversationItemStatus::Completed,
+            agent_run_id: Some(parent_run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationItemPayload::Reasoning {
+                text: "internal reasoning".to_string(),
+                summary: None,
+            },
+        })
+        .unwrap();
+    fixture
+        .repo
+        .append_conversation_item(NewConversationItem {
+            conversation_id: fixture.conversation.id.clone(),
+            status: ConversationItemStatus::Completed,
+            agent_run_id: Some(parent_run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationItemPayload::ToolCall(ToolCallItem {
+                tool_invocation_id: None,
+                call_id: "call_resume".to_string(),
+                source: ToolSource::Local,
+                name: "echo".to_string(),
+                runtime_tool_name: "echo".to_string(),
+                arguments: ToolArguments {
+                    value: json!({"text": "hi"}),
+                },
+            }),
+        })
+        .unwrap();
+    fixture
+        .repo
+        .append_conversation_item(NewConversationItem {
+            conversation_id: fixture.conversation.id.clone(),
+            status: ConversationItemStatus::Completed,
+            agent_run_id: Some(parent_run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationItemPayload::ToolResult(ToolResultItem {
+                tool_invocation_id: None,
+                call_id: "call_resume".to_string(),
+                content: vec![ContentPart::Text {
+                    text: "hi".to_string(),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: None,
+            }),
+        })
+        .unwrap();
+
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let mut request = fixture.request();
+    request.parent_agent_run_id = Some(parent_run.id);
+    request.settings_snapshot.provider_settings.provider_kind = "deepseek".to_string();
+    request.settings_snapshot.reasoning_selection = Some(ReasoningSelectionSnapshot::Level {
+        value: "high".to_string(),
+    });
+    let model = MockCompletionModel::text("ok");
+
+    runtime
+        .run_with_model(request, model.clone())
+        .await
+        .unwrap();
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 1);
+    let messages = requests[0].chat_history.iter().collect::<Vec<_>>();
+    assert!(messages.iter().all(|message| {
+        !matches!(
+            message,
+            RigMessage::Assistant { content, .. }
+                if content
+                    .iter()
+                    .any(|content| matches!(content, AssistantContent::Reasoning(_)))
+        )
+    }));
+    assert!(messages.iter().all(|message| {
+        !matches!(
+            message,
+            RigMessage::Assistant { content, .. }
+                if content
+                    .iter()
+                    .any(|content| matches!(content, AssistantContent::ToolCall(_)))
+        )
+    }));
+    assert!(messages.iter().all(|message| {
+        !matches!(
+            message,
+            RigMessage::User { content }
+                if content
+                    .iter()
+                    .any(|content| matches!(content, UserContent::ToolResult(_)))
+        )
+    }));
+    let text_history = messages
+        .iter()
+        .map(|message| rig_message_text(message))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text_history.contains("Approved tool call `call_resume` completed with success result")
+    );
+    assert!(text_history.contains("hi"));
+}
+
+#[test]
+fn deepseek_text_resume_only_targets_deepseek_thinking_resume() {
+    let fixture = Fixture::new("deepseek-resume-policy");
+    let mut request = fixture.request();
+    request.parent_agent_run_id = Some("parent".to_string());
+    request.settings_snapshot.provider_settings.provider_kind = "deepseek".to_string();
+    request.settings_snapshot.reasoning_selection = Some(ReasoningSelectionSnapshot::Level {
+        value: "high".to_string(),
+    });
+    assert!(needs_deepseek_text_resume(&request));
+
+    request.parent_agent_run_id = None;
+    assert!(!needs_deepseek_text_resume(&request));
+
+    request.parent_agent_run_id = Some("parent".to_string());
+    request.settings_snapshot.provider_settings.provider_kind = "openai".to_string();
+    assert!(!needs_deepseek_text_resume(&request));
+
+    request.settings_snapshot.provider_settings.provider_kind = "deepseek".to_string();
+    request.settings_snapshot.reasoning_selection = Some(ReasoningSelectionSnapshot::Level {
+        value: "disabled".to_string(),
+    });
+    assert!(!needs_deepseek_text_resume(&request));
+}
+
 fn insert_waiting_approval(fixture: &Fixture) -> (AgentRunRecord, ToolInvocationRecord) {
     let agent_run = insert_agent_run_with_status(fixture, AgentRunStatus::Running);
     let invocation = insert_tool_invocation(

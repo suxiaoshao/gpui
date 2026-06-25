@@ -1,7 +1,8 @@
 use crate::{
     AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent,
-    AgentRuntimeObserver, AgentStep, ProviderSecretValues, Result, SkillCatalog, SkillLoader,
-    history::build_prompt_history,
+    AgentRuntimeObserver, AgentStep, McpSessionManager, ProviderSecretValues, Result, SkillCatalog,
+    SkillLoader,
+    history::{PromptHistoryOptions, build_prompt_history_with_options},
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
     provider_models::run_saved_provider_model,
     reasoning_params::{merge_additional_params, reasoning_additional_params},
@@ -23,11 +24,14 @@ mod streaming;
 mod tests;
 
 use self::streaming::StreamingOutputAccumulator;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AgentRuntime {
     repo: FreshRepository,
     skill_loader: SkillLoader,
+    mcp_session_manager: Option<Arc<Mutex<McpSessionManager>>>,
 }
 
 impl AgentRuntime {
@@ -35,11 +39,17 @@ impl AgentRuntime {
         Self {
             repo,
             skill_loader: SkillLoader::new(),
+            mcp_session_manager: None,
         }
     }
 
     pub fn with_skill_loader(mut self, skill_loader: SkillLoader) -> Self {
         self.skill_loader = skill_loader;
+        self
+    }
+
+    pub fn with_mcp_session_manager(mut self, manager: Arc<Mutex<McpSessionManager>>) -> Self {
+        self.mcp_session_manager = Some(manager);
         self
     }
 
@@ -182,12 +192,19 @@ impl AgentRuntime {
                 )?);
             }
         };
-        let prompt_history = match build_prompt_history(
+        let deepseek_text_resume = needs_deepseek_text_resume(&request);
+        // DeepSeek thinking requires provider-native reasoning_content on replayed assistant
+        // tool-call messages; Rig history does not preserve that field, so resume as text.
+        let prompt_history = match build_prompt_history_with_options(
             &timeline.items,
             &timeline.attachments,
             &request.user_item_id,
             &agent_run.id,
             request.parent_agent_run_id.as_deref(),
+            PromptHistoryOptions {
+                include_reasoning: !deepseek_text_resume,
+                preserve_tool_protocol: !deepseek_text_resume,
+            },
         ) {
             Ok(prompt_history) => prompt_history,
             Err(error) => {
@@ -229,8 +246,13 @@ impl AgentRuntime {
         if let Some(prompt) = prompt_preamble(request.prompt_snapshot.as_ref()) {
             builder = builder.preamble(&prompt);
         }
+        let reasoning_params = if deepseek_text_resume {
+            None
+        } else {
+            reasoning_additional_params(&request.settings_snapshot)
+        };
         let additional_params = merge_additional_params(
-            reasoning_additional_params(&request.settings_snapshot),
+            reasoning_params,
             (!request.provider_tools.is_empty()).then(|| {
                 serde_json::json!({
                     "tools": request.provider_tools,
@@ -743,6 +765,26 @@ impl AgentRuntime {
             })?;
         }
         Ok(())
+    }
+}
+
+fn needs_deepseek_text_resume(request: &AgentRunRequest) -> bool {
+    request.parent_agent_run_id.is_some()
+        && request.settings_snapshot.provider_settings.provider_kind == "deepseek"
+        && reasoning_selection_enables_deepseek_thinking(
+            request.settings_snapshot.reasoning_selection.as_ref(),
+        )
+}
+
+fn reasoning_selection_enables_deepseek_thinking(
+    selection: Option<&ReasoningSelectionSnapshot>,
+) -> bool {
+    match selection {
+        Some(ReasoningSelectionSnapshot::Level { value }) => value == "high" || value == "max",
+        Some(ReasoningSelectionSnapshot::Composite { selections }) => selections
+            .iter()
+            .any(|selection| reasoning_selection_enables_deepseek_thinking(Some(selection))),
+        _ => false,
     }
 }
 

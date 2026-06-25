@@ -357,6 +357,7 @@ dependencies = [
  "image",
  "pinyin",
  "platform-ext",
+ "rmcp",
  "rust-embed",
  "serde",
  "serde_json",

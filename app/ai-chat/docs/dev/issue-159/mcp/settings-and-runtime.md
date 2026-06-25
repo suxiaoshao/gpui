@@ -1,6 +1,6 @@
 # Issue #159 ai-chat2 MCP 设置、OAuth 和运行时计划
 
-本文档固定 `app/ai-chat2` 下一阶段 MCP 实现方案。它只描述 `ai-chat2` 的实现路径，不改变 legacy `app/ai-chat`。
+本文档固定 `app/ai-chat2` MCP 总设计和阶段 1 设计记录。阶段状态、通用原则和项目管理边界见 `README.md`；阶段 2 开发计划见 `phase-2.md`。本文档只描述 `ai-chat2` 的实现路径，不改变 legacy `app/ai-chat`。
 
 ## 范围
 
@@ -21,9 +21,9 @@ V1 必须完成：
 V1 不做：
 
 - MCP Prompts、Resources、Sampling、Elicitation UI。
-- 项目级 MCP 配置。项目级配置必须等 ai-chat2 有明确 project trust model 后再做。
+- 项目级 MCP 配置。2026-06-25 已确认阶段 2 仍不做 project-level MCP definitions、project trust prompt 或 project-scoped session key；后续如需支持，单独开阶段计划。
 - app 启动即自动拉起所有 enabled stdio server。默认只在 Settings `Test`/`Refresh` 或 agent run 前按需连接。
-- OAuth browser flow、token storage、refresh、scope upgrade 和 logout 本轮不做；OAuth server definition 先通过 `config.toml` 声明并保留在 secret-safe snapshot 中。
+- OAuth browser flow、token storage、refresh、scope upgrade 和 logout 在 V1 不做；阶段 2 已补齐 authorization-code browser flow、GPUI credentials token storage、rmcp `AuthClient` runtime、refreshed credentials mirror、取消授权和基础 scope failure 状态。完整 `Upgrade Access` 增量 scope flow 仍作为后续 advanced path。
 - OAuth 配置表单首版不做；Add/Edit dialog 首版改为 Codex 风格的最小必需配置表单，只覆盖非 OAuth stdio / streamable HTTP 的常用字段，并且所有数组/映射字段都使用结构化 row editor，不再让用户输入多行字符串再由 app 解析。已有 OAuth definition 可以继续从 TOML 读取、展示 auth status、参与校验/快照，但 UI 暂不编辑 OAuth 字段。
 - MCP server 的 `required`、timeouts、tool allow/deny、per-server/per-tool approval override 等高级字段首版不在 Settings Add/Edit dialog 暴露；如果原 TOML 已存在这些字段，编辑保存必须保留。后续如需高级配置，先设计单独 Advanced path，不要混入默认表单。
 - `ClientCredentials` UI 不做；TOML 解析和校验保留为后续 advanced path。
@@ -49,17 +49,24 @@ V1 不做：
 - `app/ai-chat2/src/state/mcp.rs` 已安装 `McpRuntimeGlobal`，持有 live `McpSessionManager`、server status cache 和 run setup 入口。
 - `state::mcp` 的 run setup 已按 `required` 分流 app-layer preflight error：required server 配置/环境错误会阻断本次 run 并持久化 setup failure；non-required server 会记录 failed status 并跳过，不阻断其它 MCP server 或 provider call。
 - `app/ai-chat2/src/features/settings/mcp.rs` 已实现 MCP Settings V1：读取 `config.toml` server、搜索、刷新/测试连接、展示 transport/connection/auth tags、server info 和 tools/list，并提供 Add/Edit/Delete/Enable/Disable 管理入口。
-- `app/ai-chat2/src/features/settings/mcp/dialog.rs` 已实现 Add/Edit dialog、Delete confirm、非 OAuth stdio / streamable HTTP 字段表单、tool allow/deny、approval mode、timeout、headers/env 行解析，并通过 `state::config` helper 写回 `config.toml`；编辑 HTTP server 时会保留首版未暴露的 OAuth definition。下一步必须把该 dialog 收敛为 Codex 风格的简化表单：隐藏高级字段、移除多行字符串解析入口，并改为结构化数组/键值编辑。
+- `app/ai-chat2/src/features/settings/mcp/dialog.rs` 已实现 Add/Edit dialog、Delete confirm、非 OAuth stdio / streamable HTTP 简化字段表单、结构化参数/env/header rows、滚动内容区和固定 footer，并通过 `state::config` helper 写回 `config.toml`；编辑 HTTP server 时会保留首版未暴露的 OAuth definition。
 - `ConversationRuntimeStore` 已把 run setup 移到 async start phase，在 `AgentRuntime::begin_run(...)` 之前调用 MCP runtime 准备工具，并设置 `AgentRuntimeSnapshot.mcp_config_hash` / `mcp_config_snapshot`。
 - `crates/ai-chat-agent/src/tool_registry.rs` 已支持 `ToolSource::Mcp { server_id }`，并会为 MCP 工具分配 namespace。
 - `ai-chat-db` 已能持久化 MCP tool invocation 的 source、server id、original tool name、runtime tool name、arguments、result、error 和 approval。
 - `ConversationRuntimeStore` 已能启动/停止 run、处理 approval、把 runtime events 映射成 conversation UI refresh。
 
+阶段 2 已补齐：
+
+- MCP approval resume 已从 local-only 扩展为 source-neutral runtime tool execution；批准 MCP tool 后会用 run snapshot 恢复 registry 并执行对应 MCP tool。
+- OAuth authorization-code flow 已接入 Settings 简化 UI：`需要 OAuth` 开关、授权状态卡片、`授权` / `重新授权` 按钮。
+- OAuth token 写入 GPUI credentials，key 使用 `mcp-oauth:{canonical_server_uri}`；关闭 OAuth 并保存、删除 server、OAuth URL 变化时会删除对应 credentials。
+- agent streamable HTTP OAuth path 已用 rmcp `AuthClient`；Settings Test / agent run setup 会读取 GPUI credentials 中的 rmcp `StoredCredentials`，只注入 runtime config，不进入 TOML、SQLite 或 runtime snapshot。
+
 尚未完成：
 
-- OAuth browser flow、token storage、refresh、scope upgrade 和 logout 尚未实现；当前遇到配置了 `oauth` 的 streamable HTTP server 会明确失败，而不是静默降级。
-- `approve_and_resume_tool(...)` 当前明确只支持 `ToolSource::Local`，MCP 工具审批恢复必须重构。
-- `notifications/tools/list_changed` 已能从 agent-side handler 发事件，但 Settings 只更新已连接 session 的内存 status；更完整的 tool-cache invalidation/retry UX 仍未做。
+- refreshed credentials mirror 回 GPUI credentials 已完成：agent-side mirror `CredentialStore` 在 rmcp refresh 保存新 credentials 时发 runtime event，app 收到后写回 GPUI credentials。
+- OAuth 授权卡片已提供显式 `取消授权`；insufficient scope 已映射为“需要重新授权”状态。完整 `Upgrade Access` 增量 scope flow 仍是后续 advanced path。
+- `notifications/tools/list_changed` 已能更新 Settings 状态；复用已有 session 前会重新执行 `tools/list`，避免下一次 run 使用 stale tool cache。
 - `default_tool_policy()` 默认仍只包含 `ToolSource::Local`；MCP run setup 只在实际连接成功后把对应 `ToolSource::Mcp { server_id }` 加入本次 run snapshot，不改变全局默认策略。
 
 ## 协议和源码参考
@@ -135,12 +142,12 @@ Codex Electron app 参考路径，2026-06-24 已在本机安装的 app 上验证
 已采纳决策：
 
 - Config shape 继续支持 Codex 风格和后续高级能力：`enabled`、`required`、timeouts、tool allow/deny、per-tool approval、env-backed headers。Settings 默认 Add/Edit UI 只暴露 Codex 自定义 MCP 常用字段，不把完整 TOML schema 全部推给用户。
-- 后续 OAuth token persistence 采用 Zed/Codex 边界：OAuth session/token JSON 存到 system keychain via GPUI credentials，不写入 `config.toml`，也不写入 chat DB table。
+- OAuth token persistence 采用 Zed/Codex 边界：rmcp `StoredCredentials` JSON 存到 system keychain via GPUI credentials，不写入 `config.toml`，也不写入 chat DB table。
 - 后续 browser login flow 参考 Codex：本地 callback server、redirect URI、open browser、等待 callback、持久化 token。
 - Session/tool runtime 沿用当前 ai-chat-agent persistence model，不照搬 Zed 的整套 context-server store。
 - 默认 startup timeout 为 30s，默认 tool timeout 为 300s。
 - 生命周期参考 Codex Electron，不参考 Codex CLI/TUI。`New Chat` 本身不启动 stdio MCP server；submit/test/connect 是第一批会创建 runtime session 的用户可见时机。
-- 2026-06-24 已确认：OAuth 本轮先不做；V1 先做 `config.toml only` 的 MCP 管理 UI 和非 OAuth MCP runtime。OAuth server definition 可保留在 TOML 中用于校验/快照，但 browser flow、token storage/refresh/scope upgrade/logout 都是后续项；`ClientCredentials` UI 也保持后续 advanced path。
+- 2026-06-24 已确认：V1 先做 `config.toml only` 的 MCP 管理 UI 和非 OAuth MCP runtime。2026-06-25 阶段 2 已接入 authorization-code browser flow、GPUI credentials token storage、rmcp `AuthClient` runtime、refresh mirror、取消授权和基础 scope failure 状态；完整 `Upgrade Access` 增量 scope flow 与 `ClientCredentials` UI 仍保持后续 advanced path。
 - 2026-06-24 已确认：V1 不做 Codex-style prewarm。
 - 2026-06-24 已确认：source-neutral approval resume 遇到当前 config hash 与 run snapshot 不匹配时，不从 `mcp_config_snapshot` reconnect；直接拒绝 resume，并要求用户 retry/resend。
 
@@ -151,7 +158,7 @@ Codex Electron app 参考路径，2026-06-24 已在本机安装的 app 上验证
 - App 启动时不启动 enabled MCP server。
 - 打开 Settings 时不启动所有 enabled MCP server。
 - Settings `Test` 只启动当前选中的 server，执行 initialize + `tools/list`，然后按 config hash 决定保留或复用 live session。
-- V1 不提供 `Connect OAuth`；配置了 OAuth 的 HTTP server 会展示 auth status，但连接动作会失败并提示后续需要 OAuth runtime。
+- V1 不提供 `Connect OAuth`；阶段 2 已改为在 HTTP Add/Edit dialog 中提供 `需要 OAuth` 开关和显式 `授权` / `重新授权` / `取消授权` 动作。
 - 首次 agent submit 在 run setup 阶段连接 enabled server，并且必须发生在 provider tool declaration finalized 之前。
 - 同一个 app process 内，如果 server id 和 config hash 匹配，已有 live session 可以跨 conversation 复用。
 - config 变化、server disabled、app 退出、显式 disconnect/logout 时关闭 stale session。
@@ -176,20 +183,22 @@ rmcp = { version = "1.8.0", features = [
 
 ```toml
 http = "1.4.2"
-tokio = { version = "1.52.3", features = ["sync"] }
+rmcp.workspace = true
+tokio = { version = "1.52.3", features = ["io-util", "net", "sync", "time"] }
 url = "2.5.8"
 ```
 
 用途：
 
 - `http`：仅当 `features/settings/mcp/validation.rs` 直接解析 `HeaderName` / `HeaderValue` 时加到 `app/ai-chat2`。
-- `tokio`：`app/ai-chat2` 的 `state::mcp` 用 `tokio::sync::Mutex` 持有 live `McpSessionManager`，实际连接仍通过 `gpui_tokio::Tokio::spawn(...)` 跑在 Tokio runtime 上。
-- `url`：加到 `app/ai-chat2`，用于 URL validation；后续 OAuth callback URL parsing 和 canonical OAuth storage key 也复用它。`crates/ai-chat-agent` 现有直接依赖 `url = "2.5.8"` 保留给 agent-side URL 工作。
+- `rmcp`：`app/ai-chat2` 直接使用 rmcp OAuth `AuthorizationManager`、`OAuthState`、`StoredCredentials` 和 callback 类型。
+- `tokio`：`app/ai-chat2` 的 `state::mcp` 用 `tokio::sync::Mutex` 持有 live `McpSessionManager`，OAuth loopback callback 用 `tokio::net` / `tokio::io` / `tokio::time`；实际异步任务仍通过 `gpui_tokio::Tokio::spawn(...)` 跑在 GPUI 管理的 Tokio runtime 上。
+- `url`：加到 `app/ai-chat2`，用于 URL validation、OAuth callback URL parsing 和 canonical OAuth storage key。`crates/ai-chat-agent` 现有直接依赖 `url = "2.5.8"` 保留给 agent-side URL 工作。
 
 V1 暂不新增：
 
 - `oauth2 = "5.0.0"`：只有 OAuth status 代码需要直接导入 `TokenResponse` 时再加。
-- `tiny_http = "0.12.0"`：只有实现本地 OAuth callback server 时再加。
+- 本地 OAuth callback server 当前使用 `tokio::net::TcpListener` 实现；不新增 `tiny_http` 或 `axum`。
 
 不要新增 `webbrowser`；使用 GPUI `cx.open_url(&authorization_url)`，让浏览器打开动作留在 desktop app platform 边界内。
 
@@ -520,8 +529,6 @@ pub enum McpRuntimeEvent {
 ```text
 app/ai-chat2/src/state/mcp.rs
 app/ai-chat2/src/state/mcp_oauth.rs
-app/ai-chat2/src/state/mcp_oauth/callback.rs
-app/ai-chat2/src/state/mcp_oauth/storage.rs
 ```
 
 不新增 `mod.rs`。
@@ -631,17 +638,17 @@ pub(crate) struct McpStoredOAuthSession {
 
 运行时行为：
 
-- Settings login flow 通过 `OAuthState` 获得 credentials。
-- 通过 `cx.write_credentials(...)` 存储序列化后的 `McpStoredOAuthSession`。
-- 创建 OAuth HTTP transport 时，通过 `cx.read_credentials(...)` 读取已存 session，seed `OAuthState::set_credentials(...)`，取出 `AuthorizationManager`，再构建 `AuthClient`。
-- transport 使用过程中 `AuthorizationManager` 可能把 refreshed token 写入 rmcp in-memory store。Settings test、agent run 或显式 refresh 后，调用 `manager.get_credentials().await`，把最新 token response mirror 回 keychain。
-- Logout 调用 `cx.delete_credentials(...)`，丢弃 live session，并把状态更新为 `SignedOut`。
+- Settings login flow 通过 rmcp `OAuthState` / `AuthorizationManager` 获得 `StoredCredentials`。
+- 通过 `cx.write_credentials(...)` 存储序列化后的 rmcp `StoredCredentials`。
+- 创建 OAuth HTTP transport 时，app 通过 `cx.read_credentials(...)` 读取已存 credentials，注入 agent runtime-only `oauth_credentials`；agent 侧 seed `AuthorizationManager` + `InMemoryCredentialStore`，再构建 `AuthClient`。
+- transport 使用过程中 `AuthorizationManager` 可能刷新 token；agent-side mirror `CredentialStore` 会把 refreshed `StoredCredentials` 通过 runtime event 发回 app，并写入 GPUI credentials。
+- 授权卡片的 `取消授权`、关闭 OAuth 并保存、删除 server、OAuth URL 变化都会调用 `cx.delete_credentials(...)` 并丢弃 stale session。
 
 本地 callback 服务：
 
-- 在 `app/ai-chat2/src/state/mcp_oauth/callback.rs` 中用 `tiny_http` 实现。
+- 在 `app/ai-chat2/src/state/mcp_oauth.rs` 中用 `tokio::net::TcpListener` 实现。
 - 绑定 `127.0.0.1:<callback_port>`；`0` 表示由 OS 分配端口。
-- 默认 callback path：`/mcp/oauth/callback/{server_id}`。
+- 默认 callback path：`/callback`。
 - 支持 `callback_url` override，以兼容要求预注册 redirect URI 的 provider。Listener 仍然本地绑定；override 只控制 redirect URI。
 - 解析 `code`、`state`、`iss`、`error`、`error_description`。
 - 尽可能把完整 redirect URL 传给 `OAuthState::handle_callback_url(...)`。
@@ -692,7 +699,7 @@ pub struct AgentRuntimeSnapshot {
 - non-required server 失败时展示 settings/runtime warning，并跳过该 server。
 - required server 失败时，在 provider call 前让 setup fail，并持久化 agent run error。
 - 如果 OAuth required 但未授权，non-required server 跳过；required server 以 actionable error 失败。
-- tool call 期间如果需要 scope upgrade，更新 server OAuth status 为 `ScopeUpgradeRequired`，并把 tool invocation 标记为 recoverable auth error。用户可在 Settings reconnect 后 retry/resend。
+- tool call 或连接期间如果遇到 insufficient scope，当前阶段把 server OAuth status 更新为 `ScopeUpgradeRequired`，Settings 显示“需要重新授权”，用户重新授权后 retry/resend。完整 `Upgrade Access` 增量 scope flow 后续单独设计。
 
 审批恢复：
 
@@ -876,7 +883,7 @@ Server 列表：
 详情面板：
 
 - Effective config summary。
-- Auth status tag。OAuth flow/scopes/resource、expires at、last auth error、connect/copy/open/refresh/logout actions 后续再补。
+- Auth status tag。阶段 2 只补 `需要 OAuth` 开关、授权状态卡片和授权/重新授权/取消授权动作；OAuth flow/scopes/resource、callback、client id 等复杂字段不进默认 UI。
 - initialize 返回的 server info。
 - Tool list：
   - raw tool name,
@@ -1023,13 +1030,13 @@ pub(super) enum McpFormField {
 
 ### OAuth 连接
 
-1. 用户点击 `Connect`。
+1. 用户在已保存 HTTP MCP server 的 OAuth 卡片点击 `授权` 或 `重新授权`。
 2. `McpRuntimeStore` 创建 per-server OAuth flow。
 3. 本地 callback 服务在 `127.0.0.1` 启动。
 4. `OAuthState::start_authorization(...)` 执行 metadata discovery，并创建 authorization URL。
 5. UI 通过 `cx.open_url(&authorization_url)` 打开浏览器。
 6. 本地 callback 服务收到 redirect，并把完整 callback URL 转发给 `OAuthState::handle_callback_url(...)`。
-7. Runtime 通过 GPUI credentials 持久化 `McpStoredOAuthSession`。
+7. Runtime 通过 GPUI credentials 持久化 rmcp `StoredCredentials`。
 8. UI row 切换为 `Authorized`。
 9. 如果该 server 已连接，先 drop 再用 OAuth `AuthClient` reconnect。
 
@@ -1054,15 +1061,15 @@ pub(super) enum McpFormField {
 8. Tool invocation persistence 记录 `ToolSource::Mcp { server_id }`、raw MCP tool name 和 runtime tool name。
 9. Approval/tool result rows 通过现有 timeline plumbing 渲染。
 
-### OAuth scope upgrade
+### OAuth scope failure
 
 1. MCP call 通过 rmcp streamable HTTP error 返回 403 insufficient scope。
-2. Runtime 提取 required scope。
+2. Runtime 提取或记录 scope failure 状态。
 3. Server status 变为 `ScopeUpgradeRequired`。
-4. UI 暴露 `Upgrade Access` action。
-5. `AuthorizationManager::request_scope_upgrade(...)` 生成新的 auth URL。
-6. Callback flow 完成后更新 persisted token scopes。
-7. 用户 retry/resend 当前 conversation turn，或在支持时重新执行 failed tool flow。
+4. 默认 UI 仍不暴露 scopes；授权卡片显示“需要重新授权”，主操作为 `重新授权`。
+5. Callback flow 完成后更新 persisted token scopes。
+6. 用户 retry/resend 当前 conversation turn，或在支持时重新执行 failed tool flow。
+7. 完整 `Upgrade Access` 增量 scope flow 后续作为 advanced path 设计。
 
 ## 数据获取和刷新
 
@@ -1072,7 +1079,7 @@ pub(super) enum McpFormField {
 - Add/Edit dialog 只读取当前 config snapshot 初始化本地 draft；用户编辑过程中不触发 runtime/network fetch。
 - `Test` 和 agent run setup 通过 MCP `initialize` + `tools/list` 获取 server info 和 tool list。
 - Tool list cache 以 `server_id` 和 config hash 为 key。
-- `notifications/tools/list_changed` 会 invalidate 该 server 的 cached tool list；只有 server 已连接时才 schedule refresh。
+- `notifications/tools/list_changed` 会更新该 server 的 Settings status；复用已有 session 前会重新执行 `tools/list`，避免 stale tool cache 进入下一次 run。未连接 server 不后台启动。
 - OAuth status 从 runtime flow state、stored credentials metadata 和 live `AuthorizationManager` 派生；expired/refresh-needed status 在 explicit refresh、`Test` 或 run setup 时更新。
 - Provider/model fetching 与 MCP fetching 保持分离；MCP Settings 不复用 provider model refresh code path，只复用 notification/error pattern。
 
@@ -1127,9 +1134,9 @@ Data model 变更：
 - `Trash`：delete。
 - `ShieldCheck` / `ShieldAlert`：approval/security status。
 - `Plug`：Settings MCP page。
-- `LogIn` / `LogOut`：后续 OAuth connect/logout。
+- `LogIn` / `LogOut`：`取消授权` 等 OAuth session 操作；默认授权按钮继续优先使用 `Shield` / `RefreshCcw`。
 - `KeyRound`：后续 credential/OAuth status。
-- `Link` / `Unlink`：后续 OAuth callback/open/logout actions。
+- `Link` / `Unlink`：保留给后续 OAuth callback/open/advanced actions；默认 OAuth UI 当前不使用。
 
 以上 Lucide SVG 均已确认存在于 `third_party/lucide/icons/`。
 
@@ -1207,7 +1214,17 @@ mcp-tools-count-suffix
 mcp-value-empty
 mcp-value-yes
 mcp-value-no
-mcp-oauth-preserved-notice
+mcp-oauth-required-title
+mcp-oauth-required-description
+mcp-oauth-authorized
+mcp-oauth-not-authorized
+mcp-oauth-authorize
+mcp-oauth-reauthorize
+mcp-oauth-signing-in
+mcp-oauth-authorization-required
+mcp-oauth-scope-upgrade-required
+mcp-oauth-failed
+mcp-oauth-sign-out
 mcp-delete-title
 mcp-delete-description
 mcp-notify-server-created
@@ -1236,7 +1253,7 @@ mcp-validation-bearer-env-invalid
 mcp-validation-cwd-invalid
 ```
 
-现有 timeouts、tool allow/deny、approval mode 相关 keys 如果已经在 locale 文件中存在，可以暂时保留给 TOML advanced 后续 UI；默认 Add/Edit dialog 不再引用它们。后续 OAuth UI 需要再新增 connect/cancel/logout/refresh/open/copy、OAuth flow/field 和 callback validation 相关 keys。server/tool name、row number、重复 key/name 和 validation field label 的插值使用 `FluentArgs`。
+现有 timeouts、tool allow/deny、approval mode 相关 keys 如果已经在 locale 文件中存在，可以暂时保留给 TOML advanced 后续 UI；默认 Add/Edit dialog 不再引用它们。OAuth 默认 UI 当前只需要 `需要 OAuth`、授权状态、授权/重新授权/取消授权相关 keys；OAuth flow/field、callback validation、copy/open 等高级 keys 留给后续 advanced path。server/tool name、row number、重复 key/name 和 validation field label 的插值使用 `FluentArgs`。
 
 ## 实现顺序
 
@@ -1247,23 +1264,23 @@ mcp-validation-cwd-invalid
    - 扩展 `McpServerTomlConfig`，
    - 增加 validation helpers 和 config tests，
    - 增加 reserved header checks。
-3. 后续：OAuth 存储。
-   - 在 `state/mcp_oauth/storage.rs` 实现 keychain read/write/delete helpers，
-   - 增加 storage-key canonicalization 和 serde roundtrip tests。
-4. 后续：OAuth callback。
-   - 在 `state/mcp_oauth/callback.rs` 实现 `tiny_http` callback server，
-   - 增加 success、provider error、wrong path、callback URL override parser tests。
+3. 已完成：OAuth 存储。
+   - 在 `state/mcp_oauth.rs` 实现 keychain read/write/delete helpers，
+   - 增加 storage-key canonicalization 和 callback URL parser tests。
+4. 已完成：OAuth callback。
+   - 在 `state/mcp_oauth.rs` 实现 `tokio::net::TcpListener` callback listener，
+   - 已覆盖 relative callback URL parser；provider error、wrong path 和 callback URL override 仍可继续补测。
 5. V1 已完成非 OAuth 路径：Agent MCP session manager。
    - 增加 stdio 和 streamable HTTP connection，
-   - OAuth `AuthClient` path 后续再做，
+   - OAuth `AuthClient` path 已在阶段 2 接入，
    - list tools 并通过 `McpConnector` 注册，
    - 暴露 status snapshots。
 6. V1 已完成非 OAuth 路径：App MCP runtime store。
    - 安装 global store，
    - 从 config 派生 rows，
    - 实现 test/refresh actions，
-   - OAuth connect/logout/refresh 和 refreshed credentials mirror 后续再做。
-7. 下一步：把 Settings MCP 管理 UI 调整为 Codex 风格简化表单。
+   - OAuth authorization-code connect、取消授权、scope failure 状态和 refreshed credentials mirror 已在阶段 2 接入；完整 `Upgrade Access` 增量 scope flow 后续再做。
+7. V1 已完成：Settings MCP 管理 UI 调整为 Codex 风格简化表单。
    - 保留 page、toolbar、row/status/detail rendering，
    - 保留 Add/Edit/Delete/Enable/Disable 和 `config.toml` 持久化，
    - 新增 `form_state.rs`、`form_rows.rs`、`validation.rs`，
@@ -1318,19 +1335,23 @@ git diff --check
 
 - 添加需要 OAuth 的 streamable HTTP MCP server，并完成 browser login。
 - 确认 OAuth token 能通过 GPUI credentials 跨 app restart 保留。
-- 强制 token refresh，确认 refreshed credentials mirror 回 keychain。
-- 触发 insufficient scope，确认 `Upgrade Access` flow 更新 scopes。
+- 强制 token refresh，确认 refreshed credentials mirror 回 GPUI credentials。
+- 触发 insufficient scope，确认 Settings 进入“需要重新授权”状态；完整 `Upgrade Access` 增量 scope flow 仍是后续 advanced path。
 - 批准一个 prompted MCP tool call，确认 resume 执行同一个 raw server/tool。
 
 ## 后续实现记录
 
-以下项目已明确不进入首版，但需要保留为后续实现入口：
+以下项目已在阶段 2 补齐：
 
-- OAuth 配置 UI：为 `[mcp_servers.<id>.oauth]` 增加 Settings 表单，覆盖 authorization-code PKCE、dynamic registration / configured client id、scopes、resource、callback port/callback URL 等字段。
-- OAuth runtime：实现 rmcp `AuthorizationManager` / `AuthClient` path、本地 callback server、GPUI credentials token storage/refresh/logout/scope upgrade。
+- OAuth 简化 UI：为 HTTP server 增加 `需要 OAuth` 开关；开启后展示授权状态卡片和授权/重新授权/取消授权按钮。关闭并保存时删除 TOML OAuth definition 和该 server 对应的 GPUI credentials token，避免旧授权状态污染后续配置。authorization-code PKCE、dynamic registration / configured client id、scopes、resource、callback port/callback URL 等复杂字段只保留 TOML advanced path，不进入默认表单。
+- OAuth authorization-code runtime：实现 rmcp `OAuthState` / `AuthorizationManager` / `AuthClient` path、`127.0.0.1` callback listener、GPUI credentials token storage 和 refreshed credentials mirror。
+- MCP approval resume：把 local-only `approve_and_resume_tool(...)` 重构为 source-neutral executor；config hash 不匹配时按已确认策略拒绝 resume 并要求 retry/resend。
+
+以下项目仍是后续实现入口：
+
+- OAuth advanced scope upgrade：当前 insufficient scope 进入“需要重新授权”状态；如果后续要做 `Upgrade Access` 增量 scope flow，需要设计 scope 展示、授权 URL 生成和 retry/replay 边界。
 - `ClientCredentials` UI：为 TOML 已支持的 `ClientCredentials` flow 增加高级表单、secret env var 校验、状态展示和测试路径。
 - Advanced MCP config UI：如果后续要暴露 `required`、timeouts、tool allow/deny、per-server/per-tool approval override，必须作为单独 Advanced path 设计，并明确这些字段与 ChatForm 审批继承的优先级。
-- MCP approval resume：把当前 local-only `approve_and_resume_tool(...)` 重构为 source-neutral executor；config hash 不匹配时按已确认策略拒绝 resume 并要求 retry/resend。
 - Codex-style prewarm：在 OAuth status、错误展示和 retry/resend 稳定后，再评估是否在 composer 首次非空输入、打开已有 conversation 或显式 warmup action 中预热 MCP server。
 - config-changed approval resume：如果未来要支持从 `mcp_config_snapshot` reconnect，必须做显式确认 UI，并展示旧 config 的 server id、URL/command、raw tool name 和安全影响。
 

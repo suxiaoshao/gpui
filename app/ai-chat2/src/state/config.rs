@@ -26,8 +26,9 @@ mod mcp;
 #[cfg(test)]
 pub(crate) use mcp::McpToolApprovalMode;
 pub(crate) use mcp::{
-    McpServerTomlConfig, McpTransportKind, delete_mcp_server, is_reserved_mcp_header,
-    is_valid_mcp_env_var_name, is_valid_mcp_server_id, set_mcp_server_enabled, upsert_mcp_server,
+    McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind, delete_mcp_server,
+    is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
+    set_mcp_server_enabled, upsert_mcp_server,
 };
 
 const CONFIG_FILE_NAME: &str = "config.toml";

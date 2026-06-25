@@ -48,6 +48,7 @@ tree-sitter-languages-full = ["gpui-component/tree-sitter-languages"]
 [dependencies]
 ai-chat-agent.workspace = true
 ai-chat-core.workspace = true
+rmcp.workspace = true
 
 # ui
 app-assets.workspace = true
@@ -93,7 +94,7 @@ tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 # async runtime
 gpui-tokio.workspace = true
 smol = "2.0.2"
-tokio = { version = "1.52.3", features = ["sync"] }
+tokio = { version = "1.52.3", features = ["io-util", "net", "sync", "time"] }
 
 # config
 http = "1.4.2"

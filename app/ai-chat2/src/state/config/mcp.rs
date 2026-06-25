@@ -182,6 +182,7 @@ impl McpServerTomlConfig {
                                 "invalid MCP OAuth config for `{server_id}`: {err}"
                             ))
                         })?,
+                    oauth_credentials: None,
                 })
             }
         };

@@ -4,9 +4,11 @@ pub use config_hash::mcp_config_hash;
 
 use crate::{AgentRuntimeError, Result, ToolDefinition, ToolRegistry, ToolRunPolicy};
 use ai_chat_core::{
-    McpRuntimeConfigSnapshot, McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy,
-    ToolSource,
+    McpOAuthConfigSnapshot, McpRuntimeConfigSnapshot, McpServerRuntimeConfigSnapshot,
+    McpServerTransportSnapshot, McpToolApprovalModeSnapshot, RunSettingsSnapshot, ToolApprovalMode,
+    ToolApprovalPolicy, ToolExecutionPolicy, ToolSource,
 };
+use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use rig_core::tool::rmcp::McpTool;
 use rmcp::{
@@ -15,13 +17,15 @@ use rmcp::{
     model::{ClientInfo, ServerInfo, Tool as RmcpToolDefinition},
     service::{NotificationContext, RoleClient, RunningService, ServerSink},
     transport::{
-        StreamableHttpClientTransport, TokioChildProcess,
+        AuthClient, AuthError, AuthorizationManager, CredentialStore, InMemoryCredentialStore,
+        StoredCredentials, StreamableHttpClientTransport, TokioChildProcess,
         streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    env,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -71,13 +75,29 @@ pub struct McpStdioTransport {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpStreamableHttpTransport {
     pub url: String,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     pub oauth: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub oauth_credentials: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for McpStreamableHttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpStreamableHttpTransport")
+            .field("url", &self.url)
+            .field("headers", &self.headers)
+            .field("oauth", &self.oauth)
+            .field(
+                "oauth_credentials",
+                &self.oauth_credentials.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +132,26 @@ pub enum McpRuntimeEvent {
         server_id: String,
         status: McpOAuthStatusSnapshot,
     },
+    OAuthCredentialsChanged(Box<McpOAuthCredentialsSnapshot>),
+}
+
+#[derive(Clone, PartialEq)]
+pub struct McpOAuthCredentialsSnapshot {
+    pub server_id: String,
+    pub server_url: String,
+    pub credentials: serde_json::Value,
+    pub status: McpOAuthStatusSnapshot,
+}
+
+impl std::fmt::Debug for McpOAuthCredentialsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpOAuthCredentialsSnapshot")
+            .field("server_id", &self.server_id)
+            .field("server_url", &self.server_url)
+            .field("credentials", &"[REDACTED]")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -268,12 +308,13 @@ impl McpSessionManager {
             Ok(session) => session,
             Err(err) if required => return Err(err),
             Err(err) => {
+                let message = err.to_string();
                 return Ok(failed_server_status(
                     server_id,
                     display_name,
                     transport,
-                    failed_auth_status(&config.server.transport),
-                    err.to_string(),
+                    failed_auth_status(&config.server.transport, &message),
+                    message,
                 ));
             }
         };
@@ -294,6 +335,13 @@ impl McpSessionManager {
             config_hash: config_hash.to_string(),
         };
         if self.sessions.contains_key(&key) {
+            let refreshed_status = {
+                let session = self.sessions.get_mut(&key).expect("session key exists");
+                refresh_session_tools(session, config.startup_timeout).await?
+            };
+            self.emit(McpRuntimeEvent::ServerStatusChanged(Box::new(
+                refreshed_status,
+            )));
             return Ok(self.sessions.get_mut(&key).expect("session key exists"));
         }
 
@@ -361,6 +409,17 @@ impl McpSessionManager {
         }
     }
 
+    pub async fn prepare_tool_registry_from_snapshot(
+        &mut self,
+        registry: &mut ToolRegistry,
+        config_snapshot: McpRuntimeConfigSnapshot,
+        settings_snapshot: &RunSettingsSnapshot,
+    ) -> Result<McpPreparedTools> {
+        let configs = runtime_configs_from_snapshot(&config_snapshot, settings_snapshot)?;
+        self.prepare_tool_registry(registry, config_snapshot, configs)
+            .await
+    }
+
     pub async fn disconnect_server(&mut self, server_id: &str) {
         let keys = self
             .sessions
@@ -383,6 +442,23 @@ impl McpSessionManager {
             let _ = sender.send(event);
         }
     }
+}
+
+async fn refresh_session_tools(
+    session: &mut McpServerSession,
+    timeout: Duration,
+) -> Result<McpServerStatusSnapshot> {
+    let server_id = session.status.server_id.clone();
+    let tools = tokio::time::timeout(timeout, session.sink.list_all_tools())
+        .await
+        .map_err(|_| {
+            AgentRuntimeError::Mcp(format!("mcp server `{server_id}` tools/list timed out"))
+        })?
+        .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
+    session.tools = tools;
+    session.status.tools = session.tools.iter().map(tool_snapshot).collect();
+    session.status.updated_at_unix_ms = now_unix_ms();
+    Ok(session.status.clone())
 }
 
 #[derive(Default)]
@@ -525,18 +601,43 @@ async fn connect_mcp_server(
         }
         McpServerTransport::StreamableHttp(http) => {
             if http.oauth.is_some() {
-                return Err(AgentRuntimeError::Mcp(format!(
-                    "mcp server `{server_id}` requires OAuth; app runtime must attach an AuthorizationManager before connecting"
-                )));
+                if http.oauth_credentials.is_none() {
+                    return Err(AgentRuntimeError::Mcp(format!(
+                        "mcp server `{server_id}` requires OAuth authorization"
+                    )));
+                }
+                let auth_manager =
+                    authorization_manager_for_http(&server_id, http, event_tx.clone())
+                        .await
+                        .map_err(|err| {
+                            AgentRuntimeError::Mcp(format!(
+                                "mcp server `{server_id}` OAuth authorization failed: {err}"
+                            ))
+                        })?;
+                let transport = StreamableHttpClientTransport::with_client(
+                    AuthClient::new(reqwest::Client::default(), auth_manager),
+                    http_transport_config(http)?,
+                );
+                tokio::time::timeout(startup_timeout, handler.serve(transport))
+                    .await
+                    .map_err(|_| {
+                        AgentRuntimeError::Mcp(format!(
+                            "mcp server `{server_id}` startup timed out"
+                        ))
+                    })?
+                    .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?
+            } else {
+                let transport =
+                    StreamableHttpClientTransport::from_config(http_transport_config(http)?);
+                tokio::time::timeout(startup_timeout, handler.serve(transport))
+                    .await
+                    .map_err(|_| {
+                        AgentRuntimeError::Mcp(format!(
+                            "mcp server `{server_id}` startup timed out"
+                        ))
+                    })?
+                    .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?
             }
-            let transport =
-                StreamableHttpClientTransport::from_config(http_transport_config(http)?);
-            tokio::time::timeout(startup_timeout, handler.serve(transport))
-                .await
-                .map_err(|_| {
-                    AgentRuntimeError::Mcp(format!("mcp server `{server_id}` startup timed out"))
-                })?
-                .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?
         }
     };
     let sink = service.peer().clone();
@@ -577,6 +678,259 @@ fn http_transport_config(
         StreamableHttpClientTransportConfig::with_uri(transport.url.clone())
             .custom_headers(headers),
     )
+}
+
+async fn authorization_manager_for_http(
+    server_id: &str,
+    transport: &McpStreamableHttpTransport,
+    event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
+) -> Result<AuthorizationManager> {
+    let credentials_value = transport
+        .oauth_credentials
+        .as_ref()
+        .ok_or_else(|| AgentRuntimeError::Mcp("OAuth credentials are missing".to_string()))?;
+    let credentials = serde_json::from_value::<StoredCredentials>(credentials_value.clone())
+        .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
+    let credential_store =
+        MirroringCredentialStore::new(server_id.to_string(), transport.url.clone(), event_tx);
+    credential_store
+        .seed(credentials)
+        .await
+        .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
+
+    let mut manager = AuthorizationManager::new(transport.url.clone())
+        .await
+        .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
+    manager.set_credential_store(credential_store);
+    let initialized = manager
+        .initialize_from_store()
+        .await
+        .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
+    if !initialized {
+        return Err(AgentRuntimeError::Mcp(
+            "OAuth credentials are incomplete".to_string(),
+        ));
+    }
+    Ok(manager)
+}
+
+#[derive(Clone)]
+struct MirroringCredentialStore {
+    inner: InMemoryCredentialStore,
+    server_id: String,
+    server_url: String,
+    event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
+}
+
+impl MirroringCredentialStore {
+    fn new(
+        server_id: String,
+        server_url: String,
+        event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
+    ) -> Self {
+        Self {
+            inner: InMemoryCredentialStore::new(),
+            server_id,
+            server_url,
+            event_tx,
+        }
+    }
+
+    async fn seed(&self, credentials: StoredCredentials) -> std::result::Result<(), AuthError> {
+        self.inner.save(credentials).await
+    }
+
+    fn emit_credentials_changed(
+        &self,
+        credentials: &StoredCredentials,
+    ) -> std::result::Result<(), AuthError> {
+        let Some(sender) = &self.event_tx else {
+            return Ok(());
+        };
+        let credentials_value = serde_json::to_value(credentials)
+            .map_err(|err| AuthError::InternalError(err.to_string()))?;
+        let _ = sender.send(McpRuntimeEvent::OAuthCredentialsChanged(Box::new(
+            McpOAuthCredentialsSnapshot {
+                server_id: self.server_id.clone(),
+                server_url: self.server_url.clone(),
+                credentials: credentials_value,
+                status: oauth_status_from_credentials(credentials),
+            },
+        )));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl CredentialStore for MirroringCredentialStore {
+    async fn load(&self) -> std::result::Result<Option<StoredCredentials>, AuthError> {
+        self.inner.load().await
+    }
+
+    async fn save(&self, credentials: StoredCredentials) -> std::result::Result<(), AuthError> {
+        self.inner.save(credentials.clone()).await?;
+        self.emit_credentials_changed(&credentials)?;
+        Ok(())
+    }
+
+    async fn clear(&self) -> std::result::Result<(), AuthError> {
+        self.inner.clear().await
+    }
+}
+
+fn runtime_configs_from_snapshot(
+    snapshot: &McpRuntimeConfigSnapshot,
+    settings_snapshot: &RunSettingsSnapshot,
+) -> Result<Vec<McpServerRuntimeConfig>> {
+    let inherited_approval_mode =
+        inherited_mcp_approval_mode(settings_snapshot.tool_policy.approval_mode);
+    snapshot
+        .servers
+        .iter()
+        .filter(|server| server.enabled)
+        .map(|server| runtime_config_from_snapshot(server, inherited_approval_mode.clone()))
+        .collect()
+}
+
+fn runtime_config_from_snapshot(
+    snapshot: &McpServerRuntimeConfigSnapshot,
+    inherited_approval_mode: McpToolApprovalModeSnapshot,
+) -> Result<McpServerRuntimeConfig> {
+    let transport = match &snapshot.transport {
+        McpServerTransportSnapshot::Stdio { command, args, .. } => {
+            McpServerTransport::Stdio(McpStdioTransport {
+                command: command.clone(),
+                args: args.clone(),
+            })
+        }
+        McpServerTransportSnapshot::StreamableHttp {
+            url,
+            headers,
+            env_headers,
+            bearer_token_env_var,
+            oauth,
+        } => McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
+            url: url.clone(),
+            headers: resolved_headers(
+                &snapshot.server_id,
+                headers,
+                env_headers,
+                bearer_token_env_var.as_deref(),
+            )?,
+            oauth: oauth
+                .as_ref()
+                .map(oauth_config_to_value)
+                .transpose()
+                .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?,
+            oauth_credentials: None,
+        }),
+    };
+    let default_approval_mode = snapshot
+        .default_tools_approval_mode
+        .clone()
+        .unwrap_or(inherited_approval_mode);
+    Ok(McpServerRuntimeConfig {
+        server: McpServerConfig {
+            server_id: snapshot.server_id.clone(),
+            display_name: snapshot.display_name.clone(),
+            transport,
+            env: match &snapshot.transport {
+                McpServerTransportSnapshot::Stdio { env, env_vars, .. } => {
+                    resolved_env(&snapshot.server_id, env, env_vars)?
+                }
+                McpServerTransportSnapshot::StreamableHttp { .. } => BTreeMap::new(),
+            },
+            cwd: match &snapshot.transport {
+                McpServerTransportSnapshot::Stdio { cwd, .. } => cwd.as_ref().map(PathBuf::from),
+                McpServerTransportSnapshot::StreamableHttp { .. } => None,
+            },
+        },
+        required: snapshot.required,
+        startup_timeout: Duration::from_millis(snapshot.startup_timeout_ms),
+        tool_timeout: Duration::from_millis(snapshot.tool_timeout_ms),
+        enabled_tools: snapshot
+            .enabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect()),
+        disabled_tools: snapshot.disabled_tools.iter().cloned().collect(),
+        default_approval_mode: default_approval_mode.clone(),
+        default_approval_policy: approval_policy_for_mcp_mode(default_approval_mode),
+        execution_policy: ToolExecutionPolicy::Foreground,
+        tool_approval_overrides: snapshot
+            .tools
+            .iter()
+            .filter_map(|(tool_name, tool)| {
+                tool.approval_mode
+                    .clone()
+                    .map(|approval_mode| (tool_name.clone(), approval_mode))
+            })
+            .collect(),
+    })
+}
+
+fn resolved_env(
+    server_id: &str,
+    explicit_env: &BTreeMap<String, String>,
+    inherited_env_vars: &[String],
+) -> Result<BTreeMap<String, String>> {
+    let mut resolved = explicit_env.clone();
+    for env_var in inherited_env_vars {
+        let value = env::var(env_var).map_err(|_| {
+            AgentRuntimeError::Mcp(format!(
+                "mcp server `{server_id}` references missing environment variable `{env_var}`"
+            ))
+        })?;
+        resolved.insert(env_var.clone(), value);
+    }
+    Ok(resolved)
+}
+
+fn resolved_headers(
+    server_id: &str,
+    explicit_headers: &BTreeMap<String, String>,
+    env_headers: &BTreeMap<String, String>,
+    bearer_token_env_var: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let mut resolved = explicit_headers.clone();
+    for (header_name, env_var) in env_headers {
+        let value = env::var(env_var).map_err(|_| {
+            AgentRuntimeError::Mcp(format!(
+                "mcp server `{server_id}` header `{header_name}` references missing environment variable `{env_var}`"
+            ))
+        })?;
+        resolved.insert(header_name.clone(), value);
+    }
+    if let Some(env_var) = bearer_token_env_var {
+        let value = env::var(env_var).map_err(|_| {
+            AgentRuntimeError::Mcp(format!(
+                "mcp server `{server_id}` bearer token references missing environment variable `{env_var}`"
+            ))
+        })?;
+        resolved.insert("Authorization".to_string(), format!("Bearer {value}"));
+    }
+    Ok(resolved)
+}
+
+fn oauth_config_to_value(config: &McpOAuthConfigSnapshot) -> serde_json::Result<serde_json::Value> {
+    serde_json::to_value(config)
+}
+
+fn inherited_mcp_approval_mode(approval_mode: ToolApprovalMode) -> McpToolApprovalModeSnapshot {
+    match approval_mode {
+        ToolApprovalMode::RequestApproval => McpToolApprovalModeSnapshot::Prompt,
+        ToolApprovalMode::AutoApprove | ToolApprovalMode::FullAccess => {
+            McpToolApprovalModeSnapshot::Auto
+        }
+    }
+}
+
+fn approval_policy_for_mcp_mode(mode: McpToolApprovalModeSnapshot) -> ToolApprovalPolicy {
+    match mode {
+        McpToolApprovalModeSnapshot::Auto => ToolApprovalPolicy::Never,
+        McpToolApprovalModeSnapshot::Prompt | McpToolApprovalModeSnapshot::Deny => {
+            ToolApprovalPolicy::OnRequest
+        }
+    }
 }
 
 fn tool_allowed(tool_name: &str, config: &McpServerRuntimeConfig) -> bool {
@@ -698,6 +1052,17 @@ fn transport_kind(transport: &McpServerTransport) -> McpServerTransportKindSnaps
 
 fn http_oauth_status(transport: &McpServerTransport) -> McpOAuthStatusSnapshot {
     match transport {
+        McpServerTransport::StreamableHttp(http)
+            if http.oauth.is_some() && http.oauth_credentials.is_some() =>
+        {
+            http.oauth_credentials
+                .as_ref()
+                .and_then(|credentials| {
+                    serde_json::from_value::<StoredCredentials>(credentials.clone()).ok()
+                })
+                .map(|credentials| oauth_status_from_credentials(&credentials))
+                .unwrap_or(McpOAuthStatusSnapshot::AuthorizationRequired)
+        }
         McpServerTransport::StreamableHttp(http) if http.oauth.is_some() => {
             McpOAuthStatusSnapshot::SignedOut
         }
@@ -705,12 +1070,39 @@ fn http_oauth_status(transport: &McpServerTransport) -> McpOAuthStatusSnapshot {
     }
 }
 
-fn failed_auth_status(transport: &McpServerTransport) -> McpOAuthStatusSnapshot {
+fn failed_auth_status(transport: &McpServerTransport, message: &str) -> McpOAuthStatusSnapshot {
     match transport {
         McpServerTransport::StreamableHttp(http) if http.oauth.is_some() => {
-            McpOAuthStatusSnapshot::AuthorizationRequired
+            oauth_error_status(message)
         }
         _ => McpOAuthStatusSnapshot::NotConfigured,
+    }
+}
+
+fn oauth_status_from_credentials(credentials: &StoredCredentials) -> McpOAuthStatusSnapshot {
+    if credentials.token_response.is_some() {
+        McpOAuthStatusSnapshot::Authorized {
+            scopes: credentials.granted_scopes.clone(),
+            expires_at_unix_ms: None,
+        }
+    } else {
+        McpOAuthStatusSnapshot::AuthorizationRequired
+    }
+}
+
+fn oauth_error_status(message: &str) -> McpOAuthStatusSnapshot {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("insufficient scope") {
+        return McpOAuthStatusSnapshot::ScopeUpgradeRequired {
+            required_scope: "unknown".to_string(),
+            authorization_url: String::new(),
+        };
+    }
+    if lower.contains("authorization required") || lower.contains("requires oauth authorization") {
+        return McpOAuthStatusSnapshot::AuthorizationRequired;
+    }
+    McpOAuthStatusSnapshot::Failed {
+        message: message.to_string(),
     }
 }
 
@@ -719,4 +1111,67 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oauth_http_transport() -> McpServerTransport {
+        McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
+            url: "https://example.com/mcp".to_string(),
+            headers: BTreeMap::new(),
+            oauth: Some(serde_json::json!({ "type": "authorizationCodePkce" })),
+            oauth_credentials: None,
+        })
+    }
+
+    #[test]
+    fn oauth_error_status_maps_authorization_required() {
+        assert_eq!(
+            failed_auth_status(&oauth_http_transport(), "OAuth authorization required"),
+            McpOAuthStatusSnapshot::AuthorizationRequired
+        );
+    }
+
+    #[test]
+    fn oauth_error_status_maps_insufficient_scope() {
+        assert!(matches!(
+            failed_auth_status(&oauth_http_transport(), "Insufficient scope"),
+            McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mirroring_credential_store_emits_credentials_changed_on_save() {
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let store = MirroringCredentialStore::new(
+            "server".to_string(),
+            "https://example.com/mcp".to_string(),
+            Some(event_tx),
+        );
+
+        store
+            .save(StoredCredentials::new(
+                "client".to_string(),
+                None,
+                Vec::new(),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        match event_rx.recv().await.unwrap() {
+            McpRuntimeEvent::OAuthCredentialsChanged(snapshot) => {
+                assert_eq!(snapshot.server_id, "server");
+                assert_eq!(snapshot.server_url, "https://example.com/mcp");
+                assert_eq!(
+                    snapshot.status,
+                    McpOAuthStatusSnapshot::AuthorizationRequired
+                );
+                assert!(snapshot.credentials.get("client_id").is_some());
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+    }
 }
