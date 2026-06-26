@@ -170,10 +170,8 @@ impl McpServerFormDraft {
         }
     }
 
-    pub(super) fn server_id(&self, original_server_id: Option<&str>, cx: &App) -> String {
-        original_server_id
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| trim_input(&self.server_id_input, cx))
+    pub(super) fn server_id(&self, _original_server_id: Option<&str>, cx: &App) -> String {
+        trim_input(&self.server_id_input, cx)
     }
 
     pub(super) fn merge_into_config(
