@@ -622,10 +622,6 @@ pub(crate) fn runtime(cx: &App) -> Entity<McpRuntimeStore> {
     cx.global::<McpRuntimeGlobal>().entity()
 }
 
-pub(crate) fn session_manager_handle(cx: &App) -> Arc<Mutex<McpSessionManager>> {
-    runtime(cx).read(cx).manager.clone()
-}
-
 pub(crate) async fn prepare_run_request(
     mut request: AgentRunRequest,
     cx: &mut AsyncWindowContext,

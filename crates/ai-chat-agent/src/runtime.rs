@@ -1,7 +1,7 @@
 use crate::{
     AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent,
     AgentRuntimeObserver, AgentStep, McpSessionManager, ProviderSecretValues, Result, SkillCatalog,
-    SkillLoader,
+    SkillLoader, ToolApprovalBroker,
     history::{PromptHistoryOptions, build_prompt_history_with_options},
     persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
     provider_models::run_saved_provider_model,
@@ -17,7 +17,6 @@ use rig_core::{
     completion::{CompletionModel, Prompt, PromptError, Usage},
     streaming::{StreamedAssistantContent, StreamingPrompt},
 };
-mod approval_resume;
 mod finalization;
 mod streaming;
 #[cfg(test)]
@@ -32,6 +31,7 @@ pub struct AgentRuntime {
     repo: FreshRepository,
     skill_loader: SkillLoader,
     mcp_session_manager: Option<Arc<Mutex<McpSessionManager>>>,
+    approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
 }
 
 impl AgentRuntime {
@@ -40,6 +40,7 @@ impl AgentRuntime {
             repo,
             skill_loader: SkillLoader::new(),
             mcp_session_manager: None,
+            approval_broker: None,
         }
     }
 
@@ -50,6 +51,11 @@ impl AgentRuntime {
 
     pub fn with_mcp_session_manager(mut self, manager: Arc<Mutex<McpSessionManager>>) -> Self {
         self.mcp_session_manager = Some(manager);
+        self
+    }
+
+    pub fn with_approval_broker(mut self, broker: Arc<dyn ToolApprovalBroker>) -> Self {
+        self.approval_broker = Some(broker);
         self
     }
 
@@ -192,18 +198,14 @@ impl AgentRuntime {
                 )?);
             }
         };
-        let deepseek_text_resume = needs_deepseek_text_resume(&request);
-        // DeepSeek thinking requires provider-native reasoning_content on replayed assistant
-        // tool-call messages; Rig history does not preserve that field, so resume as text.
         let prompt_history = match build_prompt_history_with_options(
             &timeline.items,
             &timeline.attachments,
             &request.user_item_id,
             &agent_run.id,
-            request.parent_agent_run_id.as_deref(),
             PromptHistoryOptions {
-                include_reasoning: !deepseek_text_resume,
-                preserve_tool_protocol: !deepseek_text_resume,
+                include_reasoning: true,
+                preserve_tool_protocol: true,
             },
         ) {
             Ok(prompt_history) => prompt_history,
@@ -234,6 +236,7 @@ impl AgentRuntime {
             request.guards.repeated_tool_call_limit,
             request.cancellation_token.clone(),
             observer.clone(),
+            self.approval_broker.clone(),
         );
         let model = PersistingCompletionModel::new(model, context.clone());
         let hook = context.hook();
@@ -246,11 +249,7 @@ impl AgentRuntime {
         if let Some(prompt) = prompt_preamble(request.prompt_snapshot.as_ref()) {
             builder = builder.preamble(&prompt);
         }
-        let reasoning_params = if deepseek_text_resume {
-            None
-        } else {
-            reasoning_additional_params(&request.settings_snapshot)
-        };
+        let reasoning_params = reasoning_additional_params(&request.settings_snapshot);
         let additional_params = merge_additional_params(
             reasoning_params,
             (!request.provider_tools.is_empty()).then(|| {
@@ -334,13 +333,7 @@ impl AgentRuntime {
                     }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
-                        if context.waiting_tool_invocation_id().is_some() {
-                            accumulator.finish(ConversationItemStatus::Completed, None)?;
-                            context.finish_current_streaming_provider_step(
-                                final_raw_response.as_ref(),
-                                Usage::new(),
-                            )?;
-                        } else if request.cancellation_token.is_cancelled() {
+                        if request.cancellation_token.is_cancelled() {
                             accumulator.finish(ConversationItemStatus::Canceled, None)?;
                             let _ = context.cancel_current_provider_step(run_error(
                                 "canceled",
@@ -472,20 +465,6 @@ impl AgentRuntime {
                 })
             }
             Err(error) => {
-                if let Some(tool_invocation_id) = context.waiting_tool_invocation_id() {
-                    let events = context.events();
-                    let agent_run = self.repo.get_agent_run(&agent_run.id)?.ok_or_else(|| {
-                        AgentRuntimeError::Invariant("agent run disappeared".to_string())
-                    })?;
-                    return Ok(AgentRunHandle {
-                        agent_run,
-                        output: None,
-                        status: AgentRunHandleStatus::WaitingForApproval { tool_invocation_id },
-                        events,
-                        steps: context.steps(),
-                    });
-                }
-
                 if error.max_steps {
                     let output = AgentRunOutput {
                         final_item_id: context.final_item_id(),
@@ -768,26 +747,6 @@ impl AgentRuntime {
     }
 }
 
-fn needs_deepseek_text_resume(request: &AgentRunRequest) -> bool {
-    request.parent_agent_run_id.is_some()
-        && request.settings_snapshot.provider_settings.provider_kind == "deepseek"
-        && reasoning_selection_enables_deepseek_thinking(
-            request.settings_snapshot.reasoning_selection.as_ref(),
-        )
-}
-
-fn reasoning_selection_enables_deepseek_thinking(
-    selection: Option<&ReasoningSelectionSnapshot>,
-) -> bool {
-    match selection {
-        Some(ReasoningSelectionSnapshot::Level { value }) => value == "high" || value == "max",
-        Some(ReasoningSelectionSnapshot::Composite { selections }) => selections
-            .iter()
-            .any(|selection| reasoning_selection_enables_deepseek_thinking(Some(selection))),
-        _ => false,
-    }
-}
-
 fn emit_runtime(observer: Option<&AgentRuntimeObserver>, event: AgentRuntimeEvent) {
     if let Some(observer) = observer {
         observer.emit(event);
@@ -833,15 +792,4 @@ fn prompt_preamble(prompt: Option<&PromptContent>) -> Option<String> {
     let prompt = prompt?;
     let text = prompt.text.trim().to_string();
     (!text.is_empty()).then_some(text)
-}
-
-fn error_tool_output(message: impl Into<String>) -> ToolInvocationOutput {
-    ToolInvocationOutput {
-        content: vec![ContentPart::Text {
-            text: message.into(),
-        }],
-        structured_output: None,
-        raw_output: None,
-        is_error: true,
-    }
 }

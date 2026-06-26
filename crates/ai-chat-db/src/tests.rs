@@ -2108,7 +2108,6 @@ fn attachment_metadata() -> AttachmentMetadata {
 fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> AgentRunInput {
     AgentRunInput {
         user_item_id: user_item_id.to_string(),
-        parent_agent_run_id: None,
         prompt_snapshot: Some(prompt_content()),
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),

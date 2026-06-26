@@ -124,7 +124,7 @@ CREATE TABLE attachments (
 CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'resume', 'retry')),
+    trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'retry')),
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
     output_json JSON,

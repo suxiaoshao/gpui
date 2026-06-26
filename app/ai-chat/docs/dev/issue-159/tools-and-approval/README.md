@@ -7,6 +7,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | `plan.md` | 完整实现记录：文件工具、grep、审批模式、数据模型、UI、i18n、icons、验证和后续问题。 |
+| `approval-in-run-plan.md` | 已确认计划：把工具审批改为同一 agent run 内的异步 gate，停止 approved resume 拆 run。 |
 
 ## 当前结论
 

@@ -1,6 +1,6 @@
 use crate::{Result, ToolRegistry};
 use ai_chat_core::*;
-use ai_chat_db::{AgentRunRecord, ToolInvocationRecord};
+use ai_chat_db::AgentRunRecord;
 use async_trait::async_trait;
 use rig_core::completion::CompletionModel;
 use std::{path::PathBuf, sync::Arc};
@@ -34,7 +34,6 @@ pub struct AgentRunRequest {
     pub conversation_id: ConversationId,
     pub user_item_id: ConversationItemId,
     pub trigger_kind: AgentRunTriggerKind,
-    pub parent_agent_run_id: Option<AgentRunId>,
     pub prompt_snapshot: Option<PromptContent>,
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,
@@ -62,7 +61,6 @@ impl AgentRunRequest {
             conversation_id,
             user_item_id,
             trigger_kind: AgentRunTriggerKind::User,
-            parent_agent_run_id: None,
             prompt_snapshot: settings_snapshot.prompt.clone(),
             provider_id,
             model_id,
@@ -91,9 +89,6 @@ pub enum AgentStep {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentRunHandleStatus {
     Finished,
-    WaitingForApproval {
-        tool_invocation_id: ToolInvocationId,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -101,15 +96,6 @@ pub struct AgentRunHandle {
     pub agent_run: AgentRunRecord,
     pub output: Option<AgentRunOutput>,
     pub status: AgentRunHandleStatus,
-    pub events: Vec<AgentRunEvent>,
-    pub steps: Vec<AgentStep>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApprovalResumeOutcome {
-    pub tool_invocation: ToolInvocationRecord,
-    pub agent_run: AgentRunRecord,
-    pub output: AgentRunOutput,
     pub events: Vec<AgentRunEvent>,
     pub steps: Vec<AgentStep>,
 }
@@ -154,6 +140,10 @@ pub enum AgentRuntimeEvent {
         provider_step_id: ProviderStepId,
     },
     ToolInvocationChanged {
+        agent_run_id: AgentRunId,
+        tool_invocation_id: ToolInvocationId,
+    },
+    ToolApprovalRequested {
         agent_run_id: AgentRunId,
         tool_invocation_id: ToolInvocationId,
     },

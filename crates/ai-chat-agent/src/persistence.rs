@@ -1,6 +1,6 @@
 use crate::{
     AgentRuntimeError, AgentRuntimeObserver, AgentStep, RegisteredToolDefinition,
-    tool_registry::RegisteredRuntimeTool,
+    ToolApprovalBroker, tool_registry::RegisteredRuntimeTool,
 };
 use ai_chat_core::*;
 use ai_chat_db::{FreshRepository, NewAgentRun};
@@ -30,7 +30,6 @@ pub(crate) struct PersistenceContext {
     input_item_ids: Arc<Mutex<Vec<ConversationItemId>>>,
     last_provider_step_id: Arc<Mutex<Option<ProviderStepId>>>,
     final_item_id: Arc<Mutex<Option<ConversationItemId>>>,
-    waiting_tool_invocation_id: Arc<Mutex<Option<ToolInvocationId>>>,
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
@@ -41,6 +40,7 @@ pub(crate) struct PersistenceContext {
     repeated_tool_call_limit: u32,
     cancellation_token: CancellationToken,
     observer: Option<AgentRuntimeObserver>,
+    approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
 }
 
 impl PersistenceContext {
@@ -59,6 +59,7 @@ impl PersistenceContext {
         repeated_tool_call_limit: u32,
         cancellation_token: CancellationToken,
         observer: Option<AgentRuntimeObserver>,
+        approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
     ) -> Self {
         Self {
             repo,
@@ -70,7 +71,6 @@ impl PersistenceContext {
             input_item_ids: Arc::new(Mutex::new(input_item_ids)),
             last_provider_step_id: Arc::new(Mutex::new(None)),
             final_item_id: Arc::new(Mutex::new(None)),
-            waiting_tool_invocation_id: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(Vec::new())),
             steps: Arc::new(Mutex::new(Vec::new())),
             tool_definitions: Arc::new(
@@ -91,6 +91,7 @@ impl PersistenceContext {
             repeated_tool_call_limit,
             cancellation_token,
             observer,
+            approval_broker,
         }
     }
 
@@ -111,10 +112,6 @@ impl PersistenceContext {
     pub(crate) fn final_item_id(&self) -> Option<ConversationItemId> {
         mutex_clone(&self.final_item_id)
     }
-
-    pub(crate) fn waiting_tool_invocation_id(&self) -> Option<ToolInvocationId> {
-        mutex_clone(&self.waiting_tool_invocation_id)
-    }
 }
 
 pub(crate) fn new_agent_run_input(request: &crate::AgentRunRequest) -> NewAgentRun {
@@ -123,7 +120,6 @@ pub(crate) fn new_agent_run_input(request: &crate::AgentRunRequest) -> NewAgentR
         status: AgentRunStatus::Queued,
         input: AgentRunInput {
             user_item_id: request.user_item_id.clone(),
-            parent_agent_run_id: request.parent_agent_run_id.clone(),
             prompt_snapshot: request.prompt_snapshot.clone(),
             provider_id: request.provider_id.clone(),
             model_id: request.model_id.clone(),
