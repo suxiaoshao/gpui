@@ -799,7 +799,6 @@ pub(crate) struct AgentRuntimeSnapshot {
     pub(crate) engine: AgentEngineKind,
     pub(crate) engine_version: String,
     pub(crate) skill_catalog_hash: Option<String>,
-    pub(crate) mcp_config_hash: Option<String>,
     pub(crate) tool_name_strategy: ToolNameStrategy,
 }
 

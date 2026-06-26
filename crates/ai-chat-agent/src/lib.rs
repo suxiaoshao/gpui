@@ -18,8 +18,8 @@ pub use mcp::{
     McpConfigLayer, McpConnector, McpOAuthStatusSnapshot, McpPreparedTools, McpRuntimeEvent,
     McpServerConfig, McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
     McpServerStatusSnapshot, McpServerTransport, McpServerTransportKindSnapshot, McpSessionManager,
-    McpStdioTransport, McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
-    mcp_config_hash,
+    McpSessionPruneMode, McpStdioTransport, McpStreamableHttpTransport, McpToolRegistrationOptions,
+    McpToolSnapshot,
 };
 pub use persistence::PersistingCompletionModel;
 pub use provider_models::{

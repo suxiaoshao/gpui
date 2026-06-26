@@ -7,12 +7,10 @@ use std::{
 use ai_chat_agent::{
     AgentRunRequest, McpOAuthStatusSnapshot, McpPreparedTools, McpRuntimeEvent,
     McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
-    McpServerStatusSnapshot, McpServerTransportKindSnapshot, McpSessionManager, McpToolSnapshot,
-    ToolRegistry, mcp_config_hash,
+    McpServerStatusSnapshot, McpServerTransportKindSnapshot, McpSessionManager,
+    McpSessionPruneMode, McpToolSnapshot, ToolRegistry,
 };
-use ai_chat_core::{
-    McpRuntimeConfigSnapshot, McpToolApprovalModeSnapshot, ToolApprovalMode, ToolSource,
-};
+use ai_chat_core::{McpToolApprovalModeSnapshot, ToolApprovalMode, ToolSource};
 use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{Level, event};
@@ -80,7 +78,6 @@ struct McpOAuthTaskTarget {
 
 #[derive(Clone, Debug, PartialEq)]
 struct McpRuntimeSetup {
-    snapshot: McpRuntimeConfigSnapshot,
     configs: Vec<McpServerRuntimeConfig>,
     preflight_statuses: Vec<McpServerStatusSnapshot>,
 }
@@ -178,7 +175,11 @@ impl McpRuntimeStore {
                     let mut manager = manager.lock().await;
                     let preflight_statuses = setup.preflight_statuses;
                     manager
-                        .prepare_tool_registry(&mut registry, setup.snapshot, setup.configs)
+                        .prepare_tool_registry(
+                            &mut registry,
+                            setup.configs,
+                            McpSessionPruneMode::KeepExistingSessions,
+                        )
                         .await
                         .map(|mut prepared| {
                             prepared.statuses.extend(preflight_statuses);
@@ -643,23 +644,8 @@ pub(crate) async fn prepare_run_request(
         if let Err(message) = close_all_sessions(cx, setup).await {
             return Err(McpPrepareRunError { request, message });
         }
-        request.runtime_snapshot.mcp_config_hash = None;
-        request.runtime_snapshot.mcp_config_snapshot = None;
         apply_preflight_statuses(cx, preflight_statuses).await;
         return Ok(McpPreparedRun { request });
-    }
-
-    match mcp_config_hash(&setup.snapshot) {
-        Ok(config_hash) => {
-            request.runtime_snapshot.mcp_config_hash = Some(config_hash);
-            request.runtime_snapshot.mcp_config_snapshot = Some(setup.snapshot.clone());
-        }
-        Err(err) => {
-            return Err(McpPrepareRunError {
-                request,
-                message: err.to_string(),
-            });
-        }
     }
 
     let setup = match attach_oauth_credentials(setup, cx).await {
@@ -683,7 +669,11 @@ pub(crate) async fn prepare_run_request(
     let prepared_result = gpui_tokio::Tokio::spawn(cx, async move {
         let mut manager = manager.lock().await;
         let result = manager
-            .prepare_tool_registry(&mut tool_registry, setup.snapshot, setup.configs)
+            .prepare_tool_registry(
+                &mut tool_registry,
+                setup.configs,
+                McpSessionPruneMode::PruneStale,
+            )
             .await;
         (tool_registry, result)
     })
@@ -746,7 +736,11 @@ async fn close_all_sessions(
         let mut manager = manager.lock().await;
         let mut registry = ToolRegistry::default();
         manager
-            .prepare_tool_registry(&mut registry, setup.snapshot, setup.configs)
+            .prepare_tool_registry(
+                &mut registry,
+                setup.configs,
+                McpSessionPruneMode::PruneStale,
+            )
             .await
     })
     .await
@@ -839,9 +833,6 @@ fn setup_from_config_filtered(
     fail_required: bool,
     inherited_approval_mode: McpToolApprovalModeSnapshot,
 ) -> AiChat2Result<McpRuntimeSetup> {
-    let mut snapshot = McpRuntimeConfigSnapshot {
-        servers: Vec::new(),
-    };
     let mut configs = Vec::new();
     let mut preflight_statuses = Vec::new();
     for (server_id, server) in &config.mcp_servers {
@@ -849,10 +840,7 @@ fn setup_from_config_filtered(
             continue;
         }
         match server_runtime_parts(server_id, server, inherited_approval_mode.clone()) {
-            Ok((server_snapshot, runtime_config)) => {
-                snapshot.servers.push(server_snapshot);
-                configs.push(runtime_config);
-            }
+            Ok(runtime_config) => configs.push(runtime_config),
             Err(err) if fail_required && server.required => return Err(err),
             Err(err) => {
                 preflight_statuses.push(preflight_failed_status(
@@ -864,7 +852,6 @@ fn setup_from_config_filtered(
         }
     }
     Ok(McpRuntimeSetup {
-        snapshot,
         configs,
         preflight_statuses,
     })
@@ -874,13 +861,8 @@ fn server_runtime_parts(
     server_id: &str,
     server: &config::McpServerTomlConfig,
     inherited_approval_mode: McpToolApprovalModeSnapshot,
-) -> AiChat2Result<(
-    ai_chat_core::McpServerRuntimeConfigSnapshot,
-    McpServerRuntimeConfig,
-)> {
-    let snapshot = server.to_runtime_config_snapshot(server_id)?;
-    let runtime_config = server.to_server_runtime_config(server_id, inherited_approval_mode)?;
-    Ok((snapshot, runtime_config))
+) -> AiChat2Result<McpServerRuntimeConfig> {
+    server.to_server_runtime_config(server_id, inherited_approval_mode)
 }
 
 fn mcp_default_approval_from_chat_form(
@@ -1099,7 +1081,6 @@ mod tests {
 
         let setup = setup_from_config(&config).unwrap();
 
-        assert_eq!(setup.snapshot.servers.len(), 1);
         assert_eq!(setup.configs.len(), 1);
         assert!(setup.preflight_statuses.is_empty());
         assert_eq!(setup.configs[0].server.server_id, "enabled");
@@ -1127,7 +1108,6 @@ mod tests {
 
         let setup = setup_from_config(&config).unwrap();
 
-        assert_eq!(setup.snapshot.servers.len(), 1);
         assert_eq!(setup.configs.len(), 1);
         assert_eq!(setup.configs[0].server.server_id, "valid");
         assert_eq!(setup.preflight_statuses.len(), 1);

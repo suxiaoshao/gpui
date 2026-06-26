@@ -1,12 +1,8 @@
 mod config_hash;
 
-pub use config_hash::mcp_config_hash;
-
 use crate::{AgentRuntimeError, Result, ToolDefinition, ToolRegistry, ToolRunPolicy};
 use ai_chat_core::{
-    McpOAuthConfigSnapshot, McpRuntimeConfigSnapshot, McpServerRuntimeConfigSnapshot,
-    McpServerTransportSnapshot, McpToolApprovalModeSnapshot, RunSettingsSnapshot, ToolApprovalMode,
-    ToolApprovalPolicy, ToolExecutionPolicy, ToolSource,
+    McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy, ToolSource,
 };
 use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
@@ -25,11 +21,12 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    env,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
+
+use config_hash::mcp_server_fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -116,9 +113,13 @@ pub struct McpServerRuntimeConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpPreparedTools {
-    pub config_hash: String,
-    pub config_snapshot: McpRuntimeConfigSnapshot,
     pub statuses: Vec<McpServerStatusSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpSessionPruneMode {
+    PruneStale,
+    KeepExistingSessions,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,7 +158,7 @@ impl std::fmt::Debug for McpOAuthCredentialsSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct McpSessionKey {
     pub server_id: String,
-    pub config_hash: String,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,52 +259,50 @@ impl McpSessionManager {
     pub async fn prepare_tool_registry(
         &mut self,
         registry: &mut ToolRegistry,
-        config_snapshot: McpRuntimeConfigSnapshot,
         configs: Vec<McpServerRuntimeConfig>,
+        prune_mode: McpSessionPruneMode,
     ) -> Result<McpPreparedTools> {
-        let config_hash = mcp_config_hash(&config_snapshot)?;
-        let active_server_ids = configs
+        let active_fingerprints = configs
             .iter()
-            .map(|config| config.server.server_id.clone())
-            .collect::<BTreeSet<_>>();
-        self.close_stale_sessions(&active_server_ids, &config_hash)
-            .await;
+            .map(|config| {
+                (
+                    config.server.server_id.clone(),
+                    mcp_server_fingerprint(config),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if prune_mode == McpSessionPruneMode::PruneStale {
+            self.close_stale_sessions(&active_fingerprints).await;
+        }
 
         let mut statuses = Vec::new();
         for config in configs {
+            let fingerprint = mcp_server_fingerprint(&config);
             match self
-                .register_tools_for_server(registry, config, &config_hash)
+                .register_tools_for_server(registry, config, fingerprint)
                 .await
             {
                 Ok(status) => statuses.push(status),
                 Err(err) => {
-                    let status = failed_status(&config_hash, &err);
-                    if status.server_id.is_empty() {
-                        return Err(err);
-                    }
-                    statuses.push(status);
+                    return Err(err);
                 }
             }
         }
 
-        Ok(McpPreparedTools {
-            config_hash,
-            config_snapshot,
-            statuses,
-        })
+        Ok(McpPreparedTools { statuses })
     }
 
     async fn register_tools_for_server(
         &mut self,
         registry: &mut ToolRegistry,
         config: McpServerRuntimeConfig,
-        config_hash: &str,
+        fingerprint: String,
     ) -> Result<McpServerStatusSnapshot> {
         let required = config.required;
         let server_id = config.server.server_id.clone();
         let display_name = config.server.display_name.clone();
         let transport = transport_kind(&config.server.transport);
-        let result = self.ensure_session(config.clone(), config_hash).await;
+        let result = self.ensure_session(config.clone(), fingerprint).await;
         let session = match result {
             Ok(session) => session,
             Err(err) if required => return Err(err),
@@ -328,21 +327,33 @@ impl McpSessionManager {
     async fn ensure_session(
         &mut self,
         config: McpServerRuntimeConfig,
-        config_hash: &str,
+        fingerprint: String,
     ) -> Result<&mut McpServerSession> {
         let key = McpSessionKey {
             server_id: config.server.server_id.clone(),
-            config_hash: config_hash.to_string(),
+            fingerprint,
         };
         if self.sessions.contains_key(&key) {
-            let refreshed_status = {
+            let refresh_result = {
                 let session = self.sessions.get_mut(&key).expect("session key exists");
-                refresh_session_tools(session, config.startup_timeout).await?
+                refresh_session_tools(session, config.startup_timeout).await
             };
-            self.emit(McpRuntimeEvent::ServerStatusChanged(Box::new(
-                refreshed_status,
-            )));
-            return Ok(self.sessions.get_mut(&key).expect("session key exists"));
+            match refresh_result {
+                Ok(refreshed_status) => {
+                    self.emit(McpRuntimeEvent::ServerStatusChanged(Box::new(
+                        refreshed_status,
+                    )));
+                    return Ok(self.sessions.get_mut(&key).expect("session key exists"));
+                }
+                Err(_) => {
+                    if let Some(mut session) = self.sessions.remove(&key) {
+                        let _ = session
+                            .service
+                            .close_with_timeout(Duration::from_secs(5))
+                            .await;
+                    }
+                }
+            }
         }
 
         let session = connect_mcp_server(config, self.event_tx.clone()).await?;
@@ -386,19 +397,8 @@ impl McpSessionManager {
         Ok(())
     }
 
-    async fn close_stale_sessions(
-        &mut self,
-        active_server_ids: &BTreeSet<String>,
-        config_hash: &str,
-    ) {
-        let stale_keys = self
-            .sessions
-            .keys()
-            .filter(|key| {
-                key.config_hash != config_hash || !active_server_ids.contains(&key.server_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+    async fn close_stale_sessions(&mut self, active_fingerprints: &BTreeMap<String, String>) {
+        let stale_keys = stale_session_keys(self.sessions.keys(), active_fingerprints);
         for key in stale_keys {
             if let Some(mut session) = self.sessions.remove(&key) {
                 let _ = session
@@ -407,17 +407,6 @@ impl McpSessionManager {
                     .await;
             }
         }
-    }
-
-    pub async fn prepare_tool_registry_from_snapshot(
-        &mut self,
-        registry: &mut ToolRegistry,
-        config_snapshot: McpRuntimeConfigSnapshot,
-        settings_snapshot: &RunSettingsSnapshot,
-    ) -> Result<McpPreparedTools> {
-        let configs = runtime_configs_from_snapshot(&config_snapshot, settings_snapshot)?;
-        self.prepare_tool_registry(registry, config_snapshot, configs)
-            .await
     }
 
     pub async fn disconnect_server(&mut self, server_id: &str) {
@@ -442,6 +431,19 @@ impl McpSessionManager {
             let _ = sender.send(event);
         }
     }
+}
+
+fn stale_session_keys<'a>(
+    keys: impl Iterator<Item = &'a McpSessionKey>,
+    active_fingerprints: &BTreeMap<String, String>,
+) -> Vec<McpSessionKey> {
+    keys.filter(|key| {
+        active_fingerprints
+            .get(&key.server_id)
+            .is_none_or(|fingerprint| fingerprint != &key.fingerprint)
+    })
+    .cloned()
+    .collect()
 }
 
 async fn refresh_session_tools(
@@ -778,161 +780,6 @@ impl CredentialStore for MirroringCredentialStore {
     }
 }
 
-fn runtime_configs_from_snapshot(
-    snapshot: &McpRuntimeConfigSnapshot,
-    settings_snapshot: &RunSettingsSnapshot,
-) -> Result<Vec<McpServerRuntimeConfig>> {
-    let inherited_approval_mode =
-        inherited_mcp_approval_mode(settings_snapshot.tool_policy.approval_mode);
-    snapshot
-        .servers
-        .iter()
-        .filter(|server| server.enabled)
-        .map(|server| runtime_config_from_snapshot(server, inherited_approval_mode.clone()))
-        .collect()
-}
-
-fn runtime_config_from_snapshot(
-    snapshot: &McpServerRuntimeConfigSnapshot,
-    inherited_approval_mode: McpToolApprovalModeSnapshot,
-) -> Result<McpServerRuntimeConfig> {
-    let transport = match &snapshot.transport {
-        McpServerTransportSnapshot::Stdio { command, args, .. } => {
-            McpServerTransport::Stdio(McpStdioTransport {
-                command: command.clone(),
-                args: args.clone(),
-            })
-        }
-        McpServerTransportSnapshot::StreamableHttp {
-            url,
-            headers,
-            env_headers,
-            bearer_token_env_var,
-            oauth,
-        } => McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
-            url: url.clone(),
-            headers: resolved_headers(
-                &snapshot.server_id,
-                headers,
-                env_headers,
-                bearer_token_env_var.as_deref(),
-            )?,
-            oauth: oauth
-                .as_ref()
-                .map(oauth_config_to_value)
-                .transpose()
-                .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?,
-            oauth_credentials: None,
-        }),
-    };
-    let default_approval_mode = snapshot
-        .default_tools_approval_mode
-        .clone()
-        .unwrap_or(inherited_approval_mode);
-    Ok(McpServerRuntimeConfig {
-        server: McpServerConfig {
-            server_id: snapshot.server_id.clone(),
-            display_name: snapshot.display_name.clone(),
-            transport,
-            env: match &snapshot.transport {
-                McpServerTransportSnapshot::Stdio { env, env_vars, .. } => {
-                    resolved_env(&snapshot.server_id, env, env_vars)?
-                }
-                McpServerTransportSnapshot::StreamableHttp { .. } => BTreeMap::new(),
-            },
-            cwd: match &snapshot.transport {
-                McpServerTransportSnapshot::Stdio { cwd, .. } => cwd.as_ref().map(PathBuf::from),
-                McpServerTransportSnapshot::StreamableHttp { .. } => None,
-            },
-        },
-        required: snapshot.required,
-        startup_timeout: Duration::from_millis(snapshot.startup_timeout_ms),
-        tool_timeout: Duration::from_millis(snapshot.tool_timeout_ms),
-        enabled_tools: snapshot
-            .enabled_tools
-            .as_ref()
-            .map(|tools| tools.iter().cloned().collect()),
-        disabled_tools: snapshot.disabled_tools.iter().cloned().collect(),
-        default_approval_mode: default_approval_mode.clone(),
-        default_approval_policy: approval_policy_for_mcp_mode(default_approval_mode),
-        execution_policy: ToolExecutionPolicy::Foreground,
-        tool_approval_overrides: snapshot
-            .tools
-            .iter()
-            .filter_map(|(tool_name, tool)| {
-                tool.approval_mode
-                    .clone()
-                    .map(|approval_mode| (tool_name.clone(), approval_mode))
-            })
-            .collect(),
-    })
-}
-
-fn resolved_env(
-    server_id: &str,
-    explicit_env: &BTreeMap<String, String>,
-    inherited_env_vars: &[String],
-) -> Result<BTreeMap<String, String>> {
-    let mut resolved = explicit_env.clone();
-    for env_var in inherited_env_vars {
-        let value = env::var(env_var).map_err(|_| {
-            AgentRuntimeError::Mcp(format!(
-                "mcp server `{server_id}` references missing environment variable `{env_var}`"
-            ))
-        })?;
-        resolved.insert(env_var.clone(), value);
-    }
-    Ok(resolved)
-}
-
-fn resolved_headers(
-    server_id: &str,
-    explicit_headers: &BTreeMap<String, String>,
-    env_headers: &BTreeMap<String, String>,
-    bearer_token_env_var: Option<&str>,
-) -> Result<BTreeMap<String, String>> {
-    let mut resolved = explicit_headers.clone();
-    for (header_name, env_var) in env_headers {
-        let value = env::var(env_var).map_err(|_| {
-            AgentRuntimeError::Mcp(format!(
-                "mcp server `{server_id}` header `{header_name}` references missing environment variable `{env_var}`"
-            ))
-        })?;
-        resolved.insert(header_name.clone(), value);
-    }
-    if let Some(env_var) = bearer_token_env_var {
-        let value = env::var(env_var).map_err(|_| {
-            AgentRuntimeError::Mcp(format!(
-                "mcp server `{server_id}` bearer token references missing environment variable `{env_var}`"
-            ))
-        })?;
-        resolved.insert("Authorization".to_string(), format!("Bearer {value}"));
-    }
-    Ok(resolved)
-}
-
-fn oauth_config_to_value(config: &McpOAuthConfigSnapshot) -> serde_json::Result<serde_json::Value> {
-    serde_json::to_value(config)
-}
-
-fn inherited_mcp_approval_mode(approval_mode: ToolApprovalMode) -> McpToolApprovalModeSnapshot {
-    match approval_mode {
-        ToolApprovalMode::RequestApproval => McpToolApprovalModeSnapshot::Prompt,
-        ToolApprovalMode::AutoApprove | ToolApprovalMode::FullAccess => {
-            McpToolApprovalModeSnapshot::Auto
-        }
-    }
-}
-
-fn approval_policy_for_mcp_mode(mode: McpToolApprovalModeSnapshot) -> ToolApprovalPolicy {
-    match mode {
-        McpToolApprovalModeSnapshot::Auto => ToolApprovalPolicy::Never,
-        McpToolApprovalModeSnapshot::Prompt | McpToolApprovalModeSnapshot::Deny => {
-            ToolApprovalPolicy::OnRequest
-        }
-    }
-}
-
 fn tool_allowed(tool_name: &str, config: &McpServerRuntimeConfig) -> bool {
     if config.disabled_tools.contains(tool_name) {
         return false;
@@ -1033,16 +880,6 @@ fn failed_server_status(
     }
 }
 
-fn failed_status(config_hash: &str, err: &AgentRuntimeError) -> McpServerStatusSnapshot {
-    failed_server_status(
-        String::new(),
-        Some(config_hash.to_string()),
-        McpServerTransportKindSnapshot::Stdio,
-        McpOAuthStatusSnapshot::NotConfigured,
-        err.to_string(),
-    )
-}
-
 fn transport_kind(transport: &McpServerTransport) -> McpServerTransportKindSnapshot {
     match transport {
         McpServerTransport::Stdio(_) => McpServerTransportKindSnapshot::Stdio,
@@ -1116,6 +953,7 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn oauth_http_transport() -> McpServerTransport {
         McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
@@ -1124,6 +962,83 @@ mod tests {
             oauth: Some(serde_json::json!({ "type": "authorizationCodePkce" })),
             oauth_credentials: None,
         })
+    }
+
+    fn stdio_runtime_config(server_id: &str, command: &str) -> McpServerRuntimeConfig {
+        McpServerRuntimeConfig {
+            server: McpServerConfig {
+                server_id: server_id.to_string(),
+                display_name: None,
+                transport: McpServerTransport::Stdio(McpStdioTransport {
+                    command: command.to_string(),
+                    args: Vec::new(),
+                }),
+                env: BTreeMap::new(),
+                cwd: None,
+            },
+            required: false,
+            startup_timeout: Duration::from_secs(30),
+            tool_timeout: Duration::from_secs(300),
+            enabled_tools: None,
+            disabled_tools: BTreeSet::new(),
+            default_approval_mode: McpToolApprovalModeSnapshot::Auto,
+            default_approval_policy: ToolApprovalPolicy::Never,
+            execution_policy: ToolExecutionPolicy::Foreground,
+            tool_approval_overrides: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn stale_session_keys_keep_matching_servers_only() {
+        let keys = vec![
+            McpSessionKey {
+                server_id: "alpha".to_string(),
+                fingerprint: "same".to_string(),
+            },
+            McpSessionKey {
+                server_id: "beta".to_string(),
+                fingerprint: "old".to_string(),
+            },
+            McpSessionKey {
+                server_id: "removed".to_string(),
+                fingerprint: "gone".to_string(),
+            },
+        ];
+        let active = BTreeMap::from([
+            ("alpha".to_string(), "same".to_string()),
+            ("beta".to_string(), "new".to_string()),
+        ]);
+
+        let stale = stale_session_keys(keys.iter(), &active);
+
+        assert_eq!(
+            stale,
+            vec![
+                McpSessionKey {
+                    server_id: "beta".to_string(),
+                    fingerprint: "old".to_string(),
+                },
+                McpSessionKey {
+                    server_id: "removed".to_string(),
+                    fingerprint: "gone".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn server_fingerprint_changes_with_runtime_config() {
+        let first = stdio_runtime_config("server", "echo");
+        let mut second = first.clone();
+        second
+            .server
+            .env
+            .insert("TOKEN".to_string(), "secret".to_string());
+
+        assert_ne!(
+            mcp_server_fingerprint(&first),
+            mcp_server_fingerprint(&second)
+        );
     }
 
     #[test]

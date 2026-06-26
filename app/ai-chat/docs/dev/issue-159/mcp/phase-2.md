@@ -6,11 +6,11 @@
 
 阶段 1 已完成：
 
-- `app/ai-chat2/src/state/config.rs` 和 `app/ai-chat2/src/state/config/mcp.rs` 提供 `[mcp_servers]` 配置模型、校验、`config.toml` 读写和 secret-safe runtime snapshot。
+- `app/ai-chat2/src/state/config.rs` 和 `app/ai-chat2/src/state/config/mcp.rs` 提供 `[mcp_servers]` 配置模型、校验和 `config.toml` 读写。
 - `app/ai-chat2/src/state/mcp.rs` 安装 `McpRuntimeGlobal`，持有 live `McpSessionManager`、status cache、tools/list cache，并为 agent run setup 注册 MCP tools。
 - `crates/ai-chat-agent/src/mcp.rs` 提供 `McpConfigLayer`、`McpServerRuntimeConfig`、stdio / streamable HTTP session manager、tools/list 和 `McpConnector::register_rmcp_tools(...)`。
 - `app/ai-chat2/src/features/settings/mcp.rs` 和 `mcp/*` 子模块提供 MCP Settings 页面、列表、详情、Add/Edit/Delete、Enable/Disable、结构化表单和校验。
-- `app/ai-chat2/src/state/conversation_runtime.rs` 在 `AgentRuntime::begin_run(...)` 前执行 MCP run setup，并把 `mcp_config_hash` / `mcp_config_snapshot` 写入 runtime snapshot。
+- `app/ai-chat2/src/state/conversation_runtime.rs` 在 `AgentRuntime::begin_run(...)` 前执行 MCP run setup，并注册当前 enabled MCP tools；MCP runtime config 不写入 run payload。
 - `crates/ai-chat-agent/src/tool_registry.rs`、`crates/ai-chat-agent/src/persistence/tool_hook.rs`、`crates/ai-chat-db` 已记录 MCP tool invocation facts。
 
 阶段 1 明确未完成：
@@ -52,7 +52,7 @@
 
 - 不把 OAuth token 写入 `config.toml`、SQLite 或 runtime snapshot。
 - 不在 app 启动时自动拉起所有 enabled stdio server。
-- 不从旧 `mcp_config_snapshot` 静默 reconnect 已变更配置。
+- 不从已持久化的旧 MCP config 静默 reconnect 已变更配置；当前实现不持久化 MCP config/hash。
 - 不把高级 TOML schema 全部塞回默认 Add/Edit 表单。
 - 不在默认 OAuth UI 暴露 scopes、resource、client id、client metadata URL、callback port、callback URL override、dynamic registration 等复杂配置；这些只走 TOML advanced path，并且 OAuth 保持开启时 Add/Edit 保存必须保留原值。用户关闭 OAuth 并保存时，按已确认策略删除 TOML OAuth definition 和对应 GPUI credentials。
 - 不做 project-level MCP definitions：不读取 `.codex/config.toml`、`.zed/settings.json`、project metadata 或其它 project file；不实现 global + project 合并、project trust prompt、project trust persistence 或 project-scoped session 复用。
@@ -247,7 +247,6 @@ pub(crate) enum ApprovedToolExecutionRequest {
         server_id: String,
         raw_tool_name: String,
         input_json: serde_json::Value,
-        run_mcp_config_hash: String,
     },
 }
 
@@ -267,11 +266,6 @@ Approval resume error：
 pub(crate) enum McpApprovalResumeError {
     UnsupportedSource {
         source: String,
-    },
-    ConfigChanged {
-        server_id: String,
-        run_config_hash: String,
-        current_config_hash: String,
     },
     MissingLiveSession {
         server_id: String,
@@ -295,7 +289,7 @@ Approval resume：
 3. `crates/ai-chat-agent/src/runtime/approval_resume.rs` 读取 pending approval、tool invocation 和 parent agent run。
 4. `runtime/approval_resume.rs` 根据 `ToolSource` 生成 source-neutral runtime tool request。
 5. Local tool 走现有 built-in executor；MCP tool 使用 `server_id`、raw MCP tool name 和保存的 arguments 调用 live `McpSessionManager`。
-6. MCP resume 前比较当前 enabled MCP config hash 和 run snapshot hash；不匹配则写 actionable error，要求用户 retry/resend。
+6. MCP resume 使用当前 live `McpSessionManager`；如果缺少 live MCP session，则写 actionable error，要求用户 retry/resend，而不是从旧 run payload 重建 MCP config。
 7. executor 写回 `tool_invocations` 和 `conversation_items`。
 8. tool 成功后创建 resume run，让模型读取已有 ToolCall / ApprovalDecision / ToolResult 继续回答。
 
@@ -328,8 +322,8 @@ OAuth Settings：
 Agent run：
 
 1. Conversation code 构建 `AgentRunRequest`。
-2. `state::mcp::prepare_run_request(...)` 读取 `AiChat2ConfigStore` 的 enabled definitions，生成 secret-safe `mcp_config_hash` / `mcp_config_snapshot`。
-3. `state::mcp::attach_oauth_credentials(...)` 对 OAuth HTTP server 从 GPUI credentials 读取 rmcp `StoredCredentials`，只写入 agent runtime config 的 `oauth_credentials` 字段，不写入 snapshot/hash。
+2. `state::mcp::prepare_run_request(...)` 读取 `AiChat2ConfigStore` 的 enabled definitions，构造本次运行的 agent-side MCP runtime config。
+3. `state::mcp::attach_oauth_credentials(...)` 对 OAuth HTTP server 从 GPUI credentials 读取 rmcp `StoredCredentials`，只写入 agent runtime config 的 `oauth_credentials` 字段，不写入 run payload 或数据库。
 4. `McpSessionManager` 连接 server：非 OAuth HTTP 直接用 `StreamableHttpClientTransport`；OAuth HTTP 用 rmcp `AuthorizationManager` + `InMemoryCredentialStore` + `AuthClient`。
 5. Runtime 拉取 tools/list，注册 MCP tools，设置本次 run 的 enabled MCP sources。
 6. `AgentRuntime::begin_run(...)` finalize tool names 后把 tools 交给 provider。
@@ -339,10 +333,10 @@ Project-level MCP 本阶段没有数据流：agent run setup 只读取 app-level
 ## 全局数据管理
 
 - `AiChat2ConfigStore` 继续是 global MCP definitions 的唯一 source of truth。
-- `McpRuntimeGlobal(Entity<McpRuntimeStore>)` 持有 live sessions、status cache、tool-list cache、OAuth flow state 和 config hash 到 session 的映射。
+- `McpRuntimeGlobal(Entity<McpRuntimeStore>)` 持有 live sessions、status cache、tool-list cache、OAuth flow state 和 runtime-only fingerprint 到 session 的映射。
 - `McpOAuth` storage 使用 GPUI credentials；runtime store 只持有派生状态，不拥有 token truth。
 - `ConversationRuntimeStore` 只负责编排当前 conversation run，不直接创建 rmcp transport。
-- `AgentRuntimeSnapshot` 记录 per-run MCP config hash/snapshot，用于审计和 resume safety check。
+- `AgentRuntimeSnapshot` 不记录 MCP config/hash；数据库只保留 run input 的常规字段和 tool invocation facts。
 - 不新增 project-level MCP trust state、project trust store 或 project-scoped config cache。
 
 ## 数据获取和刷新
@@ -361,7 +355,7 @@ Project-level MCP 本阶段没有数据流：agent run setup 只读取 app-level
 
 继续使用现有表：
 
-- `agent_runs.input_json`：保存 `mcp_config_hash` 和 `mcp_config_snapshot`。
+- `agent_runs.input_json`：不保存 MCP config/hash。
 - `tool_invocations`：保存 MCP source、server id、raw/runtime tool name、input/output/error/approval。
 - `conversation_items`：保存 ToolCall / ApprovalRequest / ApprovalDecision / ToolResult。
 - `approval_decisions`：保存 pending/approved/denied。
@@ -520,4 +514,4 @@ Project-level MCP 已确认不进入阶段 2。后续如果重新开启，需要
 - global + project MCP 的合并规则：同名 server 覆盖、冲突报错，还是按 scope namespace 共存。
 - 首次加载 project config 时的信任 UI：需要展示 server id、transport、command/url、env/header secret 引用和工具风险。
 - project trust 是否跨重启持久化；如果持久化，存放在 config、project DB，还是新的 trust store。
-- project 切换时的 session key、config hash 和 live session 复用边界。
+- project 切换时的 runtime-only session fingerprint 和 live session 复用边界。

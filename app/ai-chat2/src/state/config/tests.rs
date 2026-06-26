@@ -1,13 +1,12 @@
 use super::{
     AiChat2AppSettings, AiChat2Config, AppSettingsConfig, ChatFormConfig, ChatFormModelConfig,
-    McpServerTomlConfig, McpToolApprovalMode, McpTransportKind, StorageConfig, delete_mcp_server,
-    install_for_test, set_mcp_server_enabled, update_app_settings, update_chat_form_config,
-    upsert_mcp_server,
+    McpOAuthTomlConfig, McpServerTomlConfig, McpToolApprovalMode, McpTransportKind, StorageConfig,
+    delete_mcp_server, install_for_test, set_mcp_server_enabled, update_app_settings,
+    update_chat_form_config, upsert_mcp_server,
 };
 use ai_chat_agent::McpServerTransport;
 use ai_chat_core::{
-    AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, McpOAuthConfigSnapshot,
-    McpServerTransportSnapshot, McpToolApprovalModeSnapshot, ReasoningSelectionSnapshot,
+    AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ReasoningSelectionSnapshot,
     TokenBudgetSelectionMode, ToolApprovalMode,
 };
 use gpui::TestAppContext;
@@ -382,96 +381,6 @@ X-Docs = "enabled"
 }
 
 #[test]
-fn mcp_runtime_snapshot_keeps_secret_values_out_of_payload() {
-    let config = toml::from_str::<AiChat2Config>(
-        r#"
-[mcp_servers.github]
-enabled = true
-required = true
-display_name = "GitHub"
-transport = "streamable_http"
-url = "https://api.githubcopilot.com/mcp/"
-startup_timeout_ms = 30000
-tool_timeout_ms = 300000
-enabled_tools = ["search_issues"]
-disabled_tools = ["delete_repository"]
-default_tools_approval_mode = "prompt"
-bearer_token_env_var = "GITHUB_MCP_TOKEN"
-
-[mcp_servers.github.headers]
-X-Client = "ai-chat2"
-
-[mcp_servers.github.env_headers]
-X-Workspace-Token = "WORKSPACE_TOKEN"
-
-[mcp_servers.github.oauth]
-flow = "authorization_code_pkce"
-scopes = ["read:user", "repo"]
-resource = "https://api.githubcopilot.com/mcp/"
-callback_port = 0
-
-[mcp_servers.github.tools.search_issues]
-approval_mode = "auto"
-"#,
-    )
-    .unwrap();
-
-    let snapshot = config.mcp_runtime_config_snapshot().unwrap();
-
-    assert_eq!(snapshot.servers.len(), 1);
-    let server = &snapshot.servers[0];
-    assert_eq!(server.server_id, "github");
-    assert!(server.required);
-    assert_eq!(
-        server.default_tools_approval_mode,
-        Some(McpToolApprovalModeSnapshot::Prompt)
-    );
-    assert_eq!(
-        server
-            .tools
-            .get("search_issues")
-            .and_then(|tool| tool.approval_mode.as_ref()),
-        Some(&McpToolApprovalModeSnapshot::Auto)
-    );
-    match &server.transport {
-        McpServerTransportSnapshot::StreamableHttp {
-            url,
-            headers,
-            env_headers,
-            bearer_token_env_var,
-            oauth,
-        } => {
-            assert_eq!(url, "https://api.githubcopilot.com/mcp/");
-            assert_eq!(
-                headers.get("X-Client").map(String::as_str),
-                Some("ai-chat2")
-            );
-            assert_eq!(
-                env_headers.get("X-Workspace-Token").map(String::as_str),
-                Some("WORKSPACE_TOKEN")
-            );
-            assert_eq!(bearer_token_env_var.as_deref(), Some("GITHUB_MCP_TOKEN"));
-            assert_eq!(
-                oauth.as_ref(),
-                Some(&McpOAuthConfigSnapshot::AuthorizationCodePkce {
-                    scopes: vec!["read:user".to_string(), "repo".to_string()],
-                    client_id: None,
-                    client_metadata_url: None,
-                    resource: Some("https://api.githubcopilot.com/mcp/".to_string()),
-                    callback_port: Some(0),
-                    callback_url: None,
-                })
-            );
-        }
-        McpServerTransportSnapshot::Stdio { .. } => panic!("expected streamable HTTP"),
-    }
-    let json = serde_json::to_string(&snapshot).unwrap();
-    assert!(!json.contains("secret-token"));
-    assert!(json.contains("GITHUB_MCP_TOKEN"));
-    assert!(json.contains("WORKSPACE_TOKEN"));
-}
-
-#[test]
 fn mcp_config_rejects_reserved_headers_and_oauth_authorization_header() {
     let reserved = toml::from_str::<AiChat2Config>(
         r#"
@@ -523,14 +432,12 @@ resource = "https://internal.example.com/mcp"
     )
     .unwrap();
 
-    let snapshot = config.mcp_runtime_config_snapshot().unwrap();
-    let oauth = match &snapshot.servers[0].transport {
-        McpServerTransportSnapshot::StreamableHttp { oauth, .. } => oauth.as_ref(),
-        McpServerTransportSnapshot::Stdio { .. } => None,
-    };
     assert_eq!(
-        oauth,
-        Some(&McpOAuthConfigSnapshot::ClientCredentials {
+        config
+            .mcp_servers
+            .get("internal")
+            .and_then(|server| server.oauth.as_ref()),
+        Some(&McpOAuthTomlConfig::ClientCredentials {
             client_id: "ai-chat2".to_string(),
             client_secret_env_var: "INTERNAL_MCP_CLIENT_SECRET".to_string(),
             scopes: vec!["tools".to_string()],

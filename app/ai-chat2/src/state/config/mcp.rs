@@ -9,10 +9,7 @@ use ai_chat_agent::{
     McpConfigLayer, McpServerConfig, McpServerRuntimeConfig, McpServerTransport, McpStdioTransport,
     McpStreamableHttpTransport,
 };
-use ai_chat_core::{
-    McpOAuthConfigSnapshot, McpServerRuntimeConfigSnapshot, McpServerTransportSnapshot,
-    McpToolApprovalModeSnapshot, McpToolOverrideSnapshot, ToolApprovalPolicy, ToolExecutionPolicy,
-};
+use ai_chat_core::{McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy};
 use gpui::App;
 use serde::{Deserialize, Serialize};
 
@@ -137,19 +134,6 @@ impl AiChat2Config {
         }
         Ok(McpConfigLayer { servers })
     }
-
-    #[cfg(test)]
-    pub(crate) fn mcp_runtime_config_snapshot(
-        &self,
-    ) -> AiChat2Result<ai_chat_core::McpRuntimeConfigSnapshot> {
-        let mut servers = Vec::new();
-        for (server_id, server) in &self.mcp_servers {
-            if server.enabled {
-                servers.push(server.to_runtime_config_snapshot(server_id)?);
-            }
-        }
-        Ok(ai_chat_core::McpRuntimeConfigSnapshot { servers })
-    }
 }
 
 impl McpServerTomlConfig {
@@ -231,64 +215,6 @@ impl McpServerTomlConfig {
                         .map(McpToolApprovalMode::to_snapshot)
                         .map(|approval_mode| (tool_name.clone(), approval_mode))
                 })
-                .collect(),
-        })
-    }
-
-    pub(crate) fn to_runtime_config_snapshot(
-        &self,
-        server_id: &str,
-    ) -> AiChat2Result<McpServerRuntimeConfigSnapshot> {
-        self.validate(server_id)?;
-        let transport = match self.transport {
-            McpTransportKind::Stdio => {
-                let command = self.command.clone().ok_or_else(|| {
-                    AiChat2Error::Config(format!("mcp server `{server_id}` is missing command"))
-                })?;
-                McpServerTransportSnapshot::Stdio {
-                    command,
-                    args: self.args.clone(),
-                    cwd: self
-                        .cwd
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    env: self.env.clone(),
-                    env_vars: self.env_vars.clone(),
-                }
-            }
-            McpTransportKind::StreamableHttp => {
-                let url = self.url.clone().ok_or_else(|| {
-                    AiChat2Error::Config(format!("mcp server `{server_id}` is missing url"))
-                })?;
-                McpServerTransportSnapshot::StreamableHttp {
-                    url,
-                    headers: self.headers.clone(),
-                    env_headers: self.env_headers.clone(),
-                    bearer_token_env_var: self.bearer_token_env_var.clone(),
-                    oauth: self.oauth.as_ref().map(McpOAuthTomlConfig::to_snapshot),
-                }
-            }
-        };
-
-        Ok(McpServerRuntimeConfigSnapshot {
-            server_id: server_id.to_string(),
-            display_name: self.display_name.clone(),
-            enabled: self.enabled,
-            required: self.required,
-            transport,
-            startup_timeout_ms: self
-                .startup_timeout_ms
-                .unwrap_or(DEFAULT_MCP_STARTUP_TIMEOUT_MS),
-            tool_timeout_ms: self.tool_timeout_ms.unwrap_or(DEFAULT_MCP_TOOL_TIMEOUT_MS),
-            enabled_tools: self.enabled_tools.clone(),
-            disabled_tools: self.disabled_tools.clone(),
-            default_tools_approval_mode: self
-                .default_tools_approval_mode
-                .map(McpToolApprovalMode::to_snapshot),
-            tools: self
-                .tools
-                .iter()
-                .map(|(tool_name, tool)| (tool_name.clone(), tool.to_snapshot()))
                 .collect(),
         })
     }
@@ -414,37 +340,6 @@ impl McpOAuthTomlConfig {
         }
         Ok(())
     }
-
-    fn to_snapshot(&self) -> McpOAuthConfigSnapshot {
-        match self {
-            Self::AuthorizationCodePkce {
-                scopes,
-                client_id,
-                client_metadata_url,
-                resource,
-                callback_port,
-                callback_url,
-            } => McpOAuthConfigSnapshot::AuthorizationCodePkce {
-                scopes: scopes.clone(),
-                client_id: client_id.clone(),
-                client_metadata_url: client_metadata_url.clone(),
-                resource: resource.clone(),
-                callback_port: *callback_port,
-                callback_url: callback_url.clone(),
-            },
-            Self::ClientCredentials {
-                client_id,
-                client_secret_env_var,
-                scopes,
-                resource,
-            } => McpOAuthConfigSnapshot::ClientCredentials {
-                client_id: client_id.clone(),
-                client_secret_env_var: client_secret_env_var.clone(),
-                scopes: scopes.clone(),
-                resource: resource.clone(),
-            },
-        }
-    }
 }
 
 impl McpToolApprovalMode {
@@ -453,14 +348,6 @@ impl McpToolApprovalMode {
             Self::Auto => McpToolApprovalModeSnapshot::Auto,
             Self::Prompt => McpToolApprovalModeSnapshot::Prompt,
             Self::Deny => McpToolApprovalModeSnapshot::Deny,
-        }
-    }
-}
-
-impl McpToolOverrideTomlConfig {
-    fn to_snapshot(&self) -> McpToolOverrideSnapshot {
-        McpToolOverrideSnapshot {
-            approval_mode: self.approval_mode.map(McpToolApprovalMode::to_snapshot),
         }
     }
 }

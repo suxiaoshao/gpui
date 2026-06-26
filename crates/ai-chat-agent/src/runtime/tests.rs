@@ -2083,8 +2083,6 @@ impl Fixture {
                 engine: AgentEngineKind::Rig,
                 engine_version: "0.37.0".to_string(),
                 skill_catalog_hash: None,
-                mcp_config_hash: None,
-                mcp_config_snapshot: None,
                 tool_name_strategy: ToolNameStrategy::Namespaced,
             },
         )

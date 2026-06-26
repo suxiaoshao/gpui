@@ -93,7 +93,7 @@ sidebar 和 conversation runtime/timeline 仍逐项评估。
 方向落地：MCP definitions 只写 `config.toml`，不新增 SQLite 表；Settings 新增 MCP 页，读取 `[mcp_servers]`，支持搜索、刷新/测试、
 连接状态、auth 状态、server info 和 tools/list 展示，并提供 Add/Edit/Delete/Enable/Disable 管理能力写回 `config.toml`；`state::mcp` 安装 app-global runtime store，
 通过 `ai-chat-agent::McpSessionManager` 按需连接 stdio / 非 OAuth streamable HTTP server，并在
-agent run `begin_run` 前注册 MCP tools、写入 `mcp_config_hash` / `mcp_config_snapshot`。
+agent run `begin_run` 前注册 MCP tools；runtime session fingerprint 只在进程内用于复用和 stale 判断，不写入 run payload 或数据库。
 OAuth browser flow/token storage/refresh/scope upgrade/logout、OAuth 配置表单、ClientCredentials UI、
 Codex-style prewarm 和 MCP source-neutral approval resume 已明确记录为后续项。
 
@@ -253,7 +253,7 @@ database、`ai-chat-agent` 和 canonical `conversation_items` 实现新的 proje
 | app settings | `config.toml` `[app_settings]` | General/Appearance 已消费并写回 language、theme、temporary hotkey 和 HTTP proxy；New Conversation 默认页已消费并更新/清空 default project；fresh DB 不再创建 `app_settings` 表。 |
 | chat form defaults | `config.toml` `[chat_form]` | Composer 已消费并写回当前模型 provider/model id、reasoning selection 和 tool approval mode；provider/provider_models 本轮仍保持 DB-backed，`[chat_form]` 只保存选择偏好。 |
 | file-backed skills | `ai-chat-agent::skills` | Composer 已通过 `state::skills` 消费 global/project catalog，支持 `$` completion、`$skill_name` inline token 视觉、整体删除/替换，并在 snapshot 输出 skill activation request；Settings 全局 Skill catalog UI 第一版已实现，提供刷新、搜索和 inline raw `SKILL.md` 内容查看，详见 `app/ai-chat/docs/dev/issue-159/skill-settings.md`。activation display 或 skill snapshot timeline UI 仍未实现。 |
-| MCP helpers | `config.toml` `[mcp_servers]` + `ai-chat-agent::mcp` | V1 已实现 config-backed MCP 状态页、管理 UI 和非 OAuth runtime：Settings 读取 TOML server 并展示状态/tools，支持 Add/Edit/Delete/Enable/Disable 写回 `config.toml`，`state::mcp` 通过 `McpSessionManager` 按需连接 stdio / 非 OAuth streamable HTTP server，agent run 前注册 tools 并写入 MCP config hash/snapshot。OAuth runtime、OAuth 配置 UI、ClientCredentials UI、prewarm 和 MCP approval resume 仍是后续项。 |
+| MCP helpers | `config.toml` `[mcp_servers]` + `ai-chat-agent::mcp` | V1 已实现 config-backed MCP 状态页、管理 UI 和非 OAuth runtime：Settings 读取 TOML server 并展示状态/tools，支持 Add/Edit/Delete/Enable/Disable 写回 `config.toml`，`state::mcp` 通过 `McpSessionManager` 按需连接 stdio / 非 OAuth streamable HTTP server，agent run 前注册 tools。MCP definitions 只保存在 `config.toml`，live session identity 只在 runtime 内存使用，run payload/DB 不保存 MCP config/hash。OAuth runtime、OAuth 配置 UI、ClientCredentials UI、prewarm 和 MCP approval resume 仍是后续项。 |
 
 ## 未开始 UI 清单
 

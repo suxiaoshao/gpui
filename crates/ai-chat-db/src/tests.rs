@@ -2116,8 +2116,6 @@ fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> Age
             engine: AgentEngineKind::Rig,
             engine_version: "0.22.0".to_string(),
             skill_catalog_hash: Some("skills".to_string()),
-            mcp_config_hash: Some("mcp".to_string()),
-            mcp_config_snapshot: None,
             tool_name_strategy: ToolNameStrategy::Namespaced,
         },
         max_steps: 8,

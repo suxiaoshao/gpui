@@ -6,17 +6,17 @@
 
 长期目标不是做一个只支持静态 header 的窄版 MCP。目标仍是完整接入 MCP 设置 UI、stdio/streamable HTTP 运行时、rmcp OAuth、MCP 工具注册、工具审批/恢复，以及持久化事实记录。
 
-2026-06-24 V1 已确认先收窄为 `config.toml only`：MCP server definitions 的 source of truth 只放在 `config.toml`，不新增 SQLite 表，也不把 OAuth token 写入 TOML。V1 需要打通非 OAuth MCP server 的配置读取、Settings 管理 UI、按需连接、tools/list、run 前工具注册和 runtime snapshot。OAuth browser flow/token storage/refresh/scope upgrade/logout、ClientCredentials UI、prewarm 和 MCP approval resume 先记录为后续项，不在本轮实现里用半成品兜底。
+2026-06-24 V1 已确认先收窄为 `config.toml only`：MCP server definitions 的 source of truth 只放在 `config.toml`，不新增 SQLite 表，也不把 OAuth token 写入 TOML。V1 需要打通非 OAuth MCP server 的配置读取、Settings 管理 UI、按需连接、tools/list 和 run 前工具注册。OAuth browser flow/token storage/refresh/scope upgrade/logout、ClientCredentials UI、prewarm 和 MCP approval resume 先记录为后续项，不在本轮实现里用半成品兜底。
 
 V1 必须完成：
 
 - Settings 新增 `MCP` tab，用于查看 `config.toml` 中声明的 MCP server、搜索、测试连接、展示 connected status、auth status、server info 和 tools/list。
 - Settings MCP tab 必须提供 Add/Edit/Delete/Enable/Disable 管理能力，并写回 `config.toml`；编辑未暴露的 OAuth 字段时必须保留原 TOML 中已存在的 OAuth definition，不允许静默删除。
 - 支持 `stdio` 和 `streamable_http` 两类传输。
-- streamable HTTP V1 支持 env-backed bearer/static headers；OAuth server definition 可在 TOML 中声明并参与校验/快照，但本轮不执行 browser OAuth flow。
+- streamable HTTP V1 支持 env-backed bearer/static headers；OAuth server definition 可在 TOML 中声明并参与校验，但本轮不执行 browser OAuth flow。
 - agent run 启动前连接 enabled MCP server，拉取 tools/list，把工具注册进现有 `ToolRegistry`。
 - MCP tool invocation 继续通过 `ToolSource::Mcp { server_id }`、raw tool name、runtime tool name、arguments、result、error 和 approval 写入现有 fresh DB。
-- `AgentRuntimeSnapshot` 写入 secret-safe MCP config snapshot/hash。
+- `AgentRunInput` 不写入 MCP config snapshot/hash；MCP config 只存在于 `config.toml` 和 runtime-only session identity。
 
 V1 不做：
 
@@ -45,12 +45,12 @@ V1 不做：
   - `McpSessionManager`
   - `McpRuntimeEvent`
   - `McpConnector::register_rmcp_tools(...)`
-- `app/ai-chat2/src/state/config.rs` 已有 `[mcp_servers.<id>]` 配置入口，并能转换为 `McpConfigLayer`、`McpServerRuntimeConfig` 和 secret-safe `McpRuntimeConfigSnapshot`。
+- `app/ai-chat2/src/state/config.rs` 已有 `[mcp_servers.<id>]` 配置入口，并能转换为 `McpConfigLayer` 和 `McpServerRuntimeConfig`。
 - `app/ai-chat2/src/state/mcp.rs` 已安装 `McpRuntimeGlobal`，持有 live `McpSessionManager`、server status cache 和 run setup 入口。
 - `state::mcp` 的 run setup 已按 `required` 分流 app-layer preflight error：required server 配置/环境错误会阻断本次 run 并持久化 setup failure；non-required server 会记录 failed status 并跳过，不阻断其它 MCP server 或 provider call。
 - `app/ai-chat2/src/features/settings/mcp.rs` 已实现 MCP Settings V1：读取 `config.toml` server、搜索、刷新/测试连接、展示 transport/connection/auth tags、server info 和 tools/list，并提供 Add/Edit/Delete/Enable/Disable 管理入口。
 - `app/ai-chat2/src/features/settings/mcp/dialog.rs` 已实现 Add/Edit dialog、Delete confirm、非 OAuth stdio / streamable HTTP 简化字段表单、结构化参数/env/header rows、滚动内容区和固定 footer，并通过 `state::config` helper 写回 `config.toml`；编辑 HTTP server 时会保留首版未暴露的 OAuth definition。
-- `ConversationRuntimeStore` 已把 run setup 移到 async start phase，在 `AgentRuntime::begin_run(...)` 之前调用 MCP runtime 准备工具，并设置 `AgentRuntimeSnapshot.mcp_config_hash` / `mcp_config_snapshot`。
+- `ConversationRuntimeStore` 已把 run setup 移到 async start phase，在 `AgentRuntime::begin_run(...)` 之前调用 MCP runtime 准备工具；MCP config 不进入 `AgentRuntimeSnapshot`。
 - `crates/ai-chat-agent/src/tool_registry.rs` 已支持 `ToolSource::Mcp { server_id }`，并会为 MCP 工具分配 namespace。
 - `ai-chat-db` 已能持久化 MCP tool invocation 的 source、server id、original tool name、runtime tool name、arguments、result、error 和 approval。
 - `ConversationRuntimeStore` 已能启动/停止 run、处理 approval、把 runtime events 映射成 conversation UI refresh。
@@ -60,7 +60,7 @@ V1 不做：
 - MCP approval resume 已从 local-only 扩展为 source-neutral runtime tool execution；批准 MCP tool 后会用 run snapshot 恢复 registry 并执行对应 MCP tool。
 - OAuth authorization-code flow 已接入 Settings 简化 UI：`需要 OAuth` 开关、授权状态卡片、`授权` / `重新授权` 按钮。
 - OAuth token 写入 GPUI credentials，key 使用 `mcp-oauth:{canonical_server_uri}`；关闭 OAuth 并保存、删除 server、OAuth URL 变化时会删除对应 credentials。
-- agent streamable HTTP OAuth path 已用 rmcp `AuthClient`；Settings Test / agent run setup 会读取 GPUI credentials 中的 rmcp `StoredCredentials`，只注入 runtime config，不进入 TOML、SQLite 或 runtime snapshot。
+- agent streamable HTTP OAuth path 已用 rmcp `AuthClient`；Settings Test / agent run setup 会读取 GPUI credentials 中的 rmcp `StoredCredentials`，只注入 runtime config，不进入 TOML、SQLite 或 `AgentRunInput`。
 
 尚未完成：
 
@@ -149,7 +149,7 @@ Codex Electron app 参考路径，2026-06-24 已在本机安装的 app 上验证
 - 生命周期参考 Codex Electron，不参考 Codex CLI/TUI。`New Chat` 本身不启动 stdio MCP server；submit/test/connect 是第一批会创建 runtime session 的用户可见时机。
 - 2026-06-24 已确认：V1 先做 `config.toml only` 的 MCP 管理 UI 和非 OAuth MCP runtime。2026-06-25 阶段 2 已接入 authorization-code browser flow、GPUI credentials token storage、rmcp `AuthClient` runtime、refresh mirror、取消授权和基础 scope failure 状态；完整 `Upgrade Access` 增量 scope flow 与 `ClientCredentials` UI 仍保持后续 advanced path。
 - 2026-06-24 已确认：V1 不做 Codex-style prewarm。
-- 2026-06-24 已确认：source-neutral approval resume 遇到当前 config hash 与 run snapshot 不匹配时，不从 `mcp_config_snapshot` reconnect；直接拒绝 resume，并要求用户 retry/resend。
+- 2026-06-26 已确认：`AgentRunInput` 不持久化 MCP config snapshot/hash；approval resume 使用当前 MCP runtime/config，必要时要求用户 retry/resend。
 
 ### 启动和复用策略
 
@@ -157,10 +157,10 @@ Codex Electron app 参考路径，2026-06-24 已在本机安装的 app 上验证
 
 - App 启动时不启动 enabled MCP server。
 - 打开 Settings 时不启动所有 enabled MCP server。
-- Settings `Test` 只启动当前选中的 server，执行 initialize + `tools/list`，然后按 config hash 决定保留或复用 live session。
+- Settings `Test` 只启动当前选中的 server，执行 initialize + `tools/list`，并且不 prune 其它 live sessions。
 - V1 不提供 `Connect OAuth`；阶段 2 已改为在 HTTP Add/Edit dialog 中提供 `需要 OAuth` 开关和显式 `授权` / `重新授权` / `取消授权` 动作。
 - 首次 agent submit 在 run setup 阶段连接 enabled server，并且必须发生在 provider tool declaration finalized 之前。
-- 同一个 app process 内，如果 server id 和 config hash 匹配，已有 live session 可以跨 conversation 复用。
+- 同一个 app process 内，如果 server id 和 runtime-only fingerprint 匹配，已有 live session 可以跨 conversation 复用。
 - config 变化、server disabled、app 退出、显式 disconnect/logout 时关闭 stale session。
 - 不要求跨进程复用。
 - 首个 MCP PR 不做 Codex-style composer prewarm。后续只有在 OAuth status、错误展示和 retry/resend 稳定后，才能重新设计受控 prewarm。
@@ -430,12 +430,10 @@ pub struct McpSessionManager {
 
 pub struct McpSessionKey {
     pub server_id: String,
-    pub config_hash: String,
+    pub fingerprint: String,
 }
 
 pub struct McpServerSession {
-    pub server_id: String,
-    pub config_hash: String,
     pub sink: rmcp::service::ServerSink,
     pub service: McpRunningService,
     pub auth_manager: Option<Arc<Mutex<rmcp::transport::auth::AuthorizationManager>>>,
@@ -498,8 +496,6 @@ pub enum McpOAuthStatusSnapshot {
 }
 
 pub struct McpPreparedTools {
-    pub config_hash: String,
-    pub config_snapshot: McpRuntimeConfigSnapshot,
     pub statuses: Vec<McpServerStatusSnapshot>,
 }
 
@@ -594,7 +590,7 @@ pub(crate) enum McpOAuthFlowState {
 
 - `state::mcp::init(cx)` 在 `state::config::init(cx)` 之后安装 `McpRuntimeGlobal`。
 - App launch 不得 eager start 每个 stdio server。
-- 首次 run 时按需连接 enabled servers，并在 config hash 匹配时复用 live sessions。
+- 首次 run 时按需连接 enabled servers，并在 runtime-only fingerprint 匹配时复用 live sessions。
 
 全局数据管理：
 
@@ -603,7 +599,7 @@ pub(crate) enum McpOAuthFlowState {
 - `McpRuntimeStore` 观察 `AiChat2ConfigStore`；它不拥有 persisted config。
 - Settings UI 同时观察 config 和 runtime store。MCP definitions 不直接访问 `ai-chat-db`。
 - Conversation runtime 请求 `McpRuntimeStore` 为 run 准备 tools；它不直接创建 rmcp transports。
-- `AgentRuntimeSnapshot` 保存单次 run 的 MCP config snapshot/hash，用于 replay/debug；它不是可变 source of truth。
+- `AgentRuntimeSnapshot` 不保存 MCP config snapshot/hash；MCP runtime state 不持久化到 run input。
 - OAuth credentials 通过 GPUI credentials 读写，不 mirror 到 config 或 SQLite。
 
 ### OAuth 存储
@@ -668,13 +664,11 @@ pub(crate) struct McpStoredOAuthSession {
 2. 继续在 `state/conversations.rs` 按现有方式构建 `AgentRunRequest`。
 3. 调用 `state::mcp::runtime(cx).prepare_tool_registry_for_run(&mut request).await`。
 4. 在该方法内部：
-   - 计算 enabled MCP config hash，
+   - 计算 runtime-only per-server fingerprint，
    - 连接 enabled servers，
    - 必要时执行 OAuth refresh，
    - 拉取 allowed tool list，
    - 把 tools 注册到 `request.tool_registry`，
-   - 设置 `request.runtime_snapshot.mcp_config_hash`，
-   - 设置 `request.runtime_snapshot.mcp_config_snapshot`。
 5. `AgentRuntime::begin_run(...)` 注册 built-in tools 后，只 finalize 一次所有 tool names。
 6. required server 失败时持久化 setup failure。
 
@@ -685,14 +679,11 @@ pub struct AgentRuntimeSnapshot {
     pub engine: AgentEngineKind,
     pub engine_version: String,
     pub skill_catalog_hash: Option<String>,
-    pub mcp_config_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_config_snapshot: Option<McpRuntimeConfigSnapshot>,
     pub tool_name_strategy: ToolNameStrategy,
 }
 ```
 
-新字段必须使用 serde default，因为旧 rows 没有它。
+MCP config 不进入 core payload model；如果未来需要审计展示，必须新增 redacted/audit-only shape，不能复用 runtime config。
 
 失败策略：
 
@@ -709,13 +700,10 @@ pub struct AgentRuntimeSnapshot {
 - Resume 必须：
   - 读取 `ToolInvocationRecord`，
   - 使用已存的 `server_id` 和 raw `tool_name`，
-  - 确保当前 config hash 匹配 run snapshot，
-  - 如果当前 config hash 与 run snapshot 不匹配，拒绝 resume，写入 actionable error，并要求用户 retry/resend，
+  - 使用当前 MCP config/runtime 重新准备 tools，
   - 用已存 arguments 调用同一个 MCP tool，
   - 持久化 output/error，并 append tool result item，
   - 像现在一样继续 parent run。
-
-首版不从 `mcp_config_snapshot` reconnect 已变更配置；`mcp_config_snapshot` 仅用于审计、debug 和错误提示。
 
 ## 设置 UI
 
@@ -1013,7 +1001,7 @@ pub(super) enum McpFormField {
 | OAuth access/refresh tokens | GPUI credentials | live session 内的 rmcp `AuthorizationManager` | 只读 status snapshots | 只写 GPUI credentials |
 | OAuth in-progress browser flow | 无 | `McpOAuthFlowState` | `McpOAuthDialog` / row status | callback 成功前不写入 |
 | Connected session 和 tool list | 无 | `McpSessionManager` / `McpRuntimeStore` | Settings detail 和 run setup | 不写入 |
-| Per-run MCP config hash/snapshot | start time 的 `AgentRunRequest` | 无 | timeline/debug surfaces | `agent_runs.input_json` |
+| MCP session identity | 当前 effective runtime config | `McpSessionManager` 内部 fingerprint | 无 | 不写入 |
 | Tool invocation fact | fresh DB | repository/event projection | conversation timeline | `tool_invocations` 和 `conversation_items` |
 
 ### Settings 编辑
@@ -1023,7 +1011,7 @@ pub(super) enum McpFormField {
 3. 校验通过后，`form_state.rs` 把 draft merge 到现有 `McpServerTomlConfig`；未暴露的 OAuth、timeouts、tool filters、approval override 等字段不被删除。
 4. Dialog 通过 `state::config::upsert_mcp_server(...)` 更新 `AiChat2ConfigStore`。
 5. Config store 持久化 `config.toml`。
-6. `McpRuntimeStore` 观察到 config hash 变化。
+6. `McpRuntimeStore` 观察到 config 变化。
 7. 对 changed/removed/disabled servers，runtime store 关闭 stale sessions。
 8. Status rows 刷新为 `NotConnected` 或 `Disabled`。
 9. 不写 chat DB。
@@ -1052,14 +1040,13 @@ pub(super) enum McpFormField {
 ### Agent run
 
 1. Conversation code 构建 `AgentRunRequest`。
-2. MCP runtime 计算 enabled config hash，并连接 enabled servers。
+2. MCP runtime 计算 runtime-only per-server fingerprint，并连接 enabled servers。
 3. 必要时加载/刷新 OAuth tokens。
 4. MCP runtime 把 allowed MCP tools 注册到 `request.tool_registry`。
-5. Runtime snapshot 在 `agent_runs.input_json` 中记录 MCP hash 和 config snapshot。
-6. `AgentRuntime::begin_run` 注册 built-in tools 并 finalize names。
-7. Provider/Rig 收到最终 tool declarations。
-8. Tool invocation persistence 记录 `ToolSource::Mcp { server_id }`、raw MCP tool name 和 runtime tool name。
-9. Approval/tool result rows 通过现有 timeline plumbing 渲染。
+5. `AgentRuntime::begin_run` 注册 built-in tools 并 finalize names。
+6. Provider/Rig 收到最终 tool declarations。
+7. Tool invocation persistence 记录 `ToolSource::Mcp { server_id }`、raw MCP tool name 和 runtime tool name。
+8. Approval/tool result rows 通过现有 timeline plumbing 渲染。
 
 ### OAuth scope failure
 
@@ -1076,20 +1063,19 @@ pub(super) enum McpFormField {
 - Config load 在 app state initialization 期间通过 `AiChat2ConfigStore::install_global_with_backend(...)` 完成。
 - Settings MCP page 渲染 config rows 和 `McpRuntimeStore` status rows 合并后的 projection。
 - Settings list rendering 不能启动 stdio process，也不能发网络请求。
-- Add/Edit dialog 只读取当前 config snapshot 初始化本地 draft；用户编辑过程中不触发 runtime/network fetch。
+- Add/Edit dialog 只读取当前 config 初始化本地 draft；用户编辑过程中不触发 runtime/network fetch。
 - `Test` 和 agent run setup 通过 MCP `initialize` + `tools/list` 获取 server info 和 tool list。
-- Tool list cache 以 `server_id` 和 config hash 为 key。
+- Tool list cache 以 `server_id` 和 runtime-only fingerprint 为 key。
 - `notifications/tools/list_changed` 会更新该 server 的 Settings status；复用已有 session 前会重新执行 `tools/list`，避免 stale tool cache 进入下一次 run。未连接 server 不后台启动。
 - OAuth status 从 runtime flow state、stored credentials metadata 和 live `AuthorizationManager` 派生；expired/refresh-needed status 在 explicit refresh、`Test` 或 run setup 时更新。
 - Provider/model fetching 与 MCP fetching 保持分离；MCP Settings 不复用 provider model refresh code path，只复用 notification/error pattern。
 
 ## 数据库影响
 
-MCP definitions 或 OAuth tokens 不需要 SQLite schema migration。
+MCP definitions、runtime config snapshot/hash 或 OAuth tokens 不需要 SQLite schema migration。
 
 现有 tables 已足够：
 
-- `agent_runs.input_json`
 - `agent_runs.output_json`
 - `tool_invocations.source`
 - `tool_invocations.server_id`
@@ -1103,9 +1089,9 @@ MCP definitions 或 OAuth tokens 不需要 SQLite schema migration。
 
 Data model 变更：
 
-- 为 `AgentRuntimeSnapshot` 增加 optional `mcp_config_snapshot`。
-- 对包含 MCP config 的 runs 设置现有 `mcp_config_hash`。
-- 在 `ai-chat-core` 中增加可序列化 MCP runtime snapshot types，不新增 Diesel table columns。
+- `AgentRuntimeSnapshot` 不包含 MCP config snapshot/hash。
+- MCP definitions 属于 `config.toml`，live sessions/tool cache 属于 runtime，tool invocation facts 继续写入 normalized tables。
+- 如果未来需要在 timeline/debug surfaces 展示 MCP 配置，必须新增 redacted audit payload，不能持久化 full runtime config。
 
 不要新增这些表：
 
@@ -1291,11 +1277,11 @@ mcp-validation-cwd-invalid
    - 增加结构化 row、字段校验、隐藏字段保留和 ChatForm 审批继承 tests。
 8. V1 已完成：Conversation runtime。
    - 在 `AgentRuntime::begin_run` 之前重构 async setup，
-   - 设置 `mcp_config_hash` 和 `mcp_config_snapshot`，
+   - 准备 MCP tools，但不把 MCP config 写入 run input，
    - 处理 required/non-required server failures。
 9. 后续：审批恢复。
    - 用 source-neutral tool execution 替换 local-only approved resume，
-   - config hash 不匹配时拒绝 resume，并提示用户 retry/resend，
+   - 使用当前 MCP runtime/config 准备 resume 所需工具，失败时提示用户 retry/resend，
    - 增加 MCP resume tests。
 10. 部分完成：Tool list change notifications。
    - 处理 `notifications/tools/list_changed`，
@@ -1345,7 +1331,7 @@ git diff --check
 
 - OAuth 简化 UI：为 HTTP server 增加 `需要 OAuth` 开关；开启后展示授权状态卡片和授权/重新授权/取消授权按钮。关闭并保存时删除 TOML OAuth definition 和该 server 对应的 GPUI credentials token，避免旧授权状态污染后续配置。authorization-code PKCE、dynamic registration / configured client id、scopes、resource、callback port/callback URL 等复杂字段只保留 TOML advanced path，不进入默认表单。
 - OAuth authorization-code runtime：实现 rmcp `OAuthState` / `AuthorizationManager` / `AuthClient` path、`127.0.0.1` callback listener、GPUI credentials token storage 和 refreshed credentials mirror。
-- MCP approval resume：把 local-only `approve_and_resume_tool(...)` 重构为 source-neutral executor；config hash 不匹配时按已确认策略拒绝 resume 并要求 retry/resend。
+- MCP approval resume：把 local-only `approve_and_resume_tool(...)` 重构为 source-neutral executor；使用当前 MCP runtime/config 准备工具，失败时要求 retry/resend。
 
 以下项目仍是后续实现入口：
 
@@ -1353,7 +1339,7 @@ git diff --check
 - `ClientCredentials` UI：为 TOML 已支持的 `ClientCredentials` flow 增加高级表单、secret env var 校验、状态展示和测试路径。
 - Advanced MCP config UI：如果后续要暴露 `required`、timeouts、tool allow/deny、per-server/per-tool approval override，必须作为单独 Advanced path 设计，并明确这些字段与 ChatForm 审批继承的优先级。
 - Codex-style prewarm：在 OAuth status、错误展示和 retry/resend 稳定后，再评估是否在 composer 首次非空输入、打开已有 conversation 或显式 warmup action 中预热 MCP server。
-- config-changed approval resume：如果未来要支持从 `mcp_config_snapshot` reconnect，必须做显式确认 UI，并展示旧 config 的 server id、URL/command、raw tool name 和安全影响。
+- MCP config audit display：如果未来要在 run history 中展示 MCP 配置，必须做 redacted audit payload，并展示 server id、transport kind、tool name 等非 secret metadata。
 
 ## 已确认问题
 
