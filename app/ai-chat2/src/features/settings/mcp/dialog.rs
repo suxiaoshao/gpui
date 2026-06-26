@@ -84,6 +84,20 @@ struct McpOAuthDialogTarget {
     cleanup_credentials: bool,
 }
 
+struct OAuthSectionLabels {
+    title: SharedString,
+    description: SharedString,
+    authorized: SharedString,
+    not_authorized: SharedString,
+    signing_in: SharedString,
+    authorization_required: SharedString,
+    scope_upgrade_required: SharedString,
+    failed: SharedString,
+    authorize: SharedString,
+    reauthorize: SharedString,
+    sign_out: SharedString,
+}
+
 impl McpServerEditDialogState {
     fn new(
         mode: McpServerEditMode,
@@ -431,17 +445,7 @@ impl McpServerEditDialogState {
 
     fn render_oauth_section(
         &self,
-        title: SharedString,
-        description: SharedString,
-        authorized_label: SharedString,
-        not_authorized_label: SharedString,
-        signing_in_label: SharedString,
-        authorization_required_label: SharedString,
-        scope_upgrade_required_label: SharedString,
-        failed_label: SharedString,
-        authorize_label: SharedString,
-        reauthorize_label: SharedString,
-        sign_out_label: SharedString,
+        labels: OAuthSectionLabels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dialog = cx.entity().downgrade();
@@ -455,12 +459,12 @@ impl McpServerEditDialogState {
             can_authorize_draft_oauth(&self.draft, self.mode.original_server_id(), cx);
         let status_text = oauth_status_text(
             &status,
-            authorized_label,
-            not_authorized_label,
-            signing_in_label,
-            authorization_required_label,
-            scope_upgrade_required_label,
-            failed_label,
+            labels.authorized,
+            labels.not_authorized,
+            labels.signing_in,
+            labels.authorization_required,
+            labels.scope_upgrade_required,
+            labels.failed,
         );
         let status_icon = oauth_status_icon(&status);
         let status_color = oauth_status_color(&status, cx);
@@ -493,9 +497,9 @@ impl McpServerEditDialogState {
                                 v_flex()
                                     .min_w_0()
                                     .gap_1()
-                                    .child(Label::new(title).text_sm().font_medium())
+                                    .child(Label::new(labels.title).text_sm().font_medium())
                                     .child(
-                                        Label::new(description)
+                                        Label::new(labels.description)
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground),
                                     ),
@@ -548,7 +552,7 @@ impl McpServerEditDialogState {
                                     this.child(
                                         Button::new("mcp-dialog-oauth-sign-out")
                                             .icon(IconName::LogOut)
-                                            .label(sign_out_label.clone())
+                                            .label(labels.sign_out.clone())
                                             .outline()
                                             .disabled(!can_authorize || signing_in)
                                             .on_click(move |_, window, cx| {
@@ -570,9 +574,9 @@ impl McpServerEditDialogState {
                                         IconName::Shield
                                     })
                                     .label(if authorized {
-                                        reauthorize_label.clone()
+                                        labels.reauthorize.clone()
                                     } else {
-                                        authorize_label.clone()
+                                        labels.authorize.clone()
                                     })
                                     .loading(signing_in)
                                     .disabled(!can_authorize || signing_in)
@@ -949,17 +953,19 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(self.render_oauth_section(
-                                oauth_required_title.into(),
-                                oauth_required_description.into(),
-                                oauth_authorized.into(),
-                                oauth_not_authorized.into(),
-                                oauth_signing_in.into(),
-                                oauth_authorization_required.into(),
-                                oauth_scope_upgrade_required.into(),
-                                oauth_failed.into(),
-                                oauth_authorize.into(),
-                                oauth_reauthorize.into(),
-                                oauth_sign_out.into(),
+                                OAuthSectionLabels {
+                                    title: oauth_required_title.into(),
+                                    description: oauth_required_description.into(),
+                                    authorized: oauth_authorized.into(),
+                                    not_authorized: oauth_not_authorized.into(),
+                                    signing_in: oauth_signing_in.into(),
+                                    authorization_required: oauth_authorization_required.into(),
+                                    scope_upgrade_required: oauth_scope_upgrade_required.into(),
+                                    failed: oauth_failed.into(),
+                                    authorize: oauth_authorize.into(),
+                                    reauthorize: oauth_reauthorize.into(),
+                                    sign_out: oauth_sign_out.into(),
+                                },
                                 cx,
                             ))
                     }),
@@ -1049,10 +1055,10 @@ fn delete_stale_oauth_credentials(
     let oauth_url_changed = original_config.oauth.is_some()
         && saved_server.oauth.is_some()
         && original_url != saved_url;
-    if oauth_disabled || oauth_url_changed {
-        if let Some(url) = original_url {
-            let _ = state::mcp_oauth::delete_credentials(url, cx);
-        }
+    if (oauth_disabled || oauth_url_changed)
+        && let Some(url) = original_url
+    {
+        let _ = state::mcp_oauth::delete_credentials(url, cx);
     }
     if oauth_disabled
         && let Some(url) = saved_url
@@ -1198,7 +1204,7 @@ fn can_authorize_oauth_values(
     if !is_valid_mcp_server_id(server_id.trim()) {
         return false;
     }
-    url::Url::parse(&url)
+    url::Url::parse(url)
         .map(|url| matches!(url.scheme(), "http" | "https"))
         .unwrap_or(false)
 }

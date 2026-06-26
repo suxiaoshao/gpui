@@ -42,7 +42,7 @@ struct VisualLineLayout {
 enum LayoutFragment {
     Text {
         range: std::ops::Range<usize>,
-        line: ShapedLine,
+        line: Box<ShapedLine>,
     },
     Token {
         range: std::ops::Range<usize>,
@@ -268,7 +268,7 @@ struct PaintVisualLine {
 enum PaintFragment {
     Text {
         range: std::ops::Range<usize>,
-        line: ShapedLine,
+        line: Box<ShapedLine>,
     },
     Token {
         range: std::ops::Range<usize>,
@@ -635,18 +635,18 @@ fn layout_editor_line(input: LayoutEditorLineInput<'_>) -> PaintLine {
         .enumerate()
         .map(|(ix, local)| {
             let absolute = input.range.start + local.start..input.range.start + local.end;
-            let fragments = paint_fragments_for_range(
-                input.text,
-                &fragments,
-                absolute.clone(),
-                input.selection.clone(),
-                input.marked_range.clone(),
-                input.font_size,
-                input.line_height,
-                input.base_color,
-                input.window,
-                input.cx,
-            );
+            let fragments = paint_fragments_for_range(PaintFragmentsInput {
+                text: input.text,
+                source_fragments: &fragments,
+                visual_range: absolute.clone(),
+                selection: input.selection.clone(),
+                marked_range: input.marked_range.clone(),
+                font_size: input.font_size,
+                line_height: input.line_height,
+                base_color: input.base_color,
+                window: input.window,
+                cx: input.cx,
+            });
             let width = fragments.iter().map(PaintFragment::width).sum();
             PaintVisualLine {
                 range: absolute,
@@ -687,7 +687,10 @@ fn layout_placeholder_line(
             range: 0..0,
             y: px(0.),
             width,
-            fragments: vec![PaintFragment::Text { range: 0..0, line }],
+            fragments: vec![PaintFragment::Text {
+                range: 0..0,
+                line: Box::new(line),
+            }],
         }],
     }
 }
@@ -764,39 +767,44 @@ struct PaintFragmentInput<'a> {
     cx: &'a mut App,
 }
 
-fn paint_fragments_for_range(
-    text: &str,
-    source_fragments: &[SourceFragment],
+struct PaintFragmentsInput<'a> {
+    text: &'a str,
+    source_fragments: &'a [SourceFragment],
     visual_range: std::ops::Range<usize>,
     selection: std::ops::Range<usize>,
     marked_range: Option<std::ops::Range<usize>>,
     font_size: Pixels,
     line_height: Pixels,
     base_color: Hsla,
-    window: &mut Window,
-    cx: &mut App,
-) -> Vec<PaintFragment> {
-    source_fragments
-        .iter()
-        .filter_map(|source| {
-            let source_range = match source {
-                SourceFragment::Text { range } | SourceFragment::Token { range, .. } => range,
-            };
-            let overlap = overlap_range(source_range, &visual_range)?;
-            paint_fragment(PaintFragmentInput {
-                text,
-                source,
-                range: overlap,
-                selection: selection.clone(),
-                marked_range: marked_range.clone(),
-                font_size,
-                line_height,
-                base_color,
-                window,
-                cx,
-            })
-        })
-        .collect()
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+fn paint_fragments_for_range(input: PaintFragmentsInput<'_>) -> Vec<PaintFragment> {
+    let mut fragments = Vec::new();
+    for source in input.source_fragments {
+        let source_range = match source {
+            SourceFragment::Text { range } | SourceFragment::Token { range, .. } => range,
+        };
+        let Some(overlap) = overlap_range(source_range, &input.visual_range) else {
+            continue;
+        };
+        if let Some(fragment) = paint_fragment(PaintFragmentInput {
+            text: input.text,
+            source,
+            range: overlap,
+            selection: input.selection.clone(),
+            marked_range: input.marked_range.clone(),
+            font_size: input.font_size,
+            line_height: input.line_height,
+            base_color: input.base_color,
+            window: &mut *input.window,
+            cx: &mut *input.cx,
+        }) {
+            fragments.push(fragment);
+        }
+    }
+    fragments
 }
 
 fn paint_fragment(input: PaintFragmentInput<'_>) -> Option<PaintFragment> {
@@ -819,7 +827,7 @@ fn paint_fragment(input: PaintFragmentInput<'_>) -> Option<PaintFragment> {
             );
             Some(PaintFragment::Text {
                 range: input.range,
-                line,
+                line: Box::new(line),
             })
         }
         SourceFragment::Token {
