@@ -39,7 +39,18 @@ pub(crate) fn credentials_key(server_url: &str) -> Result<String, String> {
     Ok(format!("mcp-oauth:{}", canonical_server_uri(&url)))
 }
 
-pub(crate) fn delete_credentials(server_url: &str, cx: &mut App) -> Result<(), String> {
+pub(crate) async fn delete_credentials(
+    server_url: &str,
+    cx: &mut AsyncWindowContext,
+) -> Result<(), String> {
+    let key = credentials_key(server_url)?;
+    let task = cx
+        .update(move |_, cx| cx.delete_credentials(&key))
+        .map_err(|err| err.to_string())?;
+    task.await.map_err(|err| err.to_string())
+}
+
+pub(crate) fn delete_credentials_detached(server_url: &str, cx: &mut App) -> Result<(), String> {
     let key = credentials_key(server_url)?;
     cx.delete_credentials(&key).detach_and_log_err(cx);
     Ok(())

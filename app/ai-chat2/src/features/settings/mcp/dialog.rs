@@ -9,7 +9,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, div, prelude::FluentBuilder as _, px, relative,
+    Task, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -27,6 +27,7 @@ use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicU64, Ordering},
 };
+use tracing::{Level, event};
 
 use super::{
     super::push_settings_error,
@@ -73,6 +74,8 @@ pub(super) struct McpServerEditDialogState {
     draft_oauth_status_key: String,
     draft_oauth_status_url: Option<String>,
     draft_oauth_credential_urls: BTreeSet<String>,
+    save_task: Option<Task<()>>,
+    sign_out_task: Option<Task<()>>,
 }
 
 struct McpOAuthDialogTarget {
@@ -82,6 +85,21 @@ struct McpOAuthDialogTarget {
     server_url: String,
     is_draft: bool,
     cleanup_credentials: bool,
+}
+
+struct McpServerSaveRequest {
+    original_server_id: Option<String>,
+    server_id: String,
+    server: McpServerTomlConfig,
+    saved_auth: McpOAuthStatusSnapshot,
+    credential_urls_to_delete: Vec<String>,
+    success_title_key: &'static str,
+}
+
+struct McpOAuthSignOutRequest {
+    server_id: String,
+    server_url: String,
+    draft_only: bool,
 }
 
 struct OAuthSectionLabels {
@@ -129,6 +147,8 @@ impl McpServerEditDialogState {
             ),
             draft_oauth_status_url: None,
             draft_oauth_credential_urls: BTreeSet::new(),
+            save_task: None,
+            sign_out_task: None,
         }
     }
 
@@ -144,7 +164,22 @@ impl McpServerEditDialogState {
         input.update(cx, |input, cx| input.focus(window, cx));
     }
 
+    fn is_saving(&self) -> bool {
+        self.save_task.is_some()
+    }
+
+    fn is_signing_out(&self) -> bool {
+        self.sign_out_task.is_some()
+    }
+
+    fn is_busy(&self) -> bool {
+        self.is_saving() || self.is_signing_out()
+    }
+
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_busy() {
+            return false;
+        }
         let original_server_id = self.mode.original_server_id().map(ToOwned::to_owned);
         let existing_server_ids = state::config::read(cx, |config| {
             config.mcp_servers.keys().cloned().collect::<Vec<_>>()
@@ -166,36 +201,84 @@ impl McpServerEditDialogState {
         let server = self
             .draft
             .merge_into_config(self.original_config.as_ref(), cx);
-        let original_config = self.original_config.clone();
         let saved_server = server.clone();
         let saved_auth = self.oauth_status_after_save(&server_id, &saved_server, cx);
+        let credential_urls_to_delete = oauth_credential_urls_to_delete(
+            self.original_config.as_ref(),
+            &saved_server,
+            &self.draft_oauth_credential_urls,
+            self.promoted_draft_oauth_url(&saved_server),
+        );
+        let request = McpServerSaveRequest {
+            original_server_id,
+            server_id,
+            server,
+            saved_auth,
+            credential_urls_to_delete,
+            success_title_key: match &self.mode {
+                McpServerEditMode::Create => "mcp-notify-server-created",
+                McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
+            },
+        };
 
-        match state::config::upsert_mcp_server(cx, original_server_id.as_deref(), server_id, server)
-        {
+        let form = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let result = delete_oauth_credentials_for_save(request, cx).await;
+            if let Err(err) = form.update_in(cx, |form, window, cx| {
+                form.finish_save(result, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "finish mcp server save failed");
+            }
+        });
+        self.save_task = Some(task);
+        cx.notify();
+        false
+    }
+
+    fn finish_save(
+        &mut self,
+        result: Result<McpServerSaveRequest, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_task = None;
+        let request = match result {
+            Ok(request) => request,
+            Err(err) => {
+                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                push_settings_error(window, cx, title, err);
+                cx.notify();
+                return;
+            }
+        };
+
+        let saved_server = request.server.clone();
+        match state::config::upsert_mcp_server(
+            cx,
+            request.original_server_id.as_deref(),
+            request.server_id,
+            request.server,
+        ) {
             Ok(()) => {
-                delete_stale_oauth_credentials(original_config.as_ref(), &saved_server, cx);
-                if let Some(original_server_id) = original_server_id {
+                if let Some(original_server_id) = request.original_server_id {
                     disconnect_server(original_server_id, window, cx);
                 }
-                self.finish_oauth_after_save(&saved_server, saved_auth, cx);
+                self.finish_oauth_after_save(&saved_server, request.saved_auth, cx);
                 self.validation_errors.clear();
                 window.push_notification(
                     Notification::new()
-                        .title(cx.global::<I18n>().t(match self.mode {
-                            McpServerEditMode::Create => "mcp-notify-server-created",
-                            McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
-                        }))
+                        .title(cx.global::<I18n>().t(request.success_title_key))
                         .with_type(NotificationType::Success),
                     cx,
                 );
-                true
+                window.close_dialog(cx);
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("mcp-notify-save-failed");
                 push_settings_error(window, cx, title, err);
-                false
             }
         }
+        cx.notify();
     }
 
     fn oauth_status_after_save(
@@ -229,6 +312,15 @@ impl McpServerEditDialogState {
         configured_oauth_status(saved_server)
     }
 
+    fn promoted_draft_oauth_url<'a>(
+        &self,
+        saved_server: &'a McpServerTomlConfig,
+    ) -> Option<&'a str> {
+        let saved_url = saved_server.url.as_deref()?;
+        (saved_server.oauth.is_some() && self.draft_oauth_status_url.as_deref() == Some(saved_url))
+            .then_some(saved_url)
+    }
+
     fn finish_oauth_after_save(
         &mut self,
         saved_server: &McpServerTomlConfig,
@@ -260,9 +352,7 @@ impl McpServerEditDialogState {
             runtime.replace_saved_server_status(server_id, saved_server, saved_auth, cx);
         });
 
-        for server_url in std::mem::take(&mut self.draft_oauth_credential_urls) {
-            let _ = state::mcp_oauth::delete_credentials(&server_url, cx);
-        }
+        self.draft_oauth_credential_urls.clear();
         self.draft_oauth_status_url = None;
     }
 
@@ -373,19 +463,57 @@ impl McpServerEditDialogState {
     }
 
     fn sign_out_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
         let Some(target) = self.draft_oauth_target(cx) else {
             return;
         };
-        if target.is_draft {
-            if target.cleanup_credentials {
-                let _ = state::mcp_oauth::delete_credentials(&target.server_url, cx);
-                self.draft_oauth_credential_urls.remove(&target.server_url);
-            } else if let Some(original_server_id) = self.mode.original_server_id() {
-                state::mcp::runtime(cx).update(cx, |runtime, cx| {
-                    runtime.sign_out_server(original_server_id.to_string(), window, cx);
-                });
+        let request = McpOAuthSignOutRequest {
+            server_id: if target.is_draft && !target.cleanup_credentials {
+                self.mode
+                    .original_server_id()
+                    .unwrap_or(target.server_id.as_str())
+                    .to_string()
+            } else {
+                target.server_id
+            },
+            server_url: target.server_url,
+            draft_only: target.is_draft && target.cleanup_credentials,
+        };
+        let form = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let result = delete_oauth_credentials_for_sign_out(request, cx).await;
+            if let Err(err) = form.update_in(cx, |form, window, cx| {
+                form.finish_oauth_sign_out(result, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "finish mcp oauth sign out failed");
             }
-            if self.draft_oauth_status_url.as_deref() == Some(target.server_url.as_str()) {
+        });
+        self.sign_out_task = Some(task);
+        cx.notify();
+    }
+
+    fn finish_oauth_sign_out(
+        &mut self,
+        result: Result<McpOAuthSignOutRequest, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sign_out_task = None;
+        let request = match result {
+            Ok(request) => request,
+            Err(err) => {
+                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                push_settings_error(window, cx, title, err);
+                cx.notify();
+                return;
+            }
+        };
+
+        if request.draft_only {
+            self.draft_oauth_credential_urls.remove(&request.server_url);
+            if self.draft_oauth_status_url.as_deref() == Some(request.server_url.as_str()) {
                 self.draft_oauth_status_url = None;
             }
             state::mcp::runtime(cx).update(cx, |runtime, cx| {
@@ -394,16 +522,32 @@ impl McpServerEditDialogState {
             cx.notify();
             return;
         }
+
         self.clear_draft_oauth_authorization(cx);
-        state::mcp::runtime(cx).update(cx, |runtime, cx| {
-            runtime.sign_out_server(target.server_id, window, cx);
+        let server = state::config::read(cx, |config| {
+            config.mcp_servers.get(&request.server_id).cloned()
         });
+        let Some(server) = server else {
+            let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+            push_settings_error(
+                window,
+                cx,
+                title,
+                format!("MCP server `{}` not found", request.server_id),
+            );
+            cx.notify();
+            return;
+        };
+        state::mcp::runtime(cx).update(cx, |runtime, cx| {
+            runtime.finish_server_sign_out(request.server_id, server, window, cx);
+        });
+        cx.notify();
     }
 
     fn cleanup_draft_oauth_credentials(&mut self, cx: &mut Context<Self>) {
         self.clear_draft_oauth_authorization(cx);
         for server_url in std::mem::take(&mut self.draft_oauth_credential_urls) {
-            let _ = state::mcp_oauth::delete_credentials(&server_url, cx);
+            let _ = state::mcp_oauth::delete_credentials_detached(&server_url, cx);
         }
     }
 
@@ -455,6 +599,8 @@ impl McpServerEditDialogState {
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
+        let signing_out = self.is_signing_out();
+        let busy = self.is_busy();
         let can_authorize =
             can_authorize_draft_oauth(&self.draft, self.mode.original_server_id(), cx);
         let status_text = oauth_status_text(
@@ -508,6 +654,7 @@ impl McpServerEditDialogState {
                     .child(
                         Switch::new("mcp-dialog-oauth-enabled")
                             .checked(enabled)
+                            .disabled(busy)
                             .on_click(move |checked, _window, cx| {
                                 let _ = dialog.update(cx, |dialog, cx| {
                                     dialog.set_oauth_enabled(*checked, cx);
@@ -554,7 +701,8 @@ impl McpServerEditDialogState {
                                             .icon(IconName::LogOut)
                                             .label(labels.sign_out.clone())
                                             .outline()
-                                            .disabled(!can_authorize || signing_in)
+                                            .loading(signing_out)
+                                            .disabled(!can_authorize || signing_in || busy)
                                             .on_click(move |_, window, cx| {
                                                 let _ = sign_out_dialog.update(cx, |dialog, cx| {
                                                     dialog.sign_out_oauth(window, cx);
@@ -579,7 +727,7 @@ impl McpServerEditDialogState {
                                         labels.authorize.clone()
                                     })
                                     .loading(signing_in)
-                                    .disabled(!can_authorize || signing_in)
+                                    .disabled(!can_authorize || signing_in || busy)
                                     .when(!authorized, |button| button.primary())
                                     .on_click(
                                         move |_, window, cx| {
@@ -987,10 +1135,13 @@ pub(super) fn open_mcp_server_edit_dialog(
     let form_to_focus = form.clone();
     let form_to_return = form.clone();
 
-    window.open_dialog(cx, move |dialog, window, _cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let dialog_height = (window.viewport_size().height - px(96.))
             .max(px(360.))
             .min(px(760.));
+        let form_state = form.read(cx);
+        let saving = form_state.is_saving();
+        let busy = form_state.is_busy();
         dialog
             .title(title.clone())
             .w(px(720.))
@@ -999,9 +1150,13 @@ pub(super) fn open_mcp_server_edit_dialog(
                 let form = form.clone();
                 move |_, _window, cx| {
                     form.update(cx, |form, cx| {
-                        form.cleanup_draft_oauth_credentials(cx);
-                    });
-                    true
+                        if form.is_busy() {
+                            false
+                        } else {
+                            form.cleanup_draft_oauth_credentials(cx);
+                            true
+                        }
+                    })
                 }
             })
             .on_ok({
@@ -1012,15 +1167,20 @@ pub(super) fn open_mcp_server_edit_dialog(
             .footer(
                 DialogFooter::new()
                     .child(
-                        DialogClose::new()
-                            .child(Button::new("mcp-dialog-cancel").label(cancel_label.clone())),
+                        DialogClose::new().child(
+                            Button::new("mcp-dialog-cancel")
+                                .label(cancel_label.clone())
+                                .disabled(busy),
+                        ),
                     )
                     .child(
                         DialogAction::new().child(
                             Button::new("mcp-dialog-save")
                                 .primary()
                                 .icon(IconName::Plug)
-                                .label(save_label.clone()),
+                                .label(save_label.clone())
+                                .loading(saving)
+                                .disabled(busy),
                         ),
                     ),
             )
@@ -1041,31 +1201,62 @@ fn confirm_mcp_server_edit_dialog(
     form.update(cx, |form, cx| form.save(window, cx))
 }
 
-fn delete_stale_oauth_credentials(
+async fn delete_oauth_credentials(
+    server_urls: &[String],
+    cx: &mut gpui::AsyncWindowContext,
+) -> Result<(), String> {
+    for server_url in server_urls {
+        state::mcp_oauth::delete_credentials(server_url, cx).await?;
+    }
+    Ok(())
+}
+
+async fn delete_oauth_credentials_for_save(
+    request: McpServerSaveRequest,
+    cx: &mut gpui::AsyncWindowContext,
+) -> Result<McpServerSaveRequest, String> {
+    delete_oauth_credentials(&request.credential_urls_to_delete, cx).await?;
+    Ok(request)
+}
+
+async fn delete_oauth_credentials_for_sign_out(
+    request: McpOAuthSignOutRequest,
+    cx: &mut gpui::AsyncWindowContext,
+) -> Result<McpOAuthSignOutRequest, String> {
+    state::mcp_oauth::delete_credentials(&request.server_url, cx).await?;
+    Ok(request)
+}
+
+fn oauth_credential_urls_to_delete(
     original_config: Option<&McpServerTomlConfig>,
     saved_server: &McpServerTomlConfig,
-    cx: &mut App,
-) {
-    let Some(original_config) = original_config else {
-        return;
-    };
-    let original_url = original_config.url.as_deref();
+    draft_credential_urls: &BTreeSet<String>,
+    promoted_draft_url: Option<&str>,
+) -> Vec<String> {
+    let mut urls = BTreeSet::new();
+    let original_url = original_config.and_then(|server| server.url.as_deref());
     let saved_url = saved_server.url.as_deref();
-    let oauth_disabled = original_config.oauth.is_some() && saved_server.oauth.is_none();
-    let oauth_url_changed = original_config.oauth.is_some()
-        && saved_server.oauth.is_some()
-        && original_url != saved_url;
+    let original_oauth_enabled = original_config.is_some_and(|server| server.oauth.is_some());
+    let oauth_disabled = original_oauth_enabled && saved_server.oauth.is_none();
+    let oauth_url_changed =
+        original_oauth_enabled && saved_server.oauth.is_some() && original_url != saved_url;
     if (oauth_disabled || oauth_url_changed)
         && let Some(url) = original_url
     {
-        let _ = state::mcp_oauth::delete_credentials(url, cx);
+        urls.insert(url.to_string());
     }
     if oauth_disabled
         && let Some(url) = saved_url
         && Some(url) != original_url
     {
-        let _ = state::mcp_oauth::delete_credentials(url, cx);
+        urls.insert(url.to_string());
     }
+    for url in draft_credential_urls {
+        if promoted_draft_url != Some(url.as_str()) {
+            urls.insert(url.clone());
+        }
+    }
+    urls.into_iter().collect()
 }
 
 fn configured_oauth_status(server: &McpServerTomlConfig) -> McpOAuthStatusSnapshot {
@@ -1093,24 +1284,39 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
         move |window, cx| {
             let server_before_delete =
                 state::config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
-            match state::config::delete_mcp_server(cx, &server_id) {
-                Ok(_) => {
-                    if let Some(server) = server_before_delete
-                        && server.oauth.is_some()
-                        && let Some(url) = server.url.as_deref()
-                    {
-                        let _ = state::mcp_oauth::delete_credentials(url, cx);
-                    }
-                    disconnect_server(server_id.clone(), window, cx);
-                    window.push_notification(
-                        Notification::new()
-                            .title(deleted_title.clone())
-                            .with_type(NotificationType::Success),
-                        cx,
-                    );
+            let credential_urls_to_delete = server_before_delete
+                .as_ref()
+                .filter(|server| server.oauth.is_some())
+                .and_then(|server| server.url.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
+            let server_id = server_id.clone();
+            let deleted_title = deleted_title.clone();
+            let delete_failed_title = delete_failed_title.clone();
+            let task = window.spawn(cx, async move |cx| {
+                let credentials_result =
+                    delete_oauth_credentials(&credential_urls_to_delete, cx).await;
+                if let Err(err) = cx.update(|window, cx| match credentials_result {
+                    Ok(()) => match state::config::delete_mcp_server(cx, &server_id) {
+                        Ok(_) => {
+                            disconnect_server(server_id.clone(), window, cx);
+                            window.push_notification(
+                                Notification::new()
+                                    .title(deleted_title.clone())
+                                    .with_type(NotificationType::Success),
+                                cx,
+                            );
+                        }
+                        Err(err) => {
+                            push_settings_error(window, cx, delete_failed_title.clone(), err)
+                        }
+                    },
+                    Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
+                }) {
+                    event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
                 }
-                Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
-            }
+            });
+            task.detach();
         },
         window,
         cx,
@@ -1298,7 +1504,14 @@ fn render_validation_summary(errors: &[McpFormValidationError], cx: &mut App) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{McpTransportKind, can_authorize_oauth_values, transport_from_toggle_states};
+    use std::collections::BTreeSet;
+
+    use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig};
+
+    use super::{
+        McpTransportKind, can_authorize_oauth_values, oauth_credential_urls_to_delete,
+        transport_from_toggle_states,
+    };
 
     #[test]
     fn transport_toggle_states_keep_single_selection() {
@@ -1354,5 +1567,46 @@ mod tests {
             "github",
             "file:///tmp/mcp",
         ));
+    }
+
+    #[test]
+    fn oauth_save_deletes_stale_credentials_but_keeps_promoted_draft() {
+        let original = oauth_server("https://old.example.com/mcp");
+        let saved = oauth_server("https://new.example.com/mcp");
+        let draft_urls = BTreeSet::from([
+            "https://new.example.com/mcp".to_string(),
+            "https://unused.example.com/mcp".to_string(),
+        ]);
+
+        let urls = oauth_credential_urls_to_delete(
+            Some(&original),
+            &saved,
+            &draft_urls,
+            saved.url.as_deref(),
+        );
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://old.example.com/mcp".to_string(),
+                "https://unused.example.com/mcp".to_string()
+            ]
+        );
+    }
+
+    fn oauth_server(url: &str) -> McpServerTomlConfig {
+        McpServerTomlConfig {
+            transport: McpTransportKind::StreamableHttp,
+            url: Some(url.to_string()),
+            oauth: Some(McpOAuthTomlConfig::AuthorizationCodePkce {
+                scopes: Vec::new(),
+                client_id: None,
+                client_metadata_url: None,
+                resource: None,
+                callback_port: None,
+                callback_url: None,
+            }),
+            ..Default::default()
+        }
     }
 }

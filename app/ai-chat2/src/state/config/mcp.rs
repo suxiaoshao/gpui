@@ -266,6 +266,11 @@ impl McpServerTomlConfig {
                     )?;
                 }
                 if self.oauth.is_some() {
+                    if self.bearer_token_env_var.is_some() {
+                        return Err(AiChat2Error::Config(format!(
+                            "mcp server `{server_id}` cannot define bearer_token_env_var when OAuth is configured"
+                        )));
+                    }
                     ensure_authorization_header_available(
                         server_id,
                         &self.headers,

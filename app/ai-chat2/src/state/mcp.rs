@@ -319,34 +319,19 @@ impl McpRuntimeStore {
             .map(|status| status.auth.clone())
     }
 
-    pub(crate) fn sign_out_server(
+    pub(crate) fn finish_server_sign_out(
         &mut self,
         server_id: String,
+        server: config::McpServerTomlConfig,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let server = config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
-        let Some(server) = server else {
-            self.last_error = Some(format!("MCP server `{server_id}` not found"));
-            cx.emit(McpRuntimeStoreEvent::StatusChanged);
-            cx.notify();
-            return;
-        };
         if !oauth_configured(&server) {
             self.last_error = Some(format!("mcp server `{server_id}` does not enable OAuth"));
             cx.emit(McpRuntimeStoreEvent::StatusChanged);
             cx.notify();
             return;
         }
-        if let Some(url) = server.url.as_deref()
-            && let Err(err) = mcp_oauth::delete_credentials(url, cx)
-        {
-            self.last_error = Some(err);
-            cx.emit(McpRuntimeStoreEvent::StatusChanged);
-            cx.notify();
-            return;
-        }
-
         self.disconnect_server(server_id.clone(), window, cx);
         self.set_server_auth_status(server_id, &server, McpOAuthStatusSnapshot::SignedOut, None);
         self.last_error = None;

@@ -412,6 +412,21 @@ flow = "authorization_code_pkce"
     .unwrap();
     let err = authorization.mcp_config_layer().unwrap_err().to_string();
     assert!(err.contains("Authorization"));
+
+    let bearer_token = toml::from_str::<AiChat2Config>(
+        r#"
+[mcp_servers.bad]
+transport = "streamable_http"
+url = "https://example.com/mcp"
+bearer_token_env_var = "MCP_TOKEN"
+
+[mcp_servers.bad.oauth]
+flow = "authorization_code_pkce"
+"#,
+    )
+    .unwrap();
+    let err = bearer_token.mcp_config_layer().unwrap_err().to_string();
+    assert!(err.contains("bearer_token_env_var"));
 }
 
 #[test]
