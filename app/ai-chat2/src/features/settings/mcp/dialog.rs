@@ -176,8 +176,16 @@ impl McpServerEditDialogState {
         self.is_saving() || self.is_signing_out()
     }
 
+    fn is_oauth_signing_in(&self, cx: &App) -> bool {
+        matches!(self.oauth_status(cx), McpOAuthStatusSnapshot::SigningIn)
+    }
+
+    fn is_dialog_blocked(&self, cx: &App) -> bool {
+        self.is_busy() || self.is_oauth_signing_in(cx)
+    }
+
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.is_busy() {
+        if self.is_dialog_blocked(cx) {
             return false;
         }
         let original_server_id = self.mode.original_server_id().map(ToOwned::to_owned);
@@ -1152,7 +1160,7 @@ pub(super) fn open_mcp_server_edit_dialog(
             .min(px(760.));
         let form_state = form.read(cx);
         let saving = form_state.is_saving();
-        let busy = form_state.is_busy();
+        let dialog_blocked = form_state.is_dialog_blocked(cx);
         dialog
             .title(title.clone())
             .w(px(720.))
@@ -1161,7 +1169,7 @@ pub(super) fn open_mcp_server_edit_dialog(
                 let form = form.clone();
                 move |_, _window, cx| {
                     form.update(cx, |form, cx| {
-                        if form.is_busy() {
+                        if form.is_dialog_blocked(cx) {
                             false
                         } else {
                             form.cleanup_draft_oauth_credentials(cx);
@@ -1181,7 +1189,7 @@ pub(super) fn open_mcp_server_edit_dialog(
                         DialogClose::new().child(
                             Button::new("mcp-dialog-cancel")
                                 .label(cancel_label.clone())
-                                .disabled(busy),
+                                .disabled(dialog_blocked),
                         ),
                     )
                     .child(
@@ -1191,7 +1199,7 @@ pub(super) fn open_mcp_server_edit_dialog(
                                 .icon(IconName::Plug)
                                 .label(save_label.clone())
                                 .loading(saving)
-                                .disabled(busy),
+                                .disabled(dialog_blocked),
                         ),
                     ),
             )
@@ -1518,11 +1526,17 @@ fn render_validation_summary(errors: &[McpFormValidationError], cx: &mut App) ->
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig};
+    use crate::{
+        foundation, state,
+        state::config::{McpOAuthTomlConfig, McpServerTomlConfig},
+    };
+    use ai_chat_agent::McpOAuthStatusSnapshot;
+    use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
 
     use super::{
-        McpTransportKind, can_authorize_oauth_values, oauth_credential_key_for_server,
-        oauth_credential_keys_to_delete, transport_from_toggle_states,
+        McpServerEditDialogState, McpServerEditMode, McpTransportKind, can_authorize_oauth_values,
+        oauth_credential_key_for_server, oauth_credential_keys_to_delete,
+        transport_from_toggle_states,
     };
 
     #[test]
@@ -1610,6 +1624,42 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn oauth_signing_in_blocks_save(cx: &mut TestAppContext) {
+        init_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            let server_id = "server".to_string();
+            let server = oauth_server("https://example.com/mcp");
+            state::mcp::runtime(cx).update(cx, |runtime, cx| {
+                runtime.replace_saved_server_status(
+                    server_id.clone(),
+                    &server,
+                    McpOAuthStatusSnapshot::SigningIn,
+                    cx,
+                );
+            });
+
+            let form = cx.new(|cx| {
+                McpServerEditDialogState::new(
+                    McpServerEditMode::Edit {
+                        original_server_id: server_id,
+                    },
+                    Some(server),
+                    window,
+                    cx,
+                )
+            });
+
+            assert!(form.read(cx).is_oauth_signing_in(cx));
+            assert!(form.read(cx).is_dialog_blocked(cx));
+            assert!(!form.update(cx, |form, cx| form.save(window, cx)));
+            assert!(form.read(cx).save_task.is_none());
+        });
+    }
+
     fn oauth_server(url: &str) -> McpServerTomlConfig {
         McpServerTomlConfig {
             transport: McpTransportKind::StreamableHttp,
@@ -1623,6 +1673,36 @@ mod tests {
                 callback_url: None,
             }),
             ..Default::default()
+        }
+    }
+
+    fn init_dialog_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            foundation::init_i18n(cx);
+            state::mcp::init(cx).expect("init MCP runtime");
+        });
+    }
+
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let view = cx.new(|_| TestView);
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            })
+            .expect("open mcp dialog test window")
+        })
+    }
+
+    struct TestView;
+
+    impl Render for TestView {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
         }
     }
 }
