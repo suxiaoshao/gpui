@@ -541,5 +541,5 @@ Codex app 参考值和 `ai-chat2` 第一版落地值对应关系：
 ## 文档状态
 
 - 本文档已从实施计划更新为第一版实现记录。
-- `app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md` 已把 ChatForm / attachments / capability gating 状态同步为第一版已实现，完整 timeline multimodal rendering 仍待补。
-- `app/ai-chat/docs/dev/issue-137-llm-abstractions.md` 已把 #159 剩余项更新为 ChatForm 多模态输入第一版已落地。
+- `app/ai-chat/docs/dev/issue-159/README.md` 已把 ChatForm / attachments / capability gating 状态同步为第一版已实现，完整 timeline multimodal rendering 仍待补。
+- `app/ai-chat/docs/dev/issue-137/README.md` 已把 #159 剩余项更新为 ChatForm 多模态输入第一版已落地。

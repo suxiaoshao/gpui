@@ -7,9 +7,9 @@
 
 关联文档：
 
-- `app/ai-chat/docs/dev/issue-137-llm-abstractions.md`
-- `app/ai-chat/docs/dev/issue-159-ai-chat2-agent-conversation-page.md`
-- `app/ai-chat/docs/dev/issue-159-ai-chat2-composer-model-picker.md`
+- `app/ai-chat/docs/dev/issue-137/README.md`
+- `app/ai-chat/docs/dev/issue-159/agent-conversation-page.md`
+- `app/ai-chat/docs/dev/issue-159/composer-model-picker.md`
 
 ## 当前仓库状态
 

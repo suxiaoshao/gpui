@@ -2108,7 +2108,6 @@ fn attachment_metadata() -> AttachmentMetadata {
 fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> AgentRunInput {
     AgentRunInput {
         user_item_id: user_item_id.to_string(),
-        parent_agent_run_id: None,
         prompt_snapshot: Some(prompt_content()),
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
@@ -2117,7 +2116,6 @@ fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> Age
             engine: AgentEngineKind::Rig,
             engine_version: "0.22.0".to_string(),
             skill_catalog_hash: Some("skills".to_string()),
-            mcp_config_hash: Some("mcp".to_string()),
             tool_name_strategy: ToolNameStrategy::Namespaced,
         },
         max_steps: 8,

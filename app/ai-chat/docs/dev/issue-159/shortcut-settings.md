@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 Global Shortcuts 设置专项计划
 
 本文档是 `app/ai-chat2` Global Shortcuts 设置页和快捷键执行流的可执行开发计划。父级 UI
-清单仍是 `app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档固定后续实现时的页面结构、
+清单仍是 `app/ai-chat/docs/dev/issue-159/README.md`；本文档固定后续实现时的页面结构、
 fresh shortcut 数据模型使用方式、状态流、全局热键刷新、自动发送流程、i18n、icon、依赖和验证要求。
 
 创建时间：2026-06-13。
@@ -535,5 +535,5 @@ shortcuts shortcut hotkey global prompt provider model selection clipboard scree
 
 ## 父文档同步
 
-- `issue-159-ai-chat2-ui.md` 需要链接本文档，并把 Shortcut settings 状态从“未开始/已有专项计划”改为“第一版已完成”。
-- `issue-137-llm-abstractions.md` 只保留简短引用：Shortcut Settings 第一版已落地，后续仍缺 Composer prompt selector、save/promote temporary flow 等 #159 剩余项。
+- `README.md` 需要链接本文档，并把 Shortcut settings 状态从“未开始/已有专项计划”改为“第一版已完成”。
+- `app/ai-chat/docs/dev/issue-137/README.md` 只保留简短引用：Shortcut Settings 第一版已落地，后续仍缺 Composer prompt selector、save/promote temporary flow 等 #159 剩余项。

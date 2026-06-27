@@ -310,7 +310,7 @@ agent run 是一次用户触发的 loop summary，可能包含多次 provider st
 
 - `id TEXT PRIMARY KEY`
 - `conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE`
-- `trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'resume', 'retry'))`
+- `trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'retry'))`
 - `status TEXT NOT NULL`
 - `input_json JSON NOT NULL`
 - `output_json JSON`
@@ -799,7 +799,6 @@ pub(crate) struct AgentRuntimeSnapshot {
     pub(crate) engine: AgentEngineKind,
     pub(crate) engine_version: String,
     pub(crate) skill_catalog_hash: Option<String>,
-    pub(crate) mcp_config_hash: Option<String>,
     pub(crate) tool_name_strategy: ToolNameStrategy,
 }
 

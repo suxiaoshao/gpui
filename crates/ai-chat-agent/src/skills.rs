@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const MAX_SKILL_NAME_LEN: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillActivationRequest {
     pub name: String,
@@ -75,6 +77,9 @@ impl SkillCatalog {
                 .unwrap_or("skill")
                 .to_string();
             let name = metadata.name.unwrap_or(fallback_name);
+            if !is_valid_skill_name(&name) {
+                continue;
+            }
             self.entries.insert(
                 name.clone(),
                 SkillCatalogEntry {
@@ -168,6 +173,16 @@ fn parse_frontmatter_metadata(content: &str) -> FrontmatterMetadata {
     metadata
 }
 
+fn is_valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_SKILL_NAME_LEN
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
 fn user_skills_root(home_dir: Option<PathBuf>) -> Option<PathBuf> {
     home_dir.map(|home| home.join(".agents").join("skills"))
 }
@@ -202,6 +217,61 @@ mod tests {
                     .to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn skill_catalog_skips_names_that_cannot_be_mentioned() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_root = temp.path().join("skills");
+        for (dir_name, frontmatter_name) in [
+            ("valid-name", Some("valid-name")),
+            ("fallback-name", None),
+            ("has space", None),
+            ("frontmatter-space", Some("my skill")),
+            ("frontmatter-dot", Some("foo.bar")),
+            ("frontmatter-upper", Some("Rust")),
+            ("frontmatter-underscore", Some("rust_skill")),
+            ("leading-hyphen", Some("-rust")),
+            ("trailing-hyphen", Some("rust-")),
+        ] {
+            let skill_dir = skill_root.join(dir_name);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            let content = if let Some(name) = frontmatter_name {
+                format!("---\nname: {name}\n---\nUse this skill.\n")
+            } else {
+                "Use this skill.\n".to_string()
+            };
+            std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+        }
+
+        let mut catalog = SkillCatalog::default();
+        catalog
+            .scan_root(&skill_root, SkillSourceKind::User)
+            .unwrap();
+
+        assert_eq!(
+            catalog
+                .entries()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fallback-name", "valid-name"]
+        );
+    }
+
+    #[test]
+    fn skill_name_validation_enforces_stable_mention_names() {
+        assert!(is_valid_skill_name("rust"));
+        assert!(is_valid_skill_name("rust-2026"));
+        assert!(is_valid_skill_name(&"a".repeat(MAX_SKILL_NAME_LEN)));
+
+        assert!(!is_valid_skill_name(""));
+        assert!(!is_valid_skill_name("Rust"));
+        assert!(!is_valid_skill_name("rust_skill"));
+        assert!(!is_valid_skill_name("rust.skill"));
+        assert!(!is_valid_skill_name("rust skill"));
+        assert!(!is_valid_skill_name("-rust"));
+        assert!(!is_valid_skill_name("rust-"));
+        assert!(!is_valid_skill_name(&"a".repeat(MAX_SKILL_NAME_LEN + 1)));
     }
 
     #[test]

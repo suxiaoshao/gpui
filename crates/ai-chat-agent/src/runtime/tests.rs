@@ -1,14 +1,13 @@
 use super::*;
 use crate::{
-    LocalTool, McpConnector, ProviderSecretValues, RegisteredToolDefinition, ToolDefinition,
-    ToolExecutor, ToolRunPolicy,
+    LocalTool, McpConnector, ProviderSecretValues, RegisteredToolDefinition, ToolApprovalBroker,
+    ToolApprovalDecision, ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
 };
 use ai_chat_db::{
     ConversationItemRecord, ConversationRecord, FreshStore, NewConversation, NewConversationItem,
     NewProject, NewProvider, NewProviderModel, NewProviderStep, NewToolInvocation,
     NewToolInvocationApproval, ProviderModelRecord, ProviderRecord, ProviderStepRecord,
-    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus,
+    ToolInvocationRecord, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use async_trait::async_trait;
 use rig_core::{
@@ -31,9 +30,78 @@ use rmcp::{
     service::RequestContext,
 };
 use serde_json::json;
-use std::{future::pending, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    future::pending,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempfile::TempDir;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock, oneshot};
+
+struct ManualApprovalBroker {
+    pending: Mutex<VecDeque<ManualPendingApproval>>,
+    notify: Notify,
+}
+
+struct ManualPendingApproval {
+    request: ToolApprovalRequest,
+    sender: oneshot::Sender<ToolApprovalDecision>,
+}
+
+impl Default for ManualApprovalBroker {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+        }
+    }
+}
+
+impl ManualApprovalBroker {
+    async fn wait_for_request(&self) -> ToolApprovalRequest {
+        loop {
+            if let Some(request) = self
+                .pending
+                .lock()
+                .unwrap()
+                .front()
+                .map(|pending| pending.request.clone())
+            {
+                return request;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    fn resolve_next(&self, decision: ToolApprovalDecision) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("pending approval exists");
+        let _ = pending.sender.send(decision);
+    }
+}
+
+impl ToolApprovalBroker for ManualApprovalBroker {
+    fn request_tool_approval<'a>(
+        &'a self,
+        request: ToolApprovalRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolApprovalDecision> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let (sender, receiver) = oneshot::channel();
+            self.pending
+                .lock()
+                .unwrap()
+                .push_back(ManualPendingApproval { request, sender });
+            self.notify.notify_waiters();
+            receiver.await.unwrap_or(ToolApprovalDecision::Canceled)
+        })
+    }
+}
 
 #[tokio::test]
 async fn no_tool_run_persists_provider_step_and_final_message() {
@@ -284,8 +352,10 @@ async fn streaming_tool_call_is_persisted_only_by_hook() {
 #[tokio::test]
 async fn streaming_approval_required_preserves_partial_text() {
     let fixture = Fixture::new("streaming-approval");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let broker = Arc::new(ManualApprovalBroker::default());
+    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
     let mut request = fixture.streaming_request();
+    let cancellation_token = request.cancellation_token.clone();
     request
         .tool_registry
         .register_local_tool(EchoTool::new(ToolApprovalPolicy::Always))
@@ -295,17 +365,12 @@ async fn streaming_approval_required_preserves_partial_text() {
         MockStreamEvent::tool_call("call_1", "echo", json!({"text": "hi"})),
     ]]);
 
-    let handle = runtime.run_with_model(request, model).await.unwrap();
+    let repo = fixture.repo.clone();
+    let conversation_id = fixture.conversation.id.clone();
+    let run = tokio::spawn(async move { runtime.run_with_model(request, model).await });
+    let approval_request = broker.wait_for_request().await;
 
-    assert_eq!(handle.agent_run.status, AgentRunStatus::Running);
-    assert!(matches!(
-        handle.status,
-        AgentRunHandleStatus::WaitingForApproval { .. }
-    ));
-    let items = fixture
-        .repo
-        .conversation_items(&fixture.conversation.id)
-        .unwrap();
+    let items = repo.conversation_items(&conversation_id).unwrap();
     let assistant_item = items
         .iter()
         .find(|item| {
@@ -318,15 +383,13 @@ async fn streaming_approval_required_preserves_partial_text() {
             )
         })
         .unwrap();
-    assert_eq!(assistant_item.status, ConversationItemStatus::Completed);
     assert!(matches!(
         &assistant_item.payload,
         ConversationItemPayload::Message { content, .. }
             if content[0].search_text() == Some("partial answer")
     ));
-    let invocations = fixture
-        .repo
-        .tool_invocations_for_run(&handle.agent_run.id)
+    let invocations = repo
+        .tool_invocations_for_run(&approval_request.agent_run_id)
         .unwrap();
     assert_eq!(
         invocations[0]
@@ -336,12 +399,16 @@ async fn streaming_approval_required_preserves_partial_text() {
         Some(ApprovalStatus::Pending)
     );
 
-    let provider_steps = fixture
-        .repo
-        .provider_steps_for_run(&handle.agent_run.id)
+    let provider_steps = repo
+        .provider_steps_for_run(&approval_request.agent_run_id)
         .unwrap();
     assert_eq!(provider_steps.len(), 1);
-    assert_eq!(provider_steps[0].status, ProviderStepStatus::Completed);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Running);
+
+    cancellation_token.cancel();
+    broker.resolve_next(ToolApprovalDecision::Canceled);
+    let handle = run.await.unwrap().unwrap();
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
 }
 
 #[tokio::test]
@@ -924,6 +991,7 @@ async fn recoverable_missing_runtime_tool_is_returned_to_model() {
         request.guards.repeated_tool_call_limit,
         request.cancellation_token.clone(),
         None,
+        None,
     );
     let hook = context.hook();
 
@@ -1131,26 +1199,27 @@ async fn rmcp_tool_call_is_registered_and_persisted_with_source_server() {
 }
 
 #[tokio::test]
-async fn approval_policy_pauses_run_with_pending_decision() {
+async fn approval_policy_waits_inside_same_run_until_broker_decision() {
     let fixture = Fixture::new("approval");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let broker = Arc::new(ManualApprovalBroker::default());
+    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
     let mut request = fixture.request();
     request
         .tool_registry
         .register_local_tool(EchoTool::new(ToolApprovalPolicy::OnRequest))
         .unwrap();
-    let model =
-        MockCompletionModel::new([MockTurn::tool_call("call_1", "echo", json!({"text": "hi"}))]);
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("call_1", "echo", json!({"text": "hi"})),
+        MockTurn::text("done"),
+    ]);
 
-    let handle = runtime.run_with_model(request, model).await.unwrap();
-    assert_eq!(handle.agent_run.status, AgentRunStatus::Running);
-    assert!(matches!(
-        handle.status,
-        AgentRunHandleStatus::WaitingForApproval { .. }
-    ));
-    let invocations = fixture
-        .repo
-        .tool_invocations_for_run(&handle.agent_run.id)
+    let repo = fixture.repo.clone();
+    let conversation_id = fixture.conversation.id.clone();
+    let mut run = tokio::spawn(async move { runtime.run_with_model(request, model).await });
+    let approval_request = broker.wait_for_request().await;
+
+    let invocations = repo
+        .tool_invocations_for_run(&approval_request.agent_run_id)
         .unwrap();
     assert_eq!(invocations.len(), 1);
     assert_eq!(
@@ -1165,55 +1234,29 @@ async fn approval_policy_pauses_run_with_pending_decision() {
         Some(ApprovalStatus::Pending)
     );
     assert!(
-        handle
-            .events
-            .iter()
-            .any(|event| matches!(event, AgentRunEvent::ApprovalRequested { .. }))
+        tokio::time::timeout(Duration::from_millis(25), &mut run)
+            .await
+            .is_err()
     );
-    assert!(
-        !handle
-            .events
-            .iter()
-            .any(|event| matches!(event, AgentRunEvent::Failed { .. }))
-    );
-    assert_eq!(handle.agent_run.error, None);
-}
 
-#[tokio::test]
-async fn approved_builtin_tool_executes_and_completes_run() {
-    let fixture = Fixture::new("approved-builtin");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_builtin_write_approval(&fixture);
+    broker.resolve_next(ToolApprovalDecision::Approved {
+        decided_by: "user".to_string(),
+        reason: Some("ok".to_string()),
+    });
+    let handle = run.await.unwrap().unwrap();
 
-    let outcome = runtime
-        .approve_and_resume_tool(
-            &invocation.id,
-            "user".to_string(),
-            Some("ok".to_string()),
-            Duration::from_secs(120),
-            crate::AgentCancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap();
+    assert_eq!(handle.agent_run.id, approval_request.agent_run_id);
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+    assert!(matches!(handle.status, AgentRunHandleStatus::Finished));
     assert_eq!(
-        outcome
-            .tool_invocation
-            .approval
-            .as_ref()
-            .map(|approval| approval.status),
-        Some(ApprovalStatus::Approved)
-    );
-    assert_eq!(outcome.agent_run.status, AgentRunStatus::Completed);
-    assert_eq!(outcome.output.stopped_reason, AgentStoppedReason::Completed);
-    assert_eq!(
-        std::fs::read_to_string(fixture.dir.path().join("approved.txt")).unwrap(),
-        "approved\n"
+        repo.agent_runs_for_conversation(&conversation_id)
+            .unwrap()
+            .len(),
+        1
     );
 
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
+    let invocation = repo
+        .get_tool_invocation(&approval_request.tool_invocation_id)
         .unwrap()
         .unwrap();
     assert_eq!(invocation.status, ToolInvocationStatus::Succeeded);
@@ -1221,296 +1264,58 @@ async fn approved_builtin_tool_executes_and_completes_run() {
         invocation.approval.as_ref().map(|approval| approval.status),
         Some(ApprovalStatus::Approved)
     );
-    assert!(!invocation.output.as_ref().unwrap().is_error);
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Completed);
-    let items = fixture
-        .repo
-        .conversation_items(&fixture.conversation.id)
-        .unwrap();
-    assert!(!items.iter().any(|item| matches!(
-        item.payload,
-        ConversationItemPayload::ApprovalDecision(_) | ConversationItemPayload::ApprovalRequest(_)
-    )));
-    assert!(items.iter().any(|item| {
-        matches!(
-            &item.payload,
-            ConversationItemPayload::ToolResult(result)
-                if result.call_id == "call_approval"
-                    && !result.is_error
-                    && result.content[0]
-                        .search_text()
-                        .is_some_and(|text| text.contains("approved.txt"))
-        )
-    }));
 }
 
 #[tokio::test]
-async fn approved_builtin_tool_error_result_completes_for_model_resume() {
-    let fixture = Fixture::new("approved-builtin-error");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    std::fs::write(fixture.dir.path().join("approved.txt"), "existing\n").unwrap();
-    let (agent_run, invocation) = insert_waiting_builtin_write_approval(&fixture);
-
-    let outcome = runtime
-        .approve_and_resume_tool(
-            &invocation.id,
-            "user".to_string(),
-            Some("ok".to_string()),
-            Duration::from_secs(120),
-            crate::AgentCancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        outcome
-            .tool_invocation
-            .approval
-            .as_ref()
-            .map(|approval| approval.status),
-        Some(ApprovalStatus::Approved)
-    );
-    assert_eq!(outcome.agent_run.status, AgentRunStatus::Completed);
-    assert_eq!(outcome.output.stopped_reason, AgentStoppedReason::Completed);
-    assert_eq!(outcome.agent_run.error, None);
-    assert!(outcome.events.iter().any(|event| {
-        matches!(
-            event,
-            AgentRunEvent::Completed { output }
-                if output.stopped_reason == AgentStoppedReason::Completed
-        )
-    }));
-    assert!(
-        !outcome
-            .events
-            .iter()
-            .any(|event| matches!(event, AgentRunEvent::Failed { .. }))
-    );
-    assert_eq!(
-        std::fs::read_to_string(fixture.dir.path().join("approved.txt")).unwrap(),
-        "existing\n"
-    );
-
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::Failed);
-    assert_eq!(invocation.error.as_ref().unwrap().code, "tool_error");
-    assert!(invocation.output.as_ref().unwrap().is_error);
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Completed);
-    assert_eq!(agent_run.error, None);
-    let items = fixture
-        .repo
-        .conversation_items(&fixture.conversation.id)
-        .unwrap();
-    assert!(items.iter().any(|item| {
-        matches!(
-            &item.payload,
-            ConversationItemPayload::ToolResult(result)
-                if result.call_id == "call_approval"
-                    && result.is_error
-                    && result.content[0]
-                        .search_text()
-                        .is_some_and(|text| text.contains("Refusing to overwrite existing file"))
-        )
-    }));
-}
-
-#[tokio::test]
-async fn approved_builtin_tool_cancellation_stops_before_execution() {
-    let fixture = Fixture::new("approved-builtin-canceled");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_builtin_write_approval(&fixture);
-    let cancellation_token = crate::AgentCancellationToken::new();
-    cancellation_token.cancel();
-
-    let outcome = runtime
-        .approve_and_resume_tool(
-            &invocation.id,
-            "user".to_string(),
-            Some("stop".to_string()),
-            Duration::from_secs(120),
-            cancellation_token,
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        outcome
-            .tool_invocation
-            .approval
-            .as_ref()
-            .map(|approval| approval.status),
-        Some(ApprovalStatus::Approved)
-    );
-    assert_eq!(outcome.agent_run.status, AgentRunStatus::Canceled);
-    assert_eq!(outcome.output.stopped_reason, AgentStoppedReason::Canceled);
-    assert!(!fixture.dir.path().join("approved.txt").exists());
-
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
-    assert_eq!(
-        invocation.approval.as_ref().map(|approval| approval.status),
-        Some(ApprovalStatus::Approved)
-    );
-    assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Canceled);
-}
-
-#[tokio::test]
-async fn approved_builtin_tool_timeout_returns_failed_error_result() {
-    let (output, status, error) =
-        super::approval_resume::approved_builtin_tool_result_from_execution(
-            "pending_tool",
-            pending::<Result<Option<ToolInvocationOutput>>>(),
-            Duration::from_millis(1),
-        )
-        .await;
-
-    let error = error.expect("timeout should produce run error");
-    assert_eq!(status, ToolInvocationStatus::Failed);
-    assert_eq!(error.code, "tool_timeout");
-    assert_eq!(error.message, "tool execution timed out");
-    assert!(error.retryable);
-    assert!(output.is_error);
-    assert_eq!(
-        output.content[0].search_text(),
-        Some("tool execution timed out")
-    );
-}
-
-#[test]
-fn denied_approval_terminalizes_tool_and_run() {
+async fn denied_approval_writes_error_tool_result_and_continues_same_run() {
     let fixture = Fixture::new("approval-denied");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_approval(&fixture);
-
-    let updated = runtime
-        .decide_approval(
-            &invocation.id,
-            ToolInvocationApprovalOutcome::Denied {
-                decided_by: "user".to_string(),
-                reason: Some("not allowed".to_string()),
-            },
-        )
+    let broker = Arc::new(ManualApprovalBroker::default());
+    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
+    let mut request = fixture.request();
+    request
+        .tool_registry
+        .register_local_tool(EchoTool::new(ToolApprovalPolicy::OnRequest))
         .unwrap();
-    assert_eq!(updated.status, ToolInvocationStatus::Denied);
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("call_1", "echo", json!({"text": "hi"})),
+        MockTurn::text("handled denial"),
+    ]);
+
+    let repo = fixture.repo.clone();
+    let conversation_id = fixture.conversation.id.clone();
+    let run = tokio::spawn(async move { runtime.run_with_model(request, model).await });
+    let approval_request = broker.wait_for_request().await;
+    broker.resolve_next(ToolApprovalDecision::Denied {
+        decided_by: "user".to_string(),
+        reason: Some("not allowed".to_string()),
+    });
+    let handle = run.await.unwrap().unwrap();
+
+    assert_eq!(handle.agent_run.id, approval_request.agent_run_id);
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+    assert_eq!(handle.agent_run.error, None);
     assert_eq!(
-        updated.approval.as_ref().map(|approval| approval.status),
-        Some(ApprovalStatus::Denied)
+        repo.agent_runs_for_conversation(&conversation_id)
+            .unwrap()
+            .len(),
+        1
     );
 
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
+    let invocation = repo
+        .get_tool_invocation(&approval_request.tool_invocation_id)
         .unwrap()
         .unwrap();
     assert_eq!(invocation.status, ToolInvocationStatus::Denied);
-    assert_eq!(invocation.error.as_ref().unwrap().code, "approval_denied");
+    assert_eq!(
+        invocation.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Denied)
+    );
+    assert_eq!(
+        invocation.error.as_ref().unwrap().code,
+        "tool_approval_denied"
+    );
     assert!(invocation.output.as_ref().unwrap().is_error);
-
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Failed);
-    assert_eq!(agent_run.error.as_ref().unwrap().code, "approval_denied");
-    assert_eq!(
-        agent_run.output.as_ref().unwrap().stopped_reason,
-        AgentStoppedReason::Failed
-    );
-
-    let items = fixture
-        .repo
-        .conversation_items(&fixture.conversation.id)
-        .unwrap();
-    assert!(!items.iter().any(|item| matches!(
-        item.payload,
-        ConversationItemPayload::ApprovalDecision(_) | ConversationItemPayload::ApprovalRequest(_)
-    )));
-    assert!(items.iter().any(|item| {
-        matches!(
-            &item.payload,
-            ConversationItemPayload::ToolResult(result)
-                if result.call_id == "call_approval"
-                    && result.is_error
-                    && result.content[0].search_text() == Some("not allowed")
-        )
-    }));
-}
-
-#[test]
-fn canceled_approval_terminalizes_tool_and_run() {
-    let fixture = Fixture::new("approval-canceled");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_approval(&fixture);
-
-    let updated = runtime
-        .decide_approval(&invocation.id, ToolInvocationApprovalOutcome::Canceled)
-        .unwrap();
-    assert_eq!(updated.status, ToolInvocationStatus::Canceled);
-    assert_eq!(
-        updated.approval.as_ref().map(|approval| approval.status),
-        Some(ApprovalStatus::Canceled)
-    );
-
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::Canceled);
-    assert_eq!(invocation.error.as_ref().unwrap().code, "approval_canceled");
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Canceled);
-    assert_eq!(agent_run.error, None);
-    assert_eq!(
-        agent_run.output.as_ref().unwrap().stopped_reason,
-        AgentStoppedReason::Canceled
-    );
-    assert_eq!(
-        tool_result_texts(&fixture),
-        vec!["Tool approval canceled".to_string()]
-    );
-}
-
-#[test]
-fn expired_approval_terminalizes_tool_and_run() {
-    let fixture = Fixture::new("approval-expired");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_approval(&fixture);
-
-    let updated = runtime
-        .decide_approval(&invocation.id, ToolInvocationApprovalOutcome::Expired)
-        .unwrap();
-    assert_eq!(updated.status, ToolInvocationStatus::Failed);
-    assert_eq!(
-        updated.approval.as_ref().map(|approval| approval.status),
-        Some(ApprovalStatus::Expired)
-    );
-
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::Failed);
-    assert_eq!(invocation.error.as_ref().unwrap().code, "approval_expired");
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Failed);
-    assert_eq!(agent_run.error.as_ref().unwrap().code, "approval_expired");
-    assert_eq!(
-        tool_result_texts(&fixture),
-        vec!["Tool approval expired".to_string()]
-    );
+    assert_eq!(tool_result_texts(&fixture), vec!["not allowed".to_string()]);
 }
 
 #[test]
@@ -1746,47 +1551,6 @@ fn cancel_waiting_approval_cancels_pending_approval() {
     );
     assert_eq!(invocation.error.as_ref().unwrap().code, "canceled");
     assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
-}
-
-#[test]
-fn decide_approval_rejects_terminal_agent_run() {
-    let fixture = Fixture::new("approval-terminal-run");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
-    let (agent_run, invocation) = insert_waiting_approval(&fixture);
-    fixture
-        .repo
-        .update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Canceled,
-                output: None,
-                error: None,
-            },
-        )
-        .unwrap();
-
-    let result = runtime.decide_approval(
-        &invocation.id,
-        ToolInvocationApprovalOutcome::Denied {
-            decided_by: "user".to_string(),
-            reason: None,
-        },
-    );
-
-    assert!(result.is_err());
-    let invocation = fixture
-        .repo
-        .get_tool_invocation(&invocation.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(invocation.status, ToolInvocationStatus::AwaitingApproval);
-    assert_eq!(
-        invocation.approval.as_ref().map(|approval| approval.status),
-        Some(ApprovalStatus::Pending)
-    );
-    let agent_run = fixture.repo.get_agent_run(&agent_run.id).unwrap().unwrap();
-    assert_eq!(agent_run.status, AgentRunStatus::Canceled);
-    assert!(tool_result_texts(&fixture).is_empty());
 }
 
 #[test]
@@ -2098,77 +1862,6 @@ fn insert_waiting_approval(fixture: &Fixture) -> (AgentRunRecord, ToolInvocation
     (agent_run, invocation)
 }
 
-fn insert_waiting_builtin_write_approval(
-    fixture: &Fixture,
-) -> (AgentRunRecord, ToolInvocationRecord) {
-    let project_root = fixture.dir.path().to_string_lossy().to_string();
-    let mut request = fixture.request();
-    request.project_root = Some(fixture.dir.path().to_path_buf());
-    request.settings_snapshot.tool_policy.permission_scope = Some(ToolPermissionScopeSnapshot {
-        project_roots: vec![project_root],
-        external_read_requires_approval: false,
-        external_write_requires_approval: true,
-    });
-    let agent_run = fixture
-        .repo
-        .insert_agent_run(new_agent_run_input(&request))
-        .unwrap();
-    let agent_run = fixture
-        .repo
-        .update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Running,
-                output: None,
-                error: None,
-            },
-        )
-        .unwrap();
-    let arguments = json!({
-        "path": "approved.txt",
-        "content": "approved\n",
-    });
-    let invocation = fixture
-        .repo
-        .insert_tool_invocation(NewToolInvocation {
-            agent_run_id: agent_run.id.clone(),
-            provider_step_id: None,
-            status: ToolInvocationStatus::AwaitingApproval,
-            input: ToolInvocationInput {
-                source: ToolSource::Local,
-                namespace: None,
-                tool_name: "write_file".to_string(),
-                runtime_tool_name: "write_file".to_string(),
-                call_id: "call_approval".to_string(),
-                arguments: ToolArguments {
-                    value: arguments.clone(),
-                },
-                approval_policy: ToolApprovalPolicy::OnRequest,
-                execution_policy: ToolExecutionPolicy::Foreground,
-            },
-            output: None,
-            error: None,
-        })
-        .unwrap();
-    let invocation = fixture
-        .repo
-        .request_tool_invocation_approval(
-            &invocation.id,
-            NewToolInvocationApproval {
-                request: ApprovalRequestPayload {
-                    reason: "approve write_file".to_string(),
-                    tool_source: ToolSource::Local,
-                    tool_name: "write_file".to_string(),
-                    arguments_preview: arguments.to_string(),
-                    access_requests: Vec::new(),
-                },
-                expires_at: None,
-            },
-        )
-        .unwrap();
-    (agent_run, invocation)
-}
-
 fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> AgentRunRecord {
     let agent_run = fixture
         .repo
@@ -2390,7 +2083,6 @@ impl Fixture {
                 engine: AgentEngineKind::Rig,
                 engine_version: "0.37.0".to_string(),
                 skill_catalog_hash: None,
-                mcp_config_hash: None,
                 tool_name_strategy: ToolNameStrategy::Namespaced,
             },
         )

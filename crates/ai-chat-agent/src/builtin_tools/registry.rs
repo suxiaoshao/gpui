@@ -1,12 +1,12 @@
 use crate::{
-    Result, ToolExecutor, ToolRegistry,
+    Result, ToolRegistry,
     builtin_tools::{
         filesystem::{EditFileTool, ListDirectoryTool, ReadFileTool, WriteFileTool},
         search::{FindPathTool, GrepTool},
         types::{BuiltinToolContext, BuiltinToolName, PathAccessRequest},
     },
 };
-use ai_chat_core::{ToolInvocationOutput, ToolPolicySnapshot, ToolSource};
+use ai_chat_core::{ToolPolicySnapshot, ToolSource};
 use std::path::{Path, PathBuf};
 
 pub fn register_enabled_builtin_tools(
@@ -55,28 +55,6 @@ pub fn access_requests_for_builtin_tool(
         }
     };
     Ok(Some(access_requests))
-}
-
-pub async fn execute_builtin_tool(
-    tool_name: &str,
-    arguments: serde_json::Value,
-    policy: &ToolPolicySnapshot,
-) -> Result<Option<ToolInvocationOutput>> {
-    let Some(tool) = BuiltinToolName::from_tool_name(tool_name) else {
-        return Ok(None);
-    };
-    let context = context_from_policy(policy);
-    let output = match tool {
-        BuiltinToolName::ReadFile => ReadFileTool::new(context).execute(arguments).await?,
-        BuiltinToolName::ListDirectory => {
-            ListDirectoryTool::new(context).execute(arguments).await?
-        }
-        BuiltinToolName::FindPath => FindPathTool::new(context).execute(arguments).await?,
-        BuiltinToolName::Grep => GrepTool::new(context).execute(arguments).await?,
-        BuiltinToolName::WriteFile => WriteFileTool::new(context).execute(arguments).await?,
-        BuiltinToolName::EditFile => EditFileTool::new(context).execute(arguments).await?,
-    };
-    Ok(Some(output))
 }
 
 pub fn context_from_policy(policy: &ToolPolicySnapshot) -> BuiltinToolContext {

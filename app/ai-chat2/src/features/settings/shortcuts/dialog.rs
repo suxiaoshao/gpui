@@ -2,13 +2,9 @@ use crate::{
     components::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         hotkey_input::{HotkeyInput, string_to_keystroke},
-        model_picker::{ModelOption, model_sections, provider_visual_for_model_choice},
-        picker::{PickerListDelegate, PickerPopoverConfig, picker_popover},
+        model_picker::{ModelOption, model_select_groups},
     },
-    foundation::{
-        I18n,
-        assets::{IconName, provider_visual_icon},
-    },
+    foundation::{I18n, assets::IconName},
     state::{
         self,
         providers::{ProviderModelChoice, ProviderModelKey},
@@ -20,15 +16,14 @@ use ai_chat_db::ShortcutRecord;
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Selectable, StyledExt, WindowExt as NotificationWindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, IndexPath, StyledExt, WindowExt as NotificationWindowExt,
+    button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     label::Label,
-    list::ListState,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
-    select::{Select, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectDelegate, SelectGroup, SelectItem, SelectState},
     switch::Switch,
     v_flex,
 };
@@ -42,6 +37,7 @@ use super::{
 };
 
 type ShortcutRecordDialogHandler = Rc<dyn Fn(ShortcutRecord, &mut Window, &mut App) + 'static>;
+type ModelSelectState = SelectState<SearchableVec<SelectGroup<ModelOption>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortcutEditMode {
@@ -63,11 +59,8 @@ pub(super) struct ShortcutEditDialogState {
     shortcut_id: Option<ShortcutId>,
     hotkey_input: Entity<HotkeyInput>,
     prompt_select: Entity<SelectState<Vec<PromptChoice>>>,
-    model_choices: Vec<ProviderModelChoice>,
-    selected_model_key: Option<ProviderModelKey>,
-    model_picker_open: bool,
-    model_picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
-    input_source_select: Entity<SelectState<Vec<InputSourceChoice>>>,
+    model_select: Entity<ModelSelectState>,
+    input_source: ShortcutInputSource,
     enabled: bool,
     existing_shortcuts: Vec<ShortcutRecord>,
     temporary_hotkey: Option<String>,
@@ -77,7 +70,6 @@ pub(super) struct ShortcutEditDialogState {
 pub(super) struct ShortcutDialogChoices {
     pub(super) prompts: Vec<PromptChoice>,
     pub(super) models: Vec<ProviderModelChoice>,
-    pub(super) input_sources: Vec<InputSourceChoice>,
 }
 
 impl ShortcutEditDialogState {
@@ -119,14 +111,10 @@ impl ShortcutEditDialogState {
             .iter()
             .position(|choice| choice.value() == &selected_prompt)
             .map(|row| IndexPath::default().row(row));
-        let model_sections = model_sections(&choices.models);
-        let model_selected_index =
-            PickerListDelegate::selected_index_for(&model_sections, selected_model.as_ref());
-        let input_source_selected_index = choices
-            .input_sources
-            .iter()
-            .position(|choice| choice.value() == &selected_input_source)
-            .map(|row| IndexPath::default().row(row));
+        let model_options = model_select_groups(&choices.models);
+        let model_selected_index = selected_model
+            .as_ref()
+            .and_then(|selected_model| model_options.position(selected_model));
 
         let hotkey_input = cx.new(|cx| {
             HotkeyInput::new("shortcut-dialog-hotkey", window, cx)
@@ -136,44 +124,8 @@ impl ShortcutEditDialogState {
         let prompt_select = cx.new(|cx| {
             SelectState::new(choices.prompts, prompt_selected_index, window, cx).searchable(true)
         });
-        let state = cx.entity().downgrade();
-        let model_confirm = Rc::new({
-            let state = state.clone();
-            move |option: ModelOption, window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |dialog, cx| {
-                    dialog.select_model(option.key(), window, cx);
-                });
-            }
-        });
-        let model_cancel = Rc::new(move |window: &mut Window, cx: &mut App| {
-            let _ = state.update(cx, |dialog, cx| {
-                dialog.set_model_picker_open(false, window, cx);
-            });
-        });
-        let model_empty_label = cx.global::<I18n>().t("chat-form-model-empty").into();
-        let model_picker = cx.new(|cx| {
-            let mut picker = ListState::new(
-                PickerListDelegate::new(
-                    model_sections,
-                    selected_model.clone(),
-                    model_empty_label,
-                    model_confirm,
-                    model_cancel,
-                ),
-                window,
-                cx,
-            )
-            .searchable(true);
-            picker.set_selected_index(model_selected_index, window, cx);
-            picker
-        });
-        let input_source_select = cx.new(|cx| {
-            SelectState::new(
-                choices.input_sources,
-                input_source_selected_index,
-                window,
-                cx,
-            )
+        let model_select = cx.new(|cx| {
+            SelectState::new(model_options, model_selected_index, window, cx).searchable(true)
         });
 
         Self {
@@ -181,11 +133,8 @@ impl ShortcutEditDialogState {
             shortcut_id,
             hotkey_input,
             prompt_select,
-            model_choices: choices.models,
-            selected_model_key: selected_model,
-            model_picker_open: false,
-            model_picker,
-            input_source_select,
+            model_select,
+            input_source: selected_input_source,
             enabled,
             existing_shortcuts,
             temporary_hotkey,
@@ -218,7 +167,7 @@ impl ShortcutEditDialogState {
             .selected_value()
             .cloned()
             .flatten();
-        let Some(model_key) = self.selected_model_key.clone() else {
+        let Some(model_key) = self.model_select.read(cx).selected_value().cloned() else {
             self.validation_error = Some(validation_message(
                 ShortcutValidationError::ModelRequired,
                 cx,
@@ -226,19 +175,13 @@ impl ShortcutEditDialogState {
             cx.notify();
             return false;
         };
-        let input_source = self
-            .input_source_select
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(ShortcutInputSource::SelectionOrClipboard);
         let draft = ShortcutDraft {
             hotkey,
             enabled: self.enabled,
             prompt_id,
             provider_id: model_key.provider_id,
             model_id: model_key.model_id,
-            input_source,
+            input_source: self.input_source,
         };
         let result = match self.mode {
             ShortcutEditMode::Create => state::shortcuts::create_shortcut(cx, draft),
@@ -279,110 +222,35 @@ impl ShortcutEditDialogState {
         });
     }
 
-    fn set_model_picker_open(&mut self, open: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        self.model_picker_open = open;
-        cx.notify();
-    }
-
-    fn select_model(&mut self, key: ProviderModelKey, window: &mut Window, cx: &mut Context<Self>) {
-        self.selected_model_key = Some(key.clone());
-        self.model_picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_selected_value(Some(key));
-            let selected_ix = picker.delegate().selected_index();
-            picker.set_selected_index(selected_ix, window, cx);
-        });
-        self.set_model_picker_open(false, window, cx);
-    }
-
-    fn selected_model_choice(&self) -> Option<&ProviderModelChoice> {
-        let selected = self.selected_model_key.as_ref()?;
-        self.model_choices
-            .iter()
-            .find(|choice| &choice.key() == selected)
-    }
-
-    fn render_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
-        let i18n = cx.global::<I18n>();
-        let selected = self.selected_model_choice();
-        let label = selected
-            .map(ProviderModelChoice::display_label)
-            .map(SharedString::from)
-            .unwrap_or_else(|| i18n.t("shortcut-field-model").into());
-        let icon = selected
-            .map(|choice| provider_visual_icon(provider_visual_for_model_choice(choice)))
-            .unwrap_or_else(|| Icon::new(IconName::Sparkles))
-            .size_4()
-            .text_color(cx.theme().muted_foreground)
-            .into_any_element();
-        let trigger = Button::new("shortcut-dialog-model-trigger")
+    fn render_input_source_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        ToggleGroup::new("shortcut-dialog-input-source")
+            .segmented()
             .outline()
-            .selected(self.model_picker_open)
             .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .min_w_0()
-                            .items_center()
-                            .gap_2()
-                            .child(icon)
-                            .child(Label::new(label).text_sm().truncate()),
-                    )
-                    .child(
-                        Icon::new(if self.model_picker_open {
-                            IconName::ChevronUp
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .size_3()
-                        .text_color(cx.theme().muted_foreground),
-                    ),
-            );
-
-        picker_popover(
-            cx,
-            PickerPopoverConfig {
-                id: "shortcut-dialog-model-popover",
-                open: self.model_picker_open,
-                trigger,
-                list: self.model_picker.clone(),
-                width: px(420.),
-                max_height: rems(18.).into(),
-                search_placeholder: Some(i18n.t("chat-form-model-search-placeholder").into()),
-                footer: None,
-                on_open_change: cx.listener(|dialog, open: &bool, window, cx| {
-                    dialog.set_model_picker_open(*open, window, cx);
-                }),
-            },
-        )
-        .into_any_element()
+            .children(input_source_choices(cx).into_iter().map(|choice| {
+                Toggle::new(input_source_toggle_id(choice.value()))
+                    .label(choice.label())
+                    .checked(self.input_source == choice.value())
+                    .flex_1()
+                    .h(px(40.))
+            }))
+            .on_click(cx.listener(|this, states: &Vec<bool>, _window, cx| {
+                this.input_source = input_source_from_toggle_states(this.input_source, states);
+                cx.notify();
+            }))
+            .into_any_element()
     }
 }
 
 impl Render for ShortcutEditDialogState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (
-            field_hotkey,
-            field_prompt,
-            field_model,
-            field_input_source,
-            field_action,
-            action_label,
-            field_enabled,
-        ) = {
+        let (field_hotkey, field_prompt, field_model, field_input_source, field_enabled) = {
             let i18n = cx.global::<I18n>();
             (
                 i18n.t("shortcut-field-hotkey"),
                 i18n.t("shortcut-field-prompt"),
                 i18n.t("shortcut-field-model"),
                 i18n.t("shortcut-field-input-source"),
-                i18n.t("shortcut-field-action"),
-                i18n.t("shortcut-action-temporary-conversation"),
                 i18n.t("shortcut-field-enabled"),
             )
         };
@@ -400,16 +268,18 @@ impl Render for ShortcutEditDialogState {
                     .w_full()
                     .into_any_element(),
             ))
-            .child(form_field(field_model, self.render_model_picker(cx)))
             .child(form_field(
-                field_input_source,
-                Select::new(&self.input_source_select)
+                field_model.clone(),
+                Select::new(&self.model_select)
+                    .placeholder(field_model)
+                    .search_placeholder(cx.global::<I18n>().t("chat-form-model-search-placeholder"))
+                    .menu_max_h(rems(18.))
                     .w_full()
                     .into_any_element(),
             ))
             .child(form_field(
-                field_action,
-                Label::new(action_label).text_sm().into_any_element(),
+                field_input_source,
+                self.render_input_source_toggle(cx),
             ))
             .child(
                 h_flex()
@@ -696,7 +566,7 @@ fn validation_message(error: ShortcutValidationError, cx: &App) -> SharedString 
     cx.global::<I18n>().t(error.i18n_key()).into()
 }
 
-pub(super) fn input_source_choices(cx: &App) -> Vec<InputSourceChoice> {
+fn input_source_choices(cx: &App) -> Vec<InputSourceChoice> {
     vec![
         InputSourceChoice::new(
             ShortcutInputSource::SelectionOrClipboard,
@@ -712,16 +582,50 @@ pub(super) fn input_source_choices(cx: &App) -> Vec<InputSourceChoice> {
     ]
 }
 
+fn input_source_toggle_id(source: ShortcutInputSource) -> &'static str {
+    match source {
+        ShortcutInputSource::SelectionOrClipboard => "shortcut-dialog-input-source-selection",
+        ShortcutInputSource::Screenshot => "shortcut-dialog-input-source-screenshot",
+    }
+}
+
+fn input_source_from_toggle_states(
+    current: ShortcutInputSource,
+    states: &[bool],
+) -> ShortcutInputSource {
+    const SOURCES: [ShortcutInputSource; 2] = [
+        ShortcutInputSource::SelectionOrClipboard,
+        ShortcutInputSource::Screenshot,
+    ];
+
+    for (ix, source) in SOURCES.into_iter().enumerate() {
+        if source != current && states.get(ix).copied().unwrap_or(false) {
+            return source;
+        }
+    }
+
+    for (ix, source) in SOURCES.into_iter().enumerate() {
+        if states.get(ix).copied().unwrap_or(false) {
+            return source;
+        }
+    }
+
+    current
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ShortcutDialogChoices, ShortcutEditMode, ShortcutValidationError,
-        confirm_shortcut_edit_dialog, input_source_choices, open_shortcut_edit_dialog,
+        confirm_shortcut_edit_dialog, input_source_from_toggle_states, open_shortcut_edit_dialog,
         validation_message,
     };
-    use crate::{database::FreshStoreGlobal, foundation, state};
+    use crate::{
+        database::FreshStoreGlobal, foundation, state, state::providers::ProviderModelChoice,
+    };
+    use ai_chat_core::conservative_model_capabilities;
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::WindowExt;
+    use gpui_component::{IndexPath, WindowExt};
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -740,7 +644,6 @@ mod tests {
                 ShortcutDialogChoices {
                     prompts: Vec::new(),
                     models: Vec::new(),
-                    input_sources: input_source_choices(cx),
                 },
                 Vec::new(),
                 None,
@@ -775,6 +678,69 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn model_select_updates_shortcut_dialog_selection(cx: &mut TestAppContext) {
+        let _dir = init_shortcut_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let models = vec![
+            model_choice("provider-1", "openai", "OpenAI", "gpt-5"),
+            model_choice("provider-2", "ollama", "Ollama", "llama3.2"),
+        ];
+        let expected_key = models[1].key();
+        let form = cx.update(|window, cx| {
+            open_shortcut_edit_dialog(
+                ShortcutEditMode::Create,
+                None,
+                ShortcutDialogChoices {
+                    prompts: Vec::new(),
+                    models,
+                },
+                Vec::new(),
+                None,
+                window,
+                cx,
+            )
+        });
+
+        let model_select = form.read_with(&cx, |form, _| form.model_select.clone());
+        cx.update(|window, cx| {
+            model_select.update(cx, |select, cx| {
+                select.set_selected_index(Some(IndexPath::default().section(1).row(0)), window, cx);
+            });
+        });
+
+        assert_eq!(
+            model_select.read_with(&cx, |select, _| select.selected_value().cloned()),
+            Some(expected_key)
+        );
+    }
+
+    #[test]
+    fn input_source_toggle_states_keep_single_selection() {
+        assert_eq!(
+            input_source_from_toggle_states(
+                ai_chat_core::ShortcutInputSource::SelectionOrClipboard,
+                &[true, true],
+            ),
+            ai_chat_core::ShortcutInputSource::Screenshot
+        );
+        assert_eq!(
+            input_source_from_toggle_states(
+                ai_chat_core::ShortcutInputSource::Screenshot,
+                &[true, true],
+            ),
+            ai_chat_core::ShortcutInputSource::SelectionOrClipboard
+        );
+        assert_eq!(
+            input_source_from_toggle_states(
+                ai_chat_core::ShortcutInputSource::Screenshot,
+                &[false, false],
+            ),
+            ai_chat_core::ShortcutInputSource::Screenshot
+        );
+    }
+
     fn init_shortcut_dialog_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
@@ -805,6 +771,22 @@ mod tests {
             _cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             gpui::div()
+        }
+    }
+
+    fn model_choice(
+        provider_id: &str,
+        provider_kind: &str,
+        provider_display_name: &str,
+        model_id: &str,
+    ) -> ProviderModelChoice {
+        ProviderModelChoice {
+            provider_id: provider_id.to_string(),
+            provider_kind: provider_kind.to_string(),
+            provider_display_name: provider_display_name.to_string(),
+            model_id: model_id.to_string(),
+            model_display_name: None,
+            capabilities: conservative_model_capabilities(provider_kind),
         }
     }
 }

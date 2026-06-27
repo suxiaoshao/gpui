@@ -1,9 +1,12 @@
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, ElementInputHandler, Entity, GlobalElementId,
-    Hsla, IntoElement, LayoutId, PaintQuad, Pixels, Point, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, WrappedLine, fill, point, px, relative, size,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, ElementInputHandler,
+    Entity, GlobalElementId, Hsla, InteractiveElement as _, IntoElement, LayoutId, PaintQuad,
+    ParentElement as _, Pixels, Point, ShapedLine, Size, Style, Styled as _, TextAlign, TextRun,
+    UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use gpui_component::ActiveTheme;
+use gpui_component::{ActiveTheme, Icon, Sizable, h_flex};
+
+use crate::foundation::assets::IconName;
 
 use super::{ComposerEditor, blink_cursor::CURSOR_WIDTH, buffer, token::ComposerToken};
 
@@ -18,11 +21,133 @@ impl ComposerEditorElement {
 }
 
 pub(super) struct LayoutLine {
+    visual_lines: Vec<VisualLineLayout>,
+}
+
+impl LayoutLine {
+    #[cfg(test)]
+    pub(super) fn first_visual_width(&self) -> Option<Pixels> {
+        self.visual_lines.first().map(VisualLineLayout::width)
+    }
+}
+
+#[derive(Clone)]
+struct VisualLineLayout {
+    range: std::ops::Range<usize>,
+    y: Pixels,
+    fragments: Vec<LayoutFragment>,
+}
+
+#[derive(Clone)]
+enum LayoutFragment {
+    Text {
+        range: std::ops::Range<usize>,
+        line: Box<ShapedLine>,
+    },
+    Token {
+        range: std::ops::Range<usize>,
+        size: Size<Pixels>,
+    },
+}
+
+#[cfg(test)]
+impl LayoutFragment {
+    fn width(&self) -> Pixels {
+        match self {
+            Self::Text { line, .. } => line.width(),
+            Self::Token { size, .. } => size.width,
+        }
+    }
+}
+
+impl VisualLineLayout {
+    #[cfg(test)]
+    fn width(&self) -> Pixels {
+        self.fragments.iter().map(LayoutFragment::width).sum()
+    }
+
+    fn x_for_offset(&self, offset: usize) -> Pixels {
+        let mut x = px(0.);
+        for fragment in &self.fragments {
+            match fragment {
+                LayoutFragment::Text { range, line } => {
+                    if offset <= range.end {
+                        let local = offset.saturating_sub(range.start).min(line.len());
+                        return x + line.x_for_index(local);
+                    }
+                    x += line.width();
+                }
+                LayoutFragment::Token { range, size } => {
+                    if offset <= range.start {
+                        return x;
+                    }
+                    if offset < range.end {
+                        return x + if offset - range.start < range.end - offset {
+                            px(0.)
+                        } else {
+                            size.width
+                        };
+                    }
+                    if offset == range.end {
+                        return x + size.width;
+                    }
+                    x += size.width;
+                }
+            }
+        }
+        x
+    }
+
+    fn offset_for_x(&self, x: Pixels) -> usize {
+        let mut fragment_x = px(0.);
+        for fragment in &self.fragments {
+            match fragment {
+                LayoutFragment::Text { range, line } => {
+                    let end_x = fragment_x + line.width();
+                    if x <= end_x {
+                        let local = line.closest_index_for_x((x - fragment_x).max(px(0.)));
+                        return range.start + local.min(range.len());
+                    }
+                    fragment_x = end_x;
+                }
+                LayoutFragment::Token { range, size } => {
+                    let end_x = fragment_x + size.width;
+                    if x <= end_x {
+                        let midpoint = fragment_x + size.width / 2.;
+                        return if x < midpoint { range.start } else { range.end };
+                    }
+                    fragment_x = end_x;
+                }
+            }
+        }
+        self.range.end
+    }
+
+    fn token_for_x(&self, x: Pixels) -> Option<ComposerTokenHit> {
+        let mut fragment_x = px(0.);
+        for fragment in &self.fragments {
+            match fragment {
+                LayoutFragment::Text { line, .. } => {
+                    fragment_x += line.width();
+                }
+                LayoutFragment::Token { range, size } => {
+                    let end_x = fragment_x + size.width;
+                    if x >= fragment_x && x <= end_x {
+                        return Some(ComposerTokenHit {
+                            range: range.clone(),
+                        });
+                    }
+                    fragment_x = end_x;
+                }
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ComposerTokenHit {
     pub(super) range: std::ops::Range<usize>,
-    pub(super) y: Pixels,
-    pub(super) visual_row: usize,
-    pub(super) visual_line_count: usize,
-    pub(super) line: WrappedLine,
 }
 
 pub(super) struct LayoutCache {
@@ -40,45 +165,34 @@ impl LayoutCache {
 
     pub(super) fn bounds_for_offset(&self, text: &str, offset: usize) -> Option<Bounds<Pixels>> {
         let offset = buffer::clamp_offset(text, offset);
-        let line = self.line_for_offset(offset)?;
-        let local_offset = offset
-            .saturating_sub(line.range.start)
-            .min(line.range.len());
-        let position = line
-            .line
-            .position_for_index(local_offset, self.line_height)
-            .unwrap_or_else(|| point(px(0.), px(0.)));
+        let visual = self.visual_line_for_offset(offset)?;
+        let x = visual.x_for_offset(offset);
 
         Some(Bounds::new(
-            point(
-                self.bounds.left() + position.x,
-                self.bounds.top() + line.y + position.y,
-            ),
+            point(self.bounds.left() + x, self.bounds.top() + visual.y),
             size(px(1.), self.line_height),
         ))
     }
 
     pub(super) fn offset_for_position(&self, text: &str, position: Point<Pixels>) -> usize {
-        if self.lines.is_empty() {
+        let Some(visual) = self.visual_line_for_position(position) else {
             return 0;
-        }
+        };
+        buffer::clamp_offset(
+            text,
+            visual.offset_for_x((position.x - self.bounds.left()).max(px(0.))),
+        )
+    }
 
-        let local_y = position.y - self.bounds.top();
-        let line = self.line_for_y(local_y);
-        let line_height = self.line_height * line.visual_line_count.max(1) as f32;
-        let point = point(
-            position.x - self.bounds.left(),
-            (local_y - line.y)
-                .max(px(0.))
-                .min(line_height - self.line_height),
-        );
-        let local_offset = line
-            .line
-            .closest_index_for_position(point, self.line_height)
-            .unwrap_or_else(|offset| offset)
-            .min(line.range.len());
-
-        buffer::clamp_offset(text, line.range.start + local_offset)
+    pub(super) fn token_hit_for_position(
+        &self,
+        text: &str,
+        position: Point<Pixels>,
+    ) -> Option<ComposerTokenHit> {
+        let visual = self.visual_line_for_position(position)?;
+        let hit = visual.token_for_x((position.x - self.bounds.left()).max(px(0.)))?;
+        let offset = buffer::clamp_offset(text, hit.range.start);
+        (offset == hit.range.start).then_some(hit)
     }
 
     pub(super) fn offset_for_vertical_move(
@@ -93,65 +207,126 @@ impl LayoutCache {
         }
 
         let offset = buffer::clamp_offset(text, offset);
-        let line = self.line_for_offset(offset)?;
-        let local_offset = offset
-            .saturating_sub(line.range.start)
-            .min(line.range.len());
-        let position = line
-            .line
-            .position_for_index(local_offset, self.line_height)
-            .unwrap_or_else(|| point(px(0.), px(0.)));
-        let preferred_x = preferred_x.unwrap_or(position.x);
-        let current_visual_row = line.visual_row + (position.y / self.line_height).floor() as usize;
-        let target_visual_row = if delta < 0 {
-            current_visual_row.saturating_sub(delta.unsigned_abs())
+        let current_ix = self.visual_line_index_for_offset(offset)?;
+        let current = self.visual_line_at(current_ix)?;
+        let preferred_x = preferred_x.unwrap_or_else(|| current.x_for_offset(offset));
+        let target_ix = if delta < 0 {
+            current_ix.saturating_sub(delta.unsigned_abs())
         } else {
-            (current_visual_row + delta as usize).min(self.visual_line_count.saturating_sub(1))
+            (current_ix + delta as usize).min(self.visual_line_count.saturating_sub(1))
         };
-        let target_line = self.line_for_visual_row(target_visual_row)?;
-        let local_visual_row = target_visual_row.saturating_sub(target_line.visual_row);
-        let local_y = self.line_height * local_visual_row as f32;
-        let local_offset = target_line
-            .line
-            .closest_index_for_position(point(preferred_x, local_y), self.line_height)
-            .unwrap_or_else(|offset| offset)
-            .min(target_line.range.len());
+        let target = self.visual_line_at(target_ix)?;
 
-        Some((
-            buffer::clamp_offset(text, target_line.range.start + local_offset),
-            preferred_x,
-        ))
+        Some((target.offset_for_x(preferred_x), preferred_x))
     }
 
-    fn line_for_offset(&self, offset: usize) -> Option<&LayoutLine> {
+    fn visual_line_for_offset(&self, offset: usize) -> Option<&VisualLineLayout> {
         self.lines
             .iter()
+            .flat_map(|line| &line.visual_lines)
             .find(|line| offset >= line.range.start && offset <= line.range.end)
-            .or_else(|| self.lines.last())
+            .or_else(|| self.lines.last().and_then(|line| line.visual_lines.last()))
     }
 
-    fn line_for_y(&self, y: Pixels) -> &LayoutLine {
-        let y = y.max(px(0.));
+    fn visual_line_index_for_offset(&self, offset: usize) -> Option<usize> {
         self.lines
             .iter()
-            .find(|line| {
-                y >= line.y && y < line.y + self.line_height * line.visual_line_count as f32
-            })
-            .unwrap_or_else(|| self.lines.last().unwrap())
+            .flat_map(|line| &line.visual_lines)
+            .position(|line| offset >= line.range.start && offset <= line.range.end)
+            .or_else(|| self.visual_line_count.checked_sub(1))
     }
 
-    fn line_for_visual_row(&self, row: usize) -> Option<&LayoutLine> {
+    fn visual_line_for_position(&self, position: Point<Pixels>) -> Option<&VisualLineLayout> {
+        let y = (position.y - self.bounds.top()).max(px(0.));
         self.lines
             .iter()
-            .find(|line| {
-                row >= line.visual_row && row < line.visual_row + line.visual_line_count.max(1)
-            })
-            .or_else(|| self.lines.last())
+            .flat_map(|line| &line.visual_lines)
+            .find(|line| y >= line.y && y < line.y + self.line_height)
+            .or_else(|| self.lines.last().and_then(|line| line.visual_lines.last()))
+    }
+
+    fn visual_line_at(&self, ix: usize) -> Option<&VisualLineLayout> {
+        self.lines
+            .iter()
+            .flat_map(|line| &line.visual_lines)
+            .nth(ix)
+    }
+}
+
+struct PaintLine {
+    visual_row: usize,
+    visual_lines: Vec<PaintVisualLine>,
+}
+
+struct PaintVisualLine {
+    range: std::ops::Range<usize>,
+    y: Pixels,
+    width: Pixels,
+    fragments: Vec<PaintFragment>,
+}
+
+enum PaintFragment {
+    Text {
+        range: std::ops::Range<usize>,
+        line: Box<ShapedLine>,
+    },
+    Token {
+        range: std::ops::Range<usize>,
+        size: Size<Pixels>,
+        element: Option<AnyElement>,
+    },
+}
+
+impl PaintFragment {
+    fn width(&self) -> Pixels {
+        match self {
+            Self::Text { line, .. } => line.width(),
+            Self::Token { size, .. } => size.width,
+        }
+    }
+
+    fn layout_fragment(&self) -> LayoutFragment {
+        match self {
+            Self::Text { range, line } => LayoutFragment::Text {
+                range: range.clone(),
+                line: line.clone(),
+            },
+            Self::Token { range, size, .. } => LayoutFragment::Token {
+                range: range.clone(),
+                size: *size,
+            },
+        }
+    }
+}
+
+impl PaintVisualLine {
+    fn layout_line(&self) -> VisualLineLayout {
+        VisualLineLayout {
+            range: self.range.clone(),
+            y: self.y,
+            fragments: self
+                .fragments
+                .iter()
+                .map(PaintFragment::layout_fragment)
+                .collect(),
+        }
+    }
+}
+
+impl PaintLine {
+    fn layout_line(&self) -> LayoutLine {
+        LayoutLine {
+            visual_lines: self
+                .visual_lines
+                .iter()
+                .map(PaintVisualLine::layout_line)
+                .collect(),
+        }
     }
 }
 
 pub(super) struct PrepaintState {
-    lines: Vec<LayoutLine>,
+    lines: Vec<PaintLine>,
     cursor: Option<Bounds<Pixels>>,
     selections: Vec<PaintQuad>,
 }
@@ -213,106 +388,79 @@ impl Element for ComposerEditorElement {
         let cursor_height = font_size.min(line_height);
         let base_color = text_style.color;
         let placeholder_color = cx.theme().muted_foreground.opacity(0.72);
-        let token_color = cx.theme().blue;
         let selection_color = cx.theme().blue.opacity(0.22);
-
-        let ranges = buffer::line_ranges(&text);
-        let is_placeholder = text.is_empty();
-        let mut lines = Vec::with_capacity(ranges.len());
-        let mut selections = Vec::new();
-        let mut cursor_quad = None;
-        let mut visual_row = 0;
         let wrap_width = bounds.size.width.max(px(1.));
+        let _ = editor;
 
-        for range in ranges.into_iter() {
-            let y = line_height * visual_row as f32;
-            let (line_text, runs) = if is_placeholder {
-                (
-                    placeholder.to_string(),
-                    vec![text_run(placeholder.len(), placeholder_color, None)],
-                )
-            } else if range.is_empty() {
-                (
-                    " ".to_string(),
-                    vec![text_run(1, base_color.opacity(0.), None)],
-                )
-            } else {
-                let line_text = text[range.clone()].to_string();
-                let runs = line_runs(
-                    &text,
-                    range.clone(),
-                    &tokens,
-                    marked_range.clone(),
-                    base_color,
-                    token_color,
-                );
-                (line_text, runs)
-            };
+        let mut lines = if text.is_empty() {
+            vec![layout_placeholder_line(
+                placeholder.to_string(),
+                font_size,
+                placeholder_color,
+                wrap_width,
+                window,
+            )]
+        } else {
+            buffer::line_ranges(&text)
+                .into_iter()
+                .scan(0usize, |visual_row, range| {
+                    let y = line_height * *visual_row as f32;
+                    let line = layout_editor_line(LayoutEditorLineInput {
+                        text: &text,
+                        range,
+                        y,
+                        visual_row: *visual_row,
+                        selection: selection.clone(),
+                        marked_range: marked_range.clone(),
+                        tokens: &tokens,
+                        font_size,
+                        line_height,
+                        wrap_width,
+                        base_color,
+                        window,
+                        cx,
+                    });
+                    *visual_row += line.visual_lines.len().max(1);
+                    Some(line)
+                })
+                .collect::<Vec<_>>()
+        };
 
-            let mut wrapped_lines = window
-                .text_system()
-                .shape_text(line_text.into(), font_size, &runs, Some(wrap_width), None)
-                .unwrap_or_default();
-            let line = wrapped_lines.pop().unwrap_or_default();
-            let visual_line_count = line.wrap_boundaries().len() + 1;
-            let line_origin = point(bounds.left(), bounds.top() + y);
-
-            if !selection.is_empty() && !is_placeholder {
+        let mut selections = Vec::new();
+        if !selection.is_empty() && !text.is_empty() {
+            for line in &lines {
                 push_selection_quads(
                     &mut selections,
                     SelectionQuadInput {
                         selection: selection.clone(),
-                        line_range: range.clone(),
-                        line: &line,
-                        origin: line_origin,
+                        line,
+                        origin: bounds.origin,
                         line_height,
-                        wrap_width,
                         color: selection_color,
                     },
                 );
             }
+        }
 
-            if cursor >= range.start && cursor <= range.end {
-                let cursor_position = if is_placeholder {
-                    point(px(0.), px(0.))
-                } else {
-                    line.position_for_index(
-                        cursor.saturating_sub(range.start).min(range.len()),
-                        line_height,
-                    )
-                    .unwrap_or_else(|| point(px(0.), px(0.)))
-                };
-                let line_cursor_bounds = Bounds::new(
-                    point(
-                        bounds.left() + cursor_position.x,
-                        line_origin.y + cursor_position.y,
-                    ),
-                    size(px(1.), line_height),
-                );
-                if show_cursor {
-                    cursor_quad = Some(Bounds::new(
+        let cursor_quad = (!text.is_empty() || show_cursor)
+            .then(|| {
+                cursor_bounds_for_lines(&lines, cursor, bounds.origin, line_height).map(|bounds| {
+                    Bounds::new(
                         point(
-                            line_cursor_bounds.left(),
-                            line_cursor_bounds.top() + (line_height - cursor_height) / 2.,
+                            bounds.left(),
+                            bounds.top() + (line_height - cursor_height) / 2.,
                         ),
                         size(CURSOR_WIDTH, cursor_height),
-                    ));
-                }
-            }
+                    )
+                })
+            })
+            .flatten();
 
-            lines.push(LayoutLine {
-                range,
-                y,
-                visual_row,
-                visual_line_count,
-                line,
-            });
-            visual_row += visual_line_count;
-        }
+        prepaint_token_elements(&mut lines, bounds.origin, line_height, window, cx);
 
         PrepaintState {
             lines,
-            cursor: cursor_quad,
+            cursor: show_cursor.then_some(cursor_quad).flatten(),
             selections,
         }
     }
@@ -330,7 +478,7 @@ impl Element for ComposerEditorElement {
         let visual_line_count = prepaint
             .lines
             .last()
-            .map(|line| line.visual_row + line.visual_line_count)
+            .map(|line| line.visual_row + line.visual_lines.len().max(1))
             .unwrap_or(1);
         let scroll_offset = self.editor.read(cx).scroll_offset();
         let viewport_line_count = visual_line_count.clamp(
@@ -363,17 +511,32 @@ impl Element for ComposerEditorElement {
                     window.paint_quad(selection);
                 }
 
-                for line in &prepaint.lines {
-                    line.line
-                        .paint(
-                            point(bounds.left(), bounds.top() + line.y),
-                            window.line_height(),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        )
-                        .ok();
+                for line in &mut prepaint.lines {
+                    for visual in &mut line.visual_lines {
+                        let mut fragment_origin = point(bounds.left(), bounds.top() + visual.y);
+                        for fragment in &mut visual.fragments {
+                            match fragment {
+                                PaintFragment::Text { line, .. } => {
+                                    line.paint(
+                                        fragment_origin,
+                                        window.line_height(),
+                                        TextAlign::Left,
+                                        None,
+                                        window,
+                                        cx,
+                                    )
+                                    .ok();
+                                    fragment_origin.x += line.width();
+                                }
+                                PaintFragment::Token { element, size, .. } => {
+                                    if let Some(element) = element {
+                                        element.paint(window, cx);
+                                    }
+                                    fragment_origin.x += size.width;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if let Some(cursor) = prepaint.cursor.take() {
@@ -382,7 +545,11 @@ impl Element for ComposerEditorElement {
             },
         );
 
-        let lines = std::mem::take(&mut prepaint.lines);
+        let lines = prepaint
+            .lines
+            .iter()
+            .map(PaintLine::layout_line)
+            .collect::<Vec<_>>();
         self.editor.update(cx, |editor, _cx| {
             editor.set_layout(
                 LayoutCache {
@@ -398,53 +565,384 @@ impl Element for ComposerEditorElement {
     }
 }
 
-struct SelectionQuadInput<'a> {
+struct LayoutEditorLineInput<'a> {
+    text: &'a str,
+    range: std::ops::Range<usize>,
+    y: Pixels,
+    visual_row: usize,
     selection: std::ops::Range<usize>,
-    line_range: std::ops::Range<usize>,
-    line: &'a WrappedLine,
-    origin: Point<Pixels>,
+    marked_range: Option<std::ops::Range<usize>>,
+    tokens: &'a [ComposerToken],
+    font_size: Pixels,
     line_height: Pixels,
     wrap_width: Pixels,
+    base_color: Hsla,
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+fn layout_editor_line(input: LayoutEditorLineInput<'_>) -> PaintLine {
+    if input.range.is_empty() {
+        return PaintLine {
+            visual_row: input.visual_row,
+            visual_lines: vec![PaintVisualLine {
+                range: input.range,
+                y: input.y,
+                width: px(0.),
+                fragments: Vec::new(),
+            }],
+        };
+    }
+
+    let fragments = source_fragments(
+        input.text,
+        input.range.clone(),
+        input.tokens,
+        input.line_height,
+        input.window,
+        input.cx,
+    );
+    let wrap_fragments = fragments
+        .iter()
+        .map(|fragment| match fragment {
+            SourceFragment::Text { range } => gpui::LineFragment::text(&input.text[range.clone()]),
+            SourceFragment::Token { range, size, .. } => {
+                gpui::LineFragment::element(size.width, range.len())
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut wrapper = input
+        .window
+        .text_system()
+        .line_wrapper(input.window.text_style().font(), input.font_size);
+    let mut local_ranges = Vec::new();
+    let mut start = 0;
+    for boundary in wrapper.wrap_line(&wrap_fragments, input.wrap_width) {
+        if boundary.ix > start {
+            local_ranges.push(start..boundary.ix);
+        }
+        start = boundary.ix;
+    }
+    if start <= input.range.len() {
+        local_ranges.push(start..input.range.len());
+    }
+    if local_ranges.is_empty() {
+        local_ranges.push(0..0);
+    }
+
+    let visual_lines = local_ranges
+        .into_iter()
+        .enumerate()
+        .map(|(ix, local)| {
+            let absolute = input.range.start + local.start..input.range.start + local.end;
+            let fragments = paint_fragments_for_range(PaintFragmentsInput {
+                text: input.text,
+                source_fragments: &fragments,
+                visual_range: absolute.clone(),
+                selection: input.selection.clone(),
+                marked_range: input.marked_range.clone(),
+                font_size: input.font_size,
+                line_height: input.line_height,
+                base_color: input.base_color,
+                window: input.window,
+                cx: input.cx,
+            });
+            let width = fragments.iter().map(PaintFragment::width).sum();
+            PaintVisualLine {
+                range: absolute,
+                y: input.y + input.line_height * ix as f32,
+                width,
+                fragments,
+            }
+        })
+        .collect();
+
+    PaintLine {
+        visual_row: input.visual_row,
+        visual_lines,
+    }
+}
+
+fn layout_placeholder_line(
+    placeholder: String,
+    font_size: Pixels,
+    color: Hsla,
+    wrap_width: Pixels,
+    window: &mut Window,
+) -> PaintLine {
+    let line = window
+        .text_system()
+        .shape_line(
+            placeholder.clone().into(),
+            font_size,
+            &[text_run(placeholder.len(), color, None)],
+            Some(wrap_width),
+        )
+        .with_len(0);
+    let width = line.width();
+
+    PaintLine {
+        visual_row: 0,
+        visual_lines: vec![PaintVisualLine {
+            range: 0..0,
+            y: px(0.),
+            width,
+            fragments: vec![PaintFragment::Text {
+                range: 0..0,
+                line: Box::new(line),
+            }],
+        }],
+    }
+}
+
+#[derive(Clone)]
+enum SourceFragment {
+    Text {
+        range: std::ops::Range<usize>,
+    },
+    Token {
+        token: ComposerToken,
+        range: std::ops::Range<usize>,
+        size: Size<Pixels>,
+    },
+}
+
+fn source_fragments(
+    text: &str,
+    line_range: std::ops::Range<usize>,
+    tokens: &[ComposerToken],
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<SourceFragment> {
+    let mut fragments = Vec::new();
+    let mut cursor = line_range.start;
+
+    for token in tokens {
+        if token.range.end <= line_range.start {
+            continue;
+        }
+        if token.range.start >= line_range.end {
+            break;
+        }
+        if token.range.start < line_range.start || token.range.end > line_range.end {
+            continue;
+        }
+        if cursor < token.range.start {
+            fragments.push(SourceFragment::Text {
+                range: cursor..token.range.start,
+            });
+        }
+        fragments.push(SourceFragment::Token {
+            token: token.clone(),
+            range: token.range.clone(),
+            size: measure_token_chip(token, line_height, window, cx),
+        });
+        cursor = token.range.end;
+    }
+
+    if cursor < line_range.end {
+        fragments.push(SourceFragment::Text {
+            range: cursor..line_range.end,
+        });
+    }
+
+    if fragments.is_empty() && !text[line_range.clone()].is_empty() {
+        fragments.push(SourceFragment::Text { range: line_range });
+    }
+
+    fragments
+}
+
+struct PaintFragmentInput<'a> {
+    text: &'a str,
+    source: &'a SourceFragment,
+    range: std::ops::Range<usize>,
+    selection: std::ops::Range<usize>,
+    marked_range: Option<std::ops::Range<usize>>,
+    font_size: Pixels,
+    line_height: Pixels,
+    base_color: Hsla,
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+struct PaintFragmentsInput<'a> {
+    text: &'a str,
+    source_fragments: &'a [SourceFragment],
+    visual_range: std::ops::Range<usize>,
+    selection: std::ops::Range<usize>,
+    marked_range: Option<std::ops::Range<usize>>,
+    font_size: Pixels,
+    line_height: Pixels,
+    base_color: Hsla,
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+fn paint_fragments_for_range(input: PaintFragmentsInput<'_>) -> Vec<PaintFragment> {
+    let mut fragments = Vec::new();
+    for source in input.source_fragments {
+        let source_range = match source {
+            SourceFragment::Text { range } | SourceFragment::Token { range, .. } => range,
+        };
+        let Some(overlap) = overlap_range(source_range, &input.visual_range) else {
+            continue;
+        };
+        if let Some(fragment) = paint_fragment(PaintFragmentInput {
+            text: input.text,
+            source,
+            range: overlap,
+            selection: input.selection.clone(),
+            marked_range: input.marked_range.clone(),
+            font_size: input.font_size,
+            line_height: input.line_height,
+            base_color: input.base_color,
+            window: &mut *input.window,
+            cx: &mut *input.cx,
+        }) {
+            fragments.push(fragment);
+        }
+    }
+    fragments
+}
+
+fn paint_fragment(input: PaintFragmentInput<'_>) -> Option<PaintFragment> {
+    match input.source {
+        SourceFragment::Text { .. } => {
+            if input.range.is_empty() {
+                return None;
+            }
+            let runs = text_runs_for_range(
+                input.text,
+                input.range.clone(),
+                input.marked_range.clone(),
+                input.base_color,
+            );
+            let line = input.window.text_system().shape_line(
+                input.text[input.range.clone()].to_string().into(),
+                input.font_size,
+                &runs,
+                None,
+            );
+            Some(PaintFragment::Text {
+                range: input.range,
+                line: Box::new(line),
+            })
+        }
+        SourceFragment::Token {
+            token,
+            range,
+            size: token_size,
+        } => {
+            if input.range.start != range.start || input.range.end != range.end {
+                return None;
+            }
+            let selected = ranges_overlap(&input.selection, range);
+            let mut element = token_chip(token, selected, input.line_height, input.cx);
+            let measured = element.layout_as_root(
+                size(
+                    AvailableSpace::Definite(token_size.width),
+                    AvailableSpace::Definite(input.line_height),
+                ),
+                input.window,
+                input.cx,
+            );
+            Some(PaintFragment::Token {
+                range: range.clone(),
+                size: measured,
+                element: Some(element),
+            })
+        }
+    }
+}
+
+fn prepaint_token_elements(
+    lines: &mut [PaintLine],
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    for line in lines {
+        for visual in &mut line.visual_lines {
+            let mut fragment_origin = point(origin.x, origin.y + visual.y);
+            for fragment in &mut visual.fragments {
+                match fragment {
+                    PaintFragment::Text { line, .. } => {
+                        fragment_origin.x += line.width();
+                    }
+                    PaintFragment::Token { element, size, .. } => {
+                        if let Some(element) = element {
+                            let element_origin = point(
+                                fragment_origin.x,
+                                fragment_origin.y + (line_height - size.height) / 2.,
+                            );
+                            element.prepaint_at(element_origin, window, cx);
+                        }
+                        fragment_origin.x += size.width;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cursor_bounds_for_lines(
+    lines: &[PaintLine],
+    cursor: usize,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+) -> Option<Bounds<Pixels>> {
+    for line in lines {
+        for visual in &line.visual_lines {
+            if cursor >= visual.range.start && cursor <= visual.range.end {
+                return Some(Bounds::new(
+                    point(
+                        origin.x + visual.layout_line().x_for_offset(cursor),
+                        origin.y + visual.y,
+                    ),
+                    size(px(1.), line_height),
+                ));
+            }
+        }
+    }
+
+    lines.last().and_then(|line| {
+        line.visual_lines.last().map(|visual| {
+            Bounds::new(
+                point(origin.x + visual.width, origin.y + visual.y),
+                size(px(1.), line_height),
+            )
+        })
+    })
+}
+
+struct SelectionQuadInput<'a> {
+    selection: std::ops::Range<usize>,
+    line: &'a PaintLine,
+    origin: Point<Pixels>,
+    line_height: Pixels,
     color: Hsla,
 }
 
 fn push_selection_quads(selections: &mut Vec<PaintQuad>, input: SelectionQuadInput<'_>) {
-    let selection_start = input.selection.start.max(input.line_range.start);
-    let selection_end = input.selection.end.min(input.line_range.end);
-    if selection_start >= selection_end {
-        return;
-    }
-
-    for visual_range in visual_ranges(input.line) {
-        let visual_start = input.line_range.start + visual_range.range.start;
-        let visual_end = input.line_range.start + visual_range.range.end;
-        let overlap_start = selection_start.max(visual_start);
-        let overlap_end = selection_end.min(visual_end);
-        if overlap_start >= overlap_end {
+    for visual in &input.line.visual_lines {
+        let selection_start = input.selection.start.max(visual.range.start);
+        let selection_end = input.selection.end.min(visual.range.end);
+        if selection_start >= selection_end {
             continue;
         }
 
-        let start_x = if overlap_start == visual_start {
-            px(0.)
-        } else {
-            input
-                .line
-                .position_for_index(overlap_start - input.line_range.start, input.line_height)
-                .map(|position| position.x)
-                .unwrap_or(px(0.))
-        };
-        let end_x = input
-            .line
-            .position_for_index(overlap_end - input.line_range.start, input.line_height)
-            .map(|position| position.x)
-            .unwrap_or(input.wrap_width);
-        let y = input.line_height * visual_range.row as f32;
+        let layout = visual.layout_line();
+        let start_x = layout.x_for_offset(selection_start);
+        let end_x = layout.x_for_offset(selection_end);
         selections.push(fill(
             Bounds::from_corners(
-                point(input.origin.x + start_x, input.origin.y + y),
+                point(input.origin.x + start_x, input.origin.y + visual.y),
                 point(
                     input.origin.x + end_x,
-                    input.origin.y + y + input.line_height,
+                    input.origin.y + visual.y + input.line_height,
                 ),
             ),
             input.color,
@@ -452,55 +950,18 @@ fn push_selection_quads(selections: &mut Vec<PaintQuad>, input: SelectionQuadInp
     }
 }
 
-struct VisualRange {
-    row: usize,
-    range: std::ops::Range<usize>,
-}
-
-fn visual_ranges(line: &WrappedLine) -> Vec<VisualRange> {
-    let mut ranges = Vec::with_capacity(line.wrap_boundaries().len() + 1);
-    let mut start = 0;
-    for (row, boundary) in line.wrap_boundaries().iter().enumerate() {
-        let run = &line.unwrapped_layout.runs[boundary.run_ix];
-        let glyph = &run.glyphs[boundary.glyph_ix];
-        let end = glyph.index;
-        if start < end {
-            ranges.push(VisualRange {
-                row,
-                range: start..end,
-            });
-        }
-        start = end;
-    }
-    if start <= line.len() {
-        ranges.push(VisualRange {
-            row: line.wrap_boundaries().len(),
-            range: start..line.len(),
-        });
-    }
-    ranges
-}
-
-fn line_runs(
+fn text_runs_for_range(
     text: &str,
-    line_range: std::ops::Range<usize>,
-    tokens: &[ComposerToken],
+    range: std::ops::Range<usize>,
     marked_range: Option<std::ops::Range<usize>>,
     base_color: Hsla,
-    token_color: Hsla,
 ) -> Vec<TextRun> {
-    let mut boundaries = vec![line_range.start, line_range.end];
-    for token in tokens {
-        if ranges_overlap(&line_range, &token.range) {
-            boundaries.push(token.range.start.max(line_range.start));
-            boundaries.push(token.range.end.min(line_range.end));
-        }
-    }
+    let mut boundaries = vec![range.start, range.end];
     if let Some(marked_range) = &marked_range
-        && ranges_overlap(&line_range, marked_range)
+        && ranges_overlap(&range, marked_range)
     {
-        boundaries.push(marked_range.start.max(line_range.start));
-        boundaries.push(marked_range.end.min(line_range.end));
+        boundaries.push(marked_range.start.max(range.start));
+        boundaries.push(marked_range.end.min(range.end));
     }
 
     boundaries.sort_unstable();
@@ -514,24 +975,81 @@ fn line_runs(
             if start == end {
                 return None;
             }
-            let is_token = tokens
-                .iter()
-                .any(|token| start >= token.range.start && end <= token.range.end);
             let is_marked = marked_range
                 .as_ref()
                 .is_some_and(|range| start >= range.start && end <= range.end);
             let underline = is_marked.then_some(UnderlineStyle {
                 thickness: px(1.),
-                color: Some(if is_token { token_color } else { base_color }),
+                color: Some(base_color),
                 wavy: false,
             });
-            Some(text_run(
-                text[start..end].len(),
-                if is_token { token_color } else { base_color },
-                underline,
-            ))
+            Some(text_run(text[start..end].len(), base_color, underline))
         })
         .collect()
+}
+
+fn measure_token_chip(
+    token: &ComposerToken,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Size<Pixels> {
+    let mut element = token_chip(token, false, line_height, cx);
+    element.layout_as_root(
+        size(
+            AvailableSpace::MinContent,
+            AvailableSpace::Definite(line_height),
+        ),
+        window,
+        cx,
+    )
+}
+
+fn token_chip(
+    token: &ComposerToken,
+    selected: bool,
+    line_height: Pixels,
+    cx: &mut App,
+) -> AnyElement {
+    let height = (line_height - px(2.)).max(px(18.));
+    h_flex()
+        .id(("ai-chat2-skill-token", token.id))
+        .h(height)
+        .items_center()
+        .gap_1()
+        .px_2()
+        .rounded(px(5.))
+        .border_1()
+        .border_color(if selected {
+            cx.theme().blue
+        } else {
+            cx.theme().border
+        })
+        .bg(if selected {
+            cx.theme().blue.opacity(0.14)
+        } else {
+            cx.theme().muted
+        })
+        .child(
+            Icon::new(IconName::Sparkles)
+                .with_size(px(13.))
+                .text_color(cx.theme().blue),
+        )
+        .child(
+            gpui::div()
+                .text_color(cx.theme().foreground)
+                .child(token.name.clone()),
+        )
+        .into_any_element()
+}
+
+fn overlap_range(
+    left: &std::ops::Range<usize>,
+    right: &std::ops::Range<usize>,
+) -> Option<std::ops::Range<usize>> {
+    let start = left.start.max(right.start);
+    let end = left.end.min(right.end);
+    (start < end).then_some(start..end)
 }
 
 fn ranges_overlap(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool {

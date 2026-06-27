@@ -1,3 +1,4 @@
+mod approval;
 mod builtin_tools;
 mod error;
 mod history;
@@ -11,10 +12,14 @@ mod skills;
 mod tool_registry;
 mod types;
 
+pub use approval::{ToolApprovalBroker, ToolApprovalDecision, ToolApprovalRequest};
 pub use error::{AgentRuntimeError, Result};
 pub use mcp::{
-    McpConfigLayer, McpConnector, McpServerConfig, McpServerTransport, McpStdioTransport,
-    McpStreamableHttpTransport,
+    McpConfigLayer, McpConnector, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot,
+    McpPreparedTools, McpRuntimeEvent, McpServerConfig, McpServerConnectionState,
+    McpServerInfoSnapshot, McpServerRuntimeConfig, McpServerStatusSnapshot, McpServerTransport,
+    McpServerTransportKindSnapshot, McpSessionManager, McpSessionPruneMode, McpStdioTransport,
+    McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
 };
 pub use persistence::PersistingCompletionModel;
 pub use provider_models::{
@@ -28,6 +33,5 @@ pub use tool_registry::{
 };
 pub use types::{
     AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest,
-    AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, ApprovalResumeOutcome,
-    CompletionModelFactory, RuntimeGuards,
+    AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, CompletionModelFactory, RuntimeGuards,
 };

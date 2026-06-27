@@ -25,12 +25,27 @@ pub(crate) struct PromptHistory {
     pub(crate) input_item_ids: Vec<ConversationItemId>,
 }
 
-pub(crate) fn build_prompt_history(
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PromptHistoryOptions {
+    pub(crate) include_reasoning: bool,
+    pub(crate) preserve_tool_protocol: bool,
+}
+
+impl Default for PromptHistoryOptions {
+    fn default() -> Self {
+        Self {
+            include_reasoning: true,
+            preserve_tool_protocol: true,
+        }
+    }
+}
+
+pub(crate) fn build_prompt_history_with_options(
     items: &[ConversationItemRecord],
     attachments: &[AttachmentRecord],
     user_item_id: &str,
     agent_run_id: &str,
-    parent_agent_run_id: Option<&str>,
+    options: PromptHistoryOptions,
 ) -> Result<PromptHistory> {
     let attachment_map = attachment_map(attachments);
     let user_index = items
@@ -39,15 +54,6 @@ pub(crate) fn build_prompt_history(
         .ok_or_else(|| {
             AgentRuntimeError::Invariant(format!("user item {user_item_id} is missing"))
         })?;
-    if let Some(parent_agent_run_id) = parent_agent_run_id {
-        return build_resume_prompt_history(
-            items,
-            &attachment_map,
-            user_index,
-            parent_agent_run_id,
-        );
-    }
-
     let current_run_skill_items = items[user_index + 1..]
         .iter()
         .filter(|item| {
@@ -56,11 +62,12 @@ pub(crate) fn build_prompt_history(
         })
         .collect::<Vec<_>>();
     let prompt = if current_run_skill_items.is_empty() {
-        conversation_item_to_rig_message(&items[user_index], &attachment_map)?.ok_or_else(|| {
-            AgentRuntimeError::Invariant(format!(
-                "user item {user_item_id} cannot be used as prompt"
-            ))
-        })?
+        conversation_item_to_rig_message_with_options(&items[user_index], &attachment_map, options)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "user item {user_item_id} cannot be used as prompt"
+                ))
+            })?
     } else {
         user_prompt_with_skill_context(
             &items[user_index],
@@ -70,7 +77,10 @@ pub(crate) fn build_prompt_history(
     };
     let history = items[..user_index]
         .iter()
-        .filter_map(|item| conversation_item_to_rig_message(item, &attachment_map).transpose())
+        .filter_map(|item| {
+            conversation_item_to_rig_message_with_options(item, &attachment_map, options)
+                .transpose()
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut input_item_ids = items[..=user_index]
         .iter()
@@ -84,49 +94,22 @@ pub(crate) fn build_prompt_history(
     })
 }
 
-fn build_resume_prompt_history(
-    items: &[ConversationItemRecord],
-    attachment_map: &AttachmentMap<'_>,
-    user_index: usize,
-    parent_agent_run_id: &str,
-) -> Result<PromptHistory> {
-    let prompt_index = items[user_index + 1..]
-        .iter()
-        .rposition(|item| {
-            item.agent_run_id.as_deref() == Some(parent_agent_run_id)
-                && matches!(item.payload, ConversationItemPayload::ToolResult(_))
-        })
-        .map(|index| user_index + 1 + index)
-        .ok_or_else(|| {
-            AgentRuntimeError::Invariant(format!(
-                "parent agent run {parent_agent_run_id} has no tool result to resume from"
-            ))
-        })?;
-    let prompt = conversation_item_to_rig_message(&items[prompt_index], attachment_map)?
-        .ok_or_else(|| {
-            AgentRuntimeError::Invariant(format!(
-                "resume prompt item {} cannot be used as prompt",
-                items[prompt_index].id
-            ))
-        })?;
-    let history = items[..prompt_index]
-        .iter()
-        .filter_map(|item| conversation_item_to_rig_message(item, attachment_map).transpose())
-        .collect::<Result<Vec<_>>>()?;
-    let input_item_ids = items[..=prompt_index]
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    Ok(PromptHistory {
-        prompt,
-        history,
-        input_item_ids,
-    })
-}
-
+#[cfg(test)]
 pub(crate) fn conversation_item_to_rig_message(
     item: &ConversationItemRecord,
     attachments: &AttachmentMap<'_>,
+) -> Result<Option<RigMessage>> {
+    conversation_item_to_rig_message_with_options(
+        item,
+        attachments,
+        PromptHistoryOptions::default(),
+    )
+}
+
+fn conversation_item_to_rig_message_with_options(
+    item: &ConversationItemRecord,
+    attachments: &AttachmentMap<'_>,
+    options: PromptHistoryOptions,
 ) -> Result<Option<RigMessage>> {
     Ok(match &item.payload {
         ConversationItemPayload::Message { role, content } => match role {
@@ -151,7 +134,7 @@ pub(crate) fn conversation_item_to_rig_message(
         ConversationItemPayload::SkillActivation(skill) => {
             Some(RigMessage::user(skill_activation_context(skill)))
         }
-        ConversationItemPayload::Reasoning { text, summary } => {
+        ConversationItemPayload::Reasoning { text, summary } if options.include_reasoning => {
             let reasoning = summary.as_ref().map_or_else(
                 || rig_core::message::Reasoning::new(text),
                 |summary| rig_core::message::Reasoning::summaries(vec![summary.clone()]),
@@ -161,6 +144,8 @@ pub(crate) fn conversation_item_to_rig_message(
                 content: OneOrMany::one(AssistantContent::Reasoning(reasoning)),
             })
         }
+        ConversationItemPayload::Reasoning { .. } => None,
+        ConversationItemPayload::ToolCall(_) if !options.preserve_tool_protocol => None,
         ConversationItemPayload::ToolCall(call) => Some(RigMessage::Assistant {
             id: item.provider_item_id.clone(),
             content: OneOrMany::one(AssistantContent::ToolCall(
@@ -171,6 +156,9 @@ pub(crate) fn conversation_item_to_rig_message(
                 .with_call_id(call.call_id.clone()),
             )),
         }),
+        ConversationItemPayload::ToolResult(result) if !options.preserve_tool_protocol => {
+            Some(RigMessage::user(textualized_tool_result(result)))
+        }
         ConversationItemPayload::ToolResult(result) => Some(RigMessage::User {
             content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                 id: result.call_id.clone(),
@@ -440,6 +428,15 @@ fn tool_result_model_text(result: &ToolResultItem) -> String {
     content_text(&result.content)
 }
 
+fn textualized_tool_result(result: &ToolResultItem) -> String {
+    let status = if result.is_error { "error" } else { "success" };
+    format!(
+        "Approved tool call `{}` completed with {status} result:\n{}",
+        result.call_id,
+        tool_result_model_text(result)
+    )
+}
+
 fn user_prompt_with_skill_context(
     user_item: &ConversationItemRecord,
     skill_items: &[&ConversationItemRecord],
@@ -558,94 +555,6 @@ mod tests {
         let error = conversation_item_to_rig_message(&item, &attachment_map).unwrap_err();
 
         assert!(matches!(error, AgentRuntimeError::Unsupported(_)));
-    }
-
-    #[test]
-    fn resume_history_uses_parent_tool_result_as_prompt() {
-        let user = conversation_item(
-            "user-1",
-            vec![ContentPart::Text {
-                text: "write a file".to_string(),
-            }],
-        );
-        let tool_call = conversation_item_with_payload(
-            "tool-call-1",
-            2,
-            Some("run-parent"),
-            ConversationItemKind::ToolCall,
-            ConversationItemPayload::ToolCall(ToolCallItem {
-                tool_invocation_id: Some("tool-1".to_string()),
-                call_id: "call_1".to_string(),
-                source: ToolSource::Local,
-                name: "write_file".to_string(),
-                runtime_tool_name: "write_file".to_string(),
-                arguments: ToolArguments {
-                    value: serde_json::json!({
-                        "path": "notes.txt",
-                        "content": "done",
-                    }),
-                },
-            }),
-        );
-        let tool_result = conversation_item_with_payload(
-            "tool-result-1",
-            4,
-            Some("run-parent"),
-            ConversationItemKind::ToolResult,
-            ConversationItemPayload::ToolResult(ToolResultItem {
-                tool_invocation_id: Some("tool-1".to_string()),
-                call_id: "call_1".to_string(),
-                content: vec![ContentPart::Text {
-                    text: "Created notes.txt".to_string(),
-                }],
-                is_error: false,
-                structured_output: None,
-                raw_output: None,
-            }),
-        );
-        let approval_decision = conversation_item_with_payload(
-            "approval-decision-1",
-            3,
-            Some("run-parent"),
-            ConversationItemKind::ApprovalDecision,
-            ConversationItemPayload::ApprovalDecision(ApprovalDecisionItem {
-                tool_invocation_id: "tool-1".to_string(),
-                decision: ApprovalDecisionPayload {
-                    approved: true,
-                    decided_by: "user".to_string(),
-                    reason: Some("ok".to_string()),
-                },
-            }),
-        );
-        let items = vec![user, tool_call, approval_decision, tool_result];
-
-        let prompt_history =
-            build_prompt_history(&items, &[], "user-1", "run-resume", Some("run-parent")).unwrap();
-
-        assert_eq!(
-            prompt_history.input_item_ids,
-            vec![
-                "user-1".to_string(),
-                "tool-call-1".to_string(),
-                "approval-decision-1".to_string(),
-                "tool-result-1".to_string()
-            ]
-        );
-        assert_eq!(prompt_history.history.len(), 2);
-        assert!(matches!(
-            prompt_history.history.first(),
-            Some(RigMessage::User { .. })
-        ));
-        assert!(matches!(
-            prompt_history.history.get(1),
-            Some(RigMessage::Assistant { content, .. })
-                if matches!(content.iter().next(), Some(AssistantContent::ToolCall(_)))
-        ));
-        assert!(matches!(
-            prompt_history.prompt,
-            RigMessage::User { content }
-                if matches!(content.iter().next(), Some(UserContent::ToolResult(result)) if result.call_id.as_deref() == Some("call_1"))
-        ));
     }
 
     fn conversation_item(id: &str, content: Vec<ContentPart>) -> ConversationItemRecord {

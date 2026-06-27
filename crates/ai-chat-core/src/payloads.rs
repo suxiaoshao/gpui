@@ -2,7 +2,6 @@ use crate::{
     AgentRunId, AttachmentId, ConversationId, ConversationItemId, ProjectId, ProviderId,
     ProviderModelId, ProviderStepId, ToolInvocationId,
 };
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectKind {
@@ -66,6 +65,7 @@ pub enum AttachmentStorageKind {
 pub enum AgentRunTriggerKind {
     User,
     Shortcut,
+    /// Legacy value accepted for runs written by the removed approval-resume flow.
     Resume,
     Retry,
 }
@@ -324,8 +324,6 @@ pub struct StructuredOutput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunInput {
     pub user_item_id: ConversationItemId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_run_id: Option<AgentRunId>,
     pub prompt_snapshot: Option<PromptContent>,
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,
@@ -340,8 +338,15 @@ pub struct AgentRuntimeSnapshot {
     pub engine: AgentEngineKind,
     pub engine_version: String,
     pub skill_catalog_hash: Option<String>,
-    pub mcp_config_hash: Option<String>,
     pub tool_name_strategy: ToolNameStrategy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToolApprovalModeSnapshot {
+    Auto,
+    Prompt,
+    Deny,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1018,6 +1023,14 @@ mod tests {
     }
 
     #[test]
+    fn legacy_resume_agent_run_trigger_kind_decodes() {
+        assert_eq!(
+            serde_json::from_value::<AgentRunTriggerKind>(json!("resume")).unwrap(),
+            AgentRunTriggerKind::Resume
+        );
+    }
+
+    #[test]
     fn legacy_project_metadata_roundtrips_without_sidebar_flags() {
         let metadata: ProjectMetadata = serde_json::from_value(json!({
             "scratchReason": null,
@@ -1198,12 +1211,13 @@ mod tests {
             engine: AgentEngineKind::Rig,
             engine_version: "0.22.0".to_string(),
             skill_catalog_hash: Some("skills".to_string()),
-            mcp_config_hash: Some("mcp".to_string()),
             tool_name_strategy: ToolNameStrategy::Namespaced,
         };
 
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["engine"], "rig");
+        assert!(value.get("mcpConfigHash").is_none());
+        assert!(value.get("mcpConfigSnapshot").is_none());
         assert_eq!(
             serde_json::from_value::<AgentRuntimeSnapshot>(value).unwrap(),
             snapshot

@@ -7,9 +7,13 @@ use crate::{
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use ai_chat_core::ModelCapabilitiesSnapshot;
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt, h_flex, label::Label, select::SelectItem, tag::Tag, v_flex,
+    ActiveTheme, Sizable, StyledExt, h_flex,
+    label::Label,
+    select::{SearchableVec, SelectGroup, SelectItem},
+    tag::Tag,
+    v_flex,
 };
 
 #[derive(Clone, Debug)]
@@ -36,6 +40,32 @@ impl ModelOption {
         }
     }
 
+    fn render_row(&self, cx: &mut App) -> AnyElement {
+        let capability_labels = capability_tag_labels(&self.capabilities, cx.global::<I18n>());
+
+        h_flex()
+            .min_w_0()
+            .items_start()
+            .gap_2()
+            .child(
+                provider_visual_icon(self.visual)
+                    .size_4()
+                    .flex_none()
+                    .mt(px(1.))
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .gap_0p5()
+                    .child(Label::new(self.display_name()).text_sm().font_medium())
+                    .when(!capability_labels.is_empty(), |this| {
+                        this.child(capability_tags(capability_labels))
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn display_name(&self) -> SharedString {
         self.model_display_name
             .clone()
@@ -51,42 +81,28 @@ impl SelectItem for ModelOption {
     type Value = ProviderModelKey;
 
     fn title(&self) -> SharedString {
-        format!("{} / {}", self.provider_display_name, self.display_name()).into()
+        self.display_name()
+    }
+
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .min_w_0()
+                .items_center()
+                .gap_2()
+                .child(provider_visual_icon(self.visual).size_4())
+                .child(
+                    Label::new(self.title())
+                        .text_sm()
+                        .whitespace_nowrap()
+                        .truncate(),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .items_center()
-            .gap_2()
-            .child(
-                provider_visual_icon(self.visual)
-                    .size_4()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        Label::new(self.display_name())
-                            .text_sm()
-                            .font_medium()
-                            .truncate(),
-                    )
-                    .child(
-                        Label::new(format!(
-                            "{} · {}",
-                            self.provider_display_name.as_ref(),
-                            self.model_id.as_ref()
-                        ))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .truncate(),
-                    ),
-            )
-            .child(capability_tags(&self.capabilities, cx.global::<I18n>()))
+        self.render_row(cx)
     }
 
     fn value(&self) -> &Self::Value {
@@ -109,6 +125,24 @@ impl SelectItem for ModelOption {
 }
 
 pub(crate) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSection<ModelOption>> {
+    grouped_model_options(choices)
+        .into_iter()
+        .map(|(provider, items)| PickerSection::section(provider, items))
+        .collect()
+}
+
+pub(crate) fn model_select_groups(
+    choices: &[ProviderModelChoice],
+) -> SearchableVec<SelectGroup<ModelOption>> {
+    SearchableVec::new(
+        grouped_model_options(choices)
+            .into_iter()
+            .map(|(provider, items)| SelectGroup::new(provider).items(items))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn grouped_model_options(choices: &[ProviderModelChoice]) -> Vec<(SharedString, Vec<ModelOption>)> {
     let mut sections = Vec::new();
     let mut provider: Option<SharedString> = None;
     let mut items = Vec::new();
@@ -117,7 +151,7 @@ pub(crate) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSecti
         let provider_name: SharedString = choice.provider_display_name.clone().into();
         if provider.as_ref() != Some(&provider_name) {
             if let Some(provider) = provider.take() {
-                sections.push(PickerSection::section(provider, items));
+                sections.push((provider, items));
                 items = Vec::new();
             }
             provider = Some(provider_name);
@@ -127,7 +161,7 @@ pub(crate) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSecti
     }
 
     if let Some(provider) = provider {
-        sections.push(PickerSection::section(provider, items));
+        sections.push((provider, items));
     }
 
     sections
@@ -137,11 +171,11 @@ pub(crate) fn provider_visual_for_model_choice(choice: &ProviderModelChoice) -> 
     provider_visual_for_kind(&choice.provider_kind)
 }
 
-fn capability_tags(capabilities: &ModelCapabilitiesSnapshot, i18n: &I18n) -> AnyElement {
+fn capability_tags(labels: Vec<SharedString>) -> AnyElement {
     h_flex()
         .gap_1()
         .children(
-            capability_tag_labels(capabilities, i18n)
+            labels
                 .into_iter()
                 .map(|label| Tag::secondary().small().child(label)),
         )
@@ -162,10 +196,27 @@ fn capability_tag_labels(
     if capabilities.image_input.is_some() {
         labels.push(i18n.t("capability-vision").into());
     }
+    if capabilities.file_input.is_some() {
+        labels.push(i18n.t("capability-file").into());
+    }
+    if capabilities.audio_input {
+        labels.push(i18n.t("capability-audio").into());
+    }
+    if capabilities.image_generation {
+        labels.push(i18n.t("capability-image-generation").into());
+    }
+    if capabilities.hosted_web_search {
+        labels.push(i18n.t("capability-web-search").into());
+    }
+    if capabilities.remote_mcp {
+        labels.push(i18n.t("capability-mcp").into());
+    }
     if capabilities.structured_output {
         labels.push(i18n.t("capability-structured").into());
     }
-    labels.truncate(3);
+    if capabilities.stateful_response_continuation {
+        labels.push(i18n.t("capability-continuation").into());
+    }
     labels
 }
 
@@ -180,24 +231,46 @@ fn capability_search_tokens(capabilities: &ModelCapabilitiesSnapshot) -> Vec<&'s
     if capabilities.image_input.is_some() {
         tokens.push("vision image input 视觉 图片");
     }
+    if capabilities.file_input.is_some() {
+        tokens.push("file input files 文件");
+    }
+    if capabilities.audio_input {
+        tokens.push("audio input 音频");
+    }
+    if capabilities.image_generation {
+        tokens.push("image generation 生成图片 生图");
+    }
+    if capabilities.hosted_web_search {
+        tokens.push("web search 搜索");
+    }
+    if capabilities.remote_mcp {
+        tokens.push("mcp remote mcp");
+    }
     if capabilities.structured_output {
         tokens.push("structured output 结构化输出");
+    }
+    if capabilities.stateful_response_continuation {
+        tokens.push("stateful continuation response continuation 续接");
     }
     tokens
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{capability_tag_labels, model_sections, provider_visual_for_model_choice};
+    use super::{
+        capability_tag_labels, model_sections, model_select_groups,
+        provider_visual_for_model_choice,
+    };
     use crate::{
         foundation::{I18n, assets::ProviderLogoName},
         state::providers::ProviderModelChoice,
     };
     use ai_chat_core::{
-        CapabilitySourceSnapshot, ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot,
-        ReasoningControlSnapshot, conservative_model_capabilities,
+        CapabilitySourceSnapshot, FileInputCapabilitySnapshot, ImageInputCapabilitySnapshot,
+        ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
+        conservative_model_capabilities,
     };
-    use gpui_component::select::SelectItem;
+    use gpui_component::select::{SelectDelegate, SelectItem};
 
     #[test]
     fn model_sections_group_choices_by_provider() {
@@ -217,6 +290,22 @@ mod tests {
     }
 
     #[test]
+    fn model_select_groups_reuse_model_options() {
+        let choices = vec![
+            choice("provider-1", "openai", "OpenAI", "gpt-5", Some("GPT Five")),
+            choice("provider-2", "ollama", "Ollama", "llama3.2", None),
+        ];
+        let groups = model_select_groups(&choices);
+
+        assert_eq!(groups.items_count(0), 1);
+        assert_eq!(groups.items_count(1), 1);
+        assert_eq!(
+            groups.position(&choices[1].key()),
+            Some(gpui_component::IndexPath::default().section(1).row(0))
+        );
+    }
+
+    #[test]
     fn model_option_matches_provider_model_and_capabilities() {
         let choices = vec![choice(
             "provider-1",
@@ -232,6 +321,22 @@ mod tests {
         assert!(option.matches("five"));
         assert!(option.matches("gpt-5"));
         assert!(option.matches("tools"));
+    }
+
+    #[test]
+    fn model_option_title_uses_model_without_provider_prefix() {
+        let choices = vec![choice(
+            "provider-1",
+            "openai",
+            "OpenAI",
+            "gpt-5",
+            Some("GPT Five"),
+        )];
+        let sections = model_sections(&choices);
+        let option = sections[0].items[0].as_ref();
+
+        assert_eq!(option.title().as_ref(), "GPT Five");
+        assert!(option.matches("openai"));
     }
 
     #[test]
@@ -260,12 +365,29 @@ mod tests {
     }
 
     #[test]
-    fn capability_tags_are_limited_to_three_labels() {
+    fn capability_tags_include_distinctive_model_capabilities() {
         let i18n = I18n::english_for_test();
-        let labels = capability_tag_labels(&capabilities_with_reasoning(), &i18n);
+        let labels = capability_tag_labels(&capabilities_with_distinctive_features(), &i18n);
+        let labels = labels
+            .iter()
+            .map(|label| label.as_ref())
+            .collect::<Vec<_>>();
 
-        assert_eq!(labels.len(), 3);
-        assert_eq!(labels[0].as_ref(), "reasoning");
+        assert_eq!(
+            labels,
+            vec![
+                "reasoning",
+                "tools",
+                "vision",
+                "files",
+                "audio",
+                "image generation",
+                "web search",
+                "MCP",
+                "structured",
+                "continuation",
+            ]
+        );
     }
 
     #[test]
@@ -278,7 +400,13 @@ mod tests {
             "capability-reasoning",
             "capability-tools",
             "capability-vision",
+            "capability-file",
+            "capability-audio",
+            "capability-image-generation",
+            "capability-web-search",
+            "capability-mcp",
             "capability-structured",
+            "capability-continuation",
         ];
 
         for i18n in locales {
@@ -319,6 +447,20 @@ mod tests {
                 source: "test".to_string(),
             },
         });
+        capabilities
+    }
+
+    fn capabilities_with_distinctive_features() -> ModelCapabilitiesSnapshot {
+        let mut capabilities = capabilities_with_reasoning();
+        capabilities.image_input = Some(ImageInputCapabilitySnapshot {
+            max_images: Some(4),
+        });
+        capabilities.file_input = Some(FileInputCapabilitySnapshot { max_files: Some(8) });
+        capabilities.audio_input = true;
+        capabilities.image_generation = true;
+        capabilities.hosted_web_search = true;
+        capabilities.remote_mcp = true;
+        capabilities.stateful_response_continuation = true;
         capabilities
     }
 }

@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 Temporary Window 专项计划
 
 本文档是 `app/ai-chat2` 临时对话窗口的实施计划。父级 UI 清单仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档只固定 Temporary Conversation
+`app/ai-chat/docs/dev/issue-159/README.md`；本文档只固定 Temporary Conversation
 Window 的真实页面、无项目对话列表、搜索、右侧 conversation detail / new conversation、键盘
 focus 和数据流。
 

@@ -1,5 +1,3 @@
-use ai_chat_core::ToolInvocationId;
-
 pub type Result<T> = std::result::Result<T, AgentRuntimeError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -18,10 +16,6 @@ pub enum AgentRuntimeError {
     RigToolServer(#[from] rig_core::tool::server::ToolServerError),
     #[error("MCP error: {0}")]
     Mcp(String),
-    #[error("tool {tool_invocation_id} is waiting for approval")]
-    WaitingForApproval {
-        tool_invocation_id: ToolInvocationId,
-    },
     #[error("runtime canceled")]
     Canceled,
     #[error("unsupported runtime operation: {0}")]

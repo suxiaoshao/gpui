@@ -1,7 +1,9 @@
 mod blink_cursor;
 mod buffer;
+mod completion;
 mod element;
 mod history;
+mod skill_detail;
 mod snapshot;
 mod token;
 
@@ -9,19 +11,25 @@ mod token;
 pub(crate) use snapshot::ComposerSendPolicy;
 pub(crate) use snapshot::ComposerSnapshot;
 
-use crate::state::attachments::clipboard_item_has_attachments;
-
-use std::{collections::BTreeMap, ops::Range, path::Path};
-
-use ai_chat_agent::SkillCatalog;
-use gpui::{
-    App, AppContext as _, ClipboardItem, Context, CursorStyle, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    UTF16Selection, Window, actions, point, px,
+use crate::{
+    foundation::I18n,
+    state::{attachments::clipboard_item_has_attachments, skills::GlobalSkillEntry},
 };
-use gpui_component::scroll::ScrollableElement as _;
+
+use std::{collections::BTreeMap, ops::Range, rc::Rc};
+
+use gpui::{
+    AnyElement, App, AppContext as _, ClipboardItem, Context, CursorStyle, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    UTF16Selection, Window, actions, div, point, px,
+};
+use gpui_component::{
+    ActiveTheme, Sizable,
+    list::{List, ListState},
+    scroll::ScrollableElement as _,
+};
 
 use self::{
     blink_cursor::BlinkCursor,
@@ -30,10 +38,19 @@ use self::{
         next_grapheme_boundary, next_word_end, offset_for_line_column, previous_grapheme_boundary,
         previous_word_start, utf16_range_to_byte_range, word_range_at,
     },
+    completion::{
+        SkillCompletionDelegate, SkillCompletionRow, SkillCompletionTrigger, skill_completion_rows,
+        skill_completion_trigger,
+    },
     element::ComposerEditorElement,
     history::{EditorHistory, EditorState},
+    skill_detail::open_skill_detail_dialog,
     snapshot::build_snapshot,
-    token::{ComposerSkill, ComposerToken, parse_skill_tokens, skills_from_catalog},
+    token::{
+        ComposerSkill, ComposerToken, expand_range_to_token_boundaries, nearest_token_boundary,
+        parse_skill_tokens, skills_from_entries, token_after_offset, token_at_offset,
+        token_before_offset,
+    },
 };
 
 pub(super) const KEY_CONTEXT: &str = "AiChat2ComposerEditor";
@@ -70,6 +87,8 @@ actions!(
         ComposerSelectAll,
         ComposerNewline,
         ComposerSubmit,
+        ComposerCancelCompletion,
+        ComposerConfirmCompletion,
         ComposerUndo,
         ComposerRedo,
         ComposerCopy,
@@ -92,6 +111,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("shift-down", ComposerSelectDown, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-enter", ComposerNewline, Some(KEY_CONTEXT)),
         KeyBinding::new("enter", ComposerSubmit, Some(KEY_CONTEXT)),
+        KeyBinding::new("escape", ComposerCancelCompletion, Some(KEY_CONTEXT)),
+        KeyBinding::new("tab", ComposerConfirmCompletion, Some(KEY_CONTEXT)),
     ]);
 
     #[cfg(target_os = "macos")]
@@ -199,6 +220,9 @@ pub(crate) struct ComposerEditor {
     blink_cursor: gpui::Entity<BlinkCursor>,
     scroll_handle: ScrollHandle,
     last_layout: Option<element::LayoutCache>,
+    completion_list: gpui::Entity<ListState<SkillCompletionDelegate>>,
+    completion_trigger: Option<SkillCompletionTrigger>,
+    completion_needs_selection_sync: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -211,11 +235,42 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let skills = SkillCatalog::scan(None)
-            .map(|catalog| skills_from_catalog(&catalog))
-            .unwrap_or_default();
         let focus_handle = cx.focus_handle();
         let blink_cursor = cx.new(|_| BlinkCursor::new());
+        let state = cx.entity().downgrade();
+        let completion_empty_label = if cx.has_global::<I18n>() {
+            cx.global::<I18n>().t("chat-form-skill-completion-empty")
+        } else {
+            "No matching skills".to_string()
+        };
+        let completion_confirm = Rc::new({
+            let state = state.clone();
+            move |row: SkillCompletionRow, window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |editor, cx| {
+                    editor.confirm_skill_completion(row, window, cx);
+                });
+            }
+        });
+        let completion_cancel = Rc::new({
+            let state = state.clone();
+            move |_window: &mut Window, cx: &mut App| {
+                let _ = state.update(cx, |editor, cx| {
+                    editor.close_skill_completion(cx);
+                });
+            }
+        });
+        let completion_list = cx.new(|cx| {
+            ListState::new(
+                SkillCompletionDelegate::new(
+                    Vec::new(),
+                    completion_empty_label.into(),
+                    completion_confirm,
+                    completion_cancel,
+                ),
+                window,
+                cx,
+            )
+        });
         let _subscriptions = vec![
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
             cx.observe_window_activation(window, |editor, window, cx| {
@@ -227,6 +282,7 @@ impl ComposerEditor {
             }),
             cx.on_blur(&focus_handle, window, |editor, window, cx| {
                 editor.sync_blink_cursor(window, cx);
+                editor.close_skill_completion(cx);
                 cx.notify();
             }),
         ];
@@ -237,7 +293,7 @@ impl ComposerEditor {
             selection: Selection::default(),
             marked_range: None,
             tokens: Vec::new(),
-            skills,
+            skills: BTreeMap::new(),
             next_token_id: 1,
             history: EditorHistory::default(),
             composition_base: None,
@@ -249,6 +305,9 @@ impl ComposerEditor {
             blink_cursor,
             scroll_handle: ScrollHandle::new(),
             last_layout: None,
+            completion_list,
+            completion_trigger: None,
+            completion_needs_selection_sync: false,
             _subscriptions,
         }
     }
@@ -281,16 +340,22 @@ impl ComposerEditor {
         self.focus_handle.focus(window, cx);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn refresh_skill_catalog(
+    pub(crate) fn set_skill_entries(
         &mut self,
-        project_root: Option<&Path>,
+        entries: &[GlobalSkillEntry],
         cx: &mut Context<Self>,
     ) {
-        self.skills = SkillCatalog::scan(project_root)
-            .map(|catalog| skills_from_catalog(&catalog))
-            .unwrap_or_default();
+        self.skills = skills_from_entries(entries);
         self.refresh_tokens();
+        if cx.has_global::<I18n>() {
+            let rows = skill_completion_rows(entries, cx.global::<I18n>());
+            self.completion_list.update(cx, |list, cx| {
+                list.delegate_mut().set_rows(rows);
+                cx.notify();
+            });
+        }
+        self.completion_needs_selection_sync = true;
+        self.refresh_skill_completion(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
     }
@@ -369,6 +434,7 @@ impl ComposerEditor {
         self.preferred_column = None;
         self.preferred_x = None;
         self.last_layout = None;
+        self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
@@ -534,6 +600,160 @@ impl ComposerEditor {
         self.tokens = parse_skill_tokens(&self.text, &self.skills, &mut self.next_token_id);
     }
 
+    pub(super) fn skill_completion_open(&self) -> bool {
+        self.completion_trigger.is_some()
+    }
+
+    fn close_skill_completion(&mut self, cx: &mut Context<Self>) {
+        if self.completion_trigger.take().is_none() && !self.completion_needs_selection_sync {
+            return;
+        }
+
+        self.completion_needs_selection_sync = false;
+        cx.notify();
+    }
+
+    fn refresh_skill_completion(&mut self, cx: &mut Context<Self>) {
+        let trigger = self
+            .selection
+            .is_empty()
+            .then(|| {
+                skill_completion_trigger(&self.text, self.cursor(), self.marked_range.as_ref())
+            })
+            .flatten();
+        if self.completion_trigger == trigger {
+            return;
+        }
+
+        let query = trigger
+            .as_ref()
+            .map(|trigger| trigger.query.clone())
+            .unwrap_or_default();
+        self.completion_trigger = trigger;
+        self.completion_needs_selection_sync = self.completion_trigger.is_some();
+        self.completion_list.update(cx, |list, cx| {
+            list.delegate_mut().set_query(query);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn sync_completion_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.completion_needs_selection_sync {
+            return;
+        }
+
+        let open = self.skill_completion_open();
+        self.completion_list.update(cx, |list, cx| {
+            let selected = open.then(|| list.delegate().first_index()).flatten();
+            list.set_selected_index(selected, window, cx);
+            if let Some(ix) = selected {
+                list.scroll_to_item(ix, gpui::ScrollStrategy::Top, window, cx);
+            }
+        });
+        self.completion_needs_selection_sync = false;
+    }
+
+    fn move_completion_selection(
+        &mut self,
+        delta: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_completion_selection(window, cx);
+        self.completion_list.update(cx, |list, cx| {
+            let count = list.delegate().item_count();
+            if count == 0 {
+                list.set_selected_index(None, window, cx);
+                return;
+            }
+
+            let current = list.selected_index().map(|ix| ix.row).unwrap_or(0);
+            let next = if delta < 0 {
+                if current == 0 { count - 1 } else { current - 1 }
+            } else if current + 1 >= count {
+                0
+            } else {
+                current + 1
+            };
+            let ix = gpui_component::IndexPath::default().row(next);
+            list.set_selected_index(Some(ix), window, cx);
+            list.scroll_to_item(ix, gpui::ScrollStrategy::Top, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn confirm_completion_if_open(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.skill_completion_open() {
+            return false;
+        }
+
+        self.sync_completion_selection(window, cx);
+        let row = self
+            .completion_list
+            .read_with(cx, |list, _| list.delegate().selected_row());
+        if let Some(row) = row {
+            self.confirm_skill_completion(row, window, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn confirm_skill_completion(
+        &mut self,
+        row: SkillCompletionRow,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(trigger) = self.completion_trigger.clone() else {
+            return;
+        };
+        let mut replacement = format!("${}", row.skill.name);
+        if self.text[trigger.range.end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_whitespace())
+        {
+            replacement.push(' ');
+        }
+        self.replace_range(trigger.range, &replacement, true, cx);
+        self.close_skill_completion(cx);
+    }
+
+    pub(super) fn render_skill_completion_panel(
+        &mut self,
+        max_height: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.sync_completion_selection(window, cx);
+
+        div()
+            .id("ai-chat2-skill-completion")
+            .w_full()
+            .max_h(max_height)
+            .occlude()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .shadow_lg()
+            .child(
+                List::new(&self.completion_list)
+                    .with_size(gpui_component::Size::Small)
+                    .scrollbar_visible(true)
+                    .max_h(max_height)
+                    .p_1(),
+            )
+            .into_any_element()
+    }
+
+    fn expand_edit_range(&self, range: Range<usize>) -> Range<usize> {
+        let range = buffer::normalize_range(&self.text, range);
+        expand_range_to_token_boundaries(&self.tokens, range)
+    }
+
     fn replace_range(
         &mut self,
         range: Range<usize>,
@@ -546,7 +766,7 @@ impl ComposerEditor {
             self.record_before_change();
         }
 
-        let range = buffer::normalize_range(&self.text, range);
+        let range = self.expand_edit_range(range);
         self.text.replace_range(range.clone(), new_text);
         let cursor = range.start + new_text.len();
         self.selection.collapse(clamp_offset(&self.text, cursor));
@@ -555,6 +775,7 @@ impl ComposerEditor {
         self.preferred_x = None;
         self.invalidate_layout();
         self.refresh_tokens();
+        self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
@@ -571,10 +792,16 @@ impl ComposerEditor {
     fn move_to(&mut self, offset: usize, selecting: bool, cx: &mut Context<Self>) {
         self.pause_cursor_blink(cx);
         let offset = buffer::clamp_grapheme_offset(&self.text, offset);
+        let offset = if selecting {
+            offset
+        } else {
+            nearest_token_boundary(&self.tokens, offset).unwrap_or(offset)
+        };
         self.selection.move_head(offset, selecting);
         self.preferred_column = None;
         self.preferred_x = None;
         self.marked_range = None;
+        self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
     }
@@ -586,10 +813,16 @@ impl ComposerEditor {
                 layout.offset_for_vertical_move(&self.text, self.cursor(), delta, self.preferred_x)
         {
             let offset = buffer::clamp_grapheme_offset(&self.text, offset);
+            let offset = if selecting {
+                offset
+            } else {
+                nearest_token_boundary(&self.tokens, offset).unwrap_or(offset)
+            };
             self.selection.move_head(offset, selecting);
             self.preferred_column = None;
             self.preferred_x = Some(preferred_x);
             self.marked_range = None;
+            self.refresh_skill_completion(cx);
             self.request_cursor_visible(cx);
             cx.notify();
             return;
@@ -605,10 +838,16 @@ impl ComposerEditor {
         };
         let offset = offset_for_line_column(&self.text, next_line_ix, preferred_column);
         let offset = buffer::clamp_grapheme_offset(&self.text, offset);
+        let offset = if selecting {
+            offset
+        } else {
+            nearest_token_boundary(&self.tokens, offset).unwrap_or(offset)
+        };
         self.selection.move_head(offset, selecting);
         self.preferred_column = Some(preferred_column);
         self.preferred_x = None;
         self.marked_range = None;
+        self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
     }
@@ -618,6 +857,12 @@ impl ComposerEditor {
             return Some(self.selection.range());
         }
         let cursor = self.cursor();
+        if let Some(token) = token_before_offset(&self.tokens, cursor) {
+            return Some(token.range.clone());
+        }
+        if let Some(token) = token_at_offset(&self.tokens, cursor) {
+            return Some(token.range.clone());
+        }
         (cursor > 0).then(|| previous_grapheme_boundary(&self.text, cursor)..cursor)
     }
 
@@ -626,6 +871,12 @@ impl ComposerEditor {
             return Some(self.selection.range());
         }
         let cursor = self.cursor();
+        if let Some(token) = token_after_offset(&self.tokens, cursor) {
+            return Some(token.range.clone());
+        }
+        if let Some(token) = token_at_offset(&self.tokens, cursor) {
+            return Some(token.range.clone());
+        }
         (cursor < self.text.len()).then(|| cursor..next_grapheme_boundary(&self.text, cursor))
     }
 
@@ -638,7 +889,7 @@ impl ComposerEditor {
         if let Some(range) = range
             && range.start != range.end
         {
-            self.replace_range(range, "", true, cx);
+            self.replace_range(self.expand_edit_range(range), "", true, cx);
             return;
         }
         window.play_system_bell();
@@ -664,6 +915,7 @@ impl ComposerEditor {
         }
         self.preferred_column = None;
         self.preferred_x = None;
+        self.close_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
     }
@@ -677,6 +929,7 @@ impl ComposerEditor {
         };
         self.preferred_column = None;
         self.preferred_x = None;
+        self.close_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
     }
@@ -688,6 +941,15 @@ impl ComposerEditor {
         buffer::clamp_grapheme_offset(&self.text, layout.offset_for_position(&self.text, position))
     }
 
+    fn token_for_mouse_position(&self, position: Point<Pixels>) -> Option<ComposerToken> {
+        let layout = self.last_layout.as_ref()?;
+        let hit = layout.token_hit_for_position(&self.text, position)?;
+        self.tokens
+            .iter()
+            .find(|token| token.range == hit.range)
+            .cloned()
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -695,6 +957,15 @@ impl ComposerEditor {
         cx: &mut Context<Self>,
     ) {
         self.focus(window, cx);
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && let Some(token) = self.token_for_mouse_position(event.position)
+        {
+            self.selecting = false;
+            open_skill_detail_dialog(token.skill, window, cx);
+            return;
+        }
+
         self.selecting = true;
         let offset = self.index_for_mouse_position(event.position);
         match event.click_count {
@@ -797,11 +1068,19 @@ impl ComposerEditor {
         self.move_to(offset, false, cx);
     }
 
-    fn on_move_up(&mut self, _: &ComposerMoveUp, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_move_up(&mut self, _: &ComposerMoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.skill_completion_open() {
+            self.move_completion_selection(-1, window, cx);
+            return;
+        }
         self.move_vertically(-1, false, cx);
     }
 
-    fn on_move_down(&mut self, _: &ComposerMoveDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_move_down(&mut self, _: &ComposerMoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.skill_completion_open() {
+            self.move_completion_selection(1, window, cx);
+            return;
+        }
         self.move_vertically(1, false, cx);
     }
 
@@ -929,20 +1208,50 @@ impl ComposerEditor {
         self.replace_selection("\n", true, cx);
     }
 
-    fn on_submit(&mut self, _: &ComposerSubmit, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_submit(&mut self, _: &ComposerSubmit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_completion_if_open(window, cx) {
+            return;
+        }
+
         let snapshot = self.snapshot();
         cx.emit(ComposerEditorEvent::SubmitRequested(snapshot));
+    }
+
+    fn on_cancel_completion(
+        &mut self,
+        _: &ComposerCancelCompletion,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.skill_completion_open() {
+            self.close_skill_completion(cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn on_confirm_completion(
+        &mut self,
+        _: &ComposerConfirmCompletion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.confirm_completion_if_open(window, cx) {
+            cx.propagate();
+        }
     }
 
     fn on_undo(&mut self, _: &ComposerUndo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.history.undo(self.current_state()) {
             self.restore_state(state, cx);
+            self.refresh_skill_completion(cx);
         }
     }
 
     fn on_redo(&mut self, _: &ComposerRedo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.history.redo(self.current_state()) {
             self.restore_state(state, cx);
+            self.refresh_skill_completion(cx);
         }
     }
 
@@ -1024,7 +1333,7 @@ impl EntityInputHandler for ComposerEditor {
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let range = range_utf16
@@ -1039,6 +1348,7 @@ impl EntityInputHandler for ComposerEditor {
         } else {
             self.replace_range(range, text, true, cx);
         }
+        self.sync_completion_selection(window, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -1075,7 +1385,7 @@ impl EntityInputHandler for ComposerEditor {
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.selection.range());
 
-        let range = buffer::normalize_range(&self.text, range);
+        let range = self.expand_edit_range(range);
         self.text.replace_range(range.clone(), new_text);
         let marked = range.start..range.start + new_text.len();
         self.marked_range = (!new_text.is_empty()).then_some(marked.clone());
@@ -1095,6 +1405,7 @@ impl EntityInputHandler for ComposerEditor {
         // macOS queries IME candidate bounds immediately after marked-text updates.
         // Keep the previous layout available until paint replaces it with a fresh one.
         self.refresh_tokens();
+        self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
@@ -1174,6 +1485,8 @@ impl Render for ComposerEditor {
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_newline))
             .on_action(cx.listener(Self::on_submit))
+            .on_action(cx.listener(Self::on_cancel_completion))
+            .on_action(cx.listener(Self::on_confirm_completion))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_copy))
@@ -1187,7 +1500,6 @@ impl Render for ComposerEditor {
             .h(height)
             .min_w_0()
             .relative()
-            .overflow_hidden()
             .text_base()
             .child(
                 gpui::div()
@@ -1203,8 +1515,9 @@ impl Render for ComposerEditor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, path::PathBuf};
 
+    use crate::state::skills::GlobalSkillEntry;
     use ai_chat_core::SkillSourceKind;
     use gpui::{AppContext as _, TestAppContext, VisualTestContext, px, size};
 
@@ -1223,6 +1536,7 @@ mod tests {
                     (*name).to_string(),
                     ComposerSkill {
                         name: (*name).to_string(),
+                        description: Some("Rust skill".to_string()),
                         source_kind: SkillSourceKind::User,
                         skill_file_path: format!("/skills/{name}/SKILL.md"),
                         directory_path: format!("/skills/{name}"),
@@ -1233,8 +1547,22 @@ mod tests {
         editor
     }
 
+    fn skill_entry(name: &str) -> GlobalSkillEntry {
+        GlobalSkillEntry {
+            name: name.to_string(),
+            description: Some("Rust skill".to_string()),
+            source_kind: SkillSourceKind::User,
+            skill_file_path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            directory_path: PathBuf::from(format!("/skills/{name}")),
+            search_text: format!("{name} Rust skill /skills/{name}/SKILL.md"),
+        }
+    }
+
     fn init_test_app(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::foundation::i18n::init(cx);
+        });
     }
 
     fn resize_editor(cx: &mut VisualTestContext, width: f32, height: f32) {
@@ -1296,6 +1624,70 @@ mod tests {
                 editor.on_redo(&ComposerRedo, window, cx);
                 assert_eq!(editor.text, "$rust");
                 assert_eq!(editor.tokens.len(), 1);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn confirming_skill_completion_appends_space(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = ComposerEditor::new("placeholder", window, cx);
+                        editor.set_skill_entries(&[skill_entry("rust")], cx);
+                        editor.replace_range(0..0, "$ru", true, cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                assert!(editor.skill_completion_open());
+                editor.on_confirm_completion(&ComposerConfirmCompletion, window, cx);
+                assert_eq!(editor.text, "$rust ");
+                assert_eq!(editor.cursor(), "$rust ".len());
+                assert_eq!(editor.tokens.len(), 1);
+                assert_eq!(editor.tokens[0].range, 0.."$rust".len());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn confirming_skill_completion_does_not_duplicate_existing_space(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = ComposerEditor::new("placeholder", window, cx);
+                        editor.set_skill_entries(&[skill_entry("rust")], cx);
+                        editor.replace_range(0..0, "$ru next", true, cx);
+                        editor.selection.collapse("$ru".len());
+                        editor.refresh_skill_completion(cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                assert!(editor.skill_completion_open());
+                editor.on_confirm_completion(&ComposerConfirmCompletion, window, cx);
+                assert_eq!(editor.text, "$rust next");
+                assert_eq!(editor.cursor(), "$rust".len());
+                assert_eq!(editor.tokens.len(), 1);
+                assert_eq!(editor.tokens[0].range, 0.."$rust".len());
             });
         });
     }
@@ -1457,6 +1849,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn skill_token_edits_are_atomic(cx: &mut TestAppContext) {
+        init_test_app(cx);
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let mut editor = editor_with_skills(&["rust"], window, cx);
+                        editor.replace_range(0..0, "$rust next", true, cx);
+                        editor
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let editor = window.root(&mut cx).unwrap();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.selection.collapse("$rust".len());
+                editor.on_backspace(&ComposerBackspace, window, cx);
+                assert_eq!(editor.text, " next");
+                assert!(editor.tokens.is_empty());
+
+                editor.clear(cx);
+                editor.replace_range(0..0, "$rust next", true, cx);
+                editor.selection.collapse(0);
+                editor.on_delete(&ComposerDelete, window, cx);
+                assert_eq!(editor.text, " next");
+                assert!(editor.tokens.is_empty());
+
+                editor.clear(cx);
+                editor.replace_range(0..0, "$rust next", true, cx);
+                editor.selection.collapse(2);
+                editor.replace_text_in_range(None, "go", window, cx);
+                assert_eq!(editor.text, "go next");
+                assert!(editor.tokens.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
     fn soft_wrap_layout_maps_points_to_utf8_offsets(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1485,7 +1919,10 @@ mod tests {
                 layout.visual_line_count,
                 editor.display_line_count(),
                 layout.bounds,
-                layout.lines.first().map(|line| line.line.width())
+                layout
+                    .lines
+                    .first()
+                    .and_then(|line| line.first_visual_width())
             );
             assert_eq!(
                 layout.offset_for_position(&editor.text, layout.bounds.origin),
@@ -1536,7 +1973,7 @@ mod tests {
                 "visual={}, bounds={:?}, line_width={:?}",
                 layout.visual_line_count,
                 layout.bounds,
-                layout.lines.first().map(|line| line.line.width())
+                layout.lines.first().and_then(|line| line.first_visual_width())
             );
             assert_eq!(
                 editor.visible_line_count(),
@@ -1654,6 +2091,7 @@ mod tests {
             "rust".to_string(),
             ComposerSkill {
                 name: "rust".to_string(),
+                description: Some("Rust skill".to_string()),
                 source_kind: SkillSourceKind::User,
                 skill_file_path: "/skills/rust/SKILL.md".to_string(),
                 directory_path: "/skills/rust".to_string(),

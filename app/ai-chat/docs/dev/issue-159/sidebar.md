@@ -1,7 +1,7 @@
 # Issue #159 ai-chat2 Sidebar 专项计划
 
 本文档是 `app/ai-chat2` project-first sidebar 的实施计划。父级清单仍是
-`app/ai-chat/docs/dev/issue-159-ai-chat2-ui.md`；本文档只固定 sidebar、project/conversation
+`app/ai-chat/docs/dev/issue-159/README.md`；本文档只固定 sidebar、project/conversation
 navigation、搜索入口和右侧 conversation 路由的具体实现方案。
 
 创建时间：2026-06-03。
