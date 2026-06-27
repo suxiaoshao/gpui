@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ai_chat_agent::McpOAuthStatusSnapshot;
-use gpui::{App, AsyncWindowContext, TaskExt as _};
+use gpui::{App, AsyncApp, AsyncWindowContext, TaskExt as _};
 use rmcp::transport::{
     StoredCredentials,
     auth::{AuthorizationCallback, AuthorizationManager, OAuthClientConfig, OAuthState},
@@ -167,18 +167,18 @@ pub(crate) async fn write_credentials(
     task.await.map_err(|err| err.to_string())
 }
 
-pub(crate) fn write_credentials_detached(
+pub(crate) async fn write_credentials_value(
     key: &CredentialsKey,
     credentials_value: serde_json::Value,
-    cx: &mut App,
+    cx: &mut AsyncApp,
 ) -> Result<(), String> {
     let credentials = serde_json::from_value::<StoredCredentials>(credentials_value)
         .map_err(|err| err.to_string())?;
     let bytes = serde_json::to_vec(&credentials).map_err(|err| err.to_string())?;
     let key = key.as_str().to_string();
-    cx.write_credentials(&key, CREDENTIALS_USERNAME, &bytes)
-        .detach_and_log_err(cx);
-    Ok(())
+    cx.update(move |cx| cx.write_credentials(&key, CREDENTIALS_USERNAME, &bytes))
+        .await
+        .map_err(|err| err.to_string())
 }
 
 pub(crate) async fn authorize_with_browser(

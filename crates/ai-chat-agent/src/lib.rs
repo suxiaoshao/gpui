@@ -15,11 +15,11 @@ mod types;
 pub use approval::{ToolApprovalBroker, ToolApprovalDecision, ToolApprovalRequest};
 pub use error::{AgentRuntimeError, Result};
 pub use mcp::{
-    McpConfigLayer, McpConnector, McpOAuthStatusSnapshot, McpPreparedTools, McpRuntimeEvent,
-    McpServerConfig, McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
-    McpServerStatusSnapshot, McpServerTransport, McpServerTransportKindSnapshot, McpSessionManager,
-    McpSessionPruneMode, McpStdioTransport, McpStreamableHttpTransport, McpToolRegistrationOptions,
-    McpToolSnapshot,
+    McpConfigLayer, McpConnector, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot,
+    McpPreparedTools, McpRuntimeEvent, McpServerConfig, McpServerConnectionState,
+    McpServerInfoSnapshot, McpServerRuntimeConfig, McpServerStatusSnapshot, McpServerTransport,
+    McpServerTransportKindSnapshot, McpSessionManager, McpSessionPruneMode, McpStdioTransport,
+    McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
 };
 pub use persistence::PersistingCompletionModel;
 pub use provider_models::{
