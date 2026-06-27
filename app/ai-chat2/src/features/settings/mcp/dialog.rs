@@ -72,8 +72,8 @@ pub(super) struct McpServerEditDialogState {
     next_row_id: u64,
     content_scroll_handle: ScrollHandle,
     draft_oauth_status_key: String,
-    draft_oauth_status_url: Option<String>,
-    draft_oauth_credential_urls: BTreeSet<String>,
+    draft_oauth_credential_key: Option<state::mcp_oauth::CredentialsKey>,
+    draft_oauth_credential_keys: BTreeSet<state::mcp_oauth::CredentialsKey>,
     save_task: Option<Task<()>>,
     sign_out_task: Option<Task<()>>,
 }
@@ -82,7 +82,7 @@ struct McpOAuthDialogTarget {
     status_key: String,
     server_id: String,
     server: McpServerTomlConfig,
-    server_url: String,
+    credential_key: state::mcp_oauth::CredentialsKey,
     is_draft: bool,
     cleanup_credentials: bool,
 }
@@ -92,13 +92,13 @@ struct McpServerSaveRequest {
     server_id: String,
     server: McpServerTomlConfig,
     saved_auth: McpOAuthStatusSnapshot,
-    credential_urls_to_delete: Vec<String>,
+    credential_keys_to_delete: Vec<state::mcp_oauth::CredentialsKey>,
     success_title_key: &'static str,
 }
 
 struct McpOAuthSignOutRequest {
     server_id: String,
-    server_url: String,
+    credential_key: state::mcp_oauth::CredentialsKey,
     draft_only: bool,
 }
 
@@ -145,8 +145,8 @@ impl McpServerEditDialogState {
                 "__mcp_oauth_draft_{}",
                 NEXT_DRAFT_OAUTH_KEY.fetch_add(1, Ordering::Relaxed)
             ),
-            draft_oauth_status_url: None,
-            draft_oauth_credential_urls: BTreeSet::new(),
+            draft_oauth_credential_key: None,
+            draft_oauth_credential_keys: BTreeSet::new(),
             save_task: None,
             sign_out_task: None,
         }
@@ -203,18 +203,20 @@ impl McpServerEditDialogState {
             .merge_into_config(self.original_config.as_ref(), cx);
         let saved_server = server.clone();
         let saved_auth = self.oauth_status_after_save(&server_id, &saved_server, cx);
-        let credential_urls_to_delete = oauth_credential_urls_to_delete(
+        let credential_keys_to_delete = oauth_credential_keys_to_delete(
+            original_server_id.as_deref(),
             self.original_config.as_ref(),
+            &server_id,
             &saved_server,
-            &self.draft_oauth_credential_urls,
-            self.promoted_draft_oauth_url(&saved_server),
+            &self.draft_oauth_credential_keys,
+            self.promoted_draft_oauth_key(&server_id, &saved_server),
         );
         let request = McpServerSaveRequest {
             original_server_id,
             server_id,
             server,
             saved_auth,
-            credential_urls_to_delete,
+            credential_keys_to_delete,
             success_title_key: match &self.mode {
                 McpServerEditMode::Create => "mcp-notify-server-created",
                 McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
@@ -287,9 +289,9 @@ impl McpServerEditDialogState {
         saved_server: &McpServerTomlConfig,
         cx: &App,
     ) -> McpOAuthStatusSnapshot {
-        let saved_url = saved_server.url.as_deref();
-        if saved_server.oauth.is_some()
-            && self.draft_oauth_status_url.as_deref() == saved_url
+        let saved_key = oauth_credential_key_for_server(server_id, saved_server);
+        if saved_key.is_some()
+            && self.draft_oauth_credential_key.as_ref() == saved_key.as_ref()
             && let Some(auth) = state::mcp::runtime(cx)
                 .read(cx)
                 .auth_status(&self.draft_oauth_status_key)
@@ -297,11 +299,14 @@ impl McpServerEditDialogState {
             return auth;
         }
 
-        if saved_server.oauth.is_some()
+        if saved_key.is_some()
+            && let Some(original_server_id) = self.mode.original_server_id()
             && self
                 .original_config
                 .as_ref()
-                .is_some_and(|server| server.oauth.is_some() && server.url.as_deref() == saved_url)
+                .and_then(|server| oauth_credential_key_for_server(original_server_id, server))
+                .as_ref()
+                == saved_key.as_ref()
         {
             let status_key = self.mode.original_server_id().unwrap_or(server_id);
             if let Some(auth) = state::mcp::runtime(cx).read(cx).auth_status(status_key) {
@@ -312,13 +317,13 @@ impl McpServerEditDialogState {
         configured_oauth_status(saved_server)
     }
 
-    fn promoted_draft_oauth_url<'a>(
+    fn promoted_draft_oauth_key(
         &self,
-        saved_server: &'a McpServerTomlConfig,
-    ) -> Option<&'a str> {
-        let saved_url = saved_server.url.as_deref()?;
-        (saved_server.oauth.is_some() && self.draft_oauth_status_url.as_deref() == Some(saved_url))
-            .then_some(saved_url)
+        server_id: &str,
+        saved_server: &McpServerTomlConfig,
+    ) -> Option<state::mcp_oauth::CredentialsKey> {
+        let saved_key = oauth_credential_key_for_server(server_id, saved_server)?;
+        (self.draft_oauth_credential_key.as_ref() == Some(&saved_key)).then_some(saved_key)
     }
 
     fn finish_oauth_after_save(
@@ -328,9 +333,9 @@ impl McpServerEditDialogState {
         cx: &mut Context<Self>,
     ) {
         let server_id = self.draft.server_id(self.mode.original_server_id(), cx);
-        let saved_url = saved_server.url.as_deref();
+        let saved_key = oauth_credential_key_for_server(&server_id, saved_server);
         let promote_draft =
-            saved_server.oauth.is_some() && self.draft_oauth_status_url.as_deref() == saved_url;
+            saved_key.is_some() && self.draft_oauth_credential_key.as_ref() == saved_key.as_ref();
 
         if promote_draft {
             state::mcp::runtime(cx).update(cx, |runtime, cx| {
@@ -341,8 +346,8 @@ impl McpServerEditDialogState {
                     cx,
                 );
             });
-            if let Some(url) = saved_url {
-                self.draft_oauth_credential_urls.remove(url);
+            if let Some(key) = saved_key.as_ref() {
+                self.draft_oauth_credential_keys.remove(key);
             }
         } else {
             self.clear_draft_oauth_authorization(cx);
@@ -352,8 +357,8 @@ impl McpServerEditDialogState {
             runtime.replace_saved_server_status(server_id, saved_server, saved_auth, cx);
         });
 
-        self.draft_oauth_credential_urls.clear();
-        self.draft_oauth_status_url = None;
+        self.draft_oauth_credential_keys.clear();
+        self.draft_oauth_credential_key = None;
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -438,15 +443,15 @@ impl McpServerEditDialogState {
             return;
         };
         if target.is_draft {
-            if self.draft_oauth_status_url.as_deref() != Some(target.server_url.as_str()) {
+            if self.draft_oauth_credential_key.as_ref() != Some(&target.credential_key) {
                 state::mcp::runtime(cx).update(cx, |runtime, cx| {
                     runtime.discard_draft_oauth_authorization(&self.draft_oauth_status_key, cx);
                 });
             }
-            self.draft_oauth_status_url = Some(target.server_url.clone());
+            self.draft_oauth_credential_key = Some(target.credential_key.clone());
             if target.cleanup_credentials {
-                self.draft_oauth_credential_urls
-                    .insert(target.server_url.clone());
+                self.draft_oauth_credential_keys
+                    .insert(target.credential_key.clone());
             }
         } else {
             self.clear_draft_oauth_authorization(cx);
@@ -478,7 +483,7 @@ impl McpServerEditDialogState {
             } else {
                 target.server_id
             },
-            server_url: target.server_url,
+            credential_key: target.credential_key,
             draft_only: target.is_draft && target.cleanup_credentials,
         };
         let form = cx.entity().downgrade();
@@ -512,9 +517,10 @@ impl McpServerEditDialogState {
         };
 
         if request.draft_only {
-            self.draft_oauth_credential_urls.remove(&request.server_url);
-            if self.draft_oauth_status_url.as_deref() == Some(request.server_url.as_str()) {
-                self.draft_oauth_status_url = None;
+            self.draft_oauth_credential_keys
+                .remove(&request.credential_key);
+            if self.draft_oauth_credential_key.as_ref() == Some(&request.credential_key) {
+                self.draft_oauth_credential_key = None;
             }
             state::mcp::runtime(cx).update(cx, |runtime, cx| {
                 runtime.discard_draft_oauth_authorization(&self.draft_oauth_status_key, cx);
@@ -546,13 +552,13 @@ impl McpServerEditDialogState {
 
     fn cleanup_draft_oauth_credentials(&mut self, cx: &mut Context<Self>) {
         self.clear_draft_oauth_authorization(cx);
-        for server_url in std::mem::take(&mut self.draft_oauth_credential_urls) {
-            let _ = state::mcp_oauth::delete_credentials_detached(&server_url, cx);
+        for credential_key in std::mem::take(&mut self.draft_oauth_credential_keys) {
+            state::mcp_oauth::delete_credentials_detached(&credential_key, cx);
         }
     }
 
     fn clear_draft_oauth_authorization(&mut self, cx: &mut Context<Self>) {
-        self.draft_oauth_status_url = None;
+        self.draft_oauth_credential_key = None;
         state::mcp::runtime(cx).update(cx, |runtime, cx| {
             runtime.discard_draft_oauth_authorization(&self.draft_oauth_status_key, cx);
         });
@@ -566,13 +572,18 @@ impl McpServerEditDialogState {
         let server = self
             .draft
             .merge_into_config(self.original_config.as_ref(), cx);
-        let server_url = server.url.clone()?;
+        let credential_key = oauth_credential_key_for_server(&server_id, &server)?;
         let original_server_id = self.mode.original_server_id();
-        let uses_original_oauth_url = self.original_config.as_ref().is_some_and(|server| {
-            server.oauth.is_some() && server.url.as_deref() == Some(server_url.as_str())
-        });
+        let uses_original_oauth_credentials = original_server_id
+            .and_then(|original_server_id| {
+                self.original_config
+                    .as_ref()
+                    .and_then(|server| oauth_credential_key_for_server(original_server_id, server))
+            })
+            .as_ref()
+            == Some(&credential_key);
         let is_saved_target =
-            original_server_id == Some(server_id.as_str()) && uses_original_oauth_url;
+            original_server_id == Some(server_id.as_str()) && uses_original_oauth_credentials;
         Some(McpOAuthDialogTarget {
             status_key: if is_saved_target {
                 server_id.clone()
@@ -581,9 +592,9 @@ impl McpServerEditDialogState {
             },
             server_id,
             server,
-            server_url,
+            credential_key,
             is_draft: !is_saved_target,
-            cleanup_credentials: !uses_original_oauth_url,
+            cleanup_credentials: !uses_original_oauth_credentials,
         })
     }
 
@@ -751,7 +762,7 @@ impl McpServerEditDialogState {
             return McpOAuthStatusSnapshot::SignedOut;
         };
         if target.is_draft {
-            if self.draft_oauth_status_url.as_deref() == Some(target.server_url.as_str())
+            if self.draft_oauth_credential_key.as_ref() == Some(&target.credential_key)
                 && let Some(auth) = state::mcp::runtime(cx)
                     .read(cx)
                     .auth_status(&target.status_key)
@@ -1202,11 +1213,11 @@ fn confirm_mcp_server_edit_dialog(
 }
 
 async fn delete_oauth_credentials(
-    server_urls: &[String],
+    credential_keys: &[state::mcp_oauth::CredentialsKey],
     cx: &mut gpui::AsyncWindowContext,
 ) -> Result<(), String> {
-    for server_url in server_urls {
-        state::mcp_oauth::delete_credentials(server_url, cx).await?;
+    for credential_key in credential_keys {
+        state::mcp_oauth::delete_credentials(credential_key, cx).await?;
     }
     Ok(())
 }
@@ -1215,7 +1226,7 @@ async fn delete_oauth_credentials_for_save(
     request: McpServerSaveRequest,
     cx: &mut gpui::AsyncWindowContext,
 ) -> Result<McpServerSaveRequest, String> {
-    delete_oauth_credentials(&request.credential_urls_to_delete, cx).await?;
+    delete_oauth_credentials(&request.credential_keys_to_delete, cx).await?;
     Ok(request)
 }
 
@@ -1223,40 +1234,42 @@ async fn delete_oauth_credentials_for_sign_out(
     request: McpOAuthSignOutRequest,
     cx: &mut gpui::AsyncWindowContext,
 ) -> Result<McpOAuthSignOutRequest, String> {
-    state::mcp_oauth::delete_credentials(&request.server_url, cx).await?;
+    state::mcp_oauth::delete_credentials(&request.credential_key, cx).await?;
     Ok(request)
 }
 
-fn oauth_credential_urls_to_delete(
+fn oauth_credential_keys_to_delete(
+    original_server_id: Option<&str>,
     original_config: Option<&McpServerTomlConfig>,
+    saved_server_id: &str,
     saved_server: &McpServerTomlConfig,
-    draft_credential_urls: &BTreeSet<String>,
-    promoted_draft_url: Option<&str>,
-) -> Vec<String> {
-    let mut urls = BTreeSet::new();
-    let original_url = original_config.and_then(|server| server.url.as_deref());
-    let saved_url = saved_server.url.as_deref();
-    let original_oauth_enabled = original_config.is_some_and(|server| server.oauth.is_some());
-    let oauth_disabled = original_oauth_enabled && saved_server.oauth.is_none();
-    let oauth_url_changed =
-        original_oauth_enabled && saved_server.oauth.is_some() && original_url != saved_url;
-    if (oauth_disabled || oauth_url_changed)
-        && let Some(url) = original_url
-    {
-        urls.insert(url.to_string());
+    draft_credential_keys: &BTreeSet<state::mcp_oauth::CredentialsKey>,
+    promoted_draft_key: Option<state::mcp_oauth::CredentialsKey>,
+) -> Vec<state::mcp_oauth::CredentialsKey> {
+    let mut keys = BTreeSet::new();
+    let original_key = original_server_id
+        .zip(original_config)
+        .and_then(|(server_id, server)| oauth_credential_key_for_server(server_id, server));
+    let saved_key = oauth_credential_key_for_server(saved_server_id, saved_server);
+
+    if original_key.is_some() && original_key != saved_key {
+        keys.extend(original_key);
     }
-    if oauth_disabled
-        && let Some(url) = saved_url
-        && Some(url) != original_url
-    {
-        urls.insert(url.to_string());
-    }
-    for url in draft_credential_urls {
-        if promoted_draft_url != Some(url.as_str()) {
-            urls.insert(url.clone());
+    for key in draft_credential_keys {
+        if promoted_draft_key.as_ref() != Some(key) {
+            keys.insert(key.clone());
         }
     }
-    urls.into_iter().collect()
+    keys.into_iter().collect()
+}
+
+fn oauth_credential_key_for_server(
+    server_id: &str,
+    server: &McpServerTomlConfig,
+) -> Option<state::mcp_oauth::CredentialsKey> {
+    state::mcp_oauth::credentials_key_for_server(server_id, server)
+        .ok()
+        .flatten()
 }
 
 fn configured_oauth_status(server: &McpServerTomlConfig) -> McpOAuthStatusSnapshot {
@@ -1284,10 +1297,9 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
         move |window, cx| {
             let server_before_delete =
                 state::config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
-            let credential_urls_to_delete = server_before_delete
+            let credential_keys_to_delete = server_before_delete
                 .as_ref()
-                .filter(|server| server.oauth.is_some())
-                .and_then(|server| server.url.clone())
+                .and_then(|server| oauth_credential_key_for_server(&server_id, server))
                 .into_iter()
                 .collect::<Vec<_>>();
             let server_id = server_id.clone();
@@ -1295,7 +1307,7 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
             let delete_failed_title = delete_failed_title.clone();
             let task = window.spawn(cx, async move |cx| {
                 let credentials_result =
-                    delete_oauth_credentials(&credential_urls_to_delete, cx).await;
+                    delete_oauth_credentials(&credential_keys_to_delete, cx).await;
                 if let Err(err) = cx.update(|window, cx| match credentials_result {
                     Ok(()) => match state::config::delete_mcp_server(cx, &server_id) {
                         Ok(_) => {
@@ -1509,8 +1521,8 @@ mod tests {
     use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig};
 
     use super::{
-        McpTransportKind, can_authorize_oauth_values, oauth_credential_urls_to_delete,
-        transport_from_toggle_states,
+        McpTransportKind, can_authorize_oauth_values, oauth_credential_key_for_server,
+        oauth_credential_keys_to_delete, transport_from_toggle_states,
     };
 
     #[test]
@@ -1571,26 +1583,30 @@ mod tests {
 
     #[test]
     fn oauth_save_deletes_stale_credentials_but_keeps_promoted_draft() {
+        let server_id = "server";
         let original = oauth_server("https://old.example.com/mcp");
         let saved = oauth_server("https://new.example.com/mcp");
-        let draft_urls = BTreeSet::from([
-            "https://new.example.com/mcp".to_string(),
-            "https://unused.example.com/mcp".to_string(),
-        ]);
+        let original_key = oauth_credential_key_for_server(server_id, &original).unwrap();
+        let saved_key = oauth_credential_key_for_server(server_id, &saved).unwrap();
+        let unused_draft_key = oauth_credential_key_for_server(
+            server_id,
+            &oauth_server("https://unused.example.com/mcp"),
+        )
+        .unwrap();
+        let draft_keys = BTreeSet::from([saved_key.clone(), unused_draft_key.clone()]);
 
-        let urls = oauth_credential_urls_to_delete(
+        let keys = oauth_credential_keys_to_delete(
+            Some(server_id),
             Some(&original),
+            server_id,
             &saved,
-            &draft_urls,
-            saved.url.as_deref(),
+            &draft_keys,
+            Some(saved_key),
         );
 
         assert_eq!(
-            urls,
-            vec![
-                "https://old.example.com/mcp".to_string(),
-                "https://unused.example.com/mcp".to_string()
-            ]
+            keys.into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from([original_key, unused_draft_key])
         );
     }
 

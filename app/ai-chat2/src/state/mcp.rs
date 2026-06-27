@@ -224,6 +224,19 @@ impl McpRuntimeStore {
             cx.notify();
             return;
         };
+        let Some(credentials_key) = mcp_oauth::credentials_key_for_server(&server_id, &server)
+            .map_or_else(
+                |err| {
+                    self.last_error = Some(err);
+                    None
+                },
+                |key| key,
+            )
+        else {
+            cx.emit(McpRuntimeStoreEvent::StatusChanged);
+            cx.notify();
+            return;
+        };
 
         self.oauth_tasks.remove(&status_key);
         self.oauth_task_targets.insert(
@@ -247,8 +260,12 @@ impl McpRuntimeStore {
                 mcp_oauth::authorize_with_browser(server_url.clone(), oauth_config, cx).await;
             let result = match result {
                 Ok(authorized) => {
-                    match mcp_oauth::write_credentials(&server_url, &authorized.credentials, cx)
-                        .await
+                    match mcp_oauth::write_credentials(
+                        &credentials_key,
+                        &authorized.credentials,
+                        cx,
+                    )
+                    .await
                     {
                         Ok(()) => Ok(authorized.status),
                         Err(err) => Err(err),
@@ -555,15 +572,26 @@ impl McpRuntimeStore {
             }
             McpRuntimeEvent::OAuthCredentialsChanged(snapshot) => {
                 let snapshot = *snapshot;
-                match mcp_oauth::write_credentials_detached(
-                    &snapshot.server_url,
-                    snapshot.credentials,
-                    cx,
-                ) {
+                let server = config::read(cx, |config| {
+                    config.mcp_servers.get(&snapshot.server_id).cloned()
+                });
+                let write_result = server
+                    .as_ref()
+                    .ok_or_else(|| format!("MCP server `{}` not found", snapshot.server_id))
+                    .and_then(|server| {
+                        mcp_oauth::credentials_key_for_server(&snapshot.server_id, server)?
+                            .ok_or_else(|| {
+                                format!(
+                                    "MCP server `{}` does not have OAuth credentials",
+                                    snapshot.server_id
+                                )
+                            })
+                    })
+                    .and_then(|key| {
+                        mcp_oauth::write_credentials_detached(&key, snapshot.credentials, cx)
+                    });
+                match write_result {
                     Ok(()) => {
-                        let server = config::read(cx, |config| {
-                            config.mcp_servers.get(&snapshot.server_id).cloned()
-                        });
                         if let Some(server) = server {
                             self.set_server_auth_status(
                                 snapshot.server_id,
@@ -764,7 +792,15 @@ async fn attach_oauth_credentials(
         if http.oauth.is_none() {
             continue;
         }
-        if let Some(credentials) = mcp_oauth::read_credentials(&http.url, cx).await? {
+        let Some(oauth) = http.oauth.as_ref() else {
+            continue;
+        };
+        let Some(credentials_key) =
+            mcp_oauth::credentials_key_for_oauth_value(&config.server.server_id, &http.url, oauth)?
+        else {
+            continue;
+        };
+        if let Some(credentials) = mcp_oauth::read_credentials(&credentials_key, cx).await? {
             http.oauth_credentials =
                 Some(serde_json::to_value(credentials).map_err(|err| err.to_string())?);
         }

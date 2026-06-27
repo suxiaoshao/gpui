@@ -13,6 +13,8 @@ use tokio::{
 };
 use url::Url;
 
+use super::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
+
 const CREDENTIALS_USERNAME: &str = "mcp-oauth";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
@@ -35,33 +37,112 @@ pub(crate) struct AuthorizedCredentials {
     pub(crate) status: McpOAuthStatusSnapshot,
 }
 
-pub(crate) fn credentials_key(server_url: &str) -> Result<String, String> {
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct CredentialsKey(String);
+
+impl CredentialsKey {
+    fn new(server_id: &str, server_url: &str, oauth: &McpOAuthTomlConfig) -> Result<Self, String> {
+        let url = Url::parse(server_url).map_err(|err| err.to_string())?;
+        let canonical_url = canonical_server_uri(&url);
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("server_id", server_id);
+        serializer.append_pair("url", &canonical_url);
+        match oauth {
+            McpOAuthTomlConfig::AuthorizationCodePkce {
+                scopes,
+                client_id,
+                client_metadata_url,
+                resource,
+                ..
+            } => {
+                serializer.append_pair("flow", "authorization_code_pkce");
+                append_optional_pair(&mut serializer, "client_id", client_id.as_deref());
+                append_optional_pair(
+                    &mut serializer,
+                    "client_metadata_url",
+                    client_metadata_url.as_deref(),
+                );
+                append_optional_pair(&mut serializer, "resource", resource.as_deref());
+                for scope in scopes {
+                    serializer.append_pair("scope", scope);
+                }
+            }
+            McpOAuthTomlConfig::ClientCredentials { .. } => {
+                return Err(
+                    "OAuth client_credentials does not use stored browser credentials".into(),
+                );
+            }
+        }
+        Ok(Self(format!("mcp-oauth:v2:{}", serializer.finish())))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub(crate) fn credentials_key_for_server(
+    server_id: &str,
+    server: &McpServerTomlConfig,
+) -> Result<Option<CredentialsKey>, String> {
+    if server.transport != McpTransportKind::StreamableHttp {
+        return Ok(None);
+    }
+    let Some(oauth) = server.oauth.as_ref() else {
+        return Ok(None);
+    };
+    let Some(server_url) = server.url.as_deref() else {
+        return Ok(None);
+    };
+    CredentialsKey::new(server_id, server_url, oauth).map(Some)
+}
+
+pub(crate) fn credentials_key_for_oauth_value(
+    server_id: &str,
+    server_url: &str,
+    oauth: &serde_json::Value,
+) -> Result<Option<CredentialsKey>, String> {
+    let oauth = serde_json::from_value::<McpOAuthTomlConfig>(oauth.clone())
+        .map_err(|err| format!("invalid MCP OAuth config for `{server_id}`: {err}"))?;
+    CredentialsKey::new(server_id, server_url, &oauth).map(Some)
+}
+
+fn append_optional_pair(
+    serializer: &mut url::form_urlencoded::Serializer<'_, String>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        serializer.append_pair(key, value);
+    }
+}
+
+pub(crate) fn legacy_credentials_key_for_test(server_url: &str) -> Result<String, String> {
     let url = Url::parse(server_url).map_err(|err| err.to_string())?;
     Ok(format!("mcp-oauth:{}", canonical_server_uri(&url)))
 }
 
 pub(crate) async fn delete_credentials(
-    server_url: &str,
+    key: &CredentialsKey,
     cx: &mut AsyncWindowContext,
 ) -> Result<(), String> {
-    let key = credentials_key(server_url)?;
+    let key = key.as_str().to_string();
     let task = cx
         .update(move |_, cx| cx.delete_credentials(&key))
         .map_err(|err| err.to_string())?;
     task.await.map_err(|err| err.to_string())
 }
 
-pub(crate) fn delete_credentials_detached(server_url: &str, cx: &mut App) -> Result<(), String> {
-    let key = credentials_key(server_url)?;
+pub(crate) fn delete_credentials_detached(key: &CredentialsKey, cx: &mut App) {
+    let key = key.as_str().to_string();
     cx.delete_credentials(&key).detach_and_log_err(cx);
-    Ok(())
 }
 
 pub(crate) async fn read_credentials(
-    server_url: &str,
+    key: &CredentialsKey,
     cx: &mut AsyncWindowContext,
 ) -> Result<Option<StoredCredentials>, String> {
-    let key = credentials_key(server_url)?;
+    let key = key.as_str().to_string();
     let task = cx
         .update(move |_, cx| cx.read_credentials(&key))
         .map_err(|err| err.to_string())?;
@@ -74,12 +155,12 @@ pub(crate) async fn read_credentials(
 }
 
 pub(crate) async fn write_credentials(
-    server_url: &str,
+    key: &CredentialsKey,
     credentials: &StoredCredentials,
     cx: &mut AsyncWindowContext,
 ) -> Result<(), String> {
-    let key = credentials_key(server_url)?;
     let bytes = serde_json::to_vec(credentials).map_err(|err| err.to_string())?;
+    let key = key.as_str().to_string();
     let task = cx
         .update(move |_, cx| cx.write_credentials(&key, CREDENTIALS_USERNAME, &bytes))
         .map_err(|err| err.to_string())?;
@@ -87,14 +168,14 @@ pub(crate) async fn write_credentials(
 }
 
 pub(crate) fn write_credentials_detached(
-    server_url: &str,
+    key: &CredentialsKey,
     credentials_value: serde_json::Value,
     cx: &mut App,
 ) -> Result<(), String> {
     let credentials = serde_json::from_value::<StoredCredentials>(credentials_value)
         .map_err(|err| err.to_string())?;
-    let key = credentials_key(server_url)?;
     let bytes = serde_json::to_vec(&credentials).map_err(|err| err.to_string())?;
+    let key = key.as_str().to_string();
     cx.write_credentials(&key, CREDENTIALS_USERNAME, &bytes)
         .detach_and_log_err(cx);
     Ok(())
@@ -307,27 +388,96 @@ async fn start_loopback_callback(
     preferred_port: Option<u16>,
     configured_redirect_uri: Option<&str>,
 ) -> Result<(String, oneshot::Receiver<Result<String, String>>), rmcp::transport::auth::AuthError> {
-    let listener = TcpListener::bind(("127.0.0.1", preferred_port.unwrap_or(0)))
+    let config = resolve_callback_listener_config(preferred_port, configured_redirect_uri)
+        .map_err(rmcp::transport::auth::AuthError::InternalError)?;
+    let listener = TcpListener::bind((config.bind_host.as_str(), config.bind_port))
         .await
         .map_err(|err| rmcp::transport::auth::AuthError::InternalError(err.to_string()))?;
     let port = listener
         .local_addr()
         .map_err(|err| rmcp::transport::auth::AuthError::InternalError(err.to_string()))?
         .port();
-    let redirect_uri = configured_redirect_uri
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("http://127.0.0.1:{port}/callback"));
+    let redirect_uri = config
+        .redirect_uri
+        .unwrap_or_else(|| format!("http://{}:{port}/callback", config.bind_host));
+    let callback_base_url = Url::parse(&redirect_uri)
+        .map_err(|err| rmcp::transport::auth::AuthError::InternalError(err.to_string()))?;
     let (tx, rx) = oneshot::channel();
 
     tokio::spawn(async move {
-        let result = receive_callback(listener, port).await;
+        let result = receive_callback(listener, callback_base_url).await;
         let _ = tx.send(result);
     });
 
     Ok((redirect_uri, rx))
 }
 
-async fn receive_callback(listener: TcpListener, port: u16) -> Result<String, String> {
+#[derive(Debug, PartialEq, Eq)]
+struct CallbackListenerConfig {
+    bind_host: String,
+    bind_port: u16,
+    redirect_uri: Option<String>,
+}
+
+fn resolve_callback_listener_config(
+    preferred_port: Option<u16>,
+    configured_redirect_uri: Option<&str>,
+) -> Result<CallbackListenerConfig, String> {
+    let Some(configured_redirect_uri) = configured_redirect_uri else {
+        return Ok(CallbackListenerConfig {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: preferred_port.unwrap_or(0),
+            redirect_uri: None,
+        });
+    };
+
+    let url = Url::parse(configured_redirect_uri).map_err(|err| err.to_string())?;
+    if url.scheme() != "http" {
+        return Err(format!(
+            "OAuth callback URL `{configured_redirect_uri}` must use http loopback"
+        ));
+    }
+    if url.fragment().is_some() {
+        return Err(format!(
+            "OAuth callback URL `{configured_redirect_uri}` must not include a fragment"
+        ));
+    }
+    let bind_host = match url.host() {
+        Some(url::Host::Ipv4(ip)) if ip.is_loopback() => ip.to_string(),
+        Some(url::Host::Ipv6(ip)) if ip.is_loopback() => ip.to_string(),
+        Some(url::Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost") => {
+            domain.to_string()
+        }
+        Some(host) => {
+            return Err(format!(
+                "OAuth callback URL `{configured_redirect_uri}` must use a loopback host, got `{host}`"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "OAuth callback URL `{configured_redirect_uri}` must include a host"
+            ));
+        }
+    };
+    let bind_port = url.port().ok_or_else(|| {
+        format!("OAuth callback URL `{configured_redirect_uri}` must include an explicit port")
+    })?;
+    if let Some(preferred_port) = preferred_port
+        && preferred_port != bind_port
+    {
+        return Err(format!(
+            "OAuth callback_port `{preferred_port}` does not match callback_url port `{bind_port}`"
+        ));
+    }
+
+    Ok(CallbackListenerConfig {
+        bind_host,
+        bind_port,
+        redirect_uri: Some(url.to_string()),
+    })
+}
+
+async fn receive_callback(listener: TcpListener, callback_base_url: Url) -> Result<String, String> {
     let (mut stream, _) = listener.accept().await.map_err(|err| err.to_string())?;
     let mut request = Vec::new();
     let mut buffer = [0_u8; 1024];
@@ -350,7 +500,7 @@ async fn receive_callback(listener: TcpListener, port: u16) -> Result<String, St
     }
 
     let request = String::from_utf8(request).map_err(|err| err.to_string())?;
-    let result = callback_url_from_request(&request, port);
+    let result = callback_url_from_request(&request, &callback_base_url);
     let response = if result.is_ok() {
         CALLBACK_RESPONSE_OK
     } else {
@@ -360,7 +510,7 @@ async fn receive_callback(listener: TcpListener, port: u16) -> Result<String, St
     result
 }
 
-fn callback_url_from_request(request: &str, port: u16) -> Result<String, String> {
+fn callback_url_from_request(request: &str, callback_base_url: &Url) -> Result<String, String> {
     let request_line = request
         .lines()
         .next()
@@ -377,12 +527,20 @@ fn callback_url_from_request(request: &str, port: u16) -> Result<String, String>
     }
 
     let callback_url = if target.starts_with("http://") || target.starts_with("https://") {
-        target.to_string()
+        Url::parse(target).map_err(|err| err.to_string())?
     } else {
-        format!("http://127.0.0.1:{port}{target}")
+        callback_base_url
+            .join(target)
+            .map_err(|err| err.to_string())?
     };
-    Url::parse(&callback_url).map_err(|err| err.to_string())?;
-    Ok(callback_url)
+    if callback_url.path() != callback_base_url.path() {
+        return Err(format!(
+            "OAuth callback path `{}` does not match expected path `{}`",
+            callback_url.path(),
+            callback_base_url.path()
+        ));
+    }
+    Ok(callback_url.to_string())
 }
 
 fn canonical_server_uri(url: &Url) -> String {
@@ -395,15 +553,40 @@ fn canonical_server_uri(url: &Url) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        authorization_url_with_resource, callback_url_from_request, canonical_server_uri,
-        credentials_key,
+        CallbackListenerConfig, authorization_url_with_resource, callback_url_from_request,
+        canonical_server_uri, credentials_key_for_server, legacy_credentials_key_for_test,
+        resolve_callback_listener_config,
     };
+    use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
     use url::Url;
 
     #[test]
     fn credentials_key_uses_canonical_server_uri_without_query_or_fragment() {
-        let key = credentials_key("https://example.com/mcp/?token=secret#frag").unwrap();
+        let key =
+            legacy_credentials_key_for_test("https://example.com/mcp/?token=secret#frag").unwrap();
         assert_eq!(key, "mcp-oauth:https://example.com/mcp");
+    }
+
+    #[test]
+    fn credentials_key_includes_server_id_and_oauth_audience() {
+        let mut server = oauth_server("https://example.com/mcp", None);
+        let first = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+        let second = credentials_key_for_server("server-b", &server)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first, second);
+
+        if let Some(McpOAuthTomlConfig::AuthorizationCodePkce { resource, .. }) =
+            server.oauth.as_mut()
+        {
+            *resource = Some("https://api.example.com/audience".to_string());
+        }
+        let audience_key = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first, audience_key);
     }
 
     #[test]
@@ -414,11 +597,79 @@ mod tests {
 
     #[test]
     fn callback_url_from_relative_request_target() {
+        let callback_base_url = Url::parse("http://127.0.0.1:49152/callback").unwrap();
         let request = "GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         assert_eq!(
-            callback_url_from_request(request, 49152).unwrap(),
+            callback_url_from_request(request, &callback_base_url).unwrap(),
             "http://127.0.0.1:49152/callback?code=abc&state=xyz"
         );
+    }
+
+    #[test]
+    fn callback_url_from_request_uses_configured_callback_origin() {
+        let callback_base_url = Url::parse("http://localhost:49152/oauth/callback").unwrap();
+        let request = "GET /oauth/callback?code=abc&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+        assert_eq!(
+            callback_url_from_request(request, &callback_base_url).unwrap(),
+            "http://localhost:49152/oauth/callback?code=abc&state=xyz"
+        );
+    }
+
+    #[test]
+    fn callback_url_from_request_rejects_wrong_path() {
+        let callback_base_url = Url::parse("http://127.0.0.1:49152/oauth/callback").unwrap();
+        let request = "GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+
+        assert!(
+            callback_url_from_request(request, &callback_base_url)
+                .unwrap_err()
+                .contains("does not match expected path")
+        );
+    }
+
+    #[test]
+    fn callback_listener_config_uses_callback_url_port() {
+        let config =
+            resolve_callback_listener_config(None, Some("http://127.0.0.1:49152/oauth/callback"))
+                .unwrap();
+
+        assert_eq!(
+            config,
+            CallbackListenerConfig {
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 49152,
+                redirect_uri: Some("http://127.0.0.1:49152/oauth/callback".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn callback_listener_config_rejects_callback_port_mismatch() {
+        let err = resolve_callback_listener_config(
+            Some(49153),
+            Some("http://127.0.0.1:49152/oauth/callback"),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("does not match callback_url port"));
+    }
+
+    #[test]
+    fn callback_listener_config_rejects_non_loopback_callback_url() {
+        let err =
+            resolve_callback_listener_config(None, Some("http://example.com:49152/oauth/callback"))
+                .unwrap_err();
+
+        assert!(err.contains("must use a loopback host"));
+    }
+
+    #[test]
+    fn callback_listener_config_rejects_missing_callback_url_port() {
+        let err = resolve_callback_listener_config(None, Some("http://127.0.0.1/oauth/callback"))
+            .unwrap_err();
+
+        assert!(err.contains("must include an explicit port"));
     }
 
     #[test]
@@ -456,5 +707,21 @@ mod tests {
         let url = "https://auth.example.com/authorize?client_id=client";
 
         assert_eq!(authorization_url_with_resource(url, Some("  ")), url);
+    }
+
+    fn oauth_server(url: &str, resource: Option<String>) -> McpServerTomlConfig {
+        McpServerTomlConfig {
+            transport: McpTransportKind::StreamableHttp,
+            url: Some(url.to_string()),
+            oauth: Some(McpOAuthTomlConfig::AuthorizationCodePkce {
+                scopes: Vec::new(),
+                client_id: None,
+                client_metadata_url: None,
+                resource,
+                callback_port: None,
+                callback_url: None,
+            }),
+            ..Default::default()
+        }
     }
 }
