@@ -16,7 +16,7 @@ use gpui_component::{
 };
 use std::any::TypeId;
 use tracing::{Level, event};
-use window_ext::WindowExt as SystemWindowExt;
+use window_ext::{NativeWindowHandle, WindowExt as SystemWindowExt};
 
 mod appearance;
 mod general;
@@ -324,6 +324,7 @@ fn open_settings_window_to(
     });
     match exists_settings {
         Some(window) => {
+            let mut reveal_window = None;
             match window.update(cx, |root, window, cx| {
                 if let Ok(settings) = root.view().clone().downcast::<SettingsView>() {
                     settings.update(cx, |settings, cx| {
@@ -341,10 +342,18 @@ fn open_settings_window_to(
                 if toggle_if_active && window.is_window_active() {
                     window.remove_window();
                 } else {
-                    if let Err(err) = window.show() {
-                        event!(Level::ERROR, error = ?err, "show ai-chat2 settings window failed");
+                    if !window.is_window_active() {
+                        match window.native_window_handle() {
+                            Ok(handle) => reveal_window = Some(handle),
+                            Err(err) => {
+                                event!(
+                                    Level::ERROR,
+                                    error = ?err,
+                                    "get ai-chat2 settings window handle failed"
+                                );
+                            }
+                        }
                     }
-                    window.activate_window();
                 }
             }) {
                 Ok(_) => {}
@@ -352,6 +361,9 @@ fn open_settings_window_to(
                     event!(Level::ERROR, error = ?err, "activate ai-chat2 settings window failed");
                 }
             };
+            if let Some(native_window) = reveal_window {
+                schedule_settings_window_reveal(native_window, cx);
+            }
         }
         None => {
             inner_open_settings_window(selected_page, cx);
@@ -388,16 +400,20 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
                 if let Ok(settings) = root.view().clone().downcast::<SettingsView>() {
                     settings.update(cx, |settings, cx| settings.focus(window, cx));
                 }
-                if let Err(err) = window.show() {
-                    event!(Level::ERROR, error = ?err, "show ai-chat2 settings window failed");
-                }
-                window.activate_window();
             });
         }
         Err(err) => {
             event!(Level::ERROR, error = ?err, "open ai-chat2 settings window failed");
         }
     };
+}
+
+fn schedule_settings_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            event!(Level::ERROR, error = ?err, "show ai-chat2 settings window failed");
+        }
+    });
 }
 
 fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 8] {

@@ -17,6 +17,7 @@ use gpui_component::{
 };
 use std::{any::TypeId, ops::Deref};
 use tracing::{Level, event};
+use window_ext::{NativeWindowHandle, WindowExt as SystemWindowExt};
 
 pub(super) mod appearance_settings;
 mod general_settings;
@@ -311,6 +312,7 @@ fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, c
     });
     match exists_settings {
         Some(window) => {
+            let mut reveal_window = None;
             match window.update(cx, |root, window, cx| {
                 if let Ok(settings) = root.view().clone().downcast::<SettingsView>() {
                     settings.update(cx, |settings, cx| {
@@ -325,7 +327,18 @@ fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, c
                 if toggle_if_active && window.is_window_active() {
                     window.remove_window();
                 } else {
-                    window.activate_window();
+                    if !window.is_window_active() {
+                        match window.native_window_handle() {
+                            Ok(handle) => reveal_window = Some(handle),
+                            Err(err) => {
+                                event!(
+                                    Level::ERROR,
+                                    error = ?err,
+                                    "get settings window handle failed"
+                                );
+                            }
+                        }
+                    }
                 }
             }) {
                 Ok(_) => {}
@@ -333,6 +346,9 @@ fn open_settings_window_to(target: SettingsOpenTarget, toggle_if_active: bool, c
                     event!(Level::ERROR, "activate settings window error: {}", err);
                 }
             };
+            if let Some(native_window) = reveal_window {
+                schedule_settings_window_reveal(native_window, cx);
+            }
         }
         None => {
             inner_open_settings_window(target, cx);
@@ -365,6 +381,14 @@ fn inner_open_settings_window(target: SettingsOpenTarget, cx: &mut App) {
             event!(Level::ERROR, "open settings window: {}", err);
         }
     };
+}
+
+fn schedule_settings_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            event!(Level::ERROR, error = ?err, "show settings window failed");
+        }
+    });
 }
 
 fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 5] {

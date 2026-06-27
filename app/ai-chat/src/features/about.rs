@@ -12,6 +12,7 @@ use gpui::{
 #[cfg(target_os = "macos")]
 use gpui::{Point, point};
 use gpui_component::{ActiveTheme, Sizable, button::Button, h_flex, label::Label, v_flex};
+use window_ext::{NativeWindowHandle, WindowExt};
 
 pub(crate) fn open_about_window(cx: &mut App) {
     if let Some(existing) = cx
@@ -19,10 +20,25 @@ pub(crate) fn open_about_window(cx: &mut App) {
         .into_iter()
         .find_map(|window| window.downcast::<AboutWindow>())
     {
+        let mut reveal_window = None;
         let _ = existing.update(cx, |view, window, cx| {
-            window.activate_window();
+            if !window.is_window_active() {
+                match window.native_window_handle() {
+                    Ok(handle) => reveal_window = Some(handle),
+                    Err(err) => {
+                        tracing::event!(
+                            tracing::Level::ERROR,
+                            error = ?err,
+                            "get about window handle failed"
+                        );
+                    }
+                }
+            }
             view.focus_handle.focus(window, cx);
         });
+        if let Some(native_window) = reveal_window {
+            schedule_about_window_reveal(native_window, cx);
+        }
         return;
     }
 
@@ -39,11 +55,22 @@ pub(crate) fn open_about_window(cx: &mut App) {
         |window, cx| {
             let view = cx.new(AboutWindow::new);
             let focus_handle = view.read(cx).focus_handle.clone();
-            window.activate_window();
             focus_handle.focus(window, cx);
             view
         },
     );
+}
+
+fn schedule_about_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            tracing::event!(
+                tracing::Level::ERROR,
+                error = ?err,
+                "show about window failed"
+            );
+        }
+    });
 }
 
 fn about_window_size() -> gpui::Size<gpui::Pixels> {

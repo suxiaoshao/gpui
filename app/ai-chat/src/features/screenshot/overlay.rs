@@ -98,7 +98,6 @@ pub(crate) fn open(binding: GlobalShortcutBinding, cx: &mut App) -> Result<(), C
                     "Failed to set screenshot overlay window floating"
                 );
             }
-            window.activate_window();
             let display_id = display_info.id_hint;
             event!(
                 Level::INFO,

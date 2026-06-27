@@ -7,12 +7,13 @@ use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{database, errors::AiChat2Error, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
-use std::{cell::RefCell, fs::create_dir_all, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, ffi::OsString, fs::create_dir_all, path::PathBuf, rc::Rc};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-use window_ext::WindowExt;
+use window_ext::{NativeWindowHandle, WindowExt};
 
 pub(crate) static APP_NAME: &str = "top.sushao.ai-chat2";
+pub(crate) const LOG_DIR_ENV: &str = "AI_CHAT2_LOG_DIR";
 #[cfg(test)]
 const APP_TITLE: &str = "AI Chat 2";
 const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -44,14 +45,26 @@ pub(crate) fn run() -> crate::errors::AiChat2Result<()> {
 }
 
 fn get_logs_dir() -> crate::errors::AiChat2Result<PathBuf> {
-    let path =
-        logs_dir_from_base(logs_base_dir().ok_or(crate::errors::AiChat2Error::LogFileNotFound)?);
+    let path = match override_dir_from_env(LOG_DIR_ENV) {
+        Some(path) => path,
+        None => {
+            logs_dir_from_base(logs_base_dir().ok_or(crate::errors::AiChat2Error::LogFileNotFound)?)
+        }
+    };
 
     if !path.exists() {
         create_dir_all(&path).map_err(|_| crate::errors::AiChat2Error::LogFileNotFound)?;
     }
 
     Ok(path)
+}
+
+fn override_dir_from_env(name: &str) -> Option<PathBuf> {
+    override_dir_from_value(std::env::var_os(name))
+}
+
+fn override_dir_from_value(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 #[cfg(target_os = "macos")]
@@ -198,17 +211,20 @@ fn with_root_view<V: 'static, R>(
     Some(callback(view, cx))
 }
 
-fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    if let Err(err) = window.show() {
-        event!(Level::ERROR, error = ?err, "show ai-chat2 main window failed");
-    }
-    window.activate_window();
-
+fn focus_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
     let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
         view.update(cx, |view, cx| {
             view.focus_chat_form(window, cx);
             view.notify_config_load_error(window, cx);
         });
+    });
+}
+
+fn schedule_main_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            event!(Level::ERROR, error = ?err, "show ai-chat2 main window failed");
+        }
     });
 }
 
@@ -267,10 +283,22 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
 
 pub(crate) fn show_or_create_main_window(cx: &mut App) {
     if let Some(window) = find_main_window(cx) {
+        let mut reveal_window = None;
         if let Err(err) = window.update(cx, |root, window, cx| {
-            reveal_main_window(root, window, cx);
+            if !window.is_window_active() {
+                match window.native_window_handle() {
+                    Ok(handle) => reveal_window = Some(handle),
+                    Err(err) => {
+                        event!(Level::ERROR, error = ?err, "get ai-chat2 main window handle failed");
+                    }
+                }
+            }
+            focus_main_window(root, window, cx);
         }) {
             event!(Level::ERROR, error = ?err, "update ai-chat2 main window failed");
+        }
+        if let Some(native_window) = reveal_window {
+            schedule_main_window_reveal(native_window, cx);
         }
         return;
     }
@@ -278,7 +306,7 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
     match open_main_window(cx) {
         Ok(window) => {
             if let Err(err) = window.update(cx, |root, window, cx| {
-                reveal_main_window(root, window, cx);
+                focus_main_window(root, window, cx);
             }) {
                 event!(Level::ERROR, error = ?err, "activate new ai-chat2 main window failed");
             }
@@ -292,11 +320,11 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_NAME, APP_TITLE, logs_dir_from_base, main_titlebar_options,
+        APP_NAME, APP_TITLE, logs_dir_from_base, main_titlebar_options, override_dir_from_value,
         should_hide_main_window_on_close,
     };
     use gpui_component::TitleBar;
-    use std::path::PathBuf;
+    use std::{ffi::OsString, path::PathBuf};
 
     #[test]
     fn main_window_close_behavior_matches_platform_support() {
@@ -331,5 +359,15 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         assert_eq!(dir, PathBuf::from("/tmp/base").join(APP_NAME).join("logs"));
+    }
+
+    #[test]
+    fn log_directory_override_ignores_empty_env_value() {
+        assert_eq!(override_dir_from_value(None), None);
+        assert_eq!(override_dir_from_value(Some(OsString::new())), None);
+        assert_eq!(
+            override_dir_from_value(Some(OsString::from("/tmp/ai-chat2-logs"))),
+            Some(PathBuf::from("/tmp/ai-chat2-logs"))
+        );
     }
 }

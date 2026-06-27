@@ -11,21 +11,37 @@ use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Root, Sizable, StyledExt, TitleBar, button::Button, h_flex, label::Label, v_flex,
 };
-use window_ext::WindowExt;
+use window_ext::{NativeWindowHandle, WindowExt};
 
 const ABOUT_CONTEXT: &str = "AiChat2AboutWindow";
 const ABOUT_WINDOW_SIZE: Size<Pixels> = size(px(360.), px(380.));
 
 pub(crate) fn open_about_window(cx: &mut App) {
     if let Some(window) = find_about_window(cx) {
+        let mut reveal_window = None;
         if let Err(err) = window.update(cx, |root, window, cx| {
-            reveal_about_window(root, window, cx);
+            if !window.is_window_active() {
+                match window.native_window_handle() {
+                    Ok(handle) => reveal_window = Some(handle),
+                    Err(err) => {
+                        tracing::event!(
+                            tracing::Level::ERROR,
+                            error = ?err,
+                            "get ai-chat2 about window handle failed"
+                        );
+                    }
+                }
+            }
+            focus_about_window(root, window, cx);
         }) {
             tracing::event!(
                 tracing::Level::ERROR,
                 error = ?err,
                 "activate ai-chat2 about window failed"
             );
+        }
+        if let Some(native_window) = reveal_window {
+            schedule_about_window_reveal(native_window, cx);
         }
         return;
     }
@@ -51,7 +67,7 @@ pub(crate) fn open_about_window(cx: &mut App) {
     match result {
         Ok(window) => {
             let _ = window.update(cx, |root, window, cx| {
-                reveal_about_window(root, window, cx);
+                focus_about_window(root, window, cx);
             });
         }
         Err(err) => {
@@ -72,20 +88,23 @@ fn find_about_window(cx: &App) -> Option<WindowHandle<Root>> {
     })
 }
 
-fn reveal_about_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    if let Err(err) = window.show() {
-        tracing::event!(
-            tracing::Level::ERROR,
-            error = ?err,
-            "show ai-chat2 about window failed"
-        );
-    }
-    window.activate_window();
-
+fn focus_about_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
     let _ = root.view().clone().downcast::<AboutWindow>().map(|view| {
         view.update(cx, |view, cx| {
             view.focus_handle.focus(window, cx);
         });
+    });
+}
+
+fn schedule_about_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            tracing::event!(
+                tracing::Level::ERROR,
+                error = ?err,
+                "show ai-chat2 about window failed"
+            );
+        }
     });
 }
 

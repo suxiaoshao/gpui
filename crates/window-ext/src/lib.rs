@@ -77,7 +77,188 @@ pub enum WindowLevel {
     Custom(i32),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct NativeWindowHandle {
+    raw_window: RawWindowHandle,
+    #[cfg(target_os = "windows")]
+    scale_factor: f32,
+}
+
+impl NativeWindowHandle {
+    pub fn hide(self) -> Result<(), WindowExtError> {
+        match self.raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.orderOut(None);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn show(self) -> Result<(), WindowExtError> {
+        match self.raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.makeKeyAndOrderFront(None);
+                    let ns_app = NSApplication::sharedApplication(
+                        MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?,
+                    );
+                    ns_app.activate();
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn show_without_activation(self) -> Result<(), WindowExtError> {
+        match self.raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    ns_window.orderFront(None);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn set_window_level(self, level: WindowLevel) -> Result<(), WindowExtError> {
+        #[cfg(target_os = "macos")]
+        {
+            if let RawWindowHandle::AppKit(handle) = self.raw_window {
+                let ns_window = get_ns_window(handle)?;
+                ns_window.setLevel(macos_window_level_value(level) as _);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = level;
+        }
+
+        Ok(())
+    }
+
+    pub fn is_visible(self) -> Result<bool, WindowExtError> {
+        match self.raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    return Ok(ns_window.isVisible());
+                }
+            }
+
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+                        return Ok(IsWindowVisible(hwnd).as_bool());
+                    };
+                }
+            }
+            _ => {}
+        };
+        Ok(true)
+    }
+
+    pub fn move_and_resize(
+        self,
+        bounds: Bounds<Pixels>,
+        display_id: Option<DisplayId>,
+    ) -> Result<(), WindowExtError> {
+        match self.raw_window {
+            #[allow(unused_variables)]
+            RawWindowHandle::AppKit(handle) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let ns_window = get_ns_window(handle)?;
+                    let screen_frame = resolve_screen_frame(&ns_window, display_id)?;
+                    let frame = objc2_foundation::NSRect::new(
+                        objc2_foundation::NSPoint::new(
+                            screen_frame.origin.x + f64::from(f32::from(bounds.origin.x)),
+                            screen_frame.origin.y + screen_frame.size.height
+                                - f64::from(f32::from(bounds.origin.y))
+                                - f64::from(f32::from(bounds.size.height)),
+                        ),
+                        objc2_foundation::NSSize::new(
+                            f64::from(f32::from(bounds.size.width)),
+                            f64::from(f32::from(bounds.size.height)),
+                        ),
+                    );
+                    ns_window.setFrame_display(frame, true);
+                }
+            }
+            #[allow(unused_variables)]
+            RawWindowHandle::Win32(handle) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let hwnd = HWND(handle.hwnd.get() as _);
+                    let scale_factor = resolve_target_scale_factor(
+                        self.scale_factor,
+                        display_id.and_then(scale_factor_for_display),
+                    );
+                    let (x, y, width, height) = logical_bounds_to_device_rect(bounds, scale_factor);
+                    unsafe {
+                        SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER)
+                            .map_err(|_| WindowExtError::FailedSetBounds)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 pub trait WindowExt {
+    fn native_window_handle(&self) -> Result<NativeWindowHandle, WindowExtError>;
     fn hide(&self) -> Result<(), WindowExtError>;
     fn show(&self) -> Result<(), WindowExtError>;
     fn show_without_activation(&self) -> Result<(), WindowExtError>;
@@ -200,6 +381,14 @@ mod quick_look {
 }
 
 impl WindowExt for Window {
+    fn native_window_handle(&self) -> Result<NativeWindowHandle, WindowExtError> {
+        Ok(NativeWindowHandle {
+            raw_window: get_raw_window(self)?,
+            #[cfg(target_os = "windows")]
+            scale_factor: self.scale_factor(),
+        })
+    }
+
     fn hide(&self) -> Result<(), WindowExtError> {
         let raw_window = get_raw_window(self)?;
         match raw_window {

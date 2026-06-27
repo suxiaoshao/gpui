@@ -8,10 +8,17 @@ use platform_ext::app::{
     NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app,
 };
 use tracing::{Level, event};
-use window_ext::{WindowExt as _, WindowLevel};
+use window_ext::{NativeWindowHandle, WindowExt as _, WindowLevel};
 
 const TEMPORARY_WINDOW_SIZE: Size<Pixels> = size(px(960.), px(620.));
 const TEMPORARY_WINDOW_LEVEL: WindowLevel = WindowLevel::ModalPanel;
+
+#[derive(Clone, Copy)]
+struct TemporaryWindowReveal {
+    native_window: NativeWindowHandle,
+    target_bounds: Bounds<Pixels>,
+    target_display_id: Option<DisplayId>,
+}
 
 struct TemporaryWindowLifecycleState {
     delay_close: Option<Task<()>>,
@@ -76,10 +83,16 @@ fn with_lifecycle_state<R>(
 impl TemporaryWindowLifecycleState {
     fn ensure_temporary_window_visible(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         let window = find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
+        let mut reveal = None;
         match window.update(cx, |root, window, cx| {
-            self.show_temporary_window(root, window, cx);
+            reveal = self.prepare_temporary_window(root, window, cx);
         }) {
-            Ok(()) => Some(window),
+            Ok(()) => {
+                if let Some(reveal) = reveal {
+                    self.schedule_temporary_window_reveal(reveal, cx);
+                }
+                Some(window)
+            }
             Err(err) => {
                 event!(Level::ERROR, error = ?err, "activate ai-chat2 temporary window failed");
                 None
@@ -90,14 +103,18 @@ impl TemporaryWindowLifecycleState {
     fn toggle_temporary_window(&mut self, cx: &mut App) {
         match find_temporary_window(cx) {
             Some(window) => {
+                let mut reveal = None;
                 if let Err(err) = window.update(cx, |root, window, cx| {
                     if window.is_visible().unwrap_or(false) {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
-                        self.show_temporary_window(root, window, cx);
+                        reveal = self.prepare_temporary_window(root, window, cx);
                     }
                 }) {
                     event!(Level::ERROR, error = ?err, "toggle ai-chat2 temporary window failed");
+                }
+                if let Some(reveal) = reveal {
+                    self.schedule_temporary_window_reveal(reveal, cx);
                 }
             }
             None => {
@@ -119,6 +136,8 @@ impl TemporaryWindowLifecycleState {
                 window_background: WindowBackgroundAppearance::Opaque,
                 is_resizable: false,
                 kind: WindowKind::PopUp,
+                focus: false,
+                show: false,
                 display_id: target_display_id,
                 app_id: Some(APP_NAME.to_owned()),
                 ..Default::default()
@@ -139,14 +158,13 @@ impl TemporaryWindowLifecycleState {
         }
     }
 
-    fn show_temporary_window(
+    fn prepare_temporary_window(
         &mut self,
         root: &mut Root,
         window: &mut Window,
         cx: &mut Context<Root>,
-    ) {
+    ) -> Option<TemporaryWindowReveal> {
         self.delay_close = None;
-        set_temporary_window_level(window);
         let target_display_id = target_display_id(cx);
         let target_bounds = recentered_bounds_for_display(
             target_display_id,
@@ -154,20 +172,57 @@ impl TemporaryWindowLifecycleState {
             TEMPORARY_WINDOW_SIZE,
             cx,
         );
-        if let Err(err) = window.move_and_resize(target_bounds, target_display_id) {
-            event!(Level::ERROR, error = ?err, "reposition ai-chat2 temporary window failed");
-        }
+        focus_search_input(root, window, cx);
+        let native_window = match window.native_window_handle() {
+            Ok(handle) => handle,
+            Err(err) => {
+                event!(Level::ERROR, error = ?err, "get ai-chat2 temporary window handle failed");
+                return None;
+            }
+        };
 
-        if let Err(err) = window.show_without_activation() {
-            event!(Level::ERROR, error = ?err, "show ai-chat2 temporary window failed");
-            return;
-        }
+        Some(TemporaryWindowReveal {
+            native_window,
+            target_bounds,
+            target_display_id,
+        })
+    }
 
+    fn schedule_temporary_window_reveal(&mut self, reveal: TemporaryWindowReveal, cx: &mut App) {
         #[cfg(target_os = "macos")]
         self.record_front_app();
 
-        window.activate_window();
-        focus_search_input(root, window, cx);
+        cx.defer(move |cx| {
+            let mut restore_front_app = false;
+            if let Err(err) = reveal
+                .native_window
+                .set_window_level(TEMPORARY_WINDOW_LEVEL)
+            {
+                event!(
+                    Level::ERROR,
+                    error = ?err,
+                    level = ?TEMPORARY_WINDOW_LEVEL,
+                    "set ai-chat2 temporary window level failed"
+                );
+            }
+            if let Err(err) = reveal
+                .native_window
+                .move_and_resize(reveal.target_bounds, reveal.target_display_id)
+            {
+                event!(Level::ERROR, error = ?err, "reposition ai-chat2 temporary window failed");
+            }
+
+            if let Err(err) = reveal.native_window.show() {
+                event!(Level::ERROR, error = ?err, "show ai-chat2 temporary window failed");
+                restore_front_app = true;
+            }
+
+            if restore_front_app {
+                let _ = with_lifecycle_state(cx, |state, _cx| {
+                    state.restore_front_app();
+                });
+            }
+        });
     }
 
     fn delay_or_hide_temporary_window(&mut self, window: &mut Window, cx: &mut App) {
@@ -180,17 +235,21 @@ impl TemporaryWindowLifecycleState {
             event!(Level::ERROR, error = ?err, "hide ai-chat2 temporary window failed");
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            restore_frontmost_app(&self.front_app);
-            self.front_app = None;
-        }
+        self.restore_front_app();
     }
 
     #[cfg(target_os = "macos")]
     fn record_front_app(&mut self) {
         if self.front_app.is_none() {
             self.front_app = record_frontmost_app();
+        }
+    }
+
+    fn restore_front_app(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            restore_frontmost_app(&self.front_app);
+            self.front_app = None;
         }
     }
 }

@@ -8,7 +8,7 @@ use gpui_component::{Root, TitleBar};
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-use window_ext::WindowExt;
+use window_ext::{NativeWindowHandle, WindowExt};
 
 pub(crate) mod menus;
 pub(crate) mod tray;
@@ -167,12 +167,16 @@ fn focus_main_window_chat_form(root: &mut Root, window: &mut Window, cx: &mut Co
     });
 }
 
-fn reveal_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    if let Err(err) = window.show() {
-        event!(Level::ERROR, error = ?err, "show main window failed");
-    }
-    window.activate_window();
+fn focus_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
     focus_main_window_chat_form(root, window, cx);
+}
+
+fn schedule_main_window_reveal(native_window: NativeWindowHandle, cx: &mut App) {
+    cx.defer(move |_| {
+        if let Err(err) = native_window.show() {
+            event!(Level::ERROR, error = ?err, "show main window failed");
+        }
+    });
 }
 
 pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, anyhow::Error> {
@@ -226,10 +230,22 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
 
 pub(crate) fn show_or_create_main_window(cx: &mut App) {
     if let Some(window) = find_main_window(cx) {
+        let mut reveal_window = None;
         if let Err(err) = window.update(cx, |root, window, cx| {
-            reveal_main_window(root, window, cx);
+            if !window.is_window_active() {
+                match window.native_window_handle() {
+                    Ok(handle) => reveal_window = Some(handle),
+                    Err(err) => {
+                        event!(Level::ERROR, error = ?err, "get main window handle failed");
+                    }
+                }
+            }
+            focus_main_window(root, window, cx);
         }) {
             event!(Level::ERROR, error = ?err, "update main window failed");
+        }
+        if let Some(native_window) = reveal_window {
+            schedule_main_window_reveal(native_window, cx);
         }
         return;
     }
@@ -237,7 +253,7 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
     match open_main_window(cx) {
         Ok(window) => {
             if let Err(err) = window.update(cx, |root, window, cx| {
-                reveal_main_window(root, window, cx);
+                focus_main_window(root, window, cx);
             }) {
                 event!(Level::ERROR, error = ?err, "activate new main window failed");
             }

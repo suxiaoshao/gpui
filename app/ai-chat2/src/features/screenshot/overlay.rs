@@ -92,7 +92,6 @@ pub(crate) fn open(shortcut: ShortcutRecord, cx: &mut App) -> Result<(), Capture
                     "failed to set screenshot overlay floating"
                 );
             }
-            window.activate_window();
             cx.new(|cx| ScreenshotOverlayView::new(display_info.clone(), window, cx))
         },
     );
