@@ -139,35 +139,43 @@ impl AiChat2Config {
 impl McpServerTomlConfig {
     pub(crate) fn to_agent_config(&self, server_id: &str) -> AiChat2Result<McpServerConfig> {
         self.validate(server_id)?;
-        let transport = match self.transport {
+        let (transport, env, cwd) = match self.transport {
             McpTransportKind::Stdio => {
                 let command = self.command.clone().ok_or_else(|| {
                     AiChat2Error::Config(format!("mcp server `{server_id}` is missing command"))
                 })?;
-                McpServerTransport::Stdio(McpStdioTransport {
-                    command,
-                    args: self.args.clone(),
-                })
+                (
+                    McpServerTransport::Stdio(McpStdioTransport {
+                        command,
+                        args: self.args.clone(),
+                    }),
+                    self.resolved_env(server_id)?,
+                    self.cwd.clone(),
+                )
             }
             McpTransportKind::StreamableHttp => {
                 let url = self.url.clone().ok_or_else(|| {
                     AiChat2Error::Config(format!("mcp server `{server_id}` is missing url"))
                 })?;
-                McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
-                    url,
-                    headers: self.resolved_headers(server_id)?,
-                    oauth: self
-                        .oauth
-                        .as_ref()
-                        .map(serde_json::to_value)
-                        .transpose()
-                        .map_err(|err| {
-                            AiChat2Error::Config(format!(
-                                "invalid MCP OAuth config for `{server_id}`: {err}"
-                            ))
-                        })?,
-                    oauth_credentials: None,
-                })
+                (
+                    McpServerTransport::StreamableHttp(McpStreamableHttpTransport {
+                        url,
+                        headers: self.resolved_headers(server_id)?,
+                        oauth: self
+                            .oauth
+                            .as_ref()
+                            .map(serde_json::to_value)
+                            .transpose()
+                            .map_err(|err| {
+                                AiChat2Error::Config(format!(
+                                    "invalid MCP OAuth config for `{server_id}`: {err}"
+                                ))
+                            })?,
+                        oauth_credentials: None,
+                    }),
+                    BTreeMap::new(),
+                    None,
+                )
             }
         };
 
@@ -175,8 +183,8 @@ impl McpServerTomlConfig {
             server_id: server_id.to_string(),
             display_name: self.display_name.clone(),
             transport,
-            env: self.resolved_env(server_id)?,
-            cwd: self.cwd.clone(),
+            env,
+            cwd,
         })
     }
 

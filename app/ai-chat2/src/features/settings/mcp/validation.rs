@@ -77,7 +77,7 @@ impl McpFormField {
 pub(super) fn validate_mcp_form(
     draft: &McpServerFormDraft,
     original_server_id: Option<&str>,
-    original_config: Option<&McpServerTomlConfig>,
+    _original_config: Option<&McpServerTomlConfig>,
     existing_server_ids: &[String],
     cx: &App,
 ) -> Vec<McpFormValidationError> {
@@ -93,7 +93,7 @@ pub(super) fn validate_mcp_form(
 
     match draft.transport {
         McpTransportKind::Stdio => validate_stdio(draft, &mut errors, cx),
-        McpTransportKind::StreamableHttp => validate_http(draft, original_config, &mut errors, cx),
+        McpTransportKind::StreamableHttp => validate_http(draft, &mut errors, cx),
     }
 
     errors
@@ -226,12 +226,7 @@ fn validate_env_var_rows(
     }
 }
 
-fn validate_http(
-    draft: &McpServerFormDraft,
-    original_config: Option<&McpServerTomlConfig>,
-    errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
-) {
+fn validate_http(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationError>, cx: &App) {
     let url = trim_input(&draft.url_input, cx);
     if url.is_empty() {
         errors.push(McpFormValidationError::new(
@@ -268,8 +263,7 @@ fn validate_http(
 
     validate_header_rows(
         draft,
-        bearer_token_env_var.is_some()
-            || original_config.is_some_and(|server| server.oauth.is_some()),
+        bearer_token_env_var.is_some() || draft.oauth_enabled,
         errors,
         cx,
     );

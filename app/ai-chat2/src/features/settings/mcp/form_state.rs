@@ -198,6 +198,11 @@ impl McpServerFormDraft {
                 server.oauth = None;
             }
             McpTransportKind::StreamableHttp => {
+                server.command = None;
+                server.args.clear();
+                server.env.clear();
+                server.env_vars.clear();
+                server.cwd = None;
                 server.url = optional_input(&self.url_input, cx);
                 server.bearer_token_env_var = optional_input(&self.bearer_token_env_var_input, cx);
                 server.headers = key_value_map(&self.headers, false, cx);
@@ -435,14 +440,18 @@ fn take_row_id(next_row_id: &mut u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::validation::validate_mcp_form;
     use super::McpServerFormDraft;
     use crate::{
         foundation,
-        state::config::{McpServerTomlConfig, McpToolApprovalMode, McpTransportKind},
+        state::config::{
+            McpOAuthTomlConfig, McpServerTomlConfig, McpToolApprovalMode, McpTransportKind,
+        },
     };
     use gpui::{
         AppContext as _, IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div,
     };
+    use std::{collections::BTreeMap, path::PathBuf};
 
     #[gpui::test]
     fn merge_preserves_hidden_fields_when_editing_stdio(cx: &mut TestAppContext) {
@@ -500,6 +509,93 @@ mod tests {
             assert_eq!(merged.args, vec!["--new".to_string()]);
             assert_eq!(merged.url.as_deref(), Some("https://example.com/mcp"));
             assert_eq!(merged.bearer_token_env_var.as_deref(), Some("MCP_TOKEN"));
+        });
+    }
+
+    #[gpui::test]
+    fn validation_allows_authorization_header_when_draft_oauth_disabled(cx: &mut TestAppContext) {
+        init_form_state_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            let original = McpServerTomlConfig {
+                transport: McpTransportKind::StreamableHttp,
+                url: Some("https://example.com/mcp".to_string()),
+                oauth: Some(McpOAuthTomlConfig::AuthorizationCodePkce {
+                    scopes: Vec::new(),
+                    client_id: None,
+                    client_metadata_url: None,
+                    resource: None,
+                    callback_port: None,
+                    callback_url: None,
+                }),
+                ..Default::default()
+            };
+
+            let mut next_row_id = 1;
+            let mut draft = McpServerFormDraft::from_config(
+                "server".to_string(),
+                &original,
+                &mut next_row_id,
+                window,
+                cx,
+            );
+            draft.set_oauth_enabled(false);
+            draft.headers[0]
+                .key_input
+                .update(cx, |input, cx| input.set_value("Authorization", window, cx));
+            draft.headers[0]
+                .value_input
+                .update(cx, |input, cx| input.set_value("Bearer token", window, cx));
+
+            let errors = validate_mcp_form(&draft, Some("server"), Some(&original), &[], cx);
+            assert!(
+                errors.is_empty(),
+                "unexpected validation errors: {errors:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn merge_clears_stdio_only_fields_when_saving_http(cx: &mut TestAppContext) {
+        init_form_state_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            let original = McpServerTomlConfig {
+                transport: McpTransportKind::Stdio,
+                command: Some("old-command".to_string()),
+                args: vec!["--old".to_string()],
+                env: BTreeMap::from([("OLD_ENV".to_string(), "value".to_string())]),
+                env_vars: vec!["OLD_SECRET".to_string()],
+                cwd: Some(PathBuf::from("/tmp/old")),
+                ..Default::default()
+            };
+
+            let mut next_row_id = 1;
+            let mut draft = McpServerFormDraft::from_config(
+                "server".to_string(),
+                &original,
+                &mut next_row_id,
+                window,
+                cx,
+            );
+            draft.transport = McpTransportKind::StreamableHttp;
+            draft.url_input.update(cx, |input, cx| {
+                input.set_value("https://example.com/mcp", window, cx)
+            });
+
+            let merged = draft.merge_into_config(Some(&original), cx);
+
+            assert_eq!(merged.transport, McpTransportKind::StreamableHttp);
+            assert_eq!(merged.url.as_deref(), Some("https://example.com/mcp"));
+            assert!(merged.command.is_none());
+            assert!(merged.args.is_empty());
+            assert!(merged.env.is_empty());
+            assert!(merged.env_vars.is_empty());
+            assert!(merged.cwd.is_none());
         });
     }
 

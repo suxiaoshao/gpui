@@ -24,6 +24,7 @@ pub(crate) struct AuthorizationCodePkceConfig {
     pub(crate) scopes: Vec<String>,
     pub(crate) client_id: Option<String>,
     pub(crate) client_metadata_url: Option<String>,
+    pub(crate) resource: Option<String>,
     pub(crate) callback_port: Option<u16>,
     pub(crate) callback_url: Option<String>,
 }
@@ -108,6 +109,7 @@ pub(crate) async fn authorize_with_browser(
         let (redirect_uri, callback_rx) =
             start_loopback_callback(config.callback_port, config.callback_url.as_deref()).await?;
         let scopes = config.scopes.iter().map(String::as_str).collect::<Vec<_>>();
+        let resource = config.resource.as_deref();
 
         if let Some(client_id) = config.client_id.as_deref().filter(|id| !id.is_empty()) {
             let mut manager = AuthorizationManager::new(server_url).await?;
@@ -118,6 +120,7 @@ pub(crate) async fn authorize_with_browser(
                     .with_scopes(config.scopes.clone()),
             )?;
             let authorization_url = manager.get_authorization_url(&scopes).await?;
+            let authorization_url = authorization_url_with_resource(&authorization_url, resource);
             Ok(PendingAuthorization::Manager {
                 manager,
                 authorization_url,
@@ -134,6 +137,7 @@ pub(crate) async fn authorize_with_browser(
                 )
                 .await?;
             let authorization_url = state.get_authorization_url().await?;
+            let authorization_url = authorization_url_with_resource(&authorization_url, resource);
             Ok(PendingAuthorization::State {
                 state,
                 authorization_url,
@@ -248,6 +252,48 @@ fn status_from_credentials(credentials: &StoredCredentials) -> McpOAuthStatusSna
     }
 }
 
+fn authorization_url_with_resource(authorization_url: &str, resource: Option<&str>) -> String {
+    let Some(resource) = resource
+        .map(str::trim)
+        .filter(|resource| !resource.is_empty())
+    else {
+        return authorization_url.to_string();
+    };
+
+    match Url::parse(authorization_url) {
+        Ok(mut url) => {
+            let query_pairs = url
+                .query_pairs()
+                .filter(|(key, _)| key != "resource")
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect::<Vec<_>>();
+            url.set_query(None);
+            {
+                let mut query = url.query_pairs_mut();
+                for (key, value) in query_pairs {
+                    query.append_pair(&key, &value);
+                }
+                query.append_pair("resource", resource);
+            }
+            url.to_string()
+        }
+        Err(_) => {
+            let separator = if authorization_url.contains('?') {
+                if authorization_url.ends_with('?') || authorization_url.ends_with('&') {
+                    ""
+                } else {
+                    "&"
+                }
+            } else {
+                "?"
+            };
+            let resource =
+                url::form_urlencoded::byte_serialize(resource.as_bytes()).collect::<String>();
+            format!("{authorization_url}{separator}resource={resource}")
+        }
+    }
+}
+
 async fn wait_for_callback(
     callback_rx: oneshot::Receiver<Result<String, String>>,
 ) -> Result<String, String> {
@@ -348,7 +394,10 @@ fn canonical_server_uri(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{callback_url_from_request, canonical_server_uri, credentials_key};
+    use super::{
+        authorization_url_with_resource, callback_url_from_request, canonical_server_uri,
+        credentials_key,
+    };
     use url::Url;
 
     #[test]
@@ -370,5 +419,42 @@ mod tests {
             callback_url_from_request(request, 49152).unwrap(),
             "http://127.0.0.1:49152/callback?code=abc&state=xyz"
         );
+    }
+
+    #[test]
+    fn authorization_url_with_resource_replaces_default_resource() {
+        let url = authorization_url_with_resource(
+            "https://auth.example.com/authorize?client_id=client&resource=https%3A%2F%2Fold.example.com%2Fmcp&state=abc",
+            Some("https://api.example.com/mcp"),
+        );
+        let url = Url::parse(&url).unwrap();
+        let pairs = url.query_pairs().collect::<Vec<_>>();
+
+        assert_eq!(
+            pairs
+                .iter()
+                .filter(|(key, _)| key.as_ref() == "resource")
+                .count(),
+            1
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key.as_ref() == "client_id" && value.as_ref() == "client")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key.as_ref() == "state" && value.as_ref() == "abc")
+        );
+        assert!(pairs.iter().any(|(key, value)| key.as_ref() == "resource"
+            && value.as_ref() == "https://api.example.com/mcp"));
+    }
+
+    #[test]
+    fn authorization_url_with_resource_ignores_blank_resource() {
+        let url = "https://auth.example.com/authorize?client_id=client";
+
+        assert_eq!(authorization_url_with_resource(url, Some("  ")), url);
     }
 }

@@ -381,6 +381,35 @@ X-Docs = "enabled"
 }
 
 #[test]
+fn mcp_config_ignores_stdio_env_for_http_servers() {
+    let config = toml::from_str::<AiChat2Config>(
+        r#"
+[mcp_servers.docs]
+transport = "streamable_http"
+url = "https://docs.example.com/mcp"
+env_vars = ["AI_CHAT2_HTTP_STDIO_ENV_SHOULD_NOT_BE_READ"]
+cwd = "/tmp/stdio-only"
+
+[mcp_servers.docs.env]
+NODE_ENV = "production"
+"#,
+    )
+    .unwrap();
+
+    let layer = config.mcp_config_layer().unwrap();
+
+    assert_eq!(layer.servers.len(), 1);
+    assert!(layer.servers[0].env.is_empty());
+    assert!(layer.servers[0].cwd.is_none());
+    match &layer.servers[0].transport {
+        McpServerTransport::StreamableHttp(http) => {
+            assert_eq!(http.url, "https://docs.example.com/mcp");
+        }
+        McpServerTransport::Stdio(_) => panic!("expected streamable HTTP transport"),
+    }
+}
+
+#[test]
 fn mcp_config_rejects_reserved_headers_and_oauth_authorization_header() {
     let reserved = toml::from_str::<AiChat2Config>(
         r#"

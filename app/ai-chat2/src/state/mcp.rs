@@ -1011,15 +1011,16 @@ fn oauth_authorization_config(
             scopes,
             client_id,
             client_metadata_url,
+            resource,
             callback_port,
             callback_url,
-            ..
         } => Ok((
             server_url,
             mcp_oauth::AuthorizationCodePkceConfig {
                 scopes: scopes.clone(),
                 client_id: client_id.clone(),
                 client_metadata_url: client_metadata_url.clone(),
+                resource: resource.clone(),
                 callback_port: *callback_port,
                 callback_url: callback_url.clone(),
             },
@@ -1202,6 +1203,24 @@ mod tests {
             oauth_error_status(&server, "Insufficient scope"),
             McpOAuthStatusSnapshot::ScopeUpgradeRequired { .. }
         ));
+    }
+
+    #[test]
+    fn oauth_authorization_config_preserves_resource() {
+        let mut server = oauth_http_server();
+        if let Some(McpOAuthTomlConfig::AuthorizationCodePkce { resource, .. }) =
+            server.oauth.as_mut()
+        {
+            *resource = Some("https://api.example.com/mcp".to_string());
+        }
+
+        let (server_url, config) = oauth_authorization_config("server", &server).unwrap();
+
+        assert_eq!(server_url, "https://example.com/mcp");
+        assert_eq!(
+            config.resource.as_deref(),
+            Some("https://api.example.com/mcp")
+        );
     }
 
     #[gpui::test]
