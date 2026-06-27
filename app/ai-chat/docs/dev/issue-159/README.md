@@ -20,13 +20,23 @@ ChatForm 多模态输入专项计划见
 `app/ai-chat/docs/dev/issue-159/tools-and-approval/README.md`。
 MCP Settings/runtime/OAuth 专项计划见
 `app/ai-chat/docs/dev/issue-159/mcp/README.md`。
+Packaged `.app` 手动冒烟测试记录见
+`app/ai-chat/docs/dev/issue-159/packaged-app-smoke-2026-06-27.md`。
 
-最后同步时间：2026-06-25。
+最后同步时间：2026-06-27。
 
 当前实现基线：`codex/issue-137-llm-abstractions`。foundation 已通过 PR #164 合入集成分支。
-当前增量分支为 `codex/issue-159-ai-chat2-ui`；阶段 PR #165
-`ai-chat2: stage agent UI, tools, and gpui-store integration` 已创建并指向
-`codex/issue-137-llm-abstractions`，尚未合入。live GitHub 查询显示 #137/#159 仍 open。
+阶段 PR #165 `ai-chat2: stage agent UI, tools, and gpui-store integration` 已于 2026-06-22 合入集成分支。
+阶段 PR #166 `ai-chat2: stage MCP and skill integration` 已于 2026-06-27 合入集成分支。
+live GitHub 查询显示 #137/#159 仍 open，当前没有 open PR 指向 `codex/issue-137-llm-abstractions`。
+2026-06-27 focused baseline 已在 `codex/issue-137-llm-abstractions` 跑完并通过：`git diff --check`、
+`cargo fmt --check`、`cargo check -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store`、
+`cargo test -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store`、
+`cargo clippy -p ai-chat2 -p ai-chat-agent -p ai-chat-core -p ai-chat-db -p gpui-store --all-targets --all-features -- -D warnings`。
+仍未运行 full workspace build/test/clippy；packaged `.app` 手动 GPUI smoke 见
+`app/ai-chat/docs/dev/issue-159/packaged-app-smoke-2026-06-27.md`，其中 OpenAI `gpt-5.4` run
+卡住、assistant 文本首部裁剪和 Projects Add 安全补测仍待处理；Cargo 仍提示依赖 `block v0.1.6`
+的既有 future-incompat warning。
 
 当前状态：进行中。已合入的 foundation 包含基础设施壳、app chrome、file-backed logging、About、Sidebar/home
 skeleton、Home root/sidebar 结构修正、ChatForm 视觉预览、`ComposerEditor` 第一版输入内核、cursor/scroll
@@ -94,8 +104,11 @@ sidebar 和 conversation runtime/timeline 仍逐项评估。
 连接状态、auth 状态、server info 和 tools/list 展示，并提供 Add/Edit/Delete/Enable/Disable 管理能力写回 `config.toml`；`state::mcp` 安装 app-global runtime store，
 通过 `ai-chat-agent::McpSessionManager` 按需连接 stdio / 非 OAuth streamable HTTP server，并在
 agent run `begin_run` 前注册 MCP tools；runtime session fingerprint 只在进程内用于复用和 stale 判断，不写入 run payload 或数据库。
-OAuth browser flow/token storage/refresh/scope upgrade/logout、OAuth 配置表单、ClientCredentials UI、
-Codex-style prewarm 和 MCP source-neutral approval resume 已明确记录为后续项。
+2026-06-27 PR #166 已把 Skill/MCP 阶段合入集成分支：Settings Skill catalog、Composer `$skill`
+completion、config-backed MCP 管理 UI、stdio / 非 OAuth streamable HTTP runtime、authorization-code
+OAuth loopback flow、GPUI credentials token storage、refresh mirror、取消授权、MCP tool registration、
+MCP approval resume 和 same-run approval gate 已完成。Scope upgrade 的完整 advanced flow、ClientCredentials
+UI、Codex-style prewarm、project-level MCP definitions/trust 和更完整真实 OAuth MCP server 手动验证仍是后续项。
 
 已完成提交：
 
@@ -130,6 +143,13 @@ Codex-style prewarm 和 MCP source-neutral approval resume 已明确记录为后
 - 本轮实现：`config.toml` app settings / ChatForm defaults / MCP server 声明入口拆分，`gpui-store`
   实验性 crate、`AiChat2ConfigStore` 和 `PromptCatalogStore` 小步接入，以及依赖和 repo-local GPUI
   skills 刷新
+- `544988d feat(ai-chat2): polish shortcut settings UI`
+- `113f5cb ai-chat2: add skill settings catalog`
+- `15dc5b1 feat(ai-chat2): add skill completion tokens`
+- `b58dd2b feat(ai-chat2): add MCP server management`
+- `c8c4915 feat(ai-chat2): add MCP OAuth and approval resume`
+- `22db9c8 ai-chat2: keep tool approvals within current run`
+- `feba981 fix(ai-chat2): harden skill mentions and OAuth save`
 
 ## 状态定义
 

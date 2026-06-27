@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn stale_session_keys_keep_matching_servers_only() {
-        let keys = vec![
+        let keys = [
             McpSessionKey {
                 server_id: "alpha".to_string(),
                 fingerprint: "same".to_string(),

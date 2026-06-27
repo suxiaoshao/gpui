@@ -117,6 +117,7 @@ fn append_optional_pair(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn legacy_credentials_key_for_test(server_url: &str) -> Result<String, String> {
     let url = Url::parse(server_url).map_err(|err| err.to_string())?;
     Ok(format!("mcp-oauth:{}", canonical_server_uri(&url)))

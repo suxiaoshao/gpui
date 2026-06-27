@@ -10,7 +10,9 @@ use ai_chat_core::{
     TokenBudgetSelectionMode, ToolApprovalMode,
 };
 use gpui::TestAppContext;
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
+
+use crate::state::config::override_dir_from_value;
 
 #[test]
 fn toml_config_stores_storage_and_app_settings() {
@@ -133,6 +135,16 @@ fn new_toml_config_writes_default_app_settings() {
     assert!(source.contains(r#"mode = "system""#));
     assert!(source.contains("[chat_form]"));
     assert!(source.contains(r#"approval_mode = "request_approval""#));
+}
+
+#[test]
+fn config_directory_override_ignores_empty_env_value() {
+    assert_eq!(override_dir_from_value(None), None);
+    assert_eq!(override_dir_from_value(Some(OsString::new())), None);
+    assert_eq!(
+        override_dir_from_value(Some(OsString::from("/tmp/ai-chat2-config"))),
+        Some(PathBuf::from("/tmp/ai-chat2-config"))
+    );
 }
 
 #[test]

@@ -10,6 +10,7 @@ use gpui_store::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -32,6 +33,7 @@ pub(crate) use mcp::{
 };
 
 const CONFIG_FILE_NAME: &str = "config.toml";
+pub(crate) const CONFIG_DIR_ENV: &str = "AI_CHAT2_CONFIG_DIR";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -241,9 +243,12 @@ impl AiChat2Config {
     }
 
     pub(crate) fn config_dir() -> AiChat2Result<PathBuf> {
-        let dir = dirs_next::config_dir()
-            .ok_or(AiChat2Error::ConfigDirUnavailable)?
-            .join(APP_NAME);
+        let dir = match override_dir_from_env(CONFIG_DIR_ENV) {
+            Some(dir) => dir,
+            None => dirs_next::config_dir()
+                .ok_or(AiChat2Error::ConfigDirUnavailable)?
+                .join(APP_NAME),
+        };
         fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -323,6 +328,14 @@ impl AiChat2AppSettings {
     pub(crate) fn default_project_id(&self) -> Option<&ProjectId> {
         self.payload.default_project_id.as_ref()
     }
+}
+
+fn override_dir_from_env(name: &str) -> Option<PathBuf> {
+    override_dir_from_value(std::env::var_os(name))
+}
+
+fn override_dir_from_value(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 pub(crate) fn store(cx: &impl AppContext) -> AiChat2ConfigStore {

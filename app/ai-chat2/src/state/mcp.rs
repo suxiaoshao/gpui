@@ -227,13 +227,10 @@ impl McpRuntimeStore {
             return;
         };
         let Some(credentials_key) = mcp_oauth::credentials_key_for_server(&server_id, &server)
-            .map_or_else(
-                |err| {
-                    self.last_error = Some(err);
-                    None
-                },
-                |key| key,
-            )
+            .unwrap_or_else(|err| {
+                self.last_error = Some(err);
+                None
+            })
         else {
             cx.emit(McpRuntimeStoreEvent::StatusChanged);
             cx.notify();
