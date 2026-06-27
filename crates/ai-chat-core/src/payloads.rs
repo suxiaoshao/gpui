@@ -65,6 +65,8 @@ pub enum AttachmentStorageKind {
 pub enum AgentRunTriggerKind {
     User,
     Shortcut,
+    /// Legacy value accepted for runs written by the removed approval-resume flow.
+    Resume,
     Retry,
 }
 
@@ -1018,6 +1020,14 @@ mod tests {
         let id = crate::new_id();
         assert_eq!(id.len(), 36);
         assert_eq!(id.chars().nth(14), Some('7'));
+    }
+
+    #[test]
+    fn legacy_resume_agent_run_trigger_kind_decodes() {
+        assert_eq!(
+            serde_json::from_value::<AgentRunTriggerKind>(json!("resume")).unwrap(),
+            AgentRunTriggerKind::Resume
+        );
     }
 
     #[test]

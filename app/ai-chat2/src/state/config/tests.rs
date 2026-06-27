@@ -430,7 +430,7 @@ flow = "authorization_code_pkce"
 }
 
 #[test]
-fn mcp_config_parses_client_credentials_as_toml_only_advanced_path() {
+fn mcp_config_rejects_client_credentials_flow() {
     let config = toml::from_str::<AiChat2Config>(
         r#"
 [mcp_servers.internal]
@@ -459,6 +459,10 @@ resource = "https://internal.example.com/mcp"
             resource: Some("https://internal.example.com/mcp".to_string()),
         })
     );
+
+    let err = config.mcp_config_layer().unwrap_err().to_string();
+    assert!(err.contains("client_credentials"));
+    assert!(err.contains("not supported"));
 }
 
 #[gpui::test]

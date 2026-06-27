@@ -330,17 +330,10 @@ impl McpOAuthTomlConfig {
                     validate_http_url(server_id, url)?;
                 }
             }
-            Self::ClientCredentials {
-                client_id,
-                client_secret_env_var,
-                ..
-            } => {
-                if client_id.trim().is_empty() {
-                    return Err(AiChat2Error::Config(format!(
-                        "mcp server `{server_id}` OAuth client_id is required"
-                    )));
-                }
-                validate_env_var_name(server_id, client_secret_env_var)?;
+            Self::ClientCredentials { .. } => {
+                return Err(AiChat2Error::Config(format!(
+                    "mcp server `{server_id}` OAuth client_credentials flow is not supported"
+                )));
             }
         }
         Ok(())
