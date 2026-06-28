@@ -778,18 +778,16 @@ fn project_picker_trigger(
 ) -> Button {
     let foreground = cx.theme().muted_foreground;
     let hover_foreground = cx.theme().foreground.opacity(0.78);
-    let hover_background = cx.theme().foreground.opacity(0.06);
     let active_background = cx.theme().foreground.opacity(0.08);
 
     Button::new(id)
-        .text()
+        .ghost()
         .with_size(px(PROJECT_PICKER_TRIGGER_SIZE))
         .h(px(PROJECT_PICKER_TRIGGER_SIZE))
         .px(px(8.))
         .py(px(0.))
         .rounded(px(PROJECT_PICKER_TRIGGER_RADIUS))
         .text_color(foreground)
-        .hover(move |this| this.bg(hover_background).text_color(hover_foreground))
         .when(open, |this| {
             this.bg(active_background).text_color(hover_foreground)
         })

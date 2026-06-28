@@ -216,3 +216,51 @@ status=canceled
 
 UI 显示 `Agent 运行已取消`。这证明 stop/cancel 路径可用，但 OpenAI run 卡住点需要继续定位：
 可能在 secret 读取、provider/runtime 构建、请求发出前等待，或底层 provider 没有把错误写到当前日志。
+
+## 真实数据正常 app 复测（2026-06-27）
+
+用户明确要求用真实数据复测，并在测试前备份、测试后还原。本轮没有复用隔离 DB，而是使用真实
+`~/Library/Application Support/top.sushao.ai-chat2` 数据目录；测试前把 `ai_chat_fresh.sqlite3`、
+`config.toml` 和 `state.toml` 备份到 `/private/tmp/gpui-ai-chat2-realdata-test-2026-06-27`。
+
+启动前原始 DB 状态为 `conversations=0`、`agent_runs=0`。测试前也记录了真实
+`scratch-projects/` 的目录列表。
+
+### 启动阻塞修复
+
+直接 `cargo run -p ai-chat2` 使用真实数据启动时先遇到启动期 panic：
+
+```text
+hover style already set
+```
+
+调用栈指向 `gpui_component::button::Button::render`，业务触发点是
+`app/ai-chat2/src/features/home/new_conversation.rs` 的项目选择器按钮。根因是该按钮使用
+`Button::text()` 后又额外设置 `.hover(...)`，和 `gpui-component` Button 内部 hover 样式重复。
+本轮已把项目选择器 trigger 改成 `Button::ghost()` 并移除外部 `.hover(...)`；`cargo fmt` 和
+`cargo check -p ai-chat2` 已通过。该修复只处理正常 app 启动阻塞，不改变下列三个 smoke 问题的结论。
+
+### 复测结果
+
+| 项目 | 结果 | 证据 |
+| --- | --- | --- |
+| Settings 基本导航 | 通过 | General、Provider、MCP、Skills、Shortcuts 页面均能打开；Provider 能读取真实 OpenAI/Ollama/DeepSeek 配置，MCP 能显示真实 `utools` server，未记录 secret。 |
+| PKG-SMOKE-001 | 仍复现 | 通过应用菜单打开 `打开临时对话` 后，临时窗口能显示，但日志新增 `2026-06-27T22:18:59 ERROR gpui::window: RefCell already borrowed`。Settings 路径本轮未再产生该错误。 |
+| PKG-SMOKE-002 | 仍复现 | Ollama `qwen3.5:4b` 完成真实 run。DB/log 中 assistant 文本以 `I understand...` 开头，GUI 可见第一行从 `understand...` 开始，左侧少了 `I `。 |
+| PKG-SMOKE-003 | 仍复现 | OpenAI `gpt-5.4` 发送后约 3 分 24 秒仍只有 `agent_runs.status=running`，没有 `provider_steps`，日志没有新的 `invoke_agent`；手动停止后 DB 更新为 `canceled`，UI 显示 `Agent 运行已取消`。 |
+
+### 还原结果
+
+测试结束后退出 app，恢复 `ai_chat_fresh.sqlite3`、`config.toml`、`state.toml`，并删除本轮新建的两个空
+scratch project 目录。恢复后校验：
+
+```text
+sqlite quick_check: ok
+conversations=0
+agent_runs=0
+provider_steps=0
+items=0
+```
+
+恢复后的 DB、config、state hash 均与测试前备份一致；`scratch-projects/` 最终列表与测试前一致；
+`pgrep -fl "ai-chat2|AI Chat 2"` 无残留进程。
