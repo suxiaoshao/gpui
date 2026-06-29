@@ -57,6 +57,7 @@ app-theme = { workspace = true, default-features = false, features = [
   "theme-picker",
 ] }
 gpui.workspace = true
+gpui-form.workspace = true
 gpui-store.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true

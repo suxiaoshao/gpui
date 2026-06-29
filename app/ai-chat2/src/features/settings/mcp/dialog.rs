@@ -9,7 +9,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Task, Window, div, prelude::FluentBuilder as _, px, relative,
+    Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -23,6 +23,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+use gpui_form::FormItemId;
 use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicU64, Ordering},
@@ -31,8 +32,10 @@ use tracing::{Level, event};
 
 use super::{
     super::push_settings_error,
-    form_rows::{render_key_value_list_field, render_string_list_field, validation_error_list},
-    form_state::{KeyValueField, McpServerFormDraft, StringListField, trim_input},
+    form_rows::{
+        AddMcpRow, McpRowList, RemoveMcpRow, one_input_rows, two_input_rows, validation_error_list,
+    },
+    form_state::McpServerFormDraft,
     validation::{McpFormField, McpFormValidationError, validate_mcp_form},
 };
 
@@ -69,7 +72,6 @@ pub(super) struct McpServerEditDialogState {
     original_config: Option<McpServerTomlConfig>,
     draft: McpServerFormDraft,
     validation_errors: Vec<McpFormValidationError>,
-    next_row_id: u64,
     content_scroll_handle: ScrollHandle,
     draft_oauth_status_key: String,
     draft_oauth_credential_key: Option<state::mcp_oauth::CredentialsKey>,
@@ -123,23 +125,15 @@ impl McpServerEditDialogState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut next_row_id = 1;
         let server_id = mode.original_server_id().unwrap_or_default().to_string();
         let server_for_draft = server.clone().unwrap_or_default();
-        let draft = McpServerFormDraft::from_config(
-            server_id,
-            &server_for_draft,
-            &mut next_row_id,
-            window,
-            cx,
-        );
+        let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
 
         Self {
             mode,
             original_config: server,
             draft,
             validation_errors: Vec::new(),
-            next_row_id,
             content_scroll_handle: ScrollHandle::default(),
             draft_oauth_status_key: format!(
                 "__mcp_oauth_draft_{}",
@@ -154,11 +148,11 @@ impl McpServerEditDialogState {
 
     fn focus_primary_input(&self, window: &mut Window, cx: &mut Context<Self>) {
         let input = if !self.mode.is_edit() {
-            self.draft.server_id_input.clone()
+            self.draft.form.read(cx).server_id_input_state()
         } else {
-            match self.draft.transport {
-                McpTransportKind::Stdio => self.draft.command_input.clone(),
-                McpTransportKind::StreamableHttp => self.draft.url_input.clone(),
+            match self.draft.form.read(cx).transport_value() {
+                McpTransportKind::Stdio => self.draft.form.read(cx).command_input_state(),
+                McpTransportKind::StreamableHttp => self.draft.form.read(cx).url_input_state(),
             }
         };
         input.update(cx, |input, cx| input.focus(window, cx));
@@ -370,6 +364,7 @@ impl McpServerEditDialogState {
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let transport = self.draft.form.read(cx).transport_value();
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -377,71 +372,59 @@ impl McpServerEditDialogState {
             .children([
                 Toggle::new("mcp-dialog-transport-stdio")
                     .label(cx.global::<I18n>().t("mcp-transport-stdio"))
-                    .checked(self.draft.transport == McpTransportKind::Stdio)
+                    .checked(transport == McpTransportKind::Stdio)
                     .flex_1()
                     .h(px(36.)),
                 Toggle::new("mcp-dialog-transport-http")
                     .label(cx.global::<I18n>().t("mcp-transport-streamable-http"))
-                    .checked(self.draft.transport == McpTransportKind::StreamableHttp)
+                    .checked(transport == McpTransportKind::StreamableHttp)
                     .flex_1()
                     .h(px(36.)),
             ])
-            .on_click(cx.listener(|this, states: &Vec<bool>, _window, cx| {
-                this.draft.transport = transport_from_toggle_states(this.draft.transport, states);
+            .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
+                let transport = transport_from_toggle_states(
+                    this.draft.form.read(cx).transport_value(),
+                    states,
+                );
+                this.draft.set_transport(transport, window, cx);
                 this.validation_errors.clear();
                 cx.notify();
             }))
             .into_any_element()
     }
 
-    fn add_string_row(
-        &mut self,
-        field: StringListField,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.draft
-            .add_string_row(field, &mut self.next_row_id, window, cx);
+    fn on_add_mcp_row(&mut self, action: &AddMcpRow, window: &mut Window, cx: &mut Context<Self>) {
+        match action.list {
+            McpRowList::Args => self.draft.add_arg_row(window, cx),
+            McpRowList::Env => self.draft.add_env_row(window, cx),
+            McpRowList::EnvVars => self.draft.add_env_var_row(window, cx),
+            McpRowList::Headers => self.draft.add_header_row(window, cx),
+            McpRowList::EnvHeaders => self.draft.add_env_header_row(window, cx),
+        }
+        self.validation_errors.clear();
         cx.notify();
     }
 
-    fn remove_string_row(
+    fn on_remove_mcp_row(
         &mut self,
-        field: StringListField,
-        row_id: u64,
+        action: &RemoveMcpRow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.draft
-            .remove_string_row(field, row_id, &mut self.next_row_id, window, cx);
+        let row_id = FormItemId::new(action.row_id);
+        match action.list {
+            McpRowList::Args => self.draft.remove_arg_row(row_id, window, cx),
+            McpRowList::Env => self.draft.remove_env_row(row_id, window, cx),
+            McpRowList::EnvVars => self.draft.remove_env_var_row(row_id, window, cx),
+            McpRowList::Headers => self.draft.remove_header_row(row_id, window, cx),
+            McpRowList::EnvHeaders => self.draft.remove_env_header_row(row_id, window, cx),
+        }
+        self.validation_errors.clear();
         cx.notify();
     }
 
-    fn add_key_value_row(
-        &mut self,
-        field: KeyValueField,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.draft
-            .add_key_value_row(field, &mut self.next_row_id, window, cx);
-        cx.notify();
-    }
-
-    fn remove_key_value_row(
-        &mut self,
-        field: KeyValueField,
-        row_id: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.draft
-            .remove_key_value_row(field, row_id, &mut self.next_row_id, window, cx);
-        cx.notify();
-    }
-
-    fn set_oauth_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.draft.set_oauth_enabled(enabled);
+    fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft.set_oauth_enabled(enabled, window, cx);
         self.validation_errors.clear();
         cx.notify();
     }
@@ -614,7 +597,7 @@ impl McpServerEditDialogState {
         let dialog = cx.entity().downgrade();
         let authorize_dialog = dialog.clone();
         let sign_out_dialog = dialog.clone();
-        let enabled = self.draft.oauth_enabled;
+        let enabled = self.draft.form.read(cx).oauth_enabled_value();
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
@@ -674,9 +657,9 @@ impl McpServerEditDialogState {
                         Switch::new("mcp-dialog-oauth-enabled")
                             .checked(enabled)
                             .disabled(busy)
-                            .on_click(move |checked, _window, cx| {
+                            .on_click(move |checked, window, cx| {
                                 let _ = dialog.update(cx, |dialog, cx| {
-                                    dialog.set_oauth_enabled(*checked, cx);
+                                    dialog.set_oauth_enabled(*checked, window, cx);
                                 });
                             }),
                     ),
@@ -763,7 +746,7 @@ impl McpServerEditDialogState {
     }
 
     fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
-        if !self.draft.oauth_enabled {
+        if !self.draft.form.read(cx).oauth_enabled_value() {
             return McpOAuthStatusSnapshot::SignedOut;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -839,11 +822,29 @@ impl Render for McpServerEditDialogState {
         let oauth_authorize = i18n.t("mcp-oauth-authorize");
         let oauth_reauthorize = i18n.t("mcp-oauth-reauthorize");
         let oauth_sign_out = i18n.t("mcp-oauth-sign-out");
-        let transport = self.draft.transport;
+        let (
+            transport,
+            server_id_input,
+            command_input,
+            cwd_input,
+            url_input,
+            bearer_token_env_var_input,
+        ) = {
+            let form = self.draft.form.read(cx);
+            (
+                form.transport_value(),
+                form.server_id_input_state(),
+                form.command_input_state(),
+                form.cwd_input_state(),
+                form.url_input_state(),
+                form.bearer_token_env_var_input_state(),
+            )
+        };
         let scroll_handle = self.content_scroll_handle.clone();
-        let dialog = cx.entity().downgrade();
 
         div()
+            .on_action(cx.listener(Self::on_add_mcp_row))
+            .on_action(cx.listener(Self::on_remove_mcp_row))
             .w_full()
             .h_full()
             .relative()
@@ -861,9 +862,7 @@ impl Render for McpServerEditDialogState {
                     })
                     .child(form_field(
                         name_label,
-                        Input::new(&self.draft.server_id_input)
-                            .w_full()
-                            .into_any_element(),
+                        Input::new(&server_id_input).w_full().into_any_element(),
                         self.field_error_messages(
                             |field| field.same_location(&McpFormField::ServerId),
                             cx,
@@ -877,19 +876,10 @@ impl Render for McpServerEditDialogState {
                         cx,
                     ))
                     .when(transport == McpTransportKind::Stdio, |this| {
-                        let add_args_dialog = dialog.clone();
-                        let remove_args_dialog = dialog.clone();
-                        let add_env_dialog = dialog.clone();
-                        let remove_env_dialog = dialog.clone();
-                        let add_env_vars_dialog = dialog.clone();
-                        let remove_env_vars_dialog = dialog.clone();
-
                         this.child(section_label(stdio_section_label, cx))
                             .child(form_field(
                                 command_label,
-                                Input::new(&self.draft.command_input)
-                                    .w_full()
-                                    .into_any_element(),
+                                Input::new(&command_input).w_full().into_any_element(),
                                 self.field_error_messages(
                                     |field| field.same_location(&McpFormField::Command),
                                     cx,
@@ -897,30 +887,22 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(list_field_with_errors(
-                                render_string_list_field(
-                                    "mcp-dialog-args",
-                                    args_label,
-                                    self.draft.args.clone(),
-                                    add_arg_label,
-                                    remove_label.clone(),
-                                )
-                                .on_add(move |window, cx| {
-                                    let _ = add_args_dialog.update(cx, |dialog, cx| {
-                                        dialog.add_string_row(StringListField::Args, window, cx);
-                                    });
-                                })
-                                .on_remove(
-                                    move |row_id, window, cx| {
-                                        let _ = remove_args_dialog.update(cx, |dialog, cx| {
-                                            dialog.remove_string_row(
-                                                StringListField::Args,
-                                                row_id,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ),
+                                {
+                                    let form = self.draft.form.read(cx);
+                                    one_input_rows(
+                                        "mcp-dialog-args",
+                                        args_label,
+                                        form.args_items().iter().map(|item| {
+                                            (
+                                                item.id,
+                                                item.item.store().read(cx).value_input_state(),
+                                            )
+                                        }),
+                                        McpRowList::Args,
+                                        add_arg_label,
+                                        remove_label.clone(),
+                                    )
+                                },
                                 self.field_error_messages(
                                     |field| matches!(field, McpFormField::Argument { .. }),
                                     cx,
@@ -928,30 +910,25 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(list_field_with_errors(
-                                render_key_value_list_field(
-                                    "mcp-dialog-env",
-                                    env_label,
-                                    self.draft.env.clone(),
-                                    add_env_label,
-                                    remove_label.clone(),
-                                )
-                                .on_add(move |window, cx| {
-                                    let _ = add_env_dialog.update(cx, |dialog, cx| {
-                                        dialog.add_key_value_row(KeyValueField::Env, window, cx);
-                                    });
-                                })
-                                .on_remove(
-                                    move |row_id, window, cx| {
-                                        let _ = remove_env_dialog.update(cx, |dialog, cx| {
-                                            dialog.remove_key_value_row(
-                                                KeyValueField::Env,
-                                                row_id,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ),
+                                {
+                                    let form = self.draft.form.read(cx);
+                                    two_input_rows(
+                                        "mcp-dialog-env",
+                                        env_label,
+                                        form.env_items().iter().map(|item| {
+                                            let store = item.item.store();
+                                            let store = store.read(cx);
+                                            (
+                                                item.id,
+                                                store.key_input_state(),
+                                                store.value_input_state(),
+                                            )
+                                        }),
+                                        McpRowList::Env,
+                                        add_env_label,
+                                        remove_label.clone(),
+                                    )
+                                },
                                 self.field_error_messages(
                                     |field| {
                                         matches!(
@@ -965,30 +942,22 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(list_field_with_errors(
-                                render_string_list_field(
-                                    "mcp-dialog-env-vars",
-                                    env_vars_label,
-                                    self.draft.env_vars.clone(),
-                                    add_env_var_label,
-                                    remove_label.clone(),
-                                )
-                                .on_add(move |window, cx| {
-                                    let _ = add_env_vars_dialog.update(cx, |dialog, cx| {
-                                        dialog.add_string_row(StringListField::EnvVars, window, cx);
-                                    });
-                                })
-                                .on_remove(
-                                    move |row_id, window, cx| {
-                                        let _ = remove_env_vars_dialog.update(cx, |dialog, cx| {
-                                            dialog.remove_string_row(
-                                                StringListField::EnvVars,
-                                                row_id,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ),
+                                {
+                                    let form = self.draft.form.read(cx);
+                                    one_input_rows(
+                                        "mcp-dialog-env-vars",
+                                        env_vars_label,
+                                        form.env_vars_items().iter().map(|item| {
+                                            (
+                                                item.id,
+                                                item.item.store().read(cx).value_input_state(),
+                                            )
+                                        }),
+                                        McpRowList::EnvVars,
+                                        add_env_var_label,
+                                        remove_label.clone(),
+                                    )
+                                },
                                 self.field_error_messages(
                                     |field| matches!(field, McpFormField::EnvVar { .. }),
                                     cx,
@@ -997,9 +966,7 @@ impl Render for McpServerEditDialogState {
                             ))
                             .child(form_field(
                                 cwd_label,
-                                Input::new(&self.draft.cwd_input)
-                                    .w_full()
-                                    .into_any_element(),
+                                Input::new(&cwd_input).w_full().into_any_element(),
                                 self.field_error_messages(
                                     |field| field.same_location(&McpFormField::Cwd),
                                     cx,
@@ -1008,17 +975,10 @@ impl Render for McpServerEditDialogState {
                             ))
                     })
                     .when(transport == McpTransportKind::StreamableHttp, |this| {
-                        let add_headers_dialog = dialog.clone();
-                        let remove_headers_dialog = dialog.clone();
-                        let add_env_headers_dialog = dialog.clone();
-                        let remove_env_headers_dialog = dialog.clone();
-
                         this.child(section_label(http_section_label, cx))
                             .child(form_field(
                                 url_label,
-                                Input::new(&self.draft.url_input)
-                                    .w_full()
-                                    .into_any_element(),
+                                Input::new(&url_input).w_full().into_any_element(),
                                 self.field_error_messages(
                                     |field| field.same_location(&McpFormField::Url),
                                     cx,
@@ -1027,7 +987,7 @@ impl Render for McpServerEditDialogState {
                             ))
                             .child(form_field(
                                 bearer_token_env_var_label,
-                                Input::new(&self.draft.bearer_token_env_var_input)
+                                Input::new(&bearer_token_env_var_input)
                                     .w_full()
                                     .into_any_element(),
                                 self.field_error_messages(
@@ -1037,34 +997,25 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(list_field_with_errors(
-                                render_key_value_list_field(
-                                    "mcp-dialog-headers",
-                                    headers_label,
-                                    self.draft.headers.clone(),
-                                    add_header_label,
-                                    remove_label.clone(),
-                                )
-                                .on_add(move |window, cx| {
-                                    let _ = add_headers_dialog.update(cx, |dialog, cx| {
-                                        dialog.add_key_value_row(
-                                            KeyValueField::Headers,
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                })
-                                .on_remove(
-                                    move |row_id, window, cx| {
-                                        let _ = remove_headers_dialog.update(cx, |dialog, cx| {
-                                            dialog.remove_key_value_row(
-                                                KeyValueField::Headers,
-                                                row_id,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ),
+                                {
+                                    let form = self.draft.form.read(cx);
+                                    two_input_rows(
+                                        "mcp-dialog-headers",
+                                        headers_label,
+                                        form.headers_items().iter().map(|item| {
+                                            let store = item.item.store();
+                                            let store = store.read(cx);
+                                            (
+                                                item.id,
+                                                store.name_input_state(),
+                                                store.value_input_state(),
+                                            )
+                                        }),
+                                        McpRowList::Headers,
+                                        add_header_label,
+                                        remove_label.clone(),
+                                    )
+                                },
                                 self.field_error_messages(
                                     |field| {
                                         matches!(
@@ -1078,35 +1029,25 @@ impl Render for McpServerEditDialogState {
                                 cx,
                             ))
                             .child(list_field_with_errors(
-                                render_key_value_list_field(
-                                    "mcp-dialog-env-headers",
-                                    env_headers_label,
-                                    self.draft.env_headers.clone(),
-                                    add_env_header_label,
-                                    remove_label.clone(),
-                                )
-                                .on_add(move |window, cx| {
-                                    let _ = add_env_headers_dialog.update(cx, |dialog, cx| {
-                                        dialog.add_key_value_row(
-                                            KeyValueField::EnvHeaders,
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                })
-                                .on_remove(
-                                    move |row_id, window, cx| {
-                                        let _ =
-                                            remove_env_headers_dialog.update(cx, |dialog, cx| {
-                                                dialog.remove_key_value_row(
-                                                    KeyValueField::EnvHeaders,
-                                                    row_id,
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                    },
-                                ),
+                                {
+                                    let form = self.draft.form.read(cx);
+                                    two_input_rows(
+                                        "mcp-dialog-env-headers",
+                                        env_headers_label,
+                                        form.env_headers_items().iter().map(|item| {
+                                            let store = item.item.store();
+                                            let store = store.read(cx);
+                                            (
+                                                item.id,
+                                                store.name_input_state(),
+                                                store.env_var_input_state(),
+                                            )
+                                        }),
+                                        McpRowList::EnvHeaders,
+                                        add_env_header_label,
+                                        remove_label.clone(),
+                                    )
+                                },
                                 self.field_error_messages(
                                     |field| {
                                         matches!(
@@ -1288,7 +1229,12 @@ fn configured_oauth_status(server: &McpServerTomlConfig) -> McpOAuthStatusSnapsh
     }
 }
 
-pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Window, cx: &mut App) {
+pub(super) fn open_mcp_server_delete_confirm(
+    server_id: String,
+    page: WeakEntity<super::McpSettingsPage>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let mut args = FluentArgs::new();
     args.set("server", server_id.clone());
     let title = cx.global::<I18n>().t("mcp-delete-title");
@@ -1313,6 +1259,7 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
             let server_id = server_id.clone();
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
+            let page_for_task = page.clone();
             let task = window.spawn(cx, async move |cx| {
                 let credentials_result =
                     delete_oauth_credentials(&credential_keys_to_delete, cx).await;
@@ -1335,8 +1282,19 @@ pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Win
                 }) {
                     event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
                 }
+                if let Err(err) = page_for_task.update(cx, |page, cx| {
+                    page.delete_task = None;
+                    cx.notify();
+                }) {
+                    event!(Level::ERROR, error = ?err, "clear mcp server delete task failed");
+                }
             });
-            task.detach();
+            if let Err(err) = page.update(cx, |page, cx| {
+                page.delete_task = Some(task);
+                cx.notify();
+            }) {
+                event!(Level::ERROR, error = ?err, "store mcp server delete task failed");
+            }
         },
         window,
         cx,
@@ -1414,8 +1372,13 @@ fn can_authorize_draft_oauth(
     cx: &App,
 ) -> bool {
     let server_id = draft.server_id(original_server_id, cx);
-    let url = trim_input(&draft.url_input, cx);
-    can_authorize_oauth_values(draft.transport, draft.oauth_enabled, &server_id, &url)
+    let input = draft.input(cx);
+    can_authorize_oauth_values(
+        input.transport,
+        input.oauth_enabled,
+        &server_id,
+        input.url.trim(),
+    )
 }
 
 fn can_authorize_oauth_values(

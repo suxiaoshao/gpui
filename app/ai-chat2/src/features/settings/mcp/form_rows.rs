@@ -1,187 +1,131 @@
-use std::rc::Rc;
-
 use crate::foundation::assets::IconName;
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
-    SharedString, Styled as _, Window, px,
+    Action as _, AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, Styled as _, px,
 };
 use gpui_component::{
     ActiveTheme, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::Input,
+    input::{Input, InputState},
     label::Label,
     v_flex,
 };
+use gpui_form::FormItemId;
+use serde::Deserialize;
 
-use super::form_state::{KeyValueDraftRow, StringListDraftRow};
-
-type AddRowHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
-type RemoveRowHandler = Rc<dyn Fn(u64, &mut Window, &mut App) + 'static>;
-
-#[derive(IntoElement)]
-pub(super) struct StringListFieldView {
-    field_id: &'static str,
-    label: SharedString,
-    rows: Vec<StringListDraftRow>,
-    add_label: SharedString,
-    remove_label: SharedString,
-    on_add: AddRowHandler,
-    on_remove: RemoveRowHandler,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub(super) enum McpRowList {
+    Args,
+    Env,
+    EnvVars,
+    Headers,
+    EnvHeaders,
 }
 
-impl StringListFieldView {
-    pub(super) fn on_add(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        self.on_add = Rc::new(handler);
-        self
-    }
-
-    pub(super) fn on_remove(
-        mut self,
-        handler: impl Fn(u64, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_remove = Rc::new(handler);
-        self
-    }
+#[derive(gpui::Action, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[action(namespace = ai_chat2_mcp_dialog, no_json)]
+pub(super) struct AddMcpRow {
+    pub(super) list: McpRowList,
 }
 
-impl RenderOnce for StringListFieldView {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let add_handler = self.on_add;
-        let remove_handler = self.on_remove;
-        v_flex()
-            .w_full()
-            .gap_2()
-            .child(Label::new(self.label).text_sm().font_medium())
-            .children(self.rows.into_iter().map(|row| {
-                let remove_handler = remove_handler.clone();
-                h_flex()
-                    .id(format!("{}-row-{}", self.field_id, row.id))
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .child(Input::new(&row.input).w_full().flex_1())
-                    .child(
-                        Button::new(format!("{}-remove-{}", self.field_id, row.id))
-                            .icon(IconName::Trash)
-                            .ghost()
-                            .tooltip(self.remove_label.clone())
-                            .on_click(move |_, window, cx| {
-                                remove_handler(row.id, window, cx);
-                            }),
-                    )
-            }))
-            .child(
-                Button::new(format!("{}-add", self.field_id))
-                    .icon(IconName::Plus)
-                    .label(self.add_label.clone())
-                    .w_full()
-                    .on_click(move |_, window, cx| {
-                        add_handler(window, cx);
-                    }),
-            )
-    }
+#[derive(gpui::Action, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[action(namespace = ai_chat2_mcp_dialog, no_json)]
+pub(super) struct RemoveMcpRow {
+    pub(super) list: McpRowList,
+    pub(super) row_id: u64,
 }
 
-#[derive(IntoElement)]
-pub(super) struct KeyValueListFieldView {
-    field_id: &'static str,
-    label: SharedString,
-    rows: Vec<KeyValueDraftRow>,
-    add_label: SharedString,
-    remove_label: SharedString,
-    on_add: AddRowHandler,
-    on_remove: RemoveRowHandler,
-}
-
-impl KeyValueListFieldView {
-    pub(super) fn on_add(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        self.on_add = Rc::new(handler);
-        self
-    }
-
-    pub(super) fn on_remove(
-        mut self,
-        handler: impl Fn(u64, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_remove = Rc::new(handler);
-        self
-    }
-}
-
-impl RenderOnce for KeyValueListFieldView {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let add_handler = self.on_add;
-        let remove_handler = self.on_remove;
-        v_flex()
-            .w_full()
-            .gap_2()
-            .child(Label::new(self.label).text_sm().font_medium())
-            .children(self.rows.into_iter().map(|row| {
-                let remove_handler = remove_handler.clone();
-                h_flex()
-                    .id(format!("{}-row-{}", self.field_id, row.id))
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .child(Input::new(&row.key_input).w_full().flex_1())
-                    .child(Input::new(&row.value_input).w_full().flex_1())
-                    .child(
-                        Button::new(format!("{}-remove-{}", self.field_id, row.id))
-                            .icon(IconName::Trash)
-                            .ghost()
-                            .tooltip(self.remove_label.clone())
-                            .on_click(move |_, window, cx| {
-                                remove_handler(row.id, window, cx);
-                            }),
-                    )
-            }))
-            .child(
-                Button::new(format!("{}-add", self.field_id))
-                    .icon(IconName::Plus)
-                    .label(self.add_label.clone())
-                    .w_full()
-                    .on_click(move |_, window, cx| {
-                        add_handler(window, cx);
-                    }),
-            )
-    }
-}
-
-pub(super) fn render_string_list_field(
+pub(super) fn one_input_rows(
     field_id: &'static str,
     label: impl Into<SharedString>,
-    rows: Vec<StringListDraftRow>,
+    rows: impl IntoIterator<Item = (FormItemId, Entity<InputState>)>,
+    list: McpRowList,
     add_label: impl Into<SharedString>,
     remove_label: impl Into<SharedString>,
-) -> StringListFieldView {
-    StringListFieldView {
-        field_id,
-        label: label.into(),
-        rows,
-        add_label: add_label.into(),
-        remove_label: remove_label.into(),
-        on_add: Rc::new(|_, _| {}),
-        on_remove: Rc::new(|_, _, _| {}),
-    }
+) -> AnyElement {
+    let add_label = add_label.into();
+    let remove_label = remove_label.into();
+
+    row_container(label)
+        .children(rows.into_iter().map(|(row_id, input)| {
+            row_shell(field_id, row_id)
+                .child(Input::new(&input).w_full().flex_1())
+                .child(remove_button(field_id, row_id, list, remove_label.clone()))
+                .into_any_element()
+        }))
+        .child(add_button(field_id, list, add_label))
+        .into_any_element()
 }
 
-pub(super) fn render_key_value_list_field(
+pub(super) fn two_input_rows(
     field_id: &'static str,
     label: impl Into<SharedString>,
-    rows: Vec<KeyValueDraftRow>,
+    rows: impl IntoIterator<Item = (FormItemId, Entity<InputState>, Entity<InputState>)>,
+    list: McpRowList,
     add_label: impl Into<SharedString>,
     remove_label: impl Into<SharedString>,
-) -> KeyValueListFieldView {
-    KeyValueListFieldView {
-        field_id,
-        label: label.into(),
-        rows,
-        add_label: add_label.into(),
-        remove_label: remove_label.into(),
-        on_add: Rc::new(|_, _| {}),
-        on_remove: Rc::new(|_, _, _| {}),
-    }
+) -> AnyElement {
+    let add_label = add_label.into();
+    let remove_label = remove_label.into();
+
+    row_container(label)
+        .children(rows.into_iter().map(|(row_id, first_input, second_input)| {
+            row_shell(field_id, row_id)
+                .child(Input::new(&first_input).w_full().flex_1())
+                .child(Input::new(&second_input).w_full().flex_1())
+                .child(remove_button(field_id, row_id, list, remove_label.clone()))
+                .into_any_element()
+        }))
+        .child(add_button(field_id, list, add_label))
+        .into_any_element()
+}
+
+fn row_container(label: impl Into<SharedString>) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(Label::new(label.into()).text_sm().font_medium())
+}
+
+fn add_button(field_id: &'static str, list: McpRowList, add_label: SharedString) -> Button {
+    Button::new(format!("{field_id}-add"))
+        .icon(IconName::Plus)
+        .label(add_label)
+        .w_full()
+        .on_click(move |_, window, cx| {
+            window.dispatch_action(AddMcpRow { list }.boxed_clone(), cx);
+        })
+}
+
+fn row_shell(field_id: &'static str, row_id: FormItemId) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(format!("{field_id}-row-{row_id}"))
+        .w_full()
+        .items_center()
+        .gap_2()
+}
+
+fn remove_button(
+    field_id: &'static str,
+    row_id: FormItemId,
+    list: McpRowList,
+    remove_label: SharedString,
+) -> Button {
+    Button::new(format!("{field_id}-remove-{row_id}"))
+        .icon(IconName::Trash)
+        .ghost()
+        .tooltip(remove_label)
+        .on_click(move |_, window, cx| {
+            window.dispatch_action(
+                RemoveMcpRow {
+                    list,
+                    row_id: row_id.get(),
+                }
+                .boxed_clone(),
+                cx,
+            );
+        })
 }
 
 pub(super) fn validation_error_list(messages: Vec<SharedString>, cx: &mut App) -> AnyElement {

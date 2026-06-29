@@ -1,0 +1,58 @@
+use gpui::{App, Context, Window};
+
+use crate::{
+    FieldChangeCause, FieldPath, FormItemId, FormMeta, FormValidationReport, ValidationScope,
+    ValueFieldStore,
+};
+
+#[doc(hidden)]
+pub fn field_path(name: &'static str) -> FieldPath {
+    FieldPath::from_static(name)
+}
+
+#[doc(hidden)]
+pub fn value_field<T>(_name: &'static str, value: T) -> ValueFieldStore<T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    ValueFieldStore::new(value)
+}
+
+#[doc(hidden)]
+pub fn scope_contains_path(scope: &ValidationScope, path: &FieldPath) -> bool {
+    match scope {
+        ValidationScope::Form => true,
+        ValidationScope::Field(field_path) => path == field_path || field_path.starts_with(path),
+        ValidationScope::Group(group_path) => path.starts_with(group_path),
+        ValidationScope::ArrayItem {
+            path: array_path,
+            id,
+        } => path.starts_with(&array_item_path(array_path, *id)),
+    }
+}
+
+fn array_item_path(path: &FieldPath, id: FormItemId) -> FieldPath {
+    path.join_item(id)
+}
+
+pub trait GeneratedFormStore<Input>: Sized + 'static {
+    fn from_value(value: Input, window: &mut Window, cx: &mut Context<Self>) -> Self;
+    fn draft(&self) -> Input;
+    fn field_paths(&self) -> &[FieldPath];
+    fn write_draft(
+        &mut self,
+        value: Input,
+        cause: FieldChangeCause,
+        window: &mut Window,
+        cx: &mut App,
+    );
+    fn meta(&self) -> &FormMeta;
+    fn apply_validation_report(
+        &mut self,
+        report: &FormValidationReport,
+        scope: &ValidationScope,
+        cx: &mut App,
+    );
+
+    fn clear_all_errors(&mut self, _cx: &mut App) {}
+}

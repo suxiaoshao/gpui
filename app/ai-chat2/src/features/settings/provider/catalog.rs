@@ -20,38 +20,20 @@ impl From<&str> for ProviderKindKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ProviderFieldKind {
-    Text,
-    Secret,
-    Url,
-    Select,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProviderSelectOption {
-    pub(super) label_key: &'static str,
-    pub(super) value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProviderFieldSchema {
-    pub(super) key: &'static str,
-    pub(super) label_key: &'static str,
-    pub(super) kind: ProviderFieldKind,
-    pub(super) required: bool,
-    pub(super) placeholder_key: &'static str,
-    pub(super) default_value: Option<&'static str>,
-    pub(super) options: Vec<ProviderSelectOption>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProviderSpec {
     pub(super) kind: ProviderKindKey,
     pub(super) display_name: &'static str,
     pub(super) description_key: &'static str,
     pub(super) visual: ProviderVisual,
-    pub(super) fields: Vec<ProviderFieldSchema>,
+    pub(super) form_kind: ProviderFormKind,
     pub(super) model_listing: ModelListingStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProviderFormKind {
+    ApiKey,
+    Ollama,
+    CustomOpenAiCompatible,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,26 +53,7 @@ pub(super) fn builtin_provider_specs() -> Vec<ProviderSpec> {
             display_name: "Ollama",
             description_key: "provider-description-ollama",
             visual: provider_visual_for_kind("ollama"),
-            fields: vec![
-                ProviderFieldSchema {
-                    key: "base_url",
-                    label_key: "provider-field-base-url",
-                    kind: ProviderFieldKind::Url,
-                    required: true,
-                    placeholder_key: "provider-placeholder-ollama-base-url",
-                    default_value: Some("http://localhost:11434"),
-                    options: Vec::new(),
-                },
-                ProviderFieldSchema {
-                    key: "bearer_token",
-                    label_key: "provider-field-bearer-token",
-                    kind: ProviderFieldKind::Secret,
-                    required: false,
-                    placeholder_key: "provider-placeholder-bearer-token",
-                    default_value: None,
-                    options: Vec::new(),
-                },
-            ],
+            form_kind: ProviderFormKind::Ollama,
             model_listing: ModelListingStrategy::OllamaTagsAndShow,
         },
         api_key_provider(
@@ -129,26 +92,7 @@ fn api_key_provider(
         display_name,
         description_key: description,
         visual: provider_visual_for_kind(kind),
-        fields: vec![
-            ProviderFieldSchema {
-                key: "api_key",
-                label_key: "provider-field-api-key",
-                kind: ProviderFieldKind::Secret,
-                required: true,
-                placeholder_key: "provider-placeholder-api-key",
-                default_value: None,
-                options: Vec::new(),
-            },
-            ProviderFieldSchema {
-                key: "base_url",
-                label_key: "provider-field-base-url",
-                kind: ProviderFieldKind::Url,
-                required: false,
-                placeholder_key: "provider-placeholder-base-url-default",
-                default_value: None,
-                options: Vec::new(),
-            },
-        ],
+        form_kind: ProviderFormKind::ApiKey,
         model_listing: if kind == "azure_openai"
             || kind == "moonshot"
             || kind == "zai"
@@ -170,53 +114,7 @@ fn custom_openai_provider() -> ProviderSpec {
         display_name: "Custom OpenAI-compatible",
         description_key: "provider-description-custom-openai-compatible",
         visual: provider_visual_for_kind("custom_openai_compatible"),
-        fields: vec![
-            ProviderFieldSchema {
-                key: "name",
-                label_key: "provider-field-name",
-                kind: ProviderFieldKind::Text,
-                required: true,
-                placeholder_key: "provider-placeholder-provider-name",
-                default_value: None,
-                options: Vec::new(),
-            },
-            ProviderFieldSchema {
-                key: "api_key",
-                label_key: "provider-field-api-key",
-                kind: ProviderFieldKind::Secret,
-                required: true,
-                placeholder_key: "provider-placeholder-api-key",
-                default_value: None,
-                options: Vec::new(),
-            },
-            ProviderFieldSchema {
-                key: "base_url",
-                label_key: "provider-field-base-url",
-                kind: ProviderFieldKind::Url,
-                required: true,
-                placeholder_key: "provider-placeholder-custom-base-url",
-                default_value: None,
-                options: Vec::new(),
-            },
-            ProviderFieldSchema {
-                key: "api_mode",
-                label_key: "provider-field-api-mode",
-                kind: ProviderFieldKind::Select,
-                required: true,
-                placeholder_key: "provider-placeholder-api-mode",
-                default_value: Some("responses"),
-                options: vec![
-                    ProviderSelectOption {
-                        label_key: "provider-api-mode-responses",
-                        value: "responses".to_string(),
-                    },
-                    ProviderSelectOption {
-                        label_key: "provider-api-mode-chat-completions",
-                        value: "chat_completions".to_string(),
-                    },
-                ],
-            },
-        ],
+        form_kind: ProviderFormKind::CustomOpenAiCompatible,
         model_listing: ModelListingStrategy::Manual,
     }
 }

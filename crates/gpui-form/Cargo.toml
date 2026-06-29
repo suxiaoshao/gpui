@@ -1,0 +1,20 @@
+[package]
+name = "gpui-form"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+garde-adapter = ["dep:garde"]
+validify-transform = ["dep:validify"]
+form-pipeline = ["garde-adapter", "validify-transform"]
+
+[dependencies]
+garde = { version = "0.23.0", default-features = false, features = ["derive", "url", "email", "pattern"], optional = true }
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-form-macros = { workspace = true }
+validify = { version = "2.0.0", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
