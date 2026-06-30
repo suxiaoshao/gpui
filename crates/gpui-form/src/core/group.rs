@@ -27,6 +27,7 @@ where
     store: Entity<Store>,
     meta: FormMeta,
     field_meta: FieldMeta,
+    required: bool,
     errors: Vec<FormError>,
     subscriptions: SubscriptionSet,
     revision: u64,
@@ -45,6 +46,7 @@ where
             store,
             meta: FormMeta::default(),
             field_meta: FieldMeta::default(),
+            required: false,
             errors: Vec::new(),
             subscriptions: SubscriptionSet::default(),
             revision: 0,
@@ -77,6 +79,14 @@ where
 
     pub fn field_meta(&self) -> &FieldMeta {
         &self.field_meta
+    }
+
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+
+    pub fn set_required(&mut self, required: bool) {
+        self.required = required;
     }
 
     pub fn errors(&self) -> &[FormError] {
@@ -182,6 +192,10 @@ where
         &self.field_meta
     }
 
+    fn is_required(&self) -> bool {
+        self.required
+    }
+
     fn errors(&self) -> &[FieldError] {
         &[]
     }
@@ -224,6 +238,10 @@ where
 {
     fn meta(&self) -> &FieldMeta {
         &self.field_meta
+    }
+
+    fn is_required(&self) -> bool {
+        self.required
     }
 
     fn errors(&self) -> &[FieldError] {

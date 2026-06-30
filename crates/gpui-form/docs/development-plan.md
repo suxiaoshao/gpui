@@ -3,7 +3,9 @@
 状态：第一阶段 crate runtime、基础 derive 宏、显式 child-store nested group、dynamic array 宏、组件 binding
 和 `garde + validify` submit pipeline 已落地。宏已生成 typed field setter、clear/apply field errors、
 array remove-by-id 和 values-with-id helper。runtime 顶层模块已按 `core` / `component` / `pipeline` /
-`view` 分组；derive 宏展开逻辑已从单个 `expand.rs` 拆成按职责划分的子模块。
+`view` 分组；derive 宏展开逻辑已从单个 `expand.rs` 拆成按职责划分的子模块。字段级 `required`
+元数据、generated getter/setter 和 binding 同步能力已落地；下游 app 仍需要自己把 generated
+`*_required()` 接到 `gpui_component::form::field().required(...)`，并保留业务 validator。
 本文档用于固定 `gpui-form` 的实现计划、边界和待确认问题；文档中标为目标形态的 API 仍可能在后续
 binding macro 和 app 接入阶段调整。
 
@@ -46,6 +48,8 @@ GPUI 原生、类型安全、能和 `gpui-component` 状态模型配合的表单
 - `placeholder`、`label`、`description`、`help`、`search_placeholder`、`disabled`、`mask` 等 UI 选项来自字段
   `#[form(...)]` 属性，并通过 `ComponentStateOptions` 传给 binding 的 `new_state`，由 binding 自行应用到
   组件 state。
+- `required` 需要成为字段级元数据：默认 `false`，用户可通过 `#[form(required)]` 或
+  `#[form(required = true/false)]` 指定。它第一阶段只表达 UI/语义 marker，不自动生成 validation rule。
 - 动态数组 row 必须按业务语义建模。不能复用一个泛型 row 再由父字段动态覆盖 child placeholder；
   如果不同数组字段的 placeholder、校验规则或必填语义不同，就拆成不同 row input/store。
 - nested struct 使用 `component = "group"` 和显式 `store = "ChildFormStore"`；父 group 持有 child
@@ -81,6 +85,251 @@ GPUI 原生、类型安全、能和 `gpui-component` 状态模型配合的表单
 - app 接入顺序不在本 crate 文档中固定；具体迁移计划放在对应 app 文档中。
 - validation 固定使用 `garde`；normalize/sanitize 固定使用 `validify::Modify`。
 - submit 被点击后，无论成功还是失败，normalized value 都要写回表单 draft 和对应组件 state。
+
+## Required 字段支持计划
+
+当前状态：
+
+- `FieldAttributes` 和 `ComponentStateOptions` 已有 `required` 字段。
+- `FieldCore`、`FieldGroupStore`、`FieldArrayStore`、内置 field store、`FormField` 和 `AnyFormField`
+  已暴露 required 元数据。
+- derive 宏已解析 `#[form(required)]` / `#[form(required = true/false)]`，并生成
+  `<field>_required()` / `set_<field>_required(required, window, cx)` helper。
+- `FormComponentBinding::set_required(...)` 已提供默认 no-op，供 app 自定义组件同步 required 语义。
+- 未知 `#[form(...)]` 字段参数已改为编译时报错，避免拼写错误被静默忽略。
+- required 仍只表达 UI/语义 marker，不自动产生 validation error；下游 app 需要继续按业务规则写 validator。
+
+### API 和语义
+
+目标属性：
+
+```rust
+#[form(component = "input", label = "prompt-field-name", required)]
+pub name: String,
+
+#[form(component = "input", label = "provider-field-base-url", required = false)]
+pub base_url: String,
+```
+
+语义：
+
+- 默认值是 `required = false`。
+- `required` 是字段元数据和 UI marker，不自动创建 `FieldError`，也不绕过现有 validation pipeline。
+- 字段是否为空、是否需要结合其它状态判定，仍由 `garde` 或 app-specific validator 决定。例如 secret 是否必填
+  需要结合 saved secret ref 和 dirty/cleared 状态，不能由通用 `gpui-form` 静态规则决定。
+- submit 时 `required` 本身不阻止提交；只有 validation adapter 或 app validator 写入错误时才阻止。
+- `required` 可以是静态属性，也可以被 app 在运行时通过 generated setter 更新，用于 secret ref 是否满足、
+  transport kind、动态 row sibling value 等条件式 UI。
+- `required` 的接入不能只覆盖首批迁移字段。下游 app 文档需要按完整表单面维护字段验证矩阵，至少写清
+  required marker、空值规则、格式/重复/引用约束、DB/config/runtime 最终保护、i18n key 和测试点。
+- 宏属性 parser 遇到未知 `#[form(...)]` key 必须报错；只允许显式列出的 forward-compatible no-op
+  语法在设计确认后加入，避免拼写错误被静默忽略。
+
+下游接入文档要求：
+
+- 不能只记录已经迁移到 `gpui-form` 的表单，也不能只记录首批 required 消费方。一个 app 侧迁移计划必须覆盖
+  同一功能面中所有用户可编辑输入、即时配置 action、搜索/filter、运行态 submit guard，以及明确不迁移的页面。
+- 对每个字段都要区分“UI required”、“保存前 app validator”、“DB/config/runtime 最终保护”。例如 DB
+  `TEXT NOT NULL` 不自动等于 UI required；`Option<T>` config 字段也不自动等于运行态 optional。
+- URL、HTTP header、env var、hotkey、enum、duplicate、FK、capability、credentials ref 等业务语义必须由
+  app-specific validator 明确写入计划；`gpui-form` 只提供 field metadata、error routing 和 binding。
+- 不迁移的输入也要写清理由：如果只是 search/filter、即时 action、只读 runtime status 或列表刷新，就不应为了
+  统一而创建 form store。
+- 如果后续新增 required marker，必须同步检查已迁移表单和未迁移候选，避免 Provider/MCP、Prompt/Shortcut、
+  General、ChatForm 等表单面的验证规则漂移。
+
+### 文件和模块结构
+
+不新增模块文件，按现有职责修改：
+
+| 文件 | 变更 |
+| --- | --- |
+| `crates/gpui-form-macros/src/attributes.rs` | `FieldAttributes` / `FieldArgs` 新增 `required: bool`；解析 `required` 和 `required = bool`；未知字段属性改为 `syn::Error`。 |
+| `crates/gpui-form-macros/src/expand/fields.rs` | `component_state_options(...)` 写入 `required`；字段初始化后调用 `core_mut().set_required(required)`；setter 生成逻辑需要同步 field meta 但不触发 dirty。 |
+| `crates/gpui-form-macros/src/expand/accessors.rs` | 为普通字段、binding 字段、select/combobox/bool 字段生成 `<field>_required()` 和 `set_<field>_required(required, window, cx)` helper。 |
+| `crates/gpui-form-macros/src/expand/errors.rs` | 不新增 required validation；`apply_field_error(...)` 已继续和 required 字段一起使用。 |
+| `crates/gpui-form/src/component/binding.rs` | `ComponentStateOptions` 新增 `required: bool`；`FormComponentBinding` 新增可选 `set_required(...)` 默认 no-op，供 app 自定义组件消费。 |
+| `crates/gpui-form/src/core/field.rs` | `FieldCore<T>` 新增 `required: bool`；`FormField` / `AnyFormField` 新增 `is_required()`；`FieldCore::set_required(...)` 不改 draft、dirty 或 errors。 |
+| `crates/gpui-form/src/core/group.rs` | `FieldGroupStore` 支持 `required`，用于 group-level field label marker。 |
+| `crates/gpui-form/src/core/array.rs` | `FieldArrayStore` 支持 `required`，用于 array-level field label marker；不自动要求数组非空。 |
+| `crates/gpui-form/src/component/fields/{input,number,select,combobox,bool,component}.rs` | 各 field store 暴露 `is_required()`，并把 runtime setter 委托给 `FieldCore`；内置 input/select 等组件不负责渲染 marker。 |
+| `crates/gpui-form/src/view/render.rs` | 保留 `FormIconKind::Required` 语义枚举；第一阶段不新增 marker view，推荐直接使用 `gpui_component::form::field().required(...)`。 |
+| `crates/gpui-form/tests/derive.rs` | 增加宏属性解析、默认 false、显式 true、generated getter/setter、binding state 同步测试；未知属性报错测试仍可补。 |
+| `crates/gpui-form/README.md` | 已更新 required 示例，说明 required 只负责 UI/语义，validation 仍由 `garde` / app validator 承担。 |
+
+### 自定义组件和类型结构
+
+`ComponentStateOptions` 目标结构：
+
+```rust
+pub struct ComponentStateOptions {
+    pub label_key: Option<&'static str>,
+    pub description_key: Option<&'static str>,
+    pub placeholder_key: Option<&'static str>,
+    pub masked: bool,
+    pub disabled: bool,
+    pub required: bool,
+}
+```
+
+`FieldCore` 目标 API：
+
+```rust
+impl<T> FieldCore<T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    pub fn is_required(&self) -> bool;
+    pub fn set_required(&mut self, required: bool);
+}
+```
+
+`FormField` / `AnyFormField` 目标 API：
+
+```rust
+pub trait FormField {
+    fn is_required(&self) -> bool;
+    // existing methods...
+}
+
+pub trait AnyFormField {
+    fn is_required(&self) -> bool;
+    // existing methods...
+}
+```
+
+生成的 app-facing helper 目标形态：
+
+```rust
+let required = form_read.name_required();
+field()
+    .label(form_read.name_label(cx))
+    .required(required)
+    .child(Input::new(form_read.name_input_state()));
+
+form.update(cx, |form, cx| {
+    form.set_url_required(
+        matches!(form.transport_value(), McpTransportKind::StreamableHttp),
+        window,
+        cx,
+    );
+});
+```
+
+组件 binding 目标：
+
+```rust
+pub trait FormComponentBinding<Value>: Sized + 'static
+where
+    Value: Clone + PartialEq + 'static,
+{
+    fn set_required(
+        _state: &Entity<Self::State>,
+        _required: bool,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+}
+```
+
+内置 binding 第一阶段只接收 `required`，不渲染 marker；marker 由 field layout 渲染。app 自定义组件如果有
+自己的 required affordance，可以在 `set_required` 里同步组件内部 state。
+
+### 所用组件和 UI 表达
+
+优先使用当前 `gpui-component`：
+
+- `gpui_component::form::field().required(true)` 已存在，并会在 label 后渲染 danger 色 `*`。
+- `gpui-form` 的 generated helper 应直接喂给 `field().required(form_read.<field>_required())`。
+- `Input`、`Select`、`Combobox`、`Switch`、`Checkbox` 不承担 required marker；它们只负责具体控件 state。
+
+`/Users/sushao/Documents/code/ui` 中 shadcn/ui 只作为补充参考：
+
+- shadcn/ui 的 Field 示例在 control 上设置 HTML `required`，并用 `data-invalid` / `aria-invalid` 表达校验状态。
+- GPUI 没有 DOM `required` / `aria-required`，因此不照搬 DOM 属性；只吸收“required 属于 control
+  语义、invalid 属于 field/control 状态”的划分。
+- 如果后续 gpui-component 增加 accessibility metadata，再把 `ComponentStateOptions.required` 传给对应控件。
+
+### 数据流
+
+```text
+#[form(required)] attribute
+  -> gpui-form-macros FieldAttributes.required
+  -> ComponentStateOptions.required
+  -> GeneratedFormStore::from_value(...)
+  -> FieldCore.required / FieldGroupStore.required / FieldArrayStore.required
+  -> generated <field>_required() or field.is_required()
+  -> app render calls gpui_component::form::field().required(...)
+  -> gpui-component renders danger "*" after label
+```
+
+运行时条件式 required：
+
+```text
+app state change, e.g. transport = StreamableHttp
+  -> generated set_url_required(true, window, cx)
+  -> FieldCore.required changes, component binding set_required no-op or syncs app component
+  -> form meta unchanged except notify
+  -> render updates field().required(true)
+```
+
+提交：
+
+```text
+submit
+  -> validify normalize
+  -> garde / app-specific validator
+  -> FieldError only if validator reports error
+```
+
+`required` 不参与 dirty、pristine、touched、blurred 或 submission attempts。
+
+### 全局数据管理
+
+- 不新增 `Global`。
+- 不新增全局 required registry。
+- `required` 是打开表单 entity 内的 field metadata；跨 view 共享表单时随同一个 `Entity<GeneratedFormStore>`
+  共享。
+- App-level conditional required 由拥有该表单的 view/dialog 根据当前 app state 调 generated setter。
+
+### 数据库变更
+
+- 无数据库变更。
+- 不新增 migration。
+- 不持久化 required state。
+- `required` 不写入 app 数据表、`config.toml`、keychain 或 `FormItemId` output。
+
+### 数据获取方式
+
+- 静态 required 来自 `#[form(required)]` 宏属性。
+- 条件式 required 来自 app owner view/dialog 的已有状态，例如 saved secret refs、dirty/cleared secret value、
+  MCP transport kind、动态 row sibling value、prompt/shortcut dialog mode、配置型 optional 字段和运行态 submit
+  required 的差异。
+- `garde` / app validator 仍是错误来源；不要从 `garde` report 反推 UI required marker。
+- `gpui-form` 不决定 URL scheme、hotkey 冲突、DB 唯一性、FK 存在性、secret ref 是否有效、model
+  是否 enabled 等 app 业务规则；这些规则必须由接入 app 的 validator 明确处理并映射到具体 generated field。
+
+### Icon
+
+- 不新增 icon asset。
+- 不使用 Lucide icon 表达 required。
+- UI marker 使用 gpui-component `Field::required(true)` 内建 danger 色 `*`。
+- `FormIconKind::Required` 只保留为未来可选语义，不要求本阶段消费。
+
+### i18n
+
+- Required marker 本身是符号 `*`，不新增 `.ftl` key。
+- 内置 `gpui-form` 不新增 required validation 文案。
+- App-specific required errors 继续用 app locale key，例如 `provider-validation-required`、
+  `mcp-validation-name-required`、`prompt-validation-name-required`、`shortcut-validation-hotkey-required`。
+- 如果未来新增通用 required validator，再在 app locale 中补 `gpui-form-error-required`，但不属于本阶段。
+
+### 新增依赖
+
+- 不新增依赖。
+- 继续使用现有 `gpui`、`gpui-component`、`garde`、`validify` 和 proc-macro 依赖。
+- 不引入 shadcn/ui、React、DOM 或 accessibility helper crate。
 
 ## 文件和模块结构
 
@@ -525,6 +774,7 @@ pub struct ComponentStateOptions {
     pub placeholder: Option<FormText>,
     pub search_placeholder: Option<FormText>,
     pub disabled: bool,
+    pub required: bool,
     pub mask: Option<FormInputMask>,
 }
 ```
@@ -534,6 +784,7 @@ pub struct ComponentStateOptions {
 - derive 宏为每个字段生成具体 binding 类型；需要动态遍历时只通过 `AnyFormField` 访问共同状态。
 - binding 的事件订阅必须返回 `SubscriptionSet` 给字段、数组 item 或表单保存，不能由组件内部 `.detach()`。
 - placeholder、search placeholder、mask、disabled 等只在 binding 的 `new_state` / `write_value` 中应用。
+- required 只作为 field metadata 和 custom binding option；built-in binding 不渲染 required marker。
 - app 不应该在 form 创建后再调用 `apply_*_placeholders` 这类 helper 去修正组件 state。
 - 如果同一种视觉 row 在不同业务字段里需要不同 placeholder 或校验规则，应拆成不同 row input/store。
 
@@ -1075,11 +1326,22 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 - 生成 binding state 创建和订阅安装代码。
 - compile-fail tests 覆盖不支持字段类型、缺失 binding、非法属性、数组 item 无法生成 form group。
 
+阶段 4.5：Required 字段语义
+
+- 解析 `#[form(required)]` 和 `#[form(required = bool)]`，默认 false。
+- 未知 field attribute 改为编译期错误，避免 `required` 拼写错误被静默忽略。
+- `FieldCore`、`FieldGroupStore`、`FieldArrayStore` 保存 required 元数据。
+- `ComponentStateOptions` 把 required 传给 binding；内置 binding 第一阶段 no-op。
+- 宏生成 `<field>_required()` 和 `set_<field>_required(required, window, cx)`。
+- README 示例改为真实 API；验证 `field().required(...)` 与 gpui-component Form 组合。
+
 阶段 5：下游基础表单接入验证
 
 - 选择一个下游 app 的基础表单作为 API smoke test；具体 app 名称、字段、文案和保存流程写入该 app 的开发文档。
 - 验证 `validify::Modify` submit-time trim / optional 空值转换，以及 `garde::Validate` validation。
 - 验证 `gpui_component::form`、`Input`、`Select` 等组件能通过 binding 正常接入。
+- 验证 required helper 能驱动 `gpui_component::form::field().required(...)`，且不自动改变 validation 结果。
+- 验证下游 Provider/MCP 这类已迁移表单也能消费 required，不把 required 只限制在后续 Prompt/Shortcut 表单。
 - 验证 submit 成功后由 app 自己调用 repository/config command，`gpui-form` 不直接持久化。
 - 不在 `gpui-form` 中引入数据库变更。
 
@@ -1087,6 +1349,8 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 
 - 选择一个下游 app 的动态数组表单作为 API smoke test；具体业务 row 类型写入该 app 的开发文档。
 - 覆盖嵌套字段组、动态 row、cross-field validation。
+- 覆盖动态 row 的条件式 required，例如 header row 只填一侧时另一侧必填；空 row 不能被静态 required
+  marker 误报。
 - 验证不同语义的动态 row 拆成独立 input/store，row 内部字段直接声明 placeholder 和校验规则。
 - 验证 `validify::Modify` 规范化动态 row 的 key/value，使用 `garde::Validate` 做字段和 cross-field validation。
 - 验证动态字段 add/remove/reorder 的 i18n 文案和 icon 由接入 app 负责。
@@ -1112,6 +1376,8 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 
 - `cargo check -p gpui-form-macros`
 - macro compile/pass-fail tests
+- required 属性测试：默认 false、显式 true/false、unknown attribute compile error、generated getter/setter、
+  `ComponentStateOptions.required` 传递、required 不自动触发 validation。
 
 接入 app 后追加：
 
@@ -1136,6 +1402,8 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 - 字段级 UI 选项通过 `ComponentStateOptions` 传给 binding 的 `new_state`；placeholder 由 row 内部字段声明，
   不由父数组字段动态覆盖 child component state。
 - 动态数组行要拆成语义化 row input/store，不能依赖父数组字段动态覆盖 child component state。
+- required 字段能力已补齐：`#[form(required)]` 默认 false、生成 required getter/setter、使用
+  gpui-component `field().required(...)` 渲染 marker，并保持 validation 仍由 `garde` / app validator 负责。
 
 ## 当前实现进度
 
@@ -1190,8 +1458,19 @@ form-pipeline = ["garde-adapter", "validify-transform"]
   写入对应 child store；reorder 移动 item id 和 child state，不重建仍存在行。
 - submit normalize 写回已使用 `FieldChangeCause::NormalizeOnSubmit` 和 `is_normalizing_on_submit` guard。
 - derive 宏已接入 app component binding 的 `FormComponentBinding::install_subscriptions`，返回的订阅会保存到字段 store。
+- derive 宏已接入 app component binding 的事件同步：custom binding 可通过
+  `FormComponentBinding::event_kind(...)` 把自定义事件映射为 `Change` / `Focus` / `Blur`，由宏统一同步 draft、
+  meta、validation trigger 和 typed form event。
+- required 字段支持已实现：`#[form(required)]` / `#[form(required = bool)]`、`FieldCore` /
+  `FieldGroupStore` / `FieldArrayStore` required 元数据、`ComponentStateOptions.required`、
+  `<field>_required()`、`set_<field>_required(...)` 和 binding `set_required(...)` 都已落地。
 - 已补测试覆盖 u64 item id 生命周期、字段路径、字段 meta 更新、组件字段宏展开、订阅保存、select/combobox
   事件同步、bool state 写回、nested group child draft/meta 同步、dynamic array child draft/meta 同步、
   array append/remove/remove_id/reorder id 生命周期、field setter、clear/apply errors、nested/array
   validation 错误分发、normalize 写回、binding 组件订阅安装、live validation scope、submit 错误写回和
   `validify -> garde` submit 顺序。
+
+待补：
+
+- 第一阶段 required 只表达字段元数据和 UI marker，不自动生成 required validation；如后续需要通用 required
+  validator，需要另行设计 `gpui-form-error-required`、adapter 触发时机和 app locale 接入方式。

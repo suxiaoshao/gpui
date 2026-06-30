@@ -7,6 +7,7 @@ pub(in crate::features::settings::provider) struct OllamaProviderFormInput {
         component = "input",
         label = "provider-field-base-url",
         placeholder = "provider-placeholder-ollama-base-url",
+        required,
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) base_url: String,

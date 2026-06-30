@@ -48,6 +48,7 @@ pub(super) fn field_initializer(
     let name = &model.name;
     let ty = model.ty;
     let triggers = validation_triggers(&model.attrs);
+    let required = model.attrs.required;
     let field_variant_ident = field_variant_ident(name);
     let field_variant = quote!(#field_enum_ident::#field_variant_ident);
 
@@ -55,6 +56,7 @@ pub(super) fn field_initializer(
         FieldKind::Value => quote! {
             let mut #ident = ::gpui_form::macro_support::value_field(#name, #value_ident);
             #ident.core_mut().set_validation_triggers(#triggers);
+            #ident.core_mut().set_required(#required);
         },
         FieldKind::Input => {
             let options = component_state_options(&model.attrs);
@@ -71,6 +73,7 @@ pub(super) fn field_initializer(
                 #state_ident.clone(),
             );
             #ident.core_mut().set_validation_triggers(#triggers);
+            #ident.core_mut().set_required(#required);
             #ident.core_mut().subscriptions_mut().push(
                 cx.subscribe_in(
                     &#state_ident,
@@ -152,6 +155,7 @@ pub(super) fn field_initializer(
                 #state_ident.clone(),
             );
             #ident.core_mut().set_validation_triggers(#triggers);
+            #ident.core_mut().set_required(#required);
             #ident.core_mut().subscriptions_mut().push(
                 cx.subscribe_in(
                     &#state_ident,
@@ -244,6 +248,7 @@ pub(super) fn field_initializer(
                 #state_ident.clone(),
             );
             #ident.core_mut().set_validation_triggers(#triggers);
+            #ident.core_mut().set_required(#required);
             }
         }
         FieldKind::Group => {
@@ -261,6 +266,7 @@ pub(super) fn field_initializer(
                     #value_ident,
                     #state_ident.clone(),
                 );
+                #ident.set_required(#required);
                 #ident.subscriptions_mut().push(
                     cx.observe(
                         &#state_ident,
@@ -320,6 +326,7 @@ pub(super) fn field_initializer(
                     }
                 }
                 #ident.set_meta(::gpui_form::FieldMeta::default());
+                #ident.set_required(#required);
             }
         }
         FieldKind::Binding => {
@@ -337,6 +344,7 @@ pub(super) fn field_initializer(
                     #state_ident.clone(),
                 );
                 #ident.core_mut().set_validation_triggers(#triggers);
+                #ident.core_mut().set_required(#required);
                 let __gpui_form_component_subscriptions =
                     <#binding as ::gpui_form::FormComponentBinding<#ty>>::install_subscriptions(
                         #state_ident.clone(),
@@ -347,6 +355,88 @@ pub(super) fn field_initializer(
                 #ident.core_mut()
                     .subscriptions_mut()
                     .extend(__gpui_form_component_subscriptions);
+                #ident.core_mut().subscriptions_mut().push(
+                    cx.subscribe_in(
+                        &#state_ident,
+                        window,
+                        |this,
+                         state,
+                         event: &<#binding as ::gpui_form::FormComponentBinding<#ty>>::Event,
+                         _window,
+                         cx| {
+                            let Some(__gpui_form_event) =
+                                <#binding as ::gpui_form::FormComponentBinding<#ty>>::event_kind(event)
+                            else {
+                                return;
+                            };
+                            match __gpui_form_event {
+                                ::gpui_form::FormComponentEvent::Change(cause) => {
+                                    if this.is_normalizing_on_submit {
+                                        return;
+                                    }
+                                    let value =
+                                        <#binding as ::gpui_form::FormComponentBinding<#ty>>::read_value(
+                                            state,
+                                            cx,
+                                        );
+                                    ::gpui_form::FormField::set_value(
+                                        &mut this.#ident,
+                                        value,
+                                        cause,
+                                    );
+                                    if cause.triggers_change_validation()
+                                        && this.#ident.core().validation_triggers().contains(
+                                            ::gpui_form::ValidationTrigger::Change,
+                                        )
+                                    {
+                                        this.apply_validation_for_scope(
+                                            ::gpui_form::ValidationTrigger::Change,
+                                            ::gpui_form::ValidationScope::Field(
+                                                ::gpui_form::macro_support::field_path(#name),
+                                            ),
+                                            cx,
+                                        );
+                                    }
+                                    this.refresh_meta();
+                                    cx.emit(#event_ident::FieldChanged(#field_variant));
+                                    cx.notify();
+                                }
+                                ::gpui_form::FormComponentEvent::Focus => {
+                                    ::gpui_form::FormField::mark_touched(&mut this.#ident);
+                                    this.refresh_meta();
+                                    cx.emit(#event_ident::FieldFocused(#field_variant));
+                                    cx.notify();
+                                }
+                                ::gpui_form::FormComponentEvent::Blur => {
+                                    let value =
+                                        <#binding as ::gpui_form::FormComponentBinding<#ty>>::read_value(
+                                            state,
+                                            cx,
+                                        );
+                                    ::gpui_form::FormField::set_value(
+                                        &mut this.#ident,
+                                        value,
+                                        ::gpui_form::FieldChangeCause::Blur,
+                                    );
+                                    if this.#ident.core().validation_triggers().contains(
+                                        ::gpui_form::ValidationTrigger::Blur,
+                                    ) {
+                                        this.apply_validation_for_scope(
+                                            ::gpui_form::ValidationTrigger::Blur,
+                                            ::gpui_form::ValidationScope::Field(
+                                                ::gpui_form::macro_support::field_path(#name),
+                                            ),
+                                            cx,
+                                        );
+                                    }
+                                    this.refresh_meta();
+                                    cx.emit(#event_ident::FieldBlurred(#field_variant));
+                                    cx.notify();
+                                }
+                            }
+                        },
+                    )
+                );
             }
         }
         FieldKind::Select => {
@@ -370,6 +460,7 @@ pub(super) fn field_initializer(
                     #state_ident.clone(),
                 );
                 #ident.core_mut().set_validation_triggers(#triggers);
+                #ident.core_mut().set_required(#required);
                 #ident.core_mut().subscriptions_mut().push(
                     cx.subscribe_in(
                         &#state_ident,
@@ -435,6 +526,7 @@ pub(super) fn field_initializer(
                     __gpui_form_delegate,
                 );
                 #ident.core_mut().set_validation_triggers(#triggers);
+                #ident.core_mut().set_required(#required);
                 #ident.core_mut().subscriptions_mut().push(
                     cx.subscribe_in(
                         &#state_ident,
@@ -607,6 +699,7 @@ fn component_state_options(attrs: &FieldAttributes) -> TokenStream {
     let description = option_lit_str(&attrs.description);
     let placeholder = option_lit_str(&attrs.placeholder);
     let masked = attrs.masked;
+    let required = attrs.required;
 
     quote! {
         ::gpui_form::ComponentStateOptions {
@@ -615,6 +708,7 @@ fn component_state_options(attrs: &FieldAttributes) -> TokenStream {
             placeholder_key: #placeholder,
             masked: #masked,
             disabled: false,
+            required: #required,
         }
     }
 }

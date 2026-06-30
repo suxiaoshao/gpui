@@ -47,6 +47,7 @@ pub trait FormField {
     fn reset(&mut self, window: &mut Window, cx: &mut App);
     fn component_state(&self) -> Option<Entity<Self::ComponentState>>;
     fn meta(&self) -> &FieldMeta;
+    fn is_required(&self) -> bool;
     fn errors(&self) -> &[FieldError];
     fn visible_errors(&self, form_meta: &FormMeta) -> Vec<&FieldError>;
     fn set_errors(&mut self, errors: Vec<FieldError>);
@@ -59,6 +60,7 @@ pub trait FormField {
 
 pub trait AnyFormField {
     fn meta(&self) -> &FieldMeta;
+    fn is_required(&self) -> bool;
     fn errors(&self) -> &[FieldError];
     fn visible_errors(&self, form_meta: &FormMeta) -> Vec<&FieldError>;
     fn set_errors(&mut self, errors: Vec<FieldError>);
@@ -74,6 +76,7 @@ where
     value: T,
     default_value: T,
     meta: FieldMeta,
+    required: bool,
     errors: Vec<FieldError>,
     visibility: ErrorVisibility,
     validation_triggers: ValidationTriggers,
@@ -90,6 +93,7 @@ where
             default_value: value.clone(),
             value,
             meta: FieldMeta::default(),
+            required: false,
             errors: Vec::new(),
             visibility: ErrorVisibility::default(),
             validation_triggers: ValidationTriggers::default(),
@@ -112,6 +116,14 @@ where
 
     pub fn meta_mut(&mut self) -> &mut FieldMeta {
         &mut self.meta
+    }
+
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+
+    pub fn set_required(&mut self, required: bool) {
+        self.required = required;
     }
 
     pub fn revision(&self) -> u64 {
@@ -259,6 +271,10 @@ where
         self.core.meta()
     }
 
+    fn is_required(&self) -> bool {
+        self.core.is_required()
+    }
+
     fn errors(&self) -> &[FieldError] {
         self.core.errors()
     }
@@ -298,6 +314,10 @@ where
 {
     fn meta(&self) -> &FieldMeta {
         self.core.meta()
+    }
+
+    fn is_required(&self) -> bool {
+        self.core.is_required()
     }
 
     fn errors(&self) -> &[FieldError] {

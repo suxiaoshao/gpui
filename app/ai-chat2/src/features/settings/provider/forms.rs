@@ -69,8 +69,34 @@ impl ProviderFormField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProviderValidationIssue {
     pub(super) field: ProviderFormField,
+    pub(super) kind: ProviderValidationKind,
     pub(super) field_label: SharedString,
     pub(super) message: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProviderValidationKind {
+    Required,
+    UrlInvalid,
+    UrlScheme,
+}
+
+impl ProviderValidationKind {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::UrlInvalid => "url_invalid",
+            Self::UrlScheme => "url_scheme",
+        }
+    }
+
+    const fn message_key(self) -> &'static str {
+        match self {
+            Self::Required => "provider-validation-required",
+            Self::UrlInvalid => "provider-validation-url-invalid",
+            Self::UrlScheme => "provider-validation-url-scheme",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +189,7 @@ impl ProviderSettingsForm {
                 let input = form.draft();
                 BTreeMap::from([(
                     FIELD_BASE_URL.to_string(),
-                    ProviderDraftValue::String(input.base_url),
+                    ProviderDraftValue::String(input.base_url.trim().to_string()),
                 )])
             }
             Self::Ollama(form) => {
@@ -171,7 +197,7 @@ impl ProviderSettingsForm {
                 let input = form.draft();
                 BTreeMap::from([(
                     FIELD_BASE_URL.to_string(),
-                    ProviderDraftValue::String(input.base_url),
+                    ProviderDraftValue::String(input.base_url.trim().to_string()),
                 )])
             }
             Self::CustomOpenAi(form) => {
@@ -180,11 +206,11 @@ impl ProviderSettingsForm {
                 BTreeMap::from([
                     (
                         FIELD_NAME.to_string(),
-                        ProviderDraftValue::String(input.name),
+                        ProviderDraftValue::String(input.name.trim().to_string()),
                     ),
                     (
                         FIELD_BASE_URL.to_string(),
-                        ProviderDraftValue::String(input.base_url),
+                        ProviderDraftValue::String(input.base_url.trim().to_string()),
                     ),
                     (
                         FIELD_API_MODE.to_string(),
@@ -251,12 +277,13 @@ impl ProviderSettingsForm {
                     form.api_key.core().revision() > 0,
                     i18n,
                 )?;
+                validate_optional_base_url(ProviderFormField::BaseUrl, input.base_url, i18n)?;
                 Ok(())
             }
             Self::Ollama(form) => {
                 let form = form.read(cx);
                 let input = form.draft();
-                require_text(ProviderFormField::BaseUrl, input.base_url, i18n)?;
+                require_base_url(ProviderFormField::BaseUrl, input.base_url, i18n)?;
                 Ok(())
             }
             Self::CustomOpenAi(form) => {
@@ -270,7 +297,7 @@ impl ProviderSettingsForm {
                     form.api_key.core().revision() > 0,
                     i18n,
                 )?;
-                require_text(ProviderFormField::BaseUrl, input.base_url, i18n)?;
+                require_base_url(ProviderFormField::BaseUrl, input.base_url, i18n)?;
                 Ok(())
             }
         }
@@ -293,7 +320,7 @@ impl ProviderSettingsForm {
         let Some(issue) = issue else {
             return;
         };
-        let error = provider_required_field_error(issue);
+        let error = provider_field_error(issue);
         match self {
             Self::ApiKey(form) => form.update(cx, |form, cx| {
                 if let Some(field) = api_key_generated_field(issue.field) {
@@ -425,27 +452,75 @@ fn require_secret(
 }
 
 fn required_field_issue(field: ProviderFormField, i18n: &I18n) -> ProviderValidationIssue {
-    ProviderValidationIssue {
-        field,
-        field_label: i18n.t(field.label_key()).into(),
-        message: required_field_message(field.label_key(), i18n),
+    provider_field_issue(field, ProviderValidationKind::Required, i18n)
+}
+
+fn require_base_url(
+    field: ProviderFormField,
+    value: String,
+    i18n: &I18n,
+) -> Result<(), ProviderValidationIssue> {
+    require_text(field, value.clone(), i18n)?;
+    validate_base_url(field, value, i18n)
+}
+
+fn validate_optional_base_url(
+    field: ProviderFormField,
+    value: String,
+    i18n: &I18n,
+) -> Result<(), ProviderValidationIssue> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    validate_base_url(field, value, i18n)
+}
+
+fn validate_base_url(
+    field: ProviderFormField,
+    value: String,
+    i18n: &I18n,
+) -> Result<(), ProviderValidationIssue> {
+    match url::Url::parse(value.trim()) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(()),
+        Ok(_) => Err(provider_field_issue(
+            field,
+            ProviderValidationKind::UrlScheme,
+            i18n,
+        )),
+        Err(_) => Err(provider_field_issue(
+            field,
+            ProviderValidationKind::UrlInvalid,
+            i18n,
+        )),
     }
 }
 
-fn required_field_message(field_label_key: &str, i18n: &I18n) -> SharedString {
-    let mut args = FluentArgs::new();
-    args.set("field", i18n.t(field_label_key));
-    i18n.t_with_args("provider-validation-required", &args)
-        .into()
+fn provider_field_issue(
+    field: ProviderFormField,
+    kind: ProviderValidationKind,
+    i18n: &I18n,
+) -> ProviderValidationIssue {
+    ProviderValidationIssue {
+        field,
+        kind,
+        field_label: i18n.t(field.label_key()).into(),
+        message: provider_field_message(field.label_key(), kind.message_key(), i18n),
+    }
 }
 
-fn provider_required_field_error(issue: &ProviderValidationIssue) -> FieldError {
+fn provider_field_message(field_label_key: &str, message_key: &str, i18n: &I18n) -> SharedString {
+    let mut args = FluentArgs::new();
+    args.set("field", i18n.t(field_label_key));
+    i18n.t_with_args(message_key, &args).into()
+}
+
+fn provider_field_error(issue: &ProviderValidationIssue) -> FieldError {
     FieldError::new_for_field(
         issue.field.key(),
         ValidationTrigger::Submit,
         ValidationSource::App("ai-chat2-provider".into()),
-        "required",
-        "provider-validation-required",
+        issue.kind.code(),
+        issue.kind.message_key(),
     )
     .with_param("field", issue.field_label.to_string())
 }

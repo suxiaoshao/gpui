@@ -62,6 +62,7 @@ pub(crate) struct FieldAttributes {
     pub(crate) description: Option<LitStr>,
     pub(crate) placeholder: Option<LitStr>,
     pub(crate) masked: bool,
+    pub(crate) required: bool,
     pub(crate) searchable: bool,
     pub(crate) multiple: bool,
     pub(crate) validate_on_mount: bool,
@@ -107,6 +108,7 @@ impl FieldAttributes {
                 parsed.placeholder = args.placeholder;
             }
             parsed.masked |= args.masked;
+            parsed.required |= args.required;
             parsed.searchable |= args.searchable;
             parsed.multiple |= args.multiple;
             parsed.validate_on_mount |= args.validate_on_mount;
@@ -183,6 +185,7 @@ struct FieldArgs {
     description: Option<LitStr>,
     placeholder: Option<LitStr>,
     masked: bool,
+    required: bool,
     searchable: bool,
     multiple: bool,
     validate_on_mount: bool,
@@ -234,6 +237,8 @@ impl Parse for FieldArgs {
                 args.placeholder = Some(input.parse()?);
             } else if key == "mask" || key == "masked" {
                 args.masked = parse_optional_bool_value(input)?;
+            } else if key == "required" {
+                args.required = parse_optional_bool_value(input)?;
             } else if key == "searchable" {
                 args.searchable = parse_optional_bool_value(input)?;
             } else if key == "multiple" {
@@ -264,17 +269,11 @@ impl Parse for FieldArgs {
                         content.parse::<Token![,]>()?;
                     }
                 }
-            } else if input.peek(Token![=]) {
-                input.parse::<Token![=]>()?;
-                if input.peek(LitStr) {
-                    let _: LitStr = input.parse()?;
-                } else {
-                    let _: proc_macro2::TokenTree = input.parse()?;
-                }
-            } else if input.peek(syn::token::Paren) {
-                let content;
-                syn::parenthesized!(content in input);
-                let _: proc_macro2::TokenStream = content.parse()?;
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unsupported form field option `{key}`"),
+                ));
             }
 
             if input.peek(Token![,]) {

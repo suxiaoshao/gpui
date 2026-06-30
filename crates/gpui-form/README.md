@@ -213,7 +213,7 @@ fn render_connection_form(
         .child(
             field()
                 .label(form_read.display_name.label(cx))
-                .required(form_read.display_name.is_required())
+                .required(form_read.display_name_required())
                 .description(form_read.display_name.help_text(cx))
                 .child(Input::new(form_read.display_name_input_state()))
                 .error(form_read.display_name.visible_error_text(cx)),
@@ -221,7 +221,7 @@ fn render_connection_form(
         .child(
             field()
                 .label(form_read.kind.label(cx))
-                .required(form_read.kind.is_required())
+                .required(form_read.kind_required())
                 .child(Select::new(form_read.kind_select_state()))
                 .error(form_read.kind.visible_error_text(cx)),
         )
@@ -586,6 +586,7 @@ pub struct ComponentStateOptions {
     pub placeholder_key: Option<&'static str>,
     pub masked: bool,
     pub disabled: bool,
+    pub required: bool,
 }
 ```
 

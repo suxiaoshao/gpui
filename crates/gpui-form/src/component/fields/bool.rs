@@ -144,6 +144,10 @@ impl FormField for BoolFieldStore {
         self.core.meta()
     }
 
+    fn is_required(&self) -> bool {
+        self.core.is_required()
+    }
+
     fn errors(&self) -> &[FieldError] {
         self.core.errors()
     }
@@ -180,6 +184,10 @@ impl FormField for BoolFieldStore {
 impl AnyFormField for BoolFieldStore {
     fn meta(&self) -> &FieldMeta {
         self.core.meta()
+    }
+
+    fn is_required(&self) -> bool {
+        self.core.is_required()
     }
 
     fn errors(&self) -> &[FieldError] {

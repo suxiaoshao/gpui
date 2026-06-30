@@ -21,6 +21,7 @@ use gpui::{StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
+    form::field as component_form_field,
     h_flex,
     input::Input,
     label::Label,
@@ -1127,13 +1128,22 @@ impl ProviderSettingsPage {
     ) -> Vec<AnyElement> {
         match form {
             ProviderSettingsForm::ApiKey(form) => {
-                let (api_key, api_key_errors, base_url, base_url_errors) = {
+                let (
+                    api_key,
+                    api_key_errors,
+                    api_key_required,
+                    base_url,
+                    base_url_errors,
+                    base_url_required,
+                ) = {
                     let form = form.read(cx);
                     (
                         form.api_key_input_state(),
                         field_errors(&form.api_key),
+                        form.api_key_required(),
                         form.base_url_input_state(),
                         field_errors(&form.base_url),
+                        form.base_url_required(),
                     )
                 };
                 vec![
@@ -1141,6 +1151,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::ApiKey,
                         api_key,
                         api_key_errors,
+                        api_key_required,
                         locked,
                         cx,
                     ),
@@ -1148,19 +1159,29 @@ impl ProviderSettingsPage {
                         ProviderFormField::BaseUrl,
                         base_url,
                         base_url_errors,
+                        base_url_required,
                         locked,
                         cx,
                     ),
                 ]
             }
             ProviderSettingsForm::Ollama(form) => {
-                let (base_url, base_url_errors, bearer_token, bearer_token_errors) = {
+                let (
+                    base_url,
+                    base_url_errors,
+                    base_url_required,
+                    bearer_token,
+                    bearer_token_errors,
+                    bearer_token_required,
+                ) = {
                     let form = form.read(cx);
                     (
                         form.base_url_input_state(),
                         field_errors(&form.base_url),
+                        form.base_url_required(),
                         form.bearer_token_input_state(),
                         field_errors(&form.bearer_token),
+                        form.bearer_token_required(),
                     )
                 };
                 vec![
@@ -1168,6 +1189,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::BaseUrl,
                         base_url,
                         base_url_errors,
+                        base_url_required,
                         locked,
                         cx,
                     ),
@@ -1175,6 +1197,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::BearerToken,
                         bearer_token,
                         bearer_token_errors,
+                        bearer_token_required,
                         locked,
                         cx,
                     ),
@@ -1184,23 +1207,31 @@ impl ProviderSettingsPage {
                 let (
                     name,
                     name_errors,
+                    name_required,
                     api_key,
                     api_key_errors,
+                    api_key_required,
                     base_url,
                     base_url_errors,
+                    base_url_required,
                     api_mode,
                     api_mode_errors,
+                    api_mode_required,
                 ) = {
                     let form = form.read(cx);
                     (
                         form.name_input_state(),
                         field_errors(&form.name),
+                        form.name_required(),
                         form.api_key_input_state(),
                         field_errors(&form.api_key),
+                        form.api_key_required(),
                         form.base_url_input_state(),
                         field_errors(&form.base_url),
+                        form.base_url_required(),
                         form.api_mode_select_state(),
                         field_errors(&form.api_mode),
+                        form.api_mode_required(),
                     )
                 };
                 vec![
@@ -1208,6 +1239,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::Name,
                         name,
                         name_errors,
+                        name_required,
                         locked,
                         cx,
                     ),
@@ -1215,6 +1247,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::ApiKey,
                         api_key,
                         api_key_errors,
+                        api_key_required,
                         locked,
                         cx,
                     ),
@@ -1222,6 +1255,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::BaseUrl,
                         base_url,
                         base_url_errors,
+                        base_url_required,
                         locked,
                         cx,
                     ),
@@ -1229,6 +1263,7 @@ impl ProviderSettingsPage {
                         ProviderFormField::ApiMode,
                         api_mode,
                         api_mode_errors,
+                        api_mode_required,
                         locked,
                         cx,
                     ),
@@ -1242,14 +1277,20 @@ impl ProviderSettingsPage {
         field: ProviderFormField,
         input: Entity<gpui_component::input::InputState>,
         errors: Vec<FieldError>,
+        required: bool,
         locked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        v_flex()
-            .gap_1()
-            .child(Label::new(cx.global::<I18n>().t(field.label_key())).text_sm())
-            .child(Input::new(&input).w_full().disabled(locked))
-            .child(provider_field_error_list(errors, cx))
+        component_form_field()
+            .label(cx.global::<I18n>().t(field.label_key()))
+            .required(required)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(Input::new(&input).w_full().disabled(locked))
+                    .child(provider_field_error_list(errors, cx)),
+            )
             .into_any_element()
     }
 
@@ -1258,14 +1299,20 @@ impl ProviderSettingsPage {
         field: ProviderFormField,
         input: Entity<gpui_component::input::InputState>,
         errors: Vec<FieldError>,
+        required: bool,
         locked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        v_flex()
-            .gap_1()
-            .child(Label::new(cx.global::<I18n>().t(field.label_key())).text_sm())
-            .child(Input::new(&input).w_full().disabled(locked).mask_toggle())
-            .child(provider_field_error_list(errors, cx))
+        component_form_field()
+            .label(cx.global::<I18n>().t(field.label_key()))
+            .required(required)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(Input::new(&input).w_full().disabled(locked).mask_toggle())
+                    .child(provider_field_error_list(errors, cx)),
+            )
             .into_any_element()
     }
 
@@ -1274,14 +1321,20 @@ impl ProviderSettingsPage {
         field: ProviderFormField,
         select: Entity<gpui_component::select::SelectState<Vec<forms::ApiModeChoice>>>,
         errors: Vec<FieldError>,
+        required: bool,
         locked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        v_flex()
-            .gap_1()
-            .child(Label::new(cx.global::<I18n>().t(field.label_key())).text_sm())
-            .child(Select::new(&select).w_full().disabled(locked))
-            .child(provider_field_error_list(errors, cx))
+        component_form_field()
+            .label(cx.global::<I18n>().t(field.label_key()))
+            .required(required)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(Select::new(&select).w_full().disabled(locked))
+                    .child(provider_field_error_list(errors, cx)),
+            )
             .into_any_element()
     }
 
@@ -1757,6 +1810,14 @@ mod tests {
                 i18n.t_with_args("provider-validation-required", &args),
                 "provider-validation-required"
             );
+            assert_ne!(
+                i18n.t_with_args("provider-validation-url-invalid", &args),
+                "provider-validation-url-invalid"
+            );
+            assert_ne!(
+                i18n.t_with_args("provider-validation-url-scheme", &args),
+                "provider-validation-url-scheme"
+            );
             let mut args = FluentArgs::new();
             args.set("count", 3);
             assert_ne!(
@@ -2183,6 +2244,61 @@ mod tests {
         assert_eq!(openai_draft, "https://unsaved.openai.example/v1");
         assert!(openai_dirty);
         assert!(!ollama_dirty);
+    }
+
+    #[gpui::test]
+    fn provider_save_rejects_invalid_base_url_before_repository_write(cx: &mut TestAppContext) {
+        let _dir = init_provider_page_test(cx);
+        let (window, page) = open_provider_settings_root_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let openai = provider_editor_key("openai");
+        let ollama = provider_editor_key("ollama");
+
+        set_text_input_value(
+            &page,
+            &openai,
+            ProviderFormField::BaseUrl,
+            "file:///tmp/openai",
+            &mut cx,
+        );
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.save(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.select_provider_from_list(ProviderKindKey::from("ollama"), window, cx);
+            });
+        });
+        set_text_input_value(
+            &page,
+            &ollama,
+            ProviderFormField::BaseUrl,
+            "not a url",
+            &mut cx,
+        );
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.save(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let (openai_db_url, ollama_db_url) = cx.update(|_, cx| {
+            let providers = database::repository(cx).list_providers().unwrap();
+            (
+                provider_setting_value(&providers, "openai", "base_url"),
+                provider_setting_value(&providers, "ollama", "base_url"),
+            )
+        });
+
+        assert_eq!(openai_db_url, "https://api.openai.com/v1");
+        assert_eq!(ollama_db_url, "http://localhost:11434");
+        assert!(page.read_with(&cx, |page, cx| page.is_editor_dirty(&openai, cx)));
+        assert!(page.read_with(&cx, |page, cx| page.is_editor_dirty(&ollama, cx)));
     }
 
     #[gpui::test]

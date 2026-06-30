@@ -92,6 +92,7 @@ pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput
         component = "input",
         label = "provider-field-name",
         placeholder = "provider-placeholder-provider-name",
+        required,
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) name: String,
@@ -99,6 +100,7 @@ pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput
         component = "input",
         label = "provider-field-api-key",
         placeholder = "provider-placeholder-api-key",
+        required,
         mask,
         validate(on_change, on_blur, on_submit)
     )]
@@ -107,6 +109,7 @@ pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput
         component = "input",
         label = "provider-field-base-url",
         placeholder = "provider-placeholder-custom-base-url",
+        required,
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) base_url: String,

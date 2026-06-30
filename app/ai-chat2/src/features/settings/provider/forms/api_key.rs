@@ -7,6 +7,7 @@ pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
         component = "input",
         label = "provider-field-api-key",
         placeholder = "provider-placeholder-api-key",
+        required,
         mask,
         validate(on_change, on_blur, on_submit)
     )]

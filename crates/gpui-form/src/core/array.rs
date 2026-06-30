@@ -114,6 +114,7 @@ pub struct FieldArrayStore<Item> {
     id_generator: FormItemIdGenerator,
     array_revision: u64,
     meta: FieldMeta,
+    required: bool,
     errors: Vec<FieldError>,
     subscriptions: SubscriptionSet,
 }
@@ -141,6 +142,7 @@ impl<Item> FieldArrayStore<Item> {
             id_generator: generator.clone(),
             array_revision: 0,
             meta: FieldMeta::default(),
+            required: false,
             errors: Vec::new(),
             subscriptions: SubscriptionSet::default(),
         }
@@ -188,6 +190,14 @@ impl<Item> FieldArrayStore<Item> {
 
     pub fn meta_mut(&mut self) -> &mut FieldMeta {
         &mut self.meta
+    }
+
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+
+    pub fn set_required(&mut self, required: bool) {
+        self.required = required;
     }
 
     pub fn set_meta(&mut self, meta: FieldMeta) {

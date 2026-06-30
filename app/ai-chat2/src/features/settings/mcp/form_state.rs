@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
 use gpui::{App, AppContext as _, Entity, Window};
-use gpui_form::{FormItemId, FormStore};
+use gpui_form::{FieldError, FormItemId, FormStore};
 
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = McpArgRowFormStore)]
@@ -83,19 +83,20 @@ pub(super) struct McpServerFormInput {
     pub(super) transport: McpTransportKind,
     #[form(
         component = "input",
-        placeholder = "mcp-field-name",
+        placeholder = "mcp-placeholder-server-id",
+        required,
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) server_id: String,
     #[form(
         component = "input",
-        placeholder = "mcp-field-command",
+        placeholder = "mcp-placeholder-command",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) command: String,
     #[form(
         component = "input",
-        placeholder = "mcp-field-cwd",
+        placeholder = "mcp-placeholder-cwd",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) cwd: String,
@@ -107,13 +108,13 @@ pub(super) struct McpServerFormInput {
     pub(super) env_vars: Vec<McpEnvVarRowInput>,
     #[form(
         component = "input",
-        placeholder = "mcp-field-url",
+        placeholder = "mcp-placeholder-url",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) url: String,
     #[form(
         component = "input",
-        placeholder = "mcp-field-bearer-token-env-var",
+        placeholder = "mcp-placeholder-bearer-token-env-var",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) bearer_token_env_var: String,
@@ -171,9 +172,11 @@ impl McpServerFormDraft {
             ),
             oauth_enabled: server.oauth.is_some(),
         };
-        Self {
-            form: cx.new(|cx| McpServerFormStore::from_value(input, window, cx)),
-        }
+        let form = cx.new(|cx| McpServerFormStore::from_value(input, window, cx));
+        form.update(cx, |form, cx| {
+            sync_transport_required_fields(form, window, cx);
+        });
+        Self { form }
     }
 
     pub(super) fn server_id(&self, _original_server_id: Option<&str>, cx: &App) -> String {
@@ -197,6 +200,7 @@ impl McpServerFormDraft {
                 window,
                 cx,
             );
+            sync_transport_required_fields(form, window, cx);
         });
     }
 
@@ -358,6 +362,153 @@ impl McpServerFormDraft {
         self.form.update(cx, |form, cx| {
             let _ = form.env_headers_remove_id(row_id, cx);
         });
+    }
+}
+
+impl McpServerFormStore {
+    pub(super) fn apply_arg_value_error(
+        &mut self,
+        row_id: FormItemId,
+        error: FieldError,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let updated = if let Some(item) = self.args.item_mut(row_id) {
+            let store = item.item.store();
+            store.update(cx, |store, cx| {
+                store.apply_field_error(McpArgRowFormField::Value, error, cx);
+            });
+            let store = store.read(cx);
+            item.item
+                .sync_from_child(store.draft(), store.meta().clone());
+            true
+        } else {
+            false
+        };
+        if updated {
+            self.args_refresh_meta();
+            self.refresh_meta();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_env_field_error(
+        &mut self,
+        row_id: FormItemId,
+        field: McpEnvRowFormField,
+        error: FieldError,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let updated = if let Some(item) = self.env.item_mut(row_id) {
+            let store = item.item.store();
+            store.update(cx, |store, cx| {
+                store.apply_field_error(field, error, cx);
+            });
+            let store = store.read(cx);
+            item.item
+                .sync_from_child(store.draft(), store.meta().clone());
+            true
+        } else {
+            false
+        };
+        if updated {
+            self.env_refresh_meta();
+            self.refresh_meta();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_env_var_value_error(
+        &mut self,
+        row_id: FormItemId,
+        error: FieldError,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let updated = if let Some(item) = self.env_vars.item_mut(row_id) {
+            let store = item.item.store();
+            store.update(cx, |store, cx| {
+                store.apply_field_error(McpEnvVarRowFormField::Value, error, cx);
+            });
+            let store = store.read(cx);
+            item.item
+                .sync_from_child(store.draft(), store.meta().clone());
+            true
+        } else {
+            false
+        };
+        if updated {
+            self.env_vars_refresh_meta();
+            self.refresh_meta();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_header_field_error(
+        &mut self,
+        row_id: FormItemId,
+        field: McpHeaderRowFormField,
+        error: FieldError,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let updated = if let Some(item) = self.headers.item_mut(row_id) {
+            let store = item.item.store();
+            store.update(cx, |store, cx| {
+                store.apply_field_error(field, error, cx);
+            });
+            let store = store.read(cx);
+            item.item
+                .sync_from_child(store.draft(), store.meta().clone());
+            true
+        } else {
+            false
+        };
+        if updated {
+            self.headers_refresh_meta();
+            self.refresh_meta();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_env_header_field_error(
+        &mut self,
+        row_id: FormItemId,
+        field: McpEnvHeaderRowFormField,
+        error: FieldError,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let updated = if let Some(item) = self.env_headers.item_mut(row_id) {
+            let store = item.item.store();
+            store.update(cx, |store, cx| {
+                store.apply_field_error(field, error, cx);
+            });
+            let store = store.read(cx);
+            item.item
+                .sync_from_child(store.draft(), store.meta().clone());
+            true
+        } else {
+            false
+        };
+        if updated {
+            self.env_headers_refresh_meta();
+            self.refresh_meta();
+            cx.notify();
+        }
+    }
+}
+
+fn sync_transport_required_fields(
+    form: &mut McpServerFormStore,
+    window: &mut Window,
+    cx: &mut gpui::Context<McpServerFormStore>,
+) {
+    match form.transport_value() {
+        McpTransportKind::Stdio => {
+            form.set_command_required(true, window, cx);
+            form.set_url_required(false, window, cx);
+        }
+        McpTransportKind::StreamableHttp => {
+            form.set_command_required(false, window, cx);
+            form.set_url_required(true, window, cx);
+        }
     }
 }
 
@@ -544,6 +695,47 @@ mod tests {
             assert_eq!(merged.url.as_deref(), Some("https://example.com/mcp"));
             assert_eq!(merged.bearer_token_env_var.as_deref(), Some("MCP_TOKEN"));
         });
+    }
+
+    #[gpui::test]
+    fn required_flags_follow_transport(cx: &mut TestAppContext) {
+        init_form_state_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let mut draft = cx.update(|window, cx| {
+            McpServerFormDraft::from_config(
+                "filesystem".to_string(),
+                &McpServerTomlConfig {
+                    transport: McpTransportKind::Stdio,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+
+        let (name_required, command_required, url_required) =
+            draft.form.read_with(&cx, |form, _| {
+                (
+                    form.server_id_required(),
+                    form.command_required(),
+                    form.url_required(),
+                )
+            });
+        assert!(name_required);
+        assert!(command_required);
+        assert!(!url_required);
+
+        cx.update(|window, cx| {
+            draft.set_transport(McpTransportKind::StreamableHttp, window, cx);
+        });
+
+        let (command_required, url_required) = draft.form.read_with(&cx, |form, _| {
+            (form.command_required(), form.url_required())
+        });
+        assert!(!command_required);
+        assert!(url_required);
     }
 
     #[gpui::test]

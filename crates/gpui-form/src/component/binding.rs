@@ -2,6 +2,13 @@ use gpui::{App, Context, Entity, Window};
 
 use crate::{FieldChangeCause, SubscriptionSet};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormComponentEvent {
+    Change(FieldChangeCause),
+    Focus,
+    Blur,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ComponentStateOptions {
     pub label_key: Option<&'static str>,
@@ -9,6 +16,7 @@ pub struct ComponentStateOptions {
     pub placeholder_key: Option<&'static str>,
     pub masked: bool,
     pub disabled: bool,
+    pub required: bool,
 }
 
 pub trait FormComponentBinding<Value>: Sized + 'static
@@ -41,6 +49,18 @@ where
         _window: &mut Window,
         _cx: &mut App,
     ) {
+    }
+
+    fn set_required(
+        _state: &Entity<Self::State>,
+        _required: bool,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    fn event_kind(_event: &Self::Event) -> Option<FormComponentEvent> {
+        None
     }
 
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool;

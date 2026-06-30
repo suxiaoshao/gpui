@@ -219,6 +219,10 @@ where
         self.core.meta()
     }
 
+    fn is_required(&self) -> bool {
+        self.core.is_required()
+    }
+
     fn errors(&self) -> &[FieldError] {
         self.core.errors()
     }
@@ -260,6 +264,10 @@ where
 {
     fn meta(&self) -> &FieldMeta {
         self.core.meta()
+    }
+
+    fn is_required(&self) -> bool {
+        self.core.is_required()
     }
 
     fn errors(&self) -> &[FieldError] {

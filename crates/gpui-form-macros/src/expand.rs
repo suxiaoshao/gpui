@@ -15,8 +15,8 @@ mod pipeline;
 mod validation;
 
 use accessors::{
-    draft_field_value, field_accessor_methods, field_meta_value, field_setter_methods,
-    focus_error_statement, input_state_lookup_arm, reset_field_statement,
+    draft_field_value, field_accessor_methods, field_meta_value, field_required_methods,
+    field_setter_methods, focus_error_statement, input_state_lookup_arm, reset_field_statement,
 };
 use arrays::{array_helper_methods, vec_inner_type};
 use errors::{apply_field_error_arm, clear_all_error_statement, clear_field_error_arm};
@@ -195,6 +195,12 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 store_where
                     .predicates
                     .push(parse_quote!(#binding: ::gpui_form::FormComponentBinding<#ty>));
+                store_where.predicates.push(parse_quote!(
+                    <#binding as ::gpui_form::FormComponentBinding<#ty>>::State:
+                        ::gpui_form::__private::gpui::EventEmitter<
+                            <#binding as ::gpui_form::FormComponentBinding<#ty>>::Event
+                        >
+                ));
             }
             FieldKind::Select => {
                 let delegate = model.attrs.delegate.as_ref().expect("checked");
@@ -304,6 +310,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
     let field_accessor_methods = field_models
         .iter()
         .map(field_accessor_methods)
+        .collect::<Result<Vec<_>>>()?;
+    let field_required_methods = field_models
+        .iter()
+        .map(field_required_methods)
         .collect::<Result<Vec<_>>>()?;
     let field_setter_methods = field_models
         .iter()
@@ -456,6 +466,8 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             }
 
             #(#field_accessor_methods)*
+
+            #(#field_required_methods)*
 
             #(#field_setter_methods)*
 

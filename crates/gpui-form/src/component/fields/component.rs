@@ -55,6 +55,11 @@ where
     ) {
         Binding::write_value(&self.state, value, cause, window, cx);
     }
+
+    pub fn set_required(&mut self, required: bool, window: &mut Window, cx: &mut App) {
+        self.core.set_required(required);
+        Binding::set_required(&self.state, required, window, cx);
+    }
 }
 
 impl<Value, Binding> FormField for ComponentFieldStore<Value, Binding>
@@ -85,6 +90,10 @@ where
 
     fn meta(&self) -> &FieldMeta {
         self.core.meta()
+    }
+
+    fn is_required(&self) -> bool {
+        self.core.is_required()
     }
 
     fn errors(&self) -> &[FieldError] {
@@ -127,6 +136,10 @@ where
 {
     fn meta(&self) -> &FieldMeta {
         self.core.meta()
+    }
+
+    fn is_required(&self) -> bool {
+        self.core.is_required()
     }
 
     fn errors(&self) -> &[FieldError] {

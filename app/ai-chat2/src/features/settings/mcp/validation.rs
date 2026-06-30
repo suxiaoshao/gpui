@@ -1,14 +1,10 @@
 use std::collections::BTreeSet;
 
-use crate::{
-    foundation::I18n,
-    state::config::{
-        McpServerTomlConfig, McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name,
-        is_valid_mcp_server_id,
-    },
+use crate::state::config::{
+    McpServerTomlConfig, McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name,
+    is_valid_mcp_server_id,
 };
-use fluent_bundle::FluentArgs;
-use gpui::{App, SharedString};
+use gpui::App;
 use gpui_form::FormItemId;
 
 use super::form_state::McpServerFormDraft;
@@ -33,19 +29,6 @@ impl McpFormValidationError {
         self.args.push((key, value.into()));
         self
     }
-
-    pub(super) fn message(&self, cx: &App) -> SharedString {
-        let i18n = cx.global::<I18n>();
-        if self.args.is_empty() {
-            return i18n.t(self.message_key).into();
-        }
-
-        let mut args = FluentArgs::new();
-        for (key, value) in &self.args {
-            args.set(*key, value.clone());
-        }
-        i18n.t_with_args(self.message_key, &args).into()
-    }
 }
 
 #[allow(dead_code)]
@@ -65,12 +48,6 @@ pub(super) enum McpFormField {
     HeaderValue { row_id: FormItemId },
     EnvHeaderName { row_id: FormItemId },
     EnvHeaderVar { row_id: FormItemId },
-}
-
-impl McpFormField {
-    pub(super) fn same_location(&self, other: &Self) -> bool {
-        self == other
-    }
 }
 
 pub(super) fn validate_mcp_form(

@@ -170,6 +170,65 @@ pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStre
     })
 }
 
+pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStream> {
+    let ident = model.ident;
+    let required_ident = format_ident!("{}_required", ident);
+    let set_required_ident = format_ident!("set_{}_required", ident);
+
+    let required_expr = match model.attrs.component {
+        FieldKind::Array => quote!(self.#ident.is_required()),
+        _ => quote!(::gpui_form::FormField::is_required(&self.#ident)),
+    };
+
+    let set_required_body = match model.attrs.component {
+        FieldKind::Array => quote! {
+            if self.#ident.is_required() == required {
+                return;
+            }
+            self.#ident.set_required(required);
+        },
+        FieldKind::Group => quote! {
+            if ::gpui_form::FormField::is_required(&self.#ident) == required {
+                return;
+            }
+            self.#ident.set_required(required);
+        },
+        FieldKind::Binding => quote! {
+            if ::gpui_form::FormField::is_required(&self.#ident) == required {
+                return;
+            }
+            self.#ident.set_required(required, window, cx);
+        },
+        _ => quote! {
+            if ::gpui_form::FormField::is_required(&self.#ident) == required {
+                return;
+            }
+            self.#ident.core_mut().set_required(required);
+        },
+    };
+
+    let window_arg = match model.attrs.component {
+        FieldKind::Binding => quote!(window),
+        _ => quote!(_window),
+    };
+
+    Ok(quote! {
+        pub fn #required_ident(&self) -> bool {
+            #required_expr
+        }
+
+        pub fn #set_required_ident(
+            &mut self,
+            required: bool,
+            #window_arg: &mut ::gpui_form::__private::gpui::Window,
+            cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+        ) {
+            #set_required_body
+            cx.notify();
+        }
+    })
+}
+
 pub(super) fn field_setter_methods(
     model: &FieldModel<'_>,
     field_enum_ident: &syn::Ident,

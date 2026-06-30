@@ -31,6 +31,13 @@ pub(crate) struct HotkeyInput {
     _subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HotkeyInputEvent {
+    Change,
+}
+
+impl EventEmitter<HotkeyInputEvent> for HotkeyInput {}
+
 fn keystroke_to_string(keystroke: &Keystroke) -> String {
     let mut result = String::new();
     if keystroke.modifiers.control {
@@ -221,6 +228,15 @@ impl HotkeyInput {
         self.value.as_ref().map(keystroke_to_string)
     }
 
+    pub(crate) fn set_hotkey(&mut self, value: Option<Keystroke>, cx: &mut Context<Self>) {
+        if self.value == value {
+            return;
+        }
+
+        self.value = value;
+        cx.notify();
+    }
+
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.outer_focus_handle.focus(window, cx);
     }
@@ -260,6 +276,7 @@ impl HotkeyInput {
 
         self.value = Some(event.keystroke.clone());
         self.stop_recording(&StopRecording, window, cx);
+        cx.emit(HotkeyInputEvent::Change);
         cx.notify();
     }
 
@@ -279,6 +296,7 @@ impl HotkeyInput {
 
     fn clear_hotkey(&mut self, _: &ClearHotkey, _window: &mut Window, cx: &mut Context<Self>) {
         if self.value.take().is_some() {
+            cx.emit(HotkeyInputEvent::Change);
             cx.notify();
         }
         cx.stop_propagation();

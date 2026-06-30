@@ -24,6 +24,96 @@ struct ProviderFormHarness {
     form: Entity<ProviderFormStore>,
 }
 
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[form(store = RequiredBindingFormStore)]
+struct RequiredBindingInput {
+    #[form(binding = "RequiredFlagBinding", required)]
+    secret: String,
+    #[form(component = "value")]
+    notes: String,
+}
+
+struct RequiredFlagState {
+    value: String,
+    required: bool,
+}
+
+impl gpui::EventEmitter<()> for RequiredFlagState {}
+
+struct RequiredFlagBinding;
+
+impl gpui_form::FormComponentBinding<String> for RequiredFlagBinding {
+    type State = RequiredFlagState;
+    type Event = ();
+
+    fn new_state(
+        initial: &String,
+        options: gpui_form::ComponentStateOptions,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self::State> {
+        let value = initial.clone();
+        cx.new(|_| RequiredFlagState {
+            value,
+            required: options.required,
+        })
+    }
+
+    fn read_value(state: &Entity<Self::State>, cx: &App) -> String {
+        state.read(cx).value.clone()
+    }
+
+    fn write_value(
+        state: &Entity<Self::State>,
+        value: &String,
+        _cause: gpui_form::FieldChangeCause,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        state.update(cx, |state, _| {
+            state.value = value.clone();
+        });
+    }
+
+    fn set_required(
+        state: &Entity<Self::State>,
+        required: bool,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        state.update(cx, |state, _| {
+            state.required = required;
+        });
+    }
+
+    fn focus(_state: &Entity<Self::State>, _window: &mut Window, _cx: &mut App) -> bool {
+        false
+    }
+}
+
+struct RequiredBindingHarness {
+    form: Entity<RequiredBindingFormStore>,
+}
+
+impl RequiredBindingHarness {
+    fn new(
+        input: RequiredBindingInput,
+        capture: Rc<RefCell<Option<Entity<RequiredBindingFormStore>>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let form = cx.new(|cx| RequiredBindingFormStore::from_value(input, window, cx));
+        capture.borrow_mut().replace(form.clone());
+        Self { form }
+    }
+}
+
+impl Render for RequiredBindingHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 impl ProviderFormHarness {
     fn new(
         input: ProviderInput,
@@ -54,6 +144,30 @@ fn create_form(
         cx.open_window(Default::default(), |window, cx| {
             let capture = capture_for_window.clone();
             cx.new(|cx| ProviderFormHarness::new(input, capture, window, cx))
+        })
+        .unwrap()
+    });
+
+    (
+        capture.borrow().as_ref().expect("form captured").clone(),
+        window,
+    )
+}
+
+fn create_required_binding_form(
+    cx: &mut TestAppContext,
+    input: RequiredBindingInput,
+) -> (
+    Entity<RequiredBindingFormStore>,
+    WindowHandle<RequiredBindingHarness>,
+) {
+    let capture = Rc::new(RefCell::new(None));
+    let capture_for_window = capture.clone();
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |window, cx| {
+            let capture = capture_for_window.clone();
+            cx.new(|cx| RequiredBindingHarness::new(input, capture, window, cx))
         })
         .unwrap()
     });
@@ -95,6 +209,47 @@ fn derive_generates_component_field_store(cx: &mut TestAppContext) {
             form.input_state_for_field(ProviderFormField::Enabled)
                 .is_none()
         );
+    });
+}
+
+#[gpui::test]
+fn required_metadata_is_generated_and_can_update_binding_state(cx: &mut TestAppContext) {
+    let (form, window) = create_required_binding_form(
+        cx,
+        RequiredBindingInput {
+            secret: "token".to_string(),
+            notes: "optional".to_string(),
+        },
+    );
+
+    cx.update(|cx| {
+        let form = form.read(cx);
+        assert!(form.secret_required());
+        assert!(!form.notes_required());
+        assert!(gpui_form::FormField::is_required(&form.secret));
+        assert!(form.secret_state().read(cx).required);
+        assert!(form.meta().is_pristine);
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("form harness root");
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.set_secret_required(false, window, cx);
+                form.set_notes_required(true, window, cx);
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(!form.secret_required());
+        assert!(form.notes_required());
+        assert!(!gpui_form::FormField::is_required(&form.secret));
+        assert!(!form.secret_state().read(cx).required);
+        assert_eq!(form.draft().secret, "token");
+        assert!(form.meta().is_pristine);
     });
 }
 
@@ -364,6 +519,8 @@ struct BindingTextState {
     disabled: bool,
 }
 
+impl gpui::EventEmitter<()> for BindingTextState {}
+
 struct BindingTextBinding;
 
 impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
@@ -412,6 +569,12 @@ impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
 
     fn focus(_state: &Entity<Self::State>, _window: &mut Window, _cx: &mut App) -> bool {
         false
+    }
+
+    fn event_kind(_event: &Self::Event) -> Option<gpui_form::FormComponentEvent> {
+        Some(gpui_form::FormComponentEvent::Change(
+            gpui_form::FieldChangeCause::UserInput,
+        ))
     }
 
     fn install_subscriptions<Form>(
@@ -491,9 +654,21 @@ fn derive_installs_binding_component_subscriptions(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let form = form.read(cx);
-        assert_eq!(form.token.core().subscriptions().len(), 1);
+        assert_eq!(form.token.core().subscriptions().len(), 2);
         assert_eq!(form.token_value(), "secret");
         assert_eq!(form.token_state().read(cx).value, "secret");
+    });
+
+    cx.update(|cx| {
+        let token_state = form.read(cx).token_state();
+        token_state.update(cx, |state, cx| {
+            state.value = "changed".to_string();
+            cx.emit(());
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(form.read(cx).token_value(), "changed");
     });
 }
 

@@ -1,5 +1,27 @@
 //! Shared form state, component binding, validation, and submit transform
 //! primitives for GPUI applications.
+//!
+//! Unsupported field options fail at macro expansion time instead of being
+//! ignored.
+//!
+//! ```compile_fail
+//! #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+//! struct TypoFormInput {
+//!     #[form(requierd)]
+//!     name: String,
+//! }
+//! ```
+//!
+//! The removed app-specific `state = "..."` attribute is also rejected; use
+//! `binding = "TypeName"` instead.
+//!
+//! ```compile_fail
+//! #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+//! struct OldCustomStateFormInput {
+//!     #[form(state = "CustomState")]
+//!     secret: String,
+//! }
+//! ```
 
 pub mod component;
 pub mod core;
@@ -15,7 +37,7 @@ pub mod __private {
 #[cfg(test)]
 mod test_support;
 
-pub use component::binding::{ComponentStateOptions, FormComponentBinding};
+pub use component::binding::{ComponentStateOptions, FormComponentBinding, FormComponentEvent};
 pub use component::fields::{
     BoolBinding, BoolComponentState, BoolFieldStore, ComboboxBinding, ComboboxFieldStore,
     ComboboxFieldValue, ComponentFieldStore, NumberFieldStore, NumberFieldValue,
