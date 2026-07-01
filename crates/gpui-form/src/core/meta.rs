@@ -48,7 +48,7 @@ pub enum SubmitOutcome {
     Failure,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormMeta {
     pub is_dirty: bool,
     pub is_touched: bool,
@@ -57,20 +57,6 @@ pub struct FormMeta {
     pub is_submitting: bool,
     pub last_submit_outcome: Option<SubmitOutcome>,
     pub submission_attempts: u32,
-}
-
-impl Default for FormMeta {
-    fn default() -> Self {
-        Self {
-            is_dirty: false,
-            is_touched: false,
-            is_blurred: false,
-            is_validating: false,
-            is_submitting: false,
-            last_submit_outcome: None,
-            submission_attempts: 0,
-        }
-    }
 }
 
 impl FormMeta {

@@ -10,13 +10,13 @@ pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenSt
     let ident = model.ident;
     let name = &model.name;
     Ok(match model.attrs.component {
-        FieldKind::Number => {
+        FieldKind::Binding => {
             quote! {
-                if let Err(__gpui_form_error) = self.#ident.parse_raw_for_submit(
+                if let Err(__gpui_form_error) = self.#ident.prepare_submit(
                     ::gpui_form::macro_support::field_path(#name),
                     cx,
                 ) {
-                    report.push_field_error(__gpui_form_error);
+                    report.push_field_error(*__gpui_form_error);
                 }
             }
         }
@@ -131,12 +131,12 @@ pub(super) fn apply_validation_statement(model: &FieldModel<'_>) -> Result<Token
             quote! {
                 if ::gpui_form::macro_support::scope_contains_path(scope, self.#ident.path()) {
                     let __gpui_form_array_path = self.#ident.path().clone();
-                    let __gpui_form_array_errors = report
-                        .field_errors()
-                        .iter()
-                        .filter(|error| error.path == __gpui_form_array_path)
-                        .cloned()
-                        .collect::<::std::vec::Vec<_>>();
+                    let __gpui_form_array_errors =
+                        ::gpui_form::macro_support::merge_field_errors_preserving_internal(
+                            self.#ident.errors(),
+                            report,
+                            &__gpui_form_array_path,
+                        );
                     self.#ident.set_errors(__gpui_form_array_errors);
 
                     for __gpui_form_item in self.#ident.items_mut() {
@@ -171,24 +171,12 @@ pub(super) fn apply_validation_statement(model: &FieldModel<'_>) -> Result<Token
                 scope,
                 &__gpui_form_field_path,
             ) {
-                let mut __gpui_form_errors = ::std::vec::Vec::new();
-                __gpui_form_errors.extend(
-                    ::gpui_form::FormField::errors(&self.#ident)
-                        .iter()
-                        .filter(|error| {
-                            error.source == ::gpui_form::ValidationSource::Internal
-                        })
-                        .cloned(),
-                );
-                __gpui_form_errors.extend(
-                    report
-                        .field_errors()
-                        .iter()
-                        .filter(|error| {
-                            error.path == __gpui_form_field_path
-                        })
-                        .cloned(),
-                );
+                let __gpui_form_errors =
+                    ::gpui_form::macro_support::merge_field_errors_preserving_internal(
+                        ::gpui_form::FormField::errors(&self.#ident),
+                        report,
+                        &__gpui_form_field_path,
+                    );
                 ::gpui_form::FormField::set_errors(
                     &mut self.#ident,
                     __gpui_form_errors,

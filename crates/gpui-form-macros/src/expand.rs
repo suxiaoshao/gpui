@@ -16,7 +16,7 @@ mod validation;
 
 use accessors::{
     draft_field_value, field_accessor_methods, field_meta_value, field_required_methods,
-    field_setter_methods, focus_error_statement, input_state_lookup_arm, reset_field_statement,
+    field_setter_methods, focus_error_statement, reset_field_statement,
 };
 use arrays::{array_helper_methods, vec_inner_type};
 use errors::{apply_field_error_arm, clear_all_error_statement, clear_field_error_arm};
@@ -130,16 +130,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 "group and array form components require #[form(store = \"ChildFormStore\")]",
             ));
         }
-        if matches!(
-            model.attrs.component,
-            FieldKind::Select | FieldKind::Combobox
-        ) && model.attrs.delegate.is_none()
-        {
-            return Err(syn::Error::new_spanned(
-                model.field,
-                "select and combobox form components require #[form(delegate = \"DelegateType\")]",
-            ));
-        }
     }
 
     let mut store_generics = input.generics.clone();
@@ -157,17 +147,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     .predicates
                     .push(parse_quote!(#ty: Clone + PartialEq + 'static));
             }
-            FieldKind::Input => {
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: ::gpui_form::TextFieldValue));
-            }
-            FieldKind::Number => {
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: ::gpui_form::NumberFieldValue));
-            }
-            FieldKind::Bool => {}
             FieldKind::Group => {
                 let store = model.attrs.store.as_ref().expect("checked");
                 store_where
@@ -201,50 +180,8 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     <#binding as ::gpui_form::FormComponentBinding<#ty>>::State:
                         ::gpui_form::__private::gpui::EventEmitter<
                             <#binding as ::gpui_form::FormComponentBinding<#ty>>::Event
-                        >
+                    >
                 ));
-            }
-            FieldKind::Select => {
-                let delegate = model.attrs.delegate.as_ref().expect("checked");
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: ::gpui_form::SelectFieldValue));
-                store_where.predicates.push(parse_quote!(
-                    #delegate: ::gpui_component::searchable_list::SearchableListDelegate + 'static
-                ));
-                store_where.predicates.push(parse_quote!(
-                    <#delegate as ::gpui_component::searchable_list::SearchableListDelegate>::Item:
-                        ::gpui_component::searchable_list::SearchableListItem<
-                            Value = <#ty as ::gpui_form::SelectFieldValue>::Selected
-                        >
-                ));
-                if model.attrs.options.is_none() {
-                    store_where
-                        .predicates
-                        .push(parse_quote!(#delegate: Default));
-                }
-            }
-            FieldKind::Combobox => {
-                let delegate = model.attrs.delegate.as_ref().expect("checked");
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: ::gpui_form::ComboboxFieldValue));
-                store_where.predicates.push(parse_quote!(
-                    #delegate: ::gpui_component::searchable_list::SearchableListDelegate
-                        + Clone
-                        + 'static
-                ));
-                store_where.predicates.push(parse_quote!(
-                    <#delegate as ::gpui_component::searchable_list::SearchableListDelegate>::Item:
-                        ::gpui_component::searchable_list::SearchableListItem<
-                            Value = <#ty as ::gpui_form::ComboboxFieldValue>::Selected
-                        >
-                ));
-                if model.attrs.options.is_none() {
-                    store_where
-                        .predicates
-                        .push(parse_quote!(#delegate: Default));
-                }
             }
         }
     }
@@ -341,10 +278,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(|model| apply_field_error_arm(model, &field_enum_ident))
         .collect::<Result<Vec<_>>>()?;
-    let input_state_lookup_arms = field_models
-        .iter()
-        .map(|model| input_state_lookup_arm(model, &field_enum_ident))
-        .collect::<Vec<_>>();
     let array_helper_methods = field_models
         .iter()
         .filter(|model| model.attrs.component == FieldKind::Array)
@@ -460,19 +393,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
 
             pub fn form_errors(&self) -> &[::gpui_form::FormError] {
                 &self.form_errors
-            }
-
-            pub fn input_state_for_field(
-                &self,
-                field: #field_enum_ident,
-            ) -> Option<
-                ::gpui_form::__private::gpui::Entity<
-                    ::gpui_component::input::InputState,
-                >,
-            > {
-                match field {
-                    #(#input_state_lookup_arms)*
-                }
             }
 
             #(#field_accessor_methods)*

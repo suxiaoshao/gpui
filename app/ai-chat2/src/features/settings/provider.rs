@@ -1138,10 +1138,10 @@ impl ProviderSettingsPage {
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.api_key_input_state(),
+                        form.api_key_state(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
-                        form.base_url_input_state(),
+                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
                     )
@@ -1176,10 +1176,10 @@ impl ProviderSettingsPage {
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.base_url_input_state(),
+                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
-                        form.bearer_token_input_state(),
+                        form.bearer_token_state(),
                         field_errors(&form.bearer_token),
                         form.bearer_token_required(),
                     )
@@ -1220,16 +1220,16 @@ impl ProviderSettingsPage {
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.name_input_state(),
+                        form.name_state(),
                         field_errors(&form.name),
                         form.name_required(),
-                        form.api_key_input_state(),
+                        form.api_key_state(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
-                        form.base_url_input_state(),
+                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
-                        form.api_mode_select_state(),
+                        form.api_mode_state(),
                         field_errors(&form.api_mode),
                         form.api_mode_required(),
                     )
@@ -2799,25 +2799,25 @@ mod tests {
     ) -> Option<Entity<gpui_component::input::InputState>> {
         match (form, field) {
             (ProviderSettingsForm::ApiKey(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_input_state())
+                Some(form.read(cx).api_key_state())
             }
             (ProviderSettingsForm::ApiKey(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_input_state())
+                Some(form.read(cx).base_url_state())
             }
             (ProviderSettingsForm::Ollama(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_input_state())
+                Some(form.read(cx).base_url_state())
             }
             (ProviderSettingsForm::Ollama(form), ProviderFormField::BearerToken) => {
-                Some(form.read(cx).bearer_token_input_state())
+                Some(form.read(cx).bearer_token_state())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::Name) => {
-                Some(form.read(cx).name_input_state())
+                Some(form.read(cx).name_state())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_input_state())
+                Some(form.read(cx).api_key_state())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_input_state())
+                Some(form.read(cx).base_url_state())
             }
             _ => None,
         }

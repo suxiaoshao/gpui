@@ -145,7 +145,7 @@ impl PromptEditDialogState {
     }
 
     fn focus_name(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let name_input = self.form.read(cx).name_input_state();
+        let name_input = self.form.read(cx).name_state();
         name_input.update(cx, |input, cx| {
             input.focus(window, cx);
         });
@@ -195,7 +195,7 @@ impl Render for PromptEditDialogState {
         let (name_input, content_input, name_error, content_error, name_required, content_required) = {
             let form = self.form.read(cx);
             (
-                form.name_input_state(),
+                form.name_state(),
                 form.content_state(),
                 field_error_message(field_errors(&form.name), cx),
                 field_error_message(field_errors(&form.content), cx),
@@ -549,7 +549,7 @@ mod tests {
             .update(|window, cx| open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx));
         let (name_input, content_input) = form.read_with(&cx, |dialog, cx| {
             let form = dialog.form.read(cx);
-            (form.name_input_state(), form.content_state())
+            (form.name_state(), form.content_state())
         });
         set_input_value(name_input, "Existing Prompt", &mut cx);
         set_input_value(content_input, "New content", &mut cx);

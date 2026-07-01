@@ -4,25 +4,37 @@ use gpui::{
     App, AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext,
     Window, WindowHandle, div,
 };
-use gpui_component::{IndexPath, combobox::ComboboxEvent, select::SelectEvent};
+use gpui_component::{
+    IndexPath,
+    combobox::ComboboxEvent,
+    searchable_list::{SearchableListDelegate, SearchableListItem},
+    select::SelectEvent,
+};
 #[cfg(feature = "form-pipeline")]
 use gpui_form::FormField as _;
 use gpui_form::FormStore as _;
 use gpui_form::macro_support::GeneratedFormStore;
 
+type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
+type I32NumberInputBinding = gpui_form_gpui_component::NumberInputBinding<i32>;
+type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
+
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ProviderFormStore)]
 struct ProviderInput {
-    #[form(component = "input", validate(on_change, on_blur, on_submit))]
+    #[form(
+        binding = "StringInputBinding",
+        validate(on_change, on_blur, on_submit)
+    )]
     name: String,
-    #[form(component = "bool")]
+    #[form(binding = "BoolInputBinding")]
     enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = QuantityFormStore)]
 struct QuantityInput {
-    #[form(component = "number")]
+    #[form(binding = "I32NumberInputBinding")]
     amount: i32,
 }
 
@@ -55,6 +67,7 @@ struct RequiredFlagBinding;
 impl gpui_form::FormComponentBinding<String> for RequiredFlagBinding {
     type State = RequiredFlagState;
     type Event = ();
+    type Draft = String;
 
     fn new_state(
         initial: &String,
@@ -69,8 +82,21 @@ impl gpui_form::FormComponentBinding<String> for RequiredFlagBinding {
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> String {
+    fn draft_from_value(value: &String) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         state.read(cx).value.clone()
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<String, Box<gpui_form::FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(
@@ -246,19 +272,7 @@ fn derive_generates_component_field_store(cx: &mut TestAppContext) {
         assert_eq!(form.name_value(), "OpenAI");
         assert!(form.enabled_value());
         assert_eq!(form.name.core().subscriptions().len(), 1);
-        assert_eq!(form.name_input_state().read(cx).value().as_ref(), "OpenAI");
-        assert_eq!(
-            form.input_state_for_field(ProviderFormField::Name)
-                .expect("name input")
-                .read(cx)
-                .value()
-                .as_ref(),
-            "OpenAI"
-        );
-        assert!(
-            form.input_state_for_field(ProviderFormField::Enabled)
-                .is_none()
-        );
+        assert_eq!(form.name_state().read(cx).value().as_ref(), "OpenAI");
     });
 }
 
@@ -347,7 +361,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
     let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("quantity form root");
-    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let amount = cx.update(|_window, cx| form.read(cx).amount_state());
     let initial_revision = cx.update(|_window, cx| form.read(cx).amount.core().revision());
 
     cx.update(|window, cx| {
@@ -360,8 +374,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.raw_value(), "12x");
-        assert!(form.amount.raw_revision() > 0);
+        assert_eq!(form.amount.draft().as_str(), "12x");
         assert!(form.amount.core().revision() > initial_revision);
         assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(form.meta().is_dirty);
@@ -391,7 +404,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
 fn number_raw_edit_with_same_typed_value_stays_dirty(cx: &mut TestAppContext) {
     let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let amount = cx.update(|_window, cx| form.read(cx).amount_state());
     let initial_revision = cx.update(|_window, cx| form.read(cx).amount.core().revision());
 
     cx.update(|window, cx| {
@@ -403,10 +416,10 @@ fn number_raw_edit_with_same_typed_value_stays_dirty(cx: &mut TestAppContext) {
 
     cx.update(|_window, cx| {
         let form = form.read(cx);
-        let _number_input = form.amount_number_input();
+        let _number_input = gpui_form_gpui_component::number_input::<i32>(&form.amount_state());
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.raw_default(), "12");
-        assert_eq!(form.amount.raw_value(), "012");
+        assert_eq!(form.amount.default_draft().as_str(), "12");
+        assert_eq!(form.amount.draft().as_str(), "012");
         assert!(form.amount.core().revision() > initial_revision);
         assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(form.meta().is_dirty);
@@ -418,7 +431,7 @@ fn number_reset_restores_raw_default(cx: &mut TestAppContext) {
     let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("quantity form root");
-    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let amount = cx.update(|_window, cx| form.read(cx).amount_state());
 
     cx.update(|window, cx| {
         amount.update(cx, |input, cx| {
@@ -436,8 +449,8 @@ fn number_reset_restores_raw_default(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.raw_default(), "12");
-        assert_eq!(form.amount.raw_value(), "12");
+        assert_eq!(form.amount.default_draft().as_str(), "12");
+        assert_eq!(form.amount.draft().as_str(), "12");
         assert_eq!(amount.read(cx).value(), "12");
         assert!(gpui_form::FormField::errors(&form.amount).is_empty());
         assert!(!gpui_form::FormField::meta(&form.amount).is_dirty);
@@ -450,7 +463,7 @@ fn number_normalize_writeback_recomputes_raw_dirty(cx: &mut TestAppContext) {
     let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("quantity form root");
-    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let amount = cx.update(|_window, cx| form.read(cx).amount_state());
 
     cx.update(|window, cx| {
         amount.update(cx, |input, cx| {
@@ -462,7 +475,7 @@ fn number_normalize_writeback_recomputes_raw_dirty(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.raw_value(), "012");
+        assert_eq!(form.amount.draft().as_str(), "012");
         assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(form.meta().is_dirty);
     });
@@ -483,8 +496,8 @@ fn number_normalize_writeback_recomputes_raw_dirty(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.raw_default(), "12");
-        assert_eq!(form.amount.raw_value(), "12");
+        assert_eq!(form.amount.default_draft().as_str(), "12");
+        assert_eq!(form.amount.draft().as_str(), "12");
         assert_eq!(amount.read(cx).value(), "12");
         assert!(!gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(!form.meta().is_dirty);
@@ -637,7 +650,7 @@ fn derive_emits_typed_field_events(cx: &mut TestAppContext) {
         })
     });
 
-    let name = cx.update(|_window, cx| form.read(cx).name_input_state());
+    let name = cx.update(|_window, cx| form.read(cx).name_state());
     cx.update(|window, cx| {
         name.update(cx, |input, cx| {
             cx.emit(gpui_component::input::InputEvent::Focus);
@@ -711,7 +724,7 @@ fn write_draft_updates_component_state_with_normalize_cause(cx: &mut TestAppCont
         let form = form.read(cx);
         assert_eq!(form.draft().name, "OpenAI");
         assert!(!form.draft().enabled);
-        assert_eq!(form.name_input_state().read(cx).value().as_ref(), "OpenAI");
+        assert_eq!(form.name_state().read(cx).value().as_ref(), "OpenAI");
     });
 }
 
@@ -727,6 +740,7 @@ struct BindingTextBinding;
 impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
     type State = BindingTextState;
     type Event = ();
+    type Draft = String;
 
     fn new_state(
         initial: &String,
@@ -741,8 +755,21 @@ impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> String {
+    fn draft_from_value(value: &String) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         state.read(cx).value.clone()
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<String, Box<gpui_form::FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(
@@ -873,23 +900,74 @@ fn derive_installs_binding_component_subscriptions(cx: &mut TestAppContext) {
     });
 }
 
+type ProviderChoiceBinding =
+    gpui_form_gpui_component::SelectBinding<Option<String>, ProviderChoices>;
+type TagsChoiceBinding = gpui_form_gpui_component::ComboboxBinding<Vec<String>, TagsChoices>;
+
+#[derive(Clone, Debug)]
+struct ProviderChoices(Vec<String>);
+
+impl Default for ProviderChoices {
+    fn default() -> Self {
+        Self(vec!["OpenAI".to_string(), "Anthropic".to_string()])
+    }
+}
+
+impl SearchableListDelegate for ProviderChoices {
+    type Item = String;
+
+    fn items_count(&self, section: usize) -> usize {
+        self.0.items_count(section)
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
+        self.0.item(ix)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        Self::Item: SearchableListItem<Value = V>,
+        V: PartialEq,
+    {
+        self.0.position(value)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TagsChoices(Vec<String>);
+
+impl Default for TagsChoices {
+    fn default() -> Self {
+        Self(vec!["fast".to_string(), "cheap".to_string()])
+    }
+}
+
+impl SearchableListDelegate for TagsChoices {
+    type Item = String;
+
+    fn items_count(&self, section: usize) -> usize {
+        self.0.items_count(section)
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&Self::Item> {
+        self.0.item(ix)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        Self::Item: SearchableListItem<Value = V>,
+        V: PartialEq,
+    {
+        self.0.position(value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ChoiceFormStore)]
 struct ChoiceInput {
-    #[form(
-        component = "select",
-        delegate = "Vec<String>",
-        options = "vec![\"OpenAI\".to_string(), \"Anthropic\".to_string()]",
-        searchable
-    )]
+    #[form(binding = "ProviderChoiceBinding")]
     provider: Option<String>,
-    #[form(
-        component = "combobox",
-        delegate = "Vec<String>",
-        options = "vec![\"fast\".to_string(), \"cheap\".to_string()]",
-        multiple,
-        searchable
-    )]
+    #[form(binding = "TagsChoiceBinding")]
     tags: Vec<String>,
 }
 
@@ -954,31 +1032,31 @@ fn derive_generates_select_and_combobox_field_stores(cx: &mut TestAppContext) {
         assert_eq!(form.provider_value(), Some("OpenAI".to_string()));
         assert_eq!(form.tags_value(), vec!["fast".to_string()]);
         assert_eq!(
-            form.provider_select_state().read(cx).selected_value(),
+            form.provider_state().read(cx).selected_value(),
             Some(&"OpenAI".to_string())
         );
         assert_eq!(
-            form.tags_combobox_state().read(cx).selected_values(),
+            form.tags_state().read(cx).selected_values(),
             vec!["fast".to_string()]
         );
     });
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let provider = cx.update(|_window, cx| form.read(cx).provider_select_state());
+    let provider = cx.update(|_window, cx| form.read(cx).provider_state());
     cx.update(|window, cx| {
         provider.update(cx, |select, cx| {
             select.set_selected_value(&"Anthropic".to_string(), window, cx);
-            cx.emit(SelectEvent::<Vec<String>>::Confirm(Some(
+            cx.emit(SelectEvent::<ProviderChoices>::Confirm(Some(
                 "Anthropic".to_string(),
             )));
         });
     });
 
-    let tags = cx.update(|_window, cx| form.read(cx).tags_combobox_state());
+    let tags = cx.update(|_window, cx| form.read(cx).tags_state());
     cx.update(|window, cx| {
         tags.update(cx, |combobox, cx| {
             combobox.set_selected_indices(vec![IndexPath::default().row(1)], window, cx);
-            cx.emit(ComboboxEvent::<Vec<String>>::Change(vec![
+            cx.emit(ComboboxEvent::<TagsChoices>::Change(vec![
                 "cheap".to_string(),
             ]));
         });
@@ -1022,11 +1100,11 @@ fn write_draft_updates_select_and_combobox_component_state(cx: &mut TestAppConte
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(
-            form.provider_select_state().read(cx).selected_value(),
+            form.provider_state().read(cx).selected_value(),
             Some(&"Anthropic".to_string())
         );
         assert_eq!(
-            form.tags_combobox_state().read(cx).selected_values(),
+            form.tags_state().read(cx).selected_values(),
             vec!["cheap".to_string()]
         );
     });
@@ -1035,7 +1113,7 @@ fn write_draft_updates_select_and_combobox_component_state(cx: &mut TestAppConte
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ProfileFormStore)]
 struct ProfileInput {
-    #[form(component = "input")]
+    #[form(binding = "StringInputBinding")]
     nickname: String,
 }
 
@@ -1119,7 +1197,7 @@ fn group_store_tracks_child_draft_and_subscriptions(cx: &mut TestAppContext) {
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let child = cx.update(|_window, cx| form.read(cx).profile_store());
-    let nickname = cx.update(|_window, cx| child.read(cx).nickname_input_state());
+    let nickname = cx.update(|_window, cx| child.read(cx).nickname_state());
     cx.update(|window, cx| {
         nickname.update(cx, |input, cx| {
             input.set_value("Grace", window, cx);
@@ -1138,7 +1216,7 @@ fn group_store_tracks_child_draft_and_subscriptions(cx: &mut TestAppContext) {
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = HeaderFormStore)]
 struct HeaderInput {
-    #[form(component = "input")]
+    #[form(binding = "StringInputBinding")]
     key: String,
 }
 
@@ -1222,7 +1300,7 @@ fn array_store_tracks_child_drafts_and_preserves_ids_on_reorder(cx: &mut TestApp
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let first_child = cx.update(|_window, cx| form.read(cx).headers_items()[0].item.store());
-    let first_key = cx.update(|_window, cx| first_child.read(cx).key_input_state());
+    let first_key = cx.update(|_window, cx| first_child.read(cx).key_state());
     cx.update(|window, cx| {
         first_key.update(cx, |input, cx| {
             input.set_value("aa", window, cx);
@@ -1523,6 +1601,75 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     });
 }
 
+#[gpui::test]
+fn applying_validation_report_preserves_internal_array_errors(cx: &mut TestAppContext) {
+    let (form, window) = create_header_list_form(
+        cx,
+        HeaderListInput {
+            headers: vec![HeaderInput {
+                key: "a".to_string(),
+            }],
+        },
+    );
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("header list root");
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.write_draft(
+                    HeaderListInput {
+                        headers: vec![
+                            HeaderInput {
+                                key: "a".to_string(),
+                            },
+                            HeaderInput {
+                                key: "b".to_string(),
+                            },
+                        ],
+                    },
+                    gpui_form::FieldChangeCause::NormalizeOnSubmit,
+                    window,
+                    cx,
+                );
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(
+            form.headers
+                .errors()
+                .iter()
+                .any(|error| error.code.as_ref() == "array_length_changed")
+        );
+    });
+
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                <HeaderListFormStore as GeneratedFormStore<HeaderListInput>>::apply_validation_report(
+                    form,
+                    &gpui_form::FormValidationReport::empty(),
+                    &gpui_form::ValidationScope::Form,
+                    cx,
+                );
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(
+            form.headers
+                .errors()
+                .iter()
+                .any(|error| error.code.as_ref() == "array_length_changed")
+        );
+    });
+}
+
 #[cfg(feature = "form-pipeline")]
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate, validify::Validify)]
 #[garde(allow_unvalidated)]
@@ -1532,7 +1679,7 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     transform(adapter = "validify")
 )]
 struct NormalizedInput {
-    #[form(component = "input")]
+    #[form(binding = "StringInputBinding")]
     #[modify(trim)]
     #[garde(length(min = 1))]
     name: String,
@@ -1611,7 +1758,7 @@ fn submit_runs_validify_writeback_before_garde_validation(cx: &mut TestAppContex
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().name, "");
-        assert_eq!(form.name_input_state().read(cx).value().as_ref(), "");
+        assert_eq!(form.name_state().read(cx).value().as_ref(), "");
     });
 }
 
@@ -1620,10 +1767,13 @@ fn submit_runs_validify_writeback_before_garde_validation(cx: &mut TestAppContex
 #[garde(allow_unvalidated)]
 #[form(store = LiveValidationFormStore, validation(adapter = "garde"))]
 struct LiveValidationInput {
-    #[form(component = "input", validate(on_change, on_blur, on_submit))]
+    #[form(
+        binding = "StringInputBinding",
+        validate(on_change, on_blur, on_submit)
+    )]
     #[garde(length(min = 3))]
     name: String,
-    #[form(component = "input", validate(on_submit))]
+    #[form(binding = "StringInputBinding", validate(on_submit))]
     #[garde(length(min = 3))]
     title: String,
 }
@@ -1691,7 +1841,7 @@ fn change_validation_writes_only_the_changed_field_errors(cx: &mut TestAppContex
     );
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let name = cx.update(|_window, cx| form.read(cx).name_input_state());
+    let name = cx.update(|_window, cx| form.read(cx).name_state());
     cx.update(|window, cx| {
         name.update(cx, |input, cx| {
             input.set_value("a", window, cx);
@@ -1823,7 +1973,7 @@ fn reset_clears_form_level_errors(cx: &mut TestAppContext) {
 #[garde(allow_unvalidated)]
 #[form(store = RequiredProfileFormStore, validation(adapter = "garde"))]
 struct RequiredProfileInput {
-    #[form(component = "input", validate(on_submit))]
+    #[form(binding = "StringInputBinding", validate(on_submit))]
     #[garde(length(min = 3))]
     nickname: String,
 }
@@ -1936,7 +2086,7 @@ fn group_submit_validation_writes_child_field_errors(cx: &mut TestAppContext) {
 #[garde(allow_unvalidated)]
 #[form(store = OverlappingProfileFormStore, validation(adapter = "garde"))]
 struct OverlappingProfileInput {
-    #[form(component = "input", validate(on_submit))]
+    #[form(binding = "StringInputBinding", validate(on_submit))]
     #[garde(length(min = 3))]
     name: String,
 }
@@ -1946,7 +2096,7 @@ struct OverlappingProfileInput {
 #[garde(allow_unvalidated)]
 #[form(store = OverlappingAccountFormStore, validation(adapter = "garde"))]
 struct OverlappingAccountInput {
-    #[form(component = "input", validate(on_submit))]
+    #[form(binding = "StringInputBinding", validate(on_submit))]
     #[garde(length(min = 3))]
     name: String,
     #[form(component = "group", store = "OverlappingProfileFormStore")]
@@ -2040,7 +2190,7 @@ fn group_validation_does_not_copy_sibling_errors_into_child(cx: &mut TestAppCont
 #[garde(allow_unvalidated)]
 #[form(store = RequiredHeaderFormStore, validation(adapter = "garde"))]
 struct RequiredHeaderInput {
-    #[form(component = "input", validate(on_submit))]
+    #[form(binding = "StringInputBinding", validate(on_submit))]
     #[garde(length(min = 1))]
     key: String,
 }

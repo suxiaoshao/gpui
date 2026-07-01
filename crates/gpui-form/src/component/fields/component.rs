@@ -3,9 +3,26 @@ use std::marker::PhantomData;
 use gpui::{App, Entity, Window};
 
 use crate::{
-    AnyFormField, FieldChangeCause, FieldCore, FieldError, FieldMeta, FieldValidationReport,
-    FormComponentBinding, FormField, FormMeta, ValidationTrigger,
+    AnyFormField, FieldChangeCause, FieldCore, FieldError, FieldMeta, FieldPath,
+    FieldValidationReport, FormComponentBinding, FormField, FormMeta, ValidationTrigger,
 };
+
+pub enum FieldDraftSync<Value> {
+    Parsed {
+        value: Value,
+        draft_changed: bool,
+    },
+    ParseError {
+        error: FieldError,
+        draft_changed: bool,
+    },
+}
+
+impl<Value> FieldDraftSync<Value> {
+    pub fn is_parsed(&self) -> bool {
+        matches!(self, Self::Parsed { .. })
+    }
+}
 
 pub struct ComponentFieldStore<Value, Binding>
 where
@@ -14,6 +31,9 @@ where
 {
     core: FieldCore<Value>,
     state: Entity<Binding::State>,
+    default_draft: Binding::Draft,
+    draft: Binding::Draft,
+    parse_error: Option<FieldError>,
     _binding: PhantomData<fn() -> Binding>,
 }
 
@@ -23,9 +43,13 @@ where
     Binding: FormComponentBinding<Value>,
 {
     pub fn new(value: Value, state: Entity<Binding::State>) -> Self {
+        let draft = Binding::draft_from_value(&value);
         Self {
             core: FieldCore::new(value),
             state,
+            default_draft: draft.clone(),
+            draft,
+            parse_error: None,
             _binding: PhantomData,
         }
     }
@@ -42,23 +66,143 @@ where
         &mut self.core
     }
 
-    pub fn read_component_value(&self, cx: &App) -> Value {
-        Binding::read_value(&self.state, cx)
+    pub fn draft(&self) -> &Binding::Draft {
+        &self.draft
+    }
+
+    pub fn default_draft(&self) -> &Binding::Draft {
+        &self.default_draft
+    }
+
+    pub fn read_component_draft(&self, cx: &App) -> Binding::Draft {
+        Binding::read_draft(&self.state, cx)
+    }
+
+    pub fn read_component_value(
+        &self,
+        path: FieldPath,
+        cx: &App,
+    ) -> Result<Value, Box<FieldError>> {
+        let draft = self.read_component_draft(cx);
+        Binding::parse_draft(&draft, path, ValidationTrigger::Change, cx)
+    }
+
+    pub fn sync_from_state(
+        &mut self,
+        path: FieldPath,
+        trigger: ValidationTrigger,
+        cause: FieldChangeCause,
+        cx: &App,
+    ) -> FieldDraftSync<Value> {
+        let draft = Binding::read_draft(&self.state, cx);
+        self.sync_draft(draft, path, trigger, cause, cx)
+    }
+
+    pub fn prepare_submit(&mut self, path: FieldPath, cx: &App) -> Result<Value, Box<FieldError>> {
+        match self.sync_from_state(
+            path,
+            ValidationTrigger::Submit,
+            FieldChangeCause::External,
+            cx,
+        ) {
+            FieldDraftSync::Parsed { value, .. } => Ok(value),
+            FieldDraftSync::ParseError { error, .. } => Err(Box::new(error)),
+        }
+    }
+
+    pub fn sync_draft(
+        &mut self,
+        draft: Binding::Draft,
+        path: FieldPath,
+        trigger: ValidationTrigger,
+        cause: FieldChangeCause,
+        cx: &App,
+    ) -> FieldDraftSync<Value> {
+        let draft_changed = self.draft != draft;
+        if draft_changed {
+            self.draft = draft;
+        }
+        match Binding::parse_draft(&self.draft, path, trigger, cx) {
+            Ok(value) => {
+                self.core.set_value_with_default_state(
+                    value.clone(),
+                    cause,
+                    self.draft == self.default_draft,
+                    draft_changed,
+                );
+                self.set_parse_error(None);
+                FieldDraftSync::Parsed {
+                    value,
+                    draft_changed,
+                }
+            }
+            Err(error) => {
+                let error = *error;
+                self.set_parse_error(Some(error.clone()));
+                self.core.refresh_meta_from_default_state(
+                    self.draft == self.default_draft,
+                    cause,
+                    draft_changed,
+                );
+                FieldDraftSync::ParseError {
+                    error,
+                    draft_changed,
+                }
+            }
+        }
     }
 
     pub fn write_component_value(
-        &self,
+        &mut self,
         value: &Value,
         cause: FieldChangeCause,
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.set_typed_value(value.clone(), cause);
         Binding::write_value(&self.state, value, cause, window, cx);
     }
 
     pub fn set_required(&mut self, required: bool, window: &mut Window, cx: &mut App) {
         self.core.set_required(required);
         Binding::set_required(&self.state, required, window, cx);
+    }
+
+    fn set_typed_value(&mut self, value: Value, cause: FieldChangeCause) {
+        let draft = Binding::draft_from_value(&value);
+        let draft_changed = self.draft != draft;
+        self.draft = draft;
+        self.core.set_value_with_default_state(
+            value,
+            cause,
+            self.draft == self.default_draft,
+            draft_changed,
+        );
+        self.set_parse_error(None);
+    }
+
+    fn set_parse_error(&mut self, error: Option<FieldError>) {
+        let previous_parse_error = self.parse_error.take();
+        self.parse_error = error;
+        let mut errors = self
+            .core
+            .errors()
+            .iter()
+            .filter(|error| {
+                if let Some(previous_parse_error) = &previous_parse_error {
+                    *error != previous_parse_error
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(error) = &self.parse_error
+            && !errors.iter().any(|existing| existing == error)
+        {
+            errors.push(error.clone());
+        }
+        self.core.set_errors(errors);
     }
 }
 
@@ -75,12 +219,14 @@ where
     }
 
     fn set_value(&mut self, value: Self::Value, cause: FieldChangeCause) {
-        self.core.set_value(value, cause);
+        self.set_typed_value(value, cause);
     }
 
     fn reset(&mut self, window: &mut Window, cx: &mut App) {
         self.core.reset();
         let value = self.core.value().clone();
+        self.draft = self.default_draft.clone();
+        self.parse_error = None;
         Binding::write_value(&self.state, &value, FieldChangeCause::Reset, window, cx);
     }
 
@@ -110,6 +256,7 @@ where
 
     fn clear_errors(&mut self) {
         self.core.clear_errors();
+        self.parse_error = None;
     }
 
     fn mark_touched(&mut self) {
@@ -156,6 +303,7 @@ where
 
     fn clear_errors(&mut self) {
         self.core.clear_errors();
+        self.parse_error = None;
     }
 
     fn focus_any(&mut self, window: &mut Window, cx: &mut App) -> bool {

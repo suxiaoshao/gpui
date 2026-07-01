@@ -251,6 +251,8 @@ where
 #[derive(Debug)]
 pub struct NoComponentState;
 
+impl gpui::EventEmitter<()> for NoComponentState {}
+
 #[derive(Debug)]
 pub struct ValueFieldStore<T>
 where

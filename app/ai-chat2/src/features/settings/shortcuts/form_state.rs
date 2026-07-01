@@ -17,6 +17,8 @@ use gpui_form::{
     FormField, FormMeta,
 };
 
+type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
+
 use super::choices::PromptChoice;
 
 pub(super) type ShortcutPromptSelectStateInner = SelectState<Vec<PromptChoice>>;
@@ -34,7 +36,7 @@ pub(super) struct ShortcutEditFormInput {
     pub(super) model: ShortcutModelSelection,
     #[form(component = "value")]
     pub(super) input_source: ShortcutInputSource,
-    #[form(component = "bool")]
+    #[form(binding = "BoolInputBinding")]
     pub(super) enabled: bool,
 }
 
@@ -97,6 +99,7 @@ pub(super) struct ShortcutHotkeyBinding;
 impl FormComponentBinding<Option<String>> for ShortcutHotkeyBinding {
     type State = HotkeyInput;
     type Event = HotkeyInputEvent;
+    type Draft = Option<String>;
 
     fn new_state(
         initial: &Option<String>,
@@ -112,8 +115,21 @@ impl FormComponentBinding<Option<String>> for ShortcutHotkeyBinding {
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> Option<String> {
+    fn draft_from_value(value: &Option<String>) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         state.read(cx).current_hotkey_string()
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<Option<String>, Box<FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(
@@ -158,6 +174,7 @@ pub(super) struct ShortcutPromptSelectBinding;
 impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBinding {
     type State = ShortcutPromptSelectState;
     type Event = ShortcutSelectBindingEvent;
+    type Draft = ShortcutPromptSelection;
 
     fn new_state(
         initial: &ShortcutPromptSelection,
@@ -188,12 +205,25 @@ impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBindi
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> ShortcutPromptSelection {
+    fn draft_from_value(value: &ShortcutPromptSelection) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         let state = state.read(cx);
         ShortcutPromptSelection {
             selected: state.select.read(cx).selected_value().cloned().flatten(),
             choices: state.choices.clone(),
         }
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<ShortcutPromptSelection, Box<FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(
@@ -248,6 +278,7 @@ pub(super) struct ShortcutModelSelectBinding;
 impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding {
     type State = ShortcutModelSelectState;
     type Event = ShortcutSelectBindingEvent;
+    type Draft = ShortcutModelSelection;
 
     fn new_state(
         initial: &ShortcutModelSelection,
@@ -286,12 +317,25 @@ impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> ShortcutModelSelection {
+    fn draft_from_value(value: &ShortcutModelSelection) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         let state = state.read(cx);
         ShortcutModelSelection {
             selected: state.select.read(cx).selected_value().cloned(),
             choices: state.choices.clone(),
         }
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<ShortcutModelSelection, Box<FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(

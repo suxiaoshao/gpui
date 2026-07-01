@@ -28,64 +28,17 @@ pub(super) fn field_meta_value(model: &FieldModel<'_>) -> TokenStream {
     }
 }
 
-pub(super) fn input_state_lookup_arm(
-    model: &FieldModel<'_>,
-    field_enum_ident: &syn::Ident,
-) -> TokenStream {
-    let ident = model.ident;
-    let variant_ident = field_variant_ident(&model.name);
-    match model.attrs.component {
-        FieldKind::Input | FieldKind::Number => {
-            quote!(#field_enum_ident::#variant_ident => Some(self.#ident.input_state()),)
-        }
-        _ => quote!(#field_enum_ident::#variant_ident => None,),
-    }
-}
-
 pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
     let ty = model.ty;
     let value_ident = format_ident!("{}_value", ident);
 
     Ok(match model.attrs.component {
-        FieldKind::Value | FieldKind::Bool => quote! {
+        FieldKind::Value => quote! {
             pub fn #value_ident(&self) -> #ty {
                 ::gpui_form::FormField::value(&self.#ident).clone()
             }
         },
-        FieldKind::Input => {
-            let input_state_ident = format_ident!("{}_input_state", ident);
-            quote! {
-                pub fn #value_ident(&self) -> #ty {
-                    ::gpui_form::FormField::value(&self.#ident).clone()
-                }
-
-                pub fn #input_state_ident(
-                    &self,
-                ) -> ::gpui_form::__private::gpui::Entity<::gpui_component::input::InputState> {
-                    self.#ident.input_state()
-                }
-            }
-        }
-        FieldKind::Number => {
-            let input_state_ident = format_ident!("{}_input_state", ident);
-            let number_input_ident = format_ident!("{}_number_input", ident);
-            quote! {
-                pub fn #value_ident(&self) -> #ty {
-                    ::gpui_form::FormField::value(&self.#ident).clone()
-                }
-
-                pub fn #input_state_ident(
-                    &self,
-                ) -> ::gpui_form::__private::gpui::Entity<::gpui_component::input::InputState> {
-                    self.#ident.input_state()
-                }
-
-                pub fn #number_input_ident(&self) -> ::gpui_component::input::NumberInput {
-                    self.#ident.number_input()
-                }
-            }
-        }
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
             let store_ident = format_ident!("{}_store", ident);
@@ -138,40 +91,6 @@ pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStre
                 }
             }
         }
-        FieldKind::Select => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            let select_state_ident = format_ident!("{}_select_state", ident);
-            quote! {
-                pub fn #value_ident(&self) -> #ty {
-                    ::gpui_form::FormField::value(&self.#ident).clone()
-                }
-
-                pub fn #select_state_ident(
-                    &self,
-                ) -> ::gpui_form::__private::gpui::Entity<
-                    ::gpui_component::select::SelectState<#delegate>,
-                > {
-                    self.#ident.select_state()
-                }
-            }
-        }
-        FieldKind::Combobox => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            let combobox_state_ident = format_ident!("{}_combobox_state", ident);
-            quote! {
-                pub fn #value_ident(&self) -> #ty {
-                    ::gpui_form::FormField::value(&self.#ident).clone()
-                }
-
-                pub fn #combobox_state_ident(
-                    &self,
-                ) -> ::gpui_form::__private::gpui::Entity<
-                    ::gpui_component::combobox::ComboboxState<#delegate>,
-                > {
-                    self.#ident.combobox_state()
-                }
-            }
-        }
     })
 }
 
@@ -204,7 +123,7 @@ pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStre
             }
             self.#ident.set_required(required, window, cx);
         },
-        _ => quote! {
+        FieldKind::Value => quote! {
             if ::gpui_form::FormField::is_required(&self.#ident) == required {
                 return;
             }
@@ -245,18 +164,14 @@ pub(super) fn field_setter_methods(
     let name = &model.name;
     let variant_ident = field_variant_ident(name);
     let field_variant = quote!(#field_enum_ident::#variant_ident);
-    let component_write = match model.attrs.component {
-        FieldKind::Input
-        | FieldKind::Number
-        | FieldKind::Bool
-        | FieldKind::Binding
-        | FieldKind::Select
-        | FieldKind::Combobox => quote! {
-            let __gpui_form_component_value =
-                ::gpui_form::FormField::value(&self.#ident).clone();
-            self.#ident.write_component_value(&__gpui_form_component_value, cause, window, cx);
+
+    let write_value = match model.attrs.component {
+        FieldKind::Value => quote! {
+            ::gpui_form::FormField::set_value(&mut self.#ident, value, cause);
         },
-        FieldKind::Value => quote!(),
+        FieldKind::Binding => quote! {
+            self.#ident.write_component_value(&value, cause, window, cx);
+        },
         FieldKind::Group => {
             return Ok(quote! {
                 pub fn #set_value_ident(
@@ -284,8 +199,7 @@ pub(super) fn field_setter_methods(
             window: &mut ::gpui_form::__private::gpui::Window,
             cx: &mut ::gpui_form::__private::gpui::Context<Self>,
         ) {
-            ::gpui_form::FormField::set_value(&mut self.#ident, value, cause);
-            #component_write
+            #write_value
             if cause.triggers_change_validation()
                 && self.#ident.core().validation_triggers().contains(
                     ::gpui_form::ValidationTrigger::Change,

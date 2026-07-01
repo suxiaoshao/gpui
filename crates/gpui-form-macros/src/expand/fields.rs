@@ -10,9 +10,6 @@ pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ty = model.ty;
     Ok(match model.attrs.component {
         FieldKind::Value => quote!(::gpui_form::ValueFieldStore<#ty>),
-        FieldKind::Input => quote!(::gpui_form::TextFieldStore<#ty>),
-        FieldKind::Number => quote!(::gpui_form::NumberFieldStore<#ty>),
-        FieldKind::Bool => quote!(::gpui_form::BoolFieldStore),
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
             quote!(::gpui_form::FieldGroupStore<#ty, #store>)
@@ -30,14 +27,6 @@ pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
         FieldKind::Binding => {
             let binding = model.attrs.binding.as_ref().expect("checked");
             quote!(::gpui_form::ComponentFieldStore<#ty, #binding>)
-        }
-        FieldKind::Select => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            quote!(::gpui_form::SelectFieldStore<#ty, #delegate>)
-        }
-        FieldKind::Combobox => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            quote!(::gpui_form::ComboboxFieldStore<#ty, #delegate>)
         }
     })
 }
@@ -63,186 +52,6 @@ pub(super) fn field_initializer(
             #ident.core_mut().set_validation_triggers(#triggers);
             #ident.core_mut().set_required(#required);
         },
-        FieldKind::Input => {
-            let options = component_state_options(&model.attrs);
-            quote! {
-            let #state_ident =
-                <::gpui_form::TextInputBinding<#ty> as ::gpui_form::FormComponentBinding<#ty>>::new_state(
-                    &#value_ident,
-                    #options,
-                    window,
-                    cx,
-                );
-            let mut #ident = ::gpui_form::TextFieldStore::new(
-                #value_ident,
-                #state_ident.clone(),
-            );
-            #ident.core_mut().set_validation_triggers(#triggers);
-            #ident.core_mut().set_required(#required);
-            #ident.core_mut().subscriptions_mut().push(
-                cx.subscribe_in(
-                    &#state_ident,
-                    window,
-                    |this, state, event: &::gpui_component::input::InputEvent, _window, cx| {
-                        match event {
-                            ::gpui_component::input::InputEvent::Change => {
-                                if this.is_normalizing_on_submit {
-                                    return;
-                                }
-                                let text = state.read(cx).value().to_string();
-                                ::gpui_form::FormField::set_value(
-                                    &mut this.#ident,
-                                    <#ty as ::gpui_form::TextFieldValue>::from_text(text),
-                                    ::gpui_form::FieldChangeCause::UserInput,
-                                );
-                                if this.#ident.core().validation_triggers().contains(
-                                    ::gpui_form::ValidationTrigger::Change,
-                                ) {
-                                    this.apply_validation_for_scope(
-                                        ::gpui_form::ValidationTrigger::Change,
-                                        ::gpui_form::ValidationScope::Field(
-                                            ::gpui_form::macro_support::field_path(#name),
-                                        ),
-                                        cx,
-                                    );
-                                }
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldChanged(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::Focus => {
-                                ::gpui_form::FormField::mark_touched(&mut this.#ident);
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldFocused(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::Blur => {
-                                let text = state.read(cx).value().to_string();
-                                ::gpui_form::FormField::set_value(
-                                    &mut this.#ident,
-                                    <#ty as ::gpui_form::TextFieldValue>::from_text(text),
-                                    ::gpui_form::FieldChangeCause::Blur,
-                                );
-                                if this.#ident.core().validation_triggers().contains(
-                                    ::gpui_form::ValidationTrigger::Blur,
-                                ) {
-                                    this.apply_validation_for_scope(
-                                        ::gpui_form::ValidationTrigger::Blur,
-                                        ::gpui_form::ValidationScope::Field(
-                                            ::gpui_form::macro_support::field_path(#name),
-                                        ),
-                                        cx,
-                                    );
-                                }
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldBlurred(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::PressEnter { .. } => {}
-                        }
-                    },
-                )
-            );
-            }
-        }
-        FieldKind::Number => {
-            let options = component_state_options(&model.attrs);
-            quote! {
-            let #state_ident =
-                <::gpui_form::NumberInputBinding<#ty> as ::gpui_form::FormComponentBinding<#ty>>::new_state(
-                    &#value_ident,
-                    #options,
-                    window,
-                    cx,
-                );
-            let mut #ident = ::gpui_form::NumberFieldStore::new(
-                #value_ident,
-                #state_ident.clone(),
-            );
-            #ident.core_mut().set_validation_triggers(#triggers);
-            #ident.core_mut().set_required(#required);
-            #ident.core_mut().subscriptions_mut().push(
-                cx.subscribe_in(
-                    &#state_ident,
-                    window,
-                    |this, state, event: &::gpui_component::input::InputEvent, _window, cx| {
-                        match event {
-                            ::gpui_component::input::InputEvent::Change => {
-                                if this.is_normalizing_on_submit {
-                                    return;
-                                }
-                                let text = state.read(cx).value().to_string();
-                                let __gpui_form_sync = this.#ident.sync_raw_input(
-                                    text,
-                                    ::gpui_form::macro_support::field_path(#name),
-                                    ::gpui_form::ValidationTrigger::Change,
-                                    ::gpui_form::FieldChangeCause::UserInput,
-                                );
-                                if __gpui_form_sync.is_parsed()
-                                    && this.#ident.core().validation_triggers().contains(
-                                        ::gpui_form::ValidationTrigger::Change,
-                                    )
-                                {
-                                    this.apply_validation_for_scope(
-                                        ::gpui_form::ValidationTrigger::Change,
-                                        ::gpui_form::ValidationScope::Field(
-                                            ::gpui_form::macro_support::field_path(#name),
-                                        ),
-                                        cx,
-                                    );
-                                }
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldChanged(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::Focus => {
-                                ::gpui_form::FormField::mark_touched(&mut this.#ident);
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldFocused(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::Blur => {
-                                ::gpui_form::FormField::mark_blurred(&mut this.#ident);
-                                if this.#ident.core().validation_triggers().contains(
-                                    ::gpui_form::ValidationTrigger::Blur,
-                                ) {
-                                    this.apply_validation_for_scope(
-                                        ::gpui_form::ValidationTrigger::Blur,
-                                        ::gpui_form::ValidationScope::Field(
-                                            ::gpui_form::macro_support::field_path(#name),
-                                        ),
-                                        cx,
-                                    );
-                                }
-                                this.refresh_meta();
-                                cx.emit(#event_ident::FieldBlurred(#field_variant));
-                                cx.notify();
-                            }
-                            ::gpui_component::input::InputEvent::PressEnter { .. } => {}
-                        }
-                    },
-                )
-            );
-            }
-        }
-        FieldKind::Bool => {
-            let options = component_state_options(&model.attrs);
-            quote! {
-            let #state_ident =
-                <::gpui_form::BoolBinding as ::gpui_form::FormComponentBinding<bool>>::new_state(
-                    &#value_ident,
-                    #options,
-                    window,
-                    cx,
-                );
-            let mut #ident = ::gpui_form::BoolFieldStore::new(
-                #value_ident,
-                #state_ident.clone(),
-            );
-            #ident.core_mut().set_validation_triggers(#triggers);
-            #ident.core_mut().set_required(#required);
-            }
-        }
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
             quote! {
@@ -369,7 +178,7 @@ pub(super) fn field_initializer(
                         &#state_ident,
                         window,
                         |this,
-                         state,
+                         _state,
                          event: &<#binding as ::gpui_form::FormComponentBinding<#ty>>::Event,
                          _window,
                          cx| {
@@ -383,17 +192,14 @@ pub(super) fn field_initializer(
                                     if this.is_normalizing_on_submit {
                                         return;
                                     }
-                                    let value =
-                                        <#binding as ::gpui_form::FormComponentBinding<#ty>>::read_value(
-                                            state,
-                                            cx,
-                                        );
-                                    ::gpui_form::FormField::set_value(
-                                        &mut this.#ident,
-                                        value,
+                                    let __gpui_form_sync = this.#ident.sync_from_state(
+                                        ::gpui_form::macro_support::field_path(#name),
+                                        ::gpui_form::ValidationTrigger::Change,
                                         cause,
+                                        cx,
                                     );
-                                    if cause.triggers_change_validation()
+                                    if __gpui_form_sync.is_parsed()
+                                        && cause.triggers_change_validation()
                                         && this.#ident.core().validation_triggers().contains(
                                             ::gpui_form::ValidationTrigger::Change,
                                         )
@@ -417,19 +223,17 @@ pub(super) fn field_initializer(
                                     cx.notify();
                                 }
                                 ::gpui_form::FormComponentEvent::Blur => {
-                                    let value =
-                                        <#binding as ::gpui_form::FormComponentBinding<#ty>>::read_value(
-                                            state,
-                                            cx,
-                                        );
-                                    ::gpui_form::FormField::set_value(
-                                        &mut this.#ident,
-                                        value,
-                                        ::gpui_form::FieldChangeCause::Blur,
-                                    );
-                                    if this.#ident.core().validation_triggers().contains(
+                                    let __gpui_form_sync = this.#ident.sync_from_state(
+                                        ::gpui_form::macro_support::field_path(#name),
                                         ::gpui_form::ValidationTrigger::Blur,
-                                    ) {
+                                        ::gpui_form::FieldChangeCause::Blur,
+                                        cx,
+                                    );
+                                    if __gpui_form_sync.is_parsed()
+                                        && this.#ident.core().validation_triggers().contains(
+                                            ::gpui_form::ValidationTrigger::Blur,
+                                        )
+                                    {
                                         this.apply_validation_for_scope(
                                             ::gpui_form::ValidationTrigger::Blur,
                                             ::gpui_form::ValidationScope::Field(
@@ -448,164 +252,6 @@ pub(super) fn field_initializer(
                 );
             }
         }
-        FieldKind::Select => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            let delegate_initializer = delegate_initializer(model);
-            let searchable = model.attrs.searchable;
-            let options = component_state_options(&model.attrs);
-            quote! {
-                let __gpui_form_delegate: #delegate = #delegate_initializer;
-                let #state_ident =
-                    ::gpui_form::SelectBinding::<#ty, #delegate>::new_state_with_delegate(
-                        &#value_ident,
-                        __gpui_form_delegate,
-                        #searchable,
-                        #options,
-                        window,
-                        cx,
-                    );
-                let mut #ident = ::gpui_form::SelectFieldStore::new(
-                    #value_ident,
-                    #state_ident.clone(),
-                );
-                #ident.core_mut().set_validation_triggers(#triggers);
-                #ident.core_mut().set_required(#required);
-                #ident.core_mut().subscriptions_mut().push(
-                    cx.subscribe_in(
-                        &#state_ident,
-                        window,
-                        |this, _state, event: &::gpui_component::select::SelectEvent<#delegate>, _window, cx| {
-                            let ::gpui_component::select::SelectEvent::Confirm(selected_value) = event;
-                            if this.is_normalizing_on_submit {
-                                return;
-                            }
-                            let previous =
-                                ::gpui_form::FormField::value(&this.#ident).clone();
-                            let next_value =
-                                <#ty as ::gpui_form::SelectFieldValue>::from_selected_value(
-                                    selected_value.clone(),
-                                    &previous,
-                                );
-                            ::gpui_form::FormField::set_value(
-                                &mut this.#ident,
-                                next_value,
-                                ::gpui_form::FieldChangeCause::UserInput,
-                            );
-                            if this.#ident.core().validation_triggers().contains(
-                                ::gpui_form::ValidationTrigger::Change,
-                            ) {
-                                this.apply_validation_for_scope(
-                                    ::gpui_form::ValidationTrigger::Change,
-                                    ::gpui_form::ValidationScope::Field(
-                                        ::gpui_form::macro_support::field_path(#name),
-                                    ),
-                                    cx,
-                                );
-                            }
-                            this.refresh_meta();
-                            cx.emit(#event_ident::FieldChanged(#field_variant));
-                            cx.notify();
-                        },
-                    )
-                );
-            }
-        }
-        FieldKind::Combobox => {
-            let delegate = model.attrs.delegate.as_ref().expect("checked");
-            let delegate_initializer = delegate_initializer(model);
-            let searchable = model.attrs.searchable;
-            let multiple = model.attrs.multiple;
-            let options = component_state_options(&model.attrs);
-            quote! {
-                let __gpui_form_delegate: #delegate = #delegate_initializer;
-                let __gpui_form_delegate_for_state = __gpui_form_delegate.clone();
-                let #state_ident =
-                    ::gpui_form::ComboboxBinding::<#ty, #delegate>::new_state_with_delegate(
-                        &#value_ident,
-                        __gpui_form_delegate_for_state,
-                        #multiple,
-                        #searchable,
-                        #options,
-                        window,
-                        cx,
-                    );
-                let mut #ident = ::gpui_form::ComboboxFieldStore::new(
-                    #value_ident,
-                    #state_ident.clone(),
-                    __gpui_form_delegate,
-                );
-                #ident.core_mut().set_validation_triggers(#triggers);
-                #ident.core_mut().set_required(#required);
-                #ident.core_mut().subscriptions_mut().push(
-                    cx.subscribe_in(
-                        &#state_ident,
-                        window,
-                        |this, _state, event: &::gpui_component::combobox::ComboboxEvent<#delegate>, _window, cx| {
-                            if this.is_normalizing_on_submit {
-                                return;
-                            }
-                            match event {
-                                ::gpui_component::combobox::ComboboxEvent::Change(selected_values) => {
-                                    let previous =
-                                        ::gpui_form::FormField::value(&this.#ident).clone();
-                                    let next_value =
-                                        <#ty as ::gpui_form::ComboboxFieldValue>::from_selected_values(
-                                            selected_values.clone(),
-                                            &previous,
-                                        );
-                                    ::gpui_form::FormField::set_value(
-                                        &mut this.#ident,
-                                        next_value,
-                                        ::gpui_form::FieldChangeCause::UserInput,
-                                    );
-                                    if this.#ident.core().validation_triggers().contains(
-                                        ::gpui_form::ValidationTrigger::Change,
-                                    ) {
-                                        this.apply_validation_for_scope(
-                                            ::gpui_form::ValidationTrigger::Change,
-                                            ::gpui_form::ValidationScope::Field(
-                                                ::gpui_form::macro_support::field_path(#name),
-                                            ),
-                                            cx,
-                                        );
-                                    }
-                                    this.refresh_meta();
-                                    cx.emit(#event_ident::FieldChanged(#field_variant));
-                                }
-                                ::gpui_component::combobox::ComboboxEvent::Confirm(selected_values) => {
-                                    let previous =
-                                        ::gpui_form::FormField::value(&this.#ident).clone();
-                                    let next_value =
-                                        <#ty as ::gpui_form::ComboboxFieldValue>::from_selected_values(
-                                            selected_values.clone(),
-                                            &previous,
-                                        );
-                                    ::gpui_form::FormField::set_value(
-                                        &mut this.#ident,
-                                        next_value,
-                                        ::gpui_form::FieldChangeCause::Blur,
-                                    );
-                                    if this.#ident.core().validation_triggers().contains(
-                                        ::gpui_form::ValidationTrigger::Blur,
-                                    ) {
-                                        this.apply_validation_for_scope(
-                                            ::gpui_form::ValidationTrigger::Blur,
-                                            ::gpui_form::ValidationScope::Field(
-                                                ::gpui_form::macro_support::field_path(#name),
-                                            ),
-                                            cx,
-                                        );
-                                    }
-                                    this.refresh_meta();
-                                    cx.emit(#event_ident::FieldBlurred(#field_variant));
-                                }
-                            }
-                            cx.notify();
-                        },
-                    )
-                );
-            }
-        }
     })
 }
 
@@ -613,21 +259,8 @@ pub(super) fn write_field_statement(model: &FieldModel<'_>) -> Result<TokenStrea
     let ident = model.ident;
     let value_ident = &model.value_ident;
     Ok(match model.attrs.component {
-        FieldKind::Input
-        | FieldKind::Number
-        | FieldKind::Bool
-        | FieldKind::Select
-        | FieldKind::Combobox => quote! {
-            ::gpui_form::FormField::set_value(&mut self.#ident, #value_ident, cause);
-            let __gpui_form_component_value =
-                ::gpui_form::FormField::value(&self.#ident).clone();
-            self.#ident.write_component_value(&__gpui_form_component_value, cause, window, cx);
-        },
         FieldKind::Binding => quote! {
-            ::gpui_form::FormField::set_value(&mut self.#ident, #value_ident, cause);
-            let __gpui_form_component_value =
-                ::gpui_form::FormField::value(&self.#ident).clone();
-            self.#ident.write_component_value(&__gpui_form_component_value, cause, window, cx);
+            self.#ident.write_component_value(&#value_ident, cause, window, cx);
         },
         FieldKind::Group => quote! {
             self.#ident.write_child_value(#value_ident, cause, window, cx);
@@ -667,13 +300,6 @@ pub(super) fn write_field_statement(model: &FieldModel<'_>) -> Result<TokenStrea
             ::gpui_form::FormField::set_value(&mut self.#ident, #value_ident, cause);
         },
     })
-}
-
-fn delegate_initializer(model: &FieldModel<'_>) -> TokenStream {
-    match &model.attrs.options {
-        Some(options) => quote!(#options),
-        None => quote!(::std::default::Default::default()),
-    }
 }
 
 fn validation_triggers(attrs: &FieldAttributes) -> TokenStream {

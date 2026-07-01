@@ -351,6 +351,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui-form",
+ "gpui-form-gpui-component",
  "gpui-store",
  "gpui-tokio",
  "gpui_platform",
@@ -5248,8 +5249,18 @@ dependencies = [
  "garde",
  "gpui",
  "gpui-component",
+ "gpui-form-gpui-component",
  "gpui-form-macros",
  "validify",
+]
+
+[[package]]
+name = "gpui-form-gpui-component"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "gpui-form",
 ]
 
 [[package]]

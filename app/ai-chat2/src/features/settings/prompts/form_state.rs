@@ -6,10 +6,16 @@ use gpui_form::{
     FormField, FormMeta,
 };
 
+type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
+
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = PromptEditFormStore)]
 pub(super) struct PromptEditFormInput {
-    #[form(component = "input", required, placeholder = "prompt-placeholder-name")]
+    #[form(
+        binding = "StringInputBinding",
+        required,
+        placeholder = "prompt-placeholder-name"
+    )]
     pub(super) name: String,
     #[form(
         binding = "PromptContentInputBinding",
@@ -30,6 +36,7 @@ pub(super) struct PromptContentInputBinding;
 impl FormComponentBinding<String> for PromptContentInputBinding {
     type State = InputState;
     type Event = InputEvent;
+    type Draft = String;
 
     fn new_state(
         initial: &String,
@@ -49,8 +56,21 @@ impl FormComponentBinding<String> for PromptContentInputBinding {
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> String {
+    fn draft_from_value(value: &String) -> Self::Draft {
+        value.clone()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
         state.read(cx).value().to_string()
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: gpui_form::FieldPath,
+        _trigger: gpui_form::ValidationTrigger,
+        _cx: &App,
+    ) -> Result<String, Box<FieldError>> {
+        Ok(draft.clone())
     }
 
     fn write_value(

@@ -153,11 +153,11 @@ impl McpServerEditDialogState {
 
     fn focus_primary_input(&self, window: &mut Window, cx: &mut Context<Self>) {
         let input = if !self.mode.is_edit() {
-            self.draft.form.read(cx).server_id_input_state()
+            self.draft.form.read(cx).server_id_state()
         } else {
             match self.draft.form.read(cx).transport_value() {
-                McpTransportKind::Stdio => self.draft.form.read(cx).command_input_state(),
-                McpTransportKind::StreamableHttp => self.draft.form.read(cx).url_input_state(),
+                McpTransportKind::Stdio => self.draft.form.read(cx).command_state(),
+                McpTransportKind::StreamableHttp => self.draft.form.read(cx).url_state(),
             }
         };
         input.update(cx, |input, cx| input.focus(window, cx));
@@ -964,15 +964,15 @@ impl Render for McpServerEditDialogState {
             let form = self.draft.form.read(cx);
             (
                 form.transport_value(),
-                form.server_id_input_state(),
+                form.server_id_state(),
                 form.server_id_required(),
-                form.command_input_state(),
+                form.command_state(),
                 form.command_required(),
-                form.cwd_input_state(),
+                form.cwd_state(),
                 form.cwd_required(),
-                form.url_input_state(),
+                form.url_state(),
                 form.url_required(),
-                form.bearer_token_env_var_input_state(),
+                form.bearer_token_env_var_state(),
                 form.bearer_token_env_var_required(),
                 field_error_messages(&form.server_id, cx),
                 field_error_messages(&form.command, cx),
@@ -1036,7 +1036,7 @@ impl Render for McpServerEditDialogState {
                                                 let store = store.read(cx);
                                                 (
                                                     item.id,
-                                                    store.value_input_state(),
+                                                    store.value_state(),
                                                     field_error_messages(&store.value, cx),
                                                 )
                                             })
@@ -1066,8 +1066,8 @@ impl Render for McpServerEditDialogState {
                                                 let store = store.read(cx);
                                                 (
                                                     item.id,
-                                                    store.key_input_state(),
-                                                    store.value_input_state(),
+                                                    store.key_state(),
+                                                    store.value_state(),
                                                     [
                                                         field_error_messages(&store.key, cx),
                                                         field_error_messages(&store.value, cx),
@@ -1101,7 +1101,7 @@ impl Render for McpServerEditDialogState {
                                                 let store = store.read(cx);
                                                 (
                                                     item.id,
-                                                    store.value_input_state(),
+                                                    store.value_state(),
                                                     field_error_messages(&store.value, cx),
                                                 )
                                             })
@@ -1157,8 +1157,8 @@ impl Render for McpServerEditDialogState {
                                                 let store = store.read(cx);
                                                 (
                                                     item.id,
-                                                    store.name_input_state(),
-                                                    store.value_input_state(),
+                                                    store.name_state(),
+                                                    store.value_state(),
                                                     [
                                                         field_error_messages(&store.name, cx),
                                                         field_error_messages(&store.value, cx),
@@ -1192,8 +1192,8 @@ impl Render for McpServerEditDialogState {
                                                 let store = store.read(cx);
                                                 (
                                                     item.id,
-                                                    store.name_input_state(),
-                                                    store.env_var_input_state(),
+                                                    store.name_state(),
+                                                    store.env_var_state(),
                                                     [
                                                         field_error_messages(&store.name, cx),
                                                         field_error_messages(&store.env_var, cx),
@@ -1848,7 +1848,7 @@ mod tests {
                 .item
                 .store()
                 .read(cx)
-                .value_input_state()
+                .value_state()
         });
         set_input_value(arg_input, "   ", &mut cx);
 

@@ -3,7 +3,11 @@
 > 历史说明：本文保留第一阶段完整设计和实现记录。当前入口见
 > `crates/gpui-form/docs/development-plan.md`；dynamic array 的后续设计见
 > `crates/gpui-form/docs/array-design.md`；validation report 路由设计见
-> `crates/gpui-form/docs/validation-routing.md`。
+> `crates/gpui-form/docs/validation-routing.md`。leaf field binding 的最终架构已调整为
+> `crates/gpui-form/docs/binding-architecture.md`：`gpui-form` core 不再默认依赖 `gpui-component`，
+> 所有 leaf field 统一使用 Draft-aware `ComponentFieldStore<Value, Binding>`，当前文中关于内置
+> `TextFieldStore` / `NumberFieldStore` / `BoolFieldStore` / `SelectFieldStore` / `ComboboxFieldStore`
+> 的内容保留为第一阶段历史记录。
 
 状态：第一阶段 crate runtime、基础 derive 宏、显式 child-store nested group、dynamic array 宏、组件 binding
 和 `garde + validify` submit pipeline 已落地。宏已生成 typed field setter、clear/apply field errors、
@@ -16,8 +20,9 @@ binding macro 和 app 接入阶段调整。
 
 ## 目标
 
-`gpui-form` 用来补齐仓库内表单缺少统一校验、输入时反馈和提交时校验的问题。第一阶段目标是提供
-GPUI 原生、类型安全、能和 `gpui-component` 状态模型配合的表单状态层。
+`gpui-form` 用来补齐仓库内表单缺少统一校验、输入时反馈和提交时校验的问题。第一阶段目标曾是提供
+GPUI 原生、类型安全、能和 `gpui-component` 状态模型配合的表单状态层；后续目标已调整为 core
+只提供 UI-library agnostic 的表单状态和 binding contract，`gpui-component` 适配进入独立 crate。
 
 核心目标：
 
@@ -43,8 +48,9 @@ GPUI 原生、类型安全、能和 `gpui-component` 状态模型配合的表单
 - domain struct 是最终提交输入；generated form store 是编辑期 draft state。
 - submit 成功前，不把字段变更写回原始 domain struct 或数据库。
 - derive 宏必须放在独立 proc-macro crate：`crates/gpui-form-macros`。
-- `crates/gpui-form` 负责运行时类型、组件适配和宏 re-export。
-- 第一阶段是 GPUI-aware crate，直接依赖 `gpui` 和 `gpui-component`；是否拆出 pure core 留到后续。
+- 第一阶段历史中，`crates/gpui-form` 同时负责运行时类型、组件适配和宏 re-export。
+- 第一阶段历史中，crate 是 GPUI-aware 并直接依赖 `gpui` 和 `gpui-component`；后续目标已改为拆出
+  `gpui-component` adapter crate，见 `binding-architecture.md`。
 - 第一阶段支持嵌套 struct、数组字段和动态字段列表。
 - 字段组件统一由 `binding = "..."` 决定 state、事件订阅、value 读写和 focus 行为；`component = "input"` /
   `"select"` / `"combobox"` / `"checkbox"` / `"switch"` / `"number"` 只是对内置 binding 的语法糖。

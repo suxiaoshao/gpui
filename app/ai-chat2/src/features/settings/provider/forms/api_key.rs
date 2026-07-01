@@ -1,10 +1,13 @@
+type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
+type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
+
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ApiKeyProviderFormStore)]
 pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
-    #[form(component = "bool")]
+    #[form(binding = "BoolInputBinding")]
     pub(super) enabled: bool,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         label = "provider-field-api-key",
         placeholder = "provider-placeholder-api-key",
         required,
@@ -13,7 +16,7 @@ pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
     )]
     pub(super) api_key: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         label = "provider-field-base-url",
         placeholder = "provider-placeholder-base-url-default",
         validate(on_change, on_blur, on_submit)

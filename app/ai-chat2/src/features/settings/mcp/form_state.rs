@@ -4,11 +4,14 @@ use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransport
 use gpui::{App, AppContext as _, Entity, Window};
 use gpui_form::{FieldError, FormItemId, FormStore};
 
+type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
+type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
+
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = McpArgRowFormStore)]
 pub(super) struct McpArgRowInput {
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-arg",
         validate(on_change, on_blur, on_submit)
     )]
@@ -19,7 +22,7 @@ pub(super) struct McpArgRowInput {
 #[form(store = McpEnvVarRowFormStore)]
 pub(super) struct McpEnvVarRowInput {
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-env-var",
         validate(on_change, on_blur, on_submit)
     )]
@@ -30,13 +33,13 @@ pub(super) struct McpEnvVarRowInput {
 #[form(store = McpEnvRowFormStore)]
 pub(super) struct McpEnvRowInput {
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-env-key",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) key: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-env-value",
         validate(on_change, on_blur, on_submit)
     )]
@@ -47,13 +50,13 @@ pub(super) struct McpEnvRowInput {
 #[form(store = McpHeaderRowFormStore)]
 pub(super) struct McpHeaderRowInput {
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-header-name",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) name: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-header-value",
         validate(on_change, on_blur, on_submit)
     )]
@@ -64,13 +67,13 @@ pub(super) struct McpHeaderRowInput {
 #[form(store = McpEnvHeaderRowFormStore)]
 pub(super) struct McpEnvHeaderRowInput {
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-header-name",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) name: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-env-header-var",
         validate(on_change, on_blur, on_submit)
     )]
@@ -82,20 +85,20 @@ pub(super) struct McpEnvHeaderRowInput {
 pub(super) struct McpServerFormInput {
     pub(super) transport: McpTransportKind,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-server-id",
         required,
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) server_id: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-command",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) command: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-cwd",
         validate(on_change, on_blur, on_submit)
     )]
@@ -107,13 +110,13 @@ pub(super) struct McpServerFormInput {
     #[form(component = "array", store = "McpEnvVarRowFormStore")]
     pub(super) env_vars: Vec<McpEnvVarRowInput>,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-url",
         validate(on_change, on_blur, on_submit)
     )]
     pub(super) url: String,
     #[form(
-        component = "input",
+        binding = "StringInputBinding",
         placeholder = "mcp-placeholder-bearer-token-env-var",
         validate(on_change, on_blur, on_submit)
     )]
@@ -122,7 +125,7 @@ pub(super) struct McpServerFormInput {
     pub(super) headers: Vec<McpHeaderRowInput>,
     #[form(component = "array", store = "McpEnvHeaderRowFormStore")]
     pub(super) env_headers: Vec<McpEnvHeaderRowInput>,
-    #[form(component = "bool")]
+    #[form(binding = "BoolInputBinding")]
     pub(super) oauth_enabled: bool,
 }
 
@@ -665,14 +668,14 @@ mod tests {
                 original,
             )
         });
-        let command_input = cx.update(|_, cx| draft.form.read(cx).command_input_state());
+        let command_input = cx.update(|_, cx| draft.form.read(cx).command_state());
         set_input_value(command_input, "new-command", &mut cx);
         let arg_input = cx.update(|_, cx| {
             draft.form.read(cx).args_items()[0]
                 .item
                 .store()
                 .read(cx)
-                .value_input_state()
+                .value_state()
         });
         set_input_value(arg_input, "--new", &mut cx);
 
@@ -771,7 +774,7 @@ mod tests {
                 .item
                 .store()
                 .read(cx)
-                .name_input_state()
+                .name_state()
         });
         set_input_value(header_name, "Authorization", &mut cx);
         let header_value = cx.update(|_, cx| {
@@ -779,7 +782,7 @@ mod tests {
                 .item
                 .store()
                 .read(cx)
-                .value_input_state()
+                .value_state()
         });
         set_input_value(header_value, "Bearer token", &mut cx);
 
@@ -816,7 +819,7 @@ mod tests {
         cx.update(|window, cx| {
             draft.set_transport(McpTransportKind::StreamableHttp, window, cx);
         });
-        let url_input = cx.update(|_, cx| draft.form.read(cx).url_input_state());
+        let url_input = cx.update(|_, cx| draft.form.read(cx).url_state());
         set_input_value(url_input, "https://example.com/mcp", &mut cx);
 
         cx.update(|_, cx| {

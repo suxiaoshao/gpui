@@ -1,8 +1,8 @@
 use gpui::{App, Context, Window};
 
 use crate::{
-    FieldChangeCause, FieldPath, FormItemId, FormMeta, FormValidationReport, ValidationScope,
-    ValueFieldStore,
+    FieldChangeCause, FieldError, FieldPath, FormItemId, FormMeta, FormValidationReport,
+    ValidationScope, ValidationSource, ValueFieldStore,
 };
 
 #[doc(hidden)]
@@ -29,6 +29,27 @@ pub fn scope_contains_path(scope: &ValidationScope, path: &FieldPath) -> bool {
             id,
         } => path.starts_with(&array_item_path(array_path, *id)),
     }
+}
+
+#[doc(hidden)]
+pub fn merge_field_errors_preserving_internal(
+    existing: &[FieldError],
+    report: &FormValidationReport,
+    path: &FieldPath,
+) -> Vec<FieldError> {
+    let mut errors = existing
+        .iter()
+        .filter(|error| error.source == ValidationSource::Internal)
+        .cloned()
+        .collect::<Vec<_>>();
+    errors.extend(
+        report
+            .field_errors()
+            .iter()
+            .filter(|error| &error.path == path)
+            .cloned(),
+    );
+    errors
 }
 
 fn array_item_path(path: &FieldPath, id: FormItemId) -> FieldPath {

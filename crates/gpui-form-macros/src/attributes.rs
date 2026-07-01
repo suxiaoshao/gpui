@@ -1,5 +1,5 @@
 use syn::{
-    Attribute, Expr, Ident, LitBool, LitStr, Path, Result, Token, Type,
+    Attribute, Ident, LitBool, LitStr, Path, Result, Token, Type,
     parse::{Parse, ParseStream},
 };
 
@@ -56,15 +56,11 @@ pub(crate) struct FieldAttributes {
     pub(crate) component: FieldKind,
     pub(crate) binding: Option<Path>,
     pub(crate) store: Option<Type>,
-    pub(crate) delegate: Option<Type>,
-    pub(crate) options: Option<Expr>,
     pub(crate) label: Option<LitStr>,
     pub(crate) description: Option<LitStr>,
     pub(crate) placeholder: Option<LitStr>,
     pub(crate) masked: bool,
     pub(crate) required: bool,
-    pub(crate) searchable: bool,
-    pub(crate) multiple: bool,
     pub(crate) validate_on_mount: bool,
     pub(crate) validate_on_change: bool,
     pub(crate) validate_on_blur: bool,
@@ -92,12 +88,6 @@ impl FieldAttributes {
             if args.store.is_some() {
                 parsed.store = args.store;
             }
-            if args.delegate.is_some() {
-                parsed.delegate = args.delegate;
-            }
-            if args.options.is_some() {
-                parsed.options = args.options;
-            }
             if args.label.is_some() {
                 parsed.label = args.label;
             }
@@ -109,8 +99,6 @@ impl FieldAttributes {
             }
             parsed.masked |= args.masked;
             parsed.required |= args.required;
-            parsed.searchable |= args.searchable;
-            parsed.multiple |= args.multiple;
             parsed.validate_on_mount |= args.validate_on_mount;
             parsed.validate_on_change |= args.validate_on_change;
             parsed.validate_on_blur |= args.validate_on_blur;
@@ -179,15 +167,11 @@ struct FieldArgs {
     component: Option<FieldKind>,
     binding: Option<Path>,
     store: Option<Type>,
-    delegate: Option<Type>,
-    options: Option<Expr>,
     label: Option<LitStr>,
     description: Option<LitStr>,
     placeholder: Option<LitStr>,
     masked: bool,
     required: bool,
-    searchable: bool,
-    multiple: bool,
     validate_on_mount: bool,
     validate_on_change: bool,
     validate_on_blur: bool,
@@ -205,8 +189,15 @@ impl Parse for FieldArgs {
             if key == "component" {
                 input.parse::<Token![=]>()?;
                 let value: LitStr = input.parse()?;
+                let component = value.value();
+                if FieldKind::is_removed_alias(&component) {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        "built-in gpui-form component aliases were removed; use #[form(binding = \"TypeName\")] with an app or adapter binding",
+                    ));
+                }
                 args.component =
-                    Some(FieldKind::parse(&value.value()).ok_or_else(|| {
+                    Some(FieldKind::parse(&component).ok_or_else(|| {
                         syn::Error::new(value.span(), "unsupported form component")
                     })?);
             } else if key == "binding" {
@@ -220,12 +211,6 @@ impl Parse for FieldArgs {
             } else if key == "store" {
                 input.parse::<Token![=]>()?;
                 args.store = Some(parse_type_value(input)?);
-            } else if key == "delegate" {
-                input.parse::<Token![=]>()?;
-                args.delegate = Some(parse_type_value(input)?);
-            } else if key == "options" {
-                input.parse::<Token![=]>()?;
-                args.options = Some(parse_expr_value(input)?);
             } else if key == "label" {
                 input.parse::<Token![=]>()?;
                 args.label = Some(input.parse()?);
@@ -239,10 +224,6 @@ impl Parse for FieldArgs {
                 args.masked = parse_optional_bool_value(input)?;
             } else if key == "required" {
                 args.required = parse_optional_bool_value(input)?;
-            } else if key == "searchable" {
-                args.searchable = parse_optional_bool_value(input)?;
-            } else if key == "multiple" {
-                args.multiple = parse_optional_bool_value(input)?;
             } else if key == "validate" {
                 let content;
                 syn::parenthesized!(content in input);
@@ -294,14 +275,6 @@ fn parse_path_value(input: ParseStream<'_>) -> Result<Path> {
 }
 
 fn parse_type_value(input: ParseStream<'_>) -> Result<Type> {
-    if input.peek(LitStr) {
-        input.parse::<LitStr>()?.parse()
-    } else {
-        input.parse()
-    }
-}
-
-fn parse_expr_value(input: ParseStream<'_>) -> Result<Expr> {
     if input.peek(LitStr) {
         input.parse::<LitStr>()?.parse()
     } else {

@@ -2,20 +2,22 @@
 
 `gpui-form` is an early GPUI-native form state and validation crate.
 
-This README describes the target user-facing design. The core runtime modules,
+This README describes the current user-facing design. The core runtime modules,
 `FormItemId(u64)` dynamic array lifecycle, validation/transform adapter traits,
 component state holder types, and a GPUI-aware `#[derive(FormStore)]` path are
-now implemented. The derive macro currently supports default value fields,
-`input`, `number`, `select`, `combobox`, `checkbox` / `switch`, binding-backed
-app component fields, explicit child-store `group` and `array` fields, plus live
-`garde` validation and `garde + validify` submit pipeline generation. Field-level
-`placeholder` and `mask` / `masked` attributes are applied when built-in
-`InputState` values are created. Built-in `input`, `number`, `select`,
-`combobox`, and bool fields use `TextInputBinding`, `NumberInputBinding`,
-`SelectBinding`, `ComboboxBinding`, and `BoolBinding` for state creation,
-component read, write, and focus behavior. Internally, the runtime modules are
-grouped under `core`, `component`, `pipeline`, and `view`; the derive expansion
-is split by generated responsibility under `gpui-form-macros/src/expand/`.
+implemented. The derive macro currently supports default value fields, explicit
+`binding = "..."` leaf component fields, explicit child-store `group` and
+`array` fields, plus live `garde` validation and `garde + validify` submit
+pipeline generation.
+
+`gpui-form` core is UI-library agnostic: it does not depend on
+`gpui-component` and does not provide built-in leaf component aliases such as
+`component = "input"` or `component = "select"`. Applications that use
+`gpui-component` opt into `gpui-form-gpui-component`, which provides
+`TextInputBinding`, `NumberInputBinding`, `SelectBinding`, `ComboboxBinding`,
+and `BoolBinding`. Internally, the runtime modules are grouped under `core`,
+`component`, `pipeline`, and `view`; the derive expansion is split by generated
+responsibility under `gpui-form-macros/src/expand/`.
 
 ## Design Reference
 
@@ -62,6 +64,11 @@ use garde::Validate;
 use gpui_form::FormStore;
 use validify::Validify;
 
+type ConnectionNameBinding = gpui_form_gpui_component::TextInputBinding<String>;
+type ConnectionKindBinding =
+    gpui_form_gpui_component::SelectBinding<Option<ConnectionKind>, ConnectionKindOptions>;
+type EndpointUrlBinding = gpui_form_gpui_component::TextInputBinding<Option<String>>;
+
 #[derive(Clone, Debug, PartialEq, FormStore, Validate, Validify)]
 #[garde(allow_unvalidated)]
 #[form(
@@ -71,7 +78,7 @@ use validify::Validify;
 )]
 pub struct ConnectionInput {
     #[form(
-        component = "input",
+        binding = "ConnectionNameBinding",
         label = "form-example-connection-name-label",
         validate(on_change, on_blur, on_submit)
     )]
@@ -80,9 +87,7 @@ pub struct ConnectionInput {
     pub display_name: String,
 
     #[form(
-        component = "select",
-        delegate = "ConnectionKindOptions",
-        options = "ConnectionKindOptions::new()",
+        binding = "ConnectionKindBinding",
         label = "form-example-connection-kind-label",
         validate(on_submit)
     )]
@@ -90,7 +95,7 @@ pub struct ConnectionInput {
     pub kind: Option<ConnectionKind>,
 
     #[form(
-        component = "input",
+        binding = "EndpointUrlBinding",
         label = "form-example-endpoint-url-label",
         validate(on_blur, on_submit)
     )]
@@ -108,9 +113,9 @@ The macro expands to a form store shape equivalent to:
 
 ```rust
 pub struct ConnectionFormStore {
-    pub display_name: TextFieldStore<String>,
-    pub kind: SelectFieldStore<Option<ConnectionKind>, ConnectionKindOptions>,
-    pub endpoint_url: TextFieldStore<Option<String>>,
+    pub display_name: ComponentFieldStore<String, ConnectionNameBinding>,
+    pub kind: ComponentFieldStore<Option<ConnectionKind>, ConnectionKindBinding>,
+    pub endpoint_url: ComponentFieldStore<Option<String>, EndpointUrlBinding>,
     pub secret_ref: ComponentFieldStore<Option<String>, SecretRefBinding>,
     validation: GardeAdapter<ConnectionInput>,
     transform: ValidifyTransform<ConnectionInput, ConnectionInput>,
@@ -142,31 +147,19 @@ match form.update(cx, |form, window, cx| form.submit(window, cx)) {
 
 ## Rendering with gpui-component
 
-Generated fields expose component-specific state for `gpui-component`.
-Select and combobox fields must declare the gpui-component searchable-list
-delegate type explicitly, because the generated store type needs the delegate as
-a Rust generic parameter. If `options = "..."` is omitted, the delegate must
-implement `Default`.
+Generated binding fields expose component-specific state for the selected UI
+adapter. For `gpui-component`, select and combobox bindings usually include the
+searchable-list delegate type in the binding alias because the generated store
+type needs it as a Rust generic parameter.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = ChoiceFormStore)]
 pub struct ChoiceInput {
-    #[form(
-        component = "select",
-        delegate = "Vec<String>",
-        options = "vec![\"primary\".to_string(), \"secondary\".to_string()]",
-        searchable
-    )]
+    #[form(binding = "ChoiceTargetBinding")]
     pub target: Option<String>,
 
-    #[form(
-        component = "combobox",
-        delegate = "Vec<String>",
-        options = "vec![\"fast\".to_string(), \"cheap\".to_string()]",
-        multiple,
-        searchable
-    )]
+    #[form(binding = "ChoiceTagsBinding")]
     pub tags: Vec<String>,
 }
 ```
@@ -181,7 +174,7 @@ Nested structs use an explicit generated child store:
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = ProfileFormStore)]
 pub struct ProfileInput {
-    #[form(component = "input")]
+    #[form(binding = "StringInputBinding")]
     pub nickname: String,
 }
 
@@ -215,20 +208,20 @@ fn render_connection_form(
                 .label(form_read.display_name.label(cx))
                 .required(form_read.display_name_required())
                 .description(form_read.display_name.help_text(cx))
-                .child(Input::new(form_read.display_name_input_state()))
+                .child(Input::new(form_read.display_name_state()))
                 .error(form_read.display_name.visible_error_text(cx)),
         )
         .child(
             field()
                 .label(form_read.kind.label(cx))
                 .required(form_read.kind_required())
-                .child(Select::new(form_read.kind_select_state()))
+                .child(Select::new(form_read.kind_state()))
                 .error(form_read.kind.visible_error_text(cx)),
         )
         .child(
             field()
                 .label(form_read.endpoint_url.label(cx))
-                .child(Input::new(form_read.endpoint_url_input_state()))
+                .child(Input::new(form_read.endpoint_url_state()))
                 .error(form_read.endpoint_url.visible_error_text(cx)),
         )
 }
@@ -243,8 +236,8 @@ reach into each field store for common component handles and values:
 ```rust
 let display_name = form_read.display_name_value();
 let enabled = form_read.enabled_value();
-let input = form_read.display_name_input_state();
-let select = form_read.kind_select_state();
+let input = form_read.display_name_state();
+let select = form_read.kind_state();
 ```
 
 For programmatic changes, prefer generated field setters over reading the whole
@@ -285,7 +278,7 @@ Derived array fields use an explicit generated child store:
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = HeaderFormStore)]
 pub struct HeaderInput {
-    #[form(component = "input")]
+    #[form(binding = "StringInputBinding")]
     pub key: String,
 }
 
@@ -345,30 +338,30 @@ rules, define separate row inputs:
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = EnvironmentRowFormStore)]
 pub struct EnvironmentRowInput {
-    #[form(component = "input", placeholder = "form-example-placeholder-variable")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-variable")]
     pub key: String,
 
-    #[form(component = "input", placeholder = "form-example-placeholder-value")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-value")]
     pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = HeaderRowFormStore)]
 pub struct HeaderRowInput {
-    #[form(component = "input", placeholder = "form-example-placeholder-header-name")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-name")]
     pub name: String,
 
-    #[form(component = "input", placeholder = "form-example-placeholder-header-value")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-value")]
     pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(store = SecretHeaderRowFormStore)]
 pub struct SecretHeaderRowInput {
-    #[form(component = "input", placeholder = "form-example-placeholder-header-name")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-name")]
     pub name: String,
 
-    #[form(component = "input", placeholder = "form-example-placeholder-secret-ref")]
+    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-secret-ref")]
     pub secret_ref: String,
 }
 
@@ -488,11 +481,11 @@ by `validify::Modify`.
 #[garde(allow_unvalidated)]
 #[form(store = ShortcutFormStore, validation(adapter = "garde"))]
 pub struct ShortcutInput {
-    #[form(component = "input", validate(on_change, on_blur, on_submit))]
+    #[form(binding = "ShortcutTitleBinding", validate(on_change, on_blur, on_submit))]
     #[garde(length(min = 1, max = 80))]
     pub title: String,
 
-    #[form(component = "select", validate(on_submit))]
+    #[form(binding = "ShortcutActionBinding", validate(on_submit))]
     #[garde(skip)]
     pub action: ShortcutAction,
 }
@@ -532,15 +525,16 @@ pub enum ValidationSource {
 
 ## Component Binding
 
-Users can provide their own component state by implementing the same binding
-trait used by the built-in components. `component = "input"` and
-`component = "select"` are shorthand for built-in bindings; app components use
-`binding = "..."`.
+Users provide component state by implementing a binding. The binding is
+responsible for creating UI state, reading a raw `Draft` from that state,
+parsing the draft into the typed field value, writing typed values back to the
+state, and mapping component events to form events.
 
 ```rust
 pub trait FormComponentBinding<Value>: 'static {
     type State: 'static;
     type Event: 'static;
+    type Draft: Clone + PartialEq + 'static;
 
     fn new_state(
         initial: &Value,
@@ -549,7 +543,14 @@ pub trait FormComponentBinding<Value>: 'static {
         cx: &mut App,
     ) -> Entity<Self::State>;
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> Value;
+    fn draft_from_value(value: &Value) -> Self::Draft;
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft;
+    fn parse_draft(
+        draft: &Self::Draft,
+        path: FieldPath,
+        trigger: ValidationTrigger,
+        cx: &App,
+    ) -> Result<Value, Box<FieldError>>;
     fn write_value(
         state: &Entity<Self::State>,
         value: &Value,
@@ -563,6 +564,13 @@ pub trait FormComponentBinding<Value>: 'static {
         window: &mut Window,
         cx: &mut App,
     );
+    fn set_required(
+        state: &Entity<Self::State>,
+        required: bool,
+        window: &mut Window,
+        cx: &mut App,
+    );
+    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent>;
     fn install_subscriptions<Form>(
         state: Entity<Self::State>,
         form: Entity<Form>,
@@ -601,6 +609,7 @@ pub struct SecretRefState {
 impl FormComponentBinding<Option<String>> for SecretRefBinding {
     type State = SecretRefState;
     type Event = InputEvent;
+    type Draft = String;
 
     fn new_state(
         initial: &Option<String>,
@@ -628,9 +637,21 @@ impl FormComponentBinding<Option<String>> for SecretRefBinding {
         })
     }
 
-    fn read_value(state: &Entity<Self::State>, cx: &App) -> Option<String> {
-        let value = state.read(cx).input.read(cx).value();
-        (!value.is_empty()).then_some(value)
+    fn draft_from_value(value: &Option<String>) -> Self::Draft {
+        value.clone().unwrap_or_default()
+    }
+
+    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
+        state.read(cx).input.read(cx).value().to_string()
+    }
+
+    fn parse_draft(
+        draft: &Self::Draft,
+        _path: FieldPath,
+        _trigger: ValidationTrigger,
+        _cx: &App,
+    ) -> Result<Option<String>, Box<FieldError>> {
+        Ok((!draft.is_empty()).then_some(draft.clone()))
     }
 
     fn write_value(
@@ -842,7 +863,7 @@ field, while validation libraries keep their own validation attributes.
     transform(adapter = "validify")
 )]
 pub struct ConnectionInput {
-    #[form(component = "input")]
+    #[form(binding = "ConnectionNameBinding")]
     #[form(label = "form-example-connection-name-label")]
     #[form(description = "form-example-connection-name-description")]
     #[form(placeholder = "form-example-connection-name-placeholder")]
@@ -851,12 +872,7 @@ pub struct ConnectionInput {
     #[garde(length(min = 1, max = 80))]
     pub display_name: String,
 
-    #[form(
-        component = "select",
-        delegate = "ConnectionKindOptions",
-        options = "ConnectionKindOptions::new()",
-        searchable
-    )]
+    #[form(binding = "ConnectionKindBinding")]
     #[garde(skip)]
     pub kind: Option<ConnectionKind>,
 }
