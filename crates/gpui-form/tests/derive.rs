@@ -348,12 +348,23 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("quantity form root");
     let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let initial_revision = cx.update(|_window, cx| form.read(cx).amount.core().revision());
 
     cx.update(|window, cx| {
         amount.update(cx, |input, cx| {
             input.set_value("12x", window, cx);
             cx.emit(gpui_component::input::InputEvent::Change);
         });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(form.amount.raw_value(), "12x");
+        assert!(form.amount.raw_revision() > 0);
+        assert!(form.amount.core().revision() > initial_revision);
+        assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
+        assert!(form.meta().is_dirty);
     });
 
     let result = cx.update(|window, cx| {
@@ -373,6 +384,110 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
         assert_eq!(amount.read(cx).value(), "12x");
+    });
+}
+
+#[gpui::test]
+fn number_raw_edit_with_same_typed_value_stays_dirty(cx: &mut TestAppContext) {
+    let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+    let initial_revision = cx.update(|_window, cx| form.read(cx).amount.core().revision());
+
+    cx.update(|window, cx| {
+        amount.update(cx, |input, cx| {
+            input.set_value("012", window, cx);
+            cx.emit(gpui_component::input::InputEvent::Change);
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        let _number_input = form.amount_number_input();
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(form.amount.raw_default(), "12");
+        assert_eq!(form.amount.raw_value(), "012");
+        assert!(form.amount.core().revision() > initial_revision);
+        assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
+        assert!(form.meta().is_dirty);
+    });
+}
+
+#[gpui::test]
+fn number_reset_restores_raw_default(cx: &mut TestAppContext) {
+    let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("quantity form root");
+    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+
+    cx.update(|window, cx| {
+        amount.update(cx, |input, cx| {
+            input.set_value("012", window, cx);
+            cx.emit(gpui_component::input::InputEvent::Change);
+        });
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| form.reset(window, cx));
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(form.amount.raw_default(), "12");
+        assert_eq!(form.amount.raw_value(), "12");
+        assert_eq!(amount.read(cx).value(), "12");
+        assert!(gpui_form::FormField::errors(&form.amount).is_empty());
+        assert!(!gpui_form::FormField::meta(&form.amount).is_dirty);
+        assert!(!form.meta().is_dirty);
+    });
+}
+
+#[gpui::test]
+fn number_normalize_writeback_recomputes_raw_dirty(cx: &mut TestAppContext) {
+    let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("quantity form root");
+    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+
+    cx.update(|window, cx| {
+        amount.update(cx, |input, cx| {
+            input.set_value("012", window, cx);
+            cx.emit(gpui_component::input::InputEvent::Change);
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(form.amount.raw_value(), "012");
+        assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
+        assert!(form.meta().is_dirty);
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.write_draft(
+                    QuantityInput { amount: 12 },
+                    gpui_form::FieldChangeCause::NormalizeOnSubmit,
+                    window,
+                    cx,
+                );
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(form.amount.raw_default(), "12");
+        assert_eq!(form.amount.raw_value(), "12");
+        assert_eq!(amount.read(cx).value(), "12");
+        assert!(!gpui_form::FormField::meta(&form.amount).is_dirty);
+        assert!(!form.meta().is_dirty);
     });
 }
 

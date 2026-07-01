@@ -176,6 +176,42 @@ where
         }
     }
 
+    pub fn set_value_with_default_state(
+        &mut self,
+        value: T,
+        cause: FieldChangeCause,
+        is_default_value: bool,
+        changed: bool,
+    ) {
+        let value_changed = self.value != value;
+        self.value = value;
+        self.refresh_meta_from_default_state(is_default_value, cause, changed || value_changed);
+    }
+
+    pub fn refresh_meta_from_default_state(
+        &mut self,
+        is_default_value: bool,
+        cause: FieldChangeCause,
+        changed: bool,
+    ) {
+        if cause == FieldChangeCause::Reset {
+            self.meta = FieldMeta::default();
+            self.errors.clear();
+        } else {
+            if cause == FieldChangeCause::Blur {
+                self.meta.mark_blurred();
+            }
+            if cause.marks_dirty() || changed {
+                self.meta.mark_touched();
+            }
+            self.meta.mark_dirty(is_default_value);
+        }
+
+        if changed || cause == FieldChangeCause::NormalizeOnSubmit {
+            self.revision = self.revision.saturating_add(1);
+        }
+    }
+
     pub fn reset(&mut self) {
         self.value = self.default_value.clone();
         self.meta = FieldMeta::default();

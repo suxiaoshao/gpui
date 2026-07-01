@@ -69,6 +69,7 @@ pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStre
         }
         FieldKind::Number => {
             let input_state_ident = format_ident!("{}_input_state", ident);
+            let number_input_ident = format_ident!("{}_number_input", ident);
             quote! {
                 pub fn #value_ident(&self) -> #ty {
                     ::gpui_form::FormField::value(&self.#ident).clone()
@@ -78,6 +79,10 @@ pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStre
                     &self,
                 ) -> ::gpui_form::__private::gpui::Entity<::gpui_component::input::InputState> {
                     self.#ident.input_state()
+                }
+
+                pub fn #number_input_ident(&self) -> ::gpui_component::input::NumberInput {
+                    self.#ident.number_input()
                 }
             }
         }

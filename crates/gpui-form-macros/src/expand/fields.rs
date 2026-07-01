@@ -172,37 +172,24 @@ pub(super) fn field_initializer(
                                     return;
                                 }
                                 let text = state.read(cx).value().to_string();
-                                match text.parse::<#ty>() {
-                                    Ok(value) => {
-                                        this.#ident.set_parse_error(None);
-                                        ::gpui_form::FormField::set_value(
-                                            &mut this.#ident,
-                                            value,
-                                            ::gpui_form::FieldChangeCause::UserInput,
-                                        );
-                                        if this.#ident.core().validation_triggers().contains(
-                                            ::gpui_form::ValidationTrigger::Change,
-                                        ) {
-                                            this.apply_validation_for_scope(
-                                                ::gpui_form::ValidationTrigger::Change,
-                                                ::gpui_form::ValidationScope::Field(
-                                                    ::gpui_form::macro_support::field_path(#name),
-                                            ),
-                                            cx,
-                                        );
-                                        }
-                                    }
-                                    Err(_) => {
-                                        let error = ::gpui_form::FieldError::new(
+                                let __gpui_form_sync = this.#ident.sync_raw_input(
+                                    text,
+                                    ::gpui_form::macro_support::field_path(#name),
+                                    ::gpui_form::ValidationTrigger::Change,
+                                    ::gpui_form::FieldChangeCause::UserInput,
+                                );
+                                if __gpui_form_sync.is_parsed()
+                                    && this.#ident.core().validation_triggers().contains(
+                                        ::gpui_form::ValidationTrigger::Change,
+                                    )
+                                {
+                                    this.apply_validation_for_scope(
+                                        ::gpui_form::ValidationTrigger::Change,
+                                        ::gpui_form::ValidationScope::Field(
                                             ::gpui_form::macro_support::field_path(#name),
-                                            ::gpui_form::ValidationTrigger::Change,
-                                            ::gpui_form::ValidationSource::Internal,
-                                            "parse",
-                                            "gpui-form-error-number-parse",
-                                        )
-                                        .with_param("value", text);
-                                        this.#ident.set_parse_error(Some(error));
-                                    }
+                                        ),
+                                        cx,
+                                    );
                                 }
                                 this.refresh_meta();
                                 cx.emit(#event_ident::FieldChanged(#field_variant));

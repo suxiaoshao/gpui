@@ -9,5 +9,5 @@ pub use bool::{BoolBinding, BoolComponentState, BoolFieldStore};
 pub use combobox::{ComboboxBinding, ComboboxFieldStore, ComboboxFieldValue};
 pub use component::ComponentFieldStore;
 pub use input::{TextFieldStore, TextFieldValue, TextInputBinding};
-pub use number::{NumberFieldStore, NumberFieldValue, NumberInputBinding};
+pub use number::{NumberFieldStore, NumberFieldValue, NumberInputBinding, NumberInputSync};
 pub use select::{SelectBinding, SelectFieldStore, SelectFieldValue};

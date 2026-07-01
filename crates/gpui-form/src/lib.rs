@@ -41,8 +41,8 @@ pub use component::binding::{ComponentStateOptions, FormComponentBinding, FormCo
 pub use component::fields::{
     BoolBinding, BoolComponentState, BoolFieldStore, ComboboxBinding, ComboboxFieldStore,
     ComboboxFieldValue, ComponentFieldStore, NumberFieldStore, NumberFieldValue,
-    NumberInputBinding, SelectBinding, SelectFieldStore, SelectFieldValue, TextFieldStore,
-    TextFieldValue, TextInputBinding,
+    NumberInputBinding, NumberInputSync, SelectBinding, SelectFieldStore, SelectFieldValue,
+    TextFieldStore, TextFieldValue, TextInputBinding,
 };
 pub use core::array::{
     ArrayIndexError, FieldArrayItem, FieldArrayStore, FormItemId, FormItemIdGenerator, FormRowValue,

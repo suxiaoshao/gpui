@@ -84,13 +84,15 @@ submit 的唯一成功事实是 `Result<Output, FormValidationReport>`：
 - `gpui-form` 只持有 edit-time form store；不持有 app 全局配置、数据库连接、keychain、runtime
   provider/MCP 状态。
 - `InputState` 等组件 state 是 raw UI source；`FieldCore<T>` 是 parse/commit 后的 typed draft source。
+  number 字段的 dirty/default snapshot 必须以 raw input 基线计算，不能只看 typed value 是否变化。
 - `FormValidationReport` 是当前合法性和错误渲染的 source；`FormMeta` 不参与合法性判定。
 - group/array parent 可以缓存 child value/meta 作为 render snapshot，但 final report 必须从 child store 当前状态递归读取。
 
 ## UI、i18n、icon、依赖和存储
 
-- 所用组件：继续使用现有 `InputState`、select/combobox/bool binding 和 app 自定义
-  `FormComponentBinding`；本设计不新增 UI 组件。
+- 所用组件：普通 input 继续使用 `InputState` + `Input`；number binding 使用 `InputState` +
+  `NumberInput`，具体 raw input dirty 设计见 `number-input-design.md`；select/combobox/bool binding 和 app
+  自定义 `FormComponentBinding` 不变。
 - 自定义类型：新增 `SubmitOutcome`；新增 `FieldPath::join_path` 和
   `FormValidationReport::with_field_prefix` 辅助 group/array report 聚合。
 - i18n：不新增用户可见文案；number parse 继续使用 `gpui-form-error-number-parse`。

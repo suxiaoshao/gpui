@@ -11,32 +11,12 @@ pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenSt
     let name = &model.name;
     Ok(match model.attrs.component {
         FieldKind::Number => {
-            let ty = model.ty;
             quote! {
-                let __gpui_form_text = self.#ident.input_state().read(cx).value().to_string();
-                match __gpui_form_text.parse::<#ty>() {
-                    Ok(__gpui_form_value) => {
-                        self.#ident.set_parse_error(None);
-                        if ::gpui_form::FormField::value(&self.#ident) != &__gpui_form_value {
-                            ::gpui_form::FormField::set_value(
-                                &mut self.#ident,
-                                __gpui_form_value,
-                                ::gpui_form::FieldChangeCause::External,
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        let __gpui_form_error = ::gpui_form::FieldError::new(
-                            ::gpui_form::macro_support::field_path(#name),
-                            ::gpui_form::ValidationTrigger::Submit,
-                            ::gpui_form::ValidationSource::Internal,
-                            "parse",
-                            "gpui-form-error-number-parse",
-                        )
-                        .with_param("value", __gpui_form_text);
-                        self.#ident.set_parse_error(Some(__gpui_form_error.clone()));
-                        report.push_field_error(__gpui_form_error);
-                    }
+                if let Err(__gpui_form_error) = self.#ident.parse_raw_for_submit(
+                    ::gpui_form::macro_support::field_path(#name),
+                    cx,
+                ) {
+                    report.push_field_error(__gpui_form_error);
                 }
             }
         }

@@ -713,7 +713,7 @@ pub enum ValidationSeverity {
 | URL | `Input` | `InputState` | `TextFieldStore<Option<String>>` | 同文本输入 |
 | 多行文本 | `Input` | `InputState` | `TextFieldStore<T>` | 同文本输入，配置 `multi_line/auto_grow` |
 | code/editor | `Input` | `InputState` | `TextFieldStore<T>` | 同文本输入，配置 `code_editor` |
-| 数字 | `NumberInput` | `InputState` | `NumberFieldStore<N>` | `InputEvent::Change`，必要时处理 step event |
+| 数字 | `NumberInput` | `InputState` | `NumberFieldStore<N>` | `InputEvent::Change/Blur`，从 raw input 同步 typed draft 和 dirty |
 | 单选下拉 | `Select` | `SelectState<D>` | `SelectFieldStore<Value, D>` | `SelectEvent::Confirm` |
 | 搜索选择 | `Combobox` | `ComboboxState<D>` | `ComboboxFieldStore<Value, D>` | `ComboboxEvent::Change/Confirm` |
 | 多选 | `Combobox` | `ComboboxState<D>` | `ComboboxFieldStore<Vec<T>, D>` | `ComboboxEvent::Change/Confirm` |
@@ -793,6 +793,29 @@ pub struct ComponentStateOptions {
 - required 只作为 field metadata 和 custom binding option；built-in binding 不渲染 required marker。
 - app 不应该在 form 创建后再调用 `apply_*_placeholders` 这类 helper 去修正组件 state。
 - 如果同一种视觉 row 在不同业务字段里需要不同 placeholder 或校验规则，应拆成不同 row input/store。
+- number binding 是内置 binding 的特殊形态：state 仍是 `InputState`，但 generated render helper 必须使用
+  `NumberInput::new(&state)`；app 不应把 `component = "number"` 的 state 渲染成普通 `Input::new(...)`。
+- number dirty/default 不从 `FieldCore<N>` 的 typed value 派生，而从 raw input 文本与 raw default 文本比较得出；
+  typed value 只表示最后一次成功 parse 后的 domain draft。
+
+number 字段目标结构详见 `number-input-design.md`。核心结构为：
+
+```rust
+pub struct NumberFieldStore<N>
+where
+    N: NumberFieldValue,
+{
+    core: FieldCore<N>,
+    input_state: Entity<InputState>,
+    raw_default: String,
+    raw_value: String,
+    raw_revision: u64,
+    parse_error: Option<FieldError>,
+}
+```
+
+其中 `raw_value` 是 form store 处理过的 raw input draft；更新入口只能是 generated subscription、
+generated setter、reset 或 submit normalize。`InputState` 是 UI entity，必须通过 binding/store 写回保持同步。
 
 语义化动态 row 目标形态：
 
@@ -885,6 +908,15 @@ repository/config/runtime data
 - 输入时不把 preview 写回字段或组件 state。
 - 错误是否显示由 `ErrorVisibility` 决定，不是所有错误立刻显示。
 
+number 输入时：
+
+- generated subscription 从 `InputState` 读取当前 raw text，调用 `NumberFieldStore::sync_raw_input(...)`。
+- parse 成功：更新 typed `FieldCore<N>`，清除 parse error；dirty 仍按 `raw_value != raw_default` 计算。
+- parse 失败：保留上一次 typed draft，写入 `ValidationSource::Internal` parse error；如果 raw text 变化，
+  字段和 form 仍必须 dirty，revision 仍必须递增。
+- change validation 只在 parse 成功后运行，避免用 stale typed value 校验当前不可解析的 raw input；submit preflight
+  会把 parse error 纳入 final report。
+
 嵌套字段组：
 
 - nested struct 被展开成 `FieldGroupStore<G>`。
@@ -912,6 +944,8 @@ submit 时：
 - 表单设置 `is_submitting = true`，`submission_attempts += 1`。
 - 递归执行 `prepare_submit`，内置 number input 会重新读取当前 raw text；若 parse 失败，写入
   `ValidationSource::Internal` field error，返回 invalid preflight report，不执行 normalize。
+- number preflight parse 成功时可同步 typed draft，但 dirty/default 仍从 raw input 基线计算；normalize 写回后再用
+  normalized raw 文本重新计算 dirty。
 - 构造 submit candidate，并调用 `validify::Modify` 产出 normalized output。
 - normalized output 写回 generated form store 的字段 draft value 和对应 component state，写回原因是
   `FieldChangeCause::NormalizeOnSubmit`。
@@ -1443,7 +1477,8 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 - derive 宏会通过 `TextInputBinding` / `NumberInputBinding` 为 `input` / `number` 字段创建
   `InputState`，通过 `SelectBinding` / `ComboboxBinding` 为 `select` / `combobox` 字段创建
   `SelectState<D>` / `ComboboxState<D>`，通过 `BoolBinding` 为 bool 字段创建 `BoolComponentState`；
-  component event 订阅会保存到字段 store。
+  component event 订阅会保存到字段 store。`NumberInputBinding` 的 render helper 目标是
+  `NumberInput::new(&state)`，不是普通 `Input::new(&state)`。
 - derive 宏已解析 `placeholder`、`mask` / `masked` 字段属性；`input` / `number` 字段创建 `InputState`
   时会通过 `FormTextResolver` 解析 placeholder，并在 builder 阶段应用 masked state。
 - derive 宏已为字段生成类型化访问器：`field_value()`、`field_input_state()`、`field_select_state()`、
@@ -1485,3 +1520,5 @@ form-pipeline = ["garde-adapter", "validify-transform"]
 
 - 第一阶段 required 只表达字段元数据和 UI marker，不自动生成 required validation；如后续需要通用 required
   validator，需要另行设计 `gpui-form-error-required`、adapter 触发时机和 app locale 接入方式。
+- `NumberInputBinding` 还需要按 `number-input-design.md` 完成 raw input dirty/default 修复：invalid raw edit
+  必须让 field/form dirty，parse 成功但 typed value 不变的 raw edit 也必须按 raw 文本判断 dirty。

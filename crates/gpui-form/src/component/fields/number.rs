@@ -2,17 +2,34 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 
 use gpui::{App, AppContext as _, Entity, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, NumberInput};
 
 use crate::{
     AnyFormField, ComponentStateOptions, FieldChangeCause, FieldCore, FieldError, FieldMeta,
-    FieldValidationReport, FormComponentBinding, FormField, FormMeta, ValidationSource,
+    FieldPath, FieldValidationReport, FormComponentBinding, FormField, FormMeta, ValidationSource,
     ValidationTrigger, resolve_form_text,
 };
 
 pub trait NumberFieldValue: Clone + PartialEq + ToString + FromStr + 'static {}
 
 impl<T> NumberFieldValue for T where T: Clone + PartialEq + ToString + FromStr + 'static {}
+
+pub enum NumberInputSync<N> {
+    Parsed {
+        value: N,
+        raw_changed: bool,
+    },
+    ParseError {
+        error: FieldError,
+        raw_changed: bool,
+    },
+}
+
+impl<N> NumberInputSync<N> {
+    pub fn is_parsed(&self) -> bool {
+        matches!(self, Self::Parsed { .. })
+    }
+}
 
 pub struct NumberInputBinding<N>(PhantomData<fn() -> N>);
 
@@ -75,6 +92,9 @@ where
 {
     core: FieldCore<N>,
     input_state: Entity<InputState>,
+    raw_default: String,
+    raw_value: String,
+    raw_revision: u64,
     parse_error: Option<FieldError>,
 }
 
@@ -83,15 +103,23 @@ where
     N: NumberFieldValue,
 {
     pub fn new(value: N, input_state: Entity<InputState>) -> Self {
+        let raw_value = value.to_string();
         Self {
             core: FieldCore::new(value),
             input_state,
+            raw_default: raw_value.clone(),
+            raw_value,
+            raw_revision: 0,
             parse_error: None,
         }
     }
 
     pub fn input_state(&self) -> Entity<InputState> {
         self.input_state.clone()
+    }
+
+    pub fn number_input(&self) -> NumberInput {
+        NumberInput::new(&self.input_state)
     }
 
     pub fn core(&self) -> &FieldCore<N> {
@@ -106,13 +134,71 @@ where
         self.input_state.read(cx).value().to_string().parse::<N>()
     }
 
+    pub fn raw_value(&self) -> &str {
+        &self.raw_value
+    }
+
+    pub fn raw_default(&self) -> &str {
+        &self.raw_default
+    }
+
+    pub fn raw_revision(&self) -> u64 {
+        self.raw_revision
+    }
+
+    pub fn sync_raw_input(
+        &mut self,
+        raw_text: String,
+        path: FieldPath,
+        trigger: ValidationTrigger,
+        cause: FieldChangeCause,
+    ) -> NumberInputSync<N> {
+        let raw_changed = self.set_raw_value(raw_text.clone());
+        match raw_text.parse::<N>() {
+            Ok(value) => {
+                self.core.set_value_with_default_state(
+                    value.clone(),
+                    cause,
+                    self.raw_value == self.raw_default,
+                    raw_changed,
+                );
+                self.set_parse_error(None);
+                NumberInputSync::Parsed { value, raw_changed }
+            }
+            Err(_) => {
+                let error = Self::parse_error(path, trigger, raw_text);
+                self.set_parse_error(Some(error.clone()));
+                self.core.refresh_meta_from_default_state(
+                    self.raw_value == self.raw_default,
+                    cause,
+                    raw_changed,
+                );
+                NumberInputSync::ParseError { error, raw_changed }
+            }
+        }
+    }
+
+    pub fn parse_raw_for_submit(&mut self, path: FieldPath, cx: &App) -> Result<N, FieldError> {
+        let raw_text = self.input_state.read(cx).value().to_string();
+        match self.sync_raw_input(
+            raw_text,
+            path,
+            ValidationTrigger::Submit,
+            FieldChangeCause::External,
+        ) {
+            NumberInputSync::Parsed { value, .. } => Ok(value),
+            NumberInputSync::ParseError { error, .. } => Err(error),
+        }
+    }
+
     pub fn write_component_value(
-        &self,
+        &mut self,
         value: &N,
         cause: FieldChangeCause,
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.set_typed_value(value.clone(), cause);
         NumberInputBinding::<N>::write_value(&self.input_state, value, cause, window, cx);
     }
 
@@ -132,6 +218,38 @@ where
         }
         self.core.set_errors(errors);
     }
+
+    fn set_typed_value(&mut self, value: N, cause: FieldChangeCause) {
+        let raw_text = value.to_string();
+        let raw_changed = self.set_raw_value(raw_text);
+        self.core.set_value_with_default_state(
+            value,
+            cause,
+            self.raw_value == self.raw_default,
+            raw_changed,
+        );
+        self.set_parse_error(None);
+    }
+
+    fn set_raw_value(&mut self, raw_text: String) -> bool {
+        let raw_changed = self.raw_value != raw_text;
+        if raw_changed {
+            self.raw_value = raw_text;
+            self.raw_revision = self.raw_revision.saturating_add(1);
+        }
+        raw_changed
+    }
+
+    fn parse_error(path: FieldPath, trigger: ValidationTrigger, value: String) -> FieldError {
+        FieldError::new(
+            path,
+            trigger,
+            ValidationSource::Internal,
+            "parse",
+            "gpui-form-error-number-parse",
+        )
+        .with_param("value", value)
+    }
 }
 
 impl<N> FormField for NumberFieldStore<N>
@@ -146,12 +264,21 @@ where
     }
 
     fn set_value(&mut self, value: Self::Value, cause: FieldChangeCause) {
-        self.core.set_value(value, cause);
+        self.set_typed_value(value, cause);
     }
 
     fn reset(&mut self, window: &mut Window, cx: &mut App) {
         self.core.reset();
-        self.write_component_value(self.core.value(), FieldChangeCause::Reset, window, cx);
+        self.raw_value = self.raw_default.clone();
+        self.raw_revision = self.raw_revision.saturating_add(1);
+        self.parse_error = None;
+        NumberInputBinding::<N>::write_value(
+            &self.input_state,
+            self.core.value(),
+            FieldChangeCause::Reset,
+            window,
+            cx,
+        );
     }
 
     fn component_state(&self) -> Option<Entity<Self::ComponentState>> {

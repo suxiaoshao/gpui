@@ -3,7 +3,7 @@
 本文档记录 `app/ai-chat2` Settings 表单接入 `gpui-form` 的 app 侧计划。`gpui-form` crate 自身只保留通用抽象；
 Provider Settings、MCP Settings、具体 placeholder key、i18n、icon、config/DB 写回规则都放在本文档。
 
-最后同步时间：2026-07-01。
+最后同步时间：2026-07-02。
 
 当前状态：设计结论已确认；`gpui-form` 已支持字段级 placeholder/mask/required 传入组件 state 创建流程，
 `ai-chat2` Provider Settings 已删除 post-creation `configure_inputs`，MCP Settings 已拆成语义化 row
@@ -22,7 +22,9 @@ Prompt Edit Dialog 已迁移到 `PromptEditFormStore`，Shortcut Edit Dialog 已
 `ShortcutEditFormStore`；字段验证梳理范围按本文“全量字段验证审计口径”覆盖所有相关表单面，不限制在
 Provider/MCP。`gpui-form` 已收口 meta/submit 状态模型：`FieldMeta` / `FormMeta` 不再保存
 `is_valid` 或 `can_submit` 这类合法性/提交能力第二事实源；Settings 保存流程只能依据 field errors、
-app validator 结果或 `submit() -> Result<_, FormValidationReport>` 决定是否继续。
+app validator 结果或 `submit() -> Result<_, FormValidationReport>` 决定是否继续。number 字段的后续通用修复
+以 `gpui-form` 的 `number-input-design.md` 为准：`NumberInputBinding` 默认渲染 `NumberInput`，dirty/default
+以 raw input 文本为基准。
 
 ## 范围
 
@@ -350,7 +352,9 @@ ChatForm validator 目标：
   attachments 继续留在 `ChatForm`，避免把运行态编辑器生命周期塞进 Settings form 抽象。
 - model 的 required 只在运行提交语义上成立；不能把 config 的 `model: Option<_>` 改成 required，也不新增
   config migration。
-- token budget 继续复用 `thinking_effort::token_budget_bounds` 和 clamp 规则，不新增 number validator 语义。
+- token budget 继续复用 `thinking_effort::token_budget_bounds` 和 clamp 规则，不新增通用 number validator 语义；
+  如果后续下沉到 generated form，必须使用 `NumberInput` render helper，并让 raw token budget 文本参与 dirty
+  判断。
 - approval mode 继续复用 `approval_select::approval_mode_sections`，不新增依赖或 app-local enum duplicate。
 
 ### 不迁移输入的验证边界
@@ -427,6 +431,9 @@ Provider/MCP：
 - MCP row 字段不静态 required；半填 row 用 validator error 定位，必要时再用 row field generated setter
   表达条件式 required。
 - required marker 不写入 DB/config。
+- Provider/MCP/Prompt/Shortcut 目前没有 generated number 字段；后续新增 number 字段时，app 只能使用
+  generated `field_number_input()`；如果直接使用 state，也必须先取出 `let state = form.field_input_state();`，
+  再渲染 `NumberInput::new(&state)`，不能把 number state 渲染成普通 `Input`。
 
 ### 所用组件
 
@@ -910,6 +917,8 @@ icon / i18n / 依赖：
   由宏生成 `field_input_state()`、`field_select_state()`、`field_value()` 等访问器。
 - app 不直接订阅每个 `InputState` 再反查字段；`gpui-form` 安装并保存组件订阅，app 只订阅 typed form event
   处理业务副作用。
+- app 不用 typed number value 推断 dirty。number field 的 typed draft 只代表最后一次成功 parse 的 domain
+  value；raw input 文本才是 dirty/default 的比较基准。
 - 表单 store 需要是 `Entity<GeneratedFormStore>`，因为 GPUI 事件、observe、component subscription
   生命周期需要挂在 entity 上；字段 store 是 form store 的普通字段；`InputState` / `SelectState`
   等组件状态仍是独立 `Entity`。
@@ -1379,7 +1388,8 @@ gpui-component：
 - `Input` / `InputState::multi_line(true)`：Prompt content binding。
 - `HotkeyInput`：Shortcut hotkey 和 General temporary hotkey binding。
 - `Select` / `SelectState`：Shortcut prompt/model selection；model select 需要保留 grouped searchable options。
-- `NumberInput`：ChatForm token budget 继续由 ChatForm 自己使用，P3 前不下沉到 Settings form。
+- `NumberInput`：ChatForm token budget 继续由 ChatForm 自己使用，P3 前不下沉到 Settings form；任何
+  `gpui-form` generated number 字段都必须使用 `NumberInput`，不能退回普通 `Input`。
 - `Switch` 或 `Checkbox`：enabled / OAuth enabled。
 - `Button`：save、add row、remove row、refresh/test。
 - `Tag` / `Label`：validation/status summary。
