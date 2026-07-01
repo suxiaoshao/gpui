@@ -45,11 +45,11 @@ impl ErrorVisibility {
             Self::Always => true,
             Self::AfterTouched => field_meta.is_touched,
             Self::AfterBlurred => field_meta.is_blurred,
-            Self::AfterSubmit => form_meta.is_submitted || form_meta.submission_attempts > 0,
+            Self::AfterSubmit => form_meta.is_submitted() || form_meta.submission_attempts > 0,
             Self::AfterInteractionOrSubmit => {
                 field_meta.is_touched
                     || field_meta.is_blurred
-                    || form_meta.is_submitted
+                    || form_meta.is_submitted()
                     || form_meta.submission_attempts > 0
             }
             Self::Never => false,

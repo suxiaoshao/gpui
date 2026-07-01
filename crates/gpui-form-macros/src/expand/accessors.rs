@@ -335,20 +335,14 @@ pub(super) fn focus_error_statement(model: &FieldModel<'_>) -> TokenStream {
     let ident = model.ident;
     match model.attrs.component {
         FieldKind::Group => quote! {
-            if !self.#ident.meta().is_valid
-                && ::gpui_form::FormField::focus(&mut self.#ident, window, cx)
-            {
+            if ::gpui_form::FormField::focus(&mut self.#ident, window, cx) {
                 return true;
             }
         },
         FieldKind::Array => quote! {
-            if !self.#ident.meta().is_valid {
-                for item in self.#ident.items_mut() {
-                    if !item.item.meta().is_valid
-                        && ::gpui_form::FormField::focus(&mut item.item, window, cx)
-                    {
-                        return true;
-                    }
+            for item in self.#ident.items_mut() {
+                if ::gpui_form::FormField::focus(&mut item.item, window, cx) {
+                    return true;
                 }
             }
         },

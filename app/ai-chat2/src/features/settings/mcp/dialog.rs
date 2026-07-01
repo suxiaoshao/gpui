@@ -1884,7 +1884,13 @@ mod tests {
                     .map(|error| error.message_key.as_ref()),
                 Some("mcp-validation-arg-empty")
             );
-            assert!(!draft_form.meta().is_valid);
+            assert!(
+                draft_form
+                    .command
+                    .errors()
+                    .iter()
+                    .any(gpui_form::FieldError::is_error)
+            );
             assert!(dialog.validation_summary_messages(cx).len() >= 3);
         });
     }

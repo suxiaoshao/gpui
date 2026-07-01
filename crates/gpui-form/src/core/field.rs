@@ -204,14 +204,11 @@ where
     }
 
     pub fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.meta
-            .set_valid(errors.iter().all(|error| !error.is_error()));
         self.errors = errors;
     }
 
     pub fn clear_errors(&mut self) {
         self.errors.clear();
-        self.meta.set_valid(true);
     }
 }
 

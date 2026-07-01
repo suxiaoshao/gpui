@@ -6,7 +6,7 @@
 
 `FieldArrayStore::append/remove/move/swap/replace_item/replace` 会调用 `bump_revision()`，先把 array store
 自身标记为 touched/dirty。但 generated helper 随后调用 `*_refresh_meta()`，该方法从
-`FieldMeta::default()` 重新聚合 child row metadata，只保留 child 的 dirty/touched/blurred/validating/valid。
+`FieldMeta::default()` 重新聚合 child row metadata，只保留 child 的 dirty/touched/blurred/validating snapshot。
 
 结果是：如果只发生结构变化，而剩余或新增 child row 仍是 pristine，array 自身刚刚产生的 dirty 会被覆盖。
 典型错误场景：
@@ -24,7 +24,8 @@
 - append/remove/move/swap/replace 后，若当前 `Vec<T>` 与默认 `Vec<T>` 不同，array 和 form 必须 dirty。
 - 如果用户通过相反操作让当前 `Vec<T>` 回到默认值，array dirty 应恢复 false；不能只记住“曾经发生过结构操作”。
 - `reset_items` 表示重新建立默认基线，reset 后当前值等于默认值，dirty 为 false。
-- child row 的 touched/blurred/validating/valid/error 仍参与 array meta 聚合。
+- child row 的 touched/blurred/validating 仍参与 array meta 聚合；合法性和错误从 array errors 与 child
+  `FormValidationReport` 聚合，不写入 `FieldMeta`。
 - 宏只生成类型安全 glue code；array meta 的语义由 `FieldArrayStore` 统一计算。
 
 ## 文件和模块结构
@@ -32,7 +33,7 @@
 | 文件 | 计划 |
 | --- | --- |
 | `crates/gpui-form/src/core/array.rs` | 扩展 `FieldArrayStore`，持有 array default value 基线，并提供统一的 meta recompute API。 |
-| `crates/gpui-form/src/core/meta.rs` | 不新增字段；继续使用现有 `FieldMeta` / `FormMeta`。 |
+| `crates/gpui-form/src/core/meta.rs` | 不新增 array 专用字段；`is_pristine()` 和合法性都保持派生语义。 |
 | `crates/gpui-form/src/core/group.rs` | 不改变 `FieldGroupStore` 的职责；继续提供 row 当前 value 和 child meta。 |
 | `crates/gpui-form-macros/src/expand/fields.rs` | 初始化 array field 时传入初始 `Vec<T>` 作为 default baseline。 |
 | `crates/gpui-form-macros/src/expand/arrays.rs` | array helper 在结构操作后把当前 row values 和 child metas 交给 `FieldArrayStore` recompute，不再手写 meta 聚合。 |
@@ -109,13 +110,14 @@ structural_dirty = current_values != default_values
 child_dirty = any(child_meta.is_dirty)
 
 meta.is_dirty = structural_dirty || child_dirty
-meta.is_pristine = !meta.is_dirty
 meta.is_default_value = !structural_dirty
 meta.is_touched = array_revision > 0 || any(child_meta.is_touched)
 meta.is_blurred = any(child_meta.is_blurred)
 meta.is_validating = any(child_meta.is_validating)
-meta.is_valid = errors.is_empty() && all(child_meta.is_valid)
 ```
+
+`meta.is_pristine()` 由 `!meta.is_dirty` 计算。array 是否存在 blocking error 不进入 `FieldMeta`；
+generated store 通过 `current_validation_report` 聚合 array-level errors 和 child row reports。
 
 `array_revision` 继续表示结构操作次数。它可以让 append/remove 后 touched 保持 true，即使当前值后来回到默认值。
 

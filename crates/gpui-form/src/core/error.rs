@@ -245,6 +245,35 @@ impl FormValidationReport {
         self.form_errors.extend(other.form_errors);
     }
 
+    pub fn with_field_prefix(&self, prefix: &FieldPath) -> Self {
+        let field_errors = self
+            .field_errors
+            .iter()
+            .cloned()
+            .map(|mut error| {
+                error.path = prefix.join_path(&error.path);
+                error
+            })
+            .collect();
+        let form_errors = self
+            .form_errors
+            .iter()
+            .cloned()
+            .map(|mut error| {
+                error.path = Some(match error.path {
+                    Some(path) => prefix.join_path(&path),
+                    None => prefix.clone(),
+                });
+                error
+            })
+            .collect();
+
+        Self {
+            field_errors,
+            form_errors,
+        }
+    }
+
     pub fn first_field_error(&self) -> Option<&FieldError> {
         self.field_errors.iter().find(|error| error.is_error())
     }

@@ -112,6 +112,12 @@ impl FieldPath {
         Self { segments }
     }
 
+    pub fn join_path(&self, path: &FieldPath) -> Self {
+        let mut segments = self.segments.clone();
+        segments.extend(path.segments().iter().cloned());
+        Self { segments }
+    }
+
     pub fn parent(&self) -> Option<Self> {
         let mut segments = self.segments.clone();
         segments.pop()?;

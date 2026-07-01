@@ -7,7 +7,6 @@ use gpui::{
 use gpui_component::{IndexPath, combobox::ComboboxEvent, select::SelectEvent};
 #[cfg(feature = "form-pipeline")]
 use gpui_form::FormField as _;
-#[cfg(feature = "form-pipeline")]
 use gpui_form::FormStore as _;
 use gpui_form::macro_support::GeneratedFormStore;
 
@@ -20,8 +19,19 @@ struct ProviderInput {
     enabled: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[form(store = QuantityFormStore)]
+struct QuantityInput {
+    #[form(component = "number")]
+    amount: i32,
+}
+
 struct ProviderFormHarness {
     form: Entity<ProviderFormStore>,
+}
+
+struct QuantityFormHarness {
+    form: Entity<QuantityFormStore>,
 }
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
@@ -127,7 +137,26 @@ impl ProviderFormHarness {
     }
 }
 
+impl QuantityFormHarness {
+    fn new(
+        input: QuantityInput,
+        capture: Rc<RefCell<Option<Entity<QuantityFormStore>>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let form = cx.new(|cx| QuantityFormStore::from_value(input, window, cx));
+        capture.borrow_mut().replace(form.clone());
+        Self { form }
+    }
+}
+
 impl Render for ProviderFormHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+impl Render for QuantityFormHarness {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
     }
@@ -144,6 +173,27 @@ fn create_form(
         cx.open_window(Default::default(), |window, cx| {
             let capture = capture_for_window.clone();
             cx.new(|cx| ProviderFormHarness::new(input, capture, window, cx))
+        })
+        .unwrap()
+    });
+
+    (
+        capture.borrow().as_ref().expect("form captured").clone(),
+        window,
+    )
+}
+
+fn create_quantity_form(
+    cx: &mut TestAppContext,
+    input: QuantityInput,
+) -> (Entity<QuantityFormStore>, WindowHandle<QuantityFormHarness>) {
+    let capture = Rc::new(RefCell::new(None));
+    let capture_for_window = capture.clone();
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |window, cx| {
+            let capture = capture_for_window.clone();
+            cx.new(|cx| QuantityFormHarness::new(input, capture, window, cx))
         })
         .unwrap()
     });
@@ -228,7 +278,7 @@ fn required_metadata_is_generated_and_can_update_binding_state(cx: &mut TestAppC
         assert!(!form.notes_required());
         assert!(gpui_form::FormField::is_required(&form.secret));
         assert!(form.secret_state().read(cx).required);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -249,7 +299,7 @@ fn required_metadata_is_generated_and_can_update_binding_state(cx: &mut TestAppC
         assert!(!gpui_form::FormField::is_required(&form.secret));
         assert!(!form.secret_state().read(cx).required);
         assert_eq!(form.draft().secret, "token");
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 }
 
@@ -289,6 +339,40 @@ fn bool_field_state_tracks_write_draft(cx: &mut TestAppContext) {
         assert!(!form.enabled_value());
         let state = gpui_form::FormField::component_state(&form.enabled).expect("bool state");
         assert!(!state.read(cx).value());
+    });
+}
+
+#[gpui::test]
+fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
+    let (form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("quantity form root");
+    let amount = cx.update(|_window, cx| form.read(cx).amount_input_state());
+
+    cx.update(|window, cx| {
+        amount.update(cx, |input, cx| {
+            input.set_value("12x", window, cx);
+            cx.emit(gpui_component::input::InputEvent::Change);
+        });
+    });
+
+    let result = cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| form.submit(window, cx))
+        })
+    });
+
+    let report = result.expect_err("unparsable number should reject submit");
+    assert_eq!(report.field_errors().len(), 1);
+    assert_eq!(report.field_errors()[0].code.as_ref(), "parse");
+    assert_eq!(
+        report.field_errors()[0].source,
+        gpui_form::ValidationSource::Internal
+    );
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.draft().amount, 12);
+        assert_eq!(amount.read(cx).value(), "12x");
     });
 }
 
@@ -356,7 +440,11 @@ fn generated_error_helpers_apply_and_clear_field_errors(cx: &mut TestAppContext)
         let form = form.read(cx);
         assert_eq!(gpui_form::FormField::errors(&form.name).len(), 1);
         assert!(gpui_form::FormField::meta(&form.name).is_touched);
-        assert!(!form.meta().is_valid);
+        assert!(
+            gpui_form::FormField::errors(&form.name)
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
     });
 
     cx.update(|_window, cx| {
@@ -370,7 +458,6 @@ fn generated_error_helpers_apply_and_clear_field_errors(cx: &mut TestAppContext)
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert!(gpui_form::FormField::errors(&form.name).is_empty());
-        assert!(form.meta().is_valid);
     });
 
     cx.update(|_window, cx| {
@@ -395,7 +482,6 @@ fn generated_error_helpers_apply_and_clear_field_errors(cx: &mut TestAppContext)
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert!(gpui_form::FormField::errors(&form.name).is_empty());
-        assert!(form.meta().is_valid);
     });
 }
 
@@ -1182,9 +1268,9 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
 
     cx.update(|cx| {
         let form = form.read(cx);
-        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_pristine());
         assert!(form.headers.meta().is_default_value);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -1212,10 +1298,10 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     });
     cx.update(|_window, cx| {
         let form = form.read(cx);
-        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_pristine());
         assert!(form.headers.meta().is_touched);
         assert!(form.headers.meta().is_default_value);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
         assert!(form.meta().is_touched);
     });
 
@@ -1243,9 +1329,9 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.headers_value()[0].key, "a");
-        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_pristine());
         assert!(form.headers.meta().is_touched);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 
     cx.update(|_window, cx| {
@@ -1277,10 +1363,10 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.headers_value()[0].key, "z");
-        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_pristine());
         assert!(!form.headers.meta().is_touched);
         assert!(form.headers.meta().is_default_value);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 
     cx.update(|window, cx| {
@@ -1315,10 +1401,10 @@ fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppCo
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.headers_value()[0].key, "z");
-        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_pristine());
         assert!(form.headers.meta().is_touched);
         assert!(form.headers.meta().is_default_value);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 }
 
@@ -1503,7 +1589,12 @@ fn change_validation_writes_only_the_changed_field_errors(cx: &mut TestAppContex
         assert_eq!(form.draft().name, "a");
         assert_eq!(form.name.errors().len(), 1);
         assert!(form.title.errors().is_empty());
-        assert!(!form.meta().is_valid);
+        assert!(
+            form.name
+                .errors()
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
     });
 }
 
@@ -1531,7 +1622,18 @@ fn submit_validation_writes_field_errors(cx: &mut TestAppContext) {
         let form = form.read(cx);
         assert_eq!(form.name.errors().len(), 1);
         assert_eq!(form.title.errors().len(), 1);
-        assert!(!form.meta().is_valid);
+        assert!(
+            form.name
+                .errors()
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
+        assert!(
+            form.title
+                .errors()
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
     });
     cx.update(|window, cx| {
         assert!(root.update(cx, |root, cx| {
@@ -1579,7 +1681,11 @@ fn reset_clears_form_level_errors(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.form_errors().len(), 1);
-        assert!(!form.meta().is_valid);
+        assert!(
+            form.form_errors()
+                .iter()
+                .any(gpui_form::FormError::is_error)
+        );
     });
 
     cx.update(|window, cx| {
@@ -1593,8 +1699,7 @@ fn reset_clears_form_level_errors(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert!(form.form_errors().is_empty());
-        assert!(form.meta().is_valid);
-        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_pristine());
     });
 }
 
@@ -1693,9 +1798,15 @@ fn group_submit_validation_writes_child_field_errors(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         let child = form.profile.store();
-        assert!(!form.profile.meta().is_valid);
-        assert!(!form.meta().is_valid);
         assert_eq!(child.read(cx).nickname.errors().len(), 1);
+        assert!(
+            child
+                .read(cx)
+                .nickname
+                .errors()
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
     });
     cx.update(|window, cx| {
         assert!(root.update(cx, |root, cx| {
@@ -1805,7 +1916,6 @@ fn group_validation_does_not_copy_sibling_errors_into_child(cx: &mut TestAppCont
         let form = form.read(cx);
         let child = form.profile.store();
         assert_eq!(form.name.errors().len(), 1);
-        assert!(form.profile.meta().is_valid);
         assert!(child.read(cx).name.errors().is_empty());
     });
 }
@@ -1911,8 +2021,15 @@ fn array_submit_validation_writes_indexed_child_errors(cx: &mut TestAppContext) 
         let form = form.read(cx);
         let first = form.headers.items()[0].item.store();
         let second = form.headers.items()[1].item.store();
-        assert!(!form.headers.meta().is_valid);
         assert_eq!(first.read(cx).key.errors().len(), 1);
+        assert!(
+            first
+                .read(cx)
+                .key
+                .errors()
+                .iter()
+                .any(gpui_form::FieldError::is_error)
+        );
         assert!(second.read(cx).key.errors().is_empty());
     });
     cx.update(|window, cx| {

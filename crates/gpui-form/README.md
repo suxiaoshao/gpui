@@ -455,10 +455,8 @@ pub struct FieldMeta {
     pub is_touched: bool,
     pub is_blurred: bool,
     pub is_dirty: bool,
-    pub is_pristine: bool,
     pub is_default_value: bool,
     pub is_validating: bool,
-    pub is_valid: bool,
 }
 ```
 
@@ -467,17 +465,17 @@ Suggested form metadata:
 ```rust
 pub struct FormMeta {
     pub is_dirty: bool,
-    pub is_pristine: bool,
     pub is_touched: bool,
     pub is_validating: bool,
-    pub is_valid: bool,
-    pub can_submit: bool,
     pub is_submitting: bool,
-    pub is_submitted: bool,
-    pub is_submit_successful: bool,
+    pub last_submit_outcome: Option<SubmitOutcome>,
     pub submission_attempts: u32,
 }
 ```
+
+`is_pristine()` and `can_attempt_submit()` are computed methods. Field/form validity
+comes from the current `FieldError` / `FormError` set and the final
+`FormValidationReport`, not from cached meta booleans.
 
 ## Validation Triggers
 

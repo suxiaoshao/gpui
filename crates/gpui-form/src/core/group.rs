@@ -94,9 +94,6 @@ where
     }
 
     pub fn set_errors(&mut self, errors: Vec<FormError>) {
-        let is_valid = errors.iter().all(|error| !error.is_error());
-        self.meta.is_valid = is_valid;
-        self.field_meta.set_valid(is_valid);
         self.errors = errors;
     }
 
@@ -117,12 +114,9 @@ where
         self.value = value;
         self.meta = meta;
         self.field_meta.is_dirty = self.meta.is_dirty;
-        self.field_meta.is_pristine = self.meta.is_pristine;
         self.field_meta.is_touched = self.meta.is_touched;
         self.field_meta.is_blurred = self.meta.is_blurred;
         self.field_meta.is_validating = self.meta.is_validating;
-        self.field_meta.is_valid =
-            self.meta.is_valid && self.errors.iter().all(|error| !error.is_error());
         self.field_meta.is_default_value = self.value == self.default_value;
         if changed {
             self.revision = self.revision.saturating_add(1);
@@ -210,8 +204,6 @@ where
 
     fn clear_errors(&mut self) {
         self.errors.clear();
-        self.field_meta.set_valid(true);
-        self.meta.is_valid = true;
     }
 
     fn mark_touched(&mut self) {
@@ -258,8 +250,6 @@ where
 
     fn clear_errors(&mut self) {
         self.errors.clear();
-        self.field_meta.set_valid(true);
-        self.meta.is_valid = true;
     }
 
     fn focus_any(&mut self, window: &mut Window, cx: &mut App) -> bool {

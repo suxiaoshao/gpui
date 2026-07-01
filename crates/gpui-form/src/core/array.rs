@@ -264,8 +264,6 @@ where
     }
 
     pub fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.meta
-            .set_valid(errors.iter().all(|error| !error.is_error()));
         self.errors = errors;
     }
 
@@ -401,7 +399,6 @@ where
 
     pub fn clear_errors(&mut self) {
         self.errors.clear();
-        self.meta.set_valid(true);
     }
 
     pub fn refresh_meta_from_values(
@@ -418,16 +415,11 @@ where
             meta.is_touched |= child_meta.is_touched;
             meta.is_blurred |= child_meta.is_blurred;
             meta.is_validating |= child_meta.is_validating;
-            meta.is_valid &= child_meta.is_valid;
         }
 
         meta.is_dirty |= structural_dirty;
         meta.is_touched |= self.array_revision > 0;
         meta.is_default_value = !structural_dirty;
-        meta.is_pristine = !meta.is_dirty;
-        if self.errors.iter().any(|error| error.is_error()) {
-            meta.set_valid(false);
-        }
         self.meta = meta;
     }
 

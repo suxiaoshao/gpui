@@ -6,6 +6,140 @@ use crate::field_kind::FieldKind;
 
 use super::{FieldModel, arrays::vec_inner_type};
 
+pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenStream> {
+    let ident = model.ident;
+    let name = &model.name;
+    Ok(match model.attrs.component {
+        FieldKind::Number => {
+            let ty = model.ty;
+            quote! {
+                let __gpui_form_text = self.#ident.input_state().read(cx).value().to_string();
+                match __gpui_form_text.parse::<#ty>() {
+                    Ok(__gpui_form_value) => {
+                        self.#ident.set_parse_error(None);
+                        if ::gpui_form::FormField::value(&self.#ident) != &__gpui_form_value {
+                            ::gpui_form::FormField::set_value(
+                                &mut self.#ident,
+                                __gpui_form_value,
+                                ::gpui_form::FieldChangeCause::External,
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        let __gpui_form_error = ::gpui_form::FieldError::new(
+                            ::gpui_form::macro_support::field_path(#name),
+                            ::gpui_form::ValidationTrigger::Submit,
+                            ::gpui_form::ValidationSource::Internal,
+                            "parse",
+                            "gpui-form-error-number-parse",
+                        )
+                        .with_param("value", __gpui_form_text);
+                        self.#ident.set_parse_error(Some(__gpui_form_error.clone()));
+                        report.push_field_error(__gpui_form_error);
+                    }
+                }
+            }
+        }
+        FieldKind::Group => {
+            let ty = model.ty;
+            let store = model.attrs.store.as_ref().expect("checked");
+            quote! {
+                let __gpui_form_child_store = self.#ident.store();
+                let __gpui_form_child_report = __gpui_form_child_store.update(cx, |child, cx| {
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#ty>>::prepare_submit(
+                        child,
+                        cx,
+                    )
+                });
+                let __gpui_form_child = __gpui_form_child_store.read(cx);
+                self.#ident.sync_from_child(
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#ty>>::draft(__gpui_form_child),
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#ty>>::meta(__gpui_form_child).clone(),
+                );
+                report.merge(__gpui_form_child_report.with_field_prefix(self.#ident.path()));
+            }
+        }
+        FieldKind::Array => {
+            let item_ty = vec_inner_type(model)?;
+            let store = model.attrs.store.as_ref().expect("checked");
+            let refresh_meta_ident = format_ident!("{}_refresh_meta", ident);
+            quote! {
+                let __gpui_form_array_path = self.#ident.path().clone();
+                for __gpui_form_item in self.#ident.items_mut() {
+                    let __gpui_form_child_store = __gpui_form_item.item.store();
+                    let __gpui_form_child_report = __gpui_form_child_store.update(cx, |child, cx| {
+                        <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::prepare_submit(
+                            child,
+                            cx,
+                        )
+                    });
+                    let __gpui_form_child = __gpui_form_child_store.read(cx);
+                    __gpui_form_item.item.sync_from_child(
+                        <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::draft(__gpui_form_child),
+                        <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::meta(__gpui_form_child).clone(),
+                    );
+                    report.merge(
+                        __gpui_form_child_report.with_field_prefix(
+                            &__gpui_form_array_path.join_index(__gpui_form_item.index),
+                        ),
+                    );
+                }
+                self.#refresh_meta_ident();
+            }
+        }
+        _ => quote! {},
+    })
+}
+
+pub(super) fn current_validation_report_statement(model: &FieldModel<'_>) -> Result<TokenStream> {
+    let ident = model.ident;
+    Ok(match model.attrs.component {
+        FieldKind::Array => {
+            let item_ty = vec_inner_type(model)?;
+            let store = model.attrs.store.as_ref().expect("checked");
+            quote! {
+                for __gpui_form_error in self.#ident.errors() {
+                    report.push_field_error(__gpui_form_error.clone());
+                }
+                let __gpui_form_array_path = self.#ident.path().clone();
+                for __gpui_form_item in self.#ident.items() {
+                    let __gpui_form_child_store = __gpui_form_item.item.store();
+                    let __gpui_form_child = __gpui_form_child_store.read(cx);
+                    let __gpui_form_child_report =
+                        <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::current_validation_report(
+                            __gpui_form_child,
+                            cx,
+                        );
+                    report.merge(
+                        __gpui_form_child_report.with_field_prefix(
+                            &__gpui_form_array_path.join_index(__gpui_form_item.index),
+                        ),
+                    );
+                }
+            }
+        }
+        FieldKind::Group => {
+            let ty = model.ty;
+            let store = model.attrs.store.as_ref().expect("checked");
+            quote! {
+                let __gpui_form_child_store = self.#ident.store();
+                let __gpui_form_child = __gpui_form_child_store.read(cx);
+                let __gpui_form_child_report =
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#ty>>::current_validation_report(
+                        __gpui_form_child,
+                        cx,
+                    );
+                report.merge(__gpui_form_child_report.with_field_prefix(self.#ident.path()));
+            }
+        }
+        _ => quote! {
+            for __gpui_form_error in ::gpui_form::FormField::errors(&self.#ident) {
+                report.push_field_error(__gpui_form_error.clone());
+            }
+        },
+    })
+}
+
 pub(super) fn apply_validation_statement(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
     let name = &model.name;

@@ -25,7 +25,9 @@ use pipeline::{
     submit_transform, submit_validation, transform_field, transform_init, validate_method_body,
     validation_field, validation_init,
 };
-use validation::apply_validation_statement;
+use validation::{
+    apply_validation_statement, current_validation_report_statement, prepare_submit_statement,
+};
 
 struct FieldModel<'a> {
     field: &'a Field,
@@ -303,6 +305,14 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(apply_validation_statement)
         .collect::<Result<Vec<_>>>()?;
+    let prepare_submit_statements = field_models
+        .iter()
+        .map(prepare_submit_statement)
+        .collect::<Result<Vec<_>>>()?;
+    let current_validation_report_statements = field_models
+        .iter()
+        .map(current_validation_report_statement)
+        .collect::<Result<Vec<_>>>()?;
     let focus_error_statements = field_models
         .iter()
         .map(focus_error_statement)
@@ -508,21 +518,15 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
 
             fn refresh_meta(&mut self) {
                 let was_submitting = self.meta.is_submitting;
-                let was_submitted = self.meta.is_submitted;
-                let was_submit_successful = self.meta.is_submit_successful;
+                let last_submit_outcome = self.meta.last_submit_outcome;
                 let submission_attempts = self.meta.submission_attempts;
                 let field_meta = [
                     #(#field_meta_values,)*
                 ];
                 let mut meta = ::gpui_form::FormMeta::aggregate(field_meta);
                 meta.is_submitting = was_submitting;
-                meta.is_submitted = was_submitted;
-                meta.is_submit_successful = was_submit_successful;
+                meta.last_submit_outcome = last_submit_outcome;
                 meta.submission_attempts = submission_attempts;
-                if self.form_errors.iter().any(|error| error.is_error()) {
-                    meta.is_valid = false;
-                }
-                meta.can_submit = !meta.is_submitting && !meta.is_validating;
                 self.meta = meta;
             }
 
@@ -566,6 +570,28 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 if matches!(scope, &::gpui_form::ValidationScope::Form) {
                     self.form_errors = report.form_errors().to_vec();
                 }
+            }
+
+            fn prepare_submit(
+                &mut self,
+                cx: &mut ::gpui_form::__private::gpui::App,
+            ) -> ::gpui_form::FormValidationReport {
+                let mut report = ::gpui_form::FormValidationReport::empty();
+                #(#prepare_submit_statements)*
+                self.refresh_meta();
+                report
+            }
+
+            fn current_validation_report(
+                &self,
+                cx: &::gpui_form::__private::gpui::App,
+            ) -> ::gpui_form::FormValidationReport {
+                let mut report = ::gpui_form::FormValidationReport::new(
+                    ::std::vec::Vec::new(),
+                    self.form_errors.clone(),
+                );
+                #(#current_validation_report_statements)*
+                report
             }
         }
 
@@ -613,6 +639,20 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 self.refresh_meta();
             }
 
+            fn prepare_submit(
+                &mut self,
+                cx: &mut ::gpui_form::__private::gpui::App,
+            ) -> ::gpui_form::FormValidationReport {
+                Self::prepare_submit(self, cx)
+            }
+
+            fn current_validation_report(
+                &self,
+                cx: &::gpui_form::__private::gpui::App,
+            ) -> ::gpui_form::FormValidationReport {
+                Self::current_validation_report(self, cx)
+            }
+
             fn clear_all_errors(&mut self, cx: &mut ::gpui_form::__private::gpui::App) {
                 Self::clear_all_errors_with_app(self, cx);
             }
@@ -650,6 +690,11 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 cx: &mut ::gpui_form::__private::gpui::App,
             ) -> Result<Self::Output, ::gpui_form::FormValidationReport> {
                 self.meta.begin_submit();
+                let preflight_report = self.prepare_submit(cx);
+                if !preflight_report.is_valid() {
+                    self.meta.finish_submit_failure();
+                    return Err(preflight_report);
+                }
                 #submit_transform
                 self.write_draft(
                     normalized.clone(),
@@ -660,12 +705,13 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 #submit_validation
                 self.apply_validation_report(&report, &::gpui_form::ValidationScope::Form, cx);
                 self.refresh_meta();
-                if report.is_valid() {
+                let final_report = self.current_validation_report(cx);
+                if final_report.is_valid() {
                     self.meta.finish_submit_success();
                     Ok(normalized)
                 } else {
                     self.meta.finish_submit_failure();
-                    Err(report)
+                    Err(final_report)
                 }
             }
 

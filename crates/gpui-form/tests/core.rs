@@ -59,7 +59,7 @@ fn field_array_preserves_ids_on_reorder_and_rebuilds_on_reset() {
 fn field_array_meta_tracks_structural_dirty_against_default_values() {
     let mut array = FieldArrayStore::new(FieldPath::from_static("headers"), ["a", "b"]);
     refresh_array_meta(&mut array);
-    assert!(array.meta().is_pristine);
+    assert!(array.meta().is_pristine());
     assert!(array.meta().is_default_value);
 
     array.append("c");
@@ -72,7 +72,7 @@ fn field_array_meta_tracks_structural_dirty_against_default_values() {
     assert_eq!(removed.item, "c");
     refresh_array_meta(&mut array);
     assert!(!array.meta().is_dirty);
-    assert!(array.meta().is_pristine);
+    assert!(array.meta().is_pristine());
     assert!(array.meta().is_touched);
     assert!(array.meta().is_default_value);
 
@@ -128,11 +128,11 @@ fn value_field_updates_meta_from_change_cause() {
     assert_eq!(field.value(), " Anthropic ");
     assert!(field.meta().is_touched);
     assert!(field.meta().is_dirty);
-    assert!(!field.meta().is_pristine);
+    assert!(!field.meta().is_pristine());
 
     field.set_value("OpenAI".to_string(), FieldChangeCause::UserInput);
     assert!(!field.meta().is_dirty);
-    assert!(field.meta().is_pristine);
+    assert!(field.meta().is_pristine());
 }
 
 #[test]
@@ -143,13 +143,13 @@ fn field_and_array_validity_only_tracks_error_severity() {
         field_error_with_severity("provider", ValidationSeverity::Info),
     ]);
     assert_eq!(field.errors().len(), 2);
-    assert!(field.meta().is_valid);
+    assert!(field.errors().iter().all(|error| !error.is_error()));
 
     field.set_errors(vec![field_error_with_severity(
         "provider",
         ValidationSeverity::Error,
     )]);
-    assert!(!field.meta().is_valid);
+    assert!(field.errors().iter().any(gpui_form::FieldError::is_error));
 
     let mut array = FieldArrayStore::new(FieldPath::from_static("headers"), ["a"]);
     array.set_errors(vec![field_error_with_severity(
@@ -157,12 +157,12 @@ fn field_and_array_validity_only_tracks_error_severity() {
         ValidationSeverity::Warning,
     )]);
     refresh_array_meta(&mut array);
-    assert!(array.meta().is_valid);
+    assert!(array.errors().iter().all(|error| !error.is_error()));
 
     array.set_errors(vec![field_error_with_severity(
         "headers",
         ValidationSeverity::Error,
     )]);
     refresh_array_meta(&mut array);
-    assert!(!array.meta().is_valid);
+    assert!(array.errors().iter().any(gpui_form::FieldError::is_error));
 }

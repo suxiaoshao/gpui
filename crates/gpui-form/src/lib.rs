@@ -56,7 +56,7 @@ pub use core::field::{
 };
 pub use core::form::{FormState, FormStore};
 pub use core::group::{FieldGroupStore, FormFragment};
-pub use core::meta::{FieldMeta, FormMeta};
+pub use core::meta::{FieldMeta, FormMeta, SubmitOutcome};
 pub use core::options::{OptionMismatch, OptionsSnapshot};
 pub use core::path::{FieldPath, FieldPathSegment};
 pub use core::subscriptions::SubscriptionSet;

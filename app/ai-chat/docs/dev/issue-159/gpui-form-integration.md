@@ -20,7 +20,9 @@ Provider/MCP 单字段写入已改用 generated setter；Provider、Prompt Edit 
 pipeline 拆分；`gpui-form` 已补齐字段级 required 元数据、generated required helper 和 binding 同步能力。
 Prompt Edit Dialog 已迁移到 `PromptEditFormStore`，Shortcut Edit Dialog 已迁移到
 `ShortcutEditFormStore`；字段验证梳理范围按本文“全量字段验证审计口径”覆盖所有相关表单面，不限制在
-Provider/MCP。
+Provider/MCP。`gpui-form` 已收口 meta/submit 状态模型：`FieldMeta` / `FormMeta` 不再保存
+`is_valid` 或 `can_submit` 这类合法性/提交能力第二事实源；Settings 保存流程只能依据 field errors、
+app validator 结果或 `submit() -> Result<_, FormValidationReport>` 决定是否继续。
 
 ## 范围
 
@@ -61,6 +63,8 @@ Provider/MCP。
 - 字段错误的存储、清理、可见性和渲染所需的 `visible_errors` 数据源。
 - submit 前 app validator / adapter 产生的字段错误回填。
 - submit 点击后把 normalize/trim 后的值写回 form draft 和组件 state。
+- `FormMeta` 只提供交互/生命周期 snapshot；`is_pristine()`、`can_attempt_submit()` 是派生查询，
+  不表达数据合法。
 
 不属于 `gpui-form` 表单层职责：
 
@@ -69,6 +73,8 @@ Provider/MCP。
 - provider model refresh、MCP connection test、OAuth authorize/sign-out、global hotkey runtime registration。
 - DB UNIQUE/FK、TOML schema、credentials deletion、provider/model enabled 检查等最终保护。
 - Settings list search/filter、theme tile、language menu、add/delete/test/refresh action。
+- 用 `form.meta().is_valid` / `form.meta().can_submit` 判断是否允许保存。保存是否成功必须由 app validator
+  或 `submit()` 返回的 `Result` 决定。
 
 按这个口径，当前代码的迁移状态是：
 

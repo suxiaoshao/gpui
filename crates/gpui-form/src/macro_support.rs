@@ -53,6 +53,12 @@ pub trait GeneratedFormStore<Input>: Sized + 'static {
         scope: &ValidationScope,
         cx: &mut App,
     );
+    fn prepare_submit(&mut self, _cx: &mut App) -> FormValidationReport {
+        FormValidationReport::empty()
+    }
+    fn current_validation_report(&self, _cx: &App) -> FormValidationReport {
+        FormValidationReport::empty()
+    }
 
     fn clear_all_errors(&mut self, _cx: &mut App) {}
 }
