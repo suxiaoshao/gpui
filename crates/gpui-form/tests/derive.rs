@@ -1542,6 +1542,63 @@ fn submit_validation_writes_field_errors(cx: &mut TestAppContext) {
 }
 
 #[cfg(feature = "form-pipeline")]
+#[gpui::test]
+fn reset_clears_form_level_errors(cx: &mut TestAppContext) {
+    let (form, window) = create_live_validation_form(
+        cx,
+        LiveValidationInput {
+            name: "valid".to_string(),
+            title: "valid".to_string(),
+        },
+    );
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("live validation form root");
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                let report = gpui_form::FormValidationReport::new(
+                    Vec::new(),
+                    vec![gpui_form::FormError::new(
+                        gpui_form::ValidationTrigger::Submit,
+                        gpui_form::ValidationSource::App("derive-test".into()),
+                        "server",
+                        "form-server-error",
+                    )],
+                );
+                <LiveValidationFormStore as GeneratedFormStore<LiveValidationInput>>::apply_validation_report(
+                    form,
+                    &report,
+                    &gpui_form::ValidationScope::Form,
+                    cx,
+                );
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.form_errors().len(), 1);
+        assert!(!form.meta().is_valid);
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.reset(window, cx);
+            });
+        });
+    });
+
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(form.form_errors().is_empty());
+        assert!(form.meta().is_valid);
+        assert!(form.meta().is_pristine);
+    });
+}
+
+#[cfg(feature = "form-pipeline")]
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
 #[garde(allow_unvalidated)]
 #[form(store = RequiredProfileFormStore, validation(adapter = "garde"))]

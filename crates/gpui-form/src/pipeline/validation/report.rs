@@ -73,9 +73,7 @@ impl ValidationAdapterReport {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.issues
-            .iter()
-            .all(|issue| issue.severity != ValidationSeverity::Error)
+        self.issues.iter().all(|issue| !issue.severity.is_error())
     }
 
     pub fn issues(&self) -> &[ValidationIssue] {

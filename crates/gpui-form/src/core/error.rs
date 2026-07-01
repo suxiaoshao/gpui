@@ -56,6 +56,12 @@ pub enum ValidationSeverity {
     Info,
 }
 
+impl ValidationSeverity {
+    pub fn is_error(self) -> bool {
+        matches!(self, Self::Error)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValidationSource {
     Garde,
@@ -118,6 +124,10 @@ impl FieldError {
         self.params.insert(key.into(), value.into());
         self
     }
+
+    pub fn is_error(&self) -> bool {
+        self.severity.is_error()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +172,10 @@ impl FormError {
         self.params.insert(key.into(), value.into());
         self
     }
+
+    pub fn is_error(&self) -> bool {
+        self.severity.is_error()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -175,9 +189,7 @@ impl FieldValidationReport {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.errors
-            .iter()
-            .all(|error| error.severity != ValidationSeverity::Error)
+        self.errors.iter().all(|error| !error.is_error())
     }
 
     pub fn errors(&self) -> &[FieldError] {
@@ -208,13 +220,8 @@ impl FormValidationReport {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.field_errors
-            .iter()
-            .all(|error| error.severity != ValidationSeverity::Error)
-            && self
-                .form_errors
-                .iter()
-                .all(|error| error.severity != ValidationSeverity::Error)
+        self.field_errors.iter().all(|error| !error.is_error())
+            && self.form_errors.iter().all(|error| !error.is_error())
     }
 
     pub fn field_errors(&self) -> &[FieldError] {
@@ -239,9 +246,7 @@ impl FormValidationReport {
     }
 
     pub fn first_field_error(&self) -> Option<&FieldError> {
-        self.field_errors
-            .iter()
-            .find(|error| error.severity == ValidationSeverity::Error)
+        self.field_errors.iter().find(|error| error.is_error())
     }
 
     pub fn into_result(self) -> Result<(), Self> {

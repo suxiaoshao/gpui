@@ -264,7 +264,8 @@ where
     }
 
     pub fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.meta.set_valid(errors.is_empty());
+        self.meta
+            .set_valid(errors.iter().all(|error| !error.is_error()));
         self.errors = errors;
     }
 
@@ -424,7 +425,7 @@ where
         meta.is_touched |= self.array_revision > 0;
         meta.is_default_value = !structural_dirty;
         meta.is_pristine = !meta.is_dirty;
-        if !self.errors.is_empty() {
+        if self.errors.iter().any(|error| error.is_error()) {
             meta.set_valid(false);
         }
         self.meta = meta;

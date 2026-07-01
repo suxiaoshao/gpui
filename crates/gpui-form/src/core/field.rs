@@ -204,7 +204,8 @@ where
     }
 
     pub fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.meta.set_valid(errors.is_empty());
+        self.meta
+            .set_valid(errors.iter().all(|error| !error.is_error()));
         self.errors = errors;
     }
 

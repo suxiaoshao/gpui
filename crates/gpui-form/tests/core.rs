@@ -1,7 +1,19 @@
 use gpui_form::{
-    FieldArrayStore, FieldChangeCause, FieldMeta, FieldPath, FormField, FormItemId,
-    FormItemIdGenerator, ValueFieldStore,
+    FieldArrayStore, FieldChangeCause, FieldError, FieldMeta, FieldPath, FormField, FormItemId,
+    FormItemIdGenerator, ValidationSeverity, ValidationSource, ValidationTrigger, ValueFieldStore,
 };
+
+fn field_error_with_severity(field: &'static str, severity: ValidationSeverity) -> FieldError {
+    let mut error = FieldError::new_for_field(
+        field,
+        ValidationTrigger::Submit,
+        ValidationSource::App("core-test".into()),
+        "test",
+        "core-test-error",
+    );
+    error.severity = severity;
+    error
+}
 
 fn refresh_array_meta(array: &mut FieldArrayStore<&'static str>) {
     let values = array
@@ -121,4 +133,36 @@ fn value_field_updates_meta_from_change_cause() {
     field.set_value("OpenAI".to_string(), FieldChangeCause::UserInput);
     assert!(!field.meta().is_dirty);
     assert!(field.meta().is_pristine);
+}
+
+#[test]
+fn field_and_array_validity_only_tracks_error_severity() {
+    let mut field = ValueFieldStore::new("OpenAI".to_string());
+    field.set_errors(vec![
+        field_error_with_severity("provider", ValidationSeverity::Warning),
+        field_error_with_severity("provider", ValidationSeverity::Info),
+    ]);
+    assert_eq!(field.errors().len(), 2);
+    assert!(field.meta().is_valid);
+
+    field.set_errors(vec![field_error_with_severity(
+        "provider",
+        ValidationSeverity::Error,
+    )]);
+    assert!(!field.meta().is_valid);
+
+    let mut array = FieldArrayStore::new(FieldPath::from_static("headers"), ["a"]);
+    array.set_errors(vec![field_error_with_severity(
+        "headers",
+        ValidationSeverity::Warning,
+    )]);
+    refresh_array_meta(&mut array);
+    assert!(array.meta().is_valid);
+
+    array.set_errors(vec![field_error_with_severity(
+        "headers",
+        ValidationSeverity::Error,
+    )]);
+    refresh_array_meta(&mut array);
+    assert!(!array.meta().is_valid);
 }

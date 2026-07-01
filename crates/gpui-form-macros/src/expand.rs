@@ -519,9 +519,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 meta.is_submitted = was_submitted;
                 meta.is_submit_successful = was_submit_successful;
                 meta.submission_attempts = submission_attempts;
-                if self.form_errors.iter().any(|error| {
-                    error.severity == ::gpui_form::ValidationSeverity::Error
-                }) {
+                if self.form_errors.iter().any(|error| error.is_error()) {
                     meta.is_valid = false;
                 }
                 meta.can_submit = !meta.is_submitting && !meta.is_validating;
@@ -633,6 +631,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) {
                 #(#reset_field_statements)*
+                self.form_errors.clear();
                 self.meta = ::gpui_form::FormMeta::default();
             }
 
