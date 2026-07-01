@@ -91,21 +91,8 @@ fn group_apply_validation_statement(model: &FieldModel<'_>) -> TokenStream {
     quote! {
         if ::gpui_form::macro_support::scope_contains_path(scope, self.#ident.path()) {
             let __gpui_form_child_store = self.#ident.store();
-            let __gpui_form_child_field_paths = __gpui_form_child_store
-                .read(cx)
-                .field_paths()
-                .to_vec();
-            let mut __gpui_form_child_report =
+            let __gpui_form_child_report =
                 report.strip_field_prefix(self.#ident.path());
-            __gpui_form_child_report.merge(::gpui_form::FormValidationReport::new(
-                report
-                    .field_errors()
-                    .iter()
-                    .filter(|error| __gpui_form_child_field_paths.contains(&error.path))
-                    .cloned()
-                    .collect(),
-                ::std::vec::Vec::new(),
-            ));
             let __gpui_form_child_scope = ::gpui_form::ValidationScope::Form;
             __gpui_form_child_store.update(cx, |child, cx| {
                 <#store as ::gpui_form::macro_support::GeneratedFormStore<#ty>>::apply_validation_report(

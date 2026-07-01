@@ -1651,6 +1651,111 @@ fn group_submit_validation_writes_child_field_errors(cx: &mut TestAppContext) {
 #[cfg(feature = "form-pipeline")]
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
 #[garde(allow_unvalidated)]
+#[form(store = OverlappingProfileFormStore, validation(adapter = "garde"))]
+struct OverlappingProfileInput {
+    #[form(component = "input", validate(on_submit))]
+    #[garde(length(min = 3))]
+    name: String,
+}
+
+#[cfg(feature = "form-pipeline")]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[garde(allow_unvalidated)]
+#[form(store = OverlappingAccountFormStore, validation(adapter = "garde"))]
+struct OverlappingAccountInput {
+    #[form(component = "input", validate(on_submit))]
+    #[garde(length(min = 3))]
+    name: String,
+    #[form(component = "group", store = "OverlappingProfileFormStore")]
+    #[garde(dive)]
+    profile: OverlappingProfileInput,
+}
+
+#[cfg(feature = "form-pipeline")]
+struct OverlappingAccountFormHarness {
+    form: Entity<OverlappingAccountFormStore>,
+}
+
+#[cfg(feature = "form-pipeline")]
+impl OverlappingAccountFormHarness {
+    fn new(
+        input: OverlappingAccountInput,
+        capture: Rc<RefCell<Option<Entity<OverlappingAccountFormStore>>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let form = cx.new(|cx| OverlappingAccountFormStore::from_value(input, window, cx));
+        capture.borrow_mut().replace(form.clone());
+        Self { form }
+    }
+}
+
+#[cfg(feature = "form-pipeline")]
+impl Render for OverlappingAccountFormHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[cfg(feature = "form-pipeline")]
+fn create_overlapping_account_form(
+    cx: &mut TestAppContext,
+    input: OverlappingAccountInput,
+) -> (
+    Entity<OverlappingAccountFormStore>,
+    WindowHandle<OverlappingAccountFormHarness>,
+) {
+    let capture = Rc::new(RefCell::new(None));
+    let capture_for_window = capture.clone();
+
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), |window, cx| {
+            let capture = capture_for_window.clone();
+            cx.new(|cx| OverlappingAccountFormHarness::new(input, capture, window, cx))
+        })
+        .unwrap()
+    });
+
+    (
+        capture.borrow().as_ref().expect("form captured").clone(),
+        window,
+    )
+}
+
+#[cfg(feature = "form-pipeline")]
+#[gpui::test]
+fn group_validation_does_not_copy_sibling_errors_into_child(cx: &mut TestAppContext) {
+    let (form, window) = create_overlapping_account_form(
+        cx,
+        OverlappingAccountInput {
+            name: "".to_string(),
+            profile: OverlappingProfileInput {
+                name: "valid".to_string(),
+            },
+        },
+    );
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("overlapping account form root");
+    let result = cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| form.submit(window, cx))
+        })
+    });
+
+    assert!(result.is_err());
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        let child = form.profile.store();
+        assert_eq!(form.name.errors().len(), 1);
+        assert!(form.profile.meta().is_valid);
+        assert!(child.read(cx).name.errors().is_empty());
+    });
+}
+
+#[cfg(feature = "form-pipeline")]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[garde(allow_unvalidated)]
 #[form(store = RequiredHeaderFormStore, validation(adapter = "garde"))]
 struct RequiredHeaderInput {
     #[form(component = "input", validate(on_submit))]

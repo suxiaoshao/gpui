@@ -2,7 +2,8 @@
 
 > 历史说明：本文保留第一阶段完整设计和实现记录。当前入口见
 > `crates/gpui-form/docs/development-plan.md`；dynamic array 的后续设计见
-> `crates/gpui-form/docs/array-design.md`。
+> `crates/gpui-form/docs/array-design.md`；validation report 路由设计见
+> `crates/gpui-form/docs/validation-routing.md`。
 
 状态：第一阶段 crate runtime、基础 derive 宏、显式 child-store nested group、dynamic array 宏、组件 binding
 和 `garde + validify` submit pipeline 已落地。宏已生成 typed field setter、clear/apply field errors、
@@ -1453,7 +1454,7 @@ form-pipeline = ["garde-adapter", "validify-transform"]
   `validify::Modify` 并写回 draft/component state，再运行 `garde::Validate`。
 - submit validation report 已写回字段错误和 form-level errors，`focus_first_error` 可以基于字段错误聚焦。
 - nested group validation report 会把 parent report 中的 `group.child` 路径 strip 成 child 相对路径后写入
-  child store；也兼容 adapter 已经返回 child 相对路径的情况。
+  child store；不会把 parent root field 与 child 相对 field 同名的错误 merge 到 child group。
 - dynamic array 宏已生成 `field_append` / `field_insert` / `field_remove` / `field_remove_id` /
   `field_move` / `field_swap` / `field_replace` / `field_reset_items` / `field_values_with_id` helpers；
   append/insert/replace/reset 负责创建 child store entity，并把 child observe subscription 保存到对应
