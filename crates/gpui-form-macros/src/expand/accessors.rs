@@ -321,7 +321,7 @@ pub(super) fn reset_field_statement(model: &FieldModel<'_>) -> TokenStream {
             let reset_ident = format_ident!("{}_reset_items", ident);
             quote! {
                 let __gpui_form_default_items =
-                    self.#ident.items().iter().map(|item| item.item.default_value().clone()).collect::<::std::vec::Vec<_>>();
+                    self.#ident.default_values().to_vec();
                 self.#reset_ident(__gpui_form_default_items, window, cx);
             }
         }

@@ -179,11 +179,49 @@ pub(super) fn array_helper_methods(model: &FieldModel<'_>) -> Result<TokenStream
             window: &mut ::gpui_form::__private::gpui::Window,
             cx: &mut ::gpui_form::__private::gpui::Context<Self>,
         ) {
-            self.#ident = ::gpui_form::FieldArrayStore::<
-                ::gpui_form::FieldGroupStore<#item_ty, #store>
-            >::new(::gpui_form::macro_support::field_path(#name), ::std::iter::empty());
-            for value in values {
-                self.#append_ident(value, window, cx);
+            let __gpui_form_default_values = self.#ident.default_values().to_vec();
+            let mut __gpui_form_children = ::std::vec::Vec::new();
+            let mut __gpui_form_groups = ::std::vec::Vec::new();
+            for __gpui_form_item_value in values {
+                let __gpui_form_child = cx.new(|cx| {
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::from_value(
+                        __gpui_form_item_value.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                let __gpui_form_item_index = __gpui_form_groups.len();
+                let __gpui_form_group = ::gpui_form::FieldGroupStore::new(
+                    ::gpui_form::macro_support::field_path(#name).join_index(__gpui_form_item_index),
+                    __gpui_form_item_value,
+                    __gpui_form_child.clone(),
+                );
+                __gpui_form_children.push(__gpui_form_child);
+                __gpui_form_groups.push(__gpui_form_group);
+            }
+            self.#ident.set_default_values(__gpui_form_default_values);
+            let __gpui_form_item_ids = self.#ident.replace_items(__gpui_form_groups);
+            for (__gpui_form_item_id, __gpui_form_child) in
+                __gpui_form_item_ids.into_iter().zip(__gpui_form_children)
+            {
+                let __gpui_form_subscription = cx.observe(
+                    &__gpui_form_child,
+                    move |this, child, cx| {
+                        let child = child.read(cx);
+                        if let Some(item) = this.#ident.item_mut(__gpui_form_item_id) {
+                            item.item.sync_from_child(
+                                <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::draft(child),
+                                <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::meta(child).clone(),
+                            );
+                        }
+                        this.#refresh_meta_ident();
+                        this.refresh_meta();
+                        cx.notify();
+                    },
+                );
+                if let Some(item) = self.#ident.item_mut(__gpui_form_item_id) {
+                    item.subscriptions_mut().push(__gpui_form_subscription);
+                }
             }
             self.#refresh_paths_ident();
             self.#refresh_meta_ident();
@@ -197,8 +235,53 @@ pub(super) fn array_helper_methods(model: &FieldModel<'_>) -> Result<TokenStream
             window: &mut ::gpui_form::__private::gpui::Window,
             cx: &mut ::gpui_form::__private::gpui::Context<Self>,
         ) {
-            self.#replace_ident(values, window, cx);
-            self.#ident.set_meta(::gpui_form::FieldMeta::default());
+            let mut __gpui_form_default_values = ::std::vec::Vec::new();
+            let mut __gpui_form_children = ::std::vec::Vec::new();
+            let mut __gpui_form_groups = ::std::vec::Vec::new();
+            for __gpui_form_item_value in values {
+                __gpui_form_default_values.push(__gpui_form_item_value.clone());
+                let __gpui_form_child = cx.new(|cx| {
+                    <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::from_value(
+                        __gpui_form_item_value.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                let __gpui_form_item_index = __gpui_form_groups.len();
+                let __gpui_form_group = ::gpui_form::FieldGroupStore::new(
+                    ::gpui_form::macro_support::field_path(#name).join_index(__gpui_form_item_index),
+                    __gpui_form_item_value,
+                    __gpui_form_child.clone(),
+                );
+                __gpui_form_children.push(__gpui_form_child);
+                __gpui_form_groups.push(__gpui_form_group);
+            }
+            let __gpui_form_item_ids = self.#ident.reset_items(__gpui_form_groups);
+            self.#ident.rebase_default_values(__gpui_form_default_values);
+            for (__gpui_form_item_id, __gpui_form_child) in
+                __gpui_form_item_ids.into_iter().zip(__gpui_form_children)
+            {
+                let __gpui_form_subscription = cx.observe(
+                    &__gpui_form_child,
+                    move |this, child, cx| {
+                        let child = child.read(cx);
+                        if let Some(item) = this.#ident.item_mut(__gpui_form_item_id) {
+                            item.item.sync_from_child(
+                                <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::draft(child),
+                                <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::meta(child).clone(),
+                            );
+                        }
+                        this.#refresh_meta_ident();
+                        this.refresh_meta();
+                        cx.notify();
+                    },
+                );
+                if let Some(item) = self.#ident.item_mut(__gpui_form_item_id) {
+                    item.subscriptions_mut().push(__gpui_form_subscription);
+                }
+            }
+            self.#refresh_paths_ident();
+            self.#refresh_meta_ident();
             self.refresh_meta();
             cx.notify();
         }
@@ -225,21 +308,20 @@ pub(super) fn array_helper_methods(model: &FieldModel<'_>) -> Result<TokenStream
         }
 
         fn #refresh_meta_ident(&mut self) {
-            let mut __gpui_form_meta = ::gpui_form::FieldMeta::default();
-            for item in self.#ident.items() {
-                let item_meta = item.item.field_meta();
-                __gpui_form_meta.is_dirty |= item_meta.is_dirty;
-                __gpui_form_meta.is_touched |= item_meta.is_touched;
-                __gpui_form_meta.is_blurred |= item_meta.is_blurred;
-                __gpui_form_meta.is_validating |= item_meta.is_validating;
-                __gpui_form_meta.is_valid &= item_meta.is_valid;
-            }
-            __gpui_form_meta.is_pristine = !__gpui_form_meta.is_dirty;
-            __gpui_form_meta.is_default_value = __gpui_form_meta.is_pristine;
-            if !self.#ident.errors().is_empty() {
-                __gpui_form_meta.set_valid(false);
-            }
-            self.#ident.set_meta(__gpui_form_meta);
+            let __gpui_form_current_values = self.#ident
+                .items()
+                .iter()
+                .map(|item| item.item.value().clone())
+                .collect::<::std::vec::Vec<_>>();
+            let __gpui_form_child_metas = self.#ident
+                .items()
+                .iter()
+                .map(|item| item.item.field_meta().clone())
+                .collect::<::std::vec::Vec<_>>();
+            self.#ident.refresh_meta_from_values(
+                __gpui_form_current_values,
+                __gpui_form_child_metas,
+            );
         }
     })
 }

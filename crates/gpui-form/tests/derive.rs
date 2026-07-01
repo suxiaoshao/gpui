@@ -1164,6 +1164,164 @@ fn array_store_removes_by_id_and_returns_values_with_id(cx: &mut TestAppContext)
     });
 }
 
+#[gpui::test]
+fn array_store_tracks_structural_dirty_against_default_values(cx: &mut TestAppContext) {
+    let (form, window) = create_header_list_form(
+        cx,
+        HeaderListInput {
+            headers: vec![
+                HeaderInput {
+                    key: "a".to_string(),
+                },
+                HeaderInput {
+                    key: "b".to_string(),
+                },
+            ],
+        },
+    );
+
+    cx.update(|cx| {
+        let form = form.read(cx);
+        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_default_value);
+        assert!(form.meta().is_pristine);
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("header list root");
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_append(HeaderInput { key: String::new() }, window, cx);
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(form.headers.meta().is_dirty);
+        assert!(form.meta().is_dirty);
+        assert!(!form.headers.meta().is_default_value);
+    });
+
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form
+                .update(cx, |form, cx| form.headers_remove(2, cx).unwrap());
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_touched);
+        assert!(form.headers.meta().is_default_value);
+        assert!(form.meta().is_pristine);
+        assert!(form.meta().is_touched);
+    });
+
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_move(0, 1, cx).unwrap();
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.headers_value()[0].key, "b");
+        assert!(form.headers.meta().is_dirty);
+        assert!(form.meta().is_dirty);
+    });
+
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_move(1, 0, cx).unwrap();
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.headers_value()[0].key, "a");
+        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_touched);
+        assert!(form.meta().is_pristine);
+    });
+
+    cx.update(|_window, cx| {
+        root.update(cx, |root, cx| {
+            root.form
+                .update(cx, |form, cx| form.headers_remove(0, cx).unwrap());
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.headers_value()[0].key, "b");
+        assert!(form.headers.meta().is_dirty);
+        assert!(form.meta().is_dirty);
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_reset_items(
+                    vec![HeaderInput {
+                        key: "z".to_string(),
+                    }],
+                    window,
+                    cx,
+                );
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.headers_value()[0].key, "z");
+        assert!(form.headers.meta().is_pristine);
+        assert!(!form.headers.meta().is_touched);
+        assert!(form.headers.meta().is_default_value);
+        assert!(form.meta().is_pristine);
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_replace(Vec::<HeaderInput>::new(), window, cx);
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert!(form.headers_value().is_empty());
+        assert!(form.headers.meta().is_dirty);
+        assert!(form.headers.meta().is_touched);
+        assert!(!form.headers.meta().is_default_value);
+        assert!(form.meta().is_dirty);
+    });
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.form.update(cx, |form, cx| {
+                form.headers_replace(
+                    vec![HeaderInput {
+                        key: "z".to_string(),
+                    }],
+                    window,
+                    cx,
+                );
+            });
+        });
+    });
+    cx.update(|_window, cx| {
+        let form = form.read(cx);
+        assert_eq!(form.headers_value()[0].key, "z");
+        assert!(form.headers.meta().is_pristine);
+        assert!(form.headers.meta().is_touched);
+        assert!(form.headers.meta().is_default_value);
+        assert!(form.meta().is_pristine);
+    });
+}
+
 #[cfg(feature = "form-pipeline")]
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate, validify::Validify)]
 #[garde(allow_unvalidated)]

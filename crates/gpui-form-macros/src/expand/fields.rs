@@ -20,7 +20,12 @@ pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
         FieldKind::Array => {
             let store = model.attrs.store.as_ref().expect("checked");
             let item_ty = vec_inner_type(model)?;
-            quote!(::gpui_form::FieldArrayStore<::gpui_form::FieldGroupStore<#item_ty, #store>>)
+            quote!(
+                ::gpui_form::FieldArrayStore<
+                    ::gpui_form::FieldGroupStore<#item_ty, #store>,
+                    #item_ty,
+                >
+            )
         }
         FieldKind::Binding => {
             let binding = model.attrs.binding.as_ref().expect("checked");
@@ -289,9 +294,12 @@ pub(super) fn field_initializer(
             let refresh_meta_ident = format_ident!("{}_refresh_meta", ident);
             quote! {
                 let mut #ident = ::gpui_form::FieldArrayStore::<
-                    ::gpui_form::FieldGroupStore<#item_ty, #store>
-                >::new(::gpui_form::macro_support::field_path(#name), ::std::iter::empty());
+                    ::gpui_form::FieldGroupStore<#item_ty, #store>,
+                    #item_ty,
+                >::empty(::gpui_form::macro_support::field_path(#name));
+                let mut __gpui_form_default_values = ::std::vec::Vec::new();
                 for __gpui_form_item_value in #value_ident {
+                    __gpui_form_default_values.push(__gpui_form_item_value.clone());
                     let __gpui_form_child = cx.new(|cx| {
                         <#store as ::gpui_form::macro_support::GeneratedFormStore<#item_ty>>::from_value(
                             __gpui_form_item_value.clone(),
@@ -305,7 +313,7 @@ pub(super) fn field_initializer(
                         __gpui_form_item_value,
                         __gpui_form_child.clone(),
                     );
-                    let __gpui_form_item_id = #ident.append(__gpui_form_group);
+                    let __gpui_form_item_id = #ident.append_initial(__gpui_form_group);
                     let __gpui_form_subscription = cx.observe(
                         &__gpui_form_child,
                         move |this, child, cx| {
@@ -325,7 +333,21 @@ pub(super) fn field_initializer(
                         item.subscriptions_mut().push(__gpui_form_subscription);
                     }
                 }
-                #ident.set_meta(::gpui_form::FieldMeta::default());
+                #ident.set_default_values(__gpui_form_default_values);
+                let __gpui_form_current_values = #ident
+                    .items()
+                    .iter()
+                    .map(|item| item.item.value().clone())
+                    .collect::<::std::vec::Vec<_>>();
+                let __gpui_form_child_metas = #ident
+                    .items()
+                    .iter()
+                    .map(|item| item.item.field_meta().clone())
+                    .collect::<::std::vec::Vec<_>>();
+                #ident.refresh_meta_from_values(
+                    __gpui_form_current_values,
+                    __gpui_form_child_metas,
+                );
                 #ident.set_required(#required);
             }
         }

@@ -108,18 +108,25 @@ impl fmt::Display for ArrayIndexError {
 impl std::error::Error for ArrayIndexError {}
 
 #[derive(Debug)]
-pub struct FieldArrayStore<Item> {
+pub struct FieldArrayStore<Item, Value = Item>
+where
+    Value: Clone + PartialEq + 'static,
+{
     path: FieldPath,
     items: Vec<FieldArrayItem<Item>>,
     id_generator: FormItemIdGenerator,
     array_revision: u64,
+    default_values: Vec<Value>,
     meta: FieldMeta,
     required: bool,
     errors: Vec<FieldError>,
     subscriptions: SubscriptionSet,
 }
 
-impl<Item> FieldArrayStore<Item> {
+impl<Item> FieldArrayStore<Item, Item>
+where
+    Item: Clone + PartialEq + 'static,
+{
     pub fn new(path: impl Into<FieldPath>, items: impl IntoIterator<Item = Item>) -> Self {
         let mut generator = FormItemIdGenerator::default();
         Self::from_items_with_generator(path, items, &mut generator)
@@ -130,17 +137,52 @@ impl<Item> FieldArrayStore<Item> {
         items: impl IntoIterator<Item = Item>,
         generator: &mut FormItemIdGenerator,
     ) -> Self {
-        let items = items
-            .into_iter()
+        let values = items.into_iter().collect::<Vec<_>>();
+        let items = values
+            .iter()
+            .cloned()
             .enumerate()
             .map(|(index, item)| FieldArrayItem::new(generator.generate(), index, item))
-            .collect();
+            .collect::<Vec<_>>();
 
         Self {
             path: path.into(),
             items,
             id_generator: generator.clone(),
             array_revision: 0,
+            default_values: values,
+            meta: FieldMeta::default(),
+            required: false,
+            errors: Vec::new(),
+            subscriptions: SubscriptionSet::default(),
+        }
+    }
+
+    pub fn replace(&mut self, items: impl IntoIterator<Item = Item>) {
+        let values = items.into_iter().collect::<Vec<_>>();
+        self.replace_items(values.clone());
+        self.refresh_meta_from_values(values, Vec::<FieldMeta>::new());
+    }
+
+    pub fn reset(&mut self, items: impl IntoIterator<Item = Item>) {
+        let values = items.into_iter().collect::<Vec<_>>();
+        self.reset_items(values.clone());
+        self.rebase_default_values(values.clone());
+        self.refresh_meta_from_values(values, Vec::<FieldMeta>::new());
+    }
+}
+
+impl<Item, Value> FieldArrayStore<Item, Value>
+where
+    Value: Clone + PartialEq + 'static,
+{
+    pub fn empty(path: impl Into<FieldPath>) -> Self {
+        Self {
+            path: path.into(),
+            items: Vec::new(),
+            id_generator: FormItemIdGenerator::default(),
+            array_revision: 0,
+            default_values: Vec::new(),
             meta: FieldMeta::default(),
             required: false,
             errors: Vec::new(),
@@ -204,6 +246,19 @@ impl<Item> FieldArrayStore<Item> {
         self.meta = meta;
     }
 
+    pub fn default_values(&self) -> &[Value] {
+        &self.default_values
+    }
+
+    pub fn set_default_values(&mut self, values: Vec<Value>) {
+        self.default_values = values;
+    }
+
+    pub fn rebase_default_values(&mut self, values: Vec<Value>) {
+        self.default_values = values;
+        self.array_revision = 0;
+    }
+
     pub fn errors(&self) -> &[FieldError] {
         &self.errors
     }
@@ -223,6 +278,26 @@ impl<Item> FieldArrayStore<Item> {
 
     pub fn array_revision(&self) -> u64 {
         self.array_revision
+    }
+
+    pub fn append_initial(&mut self, item: Item) -> FormItemId {
+        let id = self.id_generator.generate();
+        let index = self.items.len();
+        self.items.push(FieldArrayItem::new(id, index, item));
+        id
+    }
+
+    pub fn replace_items(&mut self, items: impl IntoIterator<Item = Item>) -> Vec<FormItemId> {
+        let ids = self.rebuild_items(items);
+        self.bump_revision();
+        ids
+    }
+
+    pub fn reset_items(&mut self, items: impl IntoIterator<Item = Item>) -> Vec<FormItemId> {
+        let ids = self.rebuild_items(items);
+        self.array_revision = 0;
+        self.meta = FieldMeta::default();
+        ids
     }
 
     pub fn append(&mut self, item: Item) -> FormItemId {
@@ -323,30 +398,36 @@ impl<Item> FieldArrayStore<Item> {
         Ok(id)
     }
 
-    pub fn replace(&mut self, items: impl IntoIterator<Item = Item>) {
-        self.items.clear();
-        self.id_generator = FormItemIdGenerator::default();
-        let mut next_items = Vec::new();
-        for (index, item) in items.into_iter().enumerate() {
-            next_items.push(FieldArrayItem::new(
-                self.id_generator.generate(),
-                index,
-                item,
-            ));
-        }
-        self.items = next_items;
-        self.meta = FieldMeta::default();
-        self.errors.clear();
-        self.bump_revision();
-    }
-
-    pub fn reset(&mut self, items: impl IntoIterator<Item = Item>) {
-        self.replace(items);
-    }
-
     pub fn clear_errors(&mut self) {
         self.errors.clear();
         self.meta.set_valid(true);
+    }
+
+    pub fn refresh_meta_from_values(
+        &mut self,
+        current_values: impl IntoIterator<Item = Value>,
+        child_metas: impl IntoIterator<Item = FieldMeta>,
+    ) {
+        let current_values = current_values.into_iter().collect::<Vec<_>>();
+        let structural_dirty = current_values != self.default_values;
+        let mut meta = FieldMeta::default();
+
+        for child_meta in child_metas {
+            meta.is_dirty |= child_meta.is_dirty;
+            meta.is_touched |= child_meta.is_touched;
+            meta.is_blurred |= child_meta.is_blurred;
+            meta.is_validating |= child_meta.is_validating;
+            meta.is_valid &= child_meta.is_valid;
+        }
+
+        meta.is_dirty |= structural_dirty;
+        meta.is_touched |= self.array_revision > 0;
+        meta.is_default_value = !structural_dirty;
+        meta.is_pristine = !meta.is_dirty;
+        if !self.errors.is_empty() {
+            meta.set_valid(false);
+        }
+        self.meta = meta;
     }
 
     fn reindex(&mut self) {
@@ -355,9 +436,22 @@ impl<Item> FieldArrayStore<Item> {
         }
     }
 
+    fn rebuild_items(&mut self, items: impl IntoIterator<Item = Item>) -> Vec<FormItemId> {
+        self.items.clear();
+        self.id_generator = FormItemIdGenerator::default();
+        self.errors.clear();
+
+        let mut ids = Vec::new();
+        for (index, item) in items.into_iter().enumerate() {
+            let id = self.id_generator.generate();
+            self.items.push(FieldArrayItem::new(id, index, item));
+            ids.push(id);
+        }
+        ids
+    }
+
     fn bump_revision(&mut self) {
         self.array_revision = self.array_revision.saturating_add(1);
         self.meta.mark_touched();
-        self.meta.mark_dirty(false);
     }
 }

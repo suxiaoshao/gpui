@@ -1,7 +1,16 @@
 use gpui_form::{
-    FieldArrayStore, FieldChangeCause, FieldPath, FormField, FormItemId, FormItemIdGenerator,
-    ValueFieldStore,
+    FieldArrayStore, FieldChangeCause, FieldMeta, FieldPath, FormField, FormItemId,
+    FormItemIdGenerator, ValueFieldStore,
 };
+
+fn refresh_array_meta(array: &mut FieldArrayStore<&'static str>) {
+    let values = array
+        .items()
+        .iter()
+        .map(|item| item.item)
+        .collect::<Vec<_>>();
+    array.refresh_meta_from_values(values, Vec::<FieldMeta>::new());
+}
 
 #[test]
 fn form_item_id_generator_uses_monotonic_u64_newtype() {
@@ -32,6 +41,55 @@ fn field_array_preserves_ids_on_reorder_and_rebuilds_on_reset() {
 
     array.reset(["x", "y"]);
     assert_eq!(array.ids(), vec![FormItemId::new(1), FormItemId::new(2)]);
+}
+
+#[test]
+fn field_array_meta_tracks_structural_dirty_against_default_values() {
+    let mut array = FieldArrayStore::new(FieldPath::from_static("headers"), ["a", "b"]);
+    refresh_array_meta(&mut array);
+    assert!(array.meta().is_pristine);
+    assert!(array.meta().is_default_value);
+
+    array.append("c");
+    refresh_array_meta(&mut array);
+    assert!(array.meta().is_dirty);
+    assert!(array.meta().is_touched);
+    assert!(!array.meta().is_default_value);
+
+    let removed = array.remove(2).unwrap();
+    assert_eq!(removed.item, "c");
+    refresh_array_meta(&mut array);
+    assert!(!array.meta().is_dirty);
+    assert!(array.meta().is_pristine);
+    assert!(array.meta().is_touched);
+    assert!(array.meta().is_default_value);
+
+    array.move_item(0, 1).unwrap();
+    refresh_array_meta(&mut array);
+    assert!(array.meta().is_dirty);
+    assert!(!array.meta().is_default_value);
+
+    array.move_item(1, 0).unwrap();
+    refresh_array_meta(&mut array);
+    assert!(!array.meta().is_dirty);
+    assert!(array.meta().is_touched);
+    assert!(array.meta().is_default_value);
+
+    array.replace(Vec::<&'static str>::new());
+    assert!(array.meta().is_dirty);
+    assert!(array.meta().is_touched);
+    assert!(!array.meta().is_default_value);
+
+    array.replace(["a", "b"]);
+    assert!(!array.meta().is_dirty);
+    assert!(array.meta().is_touched);
+    assert!(array.meta().is_default_value);
+
+    array.reset(["x"]);
+    assert!(!array.meta().is_dirty);
+    assert!(!array.meta().is_touched);
+    assert!(array.meta().is_default_value);
+    assert_eq!(array.default_values(), &["x"]);
 }
 
 #[test]
