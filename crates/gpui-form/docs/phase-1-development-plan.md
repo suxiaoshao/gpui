@@ -672,15 +672,15 @@ pub struct FormMeta {
     pub is_touched: bool,
     pub is_blurred: bool,
     pub is_validating: bool,
-    pub is_submitting: bool,
     pub last_submit_outcome: Option<SubmitOutcome>,
     pub submission_attempts: u32,
 }
 ```
 
 - `FieldMeta::is_pristine()` 和 `FormMeta::is_pristine()` 由 `!is_dirty` 计算。
-- `FormMeta::can_attempt_submit()` 由 `!is_submitting && !is_validating` 计算，只表示运行态允许尝试提交，
-  不表示数据合法。
+- `is_submitting` 不进入 `FormMeta`；`FormStore::is_submitting()` 由 `SubmitRuntime.task.is_some()` 计算。
+- `FormStore::can_attempt_submit()` 由 `!submit_runtime.is_submitting() && !form_meta.is_validating`
+  计算，只表示运行态允许尝试提交，不表示数据合法。
 - `is_valid` 不进入 meta；字段/form 合法性由 `FieldError::is_error`、`FormError::is_error` 和最终
   `FormValidationReport::is_valid()` 派生。
 
@@ -947,7 +947,7 @@ blur 时：
 
 submit 时：
 
-- 表单设置 `is_submitting = true`，`submission_attempts += 1`。
+- 表单把 `SubmitRuntime.task` 作为 submit loading 的唯一事实源，并记录 `submission_attempts += 1`。
 - 递归执行 `prepare_submit`，内置 number input 会重新读取当前 raw text；若 parse 失败，写入
   `ValidationSource::Internal` field error，返回 invalid preflight report，不执行 normalize。
 - number preflight parse 成功时可同步 typed draft，但 dirty/default 仍从 raw input 基线计算；normalize 写回后再用
@@ -960,10 +960,9 @@ submit 时：
 - 执行 app-defined form validator。
 - 把 adapter report 写回字段/form errors 后，用 `current_validation_report` 从当前 store 状态构造
   final report；internal field errors 会保留在 final report 中。
-- 若失败：`is_submitting = false`，`last_submit_outcome = Some(Failure)`，返回 final report 并聚焦首个
+- 若失败：清空 `SubmitRuntime.task`，设置 `last_submit_outcome = Some(Failure)`，返回 final report 并聚焦首个
   error 字段。
-- 若成功：返回 normalized `Output`，`is_submitting = false`，
-  `last_submit_outcome = Some(Success)`。
+- 若成功：返回 normalized `Output`，清空 `SubmitRuntime.task`，设置 `last_submit_outcome = Some(Success)`。
 
 外部数据刷新：
 

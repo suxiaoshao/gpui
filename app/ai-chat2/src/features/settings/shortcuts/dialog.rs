@@ -20,6 +20,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+use gpui_form::{FormStore as _, SubmitError};
 use std::rc::Rc;
 
 use super::super::push_settings_error;
@@ -57,6 +58,17 @@ pub(super) struct ShortcutEditDialogState {
     temporary_hotkey: Option<String>,
 }
 
+enum ShortcutSaveError {
+    Field {
+        field: ShortcutEditFormField,
+        error: ShortcutValidationError,
+    },
+    Notify {
+        title_key: &'static str,
+        message: String,
+    },
+}
+
 pub(super) struct ShortcutDialogChoices {
     pub(super) prompts: Vec<PromptChoice>,
     pub(super) models: Vec<ProviderModelChoice>,
@@ -87,67 +99,84 @@ impl ShortcutEditDialogState {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let draft = self.form.update(cx, |form, cx| {
+        let mode = self.mode;
+        let shortcut_id = self.shortcut_id.clone();
+        let existing_shortcuts = self.existing_shortcuts.clone();
+        let temporary_hotkey = self.temporary_hotkey.clone();
+        let result = self.form.update(cx, |form, cx| {
             form.clear_all_errors(cx);
-            form.draft()
-        });
-        let hotkey = match validate_shortcut_hotkey(
-            draft.hotkey,
-            self.shortcut_id.as_ref(),
-            &self.existing_shortcuts,
-            self.temporary_hotkey.as_deref(),
-        ) {
-            Ok(hotkey) => hotkey,
-            Err(err) => {
-                self.apply_field_error(ShortcutEditFormField::Hotkey, err, cx);
-                return false;
-            }
-        };
-        let prompt_id = draft.prompt.selected;
-        let Some(model_key) = draft.model.selected else {
-            self.apply_field_error(
-                ShortcutEditFormField::Model,
-                ShortcutValidationError::ModelRequired,
+            form.submit_sync(
+                move |draft, window, cx| {
+                    let hotkey = validate_shortcut_hotkey(
+                        draft.hotkey,
+                        shortcut_id.as_ref(),
+                        &existing_shortcuts,
+                        temporary_hotkey.as_deref(),
+                    )
+                    .map_err(|error| ShortcutSaveError::Field {
+                        field: ShortcutEditFormField::Hotkey,
+                        error,
+                    })?;
+                    let prompt_id = draft.prompt.selected;
+                    let Some(model_key) = draft.model.selected else {
+                        return Err(ShortcutSaveError::Field {
+                            field: ShortcutEditFormField::Model,
+                            error: ShortcutValidationError::ModelRequired,
+                        });
+                    };
+                    let shortcut_draft = ShortcutDraft {
+                        hotkey,
+                        enabled: draft.enabled,
+                        prompt_id,
+                        provider_id: model_key.provider_id,
+                        model_id: model_key.model_id,
+                        input_source: draft.input_source,
+                    };
+                    let result = match mode {
+                        ShortcutEditMode::Create => {
+                            state::shortcuts::create_shortcut(cx, shortcut_draft)
+                        }
+                        ShortcutEditMode::Edit => {
+                            let Some(shortcut_id) = shortcut_id.as_ref() else {
+                                return Err(ShortcutSaveError::Notify {
+                                    title_key: "notify-save-shortcut-failed",
+                                    message: "shortcut id is missing".to_string(),
+                                });
+                            };
+                            state::shortcuts::update_shortcut(cx, shortcut_id, shortcut_draft)
+                        }
+                    };
+
+                    result.map_err(|err| ShortcutSaveError::Notify {
+                        title_key: "notify-save-shortcut-failed",
+                        message: err.to_string(),
+                    })?;
+                    window.push_notification(
+                        Notification::new()
+                            .title(cx.global::<I18n>().t(match mode {
+                                ShortcutEditMode::Create => "notify-shortcut-created",
+                                ShortcutEditMode::Edit => "notify-shortcut-updated",
+                            }))
+                            .with_type(NotificationType::Success),
+                        cx,
+                    );
+                    Ok(())
+                },
+                window,
                 cx,
-            );
-            return false;
-        };
-        let shortcut_draft = ShortcutDraft {
-            hotkey,
-            enabled: draft.enabled,
-            prompt_id,
-            provider_id: model_key.provider_id,
-            model_id: model_key.model_id,
-            input_source: draft.input_source,
-        };
-        let result = match self.mode {
-            ShortcutEditMode::Create => state::shortcuts::create_shortcut(cx, shortcut_draft),
-            ShortcutEditMode::Edit => {
-                let Some(shortcut_id) = self.shortcut_id.as_ref() else {
-                    let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
-                    push_settings_error(window, cx, title, "shortcut id is missing");
-                    return false;
-                };
-                state::shortcuts::update_shortcut(cx, shortcut_id, shortcut_draft)
-            }
-        };
+            )
+        });
 
         match result {
-            Ok(_) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t(match self.mode {
-                            ShortcutEditMode::Create => "notify-shortcut-created",
-                            ShortcutEditMode::Edit => "notify-shortcut-updated",
-                        }))
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
-                true
+            Ok(()) => true,
+            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => false,
+            Err(SubmitError::Handler(ShortcutSaveError::Field { field, error })) => {
+                self.apply_field_error(field, error, cx);
+                false
             }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
-                push_settings_error(window, cx, title, err);
+            Err(SubmitError::Handler(ShortcutSaveError::Notify { title_key, message })) => {
+                let title = cx.global::<I18n>().t(title_key);
+                push_settings_error(window, cx, title, message);
                 false
             }
         }

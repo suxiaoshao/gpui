@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ai_chat_core::{
     ModelCapabilitiesSnapshot, ProviderId, ProviderModelId, ProviderModelMetadata,
-    ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
+    ProviderSecretRefs,
 };
 use gpui::{Entity, SharedString, Subscription};
 use gpui_component::input::InputState;
@@ -42,30 +42,6 @@ pub(super) struct ProviderDraft {
 }
 
 impl ProviderDraft {
-    pub(super) fn settings_payload(&self) -> ProviderSettingsPayload {
-        ProviderSettingsPayload {
-            provider_kind: self.kind.as_str().to_string(),
-            fields: self
-                .fields
-                .iter()
-                .map(|(key, value)| ProviderSettingFieldValue {
-                    key: key.clone(),
-                    value: match value {
-                        ProviderDraftValue::String(value) => ProviderSettingValue::String {
-                            value: value.clone(),
-                        },
-                        ProviderDraftValue::Bool(value) => {
-                            ProviderSettingValue::Bool { value: *value }
-                        }
-                        ProviderDraftValue::Number(value) => {
-                            ProviderSettingValue::Number { value: *value }
-                        }
-                    },
-                })
-                .collect(),
-        }
-    }
-
     pub(super) fn field_string(&self, key: &str) -> String {
         match self.fields.get(key) {
             Some(ProviderDraftValue::String(value)) => value.clone(),

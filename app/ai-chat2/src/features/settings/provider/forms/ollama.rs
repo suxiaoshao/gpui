@@ -1,5 +1,6 @@
 type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
 type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
+type SecretInputBinding = super::ProviderSecretInputBinding;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = OllamaProviderFormStore)]
@@ -15,11 +16,11 @@ pub(in crate::features::settings::provider) struct OllamaProviderFormInput {
     )]
     pub(super) base_url: String,
     #[form(
-        binding = "StringInputBinding",
+        binding = "SecretInputBinding",
         label = "provider-field-bearer-token",
         placeholder = "provider-placeholder-bearer-token",
         mask,
         validate(on_change, on_blur, on_submit)
     )]
-    pub(super) bearer_token: String,
+    pub(super) bearer_token: super::ProviderSecretValue,
 }

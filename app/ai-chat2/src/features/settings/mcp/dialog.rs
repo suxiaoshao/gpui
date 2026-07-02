@@ -25,8 +25,8 @@ use gpui_component::{
     v_flex,
 };
 use gpui_form::{
-    ErrorParamValue, FieldError, FormField, FormItemId, FormMeta, ValidationSource,
-    ValidationTrigger,
+    ErrorParamValue, FieldError, FormField, FormItemId, FormMeta, FormStore as _, SubmitError,
+    ValidationSource, ValidationTrigger,
 };
 use std::{
     collections::BTreeSet,
@@ -43,7 +43,10 @@ use super::{
         McpArgRowFormField, McpEnvHeaderRowFormField, McpEnvRowFormField, McpEnvVarRowFormField,
         McpHeaderRowFormField, McpServerFormDraft, McpServerFormField,
     },
-    validation::{McpFormField, McpFormValidationError, validate_mcp_form},
+    validation::{
+        McpFormField, McpFormValidationError, McpSubmitValidationContext,
+        validate_mcp_submit_output,
+    },
 };
 
 static NEXT_DRAFT_OAUTH_KEY: AtomicU64 = AtomicU64::new(1);
@@ -82,7 +85,6 @@ pub(super) struct McpServerEditDialogState {
     draft_oauth_status_key: String,
     draft_oauth_credential_key: Option<state::mcp_oauth::CredentialsKey>,
     draft_oauth_credential_keys: BTreeSet<state::mcp_oauth::CredentialsKey>,
-    save_task: Option<Task<()>>,
     sign_out_task: Option<Task<()>>,
 }
 
@@ -146,7 +148,6 @@ impl McpServerEditDialogState {
             ),
             draft_oauth_credential_key: None,
             draft_oauth_credential_keys: BTreeSet::new(),
-            save_task: None,
             sign_out_task: None,
         }
     }
@@ -163,16 +164,16 @@ impl McpServerEditDialogState {
         input.update(cx, |input, cx| input.focus(window, cx));
     }
 
-    fn is_saving(&self) -> bool {
-        self.save_task.is_some()
+    fn is_saving(&self, cx: &App) -> bool {
+        self.draft.form.read(cx).is_submitting()
     }
 
     fn is_signing_out(&self) -> bool {
         self.sign_out_task.is_some()
     }
 
-    fn is_busy(&self) -> bool {
-        self.is_saving() || self.is_signing_out()
+    fn is_busy(&self, cx: &App) -> bool {
+        self.is_saving(cx) || self.is_signing_out()
     }
 
     fn is_oauth_signing_in(&self, cx: &App) -> bool {
@@ -180,7 +181,7 @@ impl McpServerEditDialogState {
     }
 
     fn is_dialog_blocked(&self, cx: &App) -> bool {
-        self.is_busy() || self.is_oauth_signing_in(cx)
+        self.is_busy(cx) || self.is_oauth_signing_in(cx)
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -192,55 +193,91 @@ impl McpServerEditDialogState {
             config.mcp_servers.keys().cloned().collect::<Vec<_>>()
         });
         self.clear_form_errors(cx);
-        let validation_errors = validate_mcp_form(
-            &self.draft,
-            original_server_id.as_deref(),
-            self.original_config.as_ref(),
-            &existing_server_ids,
-            cx,
-        );
-        if !validation_errors.is_empty() {
-            self.apply_validation_errors(validation_errors, cx);
-            cx.notify();
-            return false;
-        }
 
-        let server_id = self.draft.server_id(original_server_id.as_deref(), cx);
-        let server = self
-            .draft
-            .merge_into_config(self.original_config.as_ref(), cx);
-        let saved_server = server.clone();
-        let saved_auth = self.oauth_status_after_save(&server_id, &saved_server, cx);
-        let credential_keys_to_delete = oauth_credential_keys_to_delete(
-            original_server_id.as_deref(),
-            self.original_config.as_ref(),
-            &server_id,
-            &saved_server,
-            &self.draft_oauth_credential_keys,
-            self.promoted_draft_oauth_key(&server_id, &saved_server),
-        );
-        let request = McpServerSaveRequest {
-            original_server_id,
-            server_id,
-            server,
-            saved_auth,
-            credential_keys_to_delete,
-            success_title_key: match &self.mode {
-                McpServerEditMode::Create => "mcp-notify-server-created",
-                McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
-            },
+        let original_config = self.original_config.clone();
+        let submit_row_ids = self.draft.submit_row_ids(cx);
+        let draft_oauth_credential_key = self.draft_oauth_credential_key.clone();
+        let draft_oauth_credential_keys = self.draft_oauth_credential_keys.clone();
+        let draft_oauth_status_key = self.draft_oauth_status_key.clone();
+        let success_title_key = match &self.mode {
+            McpServerEditMode::Create => "mcp-notify-server-created",
+            McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
         };
-
         let form = cx.entity().downgrade();
-        let task = window.spawn(cx, async move |cx| {
-            let result = delete_oauth_credentials_for_save(request, cx).await;
-            if let Err(err) = form.update_in(cx, |form, window, cx| {
-                form.finish_save(result, window, cx);
-            }) {
-                event!(Level::ERROR, error = ?err, "finish mcp server save failed");
-            }
+        let start = self.draft.form.update(cx, |form_store, cx| {
+            form_store.submit_async(
+                move |output, window, cx| {
+                    let validation_errors = validate_mcp_submit_output(
+                        &output,
+                        McpSubmitValidationContext {
+                            original_server_id: original_server_id.as_deref(),
+                            existing_server_ids: &existing_server_ids,
+                            row_ids: &submit_row_ids,
+                        },
+                    );
+                    if !validation_errors.is_empty() {
+                        return Err(validation_errors);
+                    }
+                    let server_id = output.server_id(original_server_id.as_deref());
+                    let server = output.merge_into_config(original_config.as_ref());
+                    let saved_server = server.clone();
+                    let saved_auth = oauth_status_after_save(
+                        draft_oauth_credential_key.as_ref(),
+                        &draft_oauth_status_key,
+                        original_server_id.as_deref(),
+                        original_config.as_ref(),
+                        &server_id,
+                        &saved_server,
+                        cx,
+                    );
+                    let credential_keys_to_delete = oauth_credential_keys_to_delete(
+                        original_server_id.as_deref(),
+                        original_config.as_ref(),
+                        &server_id,
+                        &saved_server,
+                        &draft_oauth_credential_keys,
+                        promoted_draft_oauth_key(
+                            draft_oauth_credential_key.as_ref(),
+                            &server_id,
+                            &saved_server,
+                        ),
+                    );
+                    let request = McpServerSaveRequest {
+                        original_server_id,
+                        server_id,
+                        server,
+                        saved_auth,
+                        credential_keys_to_delete,
+                        success_title_key,
+                    };
+                    Ok(window.spawn(cx, async move |cx| {
+                        let result = delete_oauth_credentials_for_save(request, cx).await;
+                        match form
+                            .update_in(cx, |form, window, cx| form.finish_save(result, window, cx))
+                        {
+                            Ok(result) => result,
+                            Err(err) => {
+                                event!(Level::ERROR, error = ?err, "finish mcp server save failed");
+                                Err(err.to_string())
+                            }
+                        }
+                    }))
+                },
+                window,
+                cx,
+            )
         });
-        self.save_task = Some(task);
+        match start {
+            Ok(gpui_form::SubmitStart::Started) => {}
+            Err(SubmitError::Handler(validation_errors)) => {
+                self.apply_validation_errors(validation_errors, cx);
+                cx.notify();
+                return false;
+            }
+            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => {
+                return false;
+            }
+        }
         cx.notify();
         false
     }
@@ -250,19 +287,19 @@ impl McpServerEditDialogState {
         result: Result<McpServerSaveRequest, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        self.save_task = None;
+    ) -> Result<(), String> {
         let request = match result {
             Ok(request) => request,
             Err(err) => {
                 let title = cx.global::<I18n>().t("mcp-notify-save-failed");
-                push_settings_error(window, cx, title, err);
+                push_settings_error(window, cx, title, err.clone());
                 cx.notify();
-                return;
+                return Err(err);
             }
         };
 
         let saved_server = request.server.clone();
+        let saved_server_id = request.server_id.clone();
         match state::config::upsert_mcp_server(
             cx,
             request.original_server_id.as_deref(),
@@ -273,7 +310,12 @@ impl McpServerEditDialogState {
                 if let Some(original_server_id) = request.original_server_id {
                     disconnect_server(original_server_id, window, cx);
                 }
-                self.finish_oauth_after_save(&saved_server, request.saved_auth, cx);
+                self.finish_oauth_after_save(
+                    &saved_server_id,
+                    &saved_server,
+                    request.saved_auth,
+                    cx,
+                );
                 self.clear_form_errors(cx);
                 window.push_notification(
                     Notification::new()
@@ -285,63 +327,24 @@ impl McpServerEditDialogState {
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                let message = err.to_string();
                 push_settings_error(window, cx, title, err);
+                cx.notify();
+                return Err(message);
             }
         }
         cx.notify();
-    }
-
-    fn oauth_status_after_save(
-        &self,
-        server_id: &str,
-        saved_server: &McpServerTomlConfig,
-        cx: &App,
-    ) -> McpOAuthStatusSnapshot {
-        let saved_key = oauth_credential_key_for_server(server_id, saved_server);
-        if saved_key.is_some()
-            && self.draft_oauth_credential_key.as_ref() == saved_key.as_ref()
-            && let Some(auth) = state::mcp::runtime(cx)
-                .read(cx)
-                .auth_status(&self.draft_oauth_status_key)
-        {
-            return auth;
-        }
-
-        if saved_key.is_some()
-            && let Some(original_server_id) = self.mode.original_server_id()
-            && self
-                .original_config
-                .as_ref()
-                .and_then(|server| oauth_credential_key_for_server(original_server_id, server))
-                .as_ref()
-                == saved_key.as_ref()
-        {
-            let status_key = self.mode.original_server_id().unwrap_or(server_id);
-            if let Some(auth) = state::mcp::runtime(cx).read(cx).auth_status(status_key) {
-                return auth;
-            }
-        }
-
-        configured_oauth_status(saved_server)
-    }
-
-    fn promoted_draft_oauth_key(
-        &self,
-        server_id: &str,
-        saved_server: &McpServerTomlConfig,
-    ) -> Option<state::mcp_oauth::CredentialsKey> {
-        let saved_key = oauth_credential_key_for_server(server_id, saved_server)?;
-        (self.draft_oauth_credential_key.as_ref() == Some(&saved_key)).then_some(saved_key)
+        Ok(())
     }
 
     fn finish_oauth_after_save(
         &mut self,
+        server_id: &str,
         saved_server: &McpServerTomlConfig,
         saved_auth: McpOAuthStatusSnapshot,
         cx: &mut Context<Self>,
     ) {
-        let server_id = self.draft.server_id(self.mode.original_server_id(), cx);
-        let saved_key = oauth_credential_key_for_server(&server_id, saved_server);
+        let saved_key = oauth_credential_key_for_server(server_id, saved_server);
         let promote_draft =
             saved_key.is_some() && self.draft_oauth_credential_key.as_ref() == saved_key.as_ref();
 
@@ -349,7 +352,7 @@ impl McpServerEditDialogState {
             state::mcp::runtime(cx).update(cx, |runtime, cx| {
                 runtime.promote_draft_oauth_authorization(
                     &self.draft_oauth_status_key,
-                    server_id.clone(),
+                    server_id.to_string(),
                     saved_server.clone(),
                     cx,
                 );
@@ -362,7 +365,12 @@ impl McpServerEditDialogState {
         }
 
         state::mcp::runtime(cx).update(cx, |runtime, cx| {
-            runtime.replace_saved_server_status(server_id, saved_server, saved_auth, cx);
+            runtime.replace_saved_server_status(
+                server_id.to_string(),
+                saved_server,
+                saved_auth,
+                cx,
+            );
         });
 
         self.draft_oauth_credential_keys.clear();
@@ -465,7 +473,7 @@ impl McpServerEditDialogState {
     }
 
     fn sign_out_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_busy() {
+        if self.is_busy(cx) {
             return;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -608,7 +616,7 @@ impl McpServerEditDialogState {
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
         let signing_out = self.is_signing_out();
-        let busy = self.is_busy();
+        let busy = self.is_busy(cx);
         let can_authorize =
             can_authorize_draft_oauth(&self.draft, self.mode.original_server_id(), cx);
         let status_text = oauth_status_text(
@@ -1256,7 +1264,7 @@ pub(super) fn open_mcp_server_edit_dialog(
             .max(px(360.))
             .min(px(760.));
         let form_state = form.read(cx);
-        let saving = form_state.is_saving();
+        let saving = form_state.is_saving(cx);
         let dialog_blocked = form_state.is_dialog_blocked(cx);
         dialog
             .title(title.clone())
@@ -1535,6 +1543,50 @@ fn can_authorize_draft_oauth(
         &server_id,
         input.url.trim(),
     )
+}
+
+fn oauth_status_after_save(
+    draft_oauth_credential_key: Option<&state::mcp_oauth::CredentialsKey>,
+    draft_oauth_status_key: &str,
+    original_server_id: Option<&str>,
+    original_config: Option<&McpServerTomlConfig>,
+    server_id: &str,
+    saved_server: &McpServerTomlConfig,
+    cx: &App,
+) -> McpOAuthStatusSnapshot {
+    let saved_key = oauth_credential_key_for_server(server_id, saved_server);
+    if saved_key.is_some()
+        && draft_oauth_credential_key == saved_key.as_ref()
+        && let Some(auth) = state::mcp::runtime(cx)
+            .read(cx)
+            .auth_status(draft_oauth_status_key)
+    {
+        return auth;
+    }
+
+    if saved_key.is_some()
+        && let Some(original_server_id) = original_server_id
+        && original_config
+            .and_then(|server| oauth_credential_key_for_server(original_server_id, server))
+            .as_ref()
+            == saved_key.as_ref()
+        && let Some(auth) = state::mcp::runtime(cx)
+            .read(cx)
+            .auth_status(original_server_id)
+    {
+        return auth;
+    }
+
+    configured_oauth_status(saved_server)
+}
+
+fn promoted_draft_oauth_key(
+    draft_oauth_credential_key: Option<&state::mcp_oauth::CredentialsKey>,
+    server_id: &str,
+    saved_server: &McpServerTomlConfig,
+) -> Option<state::mcp_oauth::CredentialsKey> {
+    let saved_key = oauth_credential_key_for_server(server_id, saved_server)?;
+    (draft_oauth_credential_key == Some(&saved_key)).then_some(saved_key)
 }
 
 fn can_authorize_oauth_values(
@@ -1830,7 +1882,7 @@ mod tests {
             assert!(form.read(cx).is_oauth_signing_in(cx));
             assert!(form.read(cx).is_dialog_blocked(cx));
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
-            assert!(form.read(cx).save_task.is_none());
+            assert!(!form.read(cx).draft.form.read(cx).is_submitting());
         });
     }
 

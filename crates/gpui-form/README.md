@@ -460,15 +460,16 @@ pub struct FormMeta {
     pub is_dirty: bool,
     pub is_touched: bool,
     pub is_validating: bool,
-    pub is_submitting: bool,
     pub last_submit_outcome: Option<SubmitOutcome>,
     pub submission_attempts: u32,
 }
 ```
 
-`is_pristine()` and `can_attempt_submit()` are computed methods. Field/form validity
-comes from the current `FieldError` / `FormError` set and the final
-`FormValidationReport`, not from cached meta booleans.
+`FormMeta::is_pristine()` is computed from the meta snapshot. Submit runtime
+queries such as `FormStore::is_submitting()` and `FormStore::can_attempt_submit()`
+are computed from the store's `SubmitRuntime` and current meta snapshot.
+Field/form validity comes from the current `FieldError` / `FormError` set and
+the final `FormValidationReport`, not from cached meta booleans.
 
 ## Validation Triggers
 

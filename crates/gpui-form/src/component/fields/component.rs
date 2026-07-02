@@ -3,9 +3,8 @@ use std::marker::PhantomData;
 use gpui::{App, Entity, Window};
 
 use crate::{
-    AnyFormField, FieldChangeCause, FieldCore, FieldError, FieldMeta, FieldPath,
-    FieldValidationReport, FormComponentBinding, FormComponentEvent, FormField, FormMeta,
-    ValidationTrigger,
+    FieldChangeCause, FieldCore, FieldError, FieldMeta, FieldPath, FieldValidationReport,
+    FormComponentBinding, FormComponentEvent, FormField, FormMeta, ValidationTrigger,
 };
 
 pub enum FieldDraftSync<Value> {
@@ -351,40 +350,5 @@ where
 
     fn focus(&mut self, window: &mut Window, cx: &mut App) -> bool {
         Binding::focus(&self.state, window, cx)
-    }
-}
-
-impl<Value, Binding> AnyFormField for ComponentFieldStore<Value, Binding>
-where
-    Value: Clone + PartialEq + 'static,
-    Binding: FormComponentBinding<Value>,
-{
-    fn meta(&self) -> &FieldMeta {
-        self.core.meta()
-    }
-
-    fn is_required(&self) -> bool {
-        self.core.is_required()
-    }
-
-    fn errors(&self) -> &[FieldError] {
-        self.core.errors()
-    }
-
-    fn visible_errors(&self, form_meta: &FormMeta) -> Vec<&FieldError> {
-        self.core.visible_errors(form_meta)
-    }
-
-    fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.core.set_errors(errors);
-    }
-
-    fn clear_errors(&mut self) {
-        self.core.clear_errors();
-        self.parse_error = None;
-    }
-
-    fn focus_any(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        self.focus(window, cx)
     }
 }

@@ -58,16 +58,6 @@ pub trait FormField {
     fn focus(&mut self, window: &mut Window, cx: &mut App) -> bool;
 }
 
-pub trait AnyFormField {
-    fn meta(&self) -> &FieldMeta;
-    fn is_required(&self) -> bool;
-    fn errors(&self) -> &[FieldError];
-    fn visible_errors(&self, form_meta: &FormMeta) -> Vec<&FieldError>;
-    fn set_errors(&mut self, errors: Vec<FieldError>);
-    fn clear_errors(&mut self);
-    fn focus_any(&mut self, window: &mut Window, cx: &mut App) -> bool;
-}
-
 #[derive(Debug)]
 pub struct FieldCore<T>
 where
@@ -340,39 +330,6 @@ where
     }
 
     fn focus(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        false
-    }
-}
-
-impl<T> AnyFormField for ValueFieldStore<T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    fn meta(&self) -> &FieldMeta {
-        self.core.meta()
-    }
-
-    fn is_required(&self) -> bool {
-        self.core.is_required()
-    }
-
-    fn errors(&self) -> &[FieldError] {
-        self.core.errors()
-    }
-
-    fn visible_errors(&self, form_meta: &FormMeta) -> Vec<&FieldError> {
-        self.core.visible_errors(form_meta)
-    }
-
-    fn set_errors(&mut self, errors: Vec<FieldError>) {
-        self.core.set_errors(errors);
-    }
-
-    fn clear_errors(&mut self) {
-        self.core.clear_errors();
-    }
-
-    fn focus_any(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         false
     }
 }

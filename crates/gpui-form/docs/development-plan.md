@@ -19,6 +19,7 @@ binding 安装，宏只保留字段枚举、路径、accessor、setter、validat
 | `number-input-design.md` | number raw input dirty/default、typed `NumberInputPolicy` 和 `new_state(...)` 类型化配置记录；最终模型见 `binding-architecture.md`。 |
 | `validation-routing.md` | validation report 路由到普通字段、group 和 array 的路径归属规则。 |
 | `meta-and-submit-state.md` | `FieldMeta` / `FormMeta` 保存事实与派生查询边界，以及 submit final report 判定流程。 |
+| `submit-handler-design.md` | sync/async submit handler、submit task ownership、`is_submitting` 派生模型和 handler trait 取舍结论。 |
 
 ## 当前边界
 
@@ -27,21 +28,31 @@ binding 安装，宏只保留字段枚举、路径、accessor、setter、validat
 - `crates/gpui-form-macros` 负责 derive 属性解析和 generated glue code；不直接订阅组件 state。
 - `crates/gpui-form-gpui-component` 作为 adapter crate，负责 `gpui-component` 的 input、number、
   bool、select、combobox binding 以及对应组件事件订阅。
-- 接入 app 负责业务 validator、数据库/config/keychain 写回、UI row action、icon、i18n resolver 和全局状态。
+- 接入 app 负责业务 validator、数据库/config/keychain 写回、UI row action、icon、i18n resolver 和全局状态；
+  保存动作通过调用 submit 时传入的 handler 进入 `gpui-form` submit runtime。
 - `gpui-form` 不访问数据库、keychain、app runtime config 或网络数据源。
 - `required` 是 field metadata 和 UI marker 语义，不自动生成 required validation error。
 
 ## 近期优先级
 
-1. 继续收口 meta/submit 状态模型：`FieldMeta` / `FormMeta` 不保存合法性或 can-submit 这类第二事实源，
-   submit 只依据 final `FormValidationReport` 决定 `Ok`/`Err`，具体设计见 `meta-and-submit-state.md`。
-2. 继续完善 dynamic array 结构性 dirty/default-value 和 internal array error 语义，具体设计见
+1. 收敛 submit API：保留 `submit_sync(...)` / `submit_async(...)` 两套入口；handler 在调用 submit 时以
+   `FnOnce(Output, &mut Window, &mut App)` 传入，不存入 generated store。store 持有 submit `Task`，
+   `is_submitting` 从 `task.is_some()` 派生；同步提交不产生 loading，异步 task builder 同步失败时不创建
+   task。具体设计见 `submit-handler-design.md`。
+2. 清理无运行价值的 trait：删除 `FormState` 和 `FormFragment`；删除或隐藏 `AnyFormField`；
+   `GeneratedFormStore` 保留为 macro/internal helper，不作为用户-facing API 讲解。
+3. 继续收口 meta/submit 状态模型：`FieldMeta` / `FormMeta` 不保存合法性或 can-submit 这类第二事实源；
+   submit 成功只依据 final `FormValidationReport` 和 handler outcome。具体设计见
+   `meta-and-submit-state.md`。
+4. 继续完善 dynamic array 结构性 dirty/default-value 和 internal array error 语义，具体设计见
    `array-design.md`。
-3. 继续给 binding draft、array structural edits、number raw dirty 和 validation routing 增加 focused tests：
+5. 继续给 binding draft、array structural edits、number raw dirty、submit handler runtime 和 validation routing
+   增加 focused tests：
    invalid draft、typed-equal draft dirty、normalize writeback、binding-owned subscriptions、
-   append/remove/move/swap/replace、回到默认值、reset rebase、parent/child 同名字段。
-4. 继续保持 app-specific validation 在接入 app 内，不把 Provider/MCP/Prompt/Shortcut 的业务规则下沉到
-   `gpui-form`。
+   append/remove/move/swap/replace、回到默认值、reset rebase、parent/child 同名字段、async task lifecycle、
+   handler error mapping。
+6. 继续保持 app-specific validation 和持久化规则在接入 app 内，不把 Provider/MCP/Prompt/Shortcut 的业务规则
+   下沉到 `gpui-form`。
 
 ## 主题拆分规则
 

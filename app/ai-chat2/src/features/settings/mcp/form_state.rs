@@ -129,8 +129,84 @@ pub(super) struct McpServerFormInput {
     pub(super) oauth_enabled: bool,
 }
 
+impl McpServerFormInput {
+    pub(super) fn server_id(&self, _original_server_id: Option<&str>) -> String {
+        self.server_id.trim().to_string()
+    }
+
+    pub(super) fn merge_into_config(
+        self,
+        original_config: Option<&McpServerTomlConfig>,
+    ) -> McpServerTomlConfig {
+        let mut server = original_config.cloned().unwrap_or_default();
+        server.transport = self.transport;
+
+        match self.transport {
+            McpTransportKind::Stdio => {
+                server.command = optional_string(self.command);
+                server.args = self
+                    .args
+                    .into_iter()
+                    .filter_map(|row| optional_string(row.value))
+                    .collect();
+                server.env =
+                    pair_input_map(self.env.into_iter().map(|row| (row.key, row.value)), true);
+                server.env_vars = self
+                    .env_vars
+                    .into_iter()
+                    .filter_map(|row| optional_string(row.value))
+                    .collect();
+                server.cwd = optional_string(self.cwd).map(PathBuf::from);
+                server.oauth = None;
+            }
+            McpTransportKind::StreamableHttp => {
+                server.command = None;
+                server.args.clear();
+                server.env.clear();
+                server.env_vars.clear();
+                server.cwd = None;
+                server.url = optional_string(self.url);
+                server.bearer_token_env_var = optional_string(self.bearer_token_env_var);
+                server.headers = pair_input_map(
+                    self.headers.into_iter().map(|row| (row.name, row.value)),
+                    false,
+                );
+                server.env_headers = pair_input_map(
+                    self.env_headers
+                        .into_iter()
+                        .map(|row| (row.name, row.env_var)),
+                    false,
+                );
+                server.oauth = self.oauth_enabled.then(|| {
+                    server.oauth.clone().unwrap_or_else(|| {
+                        McpOAuthTomlConfig::AuthorizationCodePkce {
+                            scopes: Vec::new(),
+                            client_id: None,
+                            client_metadata_url: None,
+                            resource: None,
+                            callback_port: None,
+                            callback_url: None,
+                        }
+                    })
+                });
+            }
+        }
+
+        server
+    }
+}
+
 pub(super) struct McpServerFormDraft {
     pub(super) form: Entity<McpServerFormStore>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct McpSubmitRowIds {
+    pub(super) args: Vec<FormItemId>,
+    pub(super) env: Vec<FormItemId>,
+    pub(super) env_vars: Vec<FormItemId>,
+    pub(super) headers: Vec<FormItemId>,
+    pub(super) env_headers: Vec<FormItemId>,
 }
 
 impl McpServerFormDraft {
@@ -183,11 +259,15 @@ impl McpServerFormDraft {
     }
 
     pub(super) fn server_id(&self, _original_server_id: Option<&str>, cx: &App) -> String {
-        self.input(cx).server_id.trim().to_string()
+        self.input(cx).server_id(None)
     }
 
     pub(super) fn input(&self, cx: &App) -> McpServerFormInput {
         self.form.read(cx).draft()
+    }
+
+    pub(super) fn submit_row_ids(&self, cx: &App) -> McpSubmitRowIds {
+        self.form.read(cx).submit_row_ids()
     }
 
     pub(super) fn set_transport(
@@ -212,63 +292,7 @@ impl McpServerFormDraft {
         original_config: Option<&McpServerTomlConfig>,
         cx: &App,
     ) -> McpServerTomlConfig {
-        let mut server = original_config.cloned().unwrap_or_default();
-        let input = self.input(cx);
-        server.transport = input.transport;
-
-        match input.transport {
-            McpTransportKind::Stdio => {
-                server.command = optional_string(input.command);
-                server.args = input
-                    .args
-                    .into_iter()
-                    .filter_map(|row| optional_string(row.value))
-                    .collect();
-                server.env =
-                    pair_input_map(input.env.into_iter().map(|row| (row.key, row.value)), true);
-                server.env_vars = input
-                    .env_vars
-                    .into_iter()
-                    .filter_map(|row| optional_string(row.value))
-                    .collect();
-                server.cwd = optional_string(input.cwd).map(PathBuf::from);
-                server.oauth = None;
-            }
-            McpTransportKind::StreamableHttp => {
-                server.command = None;
-                server.args.clear();
-                server.env.clear();
-                server.env_vars.clear();
-                server.cwd = None;
-                server.url = optional_string(input.url);
-                server.bearer_token_env_var = optional_string(input.bearer_token_env_var);
-                server.headers = pair_input_map(
-                    input.headers.into_iter().map(|row| (row.name, row.value)),
-                    false,
-                );
-                server.env_headers = pair_input_map(
-                    input
-                        .env_headers
-                        .into_iter()
-                        .map(|row| (row.name, row.env_var)),
-                    false,
-                );
-                server.oauth = input.oauth_enabled.then(|| {
-                    server.oauth.clone().unwrap_or_else(|| {
-                        McpOAuthTomlConfig::AuthorizationCodePkce {
-                            scopes: Vec::new(),
-                            client_id: None,
-                            client_metadata_url: None,
-                            resource: None,
-                            callback_port: None,
-                            callback_url: None,
-                        }
-                    })
-                });
-            }
-        }
-
-        server
+        self.input(cx).merge_into_config(original_config)
     }
 
     pub(super) fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut App) {
@@ -369,6 +393,36 @@ impl McpServerFormDraft {
 }
 
 impl McpServerFormStore {
+    pub(super) fn submit_row_ids(&self) -> McpSubmitRowIds {
+        McpSubmitRowIds {
+            args: self
+                .args_values_with_id()
+                .into_iter()
+                .map(|row| row.id)
+                .collect(),
+            env: self
+                .env_values_with_id()
+                .into_iter()
+                .map(|row| row.id)
+                .collect(),
+            env_vars: self
+                .env_vars_values_with_id()
+                .into_iter()
+                .map(|row| row.id)
+                .collect(),
+            headers: self
+                .headers_values_with_id()
+                .into_iter()
+                .map(|row| row.id)
+                .collect(),
+            env_headers: self
+                .env_headers_values_with_id()
+                .into_iter()
+                .map(|row| row.id)
+                .collect(),
+        }
+    }
+
     pub(super) fn apply_arg_value_error(
         &mut self,
         row_id: FormItemId,

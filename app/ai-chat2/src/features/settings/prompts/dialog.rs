@@ -19,7 +19,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::{FieldChangeCause, FieldError, ValidationSource, ValidationTrigger};
+use gpui_form::{FieldError, FormStore as _, SubmitError, ValidationSource, ValidationTrigger};
 
 use super::super::push_settings_error;
 use super::form_state::{
@@ -48,6 +48,18 @@ pub(super) struct PromptEditDialogState {
     form: Entity<PromptEditFormStore>,
 }
 
+enum PromptSaveError {
+    Field {
+        field: PromptEditFormField,
+        code: &'static str,
+        message_key: &'static str,
+    },
+    Notify {
+        title_key: &'static str,
+        message: String,
+    },
+}
+
 impl PromptEditDialogState {
     fn new(
         mode: PromptEditMode,
@@ -74,71 +86,91 @@ impl PromptEditDialogState {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let draft = self.normalized_draft(window, cx);
-        let name = draft.name;
-        let content = draft.content;
+        let mode = self.mode;
+        let prompt_id = self.prompt_id.clone();
+        let result = self.form.update(cx, |form, cx| {
+            form.clear_all_errors(cx);
+            form.submit_sync(
+                move |mut draft, window, cx| {
+                    draft.name = draft.name.trim().to_string();
+                    draft.content = draft.content.trim().to_string();
+                    if draft.name.is_empty() {
+                        return Err(PromptSaveError::Field {
+                            field: PromptEditFormField::Name,
+                            code: "required",
+                            message_key: "prompt-validation-name-required",
+                        });
+                    }
+                    if draft.content.is_empty() {
+                        return Err(PromptSaveError::Field {
+                            field: PromptEditFormField::Content,
+                            code: "required",
+                            message_key: "prompt-validation-content-required",
+                        });
+                    }
+                    match prompt_name_exists(cx, prompt_id.as_ref(), &draft.name) {
+                        Ok(true) => {
+                            return Err(PromptSaveError::Field {
+                                field: PromptEditFormField::Name,
+                                code: "duplicate",
+                                message_key: "prompt-validation-name-duplicate",
+                            });
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            return Err(PromptSaveError::Notify {
+                                title_key: "notify-save-prompt-failed",
+                                message: err.to_string(),
+                            });
+                        }
+                    }
 
-        if name.is_empty() {
-            self.apply_field_error(
-                PromptEditFormField::Name,
-                "required",
-                "prompt-validation-name-required",
-                cx,
-            );
-            return false;
-        }
-        if content.is_empty() {
-            self.apply_field_error(
-                PromptEditFormField::Content,
-                "required",
-                "prompt-validation-content-required",
-                cx,
-            );
-            return false;
-        }
-        match prompt_name_exists(cx, self.prompt_id.as_ref(), &name) {
-            Ok(true) => {
-                self.apply_field_error(
-                    PromptEditFormField::Name,
-                    "duplicate",
-                    "prompt-validation-name-duplicate",
-                    cx,
-                );
-                return false;
-            }
-            Ok(false) => {}
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-save-prompt-failed");
-                push_settings_error(window, cx, title, err);
-                return false;
-            }
-        }
+                    let result = match mode {
+                        PromptEditMode::Create => {
+                            state::prompts::create_prompt(cx, draft.name, draft.content)
+                        }
+                        PromptEditMode::Edit => {
+                            let Some(prompt_id) = prompt_id.clone() else {
+                                return Err(PromptSaveError::Notify {
+                                    title_key: "notify-save-prompt-failed",
+                                    message: "prompt id is missing".to_string(),
+                                });
+                            };
+                            state::prompts::update_prompt(cx, &prompt_id, draft.name, draft.content)
+                        }
+                    };
 
-        let result = match self.mode {
-            PromptEditMode::Create => state::prompts::create_prompt(cx, name, content),
-            PromptEditMode::Edit => {
-                let Some(prompt_id) = self.prompt_id.clone() else {
-                    let title = cx.global::<I18n>().t("notify-save-prompt-failed");
-                    push_settings_error(window, cx, title, "prompt id is missing");
-                    return false;
-                };
-                state::prompts::update_prompt(cx, &prompt_id, name, content)
-            }
-        };
+                    result.map_err(|err| PromptSaveError::Notify {
+                        title_key: "notify-save-prompt-failed",
+                        message: err.to_string(),
+                    })?;
+                    window.push_notification(
+                        Notification::new()
+                            .title(cx.global::<I18n>().t("notify-prompt-saved"))
+                            .with_type(NotificationType::Success),
+                        cx,
+                    );
+                    Ok(())
+                },
+                window,
+                cx,
+            )
+        });
 
         match result {
-            Ok(_) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t("notify-prompt-saved"))
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
-                true
+            Ok(()) => true,
+            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => false,
+            Err(SubmitError::Handler(PromptSaveError::Field {
+                field,
+                code,
+                message_key,
+            })) => {
+                self.apply_field_error(field, code, message_key, cx);
+                false
             }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-save-prompt-failed");
-                push_settings_error(window, cx, title, err);
+            Err(SubmitError::Handler(PromptSaveError::Notify { title_key, message })) => {
+                let title = cx.global::<I18n>().t(title_key);
+                push_settings_error(window, cx, title, message);
                 false
             }
         }
@@ -149,32 +181,6 @@ impl PromptEditDialogState {
         name_input.update(cx, |input, cx| {
             input.focus(window, cx);
         });
-    }
-
-    fn normalized_draft(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> PromptEditFormInput {
-        self.form.update(cx, |form, cx| {
-            let mut draft = form.draft();
-            draft.name = draft.name.trim().to_string();
-            draft.content = draft.content.trim().to_string();
-            form.clear_all_errors(cx);
-            form.set_name_value(
-                draft.name.clone(),
-                FieldChangeCause::NormalizeOnSubmit,
-                window,
-                cx,
-            );
-            form.set_content_value(
-                draft.content.clone(),
-                FieldChangeCause::NormalizeOnSubmit,
-                window,
-                cx,
-            );
-            draft
-        })
     }
 
     fn apply_field_error(
@@ -222,7 +228,6 @@ impl Render for PromptEditDialogState {
             ))
     }
 }
-
 fn prompt_name_exists(
     cx: &App,
     current_prompt_id: Option<&PromptId>,

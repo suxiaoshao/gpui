@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+use crate::state::config::McpServerTomlConfig;
 use crate::state::config::{
-    McpServerTomlConfig, McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name,
-    is_valid_mcp_server_id,
+    McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
 };
-use gpui::App;
 use gpui_form::FormItemId;
 
+#[cfg(test)]
 use super::form_state::McpServerFormDraft;
+use super::form_state::{McpServerFormInput, McpSubmitRowIds};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct McpFormValidationError {
@@ -50,26 +52,49 @@ pub(super) enum McpFormField {
     EnvHeaderVar { row_id: FormItemId },
 }
 
+pub(super) struct McpSubmitValidationContext<'a> {
+    pub(super) original_server_id: Option<&'a str>,
+    pub(super) existing_server_ids: &'a [String],
+    pub(super) row_ids: &'a McpSubmitRowIds,
+}
+
+#[cfg(test)]
 pub(super) fn validate_mcp_form(
     draft: &McpServerFormDraft,
     original_server_id: Option<&str>,
     _original_config: Option<&McpServerTomlConfig>,
     existing_server_ids: &[String],
-    cx: &App,
+    cx: &gpui::App,
+) -> Vec<McpFormValidationError> {
+    let input = draft.input(cx);
+    let row_ids = draft.submit_row_ids(cx);
+    validate_mcp_submit_output(
+        &input,
+        McpSubmitValidationContext {
+            original_server_id,
+            existing_server_ids,
+            row_ids: &row_ids,
+        },
+    )
+}
+
+pub(super) fn validate_mcp_submit_output(
+    output: &McpServerFormInput,
+    context: McpSubmitValidationContext<'_>,
 ) -> Vec<McpFormValidationError> {
     let mut errors = Vec::new();
-    let server_id = draft.server_id(original_server_id, cx);
+    let server_id = output.server_id(context.original_server_id);
 
     validate_server_id(
         &server_id,
-        original_server_id,
-        existing_server_ids,
+        context.original_server_id,
+        context.existing_server_ids,
         &mut errors,
     );
 
-    match draft.input(cx).transport {
-        McpTransportKind::Stdio => validate_stdio(draft, &mut errors, cx),
-        McpTransportKind::StreamableHttp => validate_http(draft, &mut errors, cx),
+    match output.transport {
+        McpTransportKind::Stdio => validate_stdio(output, context.row_ids, &mut errors),
+        McpTransportKind::StreamableHttp => validate_http(output, context.row_ids, &mut errors),
     }
 
     errors
@@ -109,42 +134,46 @@ fn validate_server_id(
     }
 }
 
-fn validate_stdio(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationError>, cx: &App) {
-    if draft.input(cx).command.trim().is_empty() {
+fn validate_stdio(
+    input: &McpServerFormInput,
+    row_ids: &McpSubmitRowIds,
+    errors: &mut Vec<McpFormValidationError>,
+) {
+    if input.command.trim().is_empty() {
         errors.push(McpFormValidationError::new(
             McpFormField::Command,
             "mcp-validation-command-required",
         ));
     }
 
-    for row in draft.form.read(cx).args_values_with_id() {
-        if !row.value.value.is_empty() && row.value.value.trim().is_empty() {
+    for (row_id, row) in row_ids.args.iter().copied().zip(input.args.iter()) {
+        if !row.value.is_empty() && row.value.trim().is_empty() {
             errors.push(McpFormValidationError::new(
-                McpFormField::Argument { row_id: row.id },
+                McpFormField::Argument { row_id },
                 "mcp-validation-arg-empty",
             ));
         }
     }
 
-    validate_env_rows(draft, errors, cx);
-    validate_env_var_rows(draft, errors, cx);
+    validate_env_rows(input, row_ids, errors);
+    validate_env_var_rows(input, row_ids, errors);
 }
 
 fn validate_env_rows(
-    draft: &McpServerFormDraft,
+    input: &McpServerFormInput,
+    row_ids: &McpSubmitRowIds,
     errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
 ) {
     let mut seen = BTreeSet::new();
-    for row in draft.form.read(cx).env_values_with_id() {
-        let key = row.value.key.trim();
-        let value = row.value.value.trim();
+    for (row_id, row) in row_ids.env.iter().copied().zip(input.env.iter()) {
+        let key = row.key.trim();
+        let value = row.value.trim();
         if key.is_empty() && value.is_empty() {
             continue;
         }
         if key.is_empty() {
             errors.push(McpFormValidationError::new(
-                McpFormField::EnvKey { row_id: row.id },
+                McpFormField::EnvKey { row_id },
                 "mcp-validation-env-row-incomplete",
             ));
             continue;
@@ -152,7 +181,7 @@ fn validate_env_rows(
         if !is_valid_mcp_env_var_name(key) {
             errors.push(
                 McpFormValidationError::new(
-                    McpFormField::EnvKey { row_id: row.id },
+                    McpFormField::EnvKey { row_id },
                     "mcp-validation-env-name-invalid",
                 )
                 .with_arg("name", key),
@@ -162,7 +191,7 @@ fn validate_env_rows(
         if !seen.insert(key.to_string()) {
             errors.push(
                 McpFormValidationError::new(
-                    McpFormField::EnvKey { row_id: row.id },
+                    McpFormField::EnvKey { row_id },
                     "mcp-validation-env-name-duplicate",
                 )
                 .with_arg("name", key),
@@ -172,20 +201,20 @@ fn validate_env_rows(
 }
 
 fn validate_env_var_rows(
-    draft: &McpServerFormDraft,
+    input: &McpServerFormInput,
+    row_ids: &McpSubmitRowIds,
     errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
 ) {
     let mut seen = BTreeSet::new();
-    for row in draft.form.read(cx).env_vars_values_with_id() {
-        let value = row.value.value.trim();
+    for (row_id, row) in row_ids.env_vars.iter().copied().zip(input.env_vars.iter()) {
+        let value = row.value.trim();
         if value.is_empty() {
             continue;
         }
         if !is_valid_mcp_env_var_name(value) {
             errors.push(
                 McpFormValidationError::new(
-                    McpFormField::EnvVar { row_id: row.id },
+                    McpFormField::EnvVar { row_id },
                     "mcp-validation-env-name-invalid",
                 )
                 .with_arg("name", value),
@@ -195,7 +224,7 @@ fn validate_env_var_rows(
         if !seen.insert(value.to_string()) {
             errors.push(
                 McpFormValidationError::new(
-                    McpFormField::EnvVar { row_id: row.id },
+                    McpFormField::EnvVar { row_id },
                     "mcp-validation-env-name-duplicate",
                 )
                 .with_arg("name", value),
@@ -204,8 +233,11 @@ fn validate_env_var_rows(
     }
 }
 
-fn validate_http(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationError>, cx: &App) {
-    let input = draft.input(cx);
+fn validate_http(
+    input: &McpServerFormInput,
+    row_ids: &McpSubmitRowIds,
+    errors: &mut Vec<McpFormValidationError>,
+) {
     let url = input.url.trim().to_string();
     if url.is_empty() {
         errors.push(McpFormValidationError::new(
@@ -242,36 +274,41 @@ fn validate_http(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationE
     }
 
     validate_header_rows(
-        draft,
+        input,
+        row_ids,
         bearer_token_env_var.is_some() || input.oauth_enabled,
         errors,
-        cx,
     );
 }
 
 fn validate_header_rows(
-    draft: &McpServerFormDraft,
+    input: &McpServerFormInput,
+    row_ids: &McpSubmitRowIds,
     authorization_managed: bool,
     errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
 ) {
     let mut seen = BTreeSet::new();
-    for row in draft.form.read(cx).headers_values_with_id() {
+    for (row_id, row) in row_ids.headers.iter().copied().zip(input.headers.iter()) {
         validate_header_row(
-            row.id,
-            row.value.name.trim().to_string(),
-            row.value.value.trim().to_string(),
+            row_id,
+            row.name.trim().to_string(),
+            row.value.trim().to_string(),
             false,
             authorization_managed,
             &mut seen,
             errors,
         );
     }
-    for row in draft.form.read(cx).env_headers_values_with_id() {
+    for (row_id, row) in row_ids
+        .env_headers
+        .iter()
+        .copied()
+        .zip(input.env_headers.iter())
+    {
         validate_header_row(
-            row.id,
-            row.value.name.trim().to_string(),
-            row.value.env_var.trim().to_string(),
+            row_id,
+            row.name.trim().to_string(),
+            row.env_var.trim().to_string(),
             true,
             authorization_managed,
             &mut seen,

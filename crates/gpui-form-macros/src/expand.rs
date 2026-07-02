@@ -335,6 +335,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 pub #field_idents: #store_field_types,
             )*
             meta: ::gpui_form::FormMeta,
+            submit_runtime: ::gpui_form::SubmitRuntime,
             form_errors: ::std::vec::Vec<::gpui_form::FormError>,
             field_paths: ::std::vec::Vec<::gpui_form::FieldPath>,
             #validation_field
@@ -354,6 +355,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 Self {
                     #(#field_idents,)*
                     meta: ::gpui_form::FormMeta::default(),
+                    submit_runtime: ::gpui_form::SubmitRuntime::default(),
                     form_errors: ::std::vec::Vec::new(),
                     field_paths: ::std::vec![
                         #(::gpui_form::macro_support::field_path(#field_names),)*
@@ -391,6 +393,18 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
 
             pub fn meta(&self) -> &::gpui_form::FormMeta {
                 &self.meta
+            }
+
+            pub fn is_submitting(&self) -> bool {
+                self.submit_runtime.is_submitting()
+            }
+
+            pub fn is_submitted(&self) -> bool {
+                self.submit_runtime.submission_attempts() > 0 && !self.is_submitting()
+            }
+
+            pub fn can_attempt_submit(&self) -> bool {
+                !self.is_submitting() && !self.meta.is_validating
             }
 
             pub fn form_errors(&self) -> &[::gpui_form::FormError] {
@@ -439,17 +453,11 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             }
 
             fn refresh_meta(&mut self) {
-                let was_submitting = self.meta.is_submitting;
-                let last_submit_outcome = self.meta.last_submit_outcome;
-                let submission_attempts = self.meta.submission_attempts;
                 let field_meta = [
                     #(#field_meta_values,)*
                 ];
-                let mut meta = ::gpui_form::FormMeta::aggregate(field_meta);
-                meta.is_submitting = was_submitting;
-                meta.last_submit_outcome = last_submit_outcome;
-                meta.submission_attempts = submission_attempts;
-                self.meta = meta;
+                self.meta = ::gpui_form::FormMeta::aggregate(field_meta)
+                    .with_submit_runtime(&self.submit_runtime);
             }
 
             fn clear_all_errors_with_app(
@@ -539,7 +547,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 }
             }
 
-            fn prepare_submit(
+            fn prepare_submit_report(
                 &mut self,
                 cx: &mut ::gpui_form::__private::gpui::App,
             ) -> ::gpui_form::FormValidationReport {
@@ -547,6 +555,33 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 #(#prepare_submit_statements)*
                 self.refresh_meta();
                 report
+            }
+
+            fn prepare_submit_output(
+                &mut self,
+                window: &mut ::gpui_form::__private::gpui::Window,
+                cx: &mut ::gpui_form::__private::gpui::App,
+            ) -> Result<#input_ident #ty_generics, ::gpui_form::FormValidationReport> {
+                let preflight_report = self.prepare_submit_report(cx);
+                if !preflight_report.is_valid() {
+                    return Err(preflight_report);
+                }
+                #submit_transform
+                self.write_draft(
+                    normalized.clone(),
+                    ::gpui_form::FieldChangeCause::NormalizeOnSubmit,
+                    window,
+                    cx,
+                );
+                #submit_validation
+                self.apply_validation_report(&report, &::gpui_form::ValidationScope::Form, cx);
+                self.refresh_meta();
+                let final_report = self.current_validation_report(cx);
+                if final_report.is_valid() {
+                    Ok(normalized)
+                } else {
+                    Err(final_report)
+                }
             }
 
             fn current_validation_report(
@@ -610,7 +645,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 &mut self,
                 cx: &mut ::gpui_form::__private::gpui::App,
             ) -> ::gpui_form::FormValidationReport {
-                Self::prepare_submit(self, cx)
+                Self::prepare_submit_report(self, cx)
             }
 
             fn current_validation_report(
@@ -632,6 +667,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 &self.meta
             }
 
+            fn is_submitting(&self) -> bool {
+                self.submit_runtime.is_submitting()
+            }
+
             fn reset(
                 &mut self,
                 window: &mut ::gpui_form::__private::gpui::Window,
@@ -639,7 +678,9 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             ) {
                 #(#reset_field_statements)*
                 self.form_errors.clear();
-                self.meta = ::gpui_form::FormMeta::default();
+                self.submit_runtime = ::gpui_form::SubmitRuntime::default();
+                self.refresh_meta();
+                cx.notify();
             }
 
             fn validate(
@@ -651,35 +692,116 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 self.apply_validation_for_scope(trigger, ::gpui_form::ValidationScope::Form, cx)
             }
 
-            fn submit(
+            fn prepare_submit(
                 &mut self,
                 window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
+                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
             ) -> Result<Self::Output, ::gpui_form::FormValidationReport> {
-                self.meta.begin_submit();
-                let preflight_report = self.prepare_submit(cx);
-                if !preflight_report.is_valid() {
-                    self.meta.finish_submit_failure();
-                    return Err(preflight_report);
-                }
-                #submit_transform
-                self.write_draft(
-                    normalized.clone(),
-                    ::gpui_form::FieldChangeCause::NormalizeOnSubmit,
-                    window,
-                    cx,
-                );
-                #submit_validation
-                self.apply_validation_report(&report, &::gpui_form::ValidationScope::Form, cx);
-                self.refresh_meta();
-                let final_report = self.current_validation_report(cx);
-                if final_report.is_valid() {
-                    self.meta.finish_submit_success();
-                    Ok(normalized)
+                self.submit_runtime.begin_submit();
+                let result = self.prepare_submit_output(window, cx);
+                if result.is_ok() {
+                    self.submit_runtime.finish_success();
                 } else {
-                    self.meta.finish_submit_failure();
-                    Err(final_report)
+                    self.submit_runtime.finish_failure();
                 }
+                self.refresh_meta();
+                cx.notify();
+                result
+            }
+
+            fn submit_sync<H, Success, Error>(
+                &mut self,
+                handler: H,
+                window: &mut ::gpui_form::__private::gpui::Window,
+                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
+            ) -> Result<Success, ::gpui_form::SubmitError<Error>>
+            where
+                H: FnOnce(
+                    Self::Output,
+                    &mut ::gpui_form::__private::gpui::Window,
+                    &mut ::gpui_form::__private::gpui::App,
+                ) -> Result<Success, Error>,
+            {
+                if self.submit_runtime.is_submitting() {
+                    return Err(::gpui_form::SubmitError::Busy);
+                }
+                self.submit_runtime.begin_submit();
+                let output = match self.prepare_submit_output(window, cx) {
+                    Ok(output) => output,
+                    Err(report) => {
+                        self.submit_runtime.finish_failure();
+                        self.refresh_meta();
+                        cx.notify();
+                        return Err(::gpui_form::SubmitError::Invalid(report));
+                    }
+                };
+                let result = handler(output, window, cx);
+                if result.is_ok() {
+                    self.submit_runtime.finish_success();
+                } else {
+                    self.submit_runtime.finish_failure();
+                }
+                self.refresh_meta();
+                cx.notify();
+                result.map_err(::gpui_form::SubmitError::Handler)
+            }
+
+            fn submit_async<H, Success, TaskError, StartError>(
+                &mut self,
+                handler: H,
+                window: &mut ::gpui_form::__private::gpui::Window,
+                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
+            ) -> Result<::gpui_form::SubmitStart, ::gpui_form::SubmitError<StartError>>
+            where
+                Success: 'static,
+                TaskError: 'static,
+                H: FnOnce(
+                    Self::Output,
+                    &mut ::gpui_form::__private::gpui::Window,
+                    &mut ::gpui_form::__private::gpui::App,
+                ) -> Result<
+                    ::gpui_form::__private::gpui::Task<Result<Success, TaskError>>,
+                    StartError,
+                >,
+            {
+                if self.submit_runtime.is_submitting() {
+                    return Err(::gpui_form::SubmitError::Busy);
+                }
+                self.submit_runtime.begin_submit();
+                let output = match self.prepare_submit_output(window, cx) {
+                    Ok(output) => output,
+                    Err(report) => {
+                        self.submit_runtime.finish_failure();
+                        self.refresh_meta();
+                        cx.notify();
+                        return Err(::gpui_form::SubmitError::Invalid(report));
+                    }
+                };
+                let handler_task = match handler(output, window, cx) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        self.submit_runtime.finish_failure();
+                        self.refresh_meta();
+                        cx.notify();
+                        return Err(::gpui_form::SubmitError::Handler(error));
+                    }
+                };
+                let task = cx.spawn(async move |this, cx| {
+                    let result = handler_task.await;
+                    let _ = this.update(cx, |this, cx| {
+                        if result.is_ok() {
+                            this.submit_runtime.finish_success();
+                        } else {
+                            this.submit_runtime.finish_failure();
+                        }
+                        this.refresh_meta();
+                        cx.notify();
+                    });
+                });
+                self.submit_runtime.set_task(task);
+                self.refresh_meta();
+                cx.notify();
+                Ok(::gpui_form::SubmitStart::Started)
             }
 
             fn focus_first_error(

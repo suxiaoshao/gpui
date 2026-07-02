@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     database,
@@ -33,7 +33,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
-use gpui_form::{ErrorParamValue, FieldError};
+use gpui_form::{ErrorParamValue, FieldError, SubmitError};
 use tracing::{Level, event};
 
 mod capabilities;
@@ -53,7 +53,7 @@ use self::{
     forms::{
         ApiKeyProviderFormEvent, ApiKeyProviderFormField, CustomOpenAiProviderFormEvent,
         CustomOpenAiProviderFormField, OllamaProviderFormEvent, OllamaProviderFormField,
-        ProviderFormField, ProviderSettingsForm, field_errors,
+        ProviderFormField, ProviderSettingsForm, ProviderSettingsFormOutput, field_errors,
     },
     list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
@@ -92,7 +92,6 @@ struct ProviderEditorState {
     #[allow(dead_code)]
     manual_model_editor: Option<Entity<ManualModelEditor>>,
     _field_subscriptions: Vec<Subscription>,
-    save_task: Option<Task<()>>,
     fetch_task: Option<Task<()>>,
 }
 
@@ -110,14 +109,13 @@ impl ProviderEditorState {
             validation: ProviderValidationState::Idle,
             manual_model_editor: None,
             _field_subscriptions: Vec::new(),
-            save_task: None,
             fetch_task: None,
         }
     }
 }
 
-fn editor_is_saving(editor: &ProviderEditorState) -> bool {
-    editor.save_task.is_some()
+fn editor_is_saving(editor: &ProviderEditorState, cx: &App) -> bool {
+    editor.form.is_submitting(cx)
 }
 
 fn editor_is_fetching(editor: &ProviderEditorState) -> bool {
@@ -417,8 +415,9 @@ impl ProviderSettingsPage {
         self.editors.get_mut(&self.selected_key)
     }
 
-    fn selected_editor_is_saving(&self) -> bool {
-        self.selected_editor().is_some_and(editor_is_saving)
+    fn selected_editor_is_saving(&self, cx: &App) -> bool {
+        self.selected_editor()
+            .is_some_and(|editor| editor_is_saving(editor, cx))
     }
 
     fn selected_spec(&self) -> Option<&ProviderSpec> {
@@ -442,7 +441,6 @@ impl ProviderSettingsPage {
         if self.selected_key == next_key {
             return;
         }
-        self.sync_inputs_to_selected_editor(cx);
         self.selected_key = next_key;
         self.sync_model_list(window, cx);
         cx.notify();
@@ -478,7 +476,7 @@ impl ProviderSettingsPage {
         let ListEvent::Confirm(ix) = event else {
             return;
         };
-        if self.selected_editor_is_saving() {
+        if self.selected_editor_is_saving(cx) {
             return;
         }
         let Some(row) = self
@@ -514,7 +512,7 @@ impl ProviderSettingsPage {
             .selected_editor()
             .map(|editor| model_list_rows(&editor.models))
             .unwrap_or_default();
-        let locked = self.selected_editor_is_saving();
+        let locked = self.selected_editor_is_saving(cx);
         self.model_list.update(cx, |list, cx| {
             list.delegate_mut().set_rows(rows);
             list.delegate_mut().set_disabled(locked);
@@ -522,21 +520,8 @@ impl ProviderSettingsPage {
         });
     }
 
-    fn sync_inputs_to_selected_editor(&mut self, cx: &mut Context<Self>) {
+    fn validate_current_output(&mut self, cx: &mut Context<Self>) -> bool {
         let key = self.selected_key.clone();
-        self.sync_inputs_to_editor(&key, cx);
-    }
-
-    fn sync_inputs_to_editor(&mut self, key: &ProviderEditorKey, cx: &mut Context<Self>) {
-        let Some(editor) = self.editors.get_mut(key) else {
-            return;
-        };
-        editor.form.write_to_draft(&mut editor.draft, cx);
-    }
-
-    fn validate_current_draft(&mut self, cx: &mut Context<Self>) -> bool {
-        let key = self.selected_key.clone();
-        self.sync_inputs_to_editor(&key, cx);
         if self.spec_for_key(&key).is_none() {
             if let Some(editor) = self.editors.get_mut(&key) {
                 editor.validation = ProviderValidationState::Invalid(
@@ -550,10 +535,11 @@ impl ProviderSettingsPage {
         let Some(editor) = self.editors.get(&key) else {
             return false;
         };
-        let validation_result =
-            editor
-                .form
-                .validate(&editor.draft.existing_secret_refs, cx.global::<I18n>(), cx);
+        let validation_result = editor.form.validate_current(
+            &editor.draft.existing_secret_refs,
+            cx.global::<I18n>(),
+            cx,
+        );
         let validation = validation_result
             .as_ref()
             .map(|_| ProviderValidationState::Valid)
@@ -568,67 +554,99 @@ impl ProviderSettingsPage {
         valid
     }
 
+    fn apply_provider_validation_issue(
+        &mut self,
+        key: &ProviderEditorKey,
+        issue: forms::ProviderValidationIssue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.editors.get_mut(key) {
+            editor.form.apply_validation_issue(Some(&issue), cx);
+            editor.validation = ProviderValidationState::Invalid(issue.message.clone());
+        }
+        window.push_notification(
+            Notification::new()
+                .title(
+                    cx.global::<I18n>()
+                        .t("provider-notification-validation-failed"),
+                )
+                .message(issue.message)
+                .with_type(NotificationType::Error),
+            cx,
+        );
+        cx.notify();
+    }
+
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.selected_key.clone();
-        if self.editors.get(&key).is_some_and(editor_is_saving) {
+        if self
+            .editors
+            .get(&key)
+            .is_some_and(|editor| editor_is_saving(editor, cx))
+        {
             return;
         }
-        if !self.validate_current_draft(cx) {
-            if let Some(message) = self.editors.get(&key).and_then(|editor| {
-                if let ProviderValidationState::Invalid(message) = &editor.validation {
-                    Some(message.clone())
-                } else {
-                    None
-                }
-            }) {
-                window.push_notification(
-                    Notification::new()
-                        .title(
-                            cx.global::<I18n>()
-                                .t("provider-notification-validation-failed"),
-                        )
-                        .message(message)
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-            }
-            cx.notify();
-            return;
-        }
-        self.sync_inputs_to_editor(&key, cx);
         let Some(editor) = self.editors.get(&key) else {
             return;
         };
-        let writes = Self::secret_writes_for_editor(editor, cx);
         let provider_id = editor.draft.provider_id.clone();
         let new_provider_id = provider_id.is_none().then(new_id);
         let secret_ref_owner = provider_id
             .as_deref()
             .or(new_provider_id.as_deref())
             .expect("new provider id is preallocated before saving secrets");
-        let secret_refs = Self::secret_refs_for_editor(editor, secret_ref_owner, &writes, cx);
-        let save = ProviderSaveRequest {
-            provider_id,
-            new_provider_id,
-            kind: editor.draft.kind.as_str().to_string(),
-            display_name: save_display_name_for_draft(&editor.draft),
-            enabled: editor.draft.enabled,
-            settings: editor.draft.settings_payload(),
-            secret_refs,
-            writes,
-        };
+        let secret_ref_owner = secret_ref_owner.to_string();
+        let kind = editor.draft.kind.as_str().to_string();
+        let display_name_fallback = editor.draft.display_name.clone();
+        let existing_secret_refs = editor.draft.existing_secret_refs.clone();
         let page = cx.entity().downgrade();
         let task_key = key.clone();
-        let task = window.spawn(cx, async move |cx| {
-            let result = write_provider_secrets(save, cx).await;
-            if let Err(err) = page.update_in(cx, |page, window, cx| {
-                page.finish_save(task_key, result, window, cx);
-            }) {
-                event!(Level::ERROR, error = ?err, "finish provider save failed");
+        let start = editor.form.submit_async_save(
+            existing_secret_refs.clone(),
+            move |output, window, cx| {
+                let writes = Self::secret_writes_for_output(&output);
+                let secret_refs = Self::secret_refs_for_output(
+                    &existing_secret_refs,
+                    &secret_ref_owner,
+                    &writes,
+                    &output,
+                );
+                let save = ProviderSaveRequest {
+                    provider_id,
+                    new_provider_id,
+                    kind: kind.clone(),
+                    display_name: output.display_name(&display_name_fallback),
+                    enabled: output.enabled(),
+                    settings: output.settings_payload(&kind),
+                    secret_refs,
+                    writes,
+                };
+                window.spawn(cx, async move |cx| {
+                    let result = write_provider_secrets(save, cx).await;
+                    match page.update_in(cx, |page, window, cx| {
+                        page.finish_save(task_key, result, window, cx)
+                    }) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            event!(Level::ERROR, error = ?err, "finish provider save failed");
+                            Err(err.to_string())
+                        }
+                    }
+                })
+            },
+            window,
+            cx,
+        );
+        match start {
+            Ok(gpui_form::SubmitStart::Started) => {}
+            Err(SubmitError::Handler(issue)) => {
+                self.apply_provider_validation_issue(&key, issue, window, cx);
+                return;
             }
-        });
-        if let Some(editor) = self.editors.get_mut(&key) {
-            editor.save_task = Some(task);
+            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => {
+                return;
+            }
         }
         if self.selected_key == key {
             self.sync_model_list(window, cx);
@@ -642,11 +660,8 @@ impl ProviderSettingsPage {
         result: Result<ProviderSaveRequest, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let selected = self.selected_key == key;
-        if let Some(editor) = self.editors.get_mut(&key) {
-            editor.save_task = None;
-        }
         if selected {
             self.sync_model_list(window, cx);
         }
@@ -673,25 +688,33 @@ impl ProviderSettingsPage {
                         .with_type(NotificationType::Success),
                     cx,
                 );
+                cx.notify();
+                Ok(())
             }
             Err(err) => {
                 window.push_notification(
                     Notification::new()
                         .title(cx.global::<I18n>().t("notify-save-settings-failed"))
-                        .message(err)
+                        .message(err.clone())
                         .with_type(NotificationType::Error),
                     cx,
                 );
+                cx.notify();
+                Err(err)
             }
         }
-        cx.notify();
     }
 
     fn snapshot_for_editor(editor: &ProviderEditorState, cx: &App) -> ProviderDraftSnapshot {
         let mut snapshot = ProviderDraftSnapshot::from_draft(&editor.draft);
-        snapshot.enabled = editor.form.enabled(cx);
-        snapshot.fields = editor.form.persistent_fields(cx);
-        snapshot.dirty_secret_keys = editor.form.dirty_secret_keys(cx);
+        let output = editor.form.current_output(cx);
+        snapshot.enabled = output.enabled();
+        snapshot.fields = output.persistent_fields();
+        snapshot.dirty_secret_keys = output
+            .dirty_secret_keys()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
         snapshot
     }
 
@@ -705,37 +728,32 @@ impl ProviderSettingsPage {
         })
     }
 
-    fn secret_writes_for_editor(
-        editor: &ProviderEditorState,
-        cx: &App,
-    ) -> Vec<ProviderSecretWrite> {
-        editor
-            .form
-            .secret_fields(cx)
+    fn secret_writes_for_output(output: &ProviderSettingsFormOutput) -> Vec<ProviderSecretWrite> {
+        output
+            .secret_fields()
             .into_iter()
             .filter_map(|secret| {
                 (!secret.value.is_empty()).then_some(ProviderSecretWrite {
-                    key: secret.key,
+                    key: secret.key().to_string(),
                     value: secret.value,
                 })
             })
             .collect()
     }
 
-    fn secret_refs_for_editor(
-        editor: &ProviderEditorState,
+    fn secret_refs_for_output(
+        existing_secret_refs: &ProviderSecretRefs,
         provider_id: &str,
         writes: &[ProviderSecretWrite],
-        cx: &App,
+        output: &ProviderSettingsFormOutput,
     ) -> ProviderSecretRefs {
         let mut refs = ProviderSecretStore::refs_for(provider_id, writes);
-        for saved in &editor.draft.existing_secret_refs.refs {
+        for saved in &existing_secret_refs.refs {
             if !refs.refs.iter().any(|secret| secret.key == saved.key) {
-                let changed = editor
-                    .form
-                    .secret_fields(cx)
+                let changed = output
+                    .secret_fields()
                     .into_iter()
-                    .any(|secret| secret.key == saved.key && secret.changed);
+                    .any(|secret| secret.key() == saved.key && secret.changed);
                 if !changed {
                     refs.refs.push(saved.clone());
                 }
@@ -786,7 +804,7 @@ impl ProviderSettingsPage {
         if self
             .editors
             .get(&key)
-            .is_some_and(|editor| editor_is_fetching(editor) || editor_is_saving(editor))
+            .is_some_and(|editor| editor_is_fetching(editor) || editor_is_saving(editor, cx))
         {
             return;
         }
@@ -1011,7 +1029,7 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dirty = self.is_dirty(cx);
-        let locked = editor_is_saving(editor);
+        let locked = editor_is_saving(editor, cx);
         let enabled = editor.form.enabled(cx);
         h_flex()
             .flex_none()
@@ -1074,7 +1092,7 @@ impl ProviderSettingsPage {
         editor: &ProviderEditorState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let locked = editor_is_saving(editor);
+        let locked = editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1102,7 +1120,7 @@ impl ProviderSettingsPage {
                             .small()
                             .disabled(locked)
                             .on_click(cx.listener(|page, _, _, cx| {
-                                page.validate_current_draft(cx);
+                                page.validate_current_output(cx);
                                 cx.notify();
                             })),
                     )
@@ -1112,8 +1130,8 @@ impl ProviderSettingsPage {
                             .label(cx.global::<I18n>().t("provider-action-save"))
                             .small()
                             .primary()
-                            .loading(editor_is_saving(editor))
-                            .disabled(editor_is_saving(editor))
+                            .loading(editor_is_saving(editor, cx))
+                            .disabled(editor_is_saving(editor, cx))
                             .on_click(cx.listener(|page, _, window, cx| page.save(window, cx))),
                     ),
             )
@@ -1138,7 +1156,7 @@ impl ProviderSettingsPage {
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.api_key_state(),
+                        form.api_key_state().read(cx).input(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
                         form.base_url_state(),
@@ -1179,7 +1197,7 @@ impl ProviderSettingsPage {
                         form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
-                        form.bearer_token_state(),
+                        form.bearer_token_state().read(cx).input(),
                         field_errors(&form.bearer_token),
                         form.bearer_token_required(),
                     )
@@ -1223,7 +1241,7 @@ impl ProviderSettingsPage {
                         form.name_state(),
                         field_errors(&form.name),
                         form.name_required(),
-                        form.api_key_state(),
+                        form.api_key_state().read(cx).input(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
                         form.base_url_state(),
@@ -1361,7 +1379,7 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, editor: &ProviderEditorState, cx: &mut Context<Self>) -> AnyElement {
-        let locked = editor_is_saving(editor);
+        let locked = editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1578,14 +1596,6 @@ fn default_fields_for_form_kind(
     }
 }
 
-fn save_display_name_for_draft(draft: &ProviderDraft) -> String {
-    if draft.kind.as_str() == "custom_openai_compatible" {
-        let name = draft.field_string("name");
-        return name.trim().to_string();
-    }
-    draft.display_name.clone()
-}
-
 fn draft_from_record(provider: &ProviderRecord) -> ProviderDraft {
     ProviderDraft {
         provider_id: Some(provider.id.clone()),
@@ -1636,7 +1646,7 @@ mod tests {
     use super::{
         ModelFetchSupport, ProviderEditorKey, ProviderFetchPrecondition, ProviderListItem,
         ProviderSettingsPage, draft_from_record, draft_from_spec, fetch_support,
-        provider_fetch_precondition, save_display_name_for_draft,
+        provider_fetch_precondition,
     };
     use crate::database::{self, FreshStoreGlobal};
     use crate::features::settings::provider::catalog::{
@@ -1645,7 +1655,10 @@ mod tests {
     use crate::features::settings::provider::draft::{
         ProviderDraftSnapshot, ProviderDraftValue, ProviderModelDraft,
     };
-    use crate::features::settings::provider::forms::{ProviderFormField, ProviderSettingsForm};
+    use crate::features::settings::provider::forms::{
+        ProviderApiMode, ProviderFormField, ProviderSecretValue, ProviderSettingsForm,
+        ProviderSettingsFormOutput,
+    };
     use crate::features::settings::provider::list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
     };
@@ -1856,7 +1869,7 @@ mod tests {
         let page = window.root(&mut cx).unwrap();
 
         let saved_valid =
-            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_draft(cx)));
+            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_output(cx)));
         assert!(saved_valid);
     }
 
@@ -1870,7 +1883,7 @@ mod tests {
 
         set_secret_input_value(&page, &openai, "api_key", "sk-pending", &mut cx);
         let pending_valid =
-            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_draft(cx)));
+            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_output(cx)));
         assert!(pending_valid);
     }
 
@@ -1917,7 +1930,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn secret_dirty_tracking_uses_form_field_revision(cx: &mut TestAppContext) {
+    fn secret_dirty_tracking_uses_secret_changed_binding(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -1983,18 +1996,16 @@ mod tests {
     }
 
     #[test]
-    fn custom_provider_save_display_name_uses_name_field() {
-        let custom = builtin_provider_specs()
-            .into_iter()
-            .find(|spec| spec.kind.as_str() == "custom_openai_compatible")
-            .expect("custom provider spec exists");
-        let mut draft = draft_from_spec(&custom, None);
-        draft.fields.insert(
-            "name".to_string(),
-            ProviderDraftValue::String("  Acme Gateway  ".to_string()),
-        );
+    fn custom_provider_output_display_name_uses_name_field() {
+        let output = ProviderSettingsFormOutput::CustomOpenAi {
+            enabled: true,
+            name: "  Acme Gateway  ".to_string(),
+            api_key: ProviderSecretValue::new(ProviderFormField::ApiKey, String::new(), false),
+            base_url: String::new(),
+            api_mode: ProviderApiMode::Responses,
+        };
 
-        assert_eq!(save_display_name_for_draft(&draft), "Acme Gateway");
+        assert_eq!(output.display_name("Custom"), "Acme Gateway");
     }
 
     #[test]
@@ -2322,11 +2333,29 @@ mod tests {
         cx.update(|window, cx| {
             page.update(cx, |page, cx| {
                 page.select_provider_from_list(ProviderKindKey::from("openai"), window, cx);
-                let task = cx.spawn(async move |_, _| std::future::pending::<()>().await);
-                page.editors
-                    .get_mut(&openai)
+                let form = &page
+                    .editors
+                    .get(&openai)
                     .expect("openai editor exists")
-                    .save_task = Some(task);
+                    .form;
+                let secret_refs = page
+                    .editors
+                    .get(&openai)
+                    .expect("openai editor exists")
+                    .draft
+                    .existing_secret_refs
+                    .clone();
+                let _ = form.submit_async_save(
+                    secret_refs,
+                    |output, _window, cx| {
+                        let _enabled = output.enabled();
+                        cx.spawn(async move |_cx| {
+                            std::future::pending::<Result<(), String>>().await
+                        })
+                    },
+                    window,
+                    cx,
+                );
                 page.sync_model_list(window, cx);
             });
         });
@@ -2799,7 +2828,7 @@ mod tests {
     ) -> Option<Entity<gpui_component::input::InputState>> {
         match (form, field) {
             (ProviderSettingsForm::ApiKey(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_state())
+                Some(form.read(cx).api_key_state().read(cx).input())
             }
             (ProviderSettingsForm::ApiKey(form), ProviderFormField::BaseUrl) => {
                 Some(form.read(cx).base_url_state())
@@ -2808,13 +2837,13 @@ mod tests {
                 Some(form.read(cx).base_url_state())
             }
             (ProviderSettingsForm::Ollama(form), ProviderFormField::BearerToken) => {
-                Some(form.read(cx).bearer_token_state())
+                Some(form.read(cx).bearer_token_state().read(cx).input())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::Name) => {
                 Some(form.read(cx).name_state())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_state())
+                Some(form.read(cx).api_key_state().read(cx).input())
             }
             (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::BaseUrl) => {
                 Some(form.read(cx).base_url_state())
@@ -2833,13 +2862,15 @@ mod tests {
             ProviderFormField::ApiKey | ProviderFormField::BearerToken
         ) {
             return form
-                .secret_fields(cx)
+                .current_output(cx)
+                .secret_fields()
                 .into_iter()
-                .find(|secret| secret.key == field.key())
+                .find(|secret| secret.key() == field.key())
                 .map(|secret| secret.value);
         }
 
-        form.persistent_fields(cx)
+        form.current_output(cx)
+            .persistent_fields()
             .remove(field.key())
             .and_then(|value| match value {
                 ProviderDraftValue::String(value) => Some(value),

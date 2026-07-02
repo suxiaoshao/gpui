@@ -6,5 +6,6 @@ pub mod group;
 pub mod meta;
 pub mod options;
 pub mod path;
+pub mod submit;
 pub mod subscriptions;
 pub mod trigger;

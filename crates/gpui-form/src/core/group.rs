@@ -1,19 +1,10 @@
 use gpui::{App, Entity, Window};
 
 use crate::{
-    AnyFormField, FieldChangeCause, FieldError, FieldMeta, FieldPath, FieldValidationReport,
-    FormError, FormField, FormMeta, FormStore, FormValidationReport, NoComponentState,
-    SubscriptionSet, ValidationTrigger, macro_support::GeneratedFormStore,
+    FieldChangeCause, FieldError, FieldMeta, FieldPath, FieldValidationReport, FormError,
+    FormField, FormMeta, FormStore, NoComponentState, SubscriptionSet, ValidationTrigger,
+    macro_support::GeneratedFormStore,
 };
-
-pub trait FormFragment {
-    type Output;
-
-    fn path(&self) -> &FieldPath;
-    fn meta(&self) -> &FormMeta;
-    fn validate(&mut self, trigger: ValidationTrigger) -> FormValidationReport;
-    fn output(&self) -> Result<Self::Output, FormValidationReport>;
-}
 
 #[derive(Debug)]
 pub struct FieldGroupStore<Value, Store>
@@ -222,37 +213,5 @@ where
     fn focus(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.store
             .update(cx, |store, cx| store.focus_first_error(window, cx))
-    }
-}
-
-impl<Value, Store> AnyFormField for FieldGroupStore<Value, Store>
-where
-    Value: Clone + PartialEq + 'static,
-    Store: GeneratedFormStore<Value> + FormStore<Output = Value>,
-{
-    fn meta(&self) -> &FieldMeta {
-        &self.field_meta
-    }
-
-    fn is_required(&self) -> bool {
-        self.required
-    }
-
-    fn errors(&self) -> &[FieldError] {
-        &[]
-    }
-
-    fn visible_errors(&self, _form_meta: &FormMeta) -> Vec<&FieldError> {
-        Vec::new()
-    }
-
-    fn set_errors(&mut self, _errors: Vec<FieldError>) {}
-
-    fn clear_errors(&mut self) {
-        self.errors.clear();
-    }
-
-    fn focus_any(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        self.focus(window, cx)
     }
 }
