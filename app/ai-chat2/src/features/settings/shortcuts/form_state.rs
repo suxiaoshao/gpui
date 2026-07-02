@@ -14,7 +14,7 @@ use gpui_component::{
 };
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
-    FormField, FormMeta,
+    FormComponentEventSink, FormField, FormMeta, SubscriptionSet,
 };
 
 type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
@@ -89,16 +89,10 @@ pub(super) struct ShortcutModelSelection {
     choices: Vec<ProviderModelChoice>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ShortcutSelectBindingEvent {
-    Change,
-}
-
 pub(super) struct ShortcutHotkeyBinding;
 
 impl FormComponentBinding<Option<String>> for ShortcutHotkeyBinding {
     type State = HotkeyInput;
-    type Event = HotkeyInputEvent;
     type Draft = Option<String>;
 
     fn new_state(
@@ -145,35 +139,48 @@ impl FormComponentBinding<Option<String>> for ShortcutHotkeyBinding {
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            HotkeyInputEvent::Change => {
-                Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-            }
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         state.update(cx, |input, cx| {
             input.focus(window, cx);
         });
         true
     }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &HotkeyInputEvent, window, cx| match event {
+                HotkeyInputEvent::Change => sink.emit(
+                    form,
+                    FormComponentEvent::Change(FieldChangeCause::UserInput),
+                    window,
+                    cx,
+                ),
+            },
+        ));
+        subscriptions
+    }
 }
 
 pub(super) struct ShortcutPromptSelectState {
     pub(super) select: Entity<ShortcutPromptSelectStateInner>,
     choices: Vec<PromptChoice>,
-    _subscriptions: Vec<Subscription>,
 }
-
-impl EventEmitter<ShortcutSelectBindingEvent> for ShortcutPromptSelectState {}
 
 pub(super) struct ShortcutPromptSelectBinding;
 
 impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBinding {
     type State = ShortcutPromptSelectState;
-    type Event = ShortcutSelectBindingEvent;
     type Draft = ShortcutPromptSelection;
 
     fn new_state(
@@ -188,20 +195,7 @@ impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBindi
             let select = cx.new(|cx| {
                 SelectState::new(choices.clone(), selected_index, window, cx).searchable(true)
             });
-            let subscription = cx.subscribe_in(
-                &select,
-                window,
-                |_this, _select, event: &SelectEvent<Vec<PromptChoice>>, _window, cx| {
-                    let SelectEvent::Confirm(_) = event;
-                    cx.emit(ShortcutSelectBindingEvent::Change);
-                    cx.notify();
-                },
-            );
-            ShortcutPromptSelectState {
-                select,
-                choices,
-                _subscriptions: vec![subscription],
-            }
+            ShortcutPromptSelectState { select, choices }
         })
     }
 
@@ -246,14 +240,6 @@ impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBindi
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            ShortcutSelectBindingEvent::Change => {
-                Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-            }
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         let select = state.read(cx).select.clone();
         let focus_handle = {
@@ -263,21 +249,44 @@ impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBindi
         focus_handle.focus(window, cx);
         true
     }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let select = state.read(cx).select.clone();
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &select,
+            window,
+            move |form, _select, event: &SelectEvent<Vec<PromptChoice>>, window, cx| {
+                let SelectEvent::Confirm(_) = event;
+                sink.emit(
+                    form,
+                    FormComponentEvent::Change(FieldChangeCause::UserInput),
+                    window,
+                    cx,
+                );
+            },
+        ));
+        subscriptions
+    }
 }
 
 pub(super) struct ShortcutModelSelectState {
     pub(super) select: Entity<ShortcutModelSelectStateInner>,
     choices: Vec<ProviderModelChoice>,
-    _subscriptions: Vec<Subscription>,
 }
-
-impl EventEmitter<ShortcutSelectBindingEvent> for ShortcutModelSelectState {}
 
 pub(super) struct ShortcutModelSelectBinding;
 
 impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding {
     type State = ShortcutModelSelectState;
-    type Event = ShortcutSelectBindingEvent;
     type Draft = ShortcutModelSelection;
 
     fn new_state(
@@ -296,24 +305,7 @@ impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding
             let select = cx.new(|cx| {
                 SelectState::new(model_options, selected_index, window, cx).searchable(true)
             });
-            let subscription = cx.subscribe_in(
-                &select,
-                window,
-                |_this,
-                 _select,
-                 event: &SelectEvent<SearchableVec<SelectGroup<ModelOption>>>,
-                 _window,
-                 cx| {
-                    let SelectEvent::Confirm(_) = event;
-                    cx.emit(ShortcutSelectBindingEvent::Change);
-                    cx.notify();
-                },
-            );
-            ShortcutModelSelectState {
-                select,
-                choices,
-                _subscriptions: vec![subscription],
-            }
+            ShortcutModelSelectState { select, choices }
         })
     }
 
@@ -362,14 +354,6 @@ impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            ShortcutSelectBindingEvent::Change => {
-                Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-            }
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         let select = state.read(cx).select.clone();
         let focus_handle = {
@@ -378,6 +362,37 @@ impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding
         };
         focus_handle.focus(window, cx);
         true
+    }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let select = state.read(cx).select.clone();
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &select,
+            window,
+            move |form,
+                  _select,
+                  event: &SelectEvent<SearchableVec<SelectGroup<ModelOption>>>,
+                  window,
+                  cx| {
+                let SelectEvent::Confirm(_) = event;
+                sink.emit(
+                    form,
+                    FormComponentEvent::Change(FieldChangeCause::UserInput),
+                    window,
+                    cx,
+                );
+            },
+        ));
+        subscriptions
     }
 }
 

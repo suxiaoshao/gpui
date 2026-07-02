@@ -60,13 +60,10 @@ struct RequiredFlagState {
     required: bool,
 }
 
-impl gpui::EventEmitter<()> for RequiredFlagState {}
-
 struct RequiredFlagBinding;
 
 impl gpui_form::FormComponentBinding<String> for RequiredFlagBinding {
     type State = RequiredFlagState;
-    type Event = ();
     type Draft = String;
 
     fn new_state(
@@ -366,7 +363,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
 
     cx.update(|window, cx| {
         amount.update(cx, |input, cx| {
-            input.set_value("12x", window, cx);
+            input.set_value("-", window, cx);
             cx.emit(gpui_component::input::InputEvent::Change);
         });
     });
@@ -374,7 +371,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(form.amount.draft().as_str(), "12x");
+        assert_eq!(form.amount.draft().as_str(), "-");
         assert!(form.amount.core().revision() > initial_revision);
         assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(form.meta().is_dirty);
@@ -396,7 +393,7 @@ fn submit_rejects_unparsable_number_input(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert_eq!(form.draft().amount, 12);
-        assert_eq!(amount.read(cx).value(), "12x");
+        assert_eq!(amount.read(cx).value(), "-");
     });
 }
 
@@ -423,6 +420,51 @@ fn number_raw_edit_with_same_typed_value_stays_dirty(cx: &mut TestAppContext) {
         assert!(form.amount.core().revision() > initial_revision);
         assert!(gpui_form::FormField::meta(&form.amount).is_dirty);
         assert!(form.meta().is_dirty);
+    });
+}
+
+#[gpui::test]
+fn number_new_state_applies_type_specific_input_policy(cx: &mut TestAppContext) {
+    let (_form, window) = create_quantity_form(cx, QuantityInput { amount: 12 });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    let (signed, unsigned, float) = cx.update(|window, cx| {
+        (
+            <gpui_form_gpui_component::NumberInputBinding<i32> as gpui_form::FormComponentBinding<
+                i32,
+            >>::new_state(&0, gpui_form::ComponentStateOptions::default(), window, cx),
+            <gpui_form_gpui_component::NumberInputBinding<u32> as gpui_form::FormComponentBinding<
+                u32,
+            >>::new_state(&0, gpui_form::ComponentStateOptions::default(), window, cx),
+            <gpui_form_gpui_component::NumberInputBinding<f64> as gpui_form::FormComponentBinding<
+                f64,
+            >>::new_state(&0., gpui_form::ComponentStateOptions::default(), window, cx),
+        )
+    });
+
+    cx.update(|window, cx| {
+        signed.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.insert("-", window, cx);
+            assert_eq!(input.value().as_ref(), "-");
+            input.insert(".", window, cx);
+            assert_eq!(input.value().as_ref(), "-");
+        });
+
+        unsigned.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.insert("-", window, cx);
+            assert_eq!(input.value().as_ref(), "");
+            input.insert("1", window, cx);
+            input.insert(".", window, cx);
+            assert_eq!(input.value().as_ref(), "1");
+        });
+
+        float.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.insert(".", window, cx);
+            assert_eq!(input.value().as_ref(), ".");
+        });
     });
 }
 
@@ -733,13 +775,17 @@ struct BindingTextState {
     disabled: bool,
 }
 
-impl gpui::EventEmitter<()> for BindingTextState {}
+#[derive(Clone, Copy, Debug)]
+enum BindingTextEvent {
+    Change,
+}
+
+impl gpui::EventEmitter<BindingTextEvent> for BindingTextState {}
 
 struct BindingTextBinding;
 
 impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
     type State = BindingTextState;
-    type Event = ();
     type Draft = String;
 
     fn new_state(
@@ -799,23 +845,28 @@ impl gpui_form::FormComponentBinding<String> for BindingTextBinding {
         false
     }
 
-    fn event_kind(_event: &Self::Event) -> Option<gpui_form::FormComponentEvent> {
-        Some(gpui_form::FormComponentEvent::Change(
-            gpui_form::FieldChangeCause::UserInput,
-        ))
-    }
-
     fn install_subscriptions<Form>(
-        _state: Entity<Self::State>,
-        _form: Entity<Form>,
-        _window: &mut Window,
-        _cx: &mut Context<Form>,
+        state: Entity<Self::State>,
+        sink: gpui_form::FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
     ) -> gpui_form::SubscriptionSet
     where
         Form: 'static,
     {
         let mut subscriptions = gpui_form::SubscriptionSet::new();
-        subscriptions.push(gpui::Subscription::new(|| {}));
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &BindingTextEvent, window, cx| match event {
+                BindingTextEvent::Change => sink.emit(
+                    form,
+                    gpui_form::FormComponentEvent::Change(gpui_form::FieldChangeCause::UserInput),
+                    window,
+                    cx,
+                ),
+            },
+        ));
         subscriptions
     }
 }
@@ -882,7 +933,7 @@ fn derive_installs_binding_component_subscriptions(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let form = form.read(cx);
-        assert_eq!(form.token.core().subscriptions().len(), 2);
+        assert_eq!(form.token.core().subscriptions().len(), 1);
         assert_eq!(form.token_value(), "secret");
         assert_eq!(form.token_state().read(cx).value, "secret");
     });
@@ -891,7 +942,7 @@ fn derive_installs_binding_component_subscriptions(cx: &mut TestAppContext) {
         let token_state = form.read(cx).token_state();
         token_state.update(cx, |state, cx| {
             state.value = "changed".to_string();
-            cx.emit(());
+            cx.emit(BindingTextEvent::Change);
         });
     });
     cx.run_until_parked();

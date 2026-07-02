@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use gpui::{App, AppContext as _, Context, Entity, Window};
 
 use crate::{
@@ -9,6 +11,41 @@ pub enum FormComponentEvent {
     Change(FieldChangeCause),
     Focus,
     Blur,
+}
+
+type FormComponentEventCallback<Form> =
+    dyn Fn(&mut Form, FormComponentEvent, &mut Window, &mut Context<Form>);
+
+pub struct FormComponentEventSink<Form> {
+    callback: Rc<FormComponentEventCallback<Form>>,
+}
+
+impl<Form> Clone for FormComponentEventSink<Form> {
+    fn clone(&self) -> Self {
+        Self {
+            callback: self.callback.clone(),
+        }
+    }
+}
+
+impl<Form> FormComponentEventSink<Form> {
+    pub fn new(
+        callback: impl Fn(&mut Form, FormComponentEvent, &mut Window, &mut Context<Form>) + 'static,
+    ) -> Self {
+        Self {
+            callback: Rc::new(callback),
+        }
+    }
+
+    pub fn emit(
+        &self,
+        form: &mut Form,
+        event: FormComponentEvent,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) {
+        (self.callback)(form, event, window, cx);
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -26,7 +63,6 @@ where
     Value: Clone + PartialEq + 'static,
 {
     type State: 'static;
-    type Event: 'static;
     type Draft: Clone + PartialEq + 'static;
 
     fn new_state(
@@ -71,15 +107,11 @@ where
     ) {
     }
 
-    fn event_kind(_event: &Self::Event) -> Option<FormComponentEvent> {
-        None
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool;
 
     fn install_subscriptions<Form>(
         _state: Entity<Self::State>,
-        _form: Entity<Form>,
+        _sink: FormComponentEventSink<Form>,
         _window: &mut Window,
         _cx: &mut Context<Form>,
     ) -> SubscriptionSet
@@ -97,7 +129,6 @@ where
     Value: Clone + PartialEq + 'static,
 {
     type State = NoComponentState;
-    type Event = ();
     type Draft = Value;
 
     fn new_state(

@@ -1,3 +1,5 @@
 pub mod component;
 
-pub use component::{ComponentFieldStore, FieldDraftSync};
+pub use component::{
+    ComponentFieldEventKind, ComponentFieldEventOutcome, ComponentFieldStore, FieldDraftSync,
+};

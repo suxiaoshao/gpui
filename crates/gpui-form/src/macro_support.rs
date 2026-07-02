@@ -1,8 +1,9 @@
-use gpui::{App, Context, Window};
+use gpui::{App, Context, Entity, Window};
 
 use crate::{
-    FieldChangeCause, FieldError, FieldPath, FormItemId, FormMeta, FormValidationReport,
-    ValidationScope, ValidationSource, ValueFieldStore,
+    ComponentFieldEventOutcome, ComponentFieldStore, FieldChangeCause, FieldError, FieldPath,
+    FormComponentBinding, FormItemId, FormMeta, FormValidationReport, ValidationScope,
+    ValidationSource, ValidationTriggers, ValueFieldStore,
 };
 
 #[doc(hidden)]
@@ -16,6 +17,30 @@ where
     T: Clone + PartialEq + 'static,
 {
     ValueFieldStore::new(value)
+}
+
+#[doc(hidden)]
+pub fn component_field<Value, Binding>(
+    value: Value,
+    state: Entity<Binding::State>,
+    triggers: ValidationTriggers,
+    required: bool,
+) -> ComponentFieldStore<Value, Binding>
+where
+    Value: Clone + PartialEq + 'static,
+    Binding: FormComponentBinding<Value>,
+{
+    let mut field = ComponentFieldStore::<Value, Binding>::new(value, state);
+    field.core_mut().set_validation_triggers(triggers);
+    field.core_mut().set_required(required);
+    field
+}
+
+#[doc(hidden)]
+pub fn component_field_event_trigger(
+    outcome: ComponentFieldEventOutcome,
+) -> Option<crate::ValidationTrigger> {
+    outcome.validation_trigger()
 }
 
 #[doc(hidden)]

@@ -1,10 +1,11 @@
 use std::marker::PhantomData;
 
-use gpui::{App, AppContext as _, Entity, Window};
+use gpui::{App, AppContext as _, Context, Entity, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, ValidationTrigger, resolve_form_text,
+    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
+    resolve_form_text,
 };
 
 pub trait TextFieldValue: Clone + PartialEq + 'static {
@@ -39,7 +40,6 @@ where
     T: TextFieldValue,
 {
     type State = InputState;
-    type Event = InputEvent;
     type Draft = String;
 
     fn new_state(
@@ -89,19 +89,40 @@ where
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            InputEvent::Change => Some(FormComponentEvent::Change(FieldChangeCause::UserInput)),
-            InputEvent::Focus => Some(FormComponentEvent::Focus),
-            InputEvent::Blur => Some(FormComponentEvent::Blur),
-            InputEvent::PressEnter { .. } => None,
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         state.update(cx, |input, cx| {
             input.focus(window, cx);
         });
         true
+    }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &InputEvent, window, cx| {
+                let event = match event {
+                    InputEvent::Change => {
+                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
+                    }
+                    InputEvent::Focus => Some(FormComponentEvent::Focus),
+                    InputEvent::Blur => Some(FormComponentEvent::Blur),
+                    InputEvent::PressEnter { .. } => None,
+                };
+                if let Some(event) = event {
+                    sink.emit(form, event, window, cx);
+                }
+            },
+        ));
+        subscriptions
     }
 }

@@ -38,9 +38,12 @@ pub mod __private {
 mod test_support;
 
 pub use component::binding::{
-    ComponentStateOptions, FormComponentBinding, FormComponentEvent, NoComponentBinding,
+    ComponentStateOptions, FormComponentBinding, FormComponentEvent, FormComponentEventSink,
+    NoComponentBinding,
 };
-pub use component::fields::{ComponentFieldStore, FieldDraftSync};
+pub use component::fields::{
+    ComponentFieldEventKind, ComponentFieldEventOutcome, ComponentFieldStore, FieldDraftSync,
+};
 pub use core::array::{
     ArrayIndexError, FieldArrayItem, FieldArrayStore, FormItemId, FormItemIdGenerator, FormRowValue,
 };

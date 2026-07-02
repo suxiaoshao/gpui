@@ -4,7 +4,8 @@ use gpui::{App, Entity, Window};
 
 use crate::{
     AnyFormField, FieldChangeCause, FieldCore, FieldError, FieldMeta, FieldPath,
-    FieldValidationReport, FormComponentBinding, FormField, FormMeta, ValidationTrigger,
+    FieldValidationReport, FormComponentBinding, FormComponentEvent, FormField, FormMeta,
+    ValidationTrigger,
 };
 
 pub enum FieldDraftSync<Value> {
@@ -24,6 +25,45 @@ impl<Value> FieldDraftSync<Value> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComponentFieldEventKind {
+    Changed,
+    Focused,
+    Blurred,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComponentFieldEventOutcome {
+    Changed {
+        parsed: bool,
+        cause: FieldChangeCause,
+    },
+    Focused,
+    Blurred {
+        parsed: bool,
+    },
+    Ignored,
+}
+
+impl ComponentFieldEventOutcome {
+    pub fn validation_trigger(self) -> Option<ValidationTrigger> {
+        match self {
+            Self::Changed { parsed: true, .. } => Some(ValidationTrigger::Change),
+            Self::Blurred { parsed: true } => Some(ValidationTrigger::Blur),
+            _ => None,
+        }
+    }
+
+    pub fn field_event_kind(self) -> Option<ComponentFieldEventKind> {
+        match self {
+            Self::Changed { .. } => Some(ComponentFieldEventKind::Changed),
+            Self::Focused => Some(ComponentFieldEventKind::Focused),
+            Self::Blurred { .. } => Some(ComponentFieldEventKind::Blurred),
+            Self::Ignored => None,
+        }
+    }
+}
+
 pub struct ComponentFieldStore<Value, Binding>
 where
     Value: Clone + PartialEq + 'static,
@@ -34,6 +74,7 @@ where
     default_draft: Binding::Draft,
     draft: Binding::Draft,
     parse_error: Option<FieldError>,
+    writeback_depth: usize,
     _binding: PhantomData<fn() -> Binding>,
 }
 
@@ -50,6 +91,7 @@ where
             default_draft: draft.clone(),
             draft,
             parse_error: None,
+            writeback_depth: 0,
             _binding: PhantomData,
         }
     }
@@ -152,6 +194,38 @@ where
         }
     }
 
+    pub fn apply_component_event(
+        &mut self,
+        path: FieldPath,
+        event: FormComponentEvent,
+        cx: &App,
+    ) -> ComponentFieldEventOutcome {
+        if self.writeback_depth > 0 {
+            return ComponentFieldEventOutcome::Ignored;
+        }
+
+        match event {
+            FormComponentEvent::Change(cause) => {
+                let sync = self.sync_from_state(path, ValidationTrigger::Change, cause, cx);
+                ComponentFieldEventOutcome::Changed {
+                    parsed: sync.is_parsed(),
+                    cause,
+                }
+            }
+            FormComponentEvent::Focus => {
+                self.core.meta_mut().mark_touched();
+                ComponentFieldEventOutcome::Focused
+            }
+            FormComponentEvent::Blur => {
+                let sync =
+                    self.sync_from_state(path, ValidationTrigger::Blur, FieldChangeCause::Blur, cx);
+                ComponentFieldEventOutcome::Blurred {
+                    parsed: sync.is_parsed(),
+                }
+            }
+        }
+    }
+
     pub fn write_component_value(
         &mut self,
         value: &Value,
@@ -160,7 +234,9 @@ where
         cx: &mut App,
     ) {
         self.set_typed_value(value.clone(), cause);
+        self.writeback_depth = self.writeback_depth.saturating_add(1);
         Binding::write_value(&self.state, value, cause, window, cx);
+        self.writeback_depth = self.writeback_depth.saturating_sub(1);
     }
 
     pub fn set_required(&mut self, required: bool, window: &mut Window, cx: &mut App) {
@@ -227,7 +303,9 @@ where
         let value = self.core.value().clone();
         self.draft = self.default_draft.clone();
         self.parse_error = None;
+        self.writeback_depth = self.writeback_depth.saturating_add(1);
         Binding::write_value(&self.state, &value, FieldChangeCause::Reset, window, cx);
+        self.writeback_depth = self.writeback_depth.saturating_sub(1);
     }
 
     fn component_state(&self) -> Option<Entity<Self::ComponentState>> {

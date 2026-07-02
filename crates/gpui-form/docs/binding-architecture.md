@@ -20,8 +20,8 @@
   trait contract，用户无法提供等价 store 而让宏稳定调用。
 
 number dirty bug 是同一个抽象问题的表现：当前 `FormComponentBinding<Value>` 假设组件 state 能随时读出
-合法 `Value`，但 number input 的真实编辑态是 raw text，例如 `""`、`"-"`、`"12x"`、`"01"`。这些是合法
-UI draft，不一定是合法 `i32` / `u64` / `f64`。
+合法 `Value`，但 number input 的真实编辑态是 raw text，例如 `""`、`"-"`、`"."`、`"01"`。这些是否合法还要
+看目标 Rust 类型；其中一部分是合法 UI draft，但不一定是合法 `i32` / `u64` / `f64`。
 
 ## 当前结果
 
@@ -29,9 +29,14 @@ UI draft，不一定是合法 `i32` / `u64` / `f64`。
 - leaf field 只使用一个 store：`ComponentFieldStore<Value, Binding>`。
 - 用户只实现 binding，不实现 field store；宏只依赖 `gpui-form` 自己的通用 store constructor。
 - binding 必须显式建模 `Draft`，数据流统一为 `State -> Draft -> Result<Value, Box<FieldError>>`。
-- number 不再需要专门 store；它只是 `Draft = String` 且 `parse_draft(...)` 可能失败的 binding。
+- number 不再需要专门 store；它是 `Draft = String` 且 `parse_draft(...)` 可能失败的 binding，同时
+  `NumberFieldValue` 必须按 Rust 目标类型提供 `NumberInputPolicy`，让 `new_state(...)` 对整数、无符号整数和
+  浮点数配置不同的 `InputState` 行为。
 - `gpui-component` 相关 binding 拆到新 crate：`crates/gpui-form-gpui-component`。
 - group 和 array 继续是组合字段，不纳入 leaf field 统一 store。
+- binding-owned subscriptions 已落地：derive 宏不再内联 `cx.subscribe_in(&state, ...)`，也不再隐含要求
+  `Binding::State: EventEmitter<Binding::Event>`。binding 通过 `install_subscriptions(state, sink, window, cx)`
+  自己安装订阅并回传 `FormComponentEvent`。
 
 ## 文件和模块结构
 
@@ -40,8 +45,8 @@ UI draft，不一定是合法 `i32` / `u64` / `f64`。
 | 文件 | 当前职责 |
 | --- | --- |
 | `Cargo.toml` | 移除 `gpui-component` 依赖；保留 `gpui`、`gpui-form-macros`、`garde`、`validify`。 |
-| `src/component/binding.rs` | 定义新的 draft-aware `FormComponentBinding<Value>`、`ComponentStateOptions`、`FormComponentEvent`。 |
-| `src/component/fields/component.rs` | 作为唯一 leaf field store：`ComponentFieldStore<Value, Binding>`，持有 typed value、draft、component state、parse error 和 subscriptions。 |
+| `src/component/binding.rs` | 定义 draft-aware `FormComponentBinding<Value>`、`ComponentStateOptions`、`FormComponentEvent`、`FormComponentEventSink<Form>`；binding 负责安装 subscriptions。 |
+| `src/component/fields/component.rs` | 作为唯一 leaf field store：`ComponentFieldStore<Value, Binding>`，持有 typed value、draft、component state、parse error、writeback guard 和 subscriptions；集中处理 `FormComponentEvent -> ComponentFieldEventOutcome`。 |
 | `src/component/fields.rs` | 只 re-export 通用 store 和 core binding；不再 re-export `gpui-component` bindings。 |
 | `src/component/fields/{input,number,select,combobox,bool}.rs` | 已从 core 删除，相关 binding 移到 `gpui-form-gpui-component`。 |
 | `src/core/field.rs` | 保留 `FieldCore<Value>` 作为 typed value/meta/error holder；dirty/default 由 owner store 传入 draft snapshot。 |
@@ -54,7 +59,7 @@ UI draft，不一定是合法 `i32` / `u64` / `f64`。
 | --- | --- |
 | `src/field_kind.rs` | leaf field 只区分 `Value` / `Binding`；`input`、`number`、`select`、`combobox`、`bool` 会给出 compile error，提示改用 adapter binding。 |
 | `src/attributes.rs` | `binding = "TypePath"` 是 leaf UI 控件唯一扩展点；`component = "group"` / `"array"` 仍用于组合字段。 |
-| `src/expand/fields.rs` | leaf 初始化统一生成 `ComponentFieldStore::<Value, Binding>::new(...)`；不再调用任何用户或 adapter store 的 inherent `new`。 |
+| `src/expand/fields.rs` | leaf 初始化统一生成 `ComponentFieldStore::<Value, Binding>` 和 field event sink；不再调用任何用户或 adapter store 的 inherent `new`，也不再内联 component subscription。 |
 | `src/expand/accessors.rs` | leaf 统一生成 `<field>_value()` 和 `<field>_state()`；具体 render helper 属于 adapter crate 或 app。 |
 | `src/expand/validation.rs` | submit preflight 对所有 binding 调 `prepare_submit(...)`，由 binding 的 `parse_draft(...)` 产出 typed value 或 internal field error。 |
 | `src/expand/arrays.rs` | 不变；array item 仍创建 child generated store。 |
@@ -68,7 +73,7 @@ workspace crate，专门承载 `gpui-component` 适配：
 | `Cargo.toml` | 依赖 `gpui`、`gpui-form`、`gpui-component`。 |
 | `src/lib.rs` | re-export bindings。 |
 | `src/input.rs` | `TextInputBinding<T>`，state 为 `InputState`，draft 为 `String`。 |
-| `src/number.rs` | `NumberInputBinding<N>`，state 为 `InputState`，draft 为 `String`，parse 失败返回 internal field error。 |
+| `src/number.rs` | `NumberInputBinding<N>`，state 为 `InputState`，draft 为 `String`，按 `N::input_policy()` 配置 typed number input 行为，parse 失败返回 internal field error。 |
 | `src/bool.rs` | `BoolBinding`，draft 为 `bool`。 |
 | `src/select.rs` | `SelectBinding<T, D>`，state 为 `SelectState<D>`，draft 由 selected value 或 binding snapshot 表达。 |
 | `src/combobox.rs` | `ComboboxBinding<T, D>`，state 为 `ComboboxState<D>`，draft 由 selected values 或 binding snapshot 表达。 |
@@ -86,7 +91,6 @@ where
     Value: Clone + PartialEq + 'static,
 {
     type State: 'static;
-    type Event: 'static;
     type Draft: Clone + PartialEq + 'static;
 
     fn new_state(
@@ -115,11 +119,33 @@ where
         cx: &mut App,
     );
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent>;
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let _ = (state, sink, window, cx);
+        SubscriptionSet::default()
+    }
 
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool;
 }
 ```
+
+`FormComponentEventSink<Form>` 是 binding-owned subscription 和 generated form handler 之间的边界：
+
+```rust
+pub struct FormComponentEventSink<Form> {
+    callback: Rc<dyn Fn(&mut Form, FormComponentEvent, &mut Window, &mut Context<Form>)>,
+}
+```
+
+binding 只调用 sink，不直接知道 generated field enum / event enum；宏只生成 sink 的 callback，不直接知道
+UI library 的事件源。
 
 `ComponentFieldStore` 目标形态：
 
@@ -162,8 +188,54 @@ where
         window: &mut Window,
         cx: &mut App,
     );
+    pub fn apply_component_event(
+        &mut self,
+        path: FieldPath,
+        event: FormComponentEvent,
+        cx: &App,
+    ) -> ComponentFieldEventOutcome;
 }
 ```
+
+`ComponentFieldEventOutcome` 用来让 generated form handler 做字段级 validation 和 typed event emit，但不重复
+实现 draft parsing：
+
+```rust
+pub enum ComponentFieldEventOutcome {
+    Changed { parsed: bool, cause: FieldChangeCause },
+    Focused,
+    Blurred { parsed: bool },
+    Ignored,
+}
+
+impl ComponentFieldEventOutcome {
+    pub fn validation_trigger(self) -> Option<ValidationTrigger>;
+    pub fn field_event_kind(self) -> Option<ComponentFieldEventKind>;
+}
+
+pub enum ComponentFieldEventKind {
+    Changed,
+    Focused,
+    Blurred,
+}
+```
+
+`NumberFieldValue` 是 adapter crate 的 typed number 边界，不属于 `gpui-form` core：
+
+```rust
+pub trait NumberFieldValue: Clone + PartialEq + ToString + FromStr + 'static {
+    fn input_policy() -> NumberInputPolicy;
+    fn step_draft(draft: &str, action: StepAction) -> Option<String> {
+        None
+    }
+}
+```
+
+`gpui-component::NumberInput` 的真实 state 是 `InputState`，并且 min/max/step 都以 `f64` 表达。因此
+`NumberInputBinding<N>::new_state(...)` 必须按 `N` 配置 input policy：`i32` 类 signed integer 允许符号但不允许
+小数，`u32` 类 unsigned integer 不允许符号和小数，`f32/f64` 允许小数。`i64/u64/isize/usize` 这类可能超过
+`f64` 安全整数范围的类型不把 max 映射成 `f64`，并把 step 交给 binding 的 `NumberInputEvent::Step`
+订阅，用 Rust checked arithmetic 更新 draft。
 
 `FieldDraftSync`：
 
@@ -204,8 +276,8 @@ Value = i32
 Draft = String
 default_draft = "12"
 
-用户输入 "12x":
-  draft = "12x"
+用户输入 "-":
+  draft = "-"
   parse_draft -> Err(parse)
   typed value 仍是 12
   dirty true
@@ -233,9 +305,11 @@ domain Value
 用户输入：
 
 ```text
-Binding::Event
-  -> Binding::event_kind(event)
-  -> store.sync_from_state(path, trigger, cause, cx)
+UI component event
+  -> Binding-owned subscription
+  -> FormComponentEventSink::emit(FormComponentEvent)
+  -> generated field handler
+  -> store.apply_component_event(path, event, cx)
   -> Binding::read_draft(state)
   -> compare draft/default_draft for dirty
   -> Binding::parse_draft(draft)
@@ -268,6 +342,24 @@ set_<field>_value(Value, cause)
   -> draft = Binding::draft_from_value(Value)
   -> dirty/default recomputed from draft
 ```
+
+## Derive 宏边界
+
+宏继续生成字段结构 glue code，但不继续拥有组件订阅：
+
+- 保留生成：field enum、typed form event enum、store struct、`draft()` / `write_draft(...)`、
+  field accessor/setter/required/error helper、group/array helper、validation report 路由和 `FormStore` impl。
+- 下沉到 binding：订阅哪个 state/entity、订阅几个事件源、`subscribe` / `subscribe_in` 的选择、UI event 到
+  `FormComponentEvent` 的映射。
+- 下沉到 runtime：`FormComponentEvent` 到 `ComponentFieldStore` 的 draft sync、parse error、dirty/default 和
+  focus/blur meta 更新。
+- 保留少量 generated 事件收尾：每个 generated store 生成一次 `finish_component_field_event(...)`，
+  用 runtime outcome 调用 field-scoped validation 并 emit typed form event；具体字段是否启用当前 validation
+  trigger 由字段自己的 sink closure 直接读取，不额外生成“字段枚举 -> triggers”的 match。
+- 暂不优化：`field_paths: Vec<FieldPath>`，因为当前 `FieldPath` 内部持有 `Vec<FieldPathSegment>`，不能直接用
+  const slice 表达。
+
+完整文件结构、类型结构和验证覆盖见 `macro-generation-boundary.md`。
 
 ## 所用组件
 
@@ -321,11 +413,32 @@ set_<field>_value(Value, cause)
   已实现新的 draft-aware binding。
 - 保存、validator、DB/config/keychain 写回不变。
 
-## 测试计划
+### Phase E: binding-owned subscriptions
 
-- `component_field_store_tracks_draft_dirty_when_parse_fails`。
-- `component_field_store_tracks_draft_dirty_when_typed_value_is_equal`。
-- `component_field_store_normalize_writeback_rebases_draft`。
-- `derive_leaf_binding_does_not_reference_gpui_component`，用 `cargo expand` 或 trybuild 编译错误快照验证。
-- `gpui_component_number_binding_rejects_unparsable_draft_on_submit`。
-- `ai-chat2` focused compile check：`cargo test -p ai-chat2 --no-run`。
+- 已修改 `FormComponentBinding`，删除 `type Event` 和 `event_kind(...)`。
+- 已新增 `FormComponentEventSink<Form>`，让 binding 在 `install_subscriptions(state, sink, window, cx)` 内自行订阅。
+- 已删除 derive 宏中的 `State: EventEmitter<Event>` where predicate 和内联 `cx.subscribe_in(...)`。
+- 已把 `TextInputBinding`、`NumberInputBinding`、`SelectBinding`、`ComboboxBinding` 和 app-local binding
+  的事件订阅迁移到各自 binding 实现内。
+- `BoolBinding` 保持 passive state，默认返回空 `SubscriptionSet`；如果未来 bool 组件 state 发事件，只修改
+  adapter crate。
+- 已把每个字段重复展开的 `Change` / `Focus` / `Blur` 同步逻辑收敛到 `ComponentFieldStore` runtime helper。
+- 已删除额外的“字段枚举 -> validation triggers”生成 match，改由具体字段 sink closure 直接读取自己的
+  `FieldCore`。
+- 已对 macro where predicate 做去重，减少展开代码和错误信息噪音。
+
+## 验证覆盖
+
+- `RequiredFlagState` 不实现 `EventEmitter`，但 `RequiredBindingInput` derive 编译通过，覆盖 binding state
+  不再需要隐藏 `State: EventEmitter<Binding::Event>` 约束。
+- `derive_installs_binding_component_subscriptions` 覆盖 binding-owned subscription 能把 component state 事件同步回
+  form typed value。
+- `derive_emits_typed_field_events` 覆盖 adapter-owned input subscription 回传 focus/change/blur 后，generated
+  form 仍 emit typed field event。
+- `submit_rejects_unparsable_number_input`、`number_raw_edit_with_same_typed_value_stays_dirty`、
+  `number_normalize_writeback_recomputes_raw_dirty` 和 `number_reset_restores_raw_default` 覆盖 number raw draft
+  仍由 `ComponentFieldStore` 统一管理。
+- 后续如要继续降低宏展开噪音，可补 trybuild 或 expand snapshot，专门断言生成代码中不出现
+  `Binding::event_kind(...)` 和宏内联 `cx.subscribe_in(&__gpui_form_*_state, ...)`。
+- focused 验证命令：`cargo check -p gpui-form -p gpui-form-gpui-component`、`cargo check -p ai-chat2`、
+  `cargo test -p gpui-form`、`cargo test -p ai-chat2`。

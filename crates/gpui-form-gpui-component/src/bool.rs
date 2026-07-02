@@ -25,13 +25,10 @@ impl BoolComponentState {
     }
 }
 
-impl gpui::EventEmitter<()> for BoolComponentState {}
-
 pub struct BoolBinding;
 
 impl FormComponentBinding<bool> for BoolBinding {
     type State = BoolComponentState;
-    type Event = ();
     type Draft = bool;
 
     fn new_state(

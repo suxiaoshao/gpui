@@ -1,10 +1,11 @@
-use gpui::{App, AppContext as _, Entity, Focusable, IntoElement, SharedString, Window};
+use gpui::{App, AppContext as _, Context, Entity, Focusable, IntoElement, SharedString, Window};
 use gpui_component::{
     searchable_list::SearchableListDelegate,
     select::{SelectEvent, SelectItem, SelectState},
 };
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
+    FormComponentEventSink, SubscriptionSet,
 };
 
 use crate::foundation::I18n;
@@ -97,7 +98,6 @@ pub(in crate::features::settings::provider) struct ProviderApiModeSelectBinding;
 
 impl FormComponentBinding<ProviderApiMode> for ProviderApiModeSelectBinding {
     type State = SelectState<Vec<ApiModeChoice>>;
-    type Event = SelectEvent<Vec<ApiModeChoice>>;
     type Draft = ProviderApiMode;
 
     fn new_state(
@@ -140,15 +140,36 @@ impl FormComponentBinding<ProviderApiMode> for ProviderApiModeSelectBinding {
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        let SelectEvent::Confirm(_) = event;
-        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         let focus_handle = state.read(cx).focus_handle(cx);
         focus_handle.focus(window, cx);
         true
+    }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &SelectEvent<Vec<ApiModeChoice>>, window, cx| {
+                let SelectEvent::Confirm(_) = event;
+                sink.emit(
+                    form,
+                    FormComponentEvent::Change(FieldChangeCause::UserInput),
+                    window,
+                    cx,
+                );
+            },
+        ));
+        subscriptions
     }
 }
 

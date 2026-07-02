@@ -1,5 +1,6 @@
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
+use std::collections::HashSet;
 use syn::{Data, DeriveInput, Field, Fields, GenericParam, Result, Type, parse_quote, parse2};
 
 use crate::{
@@ -69,6 +70,19 @@ fn field_variant_ident(name: &str) -> syn::Ident {
     }
 
     format_ident!("{variant}")
+}
+
+fn dedupe_where_predicates(where_clause: &mut syn::WhereClause) {
+    let mut seen = HashSet::new();
+    let mut predicates = syn::punctuated::Punctuated::new();
+
+    for predicate in where_clause.predicates.iter().cloned() {
+        if seen.insert(predicate.to_token_stream().to_string()) {
+            predicates.push(predicate);
+        }
+    }
+
+    where_clause.predicates = predicates;
 }
 
 pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
@@ -176,15 +190,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 store_where
                     .predicates
                     .push(parse_quote!(#binding: ::gpui_form::FormComponentBinding<#ty>));
-                store_where.predicates.push(parse_quote!(
-                    <#binding as ::gpui_form::FormComponentBinding<#ty>>::State:
-                        ::gpui_form::__private::gpui::EventEmitter<
-                            <#binding as ::gpui_form::FormComponentBinding<#ty>>::Event
-                    >
-                ));
             }
         }
     }
+    dedupe_where_predicates(store_where);
 
     let (impl_generics, ty_generics, where_clause) = store_generics.split_for_impl();
     let field_enum_ident = related_store_ident(&store_ident, "Field");
@@ -220,7 +229,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .collect::<Result<Vec<_>>>()?;
     let field_initializers = field_models
         .iter()
-        .map(|model| field_initializer(model, &field_enum_ident, &event_ident))
+        .map(|model| field_initializer(model, &field_enum_ident))
         .collect::<Result<Vec<_>>>()?;
     let write_field_statements = field_models
         .iter()
@@ -283,7 +292,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .filter(|model| model.attrs.component == FieldKind::Array)
         .map(array_helper_methods)
         .collect::<Result<Vec<_>>>()?;
-
     let expanded = quote! {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #input_vis enum #field_enum_ident {
@@ -329,7 +337,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             meta: ::gpui_form::FormMeta,
             form_errors: ::std::vec::Vec<::gpui_form::FormError>,
             field_paths: ::std::vec::Vec<::gpui_form::FieldPath>,
-            is_normalizing_on_submit: bool,
             #validation_field
             #transform_field
         }
@@ -351,7 +358,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     field_paths: ::std::vec![
                         #(::gpui_form::macro_support::field_path(#field_names),)*
                     ],
-                    is_normalizing_on_submit: false,
                     #validation_init
                     #transform_init
                 }
@@ -373,13 +379,9 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 cx: &mut ::gpui_form::__private::gpui::App,
             ) {
                 let #input_ident { #(#field_idents: #value_idents),* } = value;
-                let previous_normalizing = self.is_normalizing_on_submit;
-                self.is_normalizing_on_submit =
-                    cause == ::gpui_form::FieldChangeCause::NormalizeOnSubmit;
 
                 #(#write_field_statements)*
 
-                self.is_normalizing_on_submit = previous_normalizing;
                 self.refresh_meta();
             }
 
@@ -477,6 +479,51 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 self.apply_validation_report(&report, &scope, cx);
                 self.refresh_meta();
                 report
+            }
+
+            fn finish_component_field_event(
+                &mut self,
+                field: #field_enum_ident,
+                path: ::gpui_form::FieldPath,
+                outcome: ::gpui_form::ComponentFieldEventOutcome,
+                field_allows_validation_trigger: bool,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                let Some(__gpui_form_event_kind) = outcome.field_event_kind() else {
+                    return;
+                };
+
+                if let Some(__gpui_form_trigger) =
+                    ::gpui_form::macro_support::component_field_event_trigger(outcome)
+                {
+                    let __gpui_form_should_validate = match outcome {
+                        ::gpui_form::ComponentFieldEventOutcome::Changed { cause, .. } => {
+                            cause.triggers_change_validation()
+                        }
+                        _ => true,
+                    };
+                    if __gpui_form_should_validate && field_allows_validation_trigger {
+                        self.apply_validation_for_scope(
+                            __gpui_form_trigger,
+                            ::gpui_form::ValidationScope::Field(path),
+                            cx,
+                        );
+                    }
+                }
+
+                self.refresh_meta();
+                match __gpui_form_event_kind {
+                    ::gpui_form::ComponentFieldEventKind::Changed => {
+                        cx.emit(#event_ident::FieldChanged(field));
+                    }
+                    ::gpui_form::ComponentFieldEventKind::Focused => {
+                        cx.emit(#event_ident::FieldFocused(field));
+                    }
+                    ::gpui_form::ComponentFieldEventKind::Blurred => {
+                        cx.emit(#event_ident::FieldBlurred(field));
+                    }
+                }
+                cx.notify();
             }
 
             fn apply_validation_report(

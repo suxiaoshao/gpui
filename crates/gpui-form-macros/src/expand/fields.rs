@@ -34,7 +34,6 @@ pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
 pub(super) fn field_initializer(
     model: &FieldModel<'_>,
     field_enum_ident: &syn::Ident,
-    event_ident: &syn::Ident,
 ) -> Result<TokenStream> {
     let ident = model.ident;
     let value_ident = &model.value_ident;
@@ -157,99 +156,55 @@ pub(super) fn field_initializer(
                     window,
                     cx,
                 );
-                let mut #ident = ::gpui_form::ComponentFieldStore::<#ty, #binding>::new(
+                let mut #ident = ::gpui_form::macro_support::component_field::<#ty, #binding>(
                     #value_ident,
                     #state_ident.clone(),
+                    #triggers,
+                    #required,
                 );
-                #ident.core_mut().set_validation_triggers(#triggers);
-                #ident.core_mut().set_required(#required);
+                let __gpui_form_component_event_sink =
+                    ::gpui_form::FormComponentEventSink::new(
+                        |this: &mut Self,
+                         __gpui_form_event: ::gpui_form::FormComponentEvent,
+                         _window: &mut ::gpui_form::__private::gpui::Window,
+                         cx: &mut ::gpui_form::__private::gpui::Context<Self>| {
+                            let __gpui_form_outcome = this.#ident.apply_component_event(
+                                ::gpui_form::macro_support::field_path(#name),
+                                __gpui_form_event,
+                                cx,
+                            );
+                            let __gpui_form_field_allows_validation_trigger =
+                                if let Some(__gpui_form_trigger) =
+                                    ::gpui_form::macro_support::component_field_event_trigger(
+                                        __gpui_form_outcome,
+                                    )
+                                {
+                                    this.#ident
+                                        .core()
+                                        .validation_triggers()
+                                        .contains(__gpui_form_trigger)
+                                } else {
+                                    false
+                                };
+                            this.finish_component_field_event(
+                                #field_variant,
+                                ::gpui_form::macro_support::field_path(#name),
+                                __gpui_form_outcome,
+                                __gpui_form_field_allows_validation_trigger,
+                                cx,
+                            );
+                        },
+                    );
                 let __gpui_form_component_subscriptions =
                     <#binding as ::gpui_form::FormComponentBinding<#ty>>::install_subscriptions(
                         #state_ident.clone(),
-                        cx.entity(),
+                        __gpui_form_component_event_sink,
                         window,
                         cx,
                     );
                 #ident.core_mut()
                     .subscriptions_mut()
                     .extend(__gpui_form_component_subscriptions);
-                #ident.core_mut().subscriptions_mut().push(
-                    cx.subscribe_in(
-                        &#state_ident,
-                        window,
-                        |this,
-                         _state,
-                         event: &<#binding as ::gpui_form::FormComponentBinding<#ty>>::Event,
-                         _window,
-                         cx| {
-                            let Some(__gpui_form_event) =
-                                <#binding as ::gpui_form::FormComponentBinding<#ty>>::event_kind(event)
-                            else {
-                                return;
-                            };
-                            match __gpui_form_event {
-                                ::gpui_form::FormComponentEvent::Change(cause) => {
-                                    if this.is_normalizing_on_submit {
-                                        return;
-                                    }
-                                    let __gpui_form_sync = this.#ident.sync_from_state(
-                                        ::gpui_form::macro_support::field_path(#name),
-                                        ::gpui_form::ValidationTrigger::Change,
-                                        cause,
-                                        cx,
-                                    );
-                                    if __gpui_form_sync.is_parsed()
-                                        && cause.triggers_change_validation()
-                                        && this.#ident.core().validation_triggers().contains(
-                                            ::gpui_form::ValidationTrigger::Change,
-                                        )
-                                    {
-                                        this.apply_validation_for_scope(
-                                            ::gpui_form::ValidationTrigger::Change,
-                                            ::gpui_form::ValidationScope::Field(
-                                                ::gpui_form::macro_support::field_path(#name),
-                                            ),
-                                            cx,
-                                        );
-                                    }
-                                    this.refresh_meta();
-                                    cx.emit(#event_ident::FieldChanged(#field_variant));
-                                    cx.notify();
-                                }
-                                ::gpui_form::FormComponentEvent::Focus => {
-                                    ::gpui_form::FormField::mark_touched(&mut this.#ident);
-                                    this.refresh_meta();
-                                    cx.emit(#event_ident::FieldFocused(#field_variant));
-                                    cx.notify();
-                                }
-                                ::gpui_form::FormComponentEvent::Blur => {
-                                    let __gpui_form_sync = this.#ident.sync_from_state(
-                                        ::gpui_form::macro_support::field_path(#name),
-                                        ::gpui_form::ValidationTrigger::Blur,
-                                        ::gpui_form::FieldChangeCause::Blur,
-                                        cx,
-                                    );
-                                    if __gpui_form_sync.is_parsed()
-                                        && this.#ident.core().validation_triggers().contains(
-                                            ::gpui_form::ValidationTrigger::Blur,
-                                        )
-                                    {
-                                        this.apply_validation_for_scope(
-                                            ::gpui_form::ValidationTrigger::Blur,
-                                            ::gpui_form::ValidationScope::Field(
-                                                ::gpui_form::macro_support::field_path(#name),
-                                            ),
-                                            cx,
-                                        );
-                                    }
-                                    this.refresh_meta();
-                                    cx.emit(#event_ident::FieldBlurred(#field_variant));
-                                    cx.notify();
-                                }
-                            }
-                        },
-                    )
-                );
             }
         }
     })

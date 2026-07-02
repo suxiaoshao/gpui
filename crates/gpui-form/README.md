@@ -528,12 +528,12 @@ pub enum ValidationSource {
 Users provide component state by implementing a binding. The binding is
 responsible for creating UI state, reading a raw `Draft` from that state,
 parsing the draft into the typed field value, writing typed values back to the
-state, and mapping component events to form events.
+state, installing UI subscriptions, and mapping component events to form
+events.
 
 ```rust
 pub trait FormComponentBinding<Value>: 'static {
     type State: 'static;
-    type Event: 'static;
     type Draft: Clone + PartialEq + 'static;
 
     fn new_state(
@@ -570,10 +570,9 @@ pub trait FormComponentBinding<Value>: 'static {
         window: &mut Window,
         cx: &mut App,
     );
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent>;
     fn install_subscriptions<Form>(
         state: Entity<Self::State>,
-        form: Entity<Form>,
+        sink: FormComponentEventSink<Form>,
         window: &mut Window,
         cx: &mut Context<Form>,
     ) -> SubscriptionSet
@@ -608,7 +607,6 @@ pub struct SecretRefState {
 
 impl FormComponentBinding<Option<String>> for SecretRefBinding {
     type State = SecretRefState;
-    type Event = InputEvent;
     type Draft = String;
 
     fn new_state(
@@ -669,7 +667,7 @@ impl FormComponentBinding<Option<String>> for SecretRefBinding {
 
     fn install_subscriptions<Form>(
         state: Entity<Self::State>,
-        form: Entity<Form>,
+        sink: FormComponentEventSink<Form>,
         window: &mut Window,
         cx: &mut Context<Form>,
     ) -> SubscriptionSet
@@ -677,9 +675,25 @@ impl FormComponentBinding<Option<String>> for SecretRefBinding {
         Form: 'static,
     {
         let input = state.read(cx).input.clone();
-        SubscriptionSet::from(cx.subscribe_in(&input, window, move |_, _, event, window, cx| {
-            let _ = (&form, event, window, cx);
-        }))
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &input,
+            window,
+            move |form, _input, event: &InputEvent, window, cx| {
+                let event = match event {
+                    InputEvent::Change => {
+                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
+                    }
+                    InputEvent::Focus => Some(FormComponentEvent::Focus),
+                    InputEvent::Blur => Some(FormComponentEvent::Blur),
+                    InputEvent::PressEnter { .. } => None,
+                };
+                if let Some(event) = event {
+                    sink.emit(form, event, window, cx);
+                }
+            },
+        ));
+        subscriptions
     }
 
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {

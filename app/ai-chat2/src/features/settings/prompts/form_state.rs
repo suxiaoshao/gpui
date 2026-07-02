@@ -3,7 +3,7 @@ use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
-    FormField, FormMeta,
+    FormComponentEventSink, FormField, FormMeta, SubscriptionSet,
 };
 
 type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
@@ -35,7 +35,6 @@ pub(super) struct PromptContentInputBinding;
 
 impl FormComponentBinding<String> for PromptContentInputBinding {
     type State = InputState;
-    type Event = InputEvent;
     type Draft = String;
 
     fn new_state(
@@ -85,20 +84,41 @@ impl FormComponentBinding<String> for PromptContentInputBinding {
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            InputEvent::Change => Some(FormComponentEvent::Change(FieldChangeCause::UserInput)),
-            InputEvent::Focus => Some(FormComponentEvent::Focus),
-            InputEvent::Blur => Some(FormComponentEvent::Blur),
-            InputEvent::PressEnter { .. } => None,
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         state.update(cx, |input, cx| {
             input.focus(window, cx);
         });
         true
+    }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &InputEvent, window, cx| {
+                let event = match event {
+                    InputEvent::Change => {
+                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
+                    }
+                    InputEvent::Focus => Some(FormComponentEvent::Focus),
+                    InputEvent::Blur => Some(FormComponentEvent::Blur),
+                    InputEvent::PressEnter { .. } => None,
+                };
+                if let Some(event) = event {
+                    sink.emit(form, event, window, cx);
+                }
+            },
+        ));
+        subscriptions
     }
 }
 

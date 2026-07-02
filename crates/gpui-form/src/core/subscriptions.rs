@@ -40,6 +40,26 @@ impl IntoIterator for SubscriptionSet {
     }
 }
 
+impl Extend<Subscription> for SubscriptionSet {
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = Subscription>,
+    {
+        self.subscriptions.extend(iter);
+    }
+}
+
+impl FromIterator<Subscription> for SubscriptionSet {
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = Subscription>,
+    {
+        Self {
+            subscriptions: iter.into_iter().collect(),
+        }
+    }
+}
+
 impl std::fmt::Debug for SubscriptionSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubscriptionSet")

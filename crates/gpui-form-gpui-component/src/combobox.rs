@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use gpui::{App, AppContext as _, Entity, Focusable, Window};
+use gpui::{App, AppContext as _, Context, Entity, Focusable, Window};
 use gpui_component::{
     IndexPath,
     combobox::{ComboboxEvent, ComboboxState},
@@ -8,7 +8,7 @@ use gpui_component::{
 };
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, ValidationTrigger,
+    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
 };
 
 pub trait ComboboxFieldValue: Clone + PartialEq + 'static {
@@ -106,7 +106,6 @@ where
     D::Item: SearchableListItem<Value = T::Selected>,
 {
     type State = ComboboxState<D>;
-    type Event = ComboboxEvent<D>;
     type Draft = T;
 
     fn new_state(
@@ -149,16 +148,33 @@ where
         });
     }
 
-    fn event_kind(event: &Self::Event) -> Option<FormComponentEvent> {
-        match event {
-            ComboboxEvent::Change(_) => {
-                Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-            }
-            ComboboxEvent::Confirm(_) => Some(FormComponentEvent::Blur),
-        }
-    }
-
     fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
         Self::focus(state, window, cx)
+    }
+
+    fn install_subscriptions<Form>(
+        state: Entity<Self::State>,
+        sink: FormComponentEventSink<Form>,
+        window: &mut Window,
+        cx: &mut Context<Form>,
+    ) -> SubscriptionSet
+    where
+        Form: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.push(cx.subscribe_in(
+            &state,
+            window,
+            move |form, _state, event: &ComboboxEvent<D>, window, cx| {
+                let event = match event {
+                    ComboboxEvent::Change(_) => {
+                        FormComponentEvent::Change(FieldChangeCause::UserInput)
+                    }
+                    ComboboxEvent::Confirm(_) => FormComponentEvent::Blur,
+                };
+                sink.emit(form, event, window, cx);
+            },
+        ));
+        subscriptions
     }
 }
