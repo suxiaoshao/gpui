@@ -20,6 +20,10 @@ ChatForm 多模态输入专项计划见
 `app/ai-chat/docs/dev/issue-159/tools-and-approval/README.md`。
 MCP Settings/runtime/OAuth 专项计划见
 `app/ai-chat/docs/dev/issue-159/mcp/README.md`。
+Settings 表单统一接入 `gpui-form` 的计划见
+`app/ai-chat/docs/dev/issue-159/gpui-form-integration.md`。
+Settings 表单从半迁移收敛到完整 `gpui-form` validation/transform pipeline 的补齐计划见
+`app/ai-chat/docs/dev/issue-159/gpui-form-full-migration-plan.md`。
 Packaged `.app` 手动冒烟测试记录见
 `app/ai-chat/docs/dev/issue-159/packaged-app-smoke-2026-06-27.md`。
 

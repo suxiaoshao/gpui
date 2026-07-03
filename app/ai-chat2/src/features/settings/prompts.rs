@@ -22,6 +22,7 @@ use rows::{
 };
 
 mod dialog;
+mod form_state;
 mod rows;
 
 pub(super) struct PromptsSettingsPage {

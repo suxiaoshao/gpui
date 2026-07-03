@@ -1,122 +1,139 @@
 use std::collections::BTreeSet;
 
-use crate::{
-    foundation::I18n,
-    state::config::{
-        McpServerTomlConfig, McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name,
-        is_valid_mcp_server_id,
-    },
+use crate::state::config::{
+    McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
 };
-use fluent_bundle::FluentArgs;
-use gpui::{App, SharedString};
-
-use super::form_state::{
-    McpServerFormDraft, key_value_values, optional_input, string_values, trim_input,
+use gpui_form::{
+    SubmitTransform, TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
+    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct McpFormValidationError {
-    pub(super) field: McpFormField,
-    pub(super) message_key: &'static str,
-    pub(super) args: Vec<(&'static str, String)>,
+use super::form_state::McpServerFormInput;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct McpServerValidationContext {
+    pub(super) original_server_id: Option<String>,
+    pub(super) existing_server_ids: Vec<String>,
 }
 
-impl McpFormValidationError {
-    pub(super) fn new(field: McpFormField, message_key: &'static str) -> Self {
-        Self {
-            field,
-            message_key,
-            args: Vec::new(),
-        }
-    }
+#[derive(Clone, Debug, Default)]
+pub(super) struct McpServerValidator;
 
-    pub(super) fn with_arg(mut self, key: &'static str, value: impl Into<String>) -> Self {
-        self.args.push((key, value.into()));
-        self
-    }
+impl ValidationAdapter<McpServerFormInput> for McpServerValidator {
+    type Context = McpServerValidationContext;
 
-    pub(super) fn message(&self, cx: &App) -> SharedString {
-        let i18n = cx.global::<I18n>();
-        if self.args.is_empty() {
-            return i18n.t(self.message_key).into();
-        }
-
-        let mut args = FluentArgs::new();
-        for (key, value) in &self.args {
-            args.set(*key, value.clone());
-        }
-        i18n.t_with_args(self.message_key, &args).into()
+    fn validate(
+        &self,
+        draft: &McpServerFormInput,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        context: ValidationContext<'_, Self::Context>,
+        _cx: &gpui::App,
+    ) -> ValidationAdapterReport {
+        ValidationAdapterReport::new(validate_mcp_issues(
+            draft,
+            context.external,
+            trigger,
+            &scope,
+        ))
     }
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum McpFormField {
-    Form,
-    ServerId,
-    Command,
-    Argument { row_id: u64 },
-    EnvKey { row_id: u64 },
-    EnvValue { row_id: u64 },
-    EnvVar { row_id: u64 },
-    Cwd,
-    Url,
-    BearerTokenEnvVar,
-    HeaderName { row_id: u64 },
-    HeaderValue { row_id: u64 },
-    EnvHeaderName { row_id: u64 },
-    EnvHeaderVar { row_id: u64 },
-}
+#[derive(Clone, Debug, Default)]
+pub(super) struct McpServerTransform;
 
-impl McpFormField {
-    pub(super) fn same_location(&self, other: &Self) -> bool {
-        self == other
+impl SubmitTransform<McpServerFormInput, McpServerFormInput> for McpServerTransform {
+    fn preview(
+        &self,
+        draft: &McpServerFormInput,
+        _context: &TransformContext,
+    ) -> Result<McpServerFormInput, TransformReport> {
+        Ok(normalize_mcp_input(draft))
+    }
+
+    fn transform_on_submit(
+        &self,
+        draft: &McpServerFormInput,
+        context: &TransformContext,
+    ) -> Result<McpServerFormInput, TransformReport> {
+        self.preview(draft, context)
     }
 }
 
-pub(super) fn validate_mcp_form(
-    draft: &McpServerFormDraft,
-    original_server_id: Option<&str>,
-    _original_config: Option<&McpServerTomlConfig>,
-    existing_server_ids: &[String],
-    cx: &App,
-) -> Vec<McpFormValidationError> {
-    let mut errors = Vec::new();
-    let server_id = draft.server_id(original_server_id, cx);
+fn normalize_mcp_input(input: &McpServerFormInput) -> McpServerFormInput {
+    McpServerFormInput {
+        transport: input.transport,
+        server_id: input.server_id.trim().to_string(),
+        command: input.command.trim().to_string(),
+        cwd: input.cwd.trim().to_string(),
+        args: input.args.clone(),
+        env: input.env.clone(),
+        env_vars: input.env_vars.clone(),
+        url: input.url.trim().to_string(),
+        bearer_token_env_var: input.bearer_token_env_var.trim().to_string(),
+        headers: input.headers.clone(),
+        env_headers: input.env_headers.clone(),
+        oauth_enabled: input.oauth_enabled,
+    }
+}
 
-    validate_server_id(
+fn validate_mcp_issues(
+    output: &McpServerFormInput,
+    context: &McpServerValidationContext,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let server_id = output.server_id(context.original_server_id.as_deref());
+
+    validate_server_id_issue(
         &server_id,
-        original_server_id,
-        existing_server_ids,
-        &mut errors,
+        context.original_server_id.as_deref(),
+        &context.existing_server_ids,
+        trigger,
+        scope,
+        &mut issues,
     );
 
-    match draft.transport {
-        McpTransportKind::Stdio => validate_stdio(draft, &mut errors, cx),
-        McpTransportKind::StreamableHttp => validate_http(draft, &mut errors, cx),
+    match output.transport {
+        McpTransportKind::Stdio => validate_stdio_issues(output, trigger, scope, &mut issues),
+        McpTransportKind::StreamableHttp => {
+            validate_http_issues(output, trigger, scope, &mut issues)
+        }
     }
 
-    errors
+    issues
 }
 
-fn validate_server_id(
+fn validate_server_id_issue(
     server_id: &str,
     original_server_id: Option<&str>,
     existing_server_ids: &[String],
-    errors: &mut Vec<McpFormValidationError>,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
 ) {
+    let path = field_path("server_id");
     if server_id.is_empty() {
-        errors.push(McpFormValidationError::new(
-            McpFormField::ServerId,
+        push_mcp_issue(
+            issues,
+            path,
+            trigger,
+            scope,
             "mcp-validation-name-required",
-        ));
+            [],
+        );
         return;
     }
 
     if !is_valid_mcp_server_id(server_id) {
-        errors.push(
-            McpFormValidationError::new(McpFormField::ServerId, "mcp-validation-name-invalid")
-                .with_arg("name", server_id),
+        push_mcp_issue(
+            issues,
+            path,
+            trigger,
+            scope,
+            "mcp-validation-name-invalid",
+            [("name", server_id.to_string())],
         );
         return;
     }
@@ -126,223 +143,280 @@ fn validate_server_id(
             .iter()
             .any(|existing_server_id| existing_server_id == server_id)
     {
-        errors.push(
-            McpFormValidationError::new(McpFormField::ServerId, "mcp-validation-name-duplicate")
-                .with_arg("name", server_id),
+        push_mcp_issue(
+            issues,
+            path,
+            trigger,
+            scope,
+            "mcp-validation-name-duplicate",
+            [("name", server_id.to_string())],
         );
     }
 }
 
-fn validate_stdio(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationError>, cx: &App) {
-    if trim_input(&draft.command_input, cx).is_empty() {
-        errors.push(McpFormValidationError::new(
-            McpFormField::Command,
+fn validate_stdio_issues(
+    input: &McpServerFormInput,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if input.command.trim().is_empty() {
+        push_mcp_issue(
+            issues,
+            field_path("command"),
+            trigger,
+            scope,
             "mcp-validation-command-required",
-        ));
+            [],
+        );
     }
 
-    for row in &draft.args {
-        let value = row.input.read(cx).value();
-        if !value.is_empty() && value.trim().is_empty() {
-            errors.push(McpFormValidationError::new(
-                McpFormField::Argument { row_id: row.id },
+    for (index, row) in input.args.iter().enumerate() {
+        if !row.value.is_empty() && row.value.trim().is_empty() {
+            push_mcp_issue(
+                issues,
+                row_field_path("args", index, "value"),
+                trigger,
+                scope,
                 "mcp-validation-arg-empty",
-            ));
+                [],
+            );
         }
     }
 
-    validate_env_key_value_rows(draft, errors, cx);
-    validate_env_var_rows(draft, errors, cx);
+    validate_env_row_issues(input, trigger, scope, issues);
+    validate_env_var_row_issues(input, trigger, scope, issues);
 }
 
-fn validate_env_key_value_rows(
-    draft: &McpServerFormDraft,
-    errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
+fn validate_env_row_issues(
+    input: &McpServerFormInput,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     let mut seen = BTreeSet::new();
-    for row in key_value_values(&draft.env, cx) {
-        if row.key.is_empty() && row.value.is_empty() {
+    for (index, row) in input.env.iter().enumerate() {
+        let key = row.key.trim();
+        let value = row.value.trim();
+        if key.is_empty() && value.is_empty() {
             continue;
         }
-        if row.key.is_empty() {
-            errors.push(McpFormValidationError::new(
-                McpFormField::EnvKey { row_id: row.id },
+        let key_path = row_field_path("env", index, "key");
+        if key.is_empty() {
+            push_mcp_issue(
+                issues,
+                key_path,
+                trigger,
+                scope,
                 "mcp-validation-env-row-incomplete",
-            ));
-            continue;
-        }
-        if !is_valid_mcp_env_var_name(&row.key) {
-            errors.push(
-                McpFormValidationError::new(
-                    McpFormField::EnvKey { row_id: row.id },
-                    "mcp-validation-env-name-invalid",
-                )
-                .with_arg("name", row.key),
+                [],
             );
             continue;
         }
-        if !seen.insert(row.key.clone()) {
-            errors.push(
-                McpFormValidationError::new(
-                    McpFormField::EnvKey { row_id: row.id },
-                    "mcp-validation-env-name-duplicate",
-                )
-                .with_arg("name", row.key),
+        if !is_valid_mcp_env_var_name(key) {
+            push_mcp_issue(
+                issues,
+                key_path,
+                trigger,
+                scope,
+                "mcp-validation-env-name-invalid",
+                [("name", key.to_string())],
+            );
+            continue;
+        }
+        if !seen.insert(key.to_string()) {
+            push_mcp_issue(
+                issues,
+                key_path,
+                trigger,
+                scope,
+                "mcp-validation-env-name-duplicate",
+                [("name", key.to_string())],
             );
         }
     }
 }
 
-fn validate_env_var_rows(
-    draft: &McpServerFormDraft,
-    errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
+fn validate_env_var_row_issues(
+    input: &McpServerFormInput,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     let mut seen = BTreeSet::new();
-    for row in string_values(&draft.env_vars, cx) {
-        if row.value.is_empty() {
+    for (index, row) in input.env_vars.iter().enumerate() {
+        let value = row.value.trim();
+        if value.is_empty() {
             continue;
         }
-        if !is_valid_mcp_env_var_name(&row.value) {
-            errors.push(
-                McpFormValidationError::new(
-                    McpFormField::EnvVar { row_id: row.id },
-                    "mcp-validation-env-name-invalid",
-                )
-                .with_arg("name", row.value),
+        let value_path = row_field_path("env_vars", index, "value");
+        if !is_valid_mcp_env_var_name(value) {
+            push_mcp_issue(
+                issues,
+                value_path,
+                trigger,
+                scope,
+                "mcp-validation-env-name-invalid",
+                [("name", value.to_string())],
             );
             continue;
         }
-        if !seen.insert(row.value.clone()) {
-            errors.push(
-                McpFormValidationError::new(
-                    McpFormField::EnvVar { row_id: row.id },
-                    "mcp-validation-env-name-duplicate",
-                )
-                .with_arg("name", row.value),
+        if !seen.insert(value.to_string()) {
+            push_mcp_issue(
+                issues,
+                value_path,
+                trigger,
+                scope,
+                "mcp-validation-env-name-duplicate",
+                [("name", value.to_string())],
             );
         }
     }
 }
 
-fn validate_http(draft: &McpServerFormDraft, errors: &mut Vec<McpFormValidationError>, cx: &App) {
-    let url = trim_input(&draft.url_input, cx);
+fn validate_http_issues(
+    input: &McpServerFormInput,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let url = input.url.trim().to_string();
     if url.is_empty() {
-        errors.push(McpFormValidationError::new(
-            McpFormField::Url,
+        push_mcp_issue(
+            issues,
+            field_path("url"),
+            trigger,
+            scope,
             "mcp-validation-url-required",
-        ));
+            [],
+        );
     } else {
         match url::Url::parse(&url) {
             Ok(url) if matches!(url.scheme(), "http" | "https") => {}
-            Ok(_) => errors.push(
-                McpFormValidationError::new(McpFormField::Url, "mcp-validation-url-scheme")
-                    .with_arg("url", url),
+            Ok(_) => push_mcp_issue(
+                issues,
+                field_path("url"),
+                trigger,
+                scope,
+                "mcp-validation-url-scheme",
+                [("url", url.to_string())],
             ),
-            Err(err) => errors.push(
-                McpFormValidationError::new(McpFormField::Url, "mcp-validation-url-invalid")
-                    .with_arg("url", url)
-                    .with_arg("error", err.to_string()),
+            Err(err) => push_mcp_issue(
+                issues,
+                field_path("url"),
+                trigger,
+                scope,
+                "mcp-validation-url-invalid",
+                [("url", url), ("error", err.to_string())],
             ),
         }
     }
 
-    let bearer_token_env_var = optional_input(&draft.bearer_token_env_var_input, cx);
+    let bearer_token_env_var = input.bearer_token_env_var.trim().to_string();
+    let bearer_token_env_var = (!bearer_token_env_var.is_empty()).then_some(bearer_token_env_var);
     if let Some(env_var) = bearer_token_env_var.as_deref()
         && !is_valid_mcp_env_var_name(env_var)
     {
-        errors.push(
-            McpFormValidationError::new(
-                McpFormField::BearerTokenEnvVar,
-                "mcp-validation-bearer-env-invalid",
-            )
-            .with_arg("name", env_var),
+        push_mcp_issue(
+            issues,
+            field_path("bearer_token_env_var"),
+            trigger,
+            scope,
+            "mcp-validation-bearer-env-invalid",
+            [("name", env_var.to_string())],
         );
     }
 
-    validate_header_rows(
-        draft,
-        bearer_token_env_var.is_some() || draft.oauth_enabled,
-        errors,
-        cx,
+    validate_header_row_issues(
+        input,
+        trigger,
+        scope,
+        bearer_token_env_var.is_some() || input.oauth_enabled,
+        issues,
     );
 }
 
-fn validate_header_rows(
-    draft: &McpServerFormDraft,
+fn validate_header_row_issues(
+    input: &McpServerFormInput,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
     authorization_managed: bool,
-    errors: &mut Vec<McpFormValidationError>,
-    cx: &App,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     let mut seen = BTreeSet::new();
-    for row in key_value_values(&draft.headers, cx) {
-        validate_header_row(
-            row.id,
-            row.key,
-            row.value,
+    for (index, row) in input.headers.iter().enumerate() {
+        validate_header_row_issue(
+            row_field_path("headers", index, "name"),
+            row_field_path("headers", index, "value"),
+            row.name.trim().to_string(),
+            row.value.trim().to_string(),
             false,
             authorization_managed,
             &mut seen,
-            errors,
+            trigger,
+            scope,
+            issues,
         );
     }
-    for row in key_value_values(&draft.env_headers, cx) {
-        validate_header_row(
-            row.id,
-            row.key,
-            row.value,
+    for (index, row) in input.env_headers.iter().enumerate() {
+        validate_header_row_issue(
+            row_field_path("env_headers", index, "name"),
+            row_field_path("env_headers", index, "env_var"),
+            row.name.trim().to_string(),
+            row.env_var.trim().to_string(),
             true,
             authorization_managed,
             &mut seen,
-            errors,
+            trigger,
+            scope,
+            issues,
         );
     }
 }
 
-fn validate_header_row(
-    row_id: u64,
+#[allow(clippy::too_many_arguments)]
+fn validate_header_row_issue(
+    name_path: gpui_form::FieldPath,
+    value_path: gpui_form::FieldPath,
     name: String,
     value: String,
     value_is_env_var: bool,
     authorization_managed: bool,
     seen: &mut BTreeSet<String>,
-    errors: &mut Vec<McpFormValidationError>,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     if name.is_empty() && value.is_empty() {
         return;
     }
-    let (name_field, value_field) = if value_is_env_var {
-        (
-            McpFormField::EnvHeaderName { row_id },
-            McpFormField::EnvHeaderVar { row_id },
-        )
-    } else {
-        (
-            McpFormField::HeaderName { row_id },
-            McpFormField::HeaderValue { row_id },
-        )
-    };
 
     if name.is_empty() || value.is_empty() {
-        errors.push(McpFormValidationError::new(
+        push_mcp_issue(
+            issues,
             if name.is_empty() {
-                name_field
+                name_path
             } else {
-                value_field
+                value_path
             },
+            trigger,
+            scope,
             "mcp-validation-header-row-incomplete",
-        ));
+            [],
+        );
         return;
     }
 
     let header_name = match http::HeaderName::from_bytes(name.as_bytes()) {
         Ok(header_name) => header_name,
         Err(err) => {
-            errors.push(
-                McpFormValidationError::new(name_field, "mcp-validation-header-name-invalid")
-                    .with_arg("name", name)
-                    .with_arg("error", err.to_string()),
+            push_mcp_issue(
+                issues,
+                name_path,
+                trigger,
+                scope,
+                "mcp-validation-header-name-invalid",
+                [("name", name), ("error", err.to_string())],
             );
             return;
         }
@@ -351,33 +425,91 @@ fn validate_header_row(
     if is_reserved_mcp_header(&normalized)
         || (authorization_managed && normalized.eq_ignore_ascii_case("authorization"))
     {
-        errors.push(
-            McpFormValidationError::new(name_field, "mcp-validation-header-reserved")
-                .with_arg("name", name),
+        push_mcp_issue(
+            issues,
+            name_path,
+            trigger,
+            scope,
+            "mcp-validation-header-reserved",
+            [("name", name)],
         );
         return;
     }
     if !seen.insert(normalized) {
-        errors.push(
-            McpFormValidationError::new(name_field, "mcp-validation-header-duplicate")
-                .with_arg("name", name),
+        push_mcp_issue(
+            issues,
+            name_path,
+            trigger,
+            scope,
+            "mcp-validation-header-duplicate",
+            [("name", name)],
         );
         return;
     }
 
     if value_is_env_var {
         if !is_valid_mcp_env_var_name(&value) {
-            errors.push(
-                McpFormValidationError::new(value_field, "mcp-validation-env-name-invalid")
-                    .with_arg("name", value),
+            push_mcp_issue(
+                issues,
+                value_path,
+                trigger,
+                scope,
+                "mcp-validation-env-name-invalid",
+                [("name", value)],
             );
         }
     } else if let Err(err) = http::HeaderValue::from_str(&value) {
-        errors.push(
-            McpFormValidationError::new(value_field, "mcp-validation-header-value-invalid")
-                .with_arg("name", name)
-                .with_arg("error", err.to_string()),
+        push_mcp_issue(
+            issues,
+            value_path,
+            trigger,
+            scope,
+            "mcp-validation-header-value-invalid",
+            [("name", name), ("error", err.to_string())],
         );
+    }
+}
+
+fn field_path(field: &'static str) -> gpui_form::FieldPath {
+    gpui_form::FieldPath::from_static(field)
+}
+
+fn row_field_path(array: &'static str, index: usize, field: &'static str) -> gpui_form::FieldPath {
+    field_path(array).join_index(index).join_field(field)
+}
+
+fn push_mcp_issue<const N: usize>(
+    issues: &mut Vec<ValidationIssue>,
+    path: gpui_form::FieldPath,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    message_key: &'static str,
+    args: [(&'static str, String); N],
+) {
+    if !scope_includes_path(scope, &path) {
+        return;
+    }
+    let mut issue = ValidationIssue::field(
+        path,
+        trigger,
+        ValidationSource::App("ai-chat2-mcp".into()),
+        message_key,
+        message_key,
+    );
+    for (key, value) in args {
+        issue = issue.with_param(key, value);
+    }
+    issues.push(issue);
+}
+
+fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> bool {
+    match scope {
+        ValidationScope::Form => true,
+        ValidationScope::Field(field_path) => field_path == path || path.starts_with(field_path),
+        ValidationScope::Group(group_path) => path.starts_with(group_path),
+        ValidationScope::ArrayItem {
+            path: array_path, ..
+        } => path.starts_with(array_path),
     }
 }
 

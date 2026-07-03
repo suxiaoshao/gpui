@@ -29,6 +29,7 @@ use rows::{
 
 mod choices;
 mod dialog;
+mod form_state;
 mod rows;
 mod validation;
 

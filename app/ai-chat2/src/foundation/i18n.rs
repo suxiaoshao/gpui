@@ -1,6 +1,6 @@
 use ai_chat_core::AppLanguage;
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, Global};
+use gpui::{App, Global, SharedString};
 use std::collections::HashMap;
 use unic_langid::LanguageIdentifier;
 
@@ -24,6 +24,11 @@ impl Global for I18n {}
 
 pub(crate) fn init(cx: &mut App) {
     cx.set_global(I18n::from_settings(cx));
+    cx.set_global(gpui_form::FormTextResolver::new(resolve_gpui_form_text));
+}
+
+fn resolve_gpui_form_text(key: &str, cx: &App) -> SharedString {
+    cx.global::<I18n>().t(key).into()
 }
 
 impl I18n {
