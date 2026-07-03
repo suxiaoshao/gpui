@@ -2,7 +2,7 @@ use gpui::{App, AppContext as _, Context, Entity, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
+    FormComponentEvent, FormComponentEventSink, RequiredValue, SubscriptionSet, ValidationTrigger,
     resolve_form_text,
 };
 
@@ -30,6 +30,12 @@ impl ProviderSecretValue {
 
     pub(in crate::features::settings::provider) fn key(&self) -> &'static str {
         self.field.key()
+    }
+}
+
+impl RequiredValue for ProviderSecretValue {
+    fn is_empty_value(&self) -> bool {
+        self.value.trim().is_empty()
     }
 }
 

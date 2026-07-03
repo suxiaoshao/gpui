@@ -120,7 +120,7 @@ fn submit_async_sets_is_submitting_from_task(cx: &mut TestAppContext) {
         })
     });
 
-    assert_eq!(start, Ok(gpui_form::SubmitStart::Started));
+    assert_eq!(start, Ok(()));
     cx.update(|_window, cx| {
         let form = form.read(cx);
         assert!(form.is_submitting());
@@ -176,7 +176,7 @@ fn submit_async_rejects_reentrant_submit(cx: &mut TestAppContext) {
         })
     });
 
-    assert_eq!(first, Ok(gpui_form::SubmitStart::Started));
+    assert_eq!(first, Ok(()));
     assert_eq!(second, Err(gpui_form::SubmitError::Busy));
     assert!(cx.update(|_window, cx| form.read(cx).is_submitting()));
 }

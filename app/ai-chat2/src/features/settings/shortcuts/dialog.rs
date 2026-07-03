@@ -27,11 +27,13 @@ use super::super::push_settings_error;
 use super::{
     choices::{InputSourceChoice, PromptChoice},
     form_state::{
-        ShortcutEditFormField, ShortcutEditFormInput, ShortcutEditFormStore, field_errors,
+        ShortcutEditFormInput, ShortcutEditFormStore, ShortcutEditValidationContext, field_errors,
     },
     rows::{ShortcutManagementRow, input_source_label},
-    validation::{ShortcutValidationError, validate_shortcut_hotkey},
 };
+
+#[cfg(test)]
+use super::validation::ShortcutValidationError;
 
 type ShortcutRecordDialogHandler = Rc<dyn Fn(ShortcutRecord, &mut Window, &mut App) + 'static>;
 
@@ -59,10 +61,6 @@ pub(super) struct ShortcutEditDialogState {
 }
 
 enum ShortcutSaveError {
-    Field {
-        field: ShortcutEditFormField,
-        error: ShortcutValidationError,
-    },
     Notify {
         title_key: &'static str,
         message: String,
@@ -87,7 +85,19 @@ impl ShortcutEditDialogState {
         let shortcut_id = shortcut.as_ref().map(|shortcut| shortcut.id.clone());
         let form_input =
             ShortcutEditFormInput::new(shortcut.as_ref(), choices.prompts, choices.models);
-        let form = cx.new(|cx| ShortcutEditFormStore::from_value(form_input, window, cx));
+        let validation_context = ShortcutEditValidationContext {
+            shortcut_id: shortcut_id.clone(),
+            existing_shortcuts: existing_shortcuts.clone(),
+            temporary_hotkey: temporary_hotkey.clone(),
+        };
+        let form = cx.new(|cx| {
+            ShortcutEditFormStore::from_value_with_validation_context(
+                form_input,
+                validation_context,
+                window,
+                cx,
+            )
+        });
 
         Self {
             mode,
@@ -103,25 +113,26 @@ impl ShortcutEditDialogState {
         let shortcut_id = self.shortcut_id.clone();
         let existing_shortcuts = self.existing_shortcuts.clone();
         let temporary_hotkey = self.temporary_hotkey.clone();
+        let validation_context = ShortcutEditValidationContext {
+            shortcut_id: shortcut_id.clone(),
+            existing_shortcuts,
+            temporary_hotkey,
+        };
         let result = self.form.update(cx, |form, cx| {
-            form.clear_all_errors(cx);
+            form.set_validation_context(validation_context, cx);
             form.submit_sync(
                 move |draft, window, cx| {
-                    let hotkey = validate_shortcut_hotkey(
-                        draft.hotkey,
-                        shortcut_id.as_ref(),
-                        &existing_shortcuts,
-                        temporary_hotkey.as_deref(),
-                    )
-                    .map_err(|error| ShortcutSaveError::Field {
-                        field: ShortcutEditFormField::Hotkey,
-                        error,
-                    })?;
+                    let Some(hotkey) = draft.hotkey else {
+                        return Err(ShortcutSaveError::Notify {
+                            title_key: "notify-save-shortcut-failed",
+                            message: "validated shortcut hotkey is missing".to_string(),
+                        });
+                    };
                     let prompt_id = draft.prompt.selected;
                     let Some(model_key) = draft.model.selected else {
-                        return Err(ShortcutSaveError::Field {
-                            field: ShortcutEditFormField::Model,
-                            error: ShortcutValidationError::ModelRequired,
+                        return Err(ShortcutSaveError::Notify {
+                            title_key: "notify-save-shortcut-failed",
+                            message: "validated shortcut model is missing".to_string(),
                         });
                     };
                     let shortcut_draft = ShortcutDraft {
@@ -170,10 +181,6 @@ impl ShortcutEditDialogState {
         match result {
             Ok(()) => true,
             Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => false,
-            Err(SubmitError::Handler(ShortcutSaveError::Field { field, error })) => {
-                self.apply_field_error(field, error, cx);
-                false
-            }
             Err(SubmitError::Handler(ShortcutSaveError::Notify { title_key, message })) => {
                 let title = cx.global::<I18n>().t(title_key);
                 push_settings_error(window, cx, title, message);
@@ -186,17 +193,6 @@ impl ShortcutEditDialogState {
         let hotkey_input = self.form.read(cx).hotkey_state();
         hotkey_input.update(cx, |input, cx| {
             input.focus(window, cx);
-        });
-    }
-
-    fn apply_field_error(
-        &self,
-        field: ShortcutEditFormField,
-        error: ShortcutValidationError,
-        cx: &mut Context<Self>,
-    ) {
-        self.form.update(cx, |form, cx| {
-            form.apply_field_error(field, shortcut_field_error(field, error), cx);
         });
     }
 
@@ -602,20 +598,6 @@ fn form_field(
                 }),
         )
         .into_any_element()
-}
-
-fn shortcut_field_error(
-    field: ShortcutEditFormField,
-    error: ShortcutValidationError,
-) -> gpui_form::FieldError {
-    let message_key = error.i18n_key();
-    gpui_form::FieldError::new_for_field(
-        field.key(),
-        gpui_form::ValidationTrigger::Submit,
-        gpui_form::ValidationSource::App("ai-chat2-shortcut".into()),
-        message_key,
-        message_key,
-    )
 }
 
 fn field_error_message(errors: Vec<gpui_form::FieldError>, cx: &App) -> Option<SharedString> {

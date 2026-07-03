@@ -3,7 +3,11 @@ type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
 type SecretInputBinding = super::ProviderSecretInputBinding;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = ApiKeyProviderFormStore)]
+#[form(
+    store = ApiKeyProviderFormStore,
+    validation(adapter = super::ApiKeyProviderValidator, context = super::ProviderValidationContext),
+    transform(adapter = super::ApiKeyProviderTransform)
+)]
 pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
     #[form(binding = "BoolInputBinding")]
     pub(super) enabled: bool,

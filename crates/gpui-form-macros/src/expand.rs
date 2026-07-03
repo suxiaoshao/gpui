@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use syn::{Data, DeriveInput, Field, Fields, GenericParam, Result, Type, parse_quote, parse2};
 
 use crate::{
-    attributes::{FieldAttributes, FormAttributes},
+    attributes::{FieldAttributes, FormAttributes, ValidationAdapterKind},
     field_kind::FieldKind,
 };
 
@@ -24,10 +24,11 @@ use errors::{apply_field_error_arm, clear_all_error_statement, clear_field_error
 use fields::{field_initializer, store_field_type, write_field_statement};
 use pipeline::{
     submit_transform, submit_validation, transform_field, transform_init, validate_method_body,
-    validation_field, validation_init,
+    validation_context_type, validation_field, validation_init,
 };
 use validation::{
     apply_validation_statement, current_validation_report_statement, prepare_submit_statement,
+    required_validation_statement,
 };
 
 struct FieldModel<'a> {
@@ -90,6 +91,8 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
     let input_ident = &input.ident;
     let input_vis = &input.vis;
     let attrs = FormAttributes::parse(&input.attrs)?;
+    let form_uses_custom_validation =
+        matches!(attrs.validation, ValidationAdapterKind::Custom { .. });
     let store_ident = attrs
         .store
         .unwrap_or_else(|| format_ident!("{}FormStore", input_ident));
@@ -192,20 +195,37 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     .push(parse_quote!(#binding: ::gpui_form::FormComponentBinding<#ty>));
             }
         }
+        if model.attrs.required
+            && !form_uses_custom_validation
+            && matches!(
+                model.attrs.component,
+                FieldKind::Value | FieldKind::Binding | FieldKind::Array
+            )
+        {
+            let ty = model.ty;
+            store_where
+                .predicates
+                .push(parse_quote!(#ty: ::gpui_form::RequiredValue));
+        }
     }
     dedupe_where_predicates(store_where);
 
     let (impl_generics, ty_generics, where_clause) = store_generics.split_for_impl();
     let field_enum_ident = related_store_ident(&store_ident, "Field");
     let event_ident = related_store_ident(&store_ident, "Event");
-    let validation_field = validation_field(attrs.validation, input_ident, &ty_generics);
-    let validation_init = validation_init(attrs.validation);
-    let transform_field = transform_field(attrs.transform, input_ident, &ty_generics);
-    let transform_init = transform_init(attrs.transform);
-    let validate_method_body =
-        validate_method_body(attrs.validation, attrs.transform, input_ident, &ty_generics);
-    let submit_transform = submit_transform(attrs.transform, input_ident, &ty_generics);
-    let submit_validation = submit_validation(attrs.validation, input_ident, &ty_generics);
+    let validation_context_ty = validation_context_type(&attrs.validation);
+    let validation_field = validation_field(&attrs.validation, input_ident, &ty_generics);
+    let validation_init = validation_init(&attrs.validation);
+    let transform_field = transform_field(&attrs.transform, input_ident, &ty_generics);
+    let transform_init = transform_init(&attrs.transform);
+    let validate_method_body = validate_method_body(
+        &attrs.validation,
+        &attrs.transform,
+        input_ident,
+        &ty_generics,
+    );
+    let submit_transform = submit_transform(&attrs.transform, input_ident, &ty_generics);
+    let submit_validation = submit_validation(&attrs.validation, input_ident, &ty_generics);
 
     let field_idents = field_models
         .iter()
@@ -259,6 +279,14 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(current_validation_report_statement)
         .collect::<Result<Vec<_>>>()?;
+    let required_validation_statements = if form_uses_custom_validation {
+        Vec::new()
+    } else {
+        field_models
+            .iter()
+            .map(required_validation_statement)
+            .collect::<Result<Vec<_>>>()?
+    };
     let focus_error_statements = field_models
         .iter()
         .map(focus_error_statement)
@@ -363,6 +391,30 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     #validation_init
                     #transform_init
                 }
+            }
+
+            pub fn from_value_with_validation_context(
+                value: #input_ident #ty_generics,
+                validation_context: #validation_context_ty,
+                window: &mut ::gpui_form::__private::gpui::Window,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) -> Self {
+                let mut form = Self::from_value(value, window, cx);
+                form.validation_context = validation_context;
+                form
+            }
+
+            pub fn validation_context(&self) -> &#validation_context_ty {
+                &self.validation_context
+            }
+
+            pub fn set_validation_context(
+                &mut self,
+                validation_context: #validation_context_ty,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                self.validation_context = validation_context;
+                cx.notify();
             }
 
             pub fn draft(&self) -> #input_ident #ty_generics {
@@ -473,8 +525,12 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 &self,
                 trigger: ::gpui_form::ValidationTrigger,
                 scope: ::gpui_form::ValidationScope,
+                cx: &::gpui_form::__private::gpui::App,
             ) -> ::gpui_form::FormValidationReport {
                 #validate_method_body
+                let __gpui_form_required_trigger = trigger;
+                #(#required_validation_statements)*
+                report
             }
 
             fn apply_validation_for_scope(
@@ -483,7 +539,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 scope: ::gpui_form::ValidationScope,
                 cx: &mut ::gpui_form::__private::gpui::App,
             ) -> ::gpui_form::FormValidationReport {
-                let report = self.validation_report_for_scope(trigger, scope.clone());
+                let report = self.validation_report_for_scope(trigger, scope.clone(), cx);
                 self.apply_validation_report(&report, &scope, cx);
                 self.refresh_meta();
                 report
@@ -574,6 +630,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     cx,
                 );
                 #submit_validation
+                let scope = ::gpui_form::ValidationScope::Form;
+                let validation_input = normalized.clone();
+                let __gpui_form_required_trigger = ::gpui_form::ValidationTrigger::Submit;
+                #(#required_validation_statements)*
                 self.apply_validation_report(&report, &::gpui_form::ValidationScope::Form, cx);
                 self.refresh_meta();
                 let final_report = self.current_validation_report(cx);
@@ -751,7 +811,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 handler: H,
                 window: &mut ::gpui_form::__private::gpui::Window,
                 cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
-            ) -> Result<::gpui_form::SubmitStart, ::gpui_form::SubmitError<StartError>>
+            ) -> Result<(), ::gpui_form::SubmitError<StartError>>
             where
                 Success: 'static,
                 TaskError: 'static,
@@ -801,7 +861,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 self.submit_runtime.set_task(task);
                 self.refresh_meta();
                 cx.notify();
-                Ok(::gpui_form::SubmitStart::Started)
+                Ok(())
             }
 
             fn focus_first_error(

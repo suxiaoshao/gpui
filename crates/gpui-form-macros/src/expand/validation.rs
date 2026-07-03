@@ -71,6 +71,64 @@ pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenSt
     })
 }
 
+pub(super) fn required_validation_statement(model: &FieldModel<'_>) -> Result<TokenStream> {
+    if !model.attrs.required {
+        return Ok(quote!());
+    }
+
+    let ident = model.ident;
+    let name = &model.name;
+    let label_param = if let Some(label) = &model.attrs.label {
+        quote!(#label)
+    } else {
+        quote!(__gpui_form_required_path.to_string())
+    };
+
+    Ok(match model.attrs.component {
+        FieldKind::Value | FieldKind::Binding => quote! {
+            let __gpui_form_required_path = ::gpui_form::macro_support::field_path(#name);
+            if ::gpui_form::macro_support::scope_contains_path(
+                &scope,
+                &__gpui_form_required_path,
+            ) && ::gpui_form::FormField::is_required(&self.#ident)
+                && ::gpui_form::RequiredValue::is_empty_value(&validation_input.#ident)
+            {
+                report.push_field_error(
+                    ::gpui_form::FieldError::new(
+                        __gpui_form_required_path.clone(),
+                        __gpui_form_required_trigger,
+                        ::gpui_form::ValidationSource::Internal,
+                        "required",
+                        "gpui-form-error-required",
+                    )
+                    .with_param("field", #label_param),
+                );
+            }
+        },
+        FieldKind::Array => quote! {
+            let __gpui_form_required_path = ::gpui_form::macro_support::field_path(#name);
+            if ::gpui_form::macro_support::scope_contains_path(
+                &scope,
+                &__gpui_form_required_path,
+            ) && self.#ident.is_required()
+                && ::gpui_form::RequiredValue::is_empty_value(&validation_input.#ident)
+            {
+                report.push_field_error(
+                    ::gpui_form::FieldError::new(
+                        __gpui_form_required_path.clone(),
+                        __gpui_form_required_trigger,
+                        ::gpui_form::ValidationSource::Internal,
+                        "required",
+                        "gpui-form-error-required",
+                    )
+                    .with_param("field", #label_param),
+                );
+            }
+        },
+        FieldKind::Group => quote!(),
+    })
+}
+
 pub(super) fn current_validation_report_statement(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
     Ok(match model.attrs.component {

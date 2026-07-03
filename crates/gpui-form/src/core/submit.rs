@@ -58,8 +58,3 @@ pub enum SubmitError<E> {
     Busy,
     Handler(E),
 }
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum SubmitStart {
-    Started,
-}

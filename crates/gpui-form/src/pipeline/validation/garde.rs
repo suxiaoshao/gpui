@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use crate::{
-    ErrorParamValue, FieldPath, ValidationAdapter, ValidationAdapterReport, ValidationContext,
-    ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
+    ErrorParamValue, FieldPath, NoValidationContext, ValidationAdapter, ValidationAdapterReport,
+    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -23,12 +23,15 @@ where
     T: garde::Validate + 'static,
     T::Context: Default,
 {
+    type Context = NoValidationContext;
+
     fn validate(
         &self,
         draft: &T,
         trigger: ValidationTrigger,
         scope: ValidationScope,
-        _context: &ValidationContext,
+        _context: ValidationContext<'_, Self::Context>,
+        _cx: &gpui::App,
     ) -> ValidationAdapterReport {
         match draft.validate() {
             Ok(()) => ValidationAdapterReport::default(),

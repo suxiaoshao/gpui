@@ -10,6 +10,7 @@
 | `array-design.md` | dynamic array 的结构、dirty/default-value 语义、数据流和修复计划。 |
 | `number-input-design.md` | number raw input dirty/default、typed `NumberInputPolicy` 和 adapter `new_state(...)` 类型化配置记录。 |
 | `validation-routing.md` | validation report 路由到普通字段、group 和 array 的路径归属规则。 |
+| `validation-pipeline-strengthening-plan.md` | validation/required/custom context/transform/array error routing 的强化计划，目标是让字段校验进入 `gpui-form` pipeline。 |
 | `meta-and-submit-state.md` | `FieldMeta` / `FormMeta` 的保存事实、派生查询和 submit final report 判定模型。 |
 | `submit-handler-design.md` | sync/async submit handler、submit task ownership、`is_submitting` 派生模型和 handler trait 取舍结论。 |
 | `phase-1-development-plan.md` | 第一阶段完整历史计划和已落地实现记录，保留细节但不再作为唯一入口。 |

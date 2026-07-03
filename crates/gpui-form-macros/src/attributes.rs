@@ -37,18 +37,25 @@ impl FormAttributes {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ValidationAdapterKind {
     #[default]
     None,
     Garde,
+    Custom {
+        adapter: Path,
+        context: Option<Path>,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum TransformAdapterKind {
     #[default]
     Identity,
     Validify,
+    Custom {
+        adapter: Path,
+    },
 }
 
 #[derive(Default)]
@@ -293,21 +300,32 @@ fn parse_optional_bool_value(input: ParseStream<'_>) -> Result<bool> {
 
 fn parse_validation_adapter(input: ParseStream<'_>) -> Result<ValidationAdapterKind> {
     let mut adapter = ValidationAdapterKind::None;
+    let mut context = None;
 
     while !input.is_empty() {
         let key: Ident = input.parse()?;
         if key == "adapter" {
             input.parse::<Token![=]>()?;
-            let value: LitStr = input.parse()?;
-            adapter = match value.value().as_str() {
-                "garde" => ValidationAdapterKind::Garde,
-                other => {
-                    return Err(syn::Error::new(
-                        value.span(),
-                        format!("unsupported validation adapter `{other}`"),
-                    ));
+            if input.peek(LitStr) {
+                let value: LitStr = input.parse()?;
+                adapter = match value.value().as_str() {
+                    "garde" => ValidationAdapterKind::Garde,
+                    other => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            format!("unsupported validation adapter `{other}`"),
+                        ));
+                    }
+                };
+            } else {
+                adapter = ValidationAdapterKind::Custom {
+                    adapter: input.parse()?,
+                    context: None,
                 }
-            };
+            }
+        } else if key == "context" {
+            input.parse::<Token![=]>()?;
+            context = Some(parse_path_value(input)?);
         } else {
             return Err(syn::Error::new(key.span(), "unsupported validation option"));
         }
@@ -317,7 +335,16 @@ fn parse_validation_adapter(input: ParseStream<'_>) -> Result<ValidationAdapterK
         }
     }
 
-    Ok(adapter)
+    Ok(match adapter {
+        ValidationAdapterKind::Custom {
+            adapter,
+            context: existing_context,
+        } => ValidationAdapterKind::Custom {
+            adapter,
+            context: context.or(existing_context),
+        },
+        ValidationAdapterKind::None | ValidationAdapterKind::Garde => adapter,
+    })
 }
 
 fn parse_transform_adapter(input: ParseStream<'_>) -> Result<TransformAdapterKind> {
@@ -327,16 +354,22 @@ fn parse_transform_adapter(input: ParseStream<'_>) -> Result<TransformAdapterKin
         let key: Ident = input.parse()?;
         if key == "adapter" {
             input.parse::<Token![=]>()?;
-            let value: LitStr = input.parse()?;
-            adapter = match value.value().as_str() {
-                "validify" => TransformAdapterKind::Validify,
-                other => {
-                    return Err(syn::Error::new(
-                        value.span(),
-                        format!("unsupported transform adapter `{other}`"),
-                    ));
+            if input.peek(LitStr) {
+                let value: LitStr = input.parse()?;
+                adapter = match value.value().as_str() {
+                    "validify" => TransformAdapterKind::Validify,
+                    other => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            format!("unsupported transform adapter `{other}`"),
+                        ));
+                    }
+                };
+            } else {
+                adapter = TransformAdapterKind::Custom {
+                    adapter: input.parse()?,
                 }
-            };
+            }
         } else {
             return Err(syn::Error::new(key.span(), "unsupported transform option"));
         }

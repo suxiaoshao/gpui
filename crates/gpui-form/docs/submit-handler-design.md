@@ -5,11 +5,16 @@
 不长期存入 generated form store；form store 只保存 submit runtime state，其中异步提交中的 loading 状态由
 持有的 `Task` 派生。
 
+更新口径：本文保留 submit task ownership 和 sync/async handler 生命周期设计；其中“handler error 可由
+app 映射回 field/form errors”的旧口径仅适用于迁移期或真正非字段级业务错误。字段级 required、format、
+duplicate、array row 等校验应进入 `validation-pipeline-strengthening-plan.md` 中定义的 validation
+pipeline，并通过 `SubmitError::Invalid(FormValidationReport)` 返回。
+
 ## 文件和模块结构
 
 | 文件 | 计划职责 |
 | --- | --- |
-| `crates/gpui-form/src/core/submit.rs` | 新增 `SubmitRuntime`、`SubmitError`、`SubmitStart` 和 `SubmitOutcome` 等 submit runtime 类型。 |
+| `crates/gpui-form/src/core/submit.rs` | 新增 `SubmitRuntime`、`SubmitError` 和 `SubmitOutcome` 等 submit runtime 类型；`SubmitStart` 已删除，async submit 启动成功直接返回 `Ok(())`。 |
 | `crates/gpui-form/src/core/form.rs` | 收敛 public `FormStore` API：保留 form-level 操作，新增 `prepare_submit`、`submit_sync`、`submit_async`；删除未接入的 `FormState`。 |
 | `crates/gpui-form/src/core/meta.rs` | `FormMeta` 不再保存独立 `is_submitting` 字段；submit loading 只能通过 store/runtime 查询。 |
 | `crates/gpui-form/src/core/form.rs` | `FormStore` 暴露 `is_submitting()`、`is_submitted()` 和 `can_attempt_submit()`，由 submit runtime 与当前 meta snapshot 计算。 |
@@ -71,10 +76,6 @@ pub enum SubmitError<E> {
     Busy,
     Handler(E),
 }
-
-pub enum SubmitStart {
-    Started,
-}
 ```
 
 `FormMeta` 继续作为 render snapshot，但事实源调整为：
@@ -124,18 +125,18 @@ form.submit_async(handler)
   -> handler Err: last_outcome = Failure, Err(SubmitError::Handler(err)), 不创建 task
   -> handler Ok(task)
   -> store 保存 task
-  -> returns Ok(SubmitStart::Started)
+  -> returns Ok(())
   -> is_submitting() == true
   -> task 完成后清空 task
   -> Ok: last_outcome = Success
   -> Err: last_outcome = Failure，并允许把业务错误映射为 form-level 或 field-level errors
 ```
 
-handler error 映射不下沉成 core trait。同步提交由 app match `SubmitError::Handler(error)` 后决定写回
-field/form errors 或弹 notification；异步提交的 task builder error 也由 app match
-`SubmitError::Handler(error)` 后写回。真正异步 task 内的业务错误由 app 在 handler task / completion
-callback 内更新对应 form entity 或 dialog state。这样 core 不需要理解 server-side validation、
-DB/config duplicate、credentials/keychain 等 app-specific 错误类型。
+字段级错误映射不下沉成 submit handler。required、format、duplicate、array row 等可归属字段的错误必须由
+validation pipeline 生成并通过 `SubmitError::Invalid(FormValidationReport)` 返回；app handler 只处理保存副作用。
+`SubmitError::Handler(error)` 仅表达 task builder 无法启动或非字段级业务错误，例如 keychain/config runtime
+错误需要弹 notification。真正异步 task 内的业务错误由 app 在 handler task / completion callback 内更新
+dialog state 或弹 notification。
 
 ## UI、i18n、icon、依赖和存储
 
@@ -155,10 +156,10 @@ DB/config duplicate、credentials/keychain 等 app-specific 错误类型。
 
 | 表单 | 当前状态 | 目标 submit handler |
 | --- | --- | --- |
-| Provider settings | generated form store 已承载字段和 submit runtime。 | 使用 `submit_async` 托管 credentials/keychain 写入；task builder 用 submit output 做 provider validator / request construction，失败时返回 `SubmitError::Handler` 并写回 field error/notification。 |
-| MCP settings | generated form store 已承载字段、array row 和 submit runtime。 | `McpServerFormStore::submit_async(...)` 持有保存 task；task builder 从 submit output + row ids 验证并构造 server id/config，成功后删除 stale OAuth credentials、upsert `config.toml`、promote draft OAuth status、关闭 dialog。 |
-| Prompt edit | dialog 自己保存 prompts DB。 | 可以先用 `submit_sync` 处理纯本地校验和 DB command；若 DB 写入保留 async，则使用 `submit_async`。 |
-| Shortcut edit | dialog 自己保存 shortcuts DB。 | 使用 `submit_async` 或 `submit_sync`，handler 负责 provider/model snapshot 和 shortcuts DB write。 |
+| Provider settings | generated form store 已承载字段、validation context、transform 和 submit runtime。 | `submit_async` 托管 credentials/keychain 写入；field validation 由 Provider validator 进入 `SubmitError::Invalid(report)`，Validate 按钮也复用 form pipeline。 |
+| MCP settings | generated form store 已承载字段、array row、validation context、transform 和 submit runtime。 | `McpServerFormStore::submit_async(...)` 持有保存 task；validator 使用 generated field/index path，不再维护 `McpSubmitRowIds` 或 row-specific apply helper。 |
+| Prompt edit | 已使用 `PromptEditFormStore`。 | `submit_sync` handler 只执行 prompts DB create/update 和 notification；required/duplicate/trim 在 validator/transform 内完成。 |
+| Shortcut edit | 已使用 `ShortcutEditFormStore`。 | `submit_sync` handler 只构造并写入 shortcut draft；hotkey/model validation 和 hotkey canonicalize 在 validator/transform 内完成。 |
 | ChatForm controls | 暂不迁移。 | 运行态 composer/attachment submit guard 不纳入本轮 Settings submit handler 迁移。 |
 
 迁移原则：
@@ -176,6 +177,6 @@ DB/config duplicate、credentials/keychain 等 app-specific 错误类型。
 - `submit_sync_skips_handler_when_invalid`：invalid preflight 不调用 handler，返回 `SubmitError::Invalid`。
 - `submit_async_sets_is_submitting_from_task`：task 存在期间 `form.is_submitting()` 为 true，完成后为 false。
 - `submit_async_rejects_reentrant_submit`：已有 task 时第二次 submit 返回 Busy。
-- `submit_async_maps_handler_validation_error`：handler error 可映射成 field/form errors。
+- `submit_async_returns_handler_start_error`：task builder 同步失败返回 `SubmitError::Handler(error)`，不创建 task。
 - `submit_async_does_not_store_handler`：同一个 form 可用不同 handler 连续提交，store 不保存旧 handler。
 - ai-chat2 MCP focused tests：create invalid 不启动保存 task；create valid upsert config；OAuth draft promotion 仍覆盖 add/edit/rename/URL-change。

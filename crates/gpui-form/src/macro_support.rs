@@ -67,13 +67,15 @@ pub fn merge_field_errors_preserving_internal(
         .filter(|error| error.source == ValidationSource::Internal)
         .cloned()
         .collect::<Vec<_>>();
-    errors.extend(
-        report
-            .field_errors()
-            .iter()
-            .filter(|error| &error.path == path)
-            .cloned(),
-    );
+    for error in report
+        .field_errors()
+        .iter()
+        .filter(|error| &error.path == path)
+    {
+        if !errors.iter().any(|existing| existing == error) {
+            errors.push(error.clone());
+        }
+    }
     errors
 }
 

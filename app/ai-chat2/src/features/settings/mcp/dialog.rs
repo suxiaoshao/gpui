@@ -26,7 +26,7 @@ use gpui_component::{
 };
 use gpui_form::{
     ErrorParamValue, FieldError, FormField, FormItemId, FormMeta, FormStore as _, SubmitError,
-    ValidationSource, ValidationTrigger,
+    ValidationTrigger,
 };
 use std::{
     collections::BTreeSet,
@@ -39,14 +39,8 @@ use super::{
     form_rows::{
         AddMcpRow, McpRowList, RemoveMcpRow, one_input_rows, two_input_rows, validation_error_list,
     },
-    form_state::{
-        McpArgRowFormField, McpEnvHeaderRowFormField, McpEnvRowFormField, McpEnvVarRowFormField,
-        McpHeaderRowFormField, McpServerFormDraft, McpServerFormField,
-    },
-    validation::{
-        McpFormField, McpFormValidationError, McpSubmitValidationContext,
-        validate_mcp_submit_output,
-    },
+    form_state::McpServerFormDraft,
+    validation::McpServerValidationContext,
 };
 
 static NEXT_DRAFT_OAUTH_KEY: AtomicU64 = AtomicU64::new(1);
@@ -192,10 +186,8 @@ impl McpServerEditDialogState {
         let existing_server_ids = state::config::read(cx, |config| {
             config.mcp_servers.keys().cloned().collect::<Vec<_>>()
         });
-        self.clear_form_errors(cx);
 
         let original_config = self.original_config.clone();
-        let submit_row_ids = self.draft.submit_row_ids(cx);
         let draft_oauth_credential_key = self.draft_oauth_credential_key.clone();
         let draft_oauth_credential_keys = self.draft_oauth_credential_keys.clone();
         let draft_oauth_status_key = self.draft_oauth_status_key.clone();
@@ -205,19 +197,15 @@ impl McpServerEditDialogState {
         };
         let form = cx.entity().downgrade();
         let start = self.draft.form.update(cx, |form_store, cx| {
+            form_store.set_validation_context(
+                McpServerValidationContext {
+                    original_server_id: original_server_id.clone(),
+                    existing_server_ids: existing_server_ids.clone(),
+                },
+                cx,
+            );
             form_store.submit_async(
                 move |output, window, cx| {
-                    let validation_errors = validate_mcp_submit_output(
-                        &output,
-                        McpSubmitValidationContext {
-                            original_server_id: original_server_id.as_deref(),
-                            existing_server_ids: &existing_server_ids,
-                            row_ids: &submit_row_ids,
-                        },
-                    );
-                    if !validation_errors.is_empty() {
-                        return Err(validation_errors);
-                    }
                     let server_id = output.server_id(original_server_id.as_deref());
                     let server = output.merge_into_config(original_config.as_ref());
                     let saved_server = server.clone();
@@ -250,7 +238,7 @@ impl McpServerEditDialogState {
                         credential_keys_to_delete,
                         success_title_key,
                     };
-                    Ok(window.spawn(cx, async move |cx| {
+                    Ok::<_, String>(window.spawn(cx, async move |cx| {
                         let result = delete_oauth_credentials_for_save(request, cx).await;
                         match form
                             .update_in(cx, |form, window, cx| form.finish_save(result, window, cx))
@@ -268,10 +256,10 @@ impl McpServerEditDialogState {
             )
         });
         match start {
-            Ok(gpui_form::SubmitStart::Started) => {}
-            Err(SubmitError::Handler(validation_errors)) => {
-                self.apply_validation_errors(validation_errors, cx);
-                cx.notify();
+            Ok(()) => {}
+            Err(SubmitError::Handler(message)) => {
+                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                push_settings_error(window, cx, title, message);
                 return false;
             }
             Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => {
@@ -316,7 +304,6 @@ impl McpServerEditDialogState {
                     request.saved_auth,
                     cx,
                 );
-                self.clear_form_errors(cx);
                 window.push_notification(
                     Notification::new()
                         .title(cx.global::<I18n>().t(request.success_title_key))
@@ -401,7 +388,7 @@ impl McpServerEditDialogState {
                     states,
                 );
                 this.draft.set_transport(transport, window, cx);
-                this.clear_form_errors(cx);
+                this.revalidate_form(ValidationTrigger::Change, window, cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -415,7 +402,7 @@ impl McpServerEditDialogState {
             McpRowList::Headers => self.draft.add_header_row(window, cx),
             McpRowList::EnvHeaders => self.draft.add_env_header_row(window, cx),
         }
-        self.clear_form_errors(cx);
+        self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
 
@@ -433,13 +420,13 @@ impl McpServerEditDialogState {
             McpRowList::Headers => self.draft.remove_header_row(row_id, window, cx),
             McpRowList::EnvHeaders => self.draft.remove_env_header_row(row_id, window, cx),
         }
-        self.clear_form_errors(cx);
+        self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
 
     fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.draft.set_oauth_enabled(enabled, window, cx);
-        self.clear_form_errors(cx);
+        self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
 
@@ -790,91 +777,25 @@ impl McpServerEditDialogState {
             .unwrap_or(McpOAuthStatusSnapshot::SignedOut)
     }
 
-    fn clear_form_errors(&self, cx: &mut Context<Self>) {
-        self.draft.form.update(cx, |form, cx| {
-            form.clear_all_errors(cx);
+    fn revalidate_form(
+        &self,
+        trigger: ValidationTrigger,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let original_server_id = self.mode.original_server_id().map(ToOwned::to_owned);
+        let existing_server_ids = state::config::read(cx, |config| {
+            config.mcp_servers.keys().cloned().collect::<Vec<_>>()
         });
-    }
-
-    fn apply_validation_errors(&self, errors: Vec<McpFormValidationError>, cx: &mut Context<Self>) {
         self.draft.form.update(cx, |form, cx| {
-            form.clear_all_errors(cx);
-            for error in errors {
-                match error.field {
-                    McpFormField::Form => {}
-                    McpFormField::ServerId => form.apply_field_error(
-                        McpServerFormField::ServerId,
-                        mcp_field_error(McpServerFormField::ServerId.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::Command => form.apply_field_error(
-                        McpServerFormField::Command,
-                        mcp_field_error(McpServerFormField::Command.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::Argument { row_id } => form.apply_arg_value_error(
-                        row_id,
-                        mcp_field_error(McpArgRowFormField::Value.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::EnvKey { row_id } => form.apply_env_field_error(
-                        row_id,
-                        McpEnvRowFormField::Key,
-                        mcp_field_error(McpEnvRowFormField::Key.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::EnvValue { row_id } => form.apply_env_field_error(
-                        row_id,
-                        McpEnvRowFormField::Value,
-                        mcp_field_error(McpEnvRowFormField::Value.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::EnvVar { row_id } => form.apply_env_var_value_error(
-                        row_id,
-                        mcp_field_error(McpEnvVarRowFormField::Value.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::Cwd => form.apply_field_error(
-                        McpServerFormField::Cwd,
-                        mcp_field_error(McpServerFormField::Cwd.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::Url => form.apply_field_error(
-                        McpServerFormField::Url,
-                        mcp_field_error(McpServerFormField::Url.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::BearerTokenEnvVar => form.apply_field_error(
-                        McpServerFormField::BearerTokenEnvVar,
-                        mcp_field_error(McpServerFormField::BearerTokenEnvVar.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::HeaderName { row_id } => form.apply_header_field_error(
-                        row_id,
-                        McpHeaderRowFormField::Name,
-                        mcp_field_error(McpHeaderRowFormField::Name.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::HeaderValue { row_id } => form.apply_header_field_error(
-                        row_id,
-                        McpHeaderRowFormField::Value,
-                        mcp_field_error(McpHeaderRowFormField::Value.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::EnvHeaderName { row_id } => form.apply_env_header_field_error(
-                        row_id,
-                        McpEnvHeaderRowFormField::Name,
-                        mcp_field_error(McpEnvHeaderRowFormField::Name.key(), &error),
-                        cx,
-                    ),
-                    McpFormField::EnvHeaderVar { row_id } => form.apply_env_header_field_error(
-                        row_id,
-                        McpEnvHeaderRowFormField::EnvVar,
-                        mcp_field_error(McpEnvHeaderRowFormField::EnvVar.key(), &error),
-                        cx,
-                    ),
-                }
-            }
+            form.set_validation_context(
+                McpServerValidationContext {
+                    original_server_id,
+                    existing_server_ids,
+                },
+                cx,
+            );
+            form.validate(trigger, window, cx);
         });
     }
 
@@ -1649,20 +1570,6 @@ fn form_field(
                 }),
         )
         .into_any_element()
-}
-
-fn mcp_field_error(field: &'static str, error: &McpFormValidationError) -> FieldError {
-    let mut field_error = FieldError::new_for_field(
-        field,
-        ValidationTrigger::Submit,
-        ValidationSource::App("ai-chat2-mcp".into()),
-        error.message_key,
-        error.message_key,
-    );
-    for (key, value) in &error.args {
-        field_error = field_error.with_param(*key, value.clone());
-    }
-    field_error
 }
 
 fn field_error_messages<Field>(field: &Field, cx: &App) -> Vec<SharedString>

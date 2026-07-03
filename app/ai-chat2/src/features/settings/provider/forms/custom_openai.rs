@@ -175,7 +175,11 @@ impl FormComponentBinding<ProviderApiMode> for ProviderApiModeSelectBinding {
 }
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = CustomOpenAiProviderFormStore)]
+#[form(
+    store = CustomOpenAiProviderFormStore,
+    validation(adapter = super::CustomOpenAiProviderValidator, context = super::ProviderValidationContext),
+    transform(adapter = super::CustomOpenAiProviderTransform)
+)]
 pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput {
     #[form(binding = "BoolInputBinding")]
     pub(super) enabled: bool,

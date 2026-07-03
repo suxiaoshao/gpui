@@ -52,6 +52,14 @@ impl ValidationIssue {
         }
     }
 
+    pub fn required(
+        path: FieldPath,
+        label_key: Option<Cow<'static, str>>,
+        trigger: ValidationTrigger,
+    ) -> Self {
+        crate::pipeline::validation::required::required_issue(path, label_key, trigger)
+    }
+
     pub fn with_param(
         mut self,
         key: impl Into<Cow<'static, str>>,

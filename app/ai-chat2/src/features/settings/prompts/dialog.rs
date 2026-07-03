@@ -19,11 +19,11 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::{FieldError, FormStore as _, SubmitError, ValidationSource, ValidationTrigger};
+use gpui_form::{FieldError, FormStore as _, SubmitError};
 
 use super::super::push_settings_error;
 use super::form_state::{
-    PromptEditFormField, PromptEditFormInput, PromptEditFormStore, field_errors,
+    PromptEditFormInput, PromptEditFormStore, PromptEditValidationContext, field_errors,
 };
 use super::rows::prompt_updated_label;
 
@@ -49,11 +49,6 @@ pub(super) struct PromptEditDialogState {
 }
 
 enum PromptSaveError {
-    Field {
-        field: PromptEditFormField,
-        code: &'static str,
-        message_key: &'static str,
-    },
     Notify {
         title_key: &'static str,
         message: String,
@@ -76,7 +71,17 @@ impl PromptEditDialogState {
             .map(|prompt| prompt.content.text.clone())
             .unwrap_or_default();
         let form_input = PromptEditFormInput::new(name, content);
-        let form = cx.new(|cx| PromptEditFormStore::from_value(form_input, window, cx));
+        let validation_context =
+            prompt_edit_validation_context(prompt.as_ref().map(|prompt| prompt.id.clone()), cx)
+                .unwrap_or_default();
+        let form = cx.new(|cx| {
+            PromptEditFormStore::from_value_with_validation_context(
+                form_input,
+                validation_context,
+                window,
+                cx,
+            )
+        });
 
         Self {
             mode,
@@ -88,43 +93,18 @@ impl PromptEditDialogState {
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mode = self.mode;
         let prompt_id = self.prompt_id.clone();
+        let validation_context = match prompt_edit_validation_context(prompt_id.clone(), cx) {
+            Ok(validation_context) => validation_context,
+            Err(err) => {
+                let title = cx.global::<I18n>().t("notify-save-prompt-failed");
+                push_settings_error(window, cx, title, err.to_string());
+                return false;
+            }
+        };
         let result = self.form.update(cx, |form, cx| {
-            form.clear_all_errors(cx);
+            form.set_validation_context(validation_context, cx);
             form.submit_sync(
-                move |mut draft, window, cx| {
-                    draft.name = draft.name.trim().to_string();
-                    draft.content = draft.content.trim().to_string();
-                    if draft.name.is_empty() {
-                        return Err(PromptSaveError::Field {
-                            field: PromptEditFormField::Name,
-                            code: "required",
-                            message_key: "prompt-validation-name-required",
-                        });
-                    }
-                    if draft.content.is_empty() {
-                        return Err(PromptSaveError::Field {
-                            field: PromptEditFormField::Content,
-                            code: "required",
-                            message_key: "prompt-validation-content-required",
-                        });
-                    }
-                    match prompt_name_exists(cx, prompt_id.as_ref(), &draft.name) {
-                        Ok(true) => {
-                            return Err(PromptSaveError::Field {
-                                field: PromptEditFormField::Name,
-                                code: "duplicate",
-                                message_key: "prompt-validation-name-duplicate",
-                            });
-                        }
-                        Ok(false) => {}
-                        Err(err) => {
-                            return Err(PromptSaveError::Notify {
-                                title_key: "notify-save-prompt-failed",
-                                message: err.to_string(),
-                            });
-                        }
-                    }
-
+                move |draft, window, cx| {
                     let result = match mode {
                         PromptEditMode::Create => {
                             state::prompts::create_prompt(cx, draft.name, draft.content)
@@ -160,14 +140,6 @@ impl PromptEditDialogState {
         match result {
             Ok(()) => true,
             Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => false,
-            Err(SubmitError::Handler(PromptSaveError::Field {
-                field,
-                code,
-                message_key,
-            })) => {
-                self.apply_field_error(field, code, message_key, cx);
-                false
-            }
             Err(SubmitError::Handler(PromptSaveError::Notify { title_key, message })) => {
                 let title = cx.global::<I18n>().t(title_key);
                 push_settings_error(window, cx, title, message);
@@ -180,18 +152,6 @@ impl PromptEditDialogState {
         let name_input = self.form.read(cx).name_state();
         name_input.update(cx, |input, cx| {
             input.focus(window, cx);
-        });
-    }
-
-    fn apply_field_error(
-        &self,
-        field: PromptEditFormField,
-        code: &'static str,
-        message_key: &'static str,
-        cx: &mut Context<Self>,
-    ) {
-        self.form.update(cx, |form, cx| {
-            form.apply_field_error(field, prompt_field_error(field, code, message_key), cx);
         });
     }
 }
@@ -228,29 +188,19 @@ impl Render for PromptEditDialogState {
             ))
     }
 }
-fn prompt_name_exists(
+fn prompt_edit_validation_context(
+    prompt_id: Option<PromptId>,
     cx: &App,
-    current_prompt_id: Option<&PromptId>,
-    name: &str,
-) -> ai_chat_db::Result<bool> {
-    Ok(crate::database::repository(cx)
+) -> ai_chat_db::Result<PromptEditValidationContext> {
+    let existing_prompts = crate::database::repository(cx)
         .list_prompts()?
         .into_iter()
-        .any(|prompt| current_prompt_id != Some(&prompt.id) && prompt.name.trim() == name))
-}
-
-fn prompt_field_error(
-    field: PromptEditFormField,
-    code: &'static str,
-    message_key: &'static str,
-) -> FieldError {
-    FieldError::new_for_field(
-        field.key(),
-        ValidationTrigger::Submit,
-        ValidationSource::App("ai-chat2-prompt".into()),
-        code,
-        message_key,
-    )
+        .map(|prompt| (prompt.id, prompt.name))
+        .collect();
+    Ok(PromptEditValidationContext {
+        prompt_id,
+        existing_prompts,
+    })
 }
 
 fn field_error_message(errors: Vec<FieldError>, cx: &App) -> Option<SharedString> {
@@ -491,7 +441,7 @@ fn form_field(
 
 #[cfg(test)]
 mod tests {
-    use super::PromptEditFormField;
+    use super::super::form_state::PromptEditFormField;
     use super::{
         PromptEditMode, confirm_prompt_edit_dialog, field_errors, open_prompt_edit_dialog,
     };

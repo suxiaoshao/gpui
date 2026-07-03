@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use ai_chat_core::{
     ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
 };
-use fluent_bundle::FluentArgs;
-use gpui::{App, AppContext as _, Context, Entity, EntityId, SharedString, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, EntityId, Task, Window};
 use gpui_form::{
-    FieldChangeCause, FieldError, FormMeta, FormStore as _, SubmitError, SubmitStart,
-    ValidationSource, ValidationTrigger,
+    FieldChangeCause, FieldError, FormMeta, FormStore as _, FormValidationReport, SubmitError,
+    SubmitTransform, TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
+    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
 };
 
 use crate::foundation::I18n;
@@ -73,16 +73,8 @@ impl ProviderFormField {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProviderValidationIssue {
-    pub(super) field: ProviderFormField,
-    pub(super) kind: ProviderValidationKind,
-    pub(super) field_label: SharedString,
-    pub(super) message: SharedString,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ProviderValidationKind {
+enum ProviderValidationKind {
     Required,
     UrlInvalid,
     UrlScheme,
@@ -111,6 +103,37 @@ pub(super) enum ProviderSettingsForm {
     Ollama(Entity<OllamaProviderFormStore>),
     CustomOpenAi(Entity<CustomOpenAiProviderFormStore>),
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ProviderValidationContext {
+    pub(super) secret_refs: ProviderSecretRefs,
+}
+
+impl Default for ProviderValidationContext {
+    fn default() -> Self {
+        Self {
+            secret_refs: ProviderSecretRefs { refs: Vec::new() },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ApiKeyProviderValidator;
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct OllamaProviderValidator;
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct CustomOpenAiProviderValidator;
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ApiKeyProviderTransform;
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct OllamaProviderTransform;
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct CustomOpenAiProviderTransform;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProviderSettingsFormOutput {
@@ -210,36 +233,173 @@ impl ProviderSettingsFormOutput {
             .filter_map(|secret| secret.changed.then_some(secret.key()))
             .collect()
     }
+}
 
-    pub(super) fn validate(
+impl ValidationAdapter<ApiKeyProviderFormInput> for ApiKeyProviderValidator {
+    type Context = ProviderValidationContext;
+
+    fn validate(
         &self,
-        secret_refs: &ProviderSecretRefs,
-        i18n: &I18n,
-    ) -> Result<(), ProviderValidationIssue> {
-        match self {
-            Self::ApiKey {
-                api_key, base_url, ..
-            } => {
-                require_secret(api_key, secret_refs, i18n)?;
-                validate_optional_base_url(ProviderFormField::BaseUrl, base_url, i18n)?;
-                Ok(())
-            }
-            Self::Ollama { base_url, .. } => {
-                require_base_url(ProviderFormField::BaseUrl, base_url, i18n)?;
-                Ok(())
-            }
-            Self::CustomOpenAi {
-                name,
-                api_key,
-                base_url,
-                ..
-            } => {
-                require_text(ProviderFormField::Name, name, i18n)?;
-                require_secret(api_key, secret_refs, i18n)?;
-                require_base_url(ProviderFormField::BaseUrl, base_url, i18n)?;
-                Ok(())
-            }
-        }
+        draft: &ApiKeyProviderFormInput,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        context: ValidationContext<'_, Self::Context>,
+        cx: &App,
+    ) -> ValidationAdapterReport {
+        let mut issues = Vec::new();
+        push_secret_required_issue(
+            &mut issues,
+            ProviderFormField::ApiKey,
+            &draft.api_key,
+            &context.external.secret_refs,
+            trigger,
+            &scope,
+            cx,
+        );
+        push_optional_url_issue(
+            &mut issues,
+            ProviderFormField::BaseUrl,
+            &draft.base_url,
+            trigger,
+            &scope,
+            cx,
+        );
+        ValidationAdapterReport::new(issues)
+    }
+}
+
+impl ValidationAdapter<OllamaProviderFormInput> for OllamaProviderValidator {
+    type Context = ProviderValidationContext;
+
+    fn validate(
+        &self,
+        draft: &OllamaProviderFormInput,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        _context: ValidationContext<'_, Self::Context>,
+        cx: &App,
+    ) -> ValidationAdapterReport {
+        let mut issues = Vec::new();
+        push_required_url_issue(
+            &mut issues,
+            ProviderFormField::BaseUrl,
+            &draft.base_url,
+            trigger,
+            &scope,
+            cx,
+        );
+        ValidationAdapterReport::new(issues)
+    }
+}
+
+impl ValidationAdapter<CustomOpenAiProviderFormInput> for CustomOpenAiProviderValidator {
+    type Context = ProviderValidationContext;
+
+    fn validate(
+        &self,
+        draft: &CustomOpenAiProviderFormInput,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        context: ValidationContext<'_, Self::Context>,
+        cx: &App,
+    ) -> ValidationAdapterReport {
+        let mut issues = Vec::new();
+        push_required_text_issue(
+            &mut issues,
+            ProviderFormField::Name,
+            &draft.name,
+            trigger,
+            &scope,
+            cx,
+        );
+        push_secret_required_issue(
+            &mut issues,
+            ProviderFormField::ApiKey,
+            &draft.api_key,
+            &context.external.secret_refs,
+            trigger,
+            &scope,
+            cx,
+        );
+        push_required_url_issue(
+            &mut issues,
+            ProviderFormField::BaseUrl,
+            &draft.base_url,
+            trigger,
+            &scope,
+            cx,
+        );
+        ValidationAdapterReport::new(issues)
+    }
+}
+
+impl SubmitTransform<ApiKeyProviderFormInput, ApiKeyProviderFormInput> for ApiKeyProviderTransform {
+    fn preview(
+        &self,
+        draft: &ApiKeyProviderFormInput,
+        _context: &TransformContext,
+    ) -> Result<ApiKeyProviderFormInput, TransformReport> {
+        Ok(ApiKeyProviderFormInput {
+            enabled: draft.enabled,
+            api_key: draft.api_key.clone(),
+            base_url: draft.base_url.trim().to_string(),
+        })
+    }
+
+    fn transform_on_submit(
+        &self,
+        draft: &ApiKeyProviderFormInput,
+        context: &TransformContext,
+    ) -> Result<ApiKeyProviderFormInput, TransformReport> {
+        self.preview(draft, context)
+    }
+}
+
+impl SubmitTransform<OllamaProviderFormInput, OllamaProviderFormInput> for OllamaProviderTransform {
+    fn preview(
+        &self,
+        draft: &OllamaProviderFormInput,
+        _context: &TransformContext,
+    ) -> Result<OllamaProviderFormInput, TransformReport> {
+        Ok(OllamaProviderFormInput {
+            enabled: draft.enabled,
+            base_url: draft.base_url.trim().to_string(),
+            bearer_token: draft.bearer_token.clone(),
+        })
+    }
+
+    fn transform_on_submit(
+        &self,
+        draft: &OllamaProviderFormInput,
+        context: &TransformContext,
+    ) -> Result<OllamaProviderFormInput, TransformReport> {
+        self.preview(draft, context)
+    }
+}
+
+impl SubmitTransform<CustomOpenAiProviderFormInput, CustomOpenAiProviderFormInput>
+    for CustomOpenAiProviderTransform
+{
+    fn preview(
+        &self,
+        draft: &CustomOpenAiProviderFormInput,
+        _context: &TransformContext,
+    ) -> Result<CustomOpenAiProviderFormInput, TransformReport> {
+        Ok(CustomOpenAiProviderFormInput {
+            enabled: draft.enabled,
+            name: draft.name.trim().to_string(),
+            api_key: draft.api_key.clone(),
+            base_url: draft.base_url.trim().to_string(),
+            api_mode: draft.api_mode,
+        })
+    }
+
+    fn transform_on_submit(
+        &self,
+        draft: &CustomOpenAiProviderFormInput,
+        context: &TransformContext,
+    ) -> Result<CustomOpenAiProviderFormInput, TransformReport> {
+        self.preview(draft, context)
     }
 }
 
@@ -255,22 +415,31 @@ impl ProviderSettingsForm {
     {
         match form_kind {
             ProviderFormKind::ApiKey => Self::ApiKey(cx.new(|cx| {
-                ApiKeyProviderFormStore::from_value(
+                ApiKeyProviderFormStore::from_value_with_validation_context(
                     ApiKeyProviderFormInput::from_draft(draft),
+                    ProviderValidationContext {
+                        secret_refs: draft.existing_secret_refs.clone(),
+                    },
                     window,
                     cx,
                 )
             })),
             ProviderFormKind::Ollama => Self::Ollama(cx.new(|cx| {
-                OllamaProviderFormStore::from_value(
+                OllamaProviderFormStore::from_value_with_validation_context(
                     OllamaProviderFormInput::from_draft(draft),
+                    ProviderValidationContext {
+                        secret_refs: draft.existing_secret_refs.clone(),
+                    },
                     window,
                     cx,
                 )
             })),
             ProviderFormKind::CustomOpenAiCompatible => Self::CustomOpenAi(cx.new(|cx| {
-                CustomOpenAiProviderFormStore::from_value(
+                CustomOpenAiProviderFormStore::from_value_with_validation_context(
                     CustomOpenAiProviderFormInput::from_draft(draft),
+                    ProviderValidationContext {
+                        secret_refs: draft.existing_secret_refs.clone(),
+                    },
                     window,
                     cx,
                 )
@@ -308,13 +477,19 @@ impl ProviderSettingsForm {
         handler: H,
         window: &mut Window,
         cx: &mut App,
-    ) -> Result<SubmitStart, SubmitError<ProviderValidationIssue>>
+    ) -> Result<(), SubmitError<()>>
     where
         H: FnOnce(ProviderSettingsFormOutput, &mut Window, &mut App) -> Task<Result<(), String>>
             + 'static,
     {
         match self {
             Self::ApiKey(form) => form.update(cx, |form, cx| {
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
                 form.submit_async(
                     move |output, window, cx| {
                         let output = ProviderSettingsFormOutput::ApiKey {
@@ -322,14 +497,19 @@ impl ProviderSettingsForm {
                             api_key: output.api_key,
                             base_url: output.base_url,
                         };
-                        output.validate(&secret_refs, cx.global::<I18n>())?;
-                        Ok(handler(output, window, cx))
+                        Ok::<_, ()>(handler(output, window, cx))
                     },
                     window,
                     cx,
                 )
             }),
             Self::Ollama(form) => form.update(cx, |form, cx| {
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
                 form.submit_async(
                     move |output, window, cx| {
                         let output = ProviderSettingsFormOutput::Ollama {
@@ -337,14 +517,19 @@ impl ProviderSettingsForm {
                             base_url: output.base_url,
                             bearer_token: output.bearer_token,
                         };
-                        output.validate(&secret_refs, cx.global::<I18n>())?;
-                        Ok(handler(output, window, cx))
+                        Ok::<_, ()>(handler(output, window, cx))
                     },
                     window,
                     cx,
                 )
             }),
             Self::CustomOpenAi(form) => form.update(cx, |form, cx| {
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
                 form.submit_async(
                     move |output, window, cx| {
                         let output = ProviderSettingsFormOutput::CustomOpenAi {
@@ -354,8 +539,7 @@ impl ProviderSettingsForm {
                             base_url: output.base_url,
                             api_mode: output.api_mode,
                         };
-                        output.validate(&secret_refs, cx.global::<I18n>())?;
-                        Ok(handler(output, window, cx))
+                        Ok::<_, ()>(handler(output, window, cx))
                     },
                     window,
                     cx,
@@ -414,78 +598,39 @@ impl ProviderSettingsForm {
 
     pub(super) fn validate_current(
         &self,
-        secret_refs: &ProviderSecretRefs,
-        i18n: &I18n,
-        cx: &App,
-    ) -> Result<(), ProviderValidationIssue> {
-        self.current_output(cx).validate(secret_refs, i18n)
-    }
-
-    pub(super) fn clear_validation_errors(&self, cx: &mut App) {
-        match self {
-            Self::ApiKey(form) => form.update(cx, |form, cx| form.clear_all_errors(cx)),
-            Self::Ollama(form) => form.update(cx, |form, cx| form.clear_all_errors(cx)),
-            Self::CustomOpenAi(form) => form.update(cx, |form, cx| form.clear_all_errors(cx)),
-        }
-    }
-
-    pub(super) fn apply_validation_issue(
-        &self,
-        issue: Option<&ProviderValidationIssue>,
+        secret_refs: ProviderSecretRefs,
+        window: &mut Window,
         cx: &mut App,
-    ) {
-        self.clear_validation_errors(cx);
-        let Some(issue) = issue else {
-            return;
-        };
-        let error = provider_field_error(issue);
+    ) -> FormValidationReport {
         match self {
             Self::ApiKey(form) => form.update(cx, |form, cx| {
-                if let Some(field) = api_key_generated_field(issue.field) {
-                    form.apply_field_error(field, error, cx);
-                }
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, window, cx)
             }),
             Self::Ollama(form) => form.update(cx, |form, cx| {
-                if let Some(field) = ollama_generated_field(issue.field) {
-                    form.apply_field_error(field, error, cx);
-                }
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, window, cx)
             }),
             Self::CustomOpenAi(form) => form.update(cx, |form, cx| {
-                if let Some(field) = custom_openai_generated_field(issue.field) {
-                    form.apply_field_error(field, error, cx);
-                }
+                form.set_validation_context(
+                    ProviderValidationContext {
+                        secret_refs: secret_refs.clone(),
+                    },
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, window, cx)
             }),
         }
-    }
-}
-
-fn api_key_generated_field(field: ProviderFormField) -> Option<ApiKeyProviderFormField> {
-    match field {
-        ProviderFormField::ApiKey => Some(ApiKeyProviderFormField::ApiKey),
-        ProviderFormField::BaseUrl => Some(ApiKeyProviderFormField::BaseUrl),
-        ProviderFormField::Name | ProviderFormField::BearerToken | ProviderFormField::ApiMode => {
-            None
-        }
-    }
-}
-
-fn ollama_generated_field(field: ProviderFormField) -> Option<OllamaProviderFormField> {
-    match field {
-        ProviderFormField::BaseUrl => Some(OllamaProviderFormField::BaseUrl),
-        ProviderFormField::BearerToken => Some(OllamaProviderFormField::BearerToken),
-        ProviderFormField::Name | ProviderFormField::ApiKey | ProviderFormField::ApiMode => None,
-    }
-}
-
-fn custom_openai_generated_field(
-    field: ProviderFormField,
-) -> Option<CustomOpenAiProviderFormField> {
-    match field {
-        ProviderFormField::Name => Some(CustomOpenAiProviderFormField::Name),
-        ProviderFormField::ApiKey => Some(CustomOpenAiProviderFormField::ApiKey),
-        ProviderFormField::BaseUrl => Some(CustomOpenAiProviderFormField::BaseUrl),
-        ProviderFormField::ApiMode => Some(CustomOpenAiProviderFormField::ApiMode),
-        ProviderFormField::BearerToken => None,
     }
 }
 
@@ -530,107 +675,145 @@ impl CustomOpenAiProviderFormInput {
     }
 }
 
-fn require_text(
+fn push_required_text_issue(
+    issues: &mut Vec<ValidationIssue>,
     field: ProviderFormField,
     value: &str,
-    i18n: &I18n,
-) -> Result<(), ProviderValidationIssue> {
-    if value.trim().is_empty() {
-        Err(required_field_issue(field, i18n))
-    } else {
-        Ok(())
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    cx: &App,
+) {
+    if value.trim().is_empty() && provider_scope_includes_field(scope, field) {
+        issues.push(provider_validation_issue(
+            field,
+            ProviderValidationKind::Required,
+            trigger,
+            cx,
+        ));
     }
 }
 
-fn require_secret(
+fn push_secret_required_issue(
+    issues: &mut Vec<ValidationIssue>,
+    field: ProviderFormField,
     secret: &ProviderSecretValue,
     secret_refs: &ProviderSecretRefs,
-    i18n: &I18n,
-) -> Result<(), ProviderValidationIssue> {
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    cx: &App,
+) {
+    if !provider_scope_includes_field(scope, field) {
+        return;
+    }
     let has_saved_secret = !secret.changed
         && secret_refs
             .refs
             .iter()
             .any(|saved| saved.key == secret.key());
-    if has_saved_secret || !secret.value.is_empty() {
-        Ok(())
-    } else {
-        Err(required_field_issue(secret.field, i18n))
+    if !has_saved_secret && secret.value.trim().is_empty() {
+        issues.push(provider_validation_issue(
+            field,
+            ProviderValidationKind::Required,
+            trigger,
+            cx,
+        ));
     }
 }
 
-fn required_field_issue(field: ProviderFormField, i18n: &I18n) -> ProviderValidationIssue {
-    provider_field_issue(field, ProviderValidationKind::Required, i18n)
-}
-
-fn require_base_url(
+fn push_required_url_issue(
+    issues: &mut Vec<ValidationIssue>,
     field: ProviderFormField,
     value: &str,
-    i18n: &I18n,
-) -> Result<(), ProviderValidationIssue> {
-    require_text(field, value, i18n)?;
-    validate_base_url(field, value, i18n)
-}
-
-fn validate_optional_base_url(
-    field: ProviderFormField,
-    value: &str,
-    i18n: &I18n,
-) -> Result<(), ProviderValidationIssue> {
-    if value.trim().is_empty() {
-        return Ok(());
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    cx: &App,
+) {
+    if !provider_scope_includes_field(scope, field) {
+        return;
     }
-    validate_base_url(field, value, i18n)
+    let value = value.trim();
+    if value.is_empty() {
+        issues.push(provider_validation_issue(
+            field,
+            ProviderValidationKind::Required,
+            trigger,
+            cx,
+        ));
+        return;
+    }
+    push_base_url_issue(issues, field, value, trigger, cx);
 }
 
-fn validate_base_url(
+fn push_optional_url_issue(
+    issues: &mut Vec<ValidationIssue>,
     field: ProviderFormField,
     value: &str,
-    i18n: &I18n,
-) -> Result<(), ProviderValidationIssue> {
-    match url::Url::parse(value.trim()) {
-        Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(()),
-        Ok(_) => Err(provider_field_issue(
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    cx: &App,
+) {
+    if !provider_scope_includes_field(scope, field) {
+        return;
+    }
+    let value = value.trim();
+    if !value.is_empty() {
+        push_base_url_issue(issues, field, value, trigger, cx);
+    }
+}
+
+fn push_base_url_issue(
+    issues: &mut Vec<ValidationIssue>,
+    field: ProviderFormField,
+    value: &str,
+    trigger: ValidationTrigger,
+    cx: &App,
+) {
+    match url::Url::parse(value) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+        Ok(_) => issues.push(provider_validation_issue(
             field,
             ProviderValidationKind::UrlScheme,
-            i18n,
+            trigger,
+            cx,
         )),
-        Err(_) => Err(provider_field_issue(
+        Err(_) => issues.push(provider_validation_issue(
             field,
             ProviderValidationKind::UrlInvalid,
-            i18n,
+            trigger,
+            cx,
         )),
     }
 }
 
-fn provider_field_issue(
+fn provider_validation_issue(
     field: ProviderFormField,
     kind: ProviderValidationKind,
-    i18n: &I18n,
-) -> ProviderValidationIssue {
-    ProviderValidationIssue {
-        field,
-        kind,
-        field_label: i18n.t(field.label_key()).into(),
-        message: provider_field_message(field.label_key(), kind.message_key(), i18n),
-    }
-}
-
-fn provider_field_message(field_label_key: &str, message_key: &str, i18n: &I18n) -> SharedString {
-    let mut args = FluentArgs::new();
-    args.set("field", i18n.t(field_label_key));
-    i18n.t_with_args(message_key, &args).into()
-}
-
-fn provider_field_error(issue: &ProviderValidationIssue) -> FieldError {
-    FieldError::new_for_field(
-        issue.field.key(),
-        ValidationTrigger::Submit,
+    trigger: ValidationTrigger,
+    cx: &App,
+) -> ValidationIssue {
+    ValidationIssue::field(
+        gpui_form::FieldPath::from_static(field.key()),
+        trigger,
         ValidationSource::App("ai-chat2-provider".into()),
-        issue.kind.code(),
-        issue.kind.message_key(),
+        kind.code(),
+        kind.message_key(),
     )
-    .with_param("field", issue.field_label.to_string())
+    .with_param(
+        "field",
+        cx.global::<I18n>().t(field.label_key()).to_string(),
+    )
+}
+
+fn provider_scope_includes_field(scope: &ValidationScope, field: ProviderFormField) -> bool {
+    let path = gpui_form::FieldPath::from_static(field.key());
+    match scope {
+        ValidationScope::Form => true,
+        ValidationScope::Field(field_path) => field_path == &path,
+        ValidationScope::Group(group_path) => path.starts_with(group_path),
+        ValidationScope::ArrayItem {
+            path: array_path, ..
+        } => path.starts_with(array_path),
+    }
 }
 
 pub(super) fn field_errors<Field>(field: &Field) -> Vec<FieldError>

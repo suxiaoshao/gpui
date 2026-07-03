@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
 use gpui::{App, AppContext as _, Entity, Window};
-use gpui_form::{FieldError, FormItemId, FormStore};
+use gpui_form::{FormItemId, FormStore};
 
 type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
 type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
@@ -81,7 +81,11 @@ pub(super) struct McpEnvHeaderRowInput {
 }
 
 #[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = McpServerFormStore)]
+#[form(
+    store = McpServerFormStore,
+    validation(adapter = super::validation::McpServerValidator, context = super::validation::McpServerValidationContext),
+    transform(adapter = super::validation::McpServerTransform)
+)]
 pub(super) struct McpServerFormInput {
     pub(super) transport: McpTransportKind,
     #[form(
@@ -200,15 +204,6 @@ pub(super) struct McpServerFormDraft {
     pub(super) form: Entity<McpServerFormStore>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct McpSubmitRowIds {
-    pub(super) args: Vec<FormItemId>,
-    pub(super) env: Vec<FormItemId>,
-    pub(super) env_vars: Vec<FormItemId>,
-    pub(super) headers: Vec<FormItemId>,
-    pub(super) env_headers: Vec<FormItemId>,
-}
-
 impl McpServerFormDraft {
     pub(super) fn from_config(
         server_id: String,
@@ -264,10 +259,6 @@ impl McpServerFormDraft {
 
     pub(super) fn input(&self, cx: &App) -> McpServerFormInput {
         self.form.read(cx).draft()
-    }
-
-    pub(super) fn submit_row_ids(&self, cx: &App) -> McpSubmitRowIds {
-        self.form.read(cx).submit_row_ids()
     }
 
     pub(super) fn set_transport(
@@ -389,166 +380,6 @@ impl McpServerFormDraft {
         self.form.update(cx, |form, cx| {
             let _ = form.env_headers_remove_id(row_id, cx);
         });
-    }
-}
-
-impl McpServerFormStore {
-    pub(super) fn submit_row_ids(&self) -> McpSubmitRowIds {
-        McpSubmitRowIds {
-            args: self
-                .args_values_with_id()
-                .into_iter()
-                .map(|row| row.id)
-                .collect(),
-            env: self
-                .env_values_with_id()
-                .into_iter()
-                .map(|row| row.id)
-                .collect(),
-            env_vars: self
-                .env_vars_values_with_id()
-                .into_iter()
-                .map(|row| row.id)
-                .collect(),
-            headers: self
-                .headers_values_with_id()
-                .into_iter()
-                .map(|row| row.id)
-                .collect(),
-            env_headers: self
-                .env_headers_values_with_id()
-                .into_iter()
-                .map(|row| row.id)
-                .collect(),
-        }
-    }
-
-    pub(super) fn apply_arg_value_error(
-        &mut self,
-        row_id: FormItemId,
-        error: FieldError,
-        cx: &mut gpui::Context<Self>,
-    ) {
-        let updated = if let Some(item) = self.args.item_mut(row_id) {
-            let store = item.item.store();
-            store.update(cx, |store, cx| {
-                store.apply_field_error(McpArgRowFormField::Value, error, cx);
-            });
-            let store = store.read(cx);
-            item.item
-                .sync_from_child(store.draft(), store.meta().clone());
-            true
-        } else {
-            false
-        };
-        if updated {
-            self.args_refresh_meta();
-            self.refresh_meta();
-            cx.notify();
-        }
-    }
-
-    pub(super) fn apply_env_field_error(
-        &mut self,
-        row_id: FormItemId,
-        field: McpEnvRowFormField,
-        error: FieldError,
-        cx: &mut gpui::Context<Self>,
-    ) {
-        let updated = if let Some(item) = self.env.item_mut(row_id) {
-            let store = item.item.store();
-            store.update(cx, |store, cx| {
-                store.apply_field_error(field, error, cx);
-            });
-            let store = store.read(cx);
-            item.item
-                .sync_from_child(store.draft(), store.meta().clone());
-            true
-        } else {
-            false
-        };
-        if updated {
-            self.env_refresh_meta();
-            self.refresh_meta();
-            cx.notify();
-        }
-    }
-
-    pub(super) fn apply_env_var_value_error(
-        &mut self,
-        row_id: FormItemId,
-        error: FieldError,
-        cx: &mut gpui::Context<Self>,
-    ) {
-        let updated = if let Some(item) = self.env_vars.item_mut(row_id) {
-            let store = item.item.store();
-            store.update(cx, |store, cx| {
-                store.apply_field_error(McpEnvVarRowFormField::Value, error, cx);
-            });
-            let store = store.read(cx);
-            item.item
-                .sync_from_child(store.draft(), store.meta().clone());
-            true
-        } else {
-            false
-        };
-        if updated {
-            self.env_vars_refresh_meta();
-            self.refresh_meta();
-            cx.notify();
-        }
-    }
-
-    pub(super) fn apply_header_field_error(
-        &mut self,
-        row_id: FormItemId,
-        field: McpHeaderRowFormField,
-        error: FieldError,
-        cx: &mut gpui::Context<Self>,
-    ) {
-        let updated = if let Some(item) = self.headers.item_mut(row_id) {
-            let store = item.item.store();
-            store.update(cx, |store, cx| {
-                store.apply_field_error(field, error, cx);
-            });
-            let store = store.read(cx);
-            item.item
-                .sync_from_child(store.draft(), store.meta().clone());
-            true
-        } else {
-            false
-        };
-        if updated {
-            self.headers_refresh_meta();
-            self.refresh_meta();
-            cx.notify();
-        }
-    }
-
-    pub(super) fn apply_env_header_field_error(
-        &mut self,
-        row_id: FormItemId,
-        field: McpEnvHeaderRowFormField,
-        error: FieldError,
-        cx: &mut gpui::Context<Self>,
-    ) {
-        let updated = if let Some(item) = self.env_headers.item_mut(row_id) {
-            let store = item.item.store();
-            store.update(cx, |store, cx| {
-                store.apply_field_error(field, error, cx);
-            });
-            let store = store.read(cx);
-            item.item
-                .sync_from_child(store.draft(), store.meta().clone());
-            true
-        } else {
-            false
-        };
-        if updated {
-            self.env_headers_refresh_meta();
-            self.refresh_meta();
-            cx.notify();
-        }
     }
 }
 
@@ -678,7 +509,7 @@ fn optional_string(value: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::validation::validate_mcp_form;
+    use super::super::validation::McpServerValidationContext;
     use super::McpServerFormDraft;
     use crate::{
         foundation,
@@ -691,6 +522,7 @@ mod tests {
         WindowHandle, div,
     };
     use gpui_component::input::{InputEvent, InputState};
+    use gpui_form::{FormStore as _, ValidationTrigger};
     use std::{collections::BTreeMap, path::PathBuf};
 
     #[gpui::test]
@@ -801,7 +633,7 @@ mod tests {
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
-        let (mut draft, original) = cx.update(|window, cx| {
+        let mut draft = cx.update(|window, cx| {
             let original = McpServerTomlConfig {
                 transport: McpTransportKind::StreamableHttp,
                 url: Some("https://example.com/mcp".to_string()),
@@ -816,9 +648,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let draft =
-                McpServerFormDraft::from_config("server".to_string(), &original, window, cx);
-            (draft, original)
+            McpServerFormDraft::from_config("server".to_string(), &original, window, cx)
         });
         cx.update(|window, cx| {
             draft.set_oauth_enabled(false, window, cx);
@@ -840,11 +670,21 @@ mod tests {
         });
         set_input_value(header_value, "Bearer token", &mut cx);
 
-        cx.update(|_, cx| {
-            let errors = validate_mcp_form(&draft, Some("server"), Some(&original), &[], cx);
+        cx.update(|window, cx| {
+            let report = draft.form.update(cx, |form, cx| {
+                form.set_validation_context(
+                    McpServerValidationContext {
+                        original_server_id: Some("server".to_string()),
+                        existing_server_ids: Vec::new(),
+                    },
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, window, cx)
+            });
             assert!(
-                errors.is_empty(),
-                "unexpected validation errors: {errors:?}"
+                report.is_valid(),
+                "unexpected validation errors: {:?}",
+                report.field_errors()
             );
         });
     }

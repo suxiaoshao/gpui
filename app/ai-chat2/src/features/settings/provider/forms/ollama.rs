@@ -3,7 +3,11 @@ type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
 type SecretInputBinding = super::ProviderSecretInputBinding;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = OllamaProviderFormStore)]
+#[form(
+    store = OllamaProviderFormStore,
+    validation(adapter = super::OllamaProviderValidator, context = super::ProviderValidationContext),
+    transform(adapter = super::OllamaProviderTransform)
+)]
 pub(in crate::features::settings::provider) struct OllamaProviderFormInput {
     #[form(binding = "BoolInputBinding")]
     pub(super) enabled: bool,

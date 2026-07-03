@@ -33,7 +33,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
-use gpui_form::{ErrorParamValue, FieldError, SubmitError};
+use gpui_form::{ErrorParamValue, FieldError, FormValidationReport, SubmitError};
 use tracing::{Level, event};
 
 mod capabilities;
@@ -397,7 +397,6 @@ impl ProviderSettingsPage {
             return;
         };
         editor.validation = ProviderValidationState::Idle;
-        editor.form.clear_validation_errors(cx);
         cx.notify();
     }
 
@@ -520,7 +519,7 @@ impl ProviderSettingsPage {
         });
     }
 
-    fn validate_current_output(&mut self, cx: &mut Context<Self>) -> bool {
+    fn validate_current_output(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let key = self.selected_key.clone();
         if self.spec_for_key(&key).is_none() {
             if let Some(editor) = self.editors.get_mut(&key) {
@@ -535,47 +534,16 @@ impl ProviderSettingsPage {
         let Some(editor) = self.editors.get(&key) else {
             return false;
         };
-        let validation_result = editor.form.validate_current(
-            &editor.draft.existing_secret_refs,
-            cx.global::<I18n>(),
-            cx,
-        );
-        let validation = validation_result
-            .as_ref()
-            .map(|_| ProviderValidationState::Valid)
-            .unwrap_or_else(|issue| ProviderValidationState::Invalid(issue.message.clone()));
-        let valid = matches!(validation, ProviderValidationState::Valid);
-        if let Some(editor) = self.editors.get_mut(&key) {
+        let validation_report =
             editor
                 .form
-                .apply_validation_issue(validation_result.as_ref().err(), cx);
+                .validate_current(editor.draft.existing_secret_refs.clone(), window, cx);
+        let validation = provider_validation_state_from_report(&validation_report, cx);
+        let valid = matches!(validation, ProviderValidationState::Valid);
+        if let Some(editor) = self.editors.get_mut(&key) {
             editor.validation = validation;
         }
         valid
-    }
-
-    fn apply_provider_validation_issue(
-        &mut self,
-        key: &ProviderEditorKey,
-        issue: forms::ProviderValidationIssue,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(editor) = self.editors.get_mut(key) {
-            editor.form.apply_validation_issue(Some(&issue), cx);
-            editor.validation = ProviderValidationState::Invalid(issue.message.clone());
-        }
-        window.push_notification(
-            Notification::new()
-                .title(
-                    cx.global::<I18n>()
-                        .t("provider-notification-validation-failed"),
-                )
-                .message(issue.message)
-                .with_type(NotificationType::Error),
-            cx,
-        );
-        cx.notify();
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -639,12 +607,16 @@ impl ProviderSettingsPage {
             cx,
         );
         match start {
-            Ok(gpui_form::SubmitStart::Started) => {}
-            Err(SubmitError::Handler(issue)) => {
-                self.apply_provider_validation_issue(&key, issue, window, cx);
+            Ok(()) => {}
+            Err(SubmitError::Invalid(report)) => {
+                let validation = provider_validation_state_from_report(&report, cx);
+                if let Some(editor) = self.editors.get_mut(&key) {
+                    editor.validation = validation;
+                }
+                cx.notify();
                 return;
             }
-            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => {
+            Err(SubmitError::Handler(())) | Err(SubmitError::Busy) => {
                 return;
             }
         }
@@ -1119,8 +1091,8 @@ impl ProviderSettingsPage {
                             .label(cx.global::<I18n>().t("provider-action-validate"))
                             .small()
                             .disabled(locked)
-                            .on_click(cx.listener(|page, _, _, cx| {
-                                page.validate_current_output(cx);
+                            .on_click(cx.listener(|page, _, window, cx| {
+                                page.validate_current_output(window, cx);
                                 cx.notify();
                             })),
                     )
@@ -1457,6 +1429,16 @@ fn provider_field_error_message(error: &FieldError, cx: &App) -> SharedString {
         return i18n.t_with_args(error.message_key.as_ref(), &args).into();
     }
     i18n.t(error.message_key.as_ref()).into()
+}
+
+fn provider_validation_state_from_report(
+    report: &FormValidationReport,
+    cx: &App,
+) -> ProviderValidationState {
+    report
+        .first_field_error()
+        .map(|error| ProviderValidationState::Invalid(provider_field_error_message(error, cx)))
+        .unwrap_or(ProviderValidationState::Valid)
 }
 
 fn provider_error_label(message: SharedString, cx: &mut App) -> AnyElement {
@@ -1868,8 +1850,9 @@ mod tests {
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let page = window.root(&mut cx).unwrap();
 
-        let saved_valid =
-            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_output(cx)));
+        let saved_valid = cx.update(|window, cx| {
+            page.update(cx, |page, cx| page.validate_current_output(window, cx))
+        });
         assert!(saved_valid);
     }
 
@@ -1882,8 +1865,9 @@ mod tests {
         let openai = provider_editor_key("openai");
 
         set_secret_input_value(&page, &openai, "api_key", "sk-pending", &mut cx);
-        let pending_valid =
-            cx.update(|_, cx| page.update(cx, |page, cx| page.validate_current_output(cx)));
+        let pending_valid = cx.update(|window, cx| {
+            page.update(cx, |page, cx| page.validate_current_output(window, cx))
+        });
         assert!(pending_valid);
     }
 

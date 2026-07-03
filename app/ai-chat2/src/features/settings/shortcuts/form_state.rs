@@ -14,19 +14,28 @@ use gpui_component::{
 };
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
-    FormComponentEventSink, FormField, FormMeta, SubscriptionSet,
+    FormComponentEventSink, FormField, FormMeta, RequiredValue, SubmitTransform, SubscriptionSet,
+    TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
+    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
+};
+
+use super::{
+    choices::PromptChoice,
+    validation::{ShortcutValidationError, canonical_hotkey, validate_shortcut_hotkey},
 };
 
 type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
-
-use super::choices::PromptChoice;
 
 pub(super) type ShortcutPromptSelectStateInner = SelectState<Vec<PromptChoice>>;
 pub(super) type ShortcutModelSelectStateInner =
     SelectState<SearchableVec<SelectGroup<ModelOption>>>;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = ShortcutEditFormStore)]
+#[form(
+    store = ShortcutEditFormStore,
+    validation(adapter = ShortcutEditValidator, context = ShortcutEditValidationContext),
+    transform(adapter = ShortcutEditTransform)
+)]
 pub(super) struct ShortcutEditFormInput {
     #[form(binding = "ShortcutHotkeyBinding", required)]
     pub(super) hotkey: Option<String>,
@@ -77,6 +86,126 @@ impl ShortcutEditFormInput {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ShortcutEditValidationContext {
+    pub(super) shortcut_id: Option<ai_chat_core::ShortcutId>,
+    pub(super) existing_shortcuts: Vec<ShortcutRecord>,
+    pub(super) temporary_hotkey: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ShortcutEditValidator;
+
+impl ValidationAdapter<ShortcutEditFormInput> for ShortcutEditValidator {
+    type Context = ShortcutEditValidationContext;
+
+    fn validate(
+        &self,
+        draft: &ShortcutEditFormInput,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        context: ValidationContext<'_, Self::Context>,
+        _cx: &App,
+    ) -> ValidationAdapterReport {
+        let mut issues = Vec::new();
+        let hotkey_path = gpui_form::FieldPath::from_static(ShortcutEditFormField::Hotkey.key());
+        let model_path = gpui_form::FieldPath::from_static(ShortcutEditFormField::Model.key());
+
+        if scope_includes_path(&scope, &hotkey_path)
+            && let Err(error) = validate_shortcut_hotkey(
+                draft.hotkey.clone(),
+                context.external.shortcut_id.as_ref(),
+                &context.external.existing_shortcuts,
+                context.external.temporary_hotkey.as_deref(),
+            )
+        {
+            issues.push(shortcut_issue(hotkey_path, trigger, error));
+        }
+
+        if scope_includes_path(&scope, &model_path) && draft.model.selected.is_none() {
+            issues.push(shortcut_issue(
+                model_path,
+                trigger,
+                ShortcutValidationError::ModelRequired,
+            ));
+        }
+
+        ValidationAdapterReport::new(issues)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ShortcutEditTransform;
+
+impl SubmitTransform<ShortcutEditFormInput, ShortcutEditFormInput> for ShortcutEditTransform {
+    fn preview(
+        &self,
+        draft: &ShortcutEditFormInput,
+        _context: &TransformContext,
+    ) -> Result<ShortcutEditFormInput, TransformReport> {
+        Ok(normalize_shortcut_input(draft))
+    }
+
+    fn transform_on_submit(
+        &self,
+        draft: &ShortcutEditFormInput,
+        _context: &TransformContext,
+    ) -> Result<ShortcutEditFormInput, TransformReport> {
+        Ok(normalize_shortcut_input(draft))
+    }
+}
+
+fn normalize_shortcut_input(draft: &ShortcutEditFormInput) -> ShortcutEditFormInput {
+    let hotkey = draft
+        .hotkey
+        .as_ref()
+        .map(|hotkey| canonical_hotkey(hotkey).unwrap_or_else(|_| hotkey.trim().to_string()));
+
+    ShortcutEditFormInput {
+        hotkey,
+        prompt: draft.prompt.clone(),
+        model: draft.model.clone(),
+        input_source: draft.input_source,
+        enabled: draft.enabled,
+    }
+}
+
+fn shortcut_issue(
+    path: gpui_form::FieldPath,
+    trigger: ValidationTrigger,
+    error: ShortcutValidationError,
+) -> ValidationIssue {
+    ValidationIssue::field(
+        path,
+        trigger,
+        ValidationSource::App("ai-chat2-shortcut".into()),
+        shortcut_error_code(&error),
+        error.i18n_key(),
+    )
+}
+
+fn shortcut_error_code(error: &ShortcutValidationError) -> &'static str {
+    match error {
+        ShortcutValidationError::HotkeyRequired => "hotkey_required",
+        ShortcutValidationError::HotkeyInvalid => "hotkey_invalid",
+        ShortcutValidationError::HotkeyPlainKey => "hotkey_plain_key",
+        ShortcutValidationError::TemporaryConflict => "temporary_conflict",
+        ShortcutValidationError::BindingConflict => "binding_conflict",
+        ShortcutValidationError::ModelRequired => "model_required",
+    }
+}
+
+fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> bool {
+    match scope {
+        ValidationScope::Form => true,
+        ValidationScope::Field(field_path) => field_path == path,
+        ValidationScope::Group(group_path) => path.starts_with(group_path),
+        ValidationScope::ArrayItem {
+            path: array_path, ..
+        } => path.starts_with(array_path),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShortcutPromptSelection {
     pub(super) selected: Option<PromptId>,
@@ -87,6 +216,12 @@ pub(super) struct ShortcutPromptSelection {
 pub(super) struct ShortcutModelSelection {
     pub(super) selected: Option<ProviderModelKey>,
     choices: Vec<ProviderModelChoice>,
+}
+
+impl RequiredValue for ShortcutModelSelection {
+    fn is_empty_value(&self) -> bool {
+        self.selected.is_none()
+    }
 }
 
 pub(super) struct ShortcutHotkeyBinding;

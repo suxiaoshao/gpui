@@ -119,8 +119,9 @@ submit 拆成两个层次：
    `SubmitRuntime`。
 5. `is_submitting()` 在 task 存在期间为 true。
 6. task 完成时清空 `SubmitRuntime.task`，并根据 task outcome 更新 `last_submit_outcome`。
-7. builder error 可以由 app 转成 field/form errors；task error 由 app completion callback 决定是否写回
-   field/form errors 或 notification。
+7. builder error 表示 task 无法启动或非字段级业务错误；字段级错误应在 validation pipeline 中进入
+   `SubmitError::Invalid(report)`。task error 由 app completion callback 决定是否更新 dialog state 或弹
+   notification。
 
 ## 数据流和全局状态
 
@@ -138,7 +139,7 @@ submit 拆成两个层次：
 - 所用组件：普通 input 继续使用 `InputState` + `Input`；number binding 使用 `InputState` +
   `NumberInput`，具体 raw input dirty 设计见 `number-input-design.md`；select/combobox/bool binding 和 app
   自定义 `FormComponentBinding` 不变。
-- 自定义类型：新增 `SubmitRuntime`、`SubmitError`、`SubmitStart` 和 `SubmitOutcome`；新增
+- 自定义类型：新增 `SubmitRuntime`、`SubmitError` 和 `SubmitOutcome`；新增
   `FieldPath::join_path` 和 `FormValidationReport::with_field_prefix`
   辅助 group/array report 聚合。
 - i18n：不新增用户可见文案；number parse 继续使用 `gpui-form-error-number-parse`。

@@ -3,9 +3,20 @@
 本文档记录 `app/ai-chat2` Settings 表单接入 `gpui-form` 的 app 侧计划。`gpui-form` crate 自身只保留通用抽象；
 Provider Settings、MCP Settings、具体 placeholder key、i18n、icon、config/DB 写回规则都放在本文档。
 
-最后同步时间：2026-07-02。
+更新口径：本文保留历史迁移记录；“字段级校验必须进入 `gpui-form` validation/transform pipeline，app 不再手动
+回填 field errors”的完整迁移计划见 `gpui-form-full-migration-plan.md`。`gpui-form` crate 侧通用能力计划见
+`../../../../../crates/gpui-form/docs/validation-pipeline-strengthening-plan.md`。
 
-当前状态：设计结论已确认；`gpui-form` 已支持字段级 placeholder/mask/required 传入组件 state 创建流程，
+最后同步时间：2026-07-03。
+
+当前实现口径：完整迁移已由 `gpui-form-full-migration-plan.md` 接管并落地。Provider、MCP、Prompt 和
+Shortcut 的字段级校验/required/normalize 不再由 app submit handler 执行，也不再通过
+`SubmitError::Handler(...)` 手动回填 field errors；保存路径只在 `SubmitError::Invalid(FormValidationReport)`
+之外处理 DB/config/keychain/runtime 副作用。本文后续较早章节保留历史迁移记录，若出现
+`apply_field_error`、`clear_all_errors`、`McpSubmitRowIds` 或 `validate_mcp_submit_output` 方案描述，以
+`gpui-form-full-migration-plan.md`、`crates/gpui-form/docs/validation-pipeline-strengthening-plan.md` 和当前代码为准。
+
+历史状态：设计结论已确认；`gpui-form` 已支持字段级 placeholder/mask/required 传入组件 state 创建流程，
 `ai-chat2` Provider Settings 已删除 post-creation `configure_inputs`，MCP Settings 已拆成语义化 row
 input/store 并删除 `apply_*_placeholders`。MCP row add/remove 已改为 typed GPUI action，删除最后一行后保持空列表；
 Provider/MCP 单字段写入已改用 generated setter；Provider、Prompt Edit Dialog 和 Shortcut Edit Dialog 的

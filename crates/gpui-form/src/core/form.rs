@@ -1,6 +1,6 @@
 use gpui::{App, Context, Window};
 
-use crate::{FormMeta, FormValidationReport, SubmitError, SubmitStart, ValidationTrigger};
+use crate::{FormMeta, FormValidationReport, SubmitError, ValidationTrigger};
 
 pub trait FormStore: Sized + 'static {
     type Output;
@@ -54,7 +54,7 @@ pub trait FormStore: Sized + 'static {
         handler: H,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Result<SubmitStart, SubmitError<StartError>>
+    ) -> Result<(), SubmitError<StartError>>
     where
         Success: 'static,
         TaskError: 'static,
