@@ -22,6 +22,7 @@ use model_picker::{ModelOption, model_sections};
 use std::ops::Deref;
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ModelSelectEvent {
     Change(Option<ProviderModel>),
     ModelsChanged,

@@ -17,9 +17,14 @@ pub use service::{
 };
 #[allow(unused_imports)]
 pub use service::{GlobalShortcutBinding, NewGlobalShortcutBinding, UpdateGlobalShortcutBinding};
+#[allow(unused_imports)]
+pub(crate) use service::{
+    MessageAttachment, MessageAttachmentKind, MessageOutputItem, MessageOutputItemStatus,
+    MessageRunPersistence, MessageRunState,
+};
 pub use types::{Mode, Role, ShortcutInputSource, Status};
 const CREATE_TABLE_SQL: &str =
-    include_str!("../migrations/2026-03-20-000000_create_tables_v5/up.sql");
+    include_str!("../migrations/2026-05-20-000000_create_tables_v6/up.sql");
 
 pub(crate) type DbConn = Pool<ConnectionManager<SqliteConnection>>;
 

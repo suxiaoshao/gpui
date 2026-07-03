@@ -7,9 +7,12 @@ mod template_picker;
 use crate::{
     database::{ConversationTemplate, ConversationTemplatePrompt, Db, Mode},
     errors::AiChatResult,
-    foundation::assets::IconName,
     foundation::i18n::I18n,
-    llm::{apply_ext_setting, build_request_template, preset_ext_settings, provider_by_name},
+    foundation::{assets::IconName, capability_labels_text},
+    llm::{
+        CapabilityRequirement, LlmContentPart, apply_ext_setting, build_request_template,
+        preset_ext_settings, provider_by_name,
+    },
     state::ConversationDraft,
 };
 use ext_settings::{ExtSettings, ExtSettingsEvent};
@@ -19,6 +22,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Position},
+    label::Label,
     list::ListState,
     notification::{Notification, NotificationType},
     tag::Tag,
@@ -62,6 +66,7 @@ pub(crate) struct ChatFormSnapshot {
     pub(crate) provider_name: String,
     pub(crate) request_template: serde_json::Value,
     pub(crate) prompts: Vec<ConversationTemplatePrompt>,
+    pub(crate) content_parts: Vec<LlmContentPart>,
     pub(crate) mode: Mode,
 }
 
@@ -80,6 +85,7 @@ pub(crate) struct ChatForm {
     slash_restore_position: Option<Position>,
     suppress_template_trigger_once: bool,
     last_input_text: String,
+    input_content_parts: Option<Vec<LlmContentPart>>,
     pending_restore_draft: Option<ConversationDraft>,
     _subscriptions: Vec<Subscription>,
 }
@@ -119,6 +125,7 @@ impl ChatForm {
             slash_restore_position: None,
             suppress_template_trigger_once: false,
             last_input_text: String::new(),
+            input_content_parts: None,
             pending_restore_draft: None,
             _subscriptions: Vec::new(),
         };
@@ -139,7 +146,7 @@ impl ChatForm {
                     this.on_input_change(window, cx);
                     cx.emit(ChatFormEvent::StateChanged);
                 }
-                InputEvent::PressEnter { secondary }
+                InputEvent::PressEnter { secondary, .. }
                     if !secondary && !this.running && this.can_send(cx) =>
                 {
                     cx.emit(ChatFormEvent::SendRequested);
@@ -315,6 +322,9 @@ impl ChatForm {
                 input.cursor_position(),
             )
         };
+        if self.input_content_parts.is_some() && self.last_input_text != text {
+            self.input_content_parts = None;
+        }
         if self.suppress_template_trigger_once {
             self.suppress_template_trigger_once = false;
             self.last_input_text = text;
@@ -401,6 +411,7 @@ impl ChatForm {
         self.input_state
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.last_input_text.clear();
+        self.input_content_parts = None;
         cx.emit(ChatFormEvent::StateChanged);
     }
 
@@ -422,8 +433,13 @@ impl ChatForm {
             return Ok(None);
         };
         let mode = self.mode_select.read(cx).selected_value();
+        let text = self.input_state.read(cx).value().to_string();
         Ok(Some(ChatFormSnapshot {
-            text: self.input_state.read(cx).value().to_string(),
+            content_parts: self
+                .input_content_parts
+                .clone()
+                .unwrap_or_else(|| vec![LlmContentPart::text(text.clone())]),
+            text,
             provider_name: selected_model.provider_name.clone(),
             request_template,
             prompts: self
@@ -464,6 +480,7 @@ impl ChatForm {
             mode,
             selected_template_id,
             request_template,
+            input_parts: None,
         })
     }
 
@@ -474,6 +491,8 @@ impl ChatForm {
         cx: &mut Context<Self>,
     ) {
         self.pending_restore_draft = Some(draft.clone());
+        self.last_input_text = draft.text.clone();
+        self.input_content_parts = draft.input_parts.clone();
         self.input_state.update(cx, |input, cx| {
             input.set_value(draft.text.clone(), window, cx);
         });
@@ -521,6 +540,19 @@ impl ChatForm {
             && !self.input_state.read(cx).value().trim().is_empty()
             && self.model_select.read(cx).selected_model().is_some()
             && self.request_template.is_some()
+            && self.selected_template_missing_requirements(cx).is_empty()
+    }
+
+    fn selected_template_missing_requirements(&self, cx: &App) -> Vec<CapabilityRequirement> {
+        let Some(template) = self.selected_template.as_ref() else {
+            return Vec::new();
+        };
+        let Some(model) = self.model_select.read(cx).selected_model() else {
+            return Vec::new();
+        };
+        model
+            .capabilities
+            .missing_requirements(&template.required_capabilities)
     }
 }
 
@@ -549,17 +581,41 @@ impl Render for ChatForm {
                     .child(Input::new(&self.input_state).flex_1().appearance(false)),
             )
             .when_some(self.selected_template.clone(), |this, template| {
-                let tag = Tag::primary()
-                    .outline()
-                    .child(format!("{} {}", template.icon, template.name));
-                this.child(h_flex().gap_2().child(div().child(tag).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|form, _event, _window, cx| {
-                        form.selected_template = None;
-                        cx.emit(ChatFormEvent::StateChanged);
-                        cx.notify();
-                    }),
-                )))
+                let missing = self.selected_template_missing_requirements(cx);
+                let tag = if missing.is_empty() {
+                    Tag::primary()
+                        .outline()
+                        .child(format!("{} {}", template.icon, template.name))
+                        .into_any_element()
+                } else {
+                    Tag::warning()
+                        .outline()
+                        .child(format!("{} {}", template.icon, template.name))
+                        .into_any_element()
+                };
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .child(h_flex().gap_2().child(div().child(tag).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|form, _event, _window, cx| {
+                                form.selected_template = None;
+                                cx.emit(ChatFormEvent::StateChanged);
+                                cx.notify();
+                            }),
+                        )))
+                        .when(!missing.is_empty(), |this| {
+                            this.child(
+                                Label::new(format!(
+                                    "{}: {}",
+                                    cx.global::<I18n>().t("chat-template-incompatible"),
+                                    capability_labels_text(&missing, cx)
+                                ))
+                                .text_xs()
+                                .text_color(cx.theme().warning),
+                            )
+                        }),
+                )
             })
             .child(
                 h_flex()
@@ -630,7 +686,8 @@ impl Render for ChatForm {
 
 impl ChatForm {
     fn rebuild_template_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sections = template_sections(self.templates.clone());
+        let selected_model = self.model_select.read(cx).selected_model();
+        let sections = template_sections(self.templates.clone(), selected_model.as_ref());
         let selected_template_id = self.selected_template.as_ref().map(|template| template.id);
         let initial_ix =
             PickerListDelegate::selected_index_for(&sections, selected_template_id.as_ref());
@@ -761,6 +818,7 @@ mod tests {
                 prompt: prompt.to_string(),
                 role: Role::User,
             }],
+            required_capabilities: Vec::new(),
             created_time: OffsetDateTime::UNIX_EPOCH,
             updated_time: OffsetDateTime::UNIX_EPOCH,
         }

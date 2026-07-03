@@ -15,7 +15,7 @@ use std::ops::Deref;
 use tracing::{Level, event};
 
 #[derive(Debug)]
-pub enum ChatDataEvent {
+pub(crate) enum ChatDataEvent {
     AddConversation {
         name: SharedString,
         icon: SharedString,
@@ -323,9 +323,13 @@ fn insert_conversation(
                 &initial_message.content,
                 &initial_message.send_content,
                 initial_message.status,
-            );
+            )
+            .with_input_content_parts(&initial_message.input_content_parts);
             if let Some(error) = initial_message.error.as_ref() {
                 new_message = new_message.with_error(error);
+            }
+            if !initial_message.run_persistence.is_empty() {
+                new_message = new_message.with_run_persistence(&initial_message.run_persistence);
             }
             let message = Message::insert(new_message, conn)?;
             conversation.messages.push(message);

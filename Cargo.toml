@@ -1,11 +1,21 @@
 [workspace]
 members = [
   "app/ai-chat",
+  "app/ai-chat2",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
   "crates/app-assets",
+  "crates/app-assets-macros",
   "crates/app-theme",
+  "crates/ai-chat-agent",
+  "crates/ai-chat-core",
+  "crates/ai-chat-db",
+  "crates/gpui-form",
+  "crates/gpui-form-gpui-component",
+  "crates/gpui-form-macros",
+  "crates/gpui-store",
+  "crates/gpui-tokio",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
@@ -14,19 +24,35 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
+ai-chat-core = { path = "./crates/ai-chat-core" }
+ai-chat-db = { path = "./crates/ai-chat-db" }
+ai-chat-agent = { path = "./crates/ai-chat-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
+gpui-form = { path = "./crates/gpui-form" }
+gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }
+gpui-form-macros = { path = "./crates/gpui-form-macros" }
+gpui-store = { path = "./crates/gpui-store" }
+gpui-tokio = { path = "./crates/gpui-tokio" }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
+rig-core = { version = "0.39.0", features = ["rmcp"] }
+rmcp = { version = "1.8.0", features = [
+  "auth",
+  "client",
+  "macros",
+  "transport-child-process",
+  "transport-streamable-http-client-reqwest",
+] }
 
 [patch.crates-io]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui-macros = { git = "https://github.com/zed-industries/zed", package = "gpui_macros" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui-macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui_macros" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

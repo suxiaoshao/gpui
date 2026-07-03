@@ -15,6 +15,7 @@ description: Use gpui-component components in GPUI applications. Use when buildi
    `references/rules/traits.md`, `references/rules/primitives.md`, `references/rules/theme-and-size.md`, or `references/rules/state-and-interaction.md`.
 6. Compose existing components, traits, helpers, theme tokens, and delegate patterns before writing custom app-local UI.
 7. If the bundled reference conflicts with the current dependency, inspect the app's actual `gpui-component` API from Cargo sources, docs.rs for the exact version, or the checked-out dependency source.
+8. If a component reference is missing or stale, use the upstream Markdown docs fallback: `https://longbridge.github.io/gpui-component/docs/components/{component}.md` or the full `https://longbridge.github.io/gpui-component/llms-full.txt`.
 
 ## Principles
 
@@ -34,12 +35,13 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 | --- | --- |
 | Primary, secondary, danger, icon, or loading action | `Button`, `ButtonGroup`, `Toggle` |
 | Text entry | `Input`, `Editor`, `NumberInput`, `OtpInput` |
+| Formatted text, Markdown, or HTML rendering | `TextView` |
 | Boolean or option selection | `Checkbox`, `Switch`, `Radio`, `Select`, `Combobox`, `Slider`, `ColorPicker`, `DatePicker` |
 | Forms and settings | `Form`, `Settings`, `GroupBox`, `Label`, `DescriptionList` |
 | Modal or confirmation flow | `Dialog`, `AlertDialog` |
 | Non-modal panel or floating content | `Sheet`, `Popover`, `HoverCard`, `Tooltip` |
 | Menu actions | `Menu`, `DropdownButton` |
-| Feedback and status | `Alert`, `Notification`, `Progress`, `Spinner`, `Skeleton`, `Badge`, `Tag` |
+| Feedback and status | `Alert`, `Notification`, `Progress`, `Spinner`, `Skeleton`, `Badge`, `Tag`, `StatusBar` |
 | Data display | `Table`, `DataTable`, `List`, `Tree`, `VirtualList`, `Chart`, `Plot` |
 | Navigation and structure | `Sidebar`, `Tabs`, `Pagination`, `Accordion`, `Collapsible`, `Resizable`, `Scrollable` |
 | Media and affordances | `Icon`, `Image`, `Avatar`, `Kbd`, `TitleBar` |
@@ -54,6 +56,8 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - Theme and size rules: `references/rules/theme-and-size.md`
 - State and interaction rules: `references/rules/state-and-interaction.md`
 - Component docs: `references/components/<component>.md`
+- Online docs fallback: `https://longbridge.github.io/gpui-component/docs/components/{component}.md`
+- Full online docs fallback: `https://longbridge.github.io/gpui-component/llms-full.txt`
 - Third-party attribution: `references/third-party/gpui-component-docs.md`
 
 The component docs are an English snapshot of gpui-component's Markdown documentation. They are bundled for portability and progressive loading; do not load every component file unless the task genuinely requires it.

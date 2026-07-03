@@ -410,6 +410,8 @@ struct MaterialSurfaceTokens {
     sidebar_border: SharedString,
     sidebar_foreground: SharedString,
     skeleton: SharedString,
+    status_bar: SharedString,
+    status_bar_border: SharedString,
     switch: SharedString,
     switch_thumb: SharedString,
     tab: SharedString,
@@ -542,6 +544,8 @@ fn material_surface_tokens(
         sidebar_border: palette.divider.clone(),
         sidebar_foreground: hex(scheme.on_surface),
         skeleton: hex(scheme.surface_container_high),
+        status_bar: hex(scheme.surface_container_highest),
+        status_bar_border: palette.divider.clone(),
         switch: hex(scheme.surface_container_highest),
         switch_thumb: hex(scheme.surface),
         tab: hex(scheme.surface_container),
@@ -736,6 +740,8 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.sidebar_primary = Some(control.sidebar_primary);
         colors.sidebar_primary_foreground = Some(control.sidebar_primary_foreground);
         colors.skeleton = Some(surface.skeleton);
+        colors.status_bar = Some(surface.status_bar);
+        colors.status_bar_border = Some(surface.status_bar_border);
         colors.slider_bar = Some(control.slider_bar);
         colors.slider_thumb = Some(control.slider_thumb);
         colors.success = Some(status.success);

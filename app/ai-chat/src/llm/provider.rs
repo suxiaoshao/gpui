@@ -1,6 +1,5 @@
-use super::Message;
+use super::{LlmInputItem, ProviderRunEvent, ProviderRunRequest, ProviderRunState};
 use crate::{
-    database::Content,
     errors::{AiChatError, AiChatResult},
     state::AiChatConfig,
 };
@@ -14,15 +13,250 @@ use std::time::Duration;
 mod ollama;
 mod openai;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderModelCapability {
-    Streaming,
-    NonStreaming,
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CapabilityRequirement {
+    ImageInput,
+    ImageGeneration,
+    FileInput,
+    AudioInput,
+    ToolCalling,
+    HostedWebSearch,
+    RemoteMcp,
+    Reasoning,
+    StructuredOutput,
+    StatefulResponseContinuation,
 }
 
-impl ProviderModelCapability {
-    pub(crate) fn stream_flag(self) -> bool {
-        matches!(self, Self::Streaming)
+impl CapabilityRequirement {
+    pub(crate) const fn all() -> [Self; 10] {
+        [
+            Self::ImageInput,
+            Self::ImageGeneration,
+            Self::FileInput,
+            Self::AudioInput,
+            Self::ToolCalling,
+            Self::HostedWebSearch,
+            Self::RemoteMcp,
+            Self::Reasoning,
+            Self::StructuredOutput,
+            Self::StatefulResponseContinuation,
+        ]
+    }
+
+    pub(crate) const fn label_key(self) -> &'static str {
+        match self {
+            Self::ImageInput => "capability-image-input",
+            Self::ImageGeneration => "capability-image-generation",
+            Self::FileInput => "capability-file-input",
+            Self::AudioInput => "capability-audio-input",
+            Self::ToolCalling => "capability-tool-calling",
+            Self::HostedWebSearch => "capability-hosted-web-search",
+            Self::RemoteMcp => "capability-remote-mcp",
+            Self::Reasoning => "capability-reasoning",
+            Self::StructuredOutput => "capability-structured-output",
+            Self::StatefulResponseContinuation => "capability-stateful-response-continuation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+impl ReasoningEffort {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        Some(match value {
+            "none" => Self::None,
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::XHigh,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReasoningCapability {
+    pub(crate) default_effort: ReasoningEffort,
+    pub(crate) efforts: Vec<ReasoningEffort>,
+    pub(crate) summaries: bool,
+}
+
+impl ReasoningCapability {
+    pub(crate) fn supports_effort(&self, effort: ReasoningEffort) -> bool {
+        self.efforts.contains(&effort)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImageInputCapability {
+    pub(crate) max_images: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileInputCapability {
+    pub(crate) max_files: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolCallingCapability {
+    pub(crate) parallel_tool_calls: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenAIModelCapabilities {
+    pub(crate) responses_api: bool,
+    pub(crate) reasoning_summaries: bool,
+    pub(crate) hosted_web_search: bool,
+    pub(crate) stateful_response_continuation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OllamaThinkingCapability {
+    Boolean,
+    Levels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OllamaModelCapabilities {
+    pub(crate) raw_capabilities: Vec<String>,
+    pub(crate) family: String,
+    pub(crate) families: Vec<String>,
+    pub(crate) thinking: Option<OllamaThinkingCapability>,
+    pub(crate) local_web_tools: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum ProviderCapabilityExtension {
+    #[default]
+    None,
+    OpenAI(OpenAIModelCapabilities),
+    Ollama(OllamaModelCapabilities),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelCapabilities {
+    pub(crate) text_input: bool,
+    pub(crate) text_output: bool,
+    pub(crate) streaming: bool,
+    pub(crate) image_input: Option<ImageInputCapability>,
+    pub(crate) file_input: Option<FileInputCapability>,
+    pub(crate) audio_input: bool,
+    pub(crate) image_generation: bool,
+    pub(crate) tool_calling: Option<ToolCallingCapability>,
+    pub(crate) hosted_web_search: bool,
+    pub(crate) remote_mcp: bool,
+    pub(crate) reasoning: Option<ReasoningCapability>,
+    pub(crate) structured_output: bool,
+    pub(crate) stateful_response_continuation: bool,
+    pub(crate) extension: ProviderCapabilityExtension,
+}
+
+impl ModelCapabilities {
+    pub(crate) fn text_streaming() -> Self {
+        Self::text_with_streaming(true)
+    }
+
+    pub(crate) fn text_non_streaming() -> Self {
+        Self::text_with_streaming(false)
+    }
+
+    fn text_with_streaming(streaming: bool) -> Self {
+        Self {
+            text_input: true,
+            text_output: true,
+            streaming,
+            image_input: None,
+            file_input: None,
+            audio_input: false,
+            image_generation: false,
+            tool_calling: None,
+            hosted_web_search: false,
+            remote_mcp: false,
+            reasoning: None,
+            structured_output: false,
+            stateful_response_continuation: false,
+            extension: ProviderCapabilityExtension::None,
+        }
+    }
+
+    pub(crate) fn supports_streaming(&self) -> bool {
+        self.streaming
+    }
+
+    pub(crate) fn supports_reasoning(&self) -> bool {
+        self.reasoning.is_some()
+    }
+
+    pub(crate) fn supports_hosted_web_search(&self) -> bool {
+        self.hosted_web_search
+    }
+
+    pub(crate) fn supports_requirement(&self, requirement: CapabilityRequirement) -> bool {
+        match requirement {
+            CapabilityRequirement::ImageInput => self.image_input.is_some(),
+            CapabilityRequirement::ImageGeneration => self.image_generation,
+            CapabilityRequirement::FileInput => self.file_input.is_some(),
+            CapabilityRequirement::AudioInput => self.audio_input,
+            CapabilityRequirement::ToolCalling => self.tool_calling.is_some(),
+            CapabilityRequirement::HostedWebSearch => self.hosted_web_search,
+            CapabilityRequirement::RemoteMcp => self.remote_mcp,
+            CapabilityRequirement::Reasoning => self.reasoning.is_some(),
+            CapabilityRequirement::StructuredOutput => self.structured_output,
+            CapabilityRequirement::StatefulResponseContinuation => {
+                self.stateful_response_continuation
+            }
+        }
+    }
+
+    pub(crate) fn missing_requirements(
+        &self,
+        requirements: &[CapabilityRequirement],
+    ) -> Vec<CapabilityRequirement> {
+        requirements
+            .iter()
+            .copied()
+            .filter(|requirement| !self.supports_requirement(*requirement))
+            .collect()
+    }
+
+    pub(crate) fn with_openai_extension(mut self, extension: OpenAIModelCapabilities) -> Self {
+        self.hosted_web_search = extension.hosted_web_search;
+        self.stateful_response_continuation = extension.stateful_response_continuation;
+        self.extension = ProviderCapabilityExtension::OpenAI(extension);
+        self
+    }
+
+    pub(crate) fn with_ollama_extension(mut self, extension: OllamaModelCapabilities) -> Self {
+        if extension.local_web_tools {
+            self.tool_calling = Some(ToolCallingCapability {
+                parallel_tool_calls: false,
+            });
+        }
+        self.extension = ProviderCapabilityExtension::Ollama(extension);
+        self
     }
 }
 
@@ -30,7 +264,7 @@ impl ProviderModelCapability {
 pub(crate) struct ProviderModel {
     pub(crate) provider_name: String,
     pub(crate) id: String,
-    pub(crate) capability: ProviderModelCapability,
+    pub(crate) capabilities: ModelCapabilities,
     pub(crate) metadata: serde_json::Value,
 }
 
@@ -38,12 +272,12 @@ impl ProviderModel {
     pub(crate) fn new(
         provider_name: impl Into<String>,
         id: impl Into<String>,
-        capability: ProviderModelCapability,
+        capabilities: ModelCapabilities,
     ) -> Self {
         Self {
             provider_name: provider_name.into(),
             id: id.into(),
-            capability,
+            capabilities,
             metadata: serde_json::json!({}),
         }
     }
@@ -102,17 +336,43 @@ pub(crate) trait Provider: Sync {
     fn name(&self) -> &'static str;
     fn is_configured(&self, settings: &serde_json::Value) -> bool;
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value>;
+    fn build_run_request(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+    ) -> AiChatResult<ProviderRunRequest>;
+    fn build_run_request_with_state(
+        &self,
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+        _state: Option<ProviderRunState>,
+    ) -> AiChatResult<ProviderRunRequest> {
+        self.build_run_request(template, input_items)
+    }
+    fn run<'a>(
+        &'a self,
+        config: AiChatConfig,
+        settings: toml::Value,
+        request: &'a ProviderRunRequest,
+    ) -> BoxStream<'a, AiChatResult<ProviderRunEvent>>;
     fn request_body(
         &self,
         template: &serde_json::Value,
-        history_messages: Vec<Message>,
-    ) -> AiChatResult<serde_json::Value>;
-    fn fetch_by_request_body<'a>(
+        input_items: Vec<LlmInputItem>,
+    ) -> AiChatResult<serde_json::Value> {
+        Ok(self.build_run_request(template, input_items)?.request_body)
+    }
+    #[cfg(test)]
+    fn request_body_with_state(
         &self,
-        config: AiChatConfig,
-        settings: toml::Value,
-        request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<FetchUpdate>>;
+        template: &serde_json::Value,
+        input_items: Vec<LlmInputItem>,
+        state: Option<ProviderRunState>,
+    ) -> AiChatResult<serde_json::Value> {
+        Ok(self
+            .build_run_request_with_state(template, input_items, state)?
+            .request_body)
+    }
     fn list_models(
         &self,
         config: AiChatConfig,
@@ -159,14 +419,6 @@ pub(crate) fn normalized_or_default(
 
 pub(crate) use ollama::{OllamaProvider, OllamaSettings};
 pub(crate) use openai::{OpenAIProvider, OpenAISettings};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FetchUpdate {
-    ThinkingStarted,
-    ReasoningSummaryDelta(String),
-    TextDelta(String),
-    Complete(Content),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderModelsSuccess {
@@ -328,10 +580,11 @@ pub(crate) async fn available_models(config: AiChatConfig) -> AvailableModelsBat
 #[cfg(test)]
 mod tests {
     use super::{
-        AvailableModelsBatch, ExtSettingItem, FetchUpdate, Message, Provider, ProviderModel,
-        ProviderModelCapability, ProviderModelsFailure, ProviderSettingsFieldKind,
-        ProviderSettingsSpec, available_models_from_providers,
-        available_models_from_providers_with_timeout, provider_settings_specs,
+        AvailableModelsBatch, CapabilityRequirement, ExtSettingItem, ImageInputCapability,
+        LlmInputItem, ModelCapabilities, Provider, ProviderModel, ProviderModelsFailure,
+        ProviderRunEvent, ProviderRunRequest, ProviderSettingsFieldKind, ProviderSettingsSpec,
+        available_models_from_providers, available_models_from_providers_with_timeout,
+        provider_settings_specs,
     };
     use crate::{
         errors::{AiChatError, AiChatResult},
@@ -364,20 +617,24 @@ mod tests {
             unreachable!()
         }
 
-        fn request_body(
+        fn build_run_request(
             &self,
             _template: &serde_json::Value,
-            _history_messages: Vec<Message>,
-        ) -> crate::errors::AiChatResult<serde_json::Value> {
-            unreachable!()
+            input_items: Vec<LlmInputItem>,
+        ) -> crate::errors::AiChatResult<ProviderRunRequest> {
+            Ok(ProviderRunRequest::new(
+                self.name(),
+                serde_json::json!({}),
+                input_items,
+            ))
         }
 
-        fn fetch_by_request_body<'a>(
-            &self,
+        fn run<'a>(
+            &'a self,
             _config: AiChatConfig,
             _settings: toml::Value,
-            _request_body: &'a serde_json::Value,
-        ) -> BoxStream<'a, crate::errors::AiChatResult<FetchUpdate>> {
+            _request: &'a ProviderRunRequest,
+        ) -> BoxStream<'a, crate::errors::AiChatResult<ProviderRunEvent>> {
             futures::stream::empty().boxed()
         }
 
@@ -431,7 +688,27 @@ mod tests {
     }
 
     fn model(provider: &str, id: &str) -> ProviderModel {
-        ProviderModel::new(provider, id, ProviderModelCapability::Streaming)
+        ProviderModel::new(provider, id, ModelCapabilities::text_streaming())
+    }
+
+    #[test]
+    fn model_capabilities_report_missing_requirements() {
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.image_input = Some(ImageInputCapability {
+            max_images: Some(1),
+        });
+        capabilities.structured_output = true;
+
+        assert!(capabilities.supports_requirement(CapabilityRequirement::ImageInput));
+        assert!(capabilities.supports_requirement(CapabilityRequirement::StructuredOutput));
+        assert_eq!(
+            capabilities.missing_requirements(&[
+                CapabilityRequirement::ImageInput,
+                CapabilityRequirement::ToolCalling,
+                CapabilityRequirement::StructuredOutput,
+            ]),
+            vec![CapabilityRequirement::ToolCalling]
+        );
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ use crate::{
     },
     errors::AiChatResult,
     foundation::search::field_matches_query,
+    llm::CapabilityRequirement,
 };
 use diesel::SqliteConnection;
 use gpui_component::select::SelectItem;
@@ -34,6 +35,8 @@ pub struct ConversationTemplate {
     pub icon: String,
     pub description: Option<String>,
     pub prompts: Vec<ConversationTemplatePrompt>,
+    #[serde(rename = "requiredCapabilities", default)]
+    pub required_capabilities: Vec<CapabilityRequirement>,
     #[serde(
         rename = "createdTime",
         serialize_with = "serialize_offset_date_time",
@@ -87,6 +90,7 @@ impl ConversationTemplate {
             updated_time,
             description,
             prompts,
+            required_capabilities,
         } = SqlConversationTemplate::find(id, conn)?;
         Ok(Self {
             id,
@@ -96,6 +100,7 @@ impl ConversationTemplate {
             updated_time,
             description,
             prompts: serde_json::from_value(prompts)?,
+            required_capabilities: serde_json::from_value(required_capabilities)?,
         })
     }
     pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
@@ -109,6 +114,7 @@ impl ConversationTemplate {
             updated_time,
             description,
             prompts,
+            required_capabilities,
         } in sql_conversation_templates
         {
             conversation_templates.push(Self {
@@ -119,6 +125,7 @@ impl ConversationTemplate {
                 updated_time,
                 description,
                 prompts: serde_json::from_value(prompts)?,
+                required_capabilities: serde_json::from_value(required_capabilities)?,
             });
         }
         Ok(conversation_templates)
@@ -129,6 +136,7 @@ impl ConversationTemplate {
             icon,
             description,
             prompts,
+            required_capabilities,
         }: NewConversationTemplate,
         id: i32,
         conn: &mut SqliteConnection,
@@ -143,6 +151,7 @@ impl ConversationTemplate {
                 updated_time: time,
                 description,
                 prompts: serde_json::to_value(prompts)?,
+                required_capabilities: serde_json::to_value(required_capabilities)?,
             };
             sql_new.update(conn)?;
             Ok(())
@@ -162,6 +171,8 @@ pub struct NewConversationTemplate {
     pub icon: String,
     pub description: Option<String>,
     pub prompts: Vec<ConversationTemplatePrompt>,
+    #[serde(rename = "requiredCapabilities", default)]
+    pub required_capabilities: Vec<CapabilityRequirement>,
 }
 
 impl NewConversationTemplate {
@@ -171,6 +182,7 @@ impl NewConversationTemplate {
             icon,
             description,
             prompts,
+            required_capabilities,
         } = self;
         let time = OffsetDateTime::now_utc();
         conn.immediate_transaction(|conn| {
@@ -182,6 +194,7 @@ impl NewConversationTemplate {
                 updated_time: time,
                 description,
                 prompts: serde_json::to_value(prompts)?,
+                required_capabilities: serde_json::to_value(required_capabilities)?,
             };
             let SqlConversationTemplate { id, .. } = sql_new.insert(conn)?;
             Ok(id)
@@ -191,9 +204,19 @@ impl NewConversationTemplate {
 
 #[cfg(test)]
 mod tests {
-    use super::ConversationTemplate;
-    use crate::database::{ConversationTemplatePrompt, Role};
+    use super::{ConversationTemplate, NewConversationTemplate};
+    use crate::{
+        database::{CREATE_TABLE_SQL, ConversationTemplatePrompt, Role},
+        llm::CapabilityRequirement,
+    };
+    use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
     use time::OffsetDateTime;
+
+    fn setup_conn() -> anyhow::Result<SqliteConnection> {
+        let mut conn = SqliteConnection::establish(":memory:")?;
+        conn.batch_execute(CREATE_TABLE_SQL)?;
+        Ok(conn)
+    }
 
     fn template(name: &str, description: Option<&str>) -> ConversationTemplate {
         ConversationTemplate {
@@ -205,6 +228,7 @@ mod tests {
                 prompt: "hello".to_string(),
                 role: Role::User,
             }],
+            required_capabilities: Vec::new(),
             created_time: OffsetDateTime::UNIX_EPOCH,
             updated_time: OffsetDateTime::UNIX_EPOCH,
         }
@@ -224,5 +248,52 @@ mod tests {
 
         assert!(template.matches_search_query("shengcheng"));
         assert!(template.matches_search_query("ghdmz"));
+    }
+
+    #[test]
+    fn required_capabilities_roundtrip_insert_find_update() -> anyhow::Result<()> {
+        let mut conn = setup_conn()?;
+        let prompts = vec![ConversationTemplatePrompt {
+            prompt: "hello".to_string(),
+            role: Role::User,
+        }];
+        let id = NewConversationTemplate {
+            name: "Vision".to_string(),
+            icon: "🖼️".to_string(),
+            description: None,
+            prompts: prompts.clone(),
+            required_capabilities: vec![
+                CapabilityRequirement::ImageInput,
+                CapabilityRequirement::Reasoning,
+            ],
+        }
+        .insert(&mut conn)?;
+
+        let inserted = ConversationTemplate::find(id, &mut conn)?;
+        assert_eq!(
+            inserted.required_capabilities,
+            vec![
+                CapabilityRequirement::ImageInput,
+                CapabilityRequirement::Reasoning,
+            ]
+        );
+
+        ConversationTemplate::update(
+            NewConversationTemplate {
+                name: "Tool".to_string(),
+                icon: "🛠️".to_string(),
+                description: Some("tool template".to_string()),
+                prompts,
+                required_capabilities: vec![CapabilityRequirement::ToolCalling],
+            },
+            id,
+            &mut conn,
+        )?;
+        let updated = ConversationTemplate::find(id, &mut conn)?;
+        assert_eq!(
+            updated.required_capabilities,
+            vec![CapabilityRequirement::ToolCalling]
+        );
+        Ok(())
     }
 }

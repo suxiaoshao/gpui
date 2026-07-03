@@ -271,13 +271,13 @@ fn merge_models(previous: &[ProviderModel], batch: &AvailableModelsBatch) -> Vec
 mod tests {
     use super::{ModelStoreState, merge_models};
     use crate::llm::{
-        AvailableModelsBatch, ProviderModel, ProviderModelCapability, ProviderModelsFailure,
+        AvailableModelsBatch, ModelCapabilities, ProviderModel, ProviderModelsFailure,
         ProviderModelsSuccess,
     };
     use gpui::Task;
 
     fn model(provider: &str, id: &str) -> ProviderModel {
-        ProviderModel::new(provider, id, ProviderModelCapability::Streaming)
+        ProviderModel::new(provider, id, ModelCapabilities::text_streaming())
     }
 
     #[test]

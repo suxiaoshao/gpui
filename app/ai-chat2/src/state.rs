@@ -1,0 +1,22 @@
+pub(crate) mod attachments;
+pub(crate) mod config;
+pub(crate) mod conversation_runtime;
+pub(crate) mod conversations;
+pub(crate) mod hotkey;
+pub(crate) mod layout;
+pub(crate) mod mcp;
+pub(crate) mod mcp_oauth;
+pub(crate) mod projects;
+pub(crate) mod prompts;
+pub(crate) mod provider_secrets;
+pub(crate) mod providers;
+pub(crate) mod shortcuts;
+pub(crate) mod skills;
+pub(crate) mod temporary;
+pub(crate) mod theme;
+pub(crate) mod workspace;
+
+pub(crate) use config::AiChat2Config;
+pub(crate) use hotkey::GlobalHotkeyState;
+pub(crate) use layout::{AiChat2LayoutState, LayoutStateStore};
+pub(crate) use workspace::{AiChat2WorkspaceStore, HomeRoute};

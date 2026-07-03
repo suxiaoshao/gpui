@@ -14,8 +14,11 @@ use crate::{
             validation::{ShortcutValidationError, validate_hotkey},
         },
     },
-    foundation::{assets::IconName, i18n::I18n},
-    llm::{ProviderModel, apply_ext_setting, build_request_template, preset_ext_settings},
+    foundation::{assets::IconName, capability_labels_text, i18n::I18n},
+    llm::{
+        CapabilityRequirement, ProviderModel, apply_ext_setting, build_request_template,
+        preset_ext_settings,
+    },
     state::{AiChatConfig, ModelStore, ModelStoreSnapshot, ModelStoreStatus},
 };
 use gpui::{AppContext as _, prelude::FluentBuilder as _, *};
@@ -672,6 +675,25 @@ impl ShortcutFormState {
             .cloned()
     }
 
+    fn selected_template(&self) -> Option<&ConversationTemplate> {
+        let template_id = self.draft.template_id?;
+        self.templates
+            .iter()
+            .find(|template| template.id == template_id)
+    }
+
+    fn missing_template_requirements(&self, cx: &App) -> Vec<CapabilityRequirement> {
+        let Some(template) = self.selected_template() else {
+            return Vec::new();
+        };
+        let Some(model) = Self::current_model_from(self, &self.model_store_models, cx) else {
+            return Vec::new();
+        };
+        model
+            .capabilities
+            .missing_requirements(&template.required_capabilities)
+    }
+
     fn refresh_request_template_with_models(
         form: &mut ShortcutFormState,
         available_models: &[ProviderModel],
@@ -857,6 +879,7 @@ impl Render for ShortcutFormState {
         } else {
             empty_model_picker
         };
+        let missing_requirements = self.missing_template_requirements(cx);
 
         v_flex()
             .w_full()
@@ -907,12 +930,30 @@ impl Render for ShortcutFormState {
                     )
                     .child(
                         field().label(field_model.clone()).child(
-                            Select::new(&self.model_select)
-                                .placeholder(field_model.clone())
-                                .empty(move |_window, _cx| {
-                                    Label::new(model_empty_label.clone()).text_sm()
-                                })
-                                .w_full(),
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    Select::new(&self.model_select)
+                                        .placeholder(field_model.clone())
+                                        .empty(move |_window, _cx| {
+                                            Label::new(model_empty_label.clone()).text_sm()
+                                        })
+                                        .w_full(),
+                                )
+                                .when(!missing_requirements.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(format!(
+                                            "{}: {}",
+                                            cx.global::<I18n>()
+                                                .t("shortcut-form-capability-warning"),
+                                            capability_labels_text(&missing_requirements, cx)
+                                        ))
+                                        .text_xs()
+                                        .text_color(cx.theme().warning),
+                                    )
+                                }),
                         ),
                     )
                     .child(
@@ -1102,14 +1143,59 @@ mod tests {
     use crate::database::{GlobalShortcutBinding, Mode, ShortcutInputSource};
     use crate::{
         features::settings::shortcut_settings::choices::ModelChoice,
-        llm::{ProviderModel, ProviderModelCapability, build_request_template},
+        llm::{
+            ModelCapabilities, OllamaModelCapabilities, OllamaThinkingCapability,
+            OpenAIModelCapabilities, ProviderModel, ReasoningCapability, ReasoningEffort,
+            build_request_template,
+        },
         state::ModelStoreStatus,
     };
     use serde_json::json;
     use time::OffsetDateTime;
 
     fn model(provider_name: &str, model_id: &str) -> ProviderModel {
-        ProviderModel::new(provider_name, model_id, ProviderModelCapability::Streaming)
+        ProviderModel::new(provider_name, model_id, ModelCapabilities::text_streaming())
+    }
+
+    fn openai_reasoning_model(model_id: &str) -> ProviderModel {
+        let mut capabilities = ModelCapabilities::text_streaming();
+        capabilities.reasoning = Some(ReasoningCapability {
+            default_effort: ReasoningEffort::Medium,
+            efforts: vec![
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
+            summaries: true,
+        });
+        ProviderModel::new(
+            "OpenAI",
+            model_id,
+            capabilities.with_openai_extension(OpenAIModelCapabilities {
+                responses_api: true,
+                reasoning_summaries: true,
+                hosted_web_search: true,
+                stateful_response_continuation: true,
+            }),
+        )
+    }
+
+    fn ollama_gptoss_model(model_id: &str) -> ProviderModel {
+        ProviderModel::new(
+            "Ollama",
+            model_id,
+            ModelCapabilities::text_streaming().with_ollama_extension(OllamaModelCapabilities {
+                raw_capabilities: vec![
+                    "completion".to_string(),
+                    "thinking".to_string(),
+                    "tools".to_string(),
+                ],
+                family: "gptoss".to_string(),
+                families: vec!["gptoss".to_string()],
+                thinking: Some(OllamaThinkingCapability::Levels),
+                local_web_tools: true,
+            }),
+        )
     }
 
     fn shortcut_binding() -> GlobalShortcutBinding {
@@ -1247,7 +1333,7 @@ mod tests {
 
     #[test]
     fn saved_request_template_replays_ext_settings_for_same_model() -> anyhow::Result<()> {
-        let openai_model = model("OpenAI", "gpt-5.2-pro");
+        let openai_model = openai_reasoning_model("gpt-5.2-pro");
         let openai_template = build_request_template(
             &openai_model,
             Some(&json!({
@@ -1257,11 +1343,7 @@ mod tests {
         )?;
         assert_eq!(openai_template["reasoning"]["effort"], "xhigh");
 
-        let ollama_model = model("Ollama", "gpt-oss").with_metadata(json!({
-            "capabilities": ["completion", "thinking", "tools"],
-            "family": "gptoss",
-            "families": ["gptoss"]
-        }));
+        let ollama_model = ollama_gptoss_model("gpt-oss");
         let ollama_template = build_request_template(
             &ollama_model,
             Some(&json!({

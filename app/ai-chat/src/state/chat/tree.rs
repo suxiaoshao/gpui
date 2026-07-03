@@ -1,7 +1,8 @@
 use crate::{
-    database::{Content, Conversation, Db, Folder, Message, Role, Status},
+    database::{Content, Conversation, Db, Folder, Message, MessageRunPersistence, Role, Status},
     errors::AiChatResult,
     foundation::search::field_matches_query,
+    llm::LlmContentPart,
 };
 use gpui::*;
 use std::collections::BTreeSet;
@@ -32,13 +33,15 @@ impl ConversationSearchResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct AddConversationMessage {
-    pub provider: String,
-    pub role: Role,
-    pub content: Content,
-    pub send_content: serde_json::Value,
-    pub status: Status,
-    pub error: Option<String>,
+pub(crate) struct AddConversationMessage {
+    pub(crate) provider: String,
+    pub(crate) role: Role,
+    pub(crate) content: Content,
+    pub(crate) send_content: serde_json::Value,
+    pub(crate) input_content_parts: Vec<LlmContentPart>,
+    pub(crate) status: Status,
+    pub(crate) error: Option<String>,
+    pub(crate) run_persistence: MessageRunPersistence,
 }
 
 // Bootstraps chat data from the database-backed tree.
@@ -537,6 +540,7 @@ mod tests {
             role: Role::User,
             content: Content::new(format!("message {id}")),
             send_content: serde_json::json!({}),
+            input_content_parts: Vec::new(),
             status: Status::Normal,
             created_time: now(),
             updated_time: now(),

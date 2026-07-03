@@ -4,7 +4,10 @@ use crate::{
         chat_form::ChatFormSnapshot,
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     },
-    database::{Content, Conversation, Db, Message, Mode, NewMessage, Role, Status},
+    database::{
+        Content, Conversation, Db, Message, MessageRunPersistence, MessageRunState, Mode,
+        NewMessage, Role, Status,
+    },
     errors::{AiChatError, AiChatResult},
     features::conversation::detail::{
         ConversationDetailView, ConversationDetailViewExt, MessageRevisionExt,
@@ -12,7 +15,11 @@ use crate::{
     features::home::conversation_export_menu,
     foundation::assets::IconName,
     foundation::i18n::I18n,
-    llm::{FetchRunner, FetchUpdate, provider_by_name},
+    llm::{
+        LlmContentPart, LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator,
+        ProviderRunRequest, ProviderRunRunner, ProviderRunState, build_input_items,
+        persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
+    },
     platform::gpui_ext::{AsyncWindowContextResultExt, EntityResultExt, WeakEntityResultExt},
     state::{
         AiChatConfig, ChatData, ChatDataEvent, ChatDataInner, ConversationDraft, WorkspaceStore,
@@ -375,7 +382,7 @@ impl ConversationPanelView {
         });
         let conn = &mut cx.global::<Db>().get()?;
         for message in &paused_messages {
-            Self::persist_message_snapshot(message, conn)?;
+            Self::persist_message_snapshot(message, None, conn)?;
         }
         self.set_chat_form_running(false, cx);
         cx.notify();
@@ -403,7 +410,7 @@ impl ConversationPanelView {
         };
 
         let conn = &mut cx.global::<Db>().get()?;
-        Self::persist_message_snapshot(&message, conn)?;
+        Self::persist_message_snapshot(&message, None, conn)?;
         self.set_chat_form_running(false, cx);
         cx.notify();
         Ok(())
@@ -544,12 +551,14 @@ impl ConversationPanelView {
                 provider.name().to_string(),
             ))?
             .clone();
-        let stream =
-            provider.fetch_by_request_body(context.config, settings, &context.request_body);
+        let request =
+            ProviderRunRequest::from_request_body(provider.name(), context.request_body.clone());
+        let mut run_persistence = ProviderRunPersistenceAccumulator::new(&request, &context.config);
+        let stream = provider.run(context.config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     Self::set_assistant_message_status_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -558,7 +567,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     Self::append_assistant_reasoning_summary_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -567,7 +576,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::TextDelta(delta)) => {
+                Ok(ProviderRunEvent::TextDelta(delta)) => {
                     Self::append_assistant_message_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -576,7 +585,12 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(state, usage);
                     Self::replace_assistant_message_content_by_id(
                         &context.chat_data,
                         context.conversation_id,
@@ -584,6 +598,36 @@ impl ConversationPanelView {
                         content,
                         cx,
                     )?;
+                }
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    Self::record_stream_error(
+                        state,
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        message,
+                        run_persistence.persistence(),
+                        cx,
+                    )?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -593,6 +637,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         error.to_string(),
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -604,6 +649,7 @@ impl ConversationPanelView {
             &context.chat_data,
             context.conversation_id,
             assistant_message_id,
+            run_persistence.persistence(),
             cx,
         )?;
         Ok(())
@@ -631,12 +677,8 @@ impl ConversationPanelView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedFetch> {
         let user_content = Content::new(request_text);
-        let runner = Self::build_runner(
-            context,
-            Role::User,
-            user_content.send_content().to_string(),
-            cx,
-        )?;
+        let user_input_content_parts = context.composer_snapshot.content_parts.clone();
+        let runner = Self::build_runner(context, Role::User, user_input_content_parts.clone(), cx)?;
         let send_content = runner.request_body();
         let (user_message, assistant_message) =
             cx.read_global_result(|db: &Db, _window, _cx| {
@@ -649,7 +691,8 @@ impl ConversationPanelView {
                         &user_content,
                         send_content,
                         Status::Normal,
-                    ),
+                    )
+                    .with_input_content_parts(&user_input_content_parts),
                     conn,
                 )?;
                 let assistant_message = Message::insert(
@@ -675,31 +718,49 @@ impl ConversationPanelView {
     fn build_runner(
         context: &FetchContext,
         user_message_role: Role,
-        user_message_content: String,
+        user_message_content: Vec<LlmContentPart>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
-        let history_messages = cx.read_global_result(|db: &Db, _window, _cx| {
-            let conn = &mut db.get()?;
-            let conversation = Conversation::find(context.conversation_id, conn)?;
-            Ok::<_, AiChatError>(conversation.messages)
-        })??;
         let provider_name = context.composer_snapshot.provider_name.clone();
         let template = context.composer_snapshot.request_template.clone();
-        let prompts = context.composer_snapshot.prompts.clone();
         let mode = context.composer_snapshot.mode;
-        let request_body = build_request_body(
+        let prompts = context.composer_snapshot.prompts.clone();
+        let (history_messages, continuation) =
+            cx.read_global_result(|db: &Db, _window, _cx| {
+                let conn = &mut db.get()?;
+                let conversation = Conversation::find(context.conversation_id, conn)?;
+                let request_context_key = openai_request_context_key(
+                    &provider_name,
+                    &template,
+                    prompts.clone(),
+                    mode,
+                    &conversation.messages,
+                    (user_message_role, user_message_content.clone()),
+                )?;
+                let continuation = openai_continuation_candidate(
+                    &provider_name,
+                    &template,
+                    mode,
+                    &conversation.messages,
+                    &context.config,
+                    request_context_key.as_ref(),
+                    conn,
+                )?;
+                Ok::<_, AiChatError>((conversation.messages, continuation))
+            })??;
+        let run_request = build_run_request_with_continuation(
             &provider_name,
             &template,
             prompts,
             mode,
             &history_messages,
-            user_message_role,
-            &user_message_content,
+            (user_message_role, user_message_content),
+            continuation,
         )?;
         Ok(Runner {
             config: context.config.clone(),
             provider_name,
-            request_body,
+            run_request,
         })
     }
 
@@ -732,11 +793,13 @@ impl ConversationPanelView {
         assistant_message_id: i32,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let stream = runner.fetch();
+        let mut run_persistence =
+            ProviderRunPersistenceAccumulator::new(runner.run_request(), runner.get_config());
+        let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     Self::set_assistant_message_status(
                         context,
                         assistant_message_id,
@@ -744,7 +807,7 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     Self::append_assistant_reasoning_summary(
                         context,
                         assistant_message_id,
@@ -752,16 +815,51 @@ impl ConversationPanelView {
                         cx,
                     )?;
                 }
-                Ok(FetchUpdate::TextDelta(delta)) => {
+                Ok(ProviderRunEvent::TextDelta(delta)) => {
                     Self::append_assistant_message(context, assistant_message_id, delta, cx)?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(state, usage);
                     Self::replace_assistant_message_content(
                         context,
                         assistant_message_id,
                         content,
                         cx,
                     )?;
+                }
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    Self::record_stream_error(
+                        state,
+                        &context.chat_data,
+                        context.conversation_id,
+                        assistant_message_id,
+                        message,
+                        run_persistence.persistence(),
+                        cx,
+                    )?;
+                    return Ok(());
                 }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
@@ -771,6 +869,7 @@ impl ConversationPanelView {
                         context.conversation_id,
                         assistant_message_id,
                         error.to_string(),
+                        run_persistence.persistence(),
                         cx,
                     )?;
                     return Ok(());
@@ -782,6 +881,7 @@ impl ConversationPanelView {
             &context.chat_data,
             context.conversation_id,
             assistant_message_id,
+            run_persistence.persistence(),
             cx,
         )?;
         Ok(())
@@ -953,6 +1053,7 @@ impl ConversationPanelView {
         conversation_id: i32,
         assistant_message_id: i32,
         error: String,
+        run_persistence: Option<MessageRunPersistence>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         let now = OffsetDateTime::now_utc();
@@ -971,7 +1072,7 @@ impl ConversationPanelView {
         if let Some(message) = message {
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
-                Self::persist_message_snapshot(&message, conn)
+                Self::persist_message_snapshot(&message, run_persistence.as_ref(), conn)
             })??;
         }
         state.update_result(cx, |this, cx| {
@@ -985,6 +1086,7 @@ impl ConversationPanelView {
         chat_data: &Entity<AiChatResult<ChatDataInner>>,
         conversation_id: i32,
         assistant_message_id: i32,
+        run_persistence: Option<MessageRunPersistence>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
         let now = OffsetDateTime::now_utc();
@@ -1003,7 +1105,7 @@ impl ConversationPanelView {
         if let Some(message) = message {
             cx.read_global_result(|db: &Db, _window, _cx| {
                 let conn = &mut db.get()?;
-                Self::persist_message_snapshot(&message, conn)
+                Self::persist_message_snapshot(&message, run_persistence.as_ref(), conn)
             })??;
         }
         state.update_result(cx, |this, cx| {
@@ -1038,16 +1140,24 @@ impl ConversationPanelView {
 
     fn persist_message_snapshot(
         message: &Message,
+        run_persistence: Option<&MessageRunPersistence>,
         conn: &mut diesel::SqliteConnection,
     ) -> AiChatResult<()> {
-        Message::update_content(message.id, &message.content, conn)?;
-        match message.status {
-            Status::Error => {
-                Message::record_error(message.id, message.error.clone().unwrap_or_default(), conn)?
+        conn.immediate_transaction(|conn| {
+            Message::update_content(message.id, &message.content, conn)?;
+            match message.status {
+                Status::Error => Message::record_error(
+                    message.id,
+                    message.error.clone().unwrap_or_default(),
+                    conn,
+                )?,
+                status => Message::update_status(message.id, status, conn)?,
             }
-            status => Message::update_status(message.id, status, conn)?,
-        }
-        Ok(())
+            if let Some(run_persistence) = run_persistence {
+                Message::replace_run_persistence(message.id, run_persistence, conn)?;
+            }
+            Ok(())
+        })
     }
 
     fn replace_chat_message_by_id(
@@ -1094,10 +1204,10 @@ struct ExistingMessageFetchContext {
 struct Runner {
     config: AiChatConfig,
     provider_name: String,
-    request_body: serde_json::Value,
+    run_request: ProviderRunRequest,
 }
 
-impl FetchRunner for Runner {
+impl ProviderRunRunner for Runner {
     fn get_provider(&self) -> &str {
         &self.provider_name
     }
@@ -1106,9 +1216,15 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn request_body(&self) -> &serde_json::Value {
-        &self.request_body
+    fn run_request(&self) -> &ProviderRunRequest {
+        &self.run_request
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ContinuationCandidate {
+    after_index: usize,
+    state: ProviderRunState,
 }
 
 fn build_history_messages(
@@ -1116,35 +1232,171 @@ fn build_history_messages(
     mode: Mode,
     history_messages: &[Message],
     user_message_role: Role,
-    user_message_content: &str,
-) -> Vec<crate::llm::Message> {
-    use crate::llm::Message as FetchMessage;
-
-    let mut request_messages = prompts
-        .into_iter()
-        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt))
-        .collect::<Vec<_>>();
-
-    request_messages.extend(
-        history_messages
-            .iter()
-            .filter(|message| message.status == Status::Normal)
-            .filter(|message| match mode {
-                Mode::Contextual => true,
-                Mode::Single => false,
-                Mode::AssistantOnly => message.role == Role::Assistant,
-            })
-            .map(|message| {
-                FetchMessage::new(message.role, message.content.send_content().to_string())
-            }),
-    );
-    request_messages.push(FetchMessage::new(
+    user_message_content: Vec<LlmContentPart>,
+) -> Vec<crate::llm::LlmInputItem> {
+    let history = history_messages.iter().map(|message| {
+        LlmHistoryMessage::with_input_content_parts(
+            message.role,
+            message.status,
+            &message.content,
+            &message.input_content_parts,
+        )
+    });
+    build_input_items(
+        &prompts,
+        mode,
+        history,
         user_message_role,
-        user_message_content.to_string(),
-    ));
-    request_messages
+        user_message_content,
+    )
 }
 
+fn template_model(template: &serde_json::Value) -> Option<&str> {
+    template.get("model").and_then(serde_json::Value::as_str)
+}
+
+fn compatible_openai_run_state(
+    provider_name: &str,
+    model: &str,
+    current_settings: &serde_json::Value,
+    current_request_context_key: &serde_json::Value,
+    run_state: &MessageRunState,
+) -> bool {
+    if provider_name != "OpenAI"
+        || run_state.provider != provider_name
+        || run_state.run_id.as_ref().is_none_or(|id| id.is_empty())
+        || run_state.model.as_deref() != Some(model)
+        || run_state.settings.as_ref() != Some(current_settings)
+    {
+        return false;
+    }
+
+    provider_run_request_context_key(&run_state.request_body) == *current_request_context_key
+}
+
+fn openai_request_context_key(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    current_user_message: (Role, Vec<LlmContentPart>),
+) -> AiChatResult<Option<serde_json::Value>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let history = build_history_messages(
+        prompts,
+        mode,
+        history_messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    let request = provider_by_name(provider_name)?.build_run_request(template, history)?;
+    Ok(Some(provider_run_request_context_key(
+        &request.request_body,
+    )))
+}
+
+fn openai_continuation_candidate(
+    provider_name: &str,
+    template: &serde_json::Value,
+    mode: Mode,
+    history_messages: &[Message],
+    config: &AiChatConfig,
+    current_request_context_key: Option<&serde_json::Value>,
+    conn: &mut diesel::SqliteConnection,
+) -> AiChatResult<Option<ContinuationCandidate>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let Some(model) = template_model(template) else {
+        return Ok(None);
+    };
+    let Some(current_settings) = persisted_provider_settings_snapshot(provider_name, config) else {
+        return Ok(None);
+    };
+    let Some(current_request_context_key) = current_request_context_key else {
+        return Ok(None);
+    };
+
+    for (index, message) in history_messages.iter().enumerate().rev() {
+        if message.role != Role::Assistant
+            || message.status != Status::Normal
+            || message.provider != provider_name
+        {
+            continue;
+        }
+        let Some(run_state) = Message::run_state(message.id, conn)? else {
+            continue;
+        };
+        if compatible_openai_run_state(
+            provider_name,
+            model,
+            &current_settings,
+            current_request_context_key,
+            &run_state,
+        ) {
+            return Ok(Some(ContinuationCandidate {
+                after_index: index,
+                state: run_state.to_provider_state(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+fn build_run_request(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    user_message_role: Role,
+    user_message_content: &str,
+) -> AiChatResult<ProviderRunRequest> {
+    build_run_request_with_continuation(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        history_messages,
+        (
+            user_message_role,
+            vec![LlmContentPart::text(user_message_content)],
+        ),
+        None,
+    )
+}
+
+fn build_run_request_with_continuation(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: Vec<crate::database::ConversationTemplatePrompt>,
+    mode: Mode,
+    history_messages: &[Message],
+    current_user_message: (Role, Vec<LlmContentPart>),
+    continuation: Option<ContinuationCandidate>,
+) -> AiChatResult<ProviderRunRequest> {
+    let state = continuation
+        .as_ref()
+        .map(|continuation| continuation.state.clone());
+    let history_messages = continuation
+        .as_ref()
+        .map(|continuation| &history_messages[(continuation.after_index + 1)..])
+        .unwrap_or(history_messages);
+    let history = build_history_messages(
+        prompts,
+        mode,
+        history_messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    provider_by_name(provider_name)?.build_run_request_with_state(template, history, state)
+}
+
+#[cfg(test)]
 fn build_request_body(
     provider_name: &str,
     template: &serde_json::Value,
@@ -1154,14 +1406,16 @@ fn build_request_body(
     user_message_role: Role,
     user_message_content: &str,
 ) -> AiChatResult<serde_json::Value> {
-    let history = build_history_messages(
+    Ok(build_run_request(
+        provider_name,
+        template,
         prompts,
         mode,
         history_messages,
         user_message_role,
         user_message_content,
-    );
-    provider_by_name(provider_name)?.request_body(template, history)
+    )?
+    .request_body)
 }
 
 #[cfg(test)]

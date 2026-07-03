@@ -9,17 +9,20 @@ use tauri_utils::config::DeepLinkProtocol;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MacOsBundleLocalization {
     pub(crate) bundle_locale_tag: &'static str,
-    pub(crate) lproj_dir: &'static str,
+    pub(crate) source_lproj_dir: &'static str,
+    pub(crate) bundle_lproj_dir: &'static str,
 }
 
 const MACOS_BUNDLE_LOCALIZATIONS: [MacOsBundleLocalization; 2] = [
     MacOsBundleLocalization {
-        bundle_locale_tag: "en-US",
-        lproj_dir: "en-US.lproj",
+        bundle_locale_tag: "en",
+        source_lproj_dir: "en-US.lproj",
+        bundle_lproj_dir: "en.lproj",
     },
     MacOsBundleLocalization {
-        bundle_locale_tag: "zh-Hans",
-        lproj_dir: "zh-Hans.lproj",
+        bundle_locale_tag: "zh_CN",
+        source_lproj_dir: "zh-Hans.lproj",
+        bundle_lproj_dir: "zh_CN.lproj",
     },
 ];
 
@@ -175,7 +178,7 @@ fn macos_bundle_localization_resources(manifest_dir: &Path) -> Result<HashMap<St
     let mut resources_map = HashMap::new();
 
     for localization in macos_bundle_localizations() {
-        let lproj_dir = resources_root.join(localization.lproj_dir);
+        let lproj_dir = resources_root.join(localization.source_lproj_dir);
         if !lproj_dir.exists() {
             return Err(XtaskError::msg(format!(
                 "missing macOS localization directory {}",
@@ -208,10 +211,21 @@ fn macos_bundle_localization_resources(manifest_dir: &Path) -> Result<HashMap<St
                     path.display()
                 ))
             })?;
+            let destination = Path::new(localization.bundle_lproj_dir).join(
+                relative
+                    .strip_prefix(localization.source_lproj_dir)
+                    .map_err(|err| {
+                        XtaskError::msg(format!(
+                            "failed to strip localization dir {} from {}: {err}",
+                            localization.source_lproj_dir,
+                            relative.display()
+                        ))
+                    })?,
+            );
 
             resources_map.insert(
                 path.to_string_lossy().into_owned(),
-                relative.to_string_lossy().into_owned(),
+                destination.to_string_lossy().into_owned(),
             );
         }
     }
@@ -333,12 +347,12 @@ deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
         assert!(contains_localization_resource(
             resources_map,
             &Path::new("locales").join("macos/en-US.lproj/InfoPlist.strings"),
-            &Path::new("en-US.lproj").join("InfoPlist.strings"),
+            &Path::new("en.lproj").join("InfoPlist.strings"),
         ));
         assert!(contains_localization_resource(
             resources_map,
             &Path::new("locales").join("macos/zh-Hans.lproj/InfoPlist.strings"),
-            &Path::new("zh-Hans.lproj").join("InfoPlist.strings"),
+            &Path::new("zh_CN.lproj").join("InfoPlist.strings"),
         ));
 
         Ok(())

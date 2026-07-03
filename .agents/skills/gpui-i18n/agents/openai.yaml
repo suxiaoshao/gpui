@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI I18n"
+  short_description: "GPUI app localization guidance"
+  default_prompt: "Use $gpui-i18n to update localized GPUI app text and bundle strings."

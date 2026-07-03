@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::{find_window_by_view, with_root_view};
+use window_ext::{NativeWindowHandle, WindowExt as _};
 
 pub(crate) struct TemporaryWindowState {
     delay_close: Option<Task<()>>,
@@ -13,6 +14,13 @@ pub(super) enum FocusRestoreTarget {
     ExistingOrRecordCurrent,
     #[cfg(target_os = "macos")]
     Override(Option<Retained<NSRunningApplication>>),
+}
+
+#[derive(Clone, Copy)]
+struct TemporaryWindowReveal {
+    native_window: NativeWindowHandle,
+    target_bounds: Bounds<Pixels>,
+    target_display_id: Option<DisplayId>,
 }
 
 impl FocusRestoreTarget {
@@ -106,19 +114,15 @@ impl TemporaryWindowState {
         if let Err(err) = window.hide() {
             event!(Level::ERROR, "Failed to hide temporary window: {:?}", err);
         };
-        #[cfg(target_os = "macos")]
-        {
-            restore_frontmost_app(&self.front_app);
-            self.front_app = None;
-        }
+        self.restore_front_app();
     }
 
-    fn show_temporary_window_on_mouse_display(
+    fn prepare_temporary_window_on_mouse_display(
         &mut self,
         window: &mut Window,
         cx: &App,
         restore_target: FocusRestoreTarget,
-    ) -> bool {
+    ) -> Option<TemporaryWindowReveal> {
         self.delay_close = None;
         #[cfg(not(target_os = "macos"))]
         let _ = &restore_target;
@@ -129,18 +133,51 @@ impl TemporaryWindowState {
             TEMPORARY_WINDOW_SIZE,
             cx,
         );
-        if let Err(err) = window.move_and_resize(target_bounds, target_display_id) {
-            event!(Level::ERROR, error = ?err, "Failed to reposition temporary window");
-        }
-        if let Err(err) = window.show_without_activation() {
-            event!(Level::ERROR, error = ?err, "Failed to show temporary window");
-            restore_target.restore_if_override();
-            return false;
-        }
         #[cfg(target_os = "macos")]
         self.prepare_front_app_for_visible_session(restore_target);
-        window.activate_window();
-        true
+        let native_window = match window.native_window_handle() {
+            Ok(handle) => handle,
+            Err(err) => {
+                event!(Level::ERROR, error = ?err, "Failed to get temporary window handle");
+                return None;
+            }
+        };
+
+        Some(TemporaryWindowReveal {
+            native_window,
+            target_bounds,
+            target_display_id,
+        })
+    }
+
+    fn schedule_temporary_window_reveal(&mut self, reveal: TemporaryWindowReveal, cx: &mut App) {
+        cx.defer(move |cx| {
+            let mut restore_front_app = false;
+            if let Err(err) = reveal
+                .native_window
+                .move_and_resize(reveal.target_bounds, reveal.target_display_id)
+            {
+                event!(Level::ERROR, error = ?err, "Failed to reposition temporary window");
+            }
+            if let Err(err) = reveal.native_window.show() {
+                event!(Level::ERROR, error = ?err, "Failed to show temporary window");
+                restore_front_app = true;
+            }
+
+            if restore_front_app {
+                let _ = with_temporary_window_state(cx, |state, _cx| {
+                    state.restore_front_app();
+                });
+            }
+        });
+    }
+
+    fn restore_front_app(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            restore_frontmost_app(&self.front_app);
+            self.front_app = None;
+        }
     }
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
@@ -160,6 +197,8 @@ impl TemporaryWindowState {
                     cx,
                 ))),
                 is_resizable: false,
+                focus: false,
+                show: false,
                 ..Default::default()
             },
             |window, cx| {
@@ -193,17 +232,21 @@ impl TemporaryWindowState {
         let window =
             Self::find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
         let mut restore_target = Some(restore_target);
+        let mut reveal = None;
         match window.update(cx, |root, window, cx| {
             let restore_target = restore_target
                 .take()
                 .expect("restore target should be consumed by temporary window update");
-            if !self.show_temporary_window_on_mouse_display(window, cx, restore_target) {
-                return false;
-            }
+            reveal = self.prepare_temporary_window_on_mouse_display(window, cx, restore_target);
             focus_temporary_window_chat_form(root, window, cx);
             true
         }) {
-            Ok(true) => Some(window),
+            Ok(true) => {
+                if let Some(reveal) = reveal {
+                    self.schedule_temporary_window_reveal(reveal, cx);
+                }
+                Some(window)
+            }
             Ok(false) => None,
             Err(err) => {
                 if let Some(restore_target) = restore_target.take() {
@@ -218,11 +261,12 @@ impl TemporaryWindowState {
     pub(super) fn toggle_temporary_window(&mut self, cx: &mut App) {
         match Self::find_temporary_window(cx) {
             Some(temporary_window) => {
+                let mut reveal = None;
                 if let Err(err) = temporary_window.update(cx, |_this, window, cx| {
                     if window.is_visible().unwrap_or(false) {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
-                        self.show_temporary_window_on_mouse_display(
+                        reveal = self.prepare_temporary_window_on_mouse_display(
                             window,
                             cx,
                             FocusRestoreTarget::ExistingOrRecordCurrent,
@@ -231,6 +275,9 @@ impl TemporaryWindowState {
                 }) {
                     event!(Level::ERROR, "Failed to update temporary window: {:?}", err);
                 };
+                if let Some(reveal) = reveal {
+                    self.schedule_temporary_window_reveal(reveal, cx);
+                }
             }
             None => {
                 let _ = self.ensure_temporary_window_visible(cx);

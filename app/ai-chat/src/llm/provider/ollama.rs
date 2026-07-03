@@ -1,14 +1,19 @@
 use super::{
-    ExtSettingControl, ExtSettingItem, ExtSettingOption, FetchUpdate, Provider, ProviderModel,
-    ProviderModelCapability, ProviderSettingsFieldKind, ProviderSettingsFieldSpec,
-    ProviderSettingsSpec, normalized_or_default,
+    ExtSettingControl, ExtSettingItem, ExtSettingOption, ModelCapabilities,
+    OllamaModelCapabilities, OllamaThinkingCapability, Provider, ProviderCapabilityExtension,
+    ProviderModel, ProviderSettingsFieldKind, ProviderSettingsFieldSpec, ProviderSettingsSpec,
+    normalized_or_default,
 };
 use crate::{
     database::{Content, Role, UrlCitation},
     errors::{AiChatError, AiChatResult},
-    llm::Message,
+    llm::{
+        LlmAttachmentRef, LlmContentPart, LlmInputItem, LlmOutputItem, LlmToolCall, LlmToolResult,
+        ProviderRunEvent, ProviderRunRequest, ProviderRunState, ProviderUsage,
+    },
     state::AiChatConfig,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::App;
 use reqwest::Client;
@@ -38,6 +43,12 @@ const THINK_MEDIUM: &str = "medium";
 const THINK_HIGH: &str = "high";
 const THINKING_OPTIONS: &[&str] = &[THINK_LOW, THINK_MEDIUM, THINK_HIGH];
 const WEB_SEARCH_TOOLTIP_KEY: &str = "tooltip-ollama-web-search-help";
+const USAGE_DURATION_METADATA_KEYS: &[&str] = &[
+    "total_duration",
+    "load_duration",
+    "prompt_eval_duration",
+    "eval_duration",
+];
 
 fn default_base_url() -> String {
     "http://localhost:11434".to_string()
@@ -227,10 +238,14 @@ struct OllamaStoredRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 struct OllamaChatMessage {
+    #[serde(default)]
     role: String,
+    #[serde(default)]
     content: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     thinking: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<OllamaToolCall>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -256,6 +271,20 @@ struct OllamaChatResponse {
     message: OllamaChatMessage,
     #[serde(default)]
     done: bool,
+    #[serde(default)]
+    done_reason: String,
+    #[serde(default)]
+    total_duration: Option<u64>,
+    #[serde(default)]
+    load_duration: Option<u64>,
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    prompt_eval_duration: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -340,64 +369,137 @@ struct WebFetchResponse {
 
 struct RoundResult {
     message: OllamaChatMessage,
+    usage: Option<ProviderUsage>,
+}
+
+impl OllamaChatResponse {
+    fn usage(&self) -> Option<ProviderUsage> {
+        let has_usage_metadata = !self.done_reason.trim().is_empty()
+            || self.total_duration.is_some()
+            || self.load_duration.is_some()
+            || self.prompt_eval_duration.is_some()
+            || self.eval_duration.is_some();
+        if self.prompt_eval_count.is_none() && self.eval_count.is_none() && !has_usage_metadata {
+            return None;
+        }
+
+        let total_tokens = match (self.prompt_eval_count, self.eval_count) {
+            (Some(input), Some(output)) => Some(input + output),
+            _ => None,
+        };
+        let mut usage = ProviderUsage::new(self.prompt_eval_count, self.eval_count, total_tokens);
+        let mut metadata = serde_json::Map::new();
+        if !self.done_reason.trim().is_empty() {
+            metadata.insert(
+                "done_reason".to_string(),
+                serde_json::Value::String(self.done_reason.clone()),
+            );
+        }
+        if let Some(value) = self.total_duration {
+            metadata.insert("total_duration".to_string(), json!(value));
+        }
+        if let Some(value) = self.load_duration {
+            metadata.insert("load_duration".to_string(), json!(value));
+        }
+        if let Some(value) = self.prompt_eval_duration {
+            metadata.insert("prompt_eval_duration".to_string(), json!(value));
+        }
+        if let Some(value) = self.eval_duration {
+            metadata.insert("eval_duration".to_string(), json!(value));
+        }
+        if !metadata.is_empty() {
+            usage.metadata = serde_json::Value::Object(metadata);
+        }
+        Some(usage)
+    }
 }
 
 impl OllamaProvider {
-    fn metadata_capabilities(model: &ProviderModel) -> Vec<String> {
-        model
-            .metadata
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect()
+    fn provider_tool_call(tool_call: &OllamaToolCall) -> LlmToolCall {
+        LlmToolCall {
+            call_id: tool_call.id.clone(),
+            name: tool_call.function.name.clone(),
+            arguments: tool_call.function.arguments.clone(),
+        }
     }
 
-    fn model_family(model: &ProviderModel) -> String {
-        model
-            .metadata
-            .get("family")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    }
-
-    fn model_families(model: &ProviderModel) -> Vec<String> {
-        model
-            .metadata
-            .get("families")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect()
-    }
-
-    fn supports_capability(model: &ProviderModel, capability: &str) -> bool {
-        Self::metadata_capabilities(model)
-            .iter()
-            .any(|candidate| candidate == capability)
+    fn extension(model: &ProviderModel) -> Option<&OllamaModelCapabilities> {
+        match &model.capabilities.extension {
+            ProviderCapabilityExtension::Ollama(extension) => Some(extension),
+            _ => None,
+        }
     }
 
     fn supports_thinking(model: &ProviderModel) -> bool {
-        Self::supports_capability(model, "thinking")
+        Self::extension(model).is_some_and(|extension| extension.thinking.is_some())
     }
 
     fn supports_tools(model: &ProviderModel) -> bool {
-        Self::supports_capability(model, "tools")
+        Self::extension(model).is_some_and(|extension| extension.local_web_tools)
     }
 
     fn uses_thinking_levels(model: &ProviderModel) -> bool {
-        let family = Self::model_family(model);
-        if matches!(family.as_str(), "gptoss" | "gpt-oss") {
-            return true;
-        }
-        Self::model_families(model)
+        Self::extension(model)
+            .is_some_and(|extension| extension.thinking == Some(OllamaThinkingCapability::Levels))
+    }
+
+    fn thinking_capability(
+        capabilities: &[String],
+        family: &str,
+        families: &[String],
+    ) -> Option<OllamaThinkingCapability> {
+        if !capabilities
             .iter()
-            .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"))
+            .any(|capability| capability == "thinking")
+        {
+            return None;
+        }
+        let uses_levels = matches!(family, "gptoss" | "gpt-oss")
+            || families
+                .iter()
+                .any(|family| matches!(family.as_str(), "gptoss" | "gpt-oss"));
+        Some(if uses_levels {
+            OllamaThinkingCapability::Levels
+        } else {
+            OllamaThinkingCapability::Boolean
+        })
+    }
+
+    fn capabilities_from_show(show: &OllamaShowResponse) -> ModelCapabilities {
+        let raw_capabilities = show.capabilities.clone();
+        let family = show.details.family.clone();
+        let families = show.details.families.clone();
+        let local_web_tools = raw_capabilities
+            .iter()
+            .any(|capability| capability == "tools");
+        let mut capabilities = ModelCapabilities::text_streaming();
+        if raw_capabilities
+            .iter()
+            .any(|capability| capability == "vision")
+        {
+            capabilities.image_input = Some(super::ImageInputCapability { max_images: None });
+        }
+        capabilities.reasoning = Self::thinking_capability(&raw_capabilities, &family, &families)
+            .map(|_| super::ReasoningCapability {
+                default_effort: super::ReasoningEffort::Medium,
+                efforts: vec![
+                    super::ReasoningEffort::Low,
+                    super::ReasoningEffort::Medium,
+                    super::ReasoningEffort::High,
+                ],
+                summaries: true,
+            });
+        capabilities.with_ollama_extension(OllamaModelCapabilities {
+            raw_capabilities,
+            family,
+            families,
+            thinking: Self::thinking_capability(
+                &show.capabilities,
+                &show.details.family,
+                &show.details.families,
+            ),
+            local_web_tools,
+        })
     }
 
     fn default_think_for_model(model: &ProviderModel) -> Option<OllamaThinkValue> {
@@ -476,17 +578,93 @@ impl OllamaProvider {
         Ok(())
     }
 
-    fn to_ollama_message(message: Message) -> OllamaChatMessage {
-        OllamaChatMessage {
-            role: match message.role {
-                Role::Developer => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
+    fn to_ollama_message(item: LlmInputItem) -> AiChatResult<OllamaChatMessage> {
+        let (role, content, tool_call_id) = match item {
+            LlmInputItem::System { content } => ("system", content, None),
+            LlmInputItem::Developer { content } => ("system", content, None),
+            LlmInputItem::User { content } => ("user", content, None),
+            LlmInputItem::Assistant { content } => ("assistant", content, None),
+            LlmInputItem::ToolResult(result) => ("tool", result.content, Some(result.call_id)),
+            LlmInputItem::ItemReference { .. } => {
+                return Err(Self::unsupported_input("item reference"));
             }
-            .to_string(),
-            content: message.content,
+        };
+        let allow_images = tool_call_id.is_none();
+        let (content, images) = Self::content_parts(content, allow_images)?;
+        Ok(OllamaChatMessage {
+            role: role.to_string(),
+            content,
+            images,
+            tool_call_id: tool_call_id.unwrap_or_default(),
             ..Default::default()
+        })
+    }
+
+    fn content_parts(
+        content: Vec<LlmContentPart>,
+        allow_images: bool,
+    ) -> AiChatResult<(String, Vec<String>)> {
+        if content.is_empty() {
+            return Err(Self::unsupported_input("empty content"));
         }
+
+        let mut text_parts = Vec::new();
+        let mut images = Vec::new();
+        for part in content {
+            match part {
+                LlmContentPart::Text(text) => text_parts.push(text),
+                LlmContentPart::ImageRef(attachment) if allow_images => {
+                    images.push(Self::ollama_image_data(attachment)?);
+                }
+                LlmContentPart::ImageRef(_) => {
+                    return Err(Self::unsupported_input("image tool result"));
+                }
+                LlmContentPart::FileRef(_) => return Err(Self::unsupported_input("file content")),
+                LlmContentPart::AudioRef(_) => {
+                    return Err(Self::unsupported_input("audio content"));
+                }
+                LlmContentPart::AttachmentRef(_) => {
+                    return Err(Self::unsupported_input("generic attachment content"));
+                }
+            }
+        }
+
+        if text_parts.is_empty() && images.is_empty() {
+            return Err(Self::unsupported_input("empty content"));
+        }
+        Ok((text_parts.join("\n\n"), images))
+    }
+
+    fn ollama_image_data(attachment: LlmAttachmentRef) -> AiChatResult<String> {
+        let id = attachment.id.trim();
+        if let Some((header, data)) = id.split_once(',') {
+            let header = header.to_ascii_lowercase();
+            if header.starts_with("data:image/") && header.split(';').any(|part| part == "base64") {
+                return Self::raw_base64_image_data(data)
+                    .ok_or_else(|| Self::unsupported_input("invalid image data URL"));
+            }
+            return Err(Self::unsupported_input("unsupported image data URL"));
+        }
+
+        Self::raw_base64_image_data(id).ok_or_else(|| {
+            Self::unsupported_input("image input must be raw base64 or an image data URL")
+        })
+    }
+
+    fn raw_base64_image_data(value: &str) -> Option<String> {
+        let value = value
+            .chars()
+            .filter(|ch| !ch.is_ascii_whitespace())
+            .collect::<String>();
+        if value.is_empty() {
+            return None;
+        }
+        STANDARD.decode(value.as_bytes()).ok()?;
+        Some(value)
+    }
+
+    fn unsupported_input(kind: &str) -> AiChatError {
+        AiChatError::StreamError(format!("unsupported Ollama input item: {kind}"))
     }
 
     fn tool_definitions() -> Vec<OllamaToolDefinition> {
@@ -658,6 +836,176 @@ impl OllamaProvider {
         content.citations = citations;
         content
     }
+
+    fn aggregate_usage(
+        accumulated: Option<ProviderUsage>,
+        round: Option<ProviderUsage>,
+    ) -> Option<ProviderUsage> {
+        match (accumulated, round) {
+            (None, None) => None,
+            (Some(usage), None) | (None, Some(usage)) => Some(usage),
+            (Some(accumulated), Some(round)) => {
+                let input_tokens =
+                    Self::sum_optional_u64(accumulated.input_tokens, round.input_tokens);
+                let output_tokens =
+                    Self::sum_optional_u64(accumulated.output_tokens, round.output_tokens);
+                let total_tokens = Self::sum_optional_u64(
+                    accumulated.total_tokens,
+                    round.total_tokens.or_else(|| {
+                        match (round.input_tokens, round.output_tokens) {
+                            (Some(input), Some(output)) => Some(input + output),
+                            _ => None,
+                        }
+                    }),
+                )
+                .or_else(|| match (input_tokens, output_tokens) {
+                    (Some(input), Some(output)) => Some(input + output),
+                    _ => None,
+                });
+                let mut usage = ProviderUsage::new(input_tokens, output_tokens, total_tokens);
+                usage.metadata =
+                    Self::aggregate_usage_metadata(&accumulated.metadata, &round.metadata);
+                Some(usage)
+            }
+        }
+    }
+
+    fn sum_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+        match (left, right) {
+            (Some(left), Some(right)) => Some(left + right),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+    }
+
+    fn aggregate_usage_metadata(
+        accumulated: &serde_json::Value,
+        round: &serde_json::Value,
+    ) -> serde_json::Value {
+        let mut metadata = serde_json::Map::new();
+        if let Some(done_reason) = round
+            .get("done_reason")
+            .or_else(|| accumulated.get("done_reason"))
+            .cloned()
+        {
+            metadata.insert("done_reason".to_string(), done_reason);
+        }
+        for key in USAGE_DURATION_METADATA_KEYS {
+            if let Some(value) = Self::sum_optional_u64(
+                accumulated.get(key).and_then(serde_json::Value::as_u64),
+                round.get(key).and_then(serde_json::Value::as_u64),
+            ) {
+                metadata.insert((*key).to_string(), json!(value));
+            }
+        }
+
+        if metadata.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(metadata)
+        }
+    }
+
+    fn ensure_tool_call_ids(tool_calls: &mut [OllamaToolCall]) {
+        for (index, tool_call) in tool_calls.iter_mut().enumerate() {
+            if tool_call.id.trim().is_empty() {
+                tool_call.id = format!("ollama-tool-{index}");
+            }
+        }
+    }
+
+    fn provider_tool_result(message: &OllamaChatMessage) -> LlmToolResult {
+        LlmToolResult {
+            call_id: message.tool_call_id.clone(),
+            content: vec![LlmContentPart::text(message.content.clone())],
+        }
+    }
+
+    fn output_item_done_events(message: &OllamaChatMessage) -> Vec<ProviderRunEvent> {
+        let mut events = Vec::new();
+        if !message.thinking.trim().is_empty() {
+            events.push(ProviderRunEvent::OutputItemDone(LlmOutputItem::Reasoning {
+                summary: Some(message.thinking.clone()),
+            }));
+        }
+        if !message.content.is_empty() {
+            events.push(ProviderRunEvent::OutputItemDone(LlmOutputItem::Message {
+                role: Self::output_role(&message.role),
+                content: vec![LlmContentPart::text(message.content.clone())],
+            }));
+        }
+        for tool_call in &message.tool_calls {
+            events.push(ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolCall(
+                Self::provider_tool_call(tool_call),
+            )));
+        }
+        events
+    }
+
+    fn output_role(role: &str) -> Role {
+        match role {
+            "system" | "developer" => Role::Developer,
+            "user" => Role::User,
+            "assistant" | "" => Role::Assistant,
+            _ => Role::Assistant,
+        }
+    }
+
+    fn apply_stream_response(
+        event: OllamaChatResponse,
+        round_message: &mut OllamaChatMessage,
+        accumulated_reasoning: &mut String,
+        emitted_thinking_started: &mut bool,
+    ) -> (Vec<ProviderRunEvent>, Option<ProviderUsage>, bool) {
+        let mut events = Vec::new();
+        if !event.message.thinking.is_empty() {
+            if !*emitted_thinking_started {
+                events.push(ProviderRunEvent::ThinkingStarted);
+                *emitted_thinking_started = true;
+            }
+            accumulated_reasoning.push_str(&event.message.thinking);
+            events.push(ProviderRunEvent::ReasoningSummaryDelta(
+                event.message.thinking.clone(),
+            ));
+            round_message.thinking.push_str(&event.message.thinking);
+        }
+        if !event.message.content.is_empty() {
+            events.push(ProviderRunEvent::TextDelta(event.message.content.clone()));
+            round_message.content.push_str(&event.message.content);
+        }
+        if !event.message.images.is_empty() {
+            round_message.images.extend(event.message.images.clone());
+        }
+        if !event.message.tool_calls.is_empty() {
+            round_message.tool_calls = event.message.tool_calls.clone();
+            Self::ensure_tool_call_ids(&mut round_message.tool_calls);
+            for tool_call in &round_message.tool_calls {
+                events.push(ProviderRunEvent::ToolCallRequested(
+                    Self::provider_tool_call(tool_call),
+                ));
+            }
+        }
+        if !event.message.role.is_empty() {
+            round_message.role = event.message.role.clone();
+        }
+        let usage = event.done.then(|| event.usage()).flatten();
+        (events, usage, event.done)
+    }
+
+    fn apply_stream_response_line(
+        line: &str,
+        round_message: &mut OllamaChatMessage,
+        accumulated_reasoning: &mut String,
+        emitted_thinking_started: &mut bool,
+    ) -> AiChatResult<(Vec<ProviderRunEvent>, Option<ProviderUsage>, bool)> {
+        let event = serde_json::from_str::<OllamaChatResponse>(line)?;
+        Ok(Self::apply_stream_response(
+            event,
+            round_message,
+            accumulated_reasoning,
+            emitted_thinking_started,
+        ))
+    }
 }
 
 impl Provider for OllamaProvider {
@@ -675,44 +1023,51 @@ impl Provider for OllamaProvider {
     fn default_template_for_model(&self, model: &ProviderModel) -> AiChatResult<serde_json::Value> {
         Ok(serde_json::to_value(OllamaRequestTemplate {
             model: model.id.clone(),
-            stream: model.capability.stream_flag(),
+            stream: model.capabilities.supports_streaming(),
             think: Self::default_think_for_model(model),
             web_search: false,
         })?)
     }
 
-    fn request_body(
+    fn build_run_request(
         &self,
         template: &serde_json::Value,
-        history_messages: Vec<Message>,
-    ) -> AiChatResult<serde_json::Value> {
+        input_items: Vec<LlmInputItem>,
+    ) -> AiChatResult<ProviderRunRequest> {
         let template = OllamaRequestTemplate::deserialize(template)?;
         let request = OllamaStoredRequest {
             model: template.model,
-            messages: history_messages
+            messages: input_items
+                .clone()
                 .into_iter()
                 .map(Self::to_ollama_message)
-                .collect(),
+                .collect::<AiChatResult<_>>()?,
             stream: template.stream,
             think: template.think,
             web_search: template.web_search,
         };
-        Ok(serde_json::to_value(request)?)
+        Ok(ProviderRunRequest::new(
+            self.name(),
+            serde_json::to_value(request)?,
+            input_items,
+        ))
     }
 
-    fn fetch_by_request_body<'a>(
-        &self,
+    fn run<'a>(
+        &'a self,
         config: AiChatConfig,
         settings: toml::Value,
-        request_body: &'a serde_json::Value,
-    ) -> BoxStream<'a, AiChatResult<FetchUpdate>> {
+        request: &'a ProviderRunRequest,
+    ) -> BoxStream<'a, AiChatResult<ProviderRunEvent>> {
         async_stream::try_stream! {
             let settings: OllamaSettings = settings.try_into()?;
             let settings = settings.normalized();
             let client = Self::client(&config, &settings.base_url)?;
-            let mut request = OllamaStoredRequest::deserialize(request_body)?;
+            let request_body = request.request_body.clone();
+            let mut request = OllamaStoredRequest::deserialize(&request.request_body)?;
             let mut final_citations = Vec::new();
             let mut accumulated_reasoning = String::new();
+            let mut accumulated_usage = None;
 
             loop {
                 let chat_request = OllamaChatRequest {
@@ -729,10 +1084,12 @@ impl Provider for OllamaProvider {
                     .await?;
                 let response = error_for_status_with_ollama_message(response, "chat request").await?;
 
-                let round = if !chat_request.stream {
+                let mut round = if !chat_request.stream {
                     let response = response.json::<OllamaChatResponse>().await?;
+                    let usage = response.usage();
                     RoundResult {
                         message: response.message,
+                        usage,
                     }
                 } else {
                     let mut round_message = OllamaChatMessage {
@@ -743,6 +1100,7 @@ impl Provider for OllamaProvider {
                     let mut stream = response.bytes_stream();
                     let mut emitted_thinking_started = false;
                     let mut done_received = false;
+                    let mut usage = None;
 
                     while !done_received {
                         let Some(chunk) = stream.next().await else {
@@ -759,27 +1117,19 @@ impl Provider for OllamaProvider {
                                 continue;
                             }
 
-                            let event = serde_json::from_str::<OllamaChatResponse>(line)?;
-                            if !event.message.thinking.is_empty() {
-                                if !emitted_thinking_started {
-                                    yield FetchUpdate::ThinkingStarted;
-                                    emitted_thinking_started = true;
-                                }
-                                accumulated_reasoning.push_str(&event.message.thinking);
-                                yield FetchUpdate::ReasoningSummaryDelta(event.message.thinking.clone());
-                                round_message.thinking.push_str(&event.message.thinking);
+                            let (events, event_usage, done) = Self::apply_stream_response_line(
+                                line,
+                                &mut round_message,
+                                &mut accumulated_reasoning,
+                                &mut emitted_thinking_started,
+                            )?;
+                            for event in events {
+                                yield event;
                             }
-                            if !event.message.content.is_empty() {
-                                yield FetchUpdate::TextDelta(event.message.content.clone());
-                                round_message.content.push_str(&event.message.content);
+                            if let Some(event_usage) = event_usage {
+                                usage = Some(event_usage);
                             }
-                            if !event.message.tool_calls.is_empty() {
-                                round_message.tool_calls = event.message.tool_calls.clone();
-                            }
-                            if !event.message.role.is_empty() {
-                                round_message.role = event.message.role;
-                            }
-                            if event.done {
+                            if done {
                                 done_received = true;
                                 break;
                             }
@@ -788,14 +1138,36 @@ impl Provider for OllamaProvider {
 
                     RoundResult {
                         message: round_message,
+                        usage,
                     }
                 };
 
+                Self::ensure_tool_call_ids(&mut round.message.tool_calls);
+                for event in Self::output_item_done_events(&round.message) {
+                    yield event;
+                }
+                if round.usage.is_some() {
+                    accumulated_usage = Self::aggregate_usage(accumulated_usage, round.usage.clone());
+                    if let Some(usage) = accumulated_usage.clone() {
+                        yield ProviderRunEvent::UsageUpdated(usage);
+                    }
+                }
+
                 if request.web_search && !round.message.tool_calls.is_empty() {
                     let mut tool_calls = round.message.tool_calls.clone();
+                    if !request.stream {
+                        for tool_call in &tool_calls {
+                            yield ProviderRunEvent::ToolCallRequested(Self::provider_tool_call(tool_call));
+                        }
+                    }
                     let (tool_messages, citations) =
                         Self::execute_tools(&client, &settings.base_url, &mut tool_calls).await?;
                     final_citations.extend(citations);
+                    for message in &tool_messages {
+                        let tool_result = Self::provider_tool_result(message);
+                        yield ProviderRunEvent::ToolResultReceived(tool_result.clone());
+                        yield ProviderRunEvent::OutputItemDone(LlmOutputItem::ToolResult(tool_result));
+                    }
                     request.messages.push(OllamaChatMessage {
                         role: "assistant".to_string(),
                         content: round.message.content.clone(),
@@ -812,7 +1184,11 @@ impl Provider for OllamaProvider {
                     final_citations,
                     (!accumulated_reasoning.is_empty()).then_some(accumulated_reasoning),
                 );
-                yield FetchUpdate::Complete(content);
+                yield ProviderRunEvent::Completed {
+                    content,
+                    state: Some(ProviderRunState::new(self.name(), None, Vec::new(), request_body.clone())),
+                    usage: accumulated_usage,
+                };
                 break;
             }
         }
@@ -861,7 +1237,7 @@ impl Provider for OllamaProvider {
                     ProviderModel::new(
                         OllamaProvider.name(),
                         model.name,
-                        ProviderModelCapability::Streaming,
+                        Self::capabilities_from_show(&show),
                     )
                     .with_metadata(json!({
                         "capabilities": show.capabilities,

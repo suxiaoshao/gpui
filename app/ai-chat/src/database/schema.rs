@@ -7,6 +7,7 @@ diesel::table! {
         icon -> Text,
         description -> Nullable<Text>,
         prompts -> Json,
+        required_capabilities -> Json,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
     }
@@ -61,6 +62,7 @@ diesel::table! {
         role -> Text,
         content -> Json,
         send_content -> Json,
+        input_content_parts -> Json,
         status -> Text,
         created_time -> TimestamptzSqlite,
         updated_time -> TimestamptzSqlite,
@@ -70,8 +72,58 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    message_run_states (message_id) {
+        message_id -> Integer,
+        provider -> Text,
+        run_id -> Nullable<Text>,
+        output_item_ids -> Json,
+        continuation_metadata -> Json,
+        request_body -> Json,
+        usage -> Nullable<Json>,
+        model -> Nullable<Text>,
+        settings -> Nullable<Json>,
+        created_time -> TimestamptzSqlite,
+        updated_time -> TimestamptzSqlite,
+    }
+}
+
+diesel::table! {
+    message_output_items (id) {
+        id -> Integer,
+        message_id -> Integer,
+        sequence -> Integer,
+        item_kind -> Text,
+        provider_item_id -> Nullable<Text>,
+        status -> Text,
+        payload -> Json,
+        created_time -> TimestamptzSqlite,
+        updated_time -> TimestamptzSqlite,
+    }
+}
+
+diesel::table! {
+    message_attachments (id) {
+        id -> Integer,
+        message_id -> Integer,
+        attachment_id -> Text,
+        kind -> Text,
+        mime_type -> Nullable<Text>,
+        name -> Nullable<Text>,
+        metadata -> Json,
+        external_uri -> Nullable<Text>,
+        path -> Nullable<Text>,
+        sha256 -> Nullable<Text>,
+        created_time -> TimestamptzSqlite,
+        updated_time -> TimestamptzSqlite,
+    }
+}
+
 diesel::joinable!(conversations -> folders (folder_id));
 diesel::joinable!(global_shortcut_bindings -> conversation_templates (template_id));
+diesel::joinable!(message_attachments -> messages (message_id));
+diesel::joinable!(message_output_items -> messages (message_id));
+diesel::joinable!(message_run_states -> messages (message_id));
 diesel::joinable!(messages -> conversations (conversation_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
@@ -79,5 +131,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     conversations,
     folders,
     global_shortcut_bindings,
+    message_attachments,
+    message_output_items,
+    message_run_states,
     messages,
 );

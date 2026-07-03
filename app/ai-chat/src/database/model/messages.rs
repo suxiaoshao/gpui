@@ -5,6 +5,8 @@ use crate::{
 use diesel::prelude::*;
 use time::OffsetDateTime;
 
+use super::{SqlMessageAttachment, SqlMessageOutputItem, SqlMessageRunState};
+
 #[derive(Insertable)]
 #[diesel(table_name = messages)]
 pub struct SqlNewMessage<'a> {
@@ -14,6 +16,7 @@ pub struct SqlNewMessage<'a> {
     pub(in super::super) role: &'a str,
     pub(in super::super) content: &'a serde_json::Value,
     pub(in super::super) send_content: &'a serde_json::Value,
+    pub(in super::super) input_content_parts: &'a serde_json::Value,
     pub(in super::super) status: &'a str,
     pub(in super::super) created_time: OffsetDateTime,
     pub(in super::super) updated_time: OffsetDateTime,
@@ -47,6 +50,7 @@ pub struct SqlMessage {
     pub role: String,
     pub content: serde_json::Value,
     pub send_content: serde_json::Value,
+    pub input_content_parts: serde_json::Value,
     pub status: String,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
@@ -115,12 +119,26 @@ impl SqlMessage {
         conversation_id: i32,
         conn: &mut SqliteConnection,
     ) -> AiChatResult<()> {
+        let ids = messages::table
+            .filter(messages::conversation_id.eq(conversation_id))
+            .select(messages::id)
+            .load::<i32>(conn)?;
+        for id in ids {
+            delete_run_persistence(id, conn)?;
+        }
         diesel::delete(messages::table.filter(messages::conversation_id.eq(conversation_id)))
             .execute(conn)?;
         Ok(())
     }
     pub fn delete_by_path(path: &str, conn: &mut SqliteConnection) -> AiChatResult<()> {
         let path = format!("{path}/%");
+        let ids = messages::table
+            .filter(messages::conversation_path.like(&path))
+            .select(messages::id)
+            .load::<i32>(conn)?;
+        for id in ids {
+            delete_run_persistence(id, conn)?;
+        }
         diesel::delete(messages::table.filter(messages::conversation_path.like(path)))
             .execute(conn)?;
         Ok(())
@@ -169,6 +187,7 @@ impl SqlMessage {
         Ok(())
     }
     pub fn delete(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
+        delete_run_persistence(id, conn)?;
         diesel::delete(messages::table.filter(messages::id.eq(id))).execute(conn)?;
         Ok(())
     }
@@ -213,4 +232,11 @@ impl SqlMessage {
     pub fn all(conn: &mut SqliteConnection) -> AiChatResult<Vec<Self>> {
         messages::table.load::<Self>(conn).map_err(|e| e.into())
     }
+}
+
+fn delete_run_persistence(id: i32, conn: &mut SqliteConnection) -> AiChatResult<()> {
+    SqlMessageAttachment::delete_by_message_id(id, conn)?;
+    SqlMessageOutputItem::delete_by_message_id(id, conn)?;
+    SqlMessageRunState::delete_by_message_id(id, conn)?;
+    Ok(())
 }

@@ -8,7 +8,7 @@ use crate::{
         delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
         message::MessageViewExt,
     },
-    database::{Content, Mode, Role, Status},
+    database::{Content, MessageRunPersistence, MessageRunState, Mode, Role, Status},
     errors::{AiChatError, AiChatResult},
     features::hotkey::GlobalHotkeyState,
     features::{
@@ -21,7 +21,11 @@ use crate::{
         temporary::TemporaryView,
     },
     foundation::i18n::I18n,
-    llm::{FetchRunner, FetchUpdate, provider_by_name},
+    llm::{
+        LlmContentPart, LlmHistoryMessage, ProviderRunEvent, ProviderRunPersistenceAccumulator,
+        ProviderRunRequest, ProviderRunRunner, ProviderRunState, build_input_items,
+        persisted_provider_settings_snapshot, provider_by_name, provider_run_request_context_key,
+    },
     platform::gpui_ext::WeakEntityResultExt,
     state::{AddConversationMessage, AiChatConfig, ChatData},
 };
@@ -49,15 +53,17 @@ pub fn init(cx: &mut App) {
 
 pub(crate) type TemplateDetailView = ConversationDetailView<TemporaryDetailState>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TemporaryMessage {
     pub id: usize,
     pub provider: String,
     pub role: Role,
     pub content: Content,
     pub send_content: Rc<serde_json::Value>,
+    pub input_content_parts: Vec<LlmContentPart>,
     pub status: Status,
     pub error: Option<String>,
+    pub run_persistence: MessageRunPersistence,
     pub created_time: OffsetDateTime,
     pub updated_time: OffsetDateTime,
     pub start_time: OffsetDateTime,
@@ -221,6 +227,10 @@ impl MessagePreviewExt for TemporaryMessage {
         self.end_time
     }
 
+    fn input_content_parts(&self) -> &[LlmContentPart] {
+        &self.input_content_parts
+    }
+
     fn on_update_content(
         &self,
         content: Content,
@@ -282,6 +292,7 @@ impl TemporaryMessage {
         self.content = Content::default();
         self.status = Status::Loading;
         self.error = None;
+        self.run_persistence = MessageRunPersistence::default();
         self.updated_time = now;
         self.start_time = now;
         self.end_time = now;
@@ -329,8 +340,10 @@ struct NewTemporaryMessage {
     role: Role,
     content: Content,
     send_content: Rc<serde_json::Value>,
+    input_content_parts: Vec<LlmContentPart>,
     status: Status,
     error: Option<String>,
+    run_persistence: MessageRunPersistence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -599,8 +612,10 @@ fn temporary_messages_to_add_conversation_messages(
             role: message.role,
             content: message.content,
             send_content: (*message.send_content).clone(),
+            input_content_parts: message.input_content_parts,
             status: message.status,
             error: message.error,
+            run_persistence: message.run_persistence.clone(),
         })
         .collect()
 }
@@ -688,8 +703,10 @@ impl TemplateDetailView {
             role: input.role,
             content: input.content,
             send_content: input.send_content,
+            input_content_parts: input.input_content_parts,
             status: input.status,
             error: input.error,
+            run_persistence: input.run_persistence,
             created_time: input.now,
             updated_time: input.now,
             start_time: input.now,
@@ -721,15 +738,32 @@ impl TemplateDetailView {
             last.update_status(Status::Thinking);
         }
     }
-    fn on_error(&mut self, message_id: usize, error: String, cx: &mut Context<Self>) {
+    fn on_error(
+        &mut self,
+        message_id: usize,
+        error: String,
+        run_persistence: Option<MessageRunPersistence>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.record_error(error);
+            if let Some(run_persistence) = run_persistence {
+                last.run_persistence = run_persistence;
+            }
         }
         self.clear_running_task_for_message(Some(message_id), cx);
     }
-    fn on_success(&mut self, message_id: usize, cx: &mut Context<Self>) {
+    fn on_success(
+        &mut self,
+        message_id: usize,
+        run_persistence: Option<MessageRunPersistence>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(last) = self.detail.messages.iter_mut().find(|m| m.id == message_id) {
             last.update_status(Status::Normal);
+            if let Some(run_persistence) = run_persistence {
+                last.run_persistence = run_persistence;
+            }
         }
         self.clear_running_task_for_message(Some(message_id), cx);
     }
@@ -827,15 +861,16 @@ impl TemplateDetailView {
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<PreparedTemporaryFetch> {
         let content = Content::new(context.composer_snapshot.text.clone());
+        let user_input_content_parts = context.composer_snapshot.content_parts.clone();
         let runner = Self::build_runner(
             state.clone(),
             context.config.clone(),
             context.composer_snapshot.clone(),
             Role::User,
-            content.send_content().to_string(),
+            user_input_content_parts.clone(),
             cx,
         )?;
-        let send_content = runner.request_body.clone();
+        let send_content = Rc::new(runner.request_body().clone());
         let assistant_message_id = state.update_in_result(cx, |this, window, cx| {
             this.chat_form
                 .update(cx, |chat_form, cx| chat_form.clear_input(window, cx));
@@ -846,8 +881,10 @@ impl TemplateDetailView {
                     role: Role::User,
                     content,
                     send_content: send_content.clone(),
+                    input_content_parts: user_input_content_parts.clone(),
                     status: Status::Normal,
                     error: None,
+                    run_persistence: MessageRunPersistence::default(),
                 })
                 .id;
             let assistant_message_id = this
@@ -857,8 +894,10 @@ impl TemplateDetailView {
                     role: Role::Assistant,
                     content: Content::default(),
                     send_content: send_content.clone(),
+                    input_content_parts: Vec::new(),
                     status: Status::Loading,
                     error: None,
+                    run_persistence: MessageRunPersistence::default(),
                 })
                 .id;
             this.bind_running_task_messages(Some(user_message_id), Some(assistant_message_id));
@@ -875,23 +914,23 @@ impl TemplateDetailView {
         config: AiChatConfig,
         composer_snapshot: ChatFormSnapshot,
         user_message_role: Role,
-        user_message_content: String,
+        user_message_content: Vec<LlmContentPart>,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<Runner> {
         state.read_with_result(cx, |this, _cx| {
-            let request_body = build_request_body(
+            let run_request = build_run_request(
                 &composer_snapshot.provider_name,
                 &composer_snapshot.request_template,
                 &composer_snapshot.prompts,
                 composer_snapshot.mode,
                 &this.detail.messages,
-                user_message_role,
-                &user_message_content,
+                &config,
+                (user_message_role, user_message_content),
             )?;
             Ok(Runner {
                 config,
                 provider_name: composer_snapshot.provider_name.clone(),
-                request_body: Rc::new(request_body),
+                run_request: Rc::new(run_request),
             })
         })?
     }
@@ -905,41 +944,82 @@ impl TemplateDetailView {
         assistant_message_id: usize,
         cx: &mut AsyncWindowContext,
     ) -> AiChatResult<()> {
-        let stream = runner.fetch();
+        let mut run_persistence =
+            ProviderRunPersistenceAccumulator::new(runner.run_request(), runner.get_config());
+        let stream = runner.run();
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_thinking(assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_reasoning_summary(&delta, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::TextDelta(message)) => {
+                Ok(ProviderRunEvent::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state: run_state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(run_state, usage);
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(
+                            assistant_message_id,
+                            message,
+                            run_persistence.persistence(),
+                            cx,
+                        );
+                    })?;
+                    return Ok(());
+                }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, error.to_string(), cx);
+                        this.on_error(
+                            assistant_message_id,
+                            error.to_string(),
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
             }
         }
         state.update_result(cx, |this, cx| {
-            this.on_success(assistant_message_id, cx);
+            this.on_success(assistant_message_id, run_persistence.persistence(), cx);
         })?;
         Ok(())
     }
@@ -959,41 +1039,83 @@ impl TemplateDetailView {
                 provider.name().to_string(),
             ))?
             .clone();
-        let stream = provider.fetch_by_request_body(config, settings, request_body.as_ref());
+        let request =
+            ProviderRunRequest::from_request_body(provider.name(), request_body.as_ref().clone());
+        let mut run_persistence = ProviderRunPersistenceAccumulator::new(&request, &config);
+        let stream = provider.run(config, settings, &request);
         pin_mut!(stream);
         while let Some(message) = stream.next().await {
             match message {
-                Ok(FetchUpdate::ThinkingStarted) => {
+                Ok(ProviderRunEvent::ThinkingStarted) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_thinking(assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::ReasoningSummaryDelta(delta)) => {
+                Ok(ProviderRunEvent::ReasoningSummaryDelta(delta)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_reasoning_summary(&delta, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::TextDelta(message)) => {
+                Ok(ProviderRunEvent::TextDelta(message)) => {
                     state.update_result(cx, |this, _cx| {
                         this.on_message(&message, assistant_message_id);
                     })?;
                 }
-                Ok(FetchUpdate::Complete(content)) => {
+                Ok(ProviderRunEvent::Completed {
+                    content,
+                    state: run_state,
+                    usage,
+                }) => {
+                    run_persistence.record_completed(run_state, usage);
                     state.update_result(cx, |this, _cx| {
                         this.on_complete_content(content, assistant_message_id);
                     })?;
                 }
+                Ok(ProviderRunEvent::OutputItemAdded(item)) => {
+                    run_persistence.record_output_item_added(item);
+                }
+                Ok(ProviderRunEvent::OutputItemDone(item)) => {
+                    run_persistence.record_output_item_done(item);
+                }
+                Ok(ProviderRunEvent::ToolCallRequested(tool_call)) => {
+                    run_persistence.record_tool_call_requested(tool_call);
+                }
+                Ok(ProviderRunEvent::ToolResultReceived(tool_result)) => {
+                    run_persistence.record_tool_result_received(tool_result);
+                }
+                Ok(ProviderRunEvent::McpApprovalRequested(request)) => {
+                    run_persistence.record_mcp_approval_requested(request);
+                }
+                Ok(ProviderRunEvent::UsageUpdated(usage)) => {
+                    run_persistence.record_usage(usage);
+                }
+                Ok(ProviderRunEvent::Failed { message }) => {
+                    state.update_result(cx, |this, cx| {
+                        this.on_error(
+                            assistant_message_id,
+                            message,
+                            run_persistence.persistence(),
+                            cx,
+                        );
+                    })?;
+                    return Ok(());
+                }
                 Err(error) => {
                     event!(Level::ERROR, "Connection Error: {}", error);
                     state.update_result(cx, |this, cx| {
-                        this.on_error(assistant_message_id, error.to_string(), cx);
+                        this.on_error(
+                            assistant_message_id,
+                            error.to_string(),
+                            run_persistence.persistence(),
+                            cx,
+                        );
                     })?;
                     return Ok(());
                 }
             }
         }
         state.update_result(cx, |this, cx| {
-            this.on_success(assistant_message_id, cx);
+            this.on_success(assistant_message_id, run_persistence.persistence(), cx);
         })?;
         Ok(())
     }
@@ -1013,10 +1135,10 @@ struct TemporaryFetchContext {
 struct Runner {
     config: AiChatConfig,
     provider_name: String,
-    request_body: Rc<serde_json::Value>,
+    run_request: Rc<ProviderRunRequest>,
 }
 
-impl FetchRunner for Runner {
+impl ProviderRunRunner for Runner {
     fn get_provider(&self) -> &str {
         &self.provider_name
     }
@@ -1025,9 +1147,15 @@ impl FetchRunner for Runner {
         &self.config
     }
 
-    fn request_body(&self) -> &serde_json::Value {
-        self.request_body.as_ref()
+    fn run_request(&self) -> &ProviderRunRequest {
+        self.run_request.as_ref()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ContinuationCandidate {
+    after_index: usize,
+    state: ProviderRunState,
 }
 
 fn build_history_messages(
@@ -1035,52 +1163,194 @@ fn build_history_messages(
     mode: Mode,
     messages: &[TemporaryMessage],
     user_message_role: Role,
-    user_message_content: &str,
-) -> Vec<crate::llm::Message> {
-    use crate::llm::Message as FetchMessage;
-
-    let mut request_messages = prompts
-        .iter()
-        .map(|prompt| FetchMessage::new(prompt.role, prompt.prompt.clone()))
-        .collect::<Vec<_>>();
-
-    request_messages.extend(
-        messages
-            .iter()
-            .filter(|message| message.status == Status::Normal)
-            .filter(|message| match mode {
-                Mode::Contextual => true,
-                Mode::Single => false,
-                Mode::AssistantOnly => message.role == Role::Assistant,
-            })
-            .map(|message| {
-                FetchMessage::new(message.role, message.content.send_content().to_string())
-            }),
-    );
-    request_messages.push(FetchMessage::new(
+    user_message_content: Vec<LlmContentPart>,
+) -> Vec<crate::llm::LlmInputItem> {
+    let history = messages.iter().map(|message| {
+        LlmHistoryMessage::with_input_content_parts(
+            message.role,
+            message.status,
+            &message.content,
+            &message.input_content_parts,
+        )
+    });
+    build_input_items(
+        prompts,
+        mode,
+        history,
         user_message_role,
-        user_message_content.to_string(),
-    ));
-    request_messages
+        user_message_content,
+    )
 }
 
+fn template_model(template: &serde_json::Value) -> Option<&str> {
+    template.get("model").and_then(serde_json::Value::as_str)
+}
+
+fn compatible_openai_run_state(
+    provider_name: &str,
+    model: &str,
+    current_settings: &serde_json::Value,
+    current_request_context_key: &serde_json::Value,
+    run_state: &MessageRunState,
+) -> bool {
+    if provider_name != "OpenAI"
+        || run_state.provider != provider_name
+        || run_state.run_id.as_ref().is_none_or(|id| id.is_empty())
+        || run_state.model.as_deref() != Some(model)
+        || run_state.settings.as_ref() != Some(current_settings)
+    {
+        return false;
+    }
+
+    provider_run_request_context_key(&run_state.request_body) == *current_request_context_key
+}
+
+fn openai_request_context_key(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    current_user_message: (Role, Vec<LlmContentPart>),
+) -> AiChatResult<Option<serde_json::Value>> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return Ok(None);
+    }
+    let history = build_history_messages(
+        prompts,
+        mode,
+        messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    let request = provider_by_name(provider_name)?.build_run_request(template, history)?;
+    Ok(Some(provider_run_request_context_key(
+        &request.request_body,
+    )))
+}
+
+fn openai_continuation_candidate(
+    provider_name: &str,
+    template: &serde_json::Value,
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    config: &AiChatConfig,
+    current_request_context_key: Option<&serde_json::Value>,
+) -> Option<ContinuationCandidate> {
+    if provider_name != "OpenAI" || mode != Mode::Contextual {
+        return None;
+    }
+    let model = template_model(template)?;
+    let current_settings = persisted_provider_settings_snapshot(provider_name, config)?;
+    let current_request_context_key = current_request_context_key?;
+    for (index, message) in messages.iter().enumerate().rev() {
+        if message.role != Role::Assistant
+            || message.status != Status::Normal
+            || message.provider != provider_name
+        {
+            continue;
+        }
+        let Some(run_state) = message.run_persistence.run_state.as_ref() else {
+            continue;
+        };
+        if compatible_openai_run_state(
+            provider_name,
+            model,
+            &current_settings,
+            current_request_context_key,
+            run_state,
+        ) {
+            return Some(ContinuationCandidate {
+                after_index: index,
+                state: run_state.to_provider_state(),
+            });
+        }
+    }
+    None
+}
+
+fn build_run_request(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    config: &AiChatConfig,
+    current_user_message: (Role, Vec<LlmContentPart>),
+) -> AiChatResult<ProviderRunRequest> {
+    let request_context_key = openai_request_context_key(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        messages,
+        current_user_message.clone(),
+    )?;
+    let continuation = openai_continuation_candidate(
+        provider_name,
+        template,
+        mode,
+        messages,
+        config,
+        request_context_key.as_ref(),
+    );
+    build_run_request_with_continuation(
+        provider_name,
+        template,
+        prompts,
+        mode,
+        messages,
+        current_user_message,
+        continuation,
+    )
+}
+
+fn build_run_request_with_continuation(
+    provider_name: &str,
+    template: &serde_json::Value,
+    prompts: &[crate::database::ConversationTemplatePrompt],
+    mode: Mode,
+    messages: &[TemporaryMessage],
+    current_user_message: (Role, Vec<LlmContentPart>),
+    continuation: Option<ContinuationCandidate>,
+) -> AiChatResult<ProviderRunRequest> {
+    let state = continuation
+        .as_ref()
+        .map(|continuation| continuation.state.clone());
+    let messages = continuation
+        .as_ref()
+        .map(|continuation| &messages[(continuation.after_index + 1)..])
+        .unwrap_or(messages);
+    let history = build_history_messages(
+        prompts,
+        mode,
+        messages,
+        current_user_message.0,
+        current_user_message.1,
+    );
+    provider_by_name(provider_name)?.build_run_request_with_state(template, history, state)
+}
+
+#[cfg(test)]
 fn build_request_body(
     provider_name: &str,
     template: &serde_json::Value,
     prompts: &[crate::database::ConversationTemplatePrompt],
     mode: Mode,
     messages: &[TemporaryMessage],
-    user_message_role: Role,
-    user_message_content: &str,
+    config: &AiChatConfig,
+    current_user_message: (Role, Vec<LlmContentPart>),
 ) -> AiChatResult<serde_json::Value> {
-    let history = build_history_messages(
+    Ok(build_run_request(
+        provider_name,
+        template,
         prompts,
         mode,
         messages,
-        user_message_role,
-        user_message_content,
-    );
-    provider_by_name(provider_name)?.request_body(template, history)
+        config,
+        current_user_message,
+    )?
+    .request_body)
 }
 
 #[cfg(test)]
