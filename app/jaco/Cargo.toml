@@ -1,0 +1,121 @@
+[package]
+name = "jaco"
+version = "0.1.0"
+description = "A GPUI desktop agent workspace."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
+edition = "2024"
+build = "build.rs"
+
+[package.metadata.bundle]
+name = "Jaco"
+identifier = "top.sushao.jaco"
+publisher = "CN=Sushao"
+short_description = "A GPUI desktop agent workspace."
+long_description = """
+Jaco is a GPUI-based desktop agent workspace focused on project conversations,
+tools, MCP, skills, prompts, shortcuts, and local model/provider settings.
+"""
+category = "DeveloperTool"
+
+[features]
+default = ["tree-sitter-languages-basic"]
+tree-sitter-languages-basic = [
+  "gpui-component/tree-sitter-bash",
+  "gpui-component/tree-sitter-c",
+  "gpui-component/tree-sitter-css",
+  "gpui-component/tree-sitter-diff",
+  "gpui-component/tree-sitter-go",
+  "gpui-component/tree-sitter-graphql",
+  "gpui-component/tree-sitter-html",
+  "gpui-component/tree-sitter-java",
+  "gpui-component/tree-sitter-javascript",
+  "gpui-component/tree-sitter-markdown",
+  "gpui-component/tree-sitter-python",
+  "gpui-component/tree-sitter-rust",
+  "gpui-component/tree-sitter-sql",
+  "gpui-component/tree-sitter-svelte",
+  "gpui-component/tree-sitter-toml",
+  "gpui-component/tree-sitter-tsx",
+  "gpui-component/tree-sitter-typescript",
+  "gpui-component/tree-sitter-yaml",
+]
+tree-sitter-languages-full = ["gpui-component/tree-sitter-languages"]
+
+[dependencies]
+jaco-agent.workspace = true
+jaco-core.workspace = true
+rmcp.workspace = true
+
+# ui
+app-assets.workspace = true
+app-theme = { workspace = true, default-features = false, features = [
+  "system-accent",
+  "theme-picker",
+] }
+gpui.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-store.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+image = { version = "0.25.10", default-features = false, features = [
+  "gif",
+  "jpeg",
+  "png",
+  "webp",
+] }
+platform-ext.workspace = true
+rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"] }
+window-ext.workspace = true
+
+# i18n
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+sys-locale = "0.3.2"
+pinyin = "0.11.0"
+
+# err
+thiserror = "2.0.18"
+
+# database
+jaco-db.workspace = true
+dirs-next = "2.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+time = { version = "0.3.49", features = ["formatting", "local-offset", "serde"] }
+
+# log
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+
+# async runtime
+gpui-tokio.workspace = true
+smol = "2.0.2"
+tokio = { version = "1.52.3", features = ["io-util", "net", "sync", "time"] }
+
+# config
+http = "1.4.2"
+toml = "1.1.2"
+url = "2.5.8"
+
+# hotkey
+get-selected-text = "0.1.6"
+global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
+
+# text
+unicode-segmentation = "1.13.3"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3.27.0"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+xcap = "0.9.6"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["ico", "png"] }
+winresource = "0.1"

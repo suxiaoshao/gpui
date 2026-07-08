@@ -301,26 +301,26 @@ mod tests {
         fs::create_dir_all(i18n_dir.join("zh-Hans.lproj"))?;
         fs::write(
             i18n_dir.join("en-US.lproj/InfoPlist.strings"),
-            "\"CFBundleName\" = \"AI Chat\";\n",
+            "\"CFBundleName\" = \"Jaco\";\n",
         )?;
         fs::write(
             i18n_dir.join("zh-Hans.lproj/InfoPlist.strings"),
-            "\"CFBundleName\" = \"AI 对话\";\n",
+            "\"CFBundleName\" = \"Jaco\";\n",
         )?;
 
         let manifest_path = temp_dir.path.join("Cargo.toml");
         fs::write(
             &manifest_path,
             r#"[package]
-name = "ai-chat"
+name = "jaco"
 version = "0.1.0"
 license-file = "LICENSE"
 
 [package.metadata.bundle]
-name = "AI Chat"
-identifier = "top.sushao.ai-chat"
+name = "Jaco"
+identifier = "top.sushao.jaco"
 category = "DeveloperTool"
-deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
+deep_link_protocols = [{ schemes = ["jaco-screenclip"] }]
 "#,
         )?;
 
@@ -338,7 +338,7 @@ deep_link_protocols = [{ schemes = ["ai-chat-screenclip"] }]
                 .as_ref()
                 .expect("deep link protocols should be present")[0]
                 .schemes,
-            vec!["ai-chat-screenclip".to_string()]
+            vec!["jaco-screenclip".to_string()]
         );
         let resources_map = bundle_settings
             .resources_map

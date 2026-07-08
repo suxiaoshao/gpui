@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn first_app_bundle_prefers_macos_directory() -> Result<()> {
         let temp_dir = TestDir::new()?;
-        let macos_app = temp_dir.path.join("macos/AI Chat.app");
+        let macos_app = temp_dir.path.join("macos/Jaco.app");
         let osx_app = temp_dir.path.join("osx/Legacy.app");
         fs::create_dir_all(&macos_app)?;
         fs::create_dir_all(&osx_app)?;
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn first_app_bundle_falls_back_to_osx_directory() -> Result<()> {
         let temp_dir = TestDir::new()?;
-        let osx_app = temp_dir.path.join("osx/AI Chat.app");
+        let osx_app = temp_dir.path.join("osx/Jaco.app");
         fs::create_dir_all(&osx_app)?;
 
         let app_path = first_app_bundle(&temp_dir.path)?;
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn find_app_bundle_uses_product_name() -> Result<()> {
         let temp_dir = TestDir::new()?;
-        fs::create_dir_all(temp_dir.path.join("macos/AI Chat.app"))?;
+        fs::create_dir_all(temp_dir.path.join("macos/Jaco.app"))?;
         let feiwen_app = temp_dir.path.join("macos/Feiwen.app");
         fs::create_dir_all(&feiwen_app)?;
 

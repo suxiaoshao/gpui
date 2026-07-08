@@ -149,9 +149,9 @@ submit 拆成两个层次：
   submit handler 读取。
 - 新增依赖：无。
 
-## ai-chat2 使用约束
+## jaco 使用约束
 
-`app/ai-chat2` 不再把 `form.meta().is_valid` 或 `form.meta().can_submit` 当保存前判断。Settings
+`app/jaco` 不再把 `form.meta().is_valid` 或 `form.meta().can_submit` 当保存前判断。Settings
 保存流程应调用 generated form `prepare_submit(...)` 做纯 validation/normalization，或调用
 `submit_sync(...)` / `submit_async(...)` 把业务保存 handler 交给 form runtime。UI 禁用按钮只使用
 `form.can_attempt_submit()`、从 submit task 派生的 `form.is_submitting()` 与 app 自己的 runtime blocker

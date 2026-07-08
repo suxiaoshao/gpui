@@ -6,14 +6,13 @@
 
 - 本仓库是基于 `GPUI` 的 Rust workspace，包含多个独立桌面应用和共享 crate。
 - workspace 成员：
-  - `app/ai-chat`
-  - `app/ai-chat2`
+  - `app/jaco`
   - `app/feiwen`
   - `app/http-client`
   - `app/novel-download`
-  - `crates/ai-chat-agent`
-  - `crates/ai-chat-core`
-  - `crates/ai-chat-db`
+  - `crates/jaco-agent`
+  - `crates/jaco-core`
+  - `crates/jaco-db`
   - `crates/app-assets`
   - `crates/app-assets-macros`
   - `crates/app-theme`
@@ -69,7 +68,7 @@
 - PR 默认使用 `.github/pull_request_template.md`。
 - 编写 PR 内容时，必须基于“当前分支相对远程最新 `main`”的整体差异进行总结，不要只根据最后一次提交或本次会话中的改动来写。
 - 用户要求“提交 PR / 开 PR / 提 PR”时，默认创建可直接 review 的普通 PR；只有用户明确说“draft PR / 草稿 PR”时才创建 draft。
-- issue / PR 标题和描述要明确对应应用或 crate，例如 `ai-chat`、`feiwen`、`http-client`、`novel-download`、`window-ext`、`xtask`。
+- issue / PR 标题和描述要明确对应应用或 crate，例如 `jaco`、`feiwen`、`http-client`、`novel-download`、`window-ext`、`xtask`。
 
 ## 5. 验证与 CI
 
@@ -87,6 +86,6 @@
 
 - 应用入口通常位于 `app/{name}/src/main.rs`。
 - 公共能力优先放在 `crates/window-ext` 等共享 crate，避免在多个 app 中复制实现。
-- `ai-chat` 使用 Diesel + SQLite；涉及数据层变更时要同步检查 migration、schema 和 service 映射。
-- `ai-chat-agent` 的 provider 运行时优先以 `rig-core` 和当前 adapter 代码为准；不要为 OpenAI/Ollama 等 provider 原生 API 维护 repo-local skill，除非当前实现明确绕过 Rig 且需要专门的本地流程。
-- `ai-chat` 运行时资源在 `app/ai-chat/assets/`，打包资源在 `app/ai-chat/build-assets/`；不要混用。
+- `jaco` 使用 Diesel + SQLite；涉及数据层变更时要同步检查 migration、schema 和 service 映射。
+- `jaco-agent` 的 provider 运行时优先以 `rig-core` 和当前 adapter 代码为准；不要为 OpenAI/Ollama 等 provider 原生 API 维护 repo-local skill，除非当前实现明确绕过 Rig 且需要专门的本地流程。
+- `jaco` 运行时资源在 `app/jaco/assets/`，打包资源在 `app/jaco/build-assets/`；不要混用。

@@ -23,7 +23,7 @@ pipeline，并通过 `SubmitError::Invalid(FormValidationReport)` 返回。
 | `crates/gpui-form/src/macro_support.rs` | `GeneratedFormStore` 保留为 macro/internal trait，必要时改名为 `GeneratedFormStoreInternals`，不作为用户-facing API 讲解。 |
 | `crates/gpui-form-macros/src/expand.rs` | generated store 新增 `submit_runtime` 字段，生成 shared `prepare_submit` 管线和 sync/async submit glue。 |
 | `crates/gpui-form/tests/submit.rs` | 新增 submit handler focused tests：sync success、async task lifecycle、busy 时拒绝 reentrant submit。 |
-| `app/ai-chat2/src/features/settings/*` | 后续迁移 Provider/MCP/Prompt/Shortcut 的保存流程：从 dialog-local `save_task` 迁到 form store 的 async submit runtime。 |
+| `app/jaco/src/features/settings/*` | 后续迁移 Provider/MCP/Prompt/Shortcut 的保存流程：从 dialog-local `save_task` 迁到 form store 的 async submit runtime。 |
 
 ## Trait 清理结论
 
@@ -147,12 +147,12 @@ dialog state 或弹 notification。
 - i18n：核心 crate 不新增用户可见文案；app 如果把 handler error 映射为 `FieldError`，继续使用现有
   Fluent key。
 - 新增依赖库：无。使用现有 `gpui::Task`、`Window::spawn` / `Context::spawn`。
-- 数据库变更：无。submit handler 只改变提交 API 和 task ownership，不改变 ai-chat2 DB schema。
+- 数据库变更：无。submit handler 只改变提交 API 和 task ownership，不改变 jaco DB schema。
 - 全局数据管理：不新增 `Global` 保存活跃表单。form store 仍是 dialog/page 局部 `Entity<FormStore>`。
 - 数据获取方式：form core 不读取 DB/config/keychain/network；handler 由 app 传入，app 自己读取需要的
   repository/config/keychain/runtime state。
 
-## ai-chat2 迁移计划
+## jaco 迁移计划
 
 | 表单 | 当前状态 | 目标 submit handler |
 | --- | --- | --- |
@@ -179,4 +179,4 @@ dialog state 或弹 notification。
 - `submit_async_rejects_reentrant_submit`：已有 task 时第二次 submit 返回 Busy。
 - `submit_async_returns_handler_start_error`：task builder 同步失败返回 `SubmitError::Handler(error)`，不创建 task。
 - `submit_async_does_not_store_handler`：同一个 form 可用不同 handler 连续提交，store 不保存旧 handler。
-- ai-chat2 MCP focused tests：create invalid 不启动保存 task；create valid upsert config；OAuth draft promotion 仍覆盖 add/edit/rename/URL-change。
+- jaco MCP focused tests：create invalid 不启动保存 task；create valid upsert config；OAuth draft promotion 仍覆盖 add/edit/rename/URL-change。

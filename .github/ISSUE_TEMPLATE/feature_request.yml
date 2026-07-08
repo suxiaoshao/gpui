@@ -8,7 +8,7 @@ body:
       label: Target scope
       description: Select the app or crate that should gain this feature.
       options:
-        - ai-chat
+        - jaco
         - feiwen
         - http-client
         - novel-download

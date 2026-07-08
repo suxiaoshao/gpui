@@ -1,16 +1,15 @@
 [workspace]
 members = [
-  "app/ai-chat",
-  "app/ai-chat2",
+  "app/jaco",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
   "crates/app-assets",
   "crates/app-assets-macros",
   "crates/app-theme",
-  "crates/ai-chat-agent",
-  "crates/ai-chat-core",
-  "crates/ai-chat-db",
+  "crates/jaco-agent",
+  "crates/jaco-core",
+  "crates/jaco-db",
   "crates/gpui-form",
   "crates/gpui-form-gpui-component",
   "crates/gpui-form-macros",
@@ -29,9 +28,9 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
-ai-chat-core = { path = "./crates/ai-chat-core" }
-ai-chat-db = { path = "./crates/ai-chat-db" }
-ai-chat-agent = { path = "./crates/ai-chat-agent" }
+jaco-core = { path = "./crates/jaco-core" }
+jaco-db = { path = "./crates/jaco-db" }
+jaco-agent = { path = "./crates/jaco-agent" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
 gpui-form = { path = "./crates/gpui-form" }
@@ -82,7 +81,7 @@ strip = "symbols"
 incremental = false
 
 [profile.release.package]
-ai-chat = { codegen-units = 16 }
+jaco = { codegen-units = 16 }
 
 [profile.release-fast]
 inherits = "release"

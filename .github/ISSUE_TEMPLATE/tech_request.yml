@@ -8,7 +8,7 @@ body:
       label: Target scope
       description: Select the primary area affected by this engineering task.
       options:
-        - ai-chat
+        - jaco
         - feiwen
         - http-client
         - novel-download

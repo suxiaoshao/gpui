@@ -17,8 +17,7 @@ Use this skill for icon and asset decisions in apps under `app/`. Use `gpui-comp
 
 ## UI Icons
 
-- `ai-chat`: use the app-local `IconName` in `app/ai-chat/src/foundation/assets.rs`. Add missing Lucide variants there before using them from UI code.
-- `ai-chat2`: use the app-local `IconName` in `app/ai-chat2/src/foundation/assets.rs`. Provider logos use the app-local `ProviderLogoName` / `ProviderLogoAssets` declared with `app_assets::define_svg_icons!` and SVG files under `app/ai-chat2/assets/provider-icons/`.
+- `jaco`: use the app-local `IconName` in `app/jaco/src/foundation/assets.rs`. Provider logos use the app-local `ProviderLogoName` / `ProviderLogoAssets` declared with `app_assets::define_svg_icons!` and SVG files under `app/jaco/assets/provider-icons/`.
 - `feiwen`: use the app-local `IconName` in `app/feiwen/src/foundation/assets.rs`, declared with `app_assets::define_lucide_icons!`.
 - `http-client` and `novel-download`: these currently register `gpui_component_assets::Assets`; default to `gpui-component` icons unless the app needs a deliberate app-local Lucide set.
 - When an app has both component icons and app-local icons, prefer app-local icons for app-owned Lucide additions and existing component icons for generic component-provided affordances.

@@ -1,6 +1,6 @@
 # MCP Auth Test Server
 
-Local Streamable HTTP MCP server for testing ai-chat2 MCP bearer/OAuth auth paths.
+Local Streamable HTTP MCP server for testing jaco MCP bearer/OAuth auth paths.
 
 ## Run
 
@@ -25,7 +25,7 @@ MCP_AUTH_TEST_PORT=8787
 MCP_AUTH_TEST_BASE_URL=http://127.0.0.1:8787
 ```
 
-## ai-chat2 Static Bearer Config
+## jaco Static Bearer Config
 
 Set:
 
@@ -43,7 +43,7 @@ url = "http://127.0.0.1:8787/mcp"
 bearer_token_env_var = "MCP_AUTH_TEST_TOKEN"
 ```
 
-## ai-chat2 OAuth Config
+## jaco OAuth Config
 
 OAuth browser flow is meant for phase 2 testing:
 

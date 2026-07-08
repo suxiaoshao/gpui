@@ -4,14 +4,14 @@
 
 ## 应用列表
 
-- **ai-chat**：AI 聊天应用，支持会话管理、流式响应与 Web 搜索
+- **jaco**：桌面 agent 工作台，支持项目会话、工具、MCP、技能、提示词和快捷键
 - **feiwen**：小说 / 网页内容阅读器，支持本地数据库存储
 - **http-client**：HTTP 请求测试工具（类似 Postman）
 - **novel-download**：小说 / 网页内容下载工具
 
 ## 目录结构
 
-- `app/ai-chat`：AI 聊天应用
+- `app/jaco`：桌面 agent 工作台
 - `app/feiwen`：阅读器
 - `app/http-client`：HTTP 客户端
 - `app/novel-download`：下载器
@@ -22,7 +22,7 @@
 
 - Rust 1.92+（Edition 2024）
 - 推荐：`cargo-watch`（可选，热重载）
-- 可选：`diesel_cli`（仅 ai-chat 用于管理迁移）
+- 可选：`diesel_cli`（仅 jaco 用于管理迁移）
 
 ## 构建与运行
 
@@ -31,13 +31,13 @@
 cargo build --workspace
 
 # 构建指定应用
-cargo build -p ai-chat
+cargo build -p jaco
 cargo build -p feiwen
 cargo build -p http-client
 cargo build -p novel-download
 
 # 运行指定应用
-cargo run -p ai-chat
+cargo run -p jaco
 cargo run -p feiwen
 cargo run -p http-client
 cargo run -p novel-download
@@ -47,7 +47,7 @@ cargo run -p novel-download
 
 ```bash
 # 自动重载（需要 cargo-watch）
-cargo watch -x 'run -p ai-chat'
+cargo watch -x 'run -p jaco'
 ```
 
 ## 应用打包
@@ -56,13 +56,13 @@ cargo watch -x 'run -p ai-chat'
 
 ```bash
 # macOS/Linux
-cargo run -p xtask -- bundle ai-chat
+cargo run -p xtask -- bundle jaco
 cargo run -p xtask -- bundle feiwen
 cargo run -p xtask -- bundle http-client
 cargo run -p xtask -- bundle novel-download
 
 # Windows MSI（xtask 内部使用 tauri-bundler + WiX，支持 --install）
-cargo run -p xtask -- bundle ai-chat --install
+cargo run -p xtask -- bundle jaco --install
 ```
 
 默认产物目录：
@@ -91,7 +91,7 @@ target/<target-triple>/release/bundle/msi/
 - GPUI + gpui-component
 - Rust 2024 Edition
 - tracing / tracing-subscriber（日志）
-- Diesel + SQLite（ai-chat、feiwen）
+- Diesel + SQLite（jaco、feiwen）
 
 ## 许可
 
@@ -99,11 +99,11 @@ target/<target-triple>/release/bundle/msi/
 
 ## Runtime vs Build Assets
 
-- `app/ai-chat/assets/`: runtime assets only (embedded by `rust-embed`).
+- `app/jaco/assets/`: runtime assets only (embedded by `rust-embed`).
 - `app/{app}/build-assets/`: build/package-time assets only (not embedded for runtime).
 - Icon base assets live in `app/{app}/build-assets/icon/app-icon.png`.
 - `xtask bundle <app>` derives `app-icon.iconset` and `app-icon.ico` from the base PNG before bundling.
-- Windows icon default for `ai-chat`: `app/ai-chat/build-assets/icon/app-icon.ico` (see `app/ai-chat/build.rs`).
+- Windows icon default for `jaco`: `app/jaco/build-assets/icon/app-icon.ico` (see `app/jaco/build.rs`).
 - Package icon paths are configured in each app `Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
 - Windows MSI bundling in `xtask` uses `tauri-bundler` and reuses the `.ico` path from `[package.metadata.bundle].icon`.
 - macOS bundle icon paths are managed by `crates/xtask/src/bundle/` and use `build-assets/icon/...`.

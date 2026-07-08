@@ -66,7 +66,7 @@
 | `src/combobox.rs` | `ComboboxBinding<T, D>` 在 adapter 内订阅 combobox selection/input 事件，按现有 draft 规则映射 change/focus/blur。 |
 | `src/bool.rs` | 当前 `BoolBinding` 是 passive state，`install_subscriptions(...)` 返回空 `SubscriptionSet`；如果后续 bool state 变成事件源，由 adapter 自己添加订阅，不影响宏。 |
 
-### `app/ai-chat2`
+### `app/jaco`
 
 | 文件 | 结果 |
 | --- | --- |
@@ -313,8 +313,8 @@ generated set_<field>_value(...) or write_draft(...)
 - `submit_rejects_unparsable_number_input`、`number_raw_edit_with_same_typed_value_stays_dirty`、
   `number_normalize_writeback_recomputes_raw_dirty` 和 `number_reset_restores_raw_default` 覆盖 number raw draft
   仍由 `ComponentFieldStore` 统一管理。
-- `cargo check -p ai-chat2` 覆盖 app-local `PromptContentInputBinding`、`ShortcutHotkeyBinding`、
+- `cargo check -p jaco` 覆盖 app-local `PromptContentInputBinding`、`ShortcutHotkeyBinding`、
   `ShortcutPromptSelectBinding`、`ShortcutModelSelectBinding` 和 `ProviderApiModeSelectBinding` 都已适配新
   trait surface。
-- `cargo clippy -p gpui-form -p gpui-form-gpui-component -p ai-chat2 --all-targets --all-features -- -D warnings`
+- `cargo clippy -p gpui-form -p gpui-form-gpui-component -p jaco --all-targets --all-features -- -D warnings`
   覆盖宏 helper、adapter subscription 和 app-local binding 没有新增 lint。

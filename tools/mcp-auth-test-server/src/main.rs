@@ -205,7 +205,7 @@ async fn register_client(Json(body): Json<serde_json::Value>) -> Json<serde_json
         .unwrap_or_default();
     Json(serde_json::json!({
         "client_id": "mcp-test-public-client",
-        "client_name": body.get("client_name").cloned().unwrap_or_else(|| serde_json::json!("ai-chat2 test client")),
+        "client_name": body.get("client_name").cloned().unwrap_or_else(|| serde_json::json!("jaco test client")),
         "redirect_uris": redirect_uris,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
