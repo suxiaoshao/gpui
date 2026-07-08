@@ -1,6 +1,6 @@
 # gpui-form validation pipeline strengthening plan
 
-本文档记录 `gpui-form` 自身需要补齐的通用能力。它不写入 `ai-chat2` 的 Provider、MCP、Prompt 或
+本文档记录 `gpui-form` 自身需要补齐的通用能力。它不写入 `jaco` 的 Provider、MCP、Prompt 或
 Shortcut 业务规则；app-specific 字段、i18n key、DB/config/keychain 写回和数据源放在接入 app 文档中。
 
 最后同步时间：2026-07-03。本文中的通用能力已经落地；验收标准保留在文末，供后续回归检查。
@@ -216,7 +216,7 @@ runtime，而不是 app 在 submit handler 里绕过 pipeline。
 
 - 第一阶段保留为 `#[doc(hidden)] pub` 或 crate-internal macro support，供测试和迁移期使用。
 - 文档不再鼓励 app 直接调用。
-- 在 `ai-chat2` 迁移完成后删除 app 正常业务路径中的调用。
+- 在 `jaco` 迁移完成后删除 app 正常业务路径中的调用。
 
 ## 自定义类型结构
 

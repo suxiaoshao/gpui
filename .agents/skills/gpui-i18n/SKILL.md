@@ -48,8 +48,8 @@ For i18n changes, run the most focused affected app tests/checks, for example:
 
 ```sh
 cargo fmt
-cargo test -p ai-chat2 i18n
-cargo check -p ai-chat2
+cargo test -p jaco i18n
+cargo check -p jaco
 git diff --check
 ```
 

@@ -407,7 +407,7 @@ set_<field>_value(Value, cause)
 
 ### Phase D: 迁移 app
 
-- `app/ai-chat2` 已增加 `gpui-form-gpui-component` dependency。
+- `app/jaco` 已增加 `gpui-form-gpui-component` dependency。
 - Provider/MCP/Prompt/Shortcut form input 已把内置 component 语法改成显式 adapter binding 或 app-local type alias。
 - `PromptContentInputBinding`、`ShortcutHotkeyBinding`、`ShortcutPromptSelectBinding`、`ShortcutModelSelectBinding`
   已实现新的 draft-aware binding。
@@ -440,5 +440,5 @@ set_<field>_value(Value, cause)
   仍由 `ComponentFieldStore` 统一管理。
 - 后续如要继续降低宏展开噪音，可补 trybuild 或 expand snapshot，专门断言生成代码中不出现
   `Binding::event_kind(...)` 和宏内联 `cx.subscribe_in(&__gpui_form_*_state, ...)`。
-- focused 验证命令：`cargo check -p gpui-form -p gpui-form-gpui-component`、`cargo check -p ai-chat2`、
-  `cargo test -p gpui-form`、`cargo test -p ai-chat2`。
+- focused 验证命令：`cargo check -p gpui-form -p gpui-form-gpui-component`、`cargo check -p jaco`、
+  `cargo test -p gpui-form`、`cargo test -p jaco`。

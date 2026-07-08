@@ -21,8 +21,7 @@ pub struct BundleArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BundleApp {
-    AiChat,
-    AiChat2,
+    Jaco,
     Feiwen,
     HttpClient,
     NovelDownload,
@@ -31,8 +30,7 @@ pub enum BundleApp {
 impl BundleApp {
     pub fn package_name(self) -> &'static str {
         match self {
-            Self::AiChat => "ai-chat",
-            Self::AiChat2 => "ai-chat2",
+            Self::Jaco => "jaco",
             Self::Feiwen => "feiwen",
             Self::HttpClient => "http-client",
             Self::NovelDownload => "novel-download",
@@ -61,22 +59,22 @@ mod tests {
 
     #[test]
     fn parses_bundle_install_flag() {
-        let cli = Cli::try_parse_from(["xtask", "bundle", "ai-chat", "--install"])
+        let cli = Cli::try_parse_from(["xtask", "bundle", "jaco", "--install"])
             .expect("bundle command should parse");
 
         let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::AiChat);
+        assert_eq!(args.app, BundleApp::Jaco);
         assert!(args.install);
     }
 
     #[test]
-    fn parses_ai_chat2_bundle_app_argument() {
-        let cli = Cli::try_parse_from(["xtask", "bundle", "ai-chat2"])
-            .expect("bundle command should parse");
+    fn parses_jaco_bundle_app_argument() {
+        let cli =
+            Cli::try_parse_from(["xtask", "bundle", "jaco"]).expect("bundle command should parse");
 
         let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::AiChat2);
-        assert_eq!(args.app.package_name(), "ai-chat2");
-        assert_eq!(args.app.app_dir_name(), "ai-chat2");
+        assert_eq!(args.app, BundleApp::Jaco);
+        assert_eq!(args.app.package_name(), "jaco");
+        assert_eq!(args.app.app_dir_name(), "jaco");
     }
 }

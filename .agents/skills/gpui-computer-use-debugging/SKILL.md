@@ -11,7 +11,7 @@ Use this skill to verify actual desktop behavior, not just compile-time correctn
 
 Use the app under test from the user's request or the changed files:
 
-- `ai-chat`: bundle command `cargo run -p xtask -- bundle ai-chat`, macOS bundle `target/release/bundle/macos/AI Chat.app`, bundle id `top.sushao.ai-chat`.
+- `jaco`: bundle command `cargo run -p xtask -- bundle jaco`, macOS bundle `target/release/bundle/macos/Jaco.app`, bundle id `top.sushao.jaco`.
 - `feiwen`: bundle command `cargo run -p xtask -- bundle feiwen`, macOS bundle `target/release/bundle/macos/Feiwen.app`, bundle id `top.sushao.feiwen`.
 - `http-client`: bundle command `cargo run -p xtask -- bundle http-client`, macOS bundle `target/release/bundle/macos/HTTP Client.app`, bundle id `top.sushao.http-client`.
 - `novel-download`: bundle command `cargo run -p xtask -- bundle novel-download`, macOS bundle `target/release/bundle/macos/Novel Download.app`, bundle id `top.sushao.novel-download`.
@@ -20,12 +20,12 @@ Use the app under test from the user's request or the changed files:
 
 Before doing manual UI validation for an app that has product QA docs, open the app-local README and the matching `docs/tests` page. These docs describe user-facing flows, required test data, expected results, edge cases, and cleanup steps.
 
-- `ai-chat`: app README `app/ai-chat/README.md`, feature docs `app/ai-chat/docs/features/README.md`, test docs `app/ai-chat/docs/tests/README.md`.
+- `jaco`: no app-local product QA docs tree is currently present under `app/jaco/docs`; use focused code tests and scenario-specific notes until docs are added.
 - `feiwen`: app README `app/feiwen/README.md`, feature docs `app/feiwen/docs/features/README.md`, test docs `app/feiwen/docs/tests/README.md`.
 
 Use the test docs as the source of truth for manual/Computer Use validation scope:
 
-- Pick the test document that matches the changed feature, for example `app/ai-chat/docs/tests/home/sidebar.md` or `app/feiwen/docs/tests/fetch/run-states.md`.
+- Pick the test document that matches the changed feature, for example `app/feiwen/docs/tests/fetch/run-states.md` when validating Feiwen.
 - Follow the documented test case structure: `测试目标`, `数据隔离`, `测试前提`, `测试数据`, `测试步骤`, `预期结果`, `边缘情况`, `清理`.
 - Execute the exact field values and button paths in the test steps instead of inventing ad hoc data while debugging.
 - If the docs require pre-existing folders, conversations, messages, novels, authors, tags, templates, shortcuts, or fetch pages and the test is not about creating those records, pre-seed a test database before launching the app.
@@ -41,8 +41,8 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
 
 2. Prepare isolated test data before launch.
    - Do not use the user's real app data as the target of a debug run unless the user explicitly asks for that.
-   - Prefer an isolated temporary data directory or test SQLite database such as `/tmp/ai-chat-qa-data` or `/tmp/feiwen-qa-data`.
-   - For `ai-chat`, use test conversations, folders, messages, templates, shortcuts, API key placeholders, and export directories described in `app/ai-chat/docs/tests/README.md`.
+   - Prefer an isolated temporary data directory or test SQLite database such as `/tmp/jaco-qa-data` or `/tmp/feiwen-qa-data`.
+   - For `jaco`, use isolated config/data directories, test projects, conversations, prompts, shortcuts, MCP server fixtures, and API key placeholders.
    - For `feiwen`, use a test SQLite database plus local mock HTTP service data for fetch tests; do not use a real Cookie or real production crawl target. Use the fixtures and values described in `app/feiwen/docs/tests/README.md`.
    - If the app does not yet expose a documented way to override the data directory, stop and identify a safe test-data launch method before interacting with user data.
 
@@ -57,12 +57,12 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
 4. Attach Computer Use to the app.
    - Call `mcp__computer_use__.get_app_state({"app":"<full path to target .app>"})` before any click, key, or scroll in each assistant turn.
    - Do not attach by bundle id when validating local changes; bundle ids are ambiguous when an older installed app also exists.
-   - Verify the returned app state `App=...` path is the target bundle under the current workspace, for example `target/release/bundle/macos/AI Chat.app`. If it shows `/Applications/*.app`, stop and relaunch the correct local bundle.
+   - Verify the returned app state `App=...` path is the target bundle under the current workspace, for example `target/release/bundle/macos/Jaco.app`. If it shows `/Applications/*.app`, stop and relaunch the correct local bundle.
    - Use the returned screenshot plus accessibility tree together. Prefer element indices when stable; use coordinates when GPUI controls are not exposed as useful AX elements.
    - If a separate window, dialog, popover, or settings surface is opened, call `get_app_state` again before interacting.
 
 5. Navigate with visible evidence.
-   - Use the app's actual navigation model rather than assuming ai-chat's sidebar/settings layout.
+   - Use the app's actual navigation model rather than assuming another app's sidebar/settings layout.
    - When a relevant QA test doc exists, follow its documented navigation path and test steps first.
    - For table/list workflows, verify row selection, sorting, scrolling, and action controls.
    - For settings or form workflows, click the page nav item first, then use row action icons for view/edit/delete when that app has such a structure.
@@ -101,7 +101,7 @@ Use the test docs as the source of truth for manual/Computer Use validation scop
 
 Summarize validation in concrete terms:
 
-- artifact launched, for example `target/release/bundle/macos/AI Chat.app`
+- artifact launched, for example `target/release/bundle/macos/Jaco.app`
 - Computer Use app path confirmed from `get_app_state`; explicitly note if it was not the target local bundle
 - window or dialog inspected
 - interactions performed, for example click edit, scroll down, focus editor, press `Page_Down`

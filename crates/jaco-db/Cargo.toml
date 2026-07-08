@@ -1,0 +1,26 @@
+[package]
+name = "jaco-db"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.cargo-shear]
+# Keep the direct dependency so Windows builds enable libsqlite3-sys's bundled-windows feature.
+ignored = ["libsqlite3-sys"]
+
+[dependencies]
+jaco-core.workspace = true
+diesel = { version = "2.3.10", features = [
+  "sqlite",
+  "r2d2",
+  "time",
+  "returning_clauses_for_sqlite_3_35",
+  "serde_json",
+] }
+libsqlite3-sys = { version = "0.37.0", features = ["bundled-windows"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+time = { version = "0.3.49", features = ["formatting", "parsing", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
