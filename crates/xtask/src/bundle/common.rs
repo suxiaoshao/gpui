@@ -57,11 +57,13 @@ const ICO_FRAME_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
 pub(crate) struct BundleIconAssets {
     temp_dir: PathBuf,
+    #[cfg(target_os = "macos")]
     source_icon_dir: PathBuf,
     staged_icon_dir: PathBuf,
 }
 
 impl BundleIconAssets {
+    #[cfg(target_os = "macos")]
     pub(crate) fn source_base_icon(&self) -> PathBuf {
         self.source_icon_dir.join("app-icon.png")
     }
@@ -124,7 +126,8 @@ pub(crate) fn prepare_bundle_icons(app_dir: &Path) -> Result<BundleIconAssets> {
     let assets = BundleIconAssets {
         staged_icon_dir: temp_dir.join("build-assets/icon"),
         temp_dir,
-        source_icon_dir,
+        #[cfg(target_os = "macos")]
+        source_icon_dir: source_icon_dir.clone(),
     };
 
     let iconset_dir = assets.staged_icon_dir.join("app-icon.iconset");
