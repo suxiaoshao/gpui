@@ -459,6 +459,9 @@ impl PersistenceContext {
         arguments_preview: String,
         access_requests: Vec<ToolAccessRequestPayload>,
     ) -> Result<()> {
+        if access_requests.is_empty() {
+            return Ok(());
+        }
         let now = time::OffsetDateTime::now_utc();
         let approval = ToolInvocationApproval {
             status: ApprovalStatus::Approved,

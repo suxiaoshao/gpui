@@ -33,6 +33,7 @@ use rmcp::{
 use serde_json::json;
 use std::{
     collections::VecDeque,
+    fs,
     future::pending,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -961,6 +962,56 @@ async fn enabled_builtin_tools_are_exposed_to_rig_requests() {
             "write_file",
             "edit_file"
         ]
+    );
+}
+
+#[tokio::test]
+async fn full_access_builtin_tool_does_not_persist_empty_approval_entries() {
+    let fixture = Fixture::new("builtin-full-access");
+    fs::write(fixture.dir.path().join("hello.txt"), "hello from fixture").unwrap();
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let mut request = fixture.request();
+    request.project_root = Some(fixture.dir.path().to_path_buf());
+    request.settings_snapshot.tool_policy.permission_scope = Some(ToolPermissionScopeSnapshot {
+        project_roots: vec![fixture.dir.path().to_string_lossy().into_owned()],
+        external_read_requires_approval: false,
+        external_write_requires_approval: true,
+    });
+    request.settings_snapshot.tool_policy.approval_mode = ToolApprovalMode::FullAccess;
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("call_1", "read_file", json!({"path": "hello.txt"})),
+        MockTurn::text("done"),
+    ]);
+
+    let handle = runtime.run_with_model(request, model).await.unwrap();
+    let invocations = fixture
+        .repo
+        .tool_invocations_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].status, ToolInvocationStatus::Succeeded);
+    assert_eq!(invocations[0].approval, None);
+
+    let entries = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    assert!(entries.iter().all(|entry| {
+        !matches!(
+            entry.payload,
+            ConversationEntryPayload::ApprovalRequest(_)
+                | ConversationEntryPayload::ApprovalDecision(_)
+        )
+    }));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry.payload, ConversationEntryPayload::ToolCall(_)))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry.payload, ConversationEntryPayload::ToolResult(_)))
     );
 }
 
