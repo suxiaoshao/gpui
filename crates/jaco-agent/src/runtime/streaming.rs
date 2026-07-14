@@ -34,7 +34,7 @@ impl StreamingOutputAccumulator {
 
     pub(super) fn finish(
         &mut self,
-        status: ConversationItemStatus,
+        status: ConversationEntryStatus,
         final_text: Option<&str>,
     ) -> Result<()> {
         if let Some(final_text) = final_text {
@@ -48,7 +48,7 @@ impl StreamingOutputAccumulator {
 
 struct StreamingItemAccumulator {
     kind: StreamingOutputKind,
-    item_id: Option<ConversationItemId>,
+    item_id: Option<ConversationEntryId>,
     content: String,
     pending_delta: String,
     pending_chars: usize,
@@ -80,7 +80,7 @@ impl StreamingItemAccumulator {
         self.pending_delta.push_str(delta);
         self.pending_chars += delta.chars().count();
         if self.should_flush() {
-            self.flush(context, ConversationItemStatus::Running, false)?;
+            self.flush(context, ConversationEntryStatus::Running, false)?;
         }
         Ok(())
     }
@@ -95,7 +95,7 @@ impl StreamingItemAccumulator {
         if self.item_id.is_none() {
             self.start(context)?;
         } else {
-            self.flush(context, ConversationItemStatus::Running, true)?;
+            self.flush(context, ConversationEntryStatus::Running, true)?;
         }
         Ok(())
     }
@@ -115,7 +115,7 @@ impl StreamingItemAccumulator {
     fn finish(
         &mut self,
         context: &PersistenceContext,
-        status: ConversationItemStatus,
+        status: ConversationEntryStatus,
     ) -> Result<()> {
         if self.item_id.is_none() {
             if self.content.is_empty() {
@@ -124,8 +124,12 @@ impl StreamingItemAccumulator {
             self.start(context)?;
         }
         self.flush(context, status, true)?;
-        if status == ConversationItemStatus::Completed && self.kind == StreamingOutputKind::Text {
-            context.set_final_item_id(self.item_id.clone());
+        if matches!(
+            status,
+            ConversationEntryStatus::Completed | ConversationEntryStatus::Canceled
+        ) && self.kind == StreamingOutputKind::Text
+        {
+            context.set_final_entry_id(self.item_id.clone());
         }
         context.push_current_provider_step_event(ProviderStepEvent::OutputItemCompleted {
             provider_item_id: None,
@@ -158,7 +162,7 @@ impl StreamingItemAccumulator {
     fn flush(
         &mut self,
         context: &PersistenceContext,
-        status: ConversationItemStatus,
+        status: ConversationEntryStatus,
         force: bool,
     ) -> Result<()> {
         let Some(item_id) = self.item_id.as_deref() else {
@@ -188,15 +192,15 @@ impl StreamingItemAccumulator {
         Ok(())
     }
 
-    fn payload(&self) -> ConversationItemPayload {
+    fn payload(&self) -> ConversationEntryPayload {
         match self.kind {
-            StreamingOutputKind::Text => ConversationItemPayload::Message {
+            StreamingOutputKind::Text => ConversationEntryPayload::Message {
                 role: TranscriptRole::Assistant,
                 content: vec![ContentPart::Text {
                     text: self.content.clone(),
                 }],
             },
-            StreamingOutputKind::Reasoning => ConversationItemPayload::Reasoning {
+            StreamingOutputKind::Reasoning => ConversationEntryPayload::Reasoning {
                 text: self.content.clone(),
                 summary: None,
             },

@@ -3,14 +3,18 @@ use crate::{
     AgentRuntimeObserver, AgentStep, McpSessionManager, ProviderSecretValues, Result, SkillCatalog,
     SkillLoader, ToolApprovalBroker,
     history::{PromptHistoryOptions, build_prompt_history_with_options},
-    persistence::{PersistenceContext, PersistingCompletionModel, new_agent_run_input, run_error},
+    persistence::{
+        AgentRunOutcome, PersistenceContext, PersistingCompletionModel, finish_agent_run_spec,
+        new_agent_run_input, run_error,
+    },
     provider_models::run_saved_provider_model,
     reasoning_params::{merge_additional_params, reasoning_additional_params},
 };
 use futures::StreamExt;
 use jaco_core::*;
 use jaco_db::{
-    AgentRunRecord, FreshRepository, NewConversationItem, ProviderRecord, UpdateAgentRunStatus,
+    AgentRunRecord, FinishAgentRun, FinishedAgentRun, FreshRepository, NewConversationEntry,
+    ProviderRecord, UpdateAgentRunStatus,
 };
 use rig_core::{
     agent::{AgentBuilder, MultiTurnStreamItem, StreamingError},
@@ -126,7 +130,6 @@ impl AgentRuntime {
             &agent_run.id,
             UpdateAgentRunStatus {
                 status: AgentRunStatus::Running,
-                output: None,
                 error: None,
             },
         )?;
@@ -201,7 +204,7 @@ impl AgentRuntime {
         let prompt_history = match build_prompt_history_with_options(
             &timeline.items,
             &timeline.attachments,
-            &request.user_item_id,
+            &request.trigger_entry_id,
             &agent_run.id,
             PromptHistoryOptions {
                 include_reasoning: true,
@@ -299,7 +302,7 @@ impl AgentRuntime {
                 let next = tokio::select! {
                     biased;
                     _ = request.cancellation_token.cancelled() => {
-                        accumulator.finish(ConversationItemStatus::Canceled, None)?;
+                        accumulator.finish(ConversationEntryStatus::Canceled, None)?;
                         let _ = context.cancel_current_provider_step(run_error(
                             "canceled",
                             "runtime canceled",
@@ -334,7 +337,7 @@ impl AgentRuntime {
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         if request.cancellation_token.is_cancelled() {
-                            accumulator.finish(ConversationItemStatus::Canceled, None)?;
+                            accumulator.finish(ConversationEntryStatus::Canceled, None)?;
                             let _ = context.cancel_current_provider_step(run_error(
                                 "canceled",
                                 "runtime canceled",
@@ -342,7 +345,7 @@ impl AgentRuntime {
                                 None,
                             ));
                         } else {
-                            accumulator.finish(ConversationItemStatus::Failed, None)?;
+                            accumulator.finish(ConversationEntryStatus::Failed, None)?;
                             let _ = context.fail_current_provider_step(run_error(
                                 "prompt_error",
                                 error.to_string(),
@@ -358,7 +361,7 @@ impl AgentRuntime {
                             .map(|response| response.response())
                             .filter(|text| !text.is_empty());
                         if request.cancellation_token.is_cancelled() {
-                            accumulator.finish(ConversationItemStatus::Canceled, final_text)?;
+                            accumulator.finish(ConversationEntryStatus::Canceled, final_text)?;
                             let _ = context.cancel_current_provider_step(run_error(
                                 "canceled",
                                 "runtime canceled",
@@ -367,7 +370,7 @@ impl AgentRuntime {
                             ));
                             break Ok(AgentStoppedReason::Canceled);
                         } else {
-                            accumulator.finish(ConversationItemStatus::Completed, final_text)?;
+                            accumulator.finish(ConversationEntryStatus::Completed, final_text)?;
                             let usage = final_response
                                 .as_ref()
                                 .map(|response| response.usage())
@@ -429,71 +432,52 @@ impl AgentRuntime {
                         run_error("canceled", "runtime canceled", false, None),
                     )?;
                 }
-                let output = AgentRunOutput {
-                    final_item_id: context.final_item_id(),
-                    stopped_reason: final_stopped_reason,
-                };
-                let agent_run = self.repo.update_agent_run_status(
-                    &agent_run.id,
-                    UpdateAgentRunStatus {
-                        status: final_status,
-                        output: Some(output.clone()),
-                        error: None,
-                    },
-                )?;
-                emit_runtime(
-                    observer.as_ref(),
-                    AgentRuntimeEvent::AgentRunStatusChanged {
-                        agent_run_id: agent_run.id.clone(),
-                        status: final_status,
-                    },
-                );
-                let mut events = context.events();
-                if final_status == AgentRunStatus::Canceled {
-                    events.push(AgentRunEvent::Canceled);
+                let final_entry_id = if final_status == AgentRunStatus::Canceled {
+                    context
+                        .final_entry_id()
+                        .or(self.latest_assistant_entry_id_for_run(&agent_run)?)
                 } else {
-                    events.push(AgentRunEvent::Completed {
-                        output: output.clone(),
-                    });
-                }
+                    context.final_entry_id()
+                };
+                let outcome = match final_status {
+                    AgentRunStatus::Canceled => AgentRunOutcome::Canceled { final_entry_id },
+                    AgentRunStatus::Completed
+                        if final_stopped_reason == AgentStoppedReason::MaxSteps =>
+                    {
+                        AgentRunOutcome::MaxSteps { final_entry_id }
+                    }
+                    AgentRunStatus::Completed => AgentRunOutcome::Completed { final_entry_id },
+                    AgentRunStatus::Queued | AgentRunStatus::Running | AgentRunStatus::Failed => {
+                        return Err(AgentRuntimeError::Invariant(
+                            "invalid successful run final status".to_string(),
+                        ));
+                    }
+                };
+                let finished = context.finish_run(outcome)?;
+                let output = finished.run.output.clone().ok_or_else(|| {
+                    AgentRuntimeError::Invariant("finished run has no output".to_string())
+                })?;
                 Ok(AgentRunHandle {
-                    agent_run,
+                    agent_run: finished.run,
                     output: Some(output),
                     status: AgentRunHandleStatus::Finished,
-                    events,
+                    events: context.events(),
                     steps: context.steps(),
                 })
             }
             Err(error) => {
                 if error.max_steps {
-                    let output = AgentRunOutput {
-                        final_item_id: context.final_item_id(),
-                        stopped_reason: AgentStoppedReason::MaxSteps,
-                    };
-                    let agent_run = self.repo.update_agent_run_status(
-                        &agent_run.id,
-                        UpdateAgentRunStatus {
-                            status: AgentRunStatus::Completed,
-                            output: Some(output.clone()),
-                            error: None,
-                        },
-                    )?;
-                    emit_runtime(
-                        observer.as_ref(),
-                        AgentRuntimeEvent::AgentRunStatusChanged {
-                            agent_run_id: agent_run.id.clone(),
-                            status: AgentRunStatus::Completed,
-                        },
-                    );
-                    let mut events = context.events();
-                    events.push(AgentRunEvent::Completed {
-                        output: output.clone(),
-                    });
+                    let finished = context.finish_run(AgentRunOutcome::MaxSteps {
+                        final_entry_id: context.final_entry_id(),
+                    })?;
+                    let output = finished.run.output.clone().ok_or_else(|| {
+                        AgentRuntimeError::Invariant("max steps run has no output".to_string())
+                    })?;
                     return Ok(AgentRunHandle {
-                        agent_run,
+                        agent_run: finished.run,
                         output: Some(output),
                         status: AgentRunHandleStatus::Finished,
-                        events,
+                        events: context.events(),
                         steps: context.steps(),
                     });
                 }
@@ -518,36 +502,29 @@ impl AgentRuntime {
                     },
                     payload.clone(),
                 )?;
-                let output = (final_status == AgentRunStatus::Canceled).then_some(AgentRunOutput {
-                    final_item_id: context.final_item_id(),
-                    stopped_reason: AgentStoppedReason::Canceled,
-                });
-                let agent_run = self.repo.update_agent_run_status(
-                    &agent_run.id,
-                    UpdateAgentRunStatus {
-                        status: final_status,
-                        output: output.clone(),
-                        error: (final_status == AgentRunStatus::Failed).then_some(payload.clone()),
-                    },
-                )?;
-                emit_runtime(
-                    observer.as_ref(),
-                    AgentRuntimeEvent::AgentRunStatusChanged {
-                        agent_run_id: agent_run.id.clone(),
-                        status: final_status,
-                    },
-                );
-                let mut events = context.events();
-                if final_status == AgentRunStatus::Canceled {
-                    events.push(AgentRunEvent::Canceled);
+                let final_entry_id = if final_status == AgentRunStatus::Canceled {
+                    context
+                        .final_entry_id()
+                        .or(self.latest_assistant_entry_id_for_run(&agent_run)?)
                 } else {
-                    events.push(AgentRunEvent::Failed { error: payload });
-                }
+                    None
+                };
+                let outcome = if final_status == AgentRunStatus::Canceled {
+                    AgentRunOutcome::Canceled { final_entry_id }
+                } else {
+                    AgentRunOutcome::Failed {
+                        error: payload.clone(),
+                    }
+                };
+                let finished = context.finish_run(outcome)?;
+                let output = Some(finished.run.output.clone().ok_or_else(|| {
+                    AgentRuntimeError::Invariant("finished run has no output".to_string())
+                })?);
                 Ok(AgentRunHandle {
-                    agent_run,
+                    agent_run: finished.run,
                     output,
                     status: AgentRunHandleStatus::Finished,
-                    events,
+                    events: context.events(),
                     steps: context.steps(),
                 })
             }
@@ -597,40 +574,25 @@ impl AgentRuntime {
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
         let payload = run_error("setup_error", error.to_string(), true, None);
-        let item = self.repo.append_conversation_item(NewConversationItem {
-            conversation_id: agent_run.conversation_id.clone(),
-            status: ConversationItemStatus::Completed,
-            agent_run_id: Some(agent_run.id.clone()),
-            provider_step_id: None,
-            tool_invocation_id: None,
-            provider_item_id: None,
-            payload: ConversationItemPayload::Error(payload.clone()),
-        })?;
-        let output = AgentRunOutput {
-            final_item_id: Some(item.id.clone()),
-            stopped_reason: AgentStoppedReason::Failed,
-        };
-        let agent_run = self.repo.update_agent_run_status(
+        let finished = self.finish_agent_run_with_observer(
             &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Failed,
-                output: Some(output.clone()),
-                error: Some(payload.clone()),
-            },
-        )?;
-        emit_runtime(
+            finish_agent_run_spec(
+                agent_run,
+                AgentRunOutcome::Failed {
+                    error: payload.clone(),
+                },
+            ),
             observer,
-            AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id: agent_run.id.clone(),
-                status: AgentRunStatus::Failed,
-            },
-        );
+        )?;
+        let output = finished.run.output.clone().ok_or_else(|| {
+            AgentRuntimeError::Invariant("setup failure has no output".to_string())
+        })?;
         Ok(AgentRunHandle {
-            agent_run,
+            agent_run: finished.run,
             output: Some(output),
             status: AgentRunHandleStatus::Finished,
             events: vec![AgentRunEvent::Failed { error: payload }],
-            steps: vec![AgentStep::ConversationItem(item.id)],
+            steps: vec![AgentStep::ConversationEntry(finished.final_entry.id)],
         })
     }
 
@@ -671,25 +633,19 @@ impl AgentRuntime {
             ToolInvocationStatus::Canceled,
             error,
         )?;
-        let output = AgentRunOutput {
-            final_item_id: self.latest_assistant_item_id_for_run(&run)?,
-            stopped_reason: AgentStoppedReason::Canceled,
-        };
-        let run = self.repo.update_agent_run_status(
+        let _ = self.finish_agent_run_with_observer(
             &run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Canceled,
-                output: Some(output),
-                error: None,
-            },
-        )?;
-        emit_runtime(
+            finish_agent_run_spec(
+                &run,
+                AgentRunOutcome::Canceled {
+                    final_entry_id: self.latest_assistant_entry_id_for_run(&run)?,
+                },
+            ),
             observer,
-            AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id: run.id.clone(),
-                status: AgentRunStatus::Canceled,
-            },
-        );
+        )?;
+        let run = self.repo.get_agent_run(&run.id)?.ok_or_else(|| {
+            AgentRuntimeError::Invariant("canceled agent run disappeared".to_string())
+        })?;
         Ok(Some(run))
     }
 
@@ -710,14 +666,12 @@ impl AgentRuntime {
                     ToolInvocationStatus::Failed,
                     error.clone(),
                 )?;
-                recovered.push(self.repo.update_agent_run_status(
+                let finished = self.finish_agent_run_with_observer(
                     &run.id,
-                    UpdateAgentRunStatus {
-                        status: AgentRunStatus::Failed,
-                        output: None,
-                        error: Some(error),
-                    },
-                )?);
+                    finish_agent_run_spec(&run, AgentRunOutcome::Failed { error }),
+                    None,
+                )?;
+                recovered.push(finished.run);
             }
         }
         Ok(recovered)
@@ -733,17 +687,46 @@ impl AgentRuntime {
                 AgentRuntimeError::Invariant(format!("skill {} is missing", skill_request.name))
             })?;
             let activation = self.skill_loader.load(entry)?;
-            self.repo.append_conversation_item(NewConversationItem {
+            self.repo.append_conversation_entry(NewConversationEntry {
                 conversation_id: request.conversation_id.clone(),
-                status: ConversationItemStatus::Completed,
+                status: ConversationEntryStatus::Completed,
                 agent_run_id: Some(agent_run_id.to_string()),
                 provider_step_id: None,
                 tool_invocation_id: None,
                 provider_item_id: None,
-                payload: ConversationItemPayload::SkillActivation(activation),
+                payload: ConversationEntryPayload::SkillActivation(activation),
             })?;
         }
         Ok(())
+    }
+}
+
+impl AgentRuntime {
+    pub(super) fn finish_agent_run_with_observer(
+        &self,
+        agent_run_id: &str,
+        finish: FinishAgentRun,
+        observer: Option<&AgentRuntimeObserver>,
+    ) -> Result<FinishedAgentRun> {
+        let finished = self.repo.finish_agent_run(agent_run_id, finish)?;
+        if finished.appended_final_entry {
+            let entry = &finished.final_entry;
+            emit_runtime(
+                observer,
+                AgentRuntimeEvent::ConversationEntryAppended {
+                    conversation_id: entry.conversation_id.clone(),
+                    item_id: entry.id.clone(),
+                },
+            );
+        }
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::AgentRunStatusChanged {
+                agent_run_id: finished.run.id.clone(),
+                status: finished.run.status,
+            },
+        );
+        Ok(finished)
     }
 }
 

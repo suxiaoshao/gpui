@@ -482,12 +482,12 @@ fn attachment_store_dir(conversation_id: &ConversationId, cx: &App) -> JacoResul
 
 fn stored_attachment_path(
     attachment_dir: &Path,
-    user_item_id: &str,
+    trigger_entry_id: &str,
     attachment: &ComposerAttachment,
 ) -> PathBuf {
     attachment_dir.join(format!(
         "{}-{}-{}",
-        user_item_id,
+        trigger_entry_id,
         attachment.local_id,
         sanitize_file_name(&attachment.name)
     ))

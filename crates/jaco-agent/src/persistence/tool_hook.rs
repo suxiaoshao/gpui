@@ -6,8 +6,8 @@ use crate::{
 };
 use jaco_core::*;
 use jaco_db::{
-    NewConversationItem, NewToolInvocation, NewToolInvocationApproval, ToolInvocationApproval,
-    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateToolInvocationStatus,
+    NewConversationEntry, NewToolInvocation, ToolInvocationApproval, ToolInvocationApprovalOutcome,
+    ToolInvocationRecord, UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::{
@@ -65,7 +65,7 @@ impl PersistenceContext {
             return Err(AgentRuntimeError::Canceled);
         }
         let model_text = tool_output_to_model_text(&output);
-        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
             tool_invocation_id: Some(invocation.id.clone()),
             call_id: invocation.call_id.clone(),
             content: output.content.clone(),
@@ -75,10 +75,10 @@ impl PersistenceContext {
         });
         let (item, _) = self
             .repo
-            .append_conversation_item_and_update_tool_invocation(
-                NewConversationItem {
+            .append_conversation_entry_and_update_tool_invocation(
+                NewConversationEntry {
                     conversation_id: self.conversation_id.clone(),
-                    status: ConversationItemStatus::Completed,
+                    status: ConversationEntryStatus::Completed,
                     agent_run_id: Some(self.agent_run_id.clone()),
                     provider_step_id: invocation.provider_step_id.clone(),
                     tool_invocation_id: Some(invocation.id.clone()),
@@ -94,8 +94,8 @@ impl PersistenceContext {
             )?;
         let item_id = item.id.clone();
         self.add_input_item_id(item_id.clone());
-        self.push_step(AgentStep::ConversationItem(item_id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
+        self.push_step(AgentStep::ConversationEntry(item_id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
             conversation_id: self.conversation_id.clone(),
             item_id,
         });
@@ -117,7 +117,7 @@ impl PersistenceContext {
     ) -> Result<String> {
         let output = error_tool_output(error.message.clone());
         let model_text = tool_output_to_model_text(&output);
-        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
             tool_invocation_id: Some(invocation.id.clone()),
             call_id: invocation.call_id.clone(),
             content: output.content.clone(),
@@ -127,10 +127,10 @@ impl PersistenceContext {
         });
         let (item, _) = self
             .repo
-            .append_conversation_item_and_update_tool_invocation(
-                NewConversationItem {
+            .append_conversation_entry_and_update_tool_invocation(
+                NewConversationEntry {
                     conversation_id: self.conversation_id.clone(),
-                    status: ConversationItemStatus::Completed,
+                    status: ConversationEntryStatus::Completed,
                     agent_run_id: Some(self.agent_run_id.clone()),
                     provider_step_id: invocation.provider_step_id.clone(),
                     tool_invocation_id: Some(invocation.id.clone()),
@@ -145,61 +145,8 @@ impl PersistenceContext {
                 },
             )?;
         self.add_input_item_id(item.id.clone());
-        self.push_step(AgentStep::ConversationItem(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id,
-        });
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
-        self.push_event(AgentRunEvent::ToolInvocationFinished {
-            tool_invocation_id: invocation.id.clone(),
-        });
-        Ok(model_text)
-    }
-
-    pub(super) fn append_error_tool_result_and_update_tool_invocation_full(
-        &self,
-        invocation: &ToolInvocationRecord,
-        status: ToolInvocationStatus,
-        error: RunErrorPayload,
-        approval: Option<ToolInvocationApproval>,
-    ) -> Result<String> {
-        let output = error_tool_output(error.message.clone());
-        let model_text = tool_output_to_model_text(&output);
-        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
-            tool_invocation_id: Some(invocation.id.clone()),
-            call_id: invocation.call_id.clone(),
-            content: output.content.clone(),
-            is_error: true,
-            structured_output: output.structured_output.clone(),
-            raw_output: output.raw_output.clone(),
-        });
-        let (item, _) = self
-            .repo
-            .append_conversation_item_and_update_tool_invocation_full(
-                NewConversationItem {
-                    conversation_id: self.conversation_id.clone(),
-                    status: ConversationItemStatus::Completed,
-                    agent_run_id: Some(self.agent_run_id.clone()),
-                    provider_step_id: invocation.provider_step_id.clone(),
-                    tool_invocation_id: Some(invocation.id.clone()),
-                    provider_item_id: None,
-                    payload,
-                },
-                &invocation.id,
-                UpdateToolInvocationStatus {
-                    status,
-                    output: Some(output),
-                    error: Some(error),
-                },
-                approval,
-            )?;
-        self.add_input_item_id(item.id.clone());
-        self.push_step(AgentStep::ConversationItem(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationItemAppended {
+        self.push_step(AgentStep::ConversationEntry(item.id.clone()));
+        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
             conversation_id: self.conversation_id.clone(),
             item_id: item.id,
         });
@@ -266,7 +213,7 @@ impl PersistenceContext {
         });
         self.push_step(AgentStep::ToolInvocation(invocation.id.clone()));
 
-        let payload = ConversationItemPayload::ToolCall(ToolCallItem {
+        let payload = ConversationEntryPayload::ToolCall(ToolCallEntry {
             tool_invocation_id: Some(invocation.id.clone()),
             call_id: invocation.call_id.clone(),
             source: invocation.source.clone(),
@@ -293,13 +240,27 @@ impl PersistenceContext {
             arguments_preview,
             access_requests,
         };
-        let invocation = self.repo.request_tool_invocation_approval(
+        let entry = NewConversationEntry {
+            conversation_id: self.conversation_id.clone(),
+            status: ConversationEntryStatus::WaitingForApproval,
+            agent_run_id: Some(self.agent_run_id.clone()),
+            provider_step_id: invocation.provider_step_id.clone(),
+            tool_invocation_id: Some(invocation.id.clone()),
+            provider_item_id: None,
+            payload: ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                tool_invocation_id: invocation.id.clone(),
+                request: request.clone(),
+            }),
+        };
+        let (entry, invocation) = self.repo.request_tool_invocation_approval_with_entry(
             &invocation.id,
-            NewToolInvocationApproval {
+            jaco_db::NewToolInvocationApproval {
                 request: request.clone(),
                 expires_at: None,
             },
+            entry,
         )?;
+        self.record_persisted_entries(std::slice::from_ref(&entry));
         self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
             agent_run_id: self.agent_run_id.clone(),
             tool_invocation_id: invocation.id.clone(),
@@ -349,11 +310,30 @@ impl PersistenceContext {
         decided_by: String,
         reason: Option<String>,
     ) -> Result<ToolInvocationRecord> {
-        let invocation = self.repo.update_tool_invocation_approval(
+        let decision = ApprovalDecisionPayload {
+            approved: true,
+            decided_by: decided_by.clone(),
+            reason: reason.clone(),
+        };
+        let entry = NewConversationEntry {
+            conversation_id: self.conversation_id.clone(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(self.agent_run_id.clone()),
+            provider_step_id: invocation.provider_step_id.clone(),
+            tool_invocation_id: Some(invocation.id.clone()),
+            provider_item_id: None,
+            payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                tool_invocation_id: invocation.id.clone(),
+                decision,
+            }),
+        };
+        let (entry, invocation) = self.repo.decide_tool_invocation_approval_with_entry(
             &invocation.id,
             ToolInvocationApprovalOutcome::Approved { decided_by, reason },
             ToolInvocationStatus::Running,
+            entry,
         )?;
+        self.record_persisted_entries(std::slice::from_ref(&entry));
         self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
             agent_run_id: invocation.agent_run_id.clone(),
             tool_invocation_id: invocation.id.clone(),
@@ -376,15 +356,21 @@ impl PersistenceContext {
             ApprovalStatus::Denied,
             Some(ApprovalDecisionPayload {
                 approved: false,
-                decided_by,
-                reason,
+                decided_by: decided_by.clone(),
+                reason: reason.clone(),
             }),
         )?;
-        self.append_error_tool_result_and_update_tool_invocation_full(
+        let decision = ApprovalDecisionPayload {
+            approved: false,
+            decided_by,
+            reason,
+        };
+        self.append_denied_or_canceled_tool_approval_result(
             invocation,
             ToolInvocationStatus::Denied,
             error,
-            Some(approval),
+            approval,
+            Some(decision),
         )
     }
 
@@ -399,12 +385,71 @@ impl PersistenceContext {
             None,
         );
         let approval = approval_after_outcome(invocation, ApprovalStatus::Canceled, None)?;
-        self.append_error_tool_result_and_update_tool_invocation_full(
+        self.append_denied_or_canceled_tool_approval_result(
             invocation,
             ToolInvocationStatus::Canceled,
             error,
-            Some(approval),
+            approval,
+            None,
         )
+    }
+
+    fn append_denied_or_canceled_tool_approval_result(
+        &self,
+        invocation: &ToolInvocationRecord,
+        status: ToolInvocationStatus,
+        error: RunErrorPayload,
+        approval: ToolInvocationApproval,
+        decision: Option<ApprovalDecisionPayload>,
+    ) -> Result<String> {
+        let output = error_tool_output(error.message.clone());
+        let model_text = tool_output_to_model_text(&output);
+        let mut entries = Vec::new();
+        if let Some(decision) = decision {
+            entries.push(NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: invocation.provider_step_id.clone(),
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                    tool_invocation_id: invocation.id.clone(),
+                    decision,
+                }),
+            });
+        }
+        entries.push(NewConversationEntry {
+            conversation_id: self.conversation_id.clone(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(self.agent_run_id.clone()),
+            provider_step_id: invocation.provider_step_id.clone(),
+            tool_invocation_id: Some(invocation.id.clone()),
+            provider_item_id: None,
+            payload: ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: Some(invocation.id.clone()),
+                call_id: invocation.call_id.clone(),
+                content: output.content.clone(),
+                is_error: true,
+                structured_output: output.structured_output.clone(),
+                raw_output: output.raw_output.clone(),
+            }),
+        });
+        let (entries, _) = self.append_entries_and_update_tool_invocation_full(
+            entries,
+            invocation,
+            UpdateToolInvocationStatus {
+                status,
+                output: Some(output),
+                error: Some(error),
+            },
+            Some(approval),
+        )?;
+        self.push_event(AgentRunEvent::ToolInvocationFinished {
+            tool_invocation_id: invocation.id.clone(),
+        });
+        debug_assert!(!entries.is_empty());
+        Ok(model_text)
     }
 
     pub(super) fn record_auto_approval(
@@ -436,8 +481,47 @@ impl PersistenceContext {
             decided_at: Some(now),
             expires_at: None,
         };
-        self.repo
-            .record_tool_invocation_approval(&invocation.id, approval, invocation.status)?;
+        let request = approval.request.clone();
+        let decision = approval.decision.clone().expect("auto approval decision");
+        let entries = vec![
+            NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: invocation.provider_step_id.clone(),
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                    tool_invocation_id: invocation.id.clone(),
+                    request,
+                }),
+            },
+            NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: invocation.provider_step_id.clone(),
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                    tool_invocation_id: invocation.id.clone(),
+                    decision,
+                }),
+            },
+        ];
+        let entries = self
+            .repo
+            .record_auto_tool_invocation_approval_with_entries(
+                entries,
+                &invocation.id,
+                invocation.status,
+                approval,
+            )?;
+        self.record_persisted_entries(&entries.0);
+        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
+            agent_run_id: invocation.agent_run_id.clone(),
+            tool_invocation_id: invocation.id.clone(),
+        });
         Ok(())
     }
 
@@ -547,7 +631,7 @@ where
         for content in response.choice.iter() {
             let payload = match content {
                 AssistantContent::Text(text) if !text.text.is_empty() => {
-                    Some(ConversationItemPayload::Message {
+                    Some(ConversationEntryPayload::Message {
                         role: TranscriptRole::Assistant,
                         content: vec![ContentPart::Text {
                             text: text.text.clone(),
@@ -555,7 +639,7 @@ where
                     })
                 }
                 AssistantContent::Reasoning(reasoning) => {
-                    Some(ConversationItemPayload::Reasoning {
+                    Some(ConversationEntryPayload::Reasoning {
                         text: reasoning.display_text(),
                         summary: None,
                     })
@@ -566,8 +650,8 @@ where
             if let Some(payload) = payload {
                 match self.context.append_item(payload.clone()) {
                     Ok(item) => {
-                        if matches!(payload, ConversationItemPayload::Message { .. }) {
-                            mutex_replace(&self.context.final_item_id, Some(item.id.clone()));
+                        if matches!(payload, ConversationEntryPayload::Message { .. }) {
+                            mutex_replace(&self.context.final_entry_id, Some(item.id.clone()));
                         }
                         if let Some(provider_step_id) = provider_step_id.as_ref() {
                             self.context.push_event(AgentRunEvent::ProviderStepEvent {
@@ -863,7 +947,7 @@ where
             Ok(invocation) => invocation,
             Err(error) => return HookAction::terminate(error.to_string()),
         };
-        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
             tool_invocation_id: Some(tool_invocation_id.clone()),
             call_id: invocation.call_id,
             content: output.content.clone(),

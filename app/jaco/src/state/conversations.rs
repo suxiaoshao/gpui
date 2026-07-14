@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use gpui::App;
 use jaco_agent::{AgentRunRequest, SkillActivationRequest};
 use jaco_core::{
-    AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart, ConversationId,
-    ConversationItemPayload, ConversationItemStatus, ConversationMetadata,
+    AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
+    ConversationEntryPayload, ConversationEntryStatus, ConversationId, ConversationMetadata,
     ConversationSettingsSnapshot, ProjectId, PromptContent, PromptId, ReasoningSelectionSnapshot,
     RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy,
     ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole, new_id,
 };
 use jaco_db::{
-    ConversationItemRecord, ConversationRecord, ConversationTimelineRecords,
-    ConversationWithUserItemRecord, FreshRepository, NewConversation, NewConversationItem,
+    ConversationEntryRecord, ConversationRecord, ConversationTimelineRecords,
+    ConversationWithUserItemRecord, FreshRepository, NewConversation, NewConversationEntry,
     NewConversationWithUserItem, ProjectRecord,
 };
 
@@ -63,7 +63,7 @@ pub(crate) struct CreatedConversation {
 }
 
 pub(crate) struct SentConversationMessage {
-    pub(crate) item: ConversationItemRecord,
+    pub(crate) item: ConversationEntryRecord,
     pub(crate) run_request: AgentRunRequest,
 }
 
@@ -128,7 +128,7 @@ pub(crate) fn create_conversation(
     update_last_active_conversation(&project, &record.conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &record.conversation.id,
-        user_item_id: &record.user_item.id,
+        trigger_entry_id: &record.user_item.id,
         project: &project,
         provider_settings: &provider.settings,
         provider_model: request.provider_model,
@@ -175,7 +175,7 @@ pub(crate) fn send_conversation_message(
     let prepared_attachments =
         prepare_message_attachments(&conversation.id, &new_id(), &request.attachments, cx)?;
     let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
-    let item = match repository.append_conversation_item_with_attachments(
+    let item = match repository.append_conversation_entry_with_attachments(
         new_user_message_item(conversation.id.clone(), request.content_parts.clone()),
         prepared_attachments.new_attachments,
     ) {
@@ -188,7 +188,7 @@ pub(crate) fn send_conversation_message(
     update_last_active_conversation(&project, &conversation.id, cx)?;
     let run_request = build_run_request(RunRequestContext {
         conversation_id: &conversation.id,
-        user_item_id: &item.id,
+        trigger_entry_id: &item.id,
         project: &project,
         provider_settings: &provider.settings,
         provider_model: request.provider_model,
@@ -247,15 +247,15 @@ fn project_for_new_conversation(
 fn new_user_message_item(
     conversation_id: ConversationId,
     content: Vec<ContentPart>,
-) -> NewConversationItem {
-    NewConversationItem {
+) -> NewConversationEntry {
+    NewConversationEntry {
         conversation_id,
-        status: ConversationItemStatus::Completed,
+        status: ConversationEntryStatus::Completed,
         agent_run_id: None,
         provider_step_id: None,
         tool_invocation_id: None,
         provider_item_id: None,
-        payload: ConversationItemPayload::Message {
+        payload: ConversationEntryPayload::Message {
             role: TranscriptRole::User,
             content,
         },
@@ -264,7 +264,7 @@ fn new_user_message_item(
 
 struct RunRequestContext<'a> {
     conversation_id: &'a ConversationId,
-    user_item_id: &'a str,
+    trigger_entry_id: &'a str,
     project: &'a ProjectRecord,
     provider_settings: &'a jaco_core::ProviderSettingsPayload,
     provider_model: ProviderModelChoice,
@@ -284,7 +284,7 @@ fn build_run_request(input: RunRequestContext<'_>) -> AgentRunRequest {
     });
     let mut request = AgentRunRequest::new(
         input.conversation_id.clone(),
-        input.user_item_id.to_string(),
+        input.trigger_entry_id.to_string(),
         input.provider_model.provider_id.clone(),
         input.provider_model.model_id.clone(),
         RunSettingsSnapshot {
@@ -407,7 +407,7 @@ mod tests {
             let provider_model = provider_model_choice(&provider.id);
             let conversation_id = insert_conversation(&repository, &provider_model);
             let initial_item_count = repository
-                .conversation_items(&conversation_id)
+                .conversation_entries(&conversation_id)
                 .unwrap()
                 .len();
             (conversation_id, provider_model, initial_item_count)
@@ -445,7 +445,7 @@ mod tests {
             let repository = database::repository(cx);
             assert_eq!(
                 repository
-                    .conversation_items(&conversation_id)
+                    .conversation_entries(&conversation_id)
                     .unwrap()
                     .len(),
                 initial_item_count

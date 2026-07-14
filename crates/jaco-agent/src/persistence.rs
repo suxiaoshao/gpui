@@ -1,10 +1,13 @@
 use crate::{
-    AgentRuntimeError, AgentRuntimeObserver, AgentStep, RegisteredToolDefinition,
-    ToolApprovalBroker, tool_registry::RegisteredRuntimeTool,
+    AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
+    RegisteredToolDefinition, Result, ToolApprovalBroker, tool_registry::RegisteredRuntimeTool,
 };
 use jaco_core::*;
-use jaco_db::{FreshRepository, NewAgentRun};
-mod conversation_items;
+use jaco_db::{
+    AgentRunFinalEntry, AgentRunRecord, FinishAgentRun, FinishedAgentRun, FreshRepository,
+    NewAgentRun, NewConversationEntry,
+};
+mod conversation_entries;
 mod model;
 mod provider_step;
 mod tool_hook;
@@ -19,6 +22,102 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AgentRunOutcome {
+    Completed {
+        final_entry_id: Option<ConversationEntryId>,
+    },
+    MaxSteps {
+        final_entry_id: Option<ConversationEntryId>,
+    },
+    Failed {
+        error: RunErrorPayload,
+    },
+    Canceled {
+        final_entry_id: Option<ConversationEntryId>,
+    },
+}
+
+pub(crate) fn finish_agent_run_spec(
+    run: &AgentRunRecord,
+    outcome: AgentRunOutcome,
+) -> FinishAgentRun {
+    let (status, stopped_reason, error, final_entry_id) = match outcome {
+        AgentRunOutcome::Completed { final_entry_id } => (
+            AgentRunStatus::Completed,
+            AgentStoppedReason::Completed,
+            None,
+            final_entry_id,
+        ),
+        AgentRunOutcome::MaxSteps { final_entry_id } => (
+            AgentRunStatus::Completed,
+            AgentStoppedReason::MaxSteps,
+            None,
+            final_entry_id,
+        ),
+        AgentRunOutcome::Failed { error } => (
+            AgentRunStatus::Failed,
+            AgentStoppedReason::Failed,
+            Some(error),
+            None,
+        ),
+        AgentRunOutcome::Canceled { final_entry_id } => (
+            AgentRunStatus::Canceled,
+            AgentStoppedReason::Canceled,
+            None,
+            final_entry_id,
+        ),
+    };
+
+    let final_entry = if let Some(final_entry_id) = final_entry_id {
+        AgentRunFinalEntry::Existing(final_entry_id)
+    } else if let Some(error_payload) = error.clone() {
+        AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+            conversation_id: run.conversation_id.clone(),
+            status: ConversationEntryStatus::Failed,
+            agent_run_id: Some(run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationEntryPayload::Error(error_payload),
+        }))
+    } else {
+        let code = match stopped_reason {
+            AgentStoppedReason::Canceled => ConversationStatusCode::Canceled,
+            AgentStoppedReason::MaxSteps => ConversationStatusCode::MaxStepsReached,
+            AgentStoppedReason::Completed => ConversationStatusCode::CompletedWithoutOutput,
+            AgentStoppedReason::Failed => unreachable!("failed runs always provide an error"),
+        };
+        let status = match status {
+            AgentRunStatus::Completed => ConversationEntryStatus::Completed,
+            AgentRunStatus::Canceled => ConversationEntryStatus::Canceled,
+            AgentRunStatus::Failed => ConversationEntryStatus::Failed,
+            AgentRunStatus::Queued | AgentRunStatus::Running => {
+                unreachable!("finish_agent_run_spec requires a terminal status")
+            }
+        };
+        AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+            conversation_id: run.conversation_id.clone(),
+            status,
+            agent_run_id: Some(run.id.clone()),
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                code,
+                message: None,
+            }),
+        }))
+    };
+
+    FinishAgentRun {
+        status,
+        stopped_reason,
+        error,
+        final_entry,
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PersistenceContext {
     repo: FreshRepository,
@@ -27,9 +126,9 @@ pub(crate) struct PersistenceContext {
     provider_id: ProviderId,
     model_id: ProviderModelId,
     settings_snapshot: RunSettingsSnapshot,
-    input_item_ids: Arc<Mutex<Vec<ConversationItemId>>>,
+    input_item_ids: Arc<Mutex<Vec<ConversationEntryId>>>,
     last_provider_step_id: Arc<Mutex<Option<ProviderStepId>>>,
-    final_item_id: Arc<Mutex<Option<ConversationItemId>>>,
+    final_entry_id: Arc<Mutex<Option<ConversationEntryId>>>,
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
@@ -52,7 +151,7 @@ impl PersistenceContext {
         provider_id: ProviderId,
         model_id: ProviderModelId,
         settings_snapshot: RunSettingsSnapshot,
-        input_item_ids: Vec<ConversationItemId>,
+        input_item_ids: Vec<ConversationEntryId>,
         tool_definitions: Vec<RegisteredToolDefinition>,
         runtime_tools: Vec<RegisteredRuntimeTool>,
         max_tool_calls: u32,
@@ -70,7 +169,7 @@ impl PersistenceContext {
             settings_snapshot,
             input_item_ids: Arc::new(Mutex::new(input_item_ids)),
             last_provider_step_id: Arc::new(Mutex::new(None)),
-            final_item_id: Arc::new(Mutex::new(None)),
+            final_entry_id: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(Vec::new())),
             steps: Arc::new(Mutex::new(Vec::new())),
             tool_definitions: Arc::new(
@@ -109,17 +208,58 @@ impl PersistenceContext {
         mutex_clone(&self.steps)
     }
 
-    pub(crate) fn final_item_id(&self) -> Option<ConversationItemId> {
-        mutex_clone(&self.final_item_id)
+    pub(crate) fn final_entry_id(&self) -> Option<ConversationEntryId> {
+        mutex_clone(&self.final_entry_id)
+    }
+
+    pub(crate) fn finish_run(&self, outcome: AgentRunOutcome) -> Result<FinishedAgentRun> {
+        let run = self
+            .repo
+            .get_agent_run(&self.agent_run_id)?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!("agent run {} disappeared", self.agent_run_id))
+            })?;
+        let finished = self.repo.finish_agent_run(
+            &self.agent_run_id,
+            finish_agent_run_spec(&run, outcome.clone()),
+        )?;
+        self.set_final_entry_id(Some(finished.final_entry.id.clone()));
+        if finished.appended_final_entry {
+            self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
+                conversation_id: finished.final_entry.conversation_id.clone(),
+                item_id: finished.final_entry.id.clone(),
+            });
+        }
+        self.push_step(AgentStep::ConversationEntry(
+            finished.final_entry.id.clone(),
+        ));
+        match outcome {
+            AgentRunOutcome::Completed { .. } | AgentRunOutcome::MaxSteps { .. } => {
+                let output = finished.run.output.clone().ok_or_else(|| {
+                    AgentRuntimeError::Invariant("finished run has no output".to_string())
+                })?;
+                self.push_event(AgentRunEvent::Completed { output });
+            }
+            AgentRunOutcome::Failed { error } => {
+                self.push_event(AgentRunEvent::Failed { error });
+            }
+            AgentRunOutcome::Canceled { .. } => self.push_event(AgentRunEvent::Canceled),
+        }
+        self.emit_runtime(AgentRuntimeEvent::AgentRunStatusChanged {
+            agent_run_id: finished.run.id.clone(),
+            status: finished.run.status,
+        });
+        Ok(finished)
     }
 }
 
 pub(crate) fn new_agent_run_input(request: &crate::AgentRunRequest) -> NewAgentRun {
     NewAgentRun {
+        conversation_id: request.conversation_id.clone(),
+        trigger_entry_id: request.trigger_entry_id.clone(),
         trigger_kind: request.trigger_kind,
         status: AgentRunStatus::Queued,
         input: AgentRunInput {
-            user_item_id: request.user_item_id.clone(),
             prompt_snapshot: request.prompt_snapshot.clone(),
             provider_id: request.provider_id.clone(),
             model_id: request.model_id.clone(),

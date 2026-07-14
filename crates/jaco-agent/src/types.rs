@@ -32,7 +32,7 @@ impl Default for RuntimeGuards {
 #[derive(Clone)]
 pub struct AgentRunRequest {
     pub conversation_id: ConversationId,
-    pub user_item_id: ConversationItemId,
+    pub trigger_entry_id: ConversationEntryId,
     pub trigger_kind: AgentRunTriggerKind,
     pub prompt_snapshot: Option<PromptContent>,
     pub provider_id: ProviderId,
@@ -50,7 +50,7 @@ pub struct AgentRunRequest {
 impl AgentRunRequest {
     pub fn new(
         conversation_id: ConversationId,
-        user_item_id: ConversationItemId,
+        trigger_entry_id: ConversationEntryId,
         provider_id: ProviderId,
         model_id: ProviderModelId,
         settings_snapshot: RunSettingsSnapshot,
@@ -59,7 +59,7 @@ impl AgentRunRequest {
         let max_steps = settings_snapshot.tool_policy.max_steps.max(1);
         Self {
             conversation_id,
-            user_item_id,
+            trigger_entry_id,
             trigger_kind: AgentRunTriggerKind::User,
             prompt_snapshot: settings_snapshot.prompt.clone(),
             provider_id,
@@ -83,7 +83,7 @@ impl AgentRunRequest {
 pub enum AgentStep {
     ProviderStep(ProviderStepId),
     ToolInvocation(ToolInvocationId),
-    ConversationItem(ConversationItemId),
+    ConversationEntry(ConversationEntryId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,13 +127,13 @@ pub enum AgentRuntimeEvent {
         agent_run_id: AgentRunId,
         status: AgentRunStatus,
     },
-    ConversationItemAppended {
+    ConversationEntryAppended {
         conversation_id: ConversationId,
-        item_id: ConversationItemId,
+        item_id: ConversationEntryId,
     },
-    ConversationItemUpdated {
+    ConversationEntryUpdated {
         conversation_id: ConversationId,
-        item_id: ConversationItemId,
+        item_id: ConversationEntryId,
     },
     ProviderStepChanged {
         agent_run_id: AgentRunId,

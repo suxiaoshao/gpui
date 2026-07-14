@@ -6,7 +6,7 @@ pub use payloads::*;
 
 pub type ProjectId = String;
 pub type ConversationId = String;
-pub type ConversationItemId = String;
+pub type ConversationEntryId = String;
 pub type AttachmentId = String;
 pub type AgentRunId = String;
 pub type ProviderStepId = String;

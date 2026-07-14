@@ -7,7 +7,7 @@ use std::{
 use crate::{AgentRuntimeError, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jaco_core::*;
-use jaco_db::{AttachmentRecord, ConversationItemRecord};
+use jaco_db::{AttachmentRecord, ConversationEntryRecord};
 use rig_core::{
     OneOrMany,
     completion::{AssistantContent, Message as RigMessage},
@@ -22,7 +22,7 @@ type AttachmentMap<'a> = HashMap<&'a str, &'a AttachmentRecord>;
 pub(crate) struct PromptHistory {
     pub(crate) prompt: RigMessage,
     pub(crate) history: Vec<RigMessage>,
-    pub(crate) input_item_ids: Vec<ConversationItemId>,
+    pub(crate) input_item_ids: Vec<ConversationEntryId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -41,33 +41,37 @@ impl Default for PromptHistoryOptions {
 }
 
 pub(crate) fn build_prompt_history_with_options(
-    items: &[ConversationItemRecord],
+    items: &[ConversationEntryRecord],
     attachments: &[AttachmentRecord],
-    user_item_id: &str,
+    trigger_entry_id: &str,
     agent_run_id: &str,
     options: PromptHistoryOptions,
 ) -> Result<PromptHistory> {
     let attachment_map = attachment_map(attachments);
     let user_index = items
         .iter()
-        .position(|item| item.id == user_item_id)
+        .position(|item| item.id == trigger_entry_id)
         .ok_or_else(|| {
-            AgentRuntimeError::Invariant(format!("user item {user_item_id} is missing"))
+            AgentRuntimeError::Invariant(format!("user item {trigger_entry_id} is missing"))
         })?;
     let current_run_skill_items = items[user_index + 1..]
         .iter()
         .filter(|item| {
             item.agent_run_id.as_deref() == Some(agent_run_id)
-                && matches!(item.payload, ConversationItemPayload::SkillActivation(_))
+                && matches!(item.payload, ConversationEntryPayload::SkillActivation(_))
         })
         .collect::<Vec<_>>();
     let prompt = if current_run_skill_items.is_empty() {
-        conversation_item_to_rig_message_with_options(&items[user_index], &attachment_map, options)?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!(
-                    "user item {user_item_id} cannot be used as prompt"
-                ))
-            })?
+        conversation_entry_to_rig_message_with_options(
+            &items[user_index],
+            &attachment_map,
+            options,
+        )?
+        .ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "user item {trigger_entry_id} cannot be used as prompt"
+            ))
+        })?
     } else {
         user_prompt_with_skill_context(
             &items[user_index],
@@ -78,7 +82,7 @@ pub(crate) fn build_prompt_history_with_options(
     let history = items[..user_index]
         .iter()
         .filter_map(|item| {
-            conversation_item_to_rig_message_with_options(item, &attachment_map, options)
+            conversation_entry_to_rig_message_with_options(item, &attachment_map, options)
                 .transpose()
         })
         .collect::<Result<Vec<_>>>()?;
@@ -95,24 +99,24 @@ pub(crate) fn build_prompt_history_with_options(
 }
 
 #[cfg(test)]
-pub(crate) fn conversation_item_to_rig_message(
-    item: &ConversationItemRecord,
+pub(crate) fn conversation_entry_to_rig_message(
+    item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
 ) -> Result<Option<RigMessage>> {
-    conversation_item_to_rig_message_with_options(
+    conversation_entry_to_rig_message_with_options(
         item,
         attachments,
         PromptHistoryOptions::default(),
     )
 }
 
-fn conversation_item_to_rig_message_with_options(
-    item: &ConversationItemRecord,
+fn conversation_entry_to_rig_message_with_options(
+    item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
     options: PromptHistoryOptions,
 ) -> Result<Option<RigMessage>> {
     Ok(match &item.payload {
-        ConversationItemPayload::Message { role, content } => match role {
+        ConversationEntryPayload::Message { role, content } => match role {
             TranscriptRole::System => Some(RigMessage::system(content_text(content))),
             TranscriptRole::Developer => Some(RigMessage::system(format!(
                 "Developer instruction:\n{}",
@@ -131,10 +135,10 @@ fn conversation_item_to_rig_message_with_options(
             TranscriptRole::Assistant => Some(RigMessage::assistant(content_text(content))),
             TranscriptRole::Tool => Some(RigMessage::user(content_text(content))),
         },
-        ConversationItemPayload::SkillActivation(skill) => {
+        ConversationEntryPayload::SkillActivation(skill) => {
             Some(RigMessage::user(skill_activation_context(skill)))
         }
-        ConversationItemPayload::Reasoning { text, summary } if options.include_reasoning => {
+        ConversationEntryPayload::Reasoning { text, summary } if options.include_reasoning => {
             let reasoning = summary.as_ref().map_or_else(
                 || rig_core::message::Reasoning::new(text),
                 |summary| rig_core::message::Reasoning::summaries(vec![summary.clone()]),
@@ -144,9 +148,9 @@ fn conversation_item_to_rig_message_with_options(
                 content: OneOrMany::one(AssistantContent::Reasoning(reasoning)),
             })
         }
-        ConversationItemPayload::Reasoning { .. } => None,
-        ConversationItemPayload::ToolCall(_) if !options.preserve_tool_protocol => None,
-        ConversationItemPayload::ToolCall(call) => Some(RigMessage::Assistant {
+        ConversationEntryPayload::Reasoning { .. } => None,
+        ConversationEntryPayload::ToolCall(_) if !options.preserve_tool_protocol => None,
+        ConversationEntryPayload::ToolCall(call) => Some(RigMessage::Assistant {
             id: item.provider_item_id.clone(),
             content: OneOrMany::one(AssistantContent::ToolCall(
                 ToolCall::new(
@@ -156,23 +160,23 @@ fn conversation_item_to_rig_message_with_options(
                 .with_call_id(call.call_id.clone()),
             )),
         }),
-        ConversationItemPayload::ToolResult(result) if !options.preserve_tool_protocol => {
+        ConversationEntryPayload::ToolResult(result) if !options.preserve_tool_protocol => {
             Some(RigMessage::user(textualized_tool_result(result)))
         }
-        ConversationItemPayload::ToolResult(result) => Some(RigMessage::User {
+        ConversationEntryPayload::ToolResult(result) => Some(RigMessage::User {
             content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                 id: result.call_id.clone(),
                 call_id: Some(result.call_id.clone()),
                 content: OneOrMany::one(ToolResultContent::text(tool_result_model_text(result))),
             })),
         }),
-        ConversationItemPayload::Error(error) => Some(RigMessage::system(format!(
+        ConversationEntryPayload::Error(error) => Some(RigMessage::system(format!(
             "Previous run error [{}]: {}",
             error.code, error.message
         ))),
-        ConversationItemPayload::ApprovalRequest(_)
-        | ConversationItemPayload::ApprovalDecision(_)
-        | ConversationItemPayload::Status(_) => None,
+        ConversationEntryPayload::ApprovalRequest(_)
+        | ConversationEntryPayload::ApprovalDecision(_)
+        | ConversationEntryPayload::Status(_) => None,
     })
 }
 
@@ -421,14 +425,14 @@ fn document_media_type_for_extension(extension: &str) -> Option<DocumentMediaTyp
     }
 }
 
-fn tool_result_model_text(result: &ToolResultItem) -> String {
+fn tool_result_model_text(result: &ToolResultEntry) -> String {
     if let Some(structured) = result.structured_output.as_ref() {
         return structured.value.to_string();
     }
     content_text(&result.content)
 }
 
-fn textualized_tool_result(result: &ToolResultItem) -> String {
+fn textualized_tool_result(result: &ToolResultEntry) -> String {
     let status = if result.is_error { "error" } else { "success" };
     format!(
         "Approved tool call `{}` completed with {status} result:\n{}",
@@ -438,11 +442,11 @@ fn textualized_tool_result(result: &ToolResultItem) -> String {
 }
 
 fn user_prompt_with_skill_context(
-    user_item: &ConversationItemRecord,
-    skill_items: &[&ConversationItemRecord],
+    user_item: &ConversationEntryRecord,
+    skill_items: &[&ConversationEntryRecord],
     attachments: &AttachmentMap<'_>,
 ) -> Result<RigMessage> {
-    let ConversationItemPayload::Message {
+    let ConversationEntryPayload::Message {
         role: TranscriptRole::User,
         content,
     } = &user_item.payload
@@ -455,7 +459,7 @@ fn user_prompt_with_skill_context(
 
     let mut content = user_content_parts(content, attachments)?;
     for item in skill_items {
-        let ConversationItemPayload::SkillActivation(skill) = &item.payload else {
+        let ConversationEntryPayload::SkillActivation(skill) = &item.payload else {
             continue;
         };
         content.push(UserContent::text(skill_activation_context(skill)));
@@ -465,7 +469,7 @@ fn user_prompt_with_skill_context(
     })
 }
 
-fn skill_activation_context(skill: &SkillActivationItem) -> String {
+fn skill_activation_context(skill: &SkillActivationEntry) -> String {
     format!(
         "<skill>\n<name>{}</name>\n<path>{}</path>\n{}\n</skill>",
         skill.name,
@@ -492,7 +496,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let image_path = temp_dir.path().join("image.png");
         fs::write(&image_path, [0x89, b'P', b'N', b'G']).unwrap();
-        let item = conversation_item(
+        let item = conversation_entry(
             "item-1",
             vec![
                 ContentPart::Text {
@@ -512,7 +516,7 @@ mod tests {
         let attachments = [attachment];
         let attachment_map = attachment_map(&attachments);
 
-        let message = conversation_item_to_rig_message(&item, &attachment_map)
+        let message = conversation_entry_to_rig_message(&item, &attachment_map)
             .unwrap()
             .unwrap();
 
@@ -537,7 +541,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("archive.zip");
         fs::write(&file_path, [0xff, 0x00, 0x10]).unwrap();
-        let item = conversation_item(
+        let item = conversation_entry(
             "item-1",
             vec![ContentPart::File {
                 attachment_id: "att-1".to_string(),
@@ -552,37 +556,136 @@ mod tests {
         let attachments = [attachment];
         let attachment_map = attachment_map(&attachments);
 
-        let error = conversation_item_to_rig_message(&item, &attachment_map).unwrap_err();
+        let error = conversation_entry_to_rig_message(&item, &attachment_map).unwrap_err();
 
         assert!(matches!(error, AgentRuntimeError::Unsupported(_)));
     }
 
-    fn conversation_item(id: &str, content: Vec<ContentPart>) -> ConversationItemRecord {
-        conversation_item_with_payload(
+    #[test]
+    fn prompt_history_includes_errors_but_skips_status_and_approval_entries() {
+        let items = vec![
+            conversation_entry_with_payload(
+                "earlier-user",
+                1,
+                None,
+                ConversationEntryKind::Message,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "earlier question".to_string(),
+                    }],
+                },
+            ),
+            conversation_entry_with_payload(
+                "status",
+                2,
+                Some("run-1"),
+                ConversationEntryKind::Status,
+                ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::CompletedWithoutOutput,
+                    message: None,
+                }),
+            ),
+            conversation_entry_with_payload(
+                "approval",
+                3,
+                Some("run-2"),
+                ConversationEntryKind::ApprovalRequest,
+                ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                    tool_invocation_id: "tool-1".to_string(),
+                    request: ApprovalRequestPayload {
+                        reason: "Read a file".to_string(),
+                        tool_source: ToolSource::Mcp {
+                            server_id: "filesystem".to_string(),
+                        },
+                        tool_name: "read_file".to_string(),
+                        arguments_preview: "{}".to_string(),
+                        access_requests: Vec::new(),
+                    },
+                }),
+            ),
+            conversation_entry_with_payload(
+                "error",
+                4,
+                Some("run-3"),
+                ConversationEntryKind::Error,
+                ConversationEntryPayload::Error(RunErrorPayload {
+                    code: "provider_error".to_string(),
+                    message: "forced provider-open failure".to_string(),
+                    retryable: true,
+                    provider: Some("openai".to_string()),
+                    raw: None,
+                }),
+            ),
+            conversation_entry_with_payload(
+                "current-user",
+                5,
+                None,
+                ConversationEntryKind::Message,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "retry now".to_string(),
+                    }],
+                },
+            ),
+        ];
+
+        let history = build_prompt_history_with_options(
+            &items,
+            &[],
+            "current-user",
+            "run-4",
+            PromptHistoryOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(history.history.len(), 2);
+        assert!(matches!(&history.history[0], RigMessage::User { .. }));
+        assert!(matches!(
+            &history.history[1],
+            RigMessage::System { content }
+                if content == "Previous run error [provider_error]: forced provider-open failure"
+        ));
+        assert_eq!(history.prompt, RigMessage::user("retry now"));
+        assert_eq!(
+            history.input_item_ids,
+            vec![
+                "earlier-user".to_string(),
+                "status".to_string(),
+                "approval".to_string(),
+                "error".to_string(),
+                "current-user".to_string(),
+            ]
+        );
+    }
+
+    fn conversation_entry(id: &str, content: Vec<ContentPart>) -> ConversationEntryRecord {
+        conversation_entry_with_payload(
             id,
             1,
             None,
-            ConversationItemKind::Message,
-            ConversationItemPayload::Message {
+            ConversationEntryKind::Message,
+            ConversationEntryPayload::Message {
                 role: TranscriptRole::User,
                 content,
             },
         )
     }
 
-    fn conversation_item_with_payload(
+    fn conversation_entry_with_payload(
         id: &str,
         seq: i32,
         agent_run_id: Option<&str>,
-        kind: ConversationItemKind,
-        payload: ConversationItemPayload,
-    ) -> ConversationItemRecord {
-        ConversationItemRecord {
+        kind: ConversationEntryKind,
+        payload: ConversationEntryPayload,
+    ) -> ConversationEntryRecord {
+        ConversationEntryRecord {
             id: id.to_string(),
             conversation_id: "conversation-1".to_string(),
             seq,
             kind,
-            status: ConversationItemStatus::Completed,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: agent_run_id.map(str::to_string),
             provider_step_id: None,
             tool_invocation_id: None,

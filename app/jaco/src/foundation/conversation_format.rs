@@ -1,8 +1,9 @@
 use fluent_bundle::FluentArgs;
 use jaco_core::{
-    AgentRunStatus, ContentPart, ConversationItemPayload, ProviderRawPayload, TranscriptRole,
+    AgentRunStatus, ContentPart, ConversationEntryPayload, ConversationStatusCode,
+    ProviderRawPayload, TranscriptRole,
 };
-use jaco_db::{AgentRunRecord, ConversationItemRecord};
+use jaco_db::{AgentRunRecord, ConversationEntryRecord};
 use time::{Month, OffsetDateTime, UtcOffset, Weekday};
 
 use crate::foundation::I18n;
@@ -15,10 +16,10 @@ pub(crate) fn content_parts_text(content: &[ContentPart]) -> String {
         .join("\n")
 }
 
-pub(crate) fn item_markdown(item: &ConversationItemRecord) -> String {
+pub(crate) fn item_markdown(item: &ConversationEntryRecord) -> String {
     match &item.payload {
-        ConversationItemPayload::Message { content, .. } => content_parts_text(content),
-        ConversationItemPayload::SkillActivation(skill) => {
+        ConversationEntryPayload::Message { content, .. } => content_parts_text(content),
+        ConversationEntryPayload::SkillActivation(skill) => {
             let content = content_parts_text(&skill.content);
             if content.is_empty() {
                 format!("Activated skill `{}`", skill.name)
@@ -26,17 +27,17 @@ pub(crate) fn item_markdown(item: &ConversationItemRecord) -> String {
                 format!("Activated skill `{}`\n\n{}", skill.name, content)
             }
         }
-        ConversationItemPayload::Reasoning { text, summary } => {
+        ConversationEntryPayload::Reasoning { text, summary } => {
             summary.clone().unwrap_or_else(|| text.clone())
         }
-        ConversationItemPayload::ToolCall(call) => {
+        ConversationEntryPayload::ToolCall(call) => {
             let arguments = pretty_json(&call.arguments.value);
             format!(
                 "**Tool call:** `{}`\n\n```json\n{}\n```",
                 call.runtime_tool_name, arguments
             )
         }
-        ConversationItemPayload::ToolResult(result) => {
+        ConversationEntryPayload::ToolResult(result) => {
             let mut parts = Vec::new();
             let content = content_parts_text(&result.content);
             if !content.is_empty() {
@@ -54,41 +55,49 @@ pub(crate) fn item_markdown(item: &ConversationItemRecord) -> String {
                 parts.join("\n\n")
             }
         }
-        ConversationItemPayload::ApprovalRequest(request) => format!(
+        ConversationEntryPayload::ApprovalRequest(request) => format!(
             "**Approval requested:** `{}`\n\n{}",
             request.request.tool_name, request.request.arguments_preview
         ),
-        ConversationItemPayload::ApprovalDecision(decision) => {
+        ConversationEntryPayload::ApprovalDecision(decision) => {
             if decision.decision.approved {
                 "Approved".to_string()
             } else {
                 "Denied".to_string()
             }
         }
-        ConversationItemPayload::Status(status) => status
+        ConversationEntryPayload::Status(status) => status
             .message
             .as_ref()
-            .map(|message| format!("**{}**\n\n{}", status.label, message))
-            .unwrap_or_else(|| status.label.clone()),
-        ConversationItemPayload::Error(error) => format!("**Error:** {}", error.message),
+            .map(|message| format!("**{}**\n\n{}", status_code_label(status.code), message))
+            .unwrap_or_else(|| status_code_label(status.code).to_string()),
+        ConversationEntryPayload::Error(error) => format!("**Error:** {}", error.message),
     }
 }
 
-pub(crate) fn is_user_message(item: &ConversationItemRecord) -> bool {
-    matches!(
-        item.payload,
-        ConversationItemPayload::Message {
-            role: TranscriptRole::User,
-            ..
+pub(crate) fn status_i18n_key(code: ConversationStatusCode) -> &'static str {
+    match code {
+        ConversationStatusCode::Canceled => "conversation-status-canceled",
+        ConversationStatusCode::MaxStepsReached => "conversation-status-max-steps",
+        ConversationStatusCode::CompletedWithoutOutput => {
+            "conversation-status-completed-without-output"
         }
-    )
+    }
 }
 
-pub(crate) fn is_assistant_message(item: &ConversationItemRecord) -> bool {
+pub(crate) fn status_code_label(code: ConversationStatusCode) -> &'static str {
+    match code {
+        ConversationStatusCode::Canceled => "canceled",
+        ConversationStatusCode::MaxStepsReached => "max_steps_reached",
+        ConversationStatusCode::CompletedWithoutOutput => "completed_without_output",
+    }
+}
+
+pub(crate) fn is_user_message(item: &ConversationEntryRecord) -> bool {
     matches!(
         item.payload,
-        ConversationItemPayload::Message {
-            role: TranscriptRole::Assistant,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::User,
             ..
         }
     )
