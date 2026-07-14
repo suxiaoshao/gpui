@@ -22,13 +22,6 @@ pub enum DbError {
     TimeFormat(#[from] Format),
     #[error("timestamp parsing failed: {0}")]
     TimeParse(#[from] Parse),
-    #[error(
-        "database schema version {database_version} is newer than supported version {supported_version}"
-    )]
-    UnsupportedSchemaVersion {
-        database_version: i32,
-        supported_version: i32,
-    },
     #[error("database invariant failed: {0}")]
     Invariant(String),
 }

@@ -3,10 +3,10 @@ use std::{collections::HashMap, path::PathBuf};
 use gpui::*;
 use gpui_component::{ActiveTheme, h_flex};
 use jaco_core::{
-    AttachmentId, AttachmentKind, AttachmentSource, ContentPart, ConversationItemPayload,
+    AttachmentId, AttachmentKind, AttachmentSource, ContentPart, ConversationEntryPayload,
     TranscriptRole,
 };
-use jaco_db::{AttachmentRecord, ConversationItemRecord};
+use jaco_db::{AttachmentRecord, ConversationEntryRecord};
 
 use crate::components::image_preview::{self, ImagePreviewAttachment, ImagePreviewSource};
 
@@ -46,10 +46,10 @@ pub(super) fn attachments_by_id(
 }
 
 pub(super) fn user_image_attachments(
-    item: &ConversationItemRecord,
+    item: &ConversationEntryRecord,
     attachments_by_id: &HashMap<AttachmentId, AttachmentRecord>,
 ) -> Vec<UserImageAttachment> {
-    let ConversationItemPayload::Message {
+    let ConversationEntryPayload::Message {
         role: TranscriptRole::User,
         content,
     } = &item.payload
@@ -156,9 +156,9 @@ mod tests {
     use super::{attachments_by_id, user_image_attachments};
     use jaco_core::{
         AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ContentPart,
-        ConversationItemKind, ConversationItemPayload, ConversationItemStatus, TranscriptRole,
+        ConversationEntryKind, ConversationEntryPayload, ConversationEntryStatus, TranscriptRole,
     };
-    use jaco_db::{AttachmentRecord, ConversationItemRecord};
+    use jaco_db::{AttachmentRecord, ConversationEntryRecord};
     use std::path::PathBuf;
     use time::OffsetDateTime;
 
@@ -199,19 +199,19 @@ mod tests {
         assert_eq!(images[0].height, Some(240));
     }
 
-    fn user_message(content: Vec<ContentPart>) -> ConversationItemRecord {
+    fn user_message(content: Vec<ContentPart>) -> ConversationEntryRecord {
         let now = OffsetDateTime::UNIX_EPOCH;
-        ConversationItemRecord {
+        ConversationEntryRecord {
             id: "item-1".to_string(),
             conversation_id: "conversation-1".to_string(),
             seq: 1,
-            kind: ConversationItemKind::Message,
-            status: ConversationItemStatus::Completed,
+            kind: ConversationEntryKind::Message,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: None,
             provider_step_id: None,
             tool_invocation_id: None,
             provider_item_id: None,
-            payload: ConversationItemPayload::Message {
+            payload: ConversationEntryPayload::Message {
                 role: TranscriptRole::User,
                 content,
             },

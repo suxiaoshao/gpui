@@ -1,5 +1,5 @@
 use crate::{
-    AgentRunId, AttachmentId, ConversationId, ConversationItemId, ProjectId, ProviderId,
+    AgentRunId, AttachmentId, ConversationEntryId, ConversationId, ProjectId, ProviderId,
     ProviderModelId, ProviderStepId, ToolInvocationId,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -19,7 +19,7 @@ pub enum ConversationStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConversationItemKind {
+pub enum ConversationEntryKind {
     Message,
     SkillActivation,
     Reasoning,
@@ -33,13 +33,21 @@ pub enum ConversationItemKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConversationItemStatus {
+pub enum ConversationEntryStatus {
     Pending,
     Running,
     Completed,
     Failed,
     Canceled,
     WaitingForApproval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationStatusCode {
+    Canceled,
+    MaxStepsReached,
+    CompletedWithoutOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -65,8 +73,6 @@ pub enum AttachmentStorageKind {
 pub enum AgentRunTriggerKind {
     User,
     Shortcut,
-    /// Legacy value accepted for runs written by the removed approval-resume flow.
-    Resume,
     Retry,
 }
 
@@ -181,36 +187,36 @@ pub struct AttachmentMetadata {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
-pub enum ConversationItemPayload {
+pub enum ConversationEntryPayload {
     Message {
         role: TranscriptRole,
         content: Vec<ContentPart>,
     },
-    SkillActivation(SkillActivationItem),
+    SkillActivation(SkillActivationEntry),
     Reasoning {
         text: String,
         summary: Option<String>,
     },
-    ToolCall(ToolCallItem),
-    ToolResult(ToolResultItem),
-    ApprovalRequest(ApprovalRequestItem),
-    ApprovalDecision(ApprovalDecisionItem),
-    Status(StatusItem),
+    ToolCall(ToolCallEntry),
+    ToolResult(ToolResultEntry),
+    ApprovalRequest(ApprovalRequestEntry),
+    ApprovalDecision(ApprovalDecisionEntry),
+    Status(ConversationStatusEntry),
     Error(RunErrorPayload),
 }
 
-impl ConversationItemPayload {
-    pub fn kind(&self) -> ConversationItemKind {
+impl ConversationEntryPayload {
+    pub fn kind(&self) -> ConversationEntryKind {
         match self {
-            Self::Message { .. } => ConversationItemKind::Message,
-            Self::SkillActivation(_) => ConversationItemKind::SkillActivation,
-            Self::Reasoning { .. } => ConversationItemKind::Reasoning,
-            Self::ToolCall(_) => ConversationItemKind::ToolCall,
-            Self::ToolResult(_) => ConversationItemKind::ToolResult,
-            Self::ApprovalRequest(_) => ConversationItemKind::ApprovalRequest,
-            Self::ApprovalDecision(_) => ConversationItemKind::ApprovalDecision,
-            Self::Status(_) => ConversationItemKind::Status,
-            Self::Error(_) => ConversationItemKind::Error,
+            Self::Message { .. } => ConversationEntryKind::Message,
+            Self::SkillActivation(_) => ConversationEntryKind::SkillActivation,
+            Self::Reasoning { .. } => ConversationEntryKind::Reasoning,
+            Self::ToolCall(_) => ConversationEntryKind::ToolCall,
+            Self::ToolResult(_) => ConversationEntryKind::ToolResult,
+            Self::ApprovalRequest(_) => ConversationEntryKind::ApprovalRequest,
+            Self::ApprovalDecision(_) => ConversationEntryKind::ApprovalDecision,
+            Self::Status(_) => ConversationEntryKind::Status,
+            Self::Error(_) => ConversationEntryKind::Error,
         }
     }
 
@@ -234,7 +240,13 @@ impl ConversationItemPayload {
             }
             Self::ApprovalDecision(item) => item.decision.reason.clone().unwrap_or_default(),
             Self::Status(status) => {
-                join_search_parts([Some(&status.label), status.message.as_ref()])
+                let code = match status.code {
+                    ConversationStatusCode::Canceled => "canceled",
+                    ConversationStatusCode::MaxStepsReached => "max_steps_reached",
+                    ConversationStatusCode::CompletedWithoutOutput => "completed_without_output",
+                }
+                .to_string();
+                join_search_parts([Some(&code), status.message.as_ref()])
             }
             Self::Error(error) => format!("{} {}", error.code, error.message),
         }
@@ -260,7 +272,7 @@ fn join_search_parts<'a>(parts: impl IntoIterator<Item = Option<&'a String>>) ->
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SkillActivationItem {
+pub struct SkillActivationEntry {
     pub name: String,
     pub source_kind: SkillSourceKind,
     pub skill_file_path: String,
@@ -280,7 +292,7 @@ pub enum SkillSourceKind {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ToolCallItem {
+pub struct ToolCallEntry {
     pub tool_invocation_id: Option<ToolInvocationId>,
     pub call_id: String,
     pub source: ToolSource,
@@ -291,7 +303,7 @@ pub struct ToolCallItem {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ToolResultItem {
+pub struct ToolResultEntry {
     pub tool_invocation_id: Option<ToolInvocationId>,
     pub call_id: String,
     pub content: Vec<ContentPart>,
@@ -323,7 +335,6 @@ pub struct StructuredOutput {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunInput {
-    pub user_item_id: ConversationItemId,
     pub prompt_snapshot: Option<PromptContent>,
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,
@@ -365,7 +376,7 @@ pub enum ToolNameStrategy {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunOutput {
-    pub final_item_id: Option<ConversationItemId>,
+    pub final_entry_id: ConversationEntryId,
     pub stopped_reason: AgentStoppedReason,
 }
 
@@ -423,7 +434,7 @@ pub struct AgentRunState {
 pub struct ProviderStepRequestSnapshot {
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,
-    pub input_item_ids: Vec<ConversationItemId>,
+    pub input_item_ids: Vec<ConversationEntryId>,
     pub snapshot_kind: ProviderStepSnapshotKind,
     pub request_body: ProviderRawPayload,
 }
@@ -457,7 +468,7 @@ pub struct ProviderRunStateSnapshot {
 pub enum ProviderStepEvent {
     OutputItemStarted {
         provider_item_id: Option<String>,
-        item: ConversationItemPayload,
+        item: ConversationEntryPayload,
     },
     TextDelta {
         provider_item_id: Option<String>,
@@ -469,10 +480,10 @@ pub enum ProviderStepEvent {
     },
     OutputItemCompleted {
         provider_item_id: Option<String>,
-        item: ConversationItemPayload,
+        item: ConversationEntryPayload,
     },
     ToolCallRequested {
-        call: ToolCallItem,
+        call: ToolCallEntry,
     },
     UsageUpdated {
         usage: ProviderUsageSnapshot,
@@ -590,8 +601,8 @@ pub struct RunErrorPayload {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StatusItem {
-    pub label: String,
+pub struct ConversationStatusEntry {
+    pub code: ConversationStatusCode,
     pub message: Option<String>,
 }
 
@@ -634,14 +645,14 @@ pub enum ToolExecutionPolicy {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApprovalRequestItem {
+pub struct ApprovalRequestEntry {
     pub tool_invocation_id: ToolInvocationId,
     pub request: ApprovalRequestPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApprovalDecisionItem {
+pub struct ApprovalDecisionEntry {
     pub tool_invocation_id: ToolInvocationId,
     pub decision: ApprovalDecisionPayload,
 }
@@ -1023,14 +1034,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_resume_agent_run_trigger_kind_decodes() {
-        assert_eq!(
-            serde_json::from_value::<AgentRunTriggerKind>(json!("resume")).unwrap(),
-            AgentRunTriggerKind::Resume
-        );
-    }
-
-    #[test]
     fn legacy_project_metadata_roundtrips_without_sidebar_flags() {
         let metadata: ProjectMetadata = serde_json::from_value(json!({
             "scratchReason": null,
@@ -1089,7 +1092,7 @@ mod tests {
 
     #[test]
     fn skill_activation_roundtrips_with_file_snapshot() {
-        let payload = ConversationItemPayload::SkillActivation(SkillActivationItem {
+        let payload = ConversationEntryPayload::SkillActivation(SkillActivationEntry {
             name: "rust".to_string(),
             source_kind: SkillSourceKind::Project,
             skill_file_path: "/repo/.agents/skills/rust/SKILL.md".to_string(),
@@ -1103,10 +1106,23 @@ mod tests {
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["type"], "skillActivation");
         assert_eq!(
-            serde_json::from_value::<ConversationItemPayload>(value).unwrap(),
+            serde_json::from_value::<ConversationEntryPayload>(value).unwrap(),
             payload
         );
-        assert_eq!(payload.kind(), ConversationItemKind::SkillActivation);
+        assert_eq!(payload.kind(), ConversationEntryKind::SkillActivation);
+    }
+
+    #[test]
+    fn typed_status_search_text_uses_stable_code() {
+        let payload = ConversationEntryPayload::Status(ConversationStatusEntry {
+            code: ConversationStatusCode::MaxStepsReached,
+            message: Some("provider stopped after the guard".to_string()),
+        });
+
+        assert_eq!(
+            payload.search_text(),
+            "max_steps_reached\nprovider stopped after the guard"
+        );
     }
 
     #[test]

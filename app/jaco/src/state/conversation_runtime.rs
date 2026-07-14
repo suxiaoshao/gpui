@@ -66,6 +66,15 @@ impl ConversationRuntimeStore {
         self.active_runs.contains_key(conversation_id)
     }
 
+    pub(crate) fn active_agent_run_id(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Option<AgentRunId> {
+        self.active_runs
+            .get(conversation_id)
+            .and_then(|active| active.agent_run_id.clone())
+    }
+
     pub(crate) fn take_last_error(&mut self, conversation_id: &ConversationId) -> Option<String> {
         self.last_errors.remove(conversation_id)
     }
@@ -291,10 +300,10 @@ impl ConversationRuntimeStore {
                     cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
                 }
             }
-            jaco_agent::AgentRuntimeEvent::ConversationItemAppended {
+            jaco_agent::AgentRuntimeEvent::ConversationEntryAppended {
                 conversation_id, ..
             }
-            | jaco_agent::AgentRuntimeEvent::ConversationItemUpdated {
+            | jaco_agent::AgentRuntimeEvent::ConversationEntryUpdated {
                 conversation_id, ..
             } => {
                 cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
@@ -446,15 +455,15 @@ mod tests {
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunTriggerKind, AgentRuntimeSnapshot,
-        ApprovalRequestPayload, ApprovalStatus, ContentPart, ConversationItemPayload,
-        ConversationItemStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
+        ApprovalRequestPayload, ApprovalStatus, ContentPart, ConversationEntryPayload,
+        ConversationEntryStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
         ProjectMetadata, ProviderSettingsPayload, ToolApprovalMode, ToolApprovalPolicy,
         ToolArguments, ToolExecutionPolicy, ToolInvocationInput, ToolInvocationStatus,
         ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
         conservative_model_capabilities,
     };
     use jaco_db::{
-        NewAgentRun, NewConversation, NewConversationItem, NewProject, NewToolInvocation,
+        NewAgentRun, NewConversation, NewConversationEntry, NewProject, NewToolInvocation,
         NewToolInvocationApproval,
     };
     use std::sync::{Arc, Mutex};
@@ -660,10 +669,10 @@ mod tests {
         let agent_run = jaco_db::AgentRunRecord {
             id: "run-1".to_string(),
             conversation_id: conversation_id.clone(),
+            trigger_entry_id: "user-1".to_string(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Completed,
             input: AgentRunInput {
-                user_item_id: "user-1".to_string(),
                 prompt_snapshot: None,
                 provider_id: "provider".to_string(),
                 model_id: "model".to_string(),
@@ -877,7 +886,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn conversation_item_updated_emits_conversation_changed(cx: &mut gpui::TestAppContext) {
+    fn conversation_entry_updated_emits_conversation_changed(cx: &mut gpui::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
         let conversation_id = "conversation-1".to_string();
@@ -885,7 +894,7 @@ mod tests {
         cx.update(|cx| {
             store.update(cx, |store, cx| {
                 store.handle_runtime_event(
-                    jaco_agent::AgentRuntimeEvent::ConversationItemUpdated {
+                    jaco_agent::AgentRuntimeEvent::ConversationEntryUpdated {
                         conversation_id: conversation_id.clone(),
                         item_id: "item-1".to_string(),
                     },
@@ -981,14 +990,14 @@ mod tests {
             })
             .unwrap();
         repository
-            .append_conversation_item(NewConversationItem {
+            .append_conversation_entry(NewConversationEntry {
                 conversation_id: conversation.id.clone(),
-                status: ConversationItemStatus::Completed,
+                status: ConversationEntryStatus::Completed,
                 agent_run_id: None,
                 provider_step_id: None,
                 tool_invocation_id: None,
                 provider_item_id: None,
-                payload: ConversationItemPayload::Message {
+                payload: ConversationEntryPayload::Message {
                     role: TranscriptRole::User,
                     content: vec![ContentPart::Text {
                         text: "hello".to_string(),
@@ -1004,8 +1013,8 @@ mod tests {
         conversation_id: &ConversationId,
         status: AgentRunStatus,
     ) -> AgentRunId {
-        let user_item_id = repository
-            .conversation_items(conversation_id)
+        let trigger_entry_id = repository
+            .conversation_entries(conversation_id)
             .unwrap()
             .last()
             .unwrap()
@@ -1013,10 +1022,11 @@ mod tests {
             .clone();
         repository
             .insert_agent_run(NewAgentRun {
+                conversation_id: conversation_id.to_string(),
+                trigger_entry_id: trigger_entry_id.clone(),
                 trigger_kind: AgentRunTriggerKind::User,
                 status,
                 input: AgentRunInput {
-                    user_item_id,
                     prompt_snapshot: None,
                     provider_id: "provider".to_string(),
                     model_id: "model".to_string(),
@@ -1082,11 +1092,11 @@ mod tests {
         conversation_id: &ConversationId,
     ) -> Vec<String> {
         repository
-            .conversation_items(conversation_id)
+            .conversation_entries(conversation_id)
             .unwrap()
             .into_iter()
             .filter_map(|item| match item.payload {
-                ConversationItemPayload::ToolResult(result) => Some(result.content),
+                ConversationEntryPayload::ToolResult(result) => Some(result.content),
                 _ => None,
             })
             .flatten()

@@ -8,8 +8,8 @@ use gpui_component::{
     text::{TextView, TextViewState},
     v_flex,
 };
-use jaco_core::ConversationItemPayload;
-use jaco_db::ConversationItemRecord;
+use jaco_core::ConversationEntryPayload;
+use jaco_db::ConversationEntryRecord;
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
@@ -28,7 +28,7 @@ enum DetailTone {
 }
 
 pub(super) fn detail_block(
-    item: ConversationItemRecord,
+    item: ConversationEntryRecord,
     text_state: Option<Entity<TextViewState>>,
     approval_decidable: bool,
     on_approval_decision: OnApprovalDecision,
@@ -109,11 +109,11 @@ pub(super) fn detail_block(
 }
 
 fn approval_action_buttons(
-    payload: &ConversationItemPayload,
+    payload: &ConversationEntryPayload,
     on_approval_decision: OnApprovalDecision,
     cx: &mut App,
 ) -> Option<AnyElement> {
-    let ConversationItemPayload::ApprovalRequest(request) = payload else {
+    let ConversationEntryPayload::ApprovalRequest(request) = payload else {
         return None;
     };
     let approve_id = request.tool_invocation_id.clone();
@@ -165,79 +165,79 @@ fn markdown_view(
     }
 }
 
-fn default_expanded(payload: &ConversationItemPayload) -> bool {
+fn default_expanded(payload: &ConversationEntryPayload) -> bool {
     !matches!(
         payload,
-        ConversationItemPayload::ToolCall(_)
-            | ConversationItemPayload::ToolResult(_)
-            | ConversationItemPayload::ApprovalRequest(_)
-            | ConversationItemPayload::ApprovalDecision(_)
+        ConversationEntryPayload::ToolCall(_)
+            | ConversationEntryPayload::ToolResult(_)
+            | ConversationEntryPayload::ApprovalRequest(_)
+            | ConversationEntryPayload::ApprovalDecision(_)
     )
 }
 
-fn detail_title(item: &ConversationItemRecord, i18n: &I18n) -> String {
+fn detail_title(item: &ConversationEntryRecord, i18n: &I18n) -> String {
     match &item.payload {
-        ConversationItemPayload::ToolCall(call) => label_with_name(
+        ConversationEntryPayload::ToolCall(call) => label_with_name(
             i18n,
             "conversation-tool-call",
             call.runtime_tool_name.as_str(),
         ),
-        ConversationItemPayload::ToolResult(result) => {
+        ConversationEntryPayload::ToolResult(result) => {
             label_with_name(i18n, "conversation-tool-result", result.call_id.as_str())
         }
-        ConversationItemPayload::ApprovalRequest(_) => i18n.t("conversation-approval-request"),
-        ConversationItemPayload::ApprovalDecision(decision) => {
+        ConversationEntryPayload::ApprovalRequest(_) => i18n.t("conversation-approval-request"),
+        ConversationEntryPayload::ApprovalDecision(decision) => {
             i18n.t(if decision.decision.approved {
                 "conversation-approval-approved"
             } else {
                 "conversation-approval-denied"
             })
         }
-        ConversationItemPayload::SkillActivation(skill) => {
+        ConversationEntryPayload::SkillActivation(skill) => {
             label_with_name(i18n, "conversation-skill-activation", skill.name.as_str())
         }
-        ConversationItemPayload::Reasoning { .. } => i18n.t("conversation-reasoning"),
-        ConversationItemPayload::Message { role, .. } => format!("{role:?}"),
-        ConversationItemPayload::Status(status) => status.label.clone(),
-        ConversationItemPayload::Error(_) => i18n.t("conversation-error"),
+        ConversationEntryPayload::Reasoning { .. } => i18n.t("conversation-reasoning"),
+        ConversationEntryPayload::Message { role, .. } => format!("{role:?}"),
+        ConversationEntryPayload::Status(status) => i18n.t(format::status_i18n_key(status.code)),
+        ConversationEntryPayload::Error(_) => i18n.t("conversation-error"),
     }
 }
 
-fn detail_icon(payload: &ConversationItemPayload) -> IconName {
+fn detail_icon(payload: &ConversationEntryPayload) -> IconName {
     match payload {
-        ConversationItemPayload::ToolCall(call) => tool_icon(&call.runtime_tool_name),
-        ConversationItemPayload::ToolResult(result) => {
+        ConversationEntryPayload::ToolCall(call) => tool_icon(&call.runtime_tool_name),
+        ConversationEntryPayload::ToolResult(result) => {
             if result.is_error {
                 IconName::CircleAlert
             } else {
                 IconName::CircleCheck
             }
         }
-        ConversationItemPayload::ApprovalRequest(_) => IconName::ShieldAlert,
-        ConversationItemPayload::ApprovalDecision(decision) => {
+        ConversationEntryPayload::ApprovalRequest(_) => IconName::ShieldAlert,
+        ConversationEntryPayload::ApprovalDecision(decision) => {
             if decision.decision.approved {
                 IconName::ShieldCheck
             } else {
                 IconName::ShieldAlert
             }
         }
-        ConversationItemPayload::SkillActivation(_) => IconName::Sparkles,
-        ConversationItemPayload::Reasoning { .. } => IconName::Lightbulb,
-        ConversationItemPayload::Error(_) => IconName::CircleAlert,
-        ConversationItemPayload::Message { .. } => IconName::MessageSquare,
-        ConversationItemPayload::Status(_) => IconName::CircleCheck,
+        ConversationEntryPayload::SkillActivation(_) => IconName::Sparkles,
+        ConversationEntryPayload::Reasoning { .. } => IconName::Lightbulb,
+        ConversationEntryPayload::Error(_) => IconName::CircleAlert,
+        ConversationEntryPayload::Message { .. } => IconName::MessageSquare,
+        ConversationEntryPayload::Status(_) => IconName::CircleCheck,
     }
 }
 
-fn detail_tone(payload: &ConversationItemPayload) -> DetailTone {
+fn detail_tone(payload: &ConversationEntryPayload) -> DetailTone {
     match payload {
-        ConversationItemPayload::ToolResult(result) if result.is_error => DetailTone::Danger,
-        ConversationItemPayload::ToolResult(_) => DetailTone::Success,
-        ConversationItemPayload::ApprovalRequest(_) => DetailTone::Warning,
-        ConversationItemPayload::ApprovalDecision(decision) if decision.decision.approved => {
+        ConversationEntryPayload::ToolResult(result) if result.is_error => DetailTone::Danger,
+        ConversationEntryPayload::ToolResult(_) => DetailTone::Success,
+        ConversationEntryPayload::ApprovalRequest(_) => DetailTone::Warning,
+        ConversationEntryPayload::ApprovalDecision(decision) if decision.decision.approved => {
             DetailTone::Success
         }
-        ConversationItemPayload::ApprovalDecision(_) | ConversationItemPayload::Error(_) => {
+        ConversationEntryPayload::ApprovalDecision(_) | ConversationEntryPayload::Error(_) => {
             DetailTone::Danger
         }
         _ => DetailTone::Normal,

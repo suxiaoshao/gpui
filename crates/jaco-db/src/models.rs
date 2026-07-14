@@ -80,7 +80,7 @@ pub(crate) struct SqlConversationRow {
     pub(crate) prompt_id: Option<String>,
     pub(crate) default_provider_id: Option<String>,
     pub(crate) default_model_id: Option<String>,
-    pub(crate) last_item_seq: i32,
+    pub(crate) last_entry_seq: i32,
     pub(crate) metadata_json: Value,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) created_at: OffsetDateTime,
@@ -100,7 +100,7 @@ pub(crate) struct SqlNewConversationRow {
     pub(crate) prompt_id: Option<String>,
     pub(crate) default_provider_id: Option<String>,
     pub(crate) default_model_id: Option<String>,
-    pub(crate) last_item_seq: i32,
+    pub(crate) last_entry_seq: i32,
     pub(crate) metadata_json: Value,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) created_at: OffsetDateTime,
@@ -110,9 +110,9 @@ pub(crate) struct SqlNewConversationRow {
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = conversation_items)]
+#[diesel(table_name = conversation_entries)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct SqlConversationItemRow {
+pub(crate) struct SqlConversationEntryRow {
     pub(crate) id: String,
     pub(crate) conversation_id: String,
     pub(crate) seq: i32,
@@ -129,8 +129,8 @@ pub(crate) struct SqlConversationItemRow {
 }
 
 #[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = conversation_items)]
-pub(crate) struct SqlNewConversationItemRow {
+#[diesel(table_name = conversation_entries)]
+pub(crate) struct SqlNewConversationEntryRow {
     pub(crate) id: String,
     pub(crate) conversation_id: String,
     pub(crate) seq: i32,
@@ -147,8 +147,8 @@ pub(crate) struct SqlNewConversationItemRow {
 }
 
 #[derive(Debug, Clone, AsChangeset)]
-#[diesel(table_name = conversation_items)]
-pub(crate) struct SqlConversationItemPayloadChanges {
+#[diesel(table_name = conversation_entries)]
+pub(crate) struct SqlConversationEntryPayloadChanges {
     pub(crate) kind: String,
     pub(crate) status: String,
     pub(crate) payload_json: Value,
@@ -203,10 +203,12 @@ pub(crate) struct SqlNewAttachmentRow {
 pub(crate) struct SqlAgentRunRow {
     pub(crate) id: String,
     pub(crate) conversation_id: String,
+    pub(crate) trigger_entry_id: String,
     pub(crate) trigger_kind: String,
     pub(crate) status: String,
     pub(crate) input_json: Value,
-    pub(crate) output_json: Option<Value>,
+    pub(crate) final_entry_id: Option<String>,
+    pub(crate) stopped_reason: Option<String>,
     pub(crate) error_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) started_at: Option<OffsetDateTime>,
@@ -219,10 +221,12 @@ pub(crate) struct SqlAgentRunRow {
 pub(crate) struct SqlNewAgentRunRow {
     pub(crate) id: String,
     pub(crate) conversation_id: String,
+    pub(crate) trigger_entry_id: String,
     pub(crate) trigger_kind: String,
     pub(crate) status: String,
     pub(crate) input_json: Value,
-    pub(crate) output_json: Option<Value>,
+    pub(crate) final_entry_id: Option<String>,
+    pub(crate) stopped_reason: Option<String>,
     pub(crate) error_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) started_at: Option<OffsetDateTime>,
@@ -235,7 +239,19 @@ pub(crate) struct SqlNewAgentRunRow {
 #[diesel(treat_none_as_null = true)]
 pub(crate) struct SqlAgentRunStatusChanges {
     pub(crate) status: String,
-    pub(crate) output_json: Option<Value>,
+    pub(crate) error_json: Option<Value>,
+    pub(crate) started_at: Option<OffsetDateTime>,
+    pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = agent_runs)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlAgentRunFinalChanges {
+    pub(crate) status: String,
+    pub(crate) final_entry_id: String,
+    pub(crate) stopped_reason: String,
     pub(crate) error_json: Option<Value>,
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
@@ -587,7 +603,7 @@ impl TryFrom<SqlConversationRow> for ConversationRecord {
             prompt_id: row.prompt_id,
             default_provider_id: row.default_provider_id,
             default_model_id: row.default_model_id,
-            last_item_seq: row.last_item_seq,
+            last_entry_seq: row.last_entry_seq,
             metadata: from_json(row.metadata_json)?,
             settings_snapshot: from_json(row.settings_snapshot_json)?,
             created_at: row.created_at,
@@ -598,11 +614,11 @@ impl TryFrom<SqlConversationRow> for ConversationRecord {
     }
 }
 
-impl TryFrom<SqlConversationItemRow> for ConversationItemRecord {
+impl TryFrom<SqlConversationEntryRow> for ConversationEntryRecord {
     type Error = DbError;
 
-    fn try_from(row: SqlConversationItemRow) -> Result<Self> {
-        let payload: ConversationItemPayload = from_json(row.payload_json)?;
+    fn try_from(row: SqlConversationEntryRow) -> Result<Self> {
+        let payload: ConversationEntryPayload = from_json(row.payload_json)?;
         let kind = db_label_parse(row.kind)?;
         if payload.kind() != kind {
             return Err(DbError::Invariant(
@@ -655,13 +671,27 @@ impl TryFrom<SqlAgentRunRow> for AgentRunRecord {
     type Error = DbError;
 
     fn try_from(row: SqlAgentRunRow) -> Result<Self> {
+        let output = match (row.final_entry_id, row.stopped_reason) {
+            (None, None) => None,
+            (Some(final_entry_id), Some(stopped_reason)) => Some(AgentRunOutput {
+                final_entry_id,
+                stopped_reason: db_label_parse(stopped_reason)?,
+            }),
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(DbError::Invariant(
+                    "agent run final entry and stopped reason must be both null or both set"
+                        .to_string(),
+                ));
+            }
+        };
         Ok(Self {
             id: row.id,
             conversation_id: row.conversation_id,
+            trigger_entry_id: row.trigger_entry_id,
             trigger_kind: db_label_parse(row.trigger_kind)?,
             status: db_label_parse(row.status)?,
             input: from_json(row.input_json)?,
-            output: from_json_opt(row.output_json)?,
+            output,
             error: from_json_opt(row.error_json)?,
             created_at: row.created_at,
             started_at: row.started_at,

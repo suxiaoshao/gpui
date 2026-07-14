@@ -228,21 +228,13 @@ mod tests {
             I18n::for_locale_tag("zh-CN").t_with_args("conversation-agent-canceled", &args),
             "conversation-agent-canceled"
         );
-        assert_ne!(
-            I18n::for_locale_tag("en-US").t("conversation-agent-failed-fallback"),
-            "conversation-agent-failed-fallback"
-        );
-        assert_ne!(
-            I18n::for_locale_tag("zh-CN").t("conversation-agent-failed-fallback"),
-            "conversation-agent-failed-fallback"
-        );
-        assert_ne!(
-            I18n::for_locale_tag("en-US").t("conversation-agent-canceled-fallback"),
-            "conversation-agent-canceled-fallback"
-        );
-        assert_ne!(
-            I18n::for_locale_tag("zh-CN").t("conversation-agent-canceled-fallback"),
-            "conversation-agent-canceled-fallback"
-        );
+        for key in [
+            "conversation-status-canceled",
+            "conversation-status-max-steps",
+            "conversation-status-completed-without-output",
+        ] {
+            assert_ne!(I18n::for_locale_tag("en-US").t(key), key);
+            assert_ne!(I18n::for_locale_tag("zh-CN").t(key), key);
+        }
     }
 }

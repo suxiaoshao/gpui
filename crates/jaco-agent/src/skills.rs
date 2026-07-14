@@ -123,12 +123,12 @@ impl SkillLoader {
         Self
     }
 
-    pub fn load(&self, entry: &SkillCatalogEntry) -> Result<SkillActivationItem> {
+    pub fn load(&self, entry: &SkillCatalogEntry) -> Result<SkillActivationEntry> {
         let content = fs::read_to_string(&entry.skill_file_path)?;
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
         let content_sha256 = hex::encode(hasher.finalize());
-        Ok(SkillActivationItem {
+        Ok(SkillActivationEntry {
             name: entry.name.clone(),
             source_kind: entry.source_kind,
             skill_file_path: entry.skill_file_path.to_string_lossy().to_string(),

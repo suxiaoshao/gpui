@@ -1,9 +1,9 @@
 use crate::{
-    FreshStore, NewAgentRun, NewAttachment, NewConversation, NewConversationItem, NewProject,
-    NewPrompt, NewProvider, NewProviderModel, NewProviderStep, NewShortcut, NewToolInvocation,
-    NewToolInvocationApproval, NewUsageEvent, ToolInvocationApproval,
-    ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt, UpdateProvider,
-    UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
+    AgentRunFinalEntry, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment, NewConversation,
+    NewConversationEntry, NewProject, NewPrompt, NewProvider, NewProviderModel, NewProviderStep,
+    NewShortcut, NewToolInvocation, NewToolInvocationApproval, NewUsageEvent,
+    ToolInvocationApproval, ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt,
+    UpdateProvider, UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
 };
 use diesel::{
     Connection, RunQueryDsl, SqliteConnection, sql_query,
@@ -55,30 +55,6 @@ fn pooled_connections_configure_sqlite_busy_timeout() {
 }
 
 #[test]
-fn bootstrap_rejects_newer_schema_without_downgrading_metadata() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(crate::DATABASE_FILE);
-    FreshStore::open(&path).unwrap();
-
-    let newer_version = crate::repository::schema_version() + 1;
-    let mut conn = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
-    sql_query("UPDATE schema_metadata SET schema_version = ? WHERE id = 'default'")
-        .bind::<Integer, _>(newer_version)
-        .execute(&mut conn)
-        .unwrap();
-
-    let err = FreshStore::open(&path).unwrap_err();
-    assert!(err.to_string().contains("newer than supported"));
-
-    let stored_version =
-        sql_query("SELECT schema_version AS value FROM schema_metadata WHERE id = 'default'")
-            .load::<IntRow>(&mut conn)
-            .unwrap()[0]
-            .value;
-    assert_eq!(stored_version, newer_version);
-}
-
-#[test]
 fn failed_migration_rolls_back_partial_schema() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("broken.sqlite3");
@@ -112,7 +88,7 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
         "mcp_servers",
         "mcp_tools",
         "app_settings",
-        "conversation_item_fts",
+        "conversation_entry_fts",
     ] {
         assert!(!tables.contains(disallowed));
     }
@@ -309,7 +285,7 @@ fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() 
     let mut by_item = conversation(&searchable_project);
     by_item.title = "Chat".to_string();
     let by_item = repo.insert_conversation(by_item).unwrap();
-    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+    repo.append_conversation_entry(message_item(&by_item.id, "contains unique needle"))
         .unwrap();
 
     let by_project = repo
@@ -318,12 +294,12 @@ fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() 
     let removed = repo
         .insert_conversation(conversation(&removed_project))
         .unwrap();
-    repo.append_conversation_item(message_item(&removed.id, "unique needle"))
+    repo.append_conversation_entry(message_item(&removed.id, "unique needle"))
         .unwrap();
     let deleted = repo
         .insert_conversation(conversation(&searchable_project))
         .unwrap();
-    repo.append_conversation_item(message_item(&deleted.id, "unique needle"))
+    repo.append_conversation_entry(message_item(&deleted.id, "unique needle"))
         .unwrap();
     repo.soft_delete_conversation(&deleted.id).unwrap();
 
@@ -417,13 +393,13 @@ fn no_project_search_matches_title_and_item_text_but_not_normal_project_text() {
     let mut by_item = conversation(&scratch_project);
     by_item.title = "Scratch chat".to_string();
     let by_item = repo.insert_conversation(by_item).unwrap();
-    repo.append_conversation_item(message_item(&by_item.id, "contains unique needle"))
+    repo.append_conversation_entry(message_item(&by_item.id, "contains unique needle"))
         .unwrap();
 
     let normal = repo
         .insert_conversation(conversation(&normal_project))
         .unwrap();
-    repo.append_conversation_item(message_item(&normal.id, "unique needle"))
+    repo.append_conversation_entry(message_item(&normal.id, "unique needle"))
         .unwrap();
 
     let title_matches = repo.list_no_project_conversations("release").unwrap();
@@ -466,11 +442,11 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
 
-    let conversation_items_sql = table_sql(&mut conn, "conversation_items");
-    assert!(conversation_items_sql.contains(
-        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'status', 'error'))"
+    let conversation_entries_sql = table_sql(&mut conn, "conversation_entries");
+    assert!(conversation_entries_sql.contains(
+        "kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error'))"
     ));
-    assert!(conversation_items_sql.contains(
+    assert!(conversation_entries_sql.contains(
         "status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval'))"
     ));
 
@@ -497,13 +473,15 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     let project = repo.insert_project(project("checks")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "hello"))
+        .append_conversation_entry(message_item(&conversation.id, "hello"))
         .unwrap();
     let provider = repo.insert_provider(provider()).unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, "gpt-5"),
         })
         .unwrap();
@@ -521,10 +499,11 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     assert!(
         sql_query(
             "INSERT INTO agent_runs \
-             (id, conversation_id, trigger_kind, status, input_json, created_at, updated_at) \
-             VALUES ('bad_run', ?, 'user', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+             (id, conversation_id, trigger_entry_id, trigger_kind, status, input_json, created_at, updated_at) \
+             VALUES ('bad_run', ?, ?, 'user', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
         .bind::<Text, _>(&conversation.id)
+        .bind::<Text, _>(&user_item.id)
         .execute(&mut conn)
         .is_err()
     );
@@ -551,7 +530,7 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     );
     assert!(
         sql_query(
-            "INSERT INTO conversation_items \
+            "INSERT INTO conversation_entries \
              (id, conversation_id, seq, kind, status, payload_json, created_at, updated_at) \
              VALUES ('bad_item_kind', ?, 99, 'bogus', 'completed', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
@@ -561,7 +540,7 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     );
     assert!(
         sql_query(
-            "INSERT INTO conversation_items \
+            "INSERT INTO conversation_entries \
              (id, conversation_id, seq, kind, status, payload_json, created_at, updated_at) \
              VALUES ('bad_item_status', ?, 100, 'message', 'bogus', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
@@ -591,7 +570,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
 
     let project = repo.insert_project(project("fk")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
-    repo.append_conversation_item(message_item(&conversation.id, "cascade probe"))
+    repo.append_conversation_entry(message_item(&conversation.id, "cascade probe"))
         .unwrap();
 
     let mut conn = store.pool().get().unwrap();
@@ -600,7 +579,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
         .execute(&mut conn)
         .unwrap();
     assert!(repo.get_conversation(&conversation.id).unwrap().is_none());
-    assert_eq!(count(&mut conn, "conversation_items"), 0);
+    assert_eq!(count(&mut conn, "conversation_entries"), 0);
 }
 
 #[test]
@@ -612,16 +591,16 @@ fn append_items_updates_order_last_seq_and_search_text() {
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
 
     let first = repo
-        .append_conversation_item(message_item(&conversation.id, "hello alpha"))
+        .append_conversation_entry(message_item(&conversation.id, "hello alpha"))
         .unwrap();
     let second = repo
-        .append_conversation_item(message_item(&conversation.id, "hello beta"))
+        .append_conversation_entry(message_item(&conversation.id, "hello beta"))
         .unwrap();
     assert_eq!((first.seq, second.seq), (1, 2));
 
     let conversation = repo.get_conversation(&conversation.id).unwrap().unwrap();
-    assert_eq!(conversation.last_item_seq, 2);
-    let items = repo.conversation_items(&conversation.id).unwrap();
+    assert_eq!(conversation.last_entry_seq, 2);
+    let items = repo.conversation_entries(&conversation.id).unwrap();
     assert_eq!(
         items.iter().map(|item| item.seq).collect::<Vec<_>>(),
         [1, 2]
@@ -629,10 +608,10 @@ fn append_items_updates_order_last_seq_and_search_text() {
 
     assert_eq!(first.search_text, "hello alpha");
 
-    repo.update_conversation_item_payload(
+    repo.update_conversation_entry_payload(
         &first.id,
-        ConversationItemStatus::Completed,
-        ConversationItemPayload::Message {
+        ConversationEntryStatus::Completed,
+        ConversationEntryPayload::Message {
             role: TranscriptRole::User,
             content: vec![ContentPart::Text {
                 text: "gamma".to_string(),
@@ -640,10 +619,10 @@ fn append_items_updates_order_last_seq_and_search_text() {
         },
     )
     .unwrap();
-    let updated = repo.conversation_items(&conversation.id).unwrap();
+    let updated = repo.conversation_entries(&conversation.id).unwrap();
     assert_eq!(updated[0].search_text, "gamma");
 
-    let remaining = repo.conversation_items(&conversation.id).unwrap();
+    let remaining = repo.conversation_entries(&conversation.id).unwrap();
     assert_eq!(
         remaining
             .iter()
@@ -661,14 +640,14 @@ fn update_item_payload_bumps_parent_conversation_timestamp() {
     let project = repo.insert_project(project("item-update")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let item = repo
-        .append_conversation_item(message_item(&conversation.id, "before"))
+        .append_conversation_entry(message_item(&conversation.id, "before"))
         .unwrap();
 
     let updated = repo
-        .update_conversation_item_payload(
+        .update_conversation_entry_payload(
             &item.id,
-            ConversationItemStatus::Completed,
-            ConversationItemPayload::Message {
+            ConversationEntryStatus::Completed,
+            ConversationEntryPayload::Message {
                 role: TranscriptRole::Assistant,
                 content: vec![ContentPart::Text {
                     text: "after".to_string(),
@@ -695,12 +674,14 @@ fn append_item_rejects_cross_conversation_execution_links() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation_a.id, "run input"))
+        .append_conversation_entry(message_item(&conversation_a.id, "run input"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -731,35 +712,37 @@ fn append_item_rejects_cross_conversation_execution_links() {
     same_conversation.agent_run_id = Some(agent_run.id.clone());
     same_conversation.provider_step_id = Some(provider_step.id.clone());
     same_conversation.tool_invocation_id = Some(tool.id.clone());
-    repo.append_conversation_item(same_conversation).unwrap();
+    repo.append_conversation_entry(same_conversation).unwrap();
 
     let mut cross_agent = message_item(&conversation_b.id, "cross agent");
     cross_agent.agent_run_id = Some(agent_run.id.clone());
-    assert!(repo.append_conversation_item(cross_agent).is_err());
+    assert!(repo.append_conversation_entry(cross_agent).is_err());
 
     let mut cross_step = message_item(&conversation_b.id, "cross step");
     cross_step.provider_step_id = Some(provider_step.id.clone());
-    assert!(repo.append_conversation_item(cross_step).is_err());
+    assert!(repo.append_conversation_entry(cross_step).is_err());
 
     let mut cross_tool = message_item(&conversation_b.id, "cross tool");
     cross_tool.tool_invocation_id = Some(tool.id.clone());
-    assert!(repo.append_conversation_item(cross_tool).is_err());
+    assert!(repo.append_conversation_entry(cross_tool).is_err());
 
     let second_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::Retry,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
     let mut mismatched_chain = message_item(&conversation_a.id, "mismatched chain");
     mismatched_chain.agent_run_id = Some(second_run.id);
     mismatched_chain.provider_step_id = Some(provider_step.id);
-    assert!(repo.append_conversation_item(mismatched_chain).is_err());
+    assert!(repo.append_conversation_entry(mismatched_chain).is_err());
 }
 
 #[test]
-fn insert_agent_run_derives_conversation_and_rejects_invalid_user_item() {
+fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_in_dir(dir.path()).unwrap();
     let repo = store.repository();
@@ -770,10 +753,10 @@ fn insert_agent_run_derives_conversation_and_rejects_invalid_user_item() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "run input"))
+        .append_conversation_entry(message_item(&conversation.id, "run input"))
         .unwrap();
     let assistant_item = repo
-        .append_conversation_item(message_item_with_role(
+        .append_conversation_entry(message_item_with_role(
             &conversation.id,
             TranscriptRole::Assistant,
             "assistant output",
@@ -781,22 +764,28 @@ fn insert_agent_run_derives_conversation_and_rejects_invalid_user_item() {
         .unwrap();
 
     let valid = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
         status: AgentRunStatus::Running,
+        trigger_entry_id: user_item.id.clone(),
         input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
     });
     assert_eq!(valid.unwrap().conversation_id, conversation.id);
 
     let missing_item = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
         status: AgentRunStatus::Running,
+        trigger_entry_id: "missing-item".to_string(),
         input: agent_run_input("missing-item", &provider.id, &model.model_id),
     });
     assert!(missing_item.is_err());
 
     let non_user_item = repo.insert_agent_run(NewAgentRun {
+        conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
         status: AgentRunStatus::Running,
+        trigger_entry_id: assistant_item.id.clone(),
         input: agent_run_input(&assistant_item.id, &provider.id, &model.model_id),
     });
     assert!(non_user_item.is_err());
@@ -814,22 +803,26 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let first_item = repo
-        .append_conversation_item(message_item(&conversation.id, "first run"))
+        .append_conversation_entry(message_item(&conversation.id, "first run"))
         .unwrap();
     let second_item = repo
-        .append_conversation_item(message_item(&conversation.id, "second run"))
+        .append_conversation_entry(message_item(&conversation.id, "second run"))
         .unwrap();
     let first_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: first_item.id.clone(),
             input: agent_run_input(&first_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
     let second_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::Retry,
             status: AgentRunStatus::Running,
+            trigger_entry_id: second_item.id.clone(),
             input: agent_run_input(&second_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -869,12 +862,14 @@ fn usage_event_derives_dimensions_from_provider_step() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "usage input"))
+        .append_conversation_entry(message_item(&conversation.id, "usage input"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -918,12 +913,14 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "step input"))
+        .append_conversation_entry(message_item(&conversation.id, "step input"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -995,21 +992,23 @@ fn provider_step_validates_input_item_ownership() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&primary_conversation.id, "step input"))
+        .append_conversation_entry(message_item(&primary_conversation.id, "step input"))
         .unwrap();
     let context_item = repo
-        .append_conversation_item(message_item(
+        .append_conversation_entry(message_item(
             &primary_conversation.id,
             "same conversation context",
         ))
         .unwrap();
     let other_item = repo
-        .append_conversation_item(message_item(&other_conversation.id, "other context"))
+        .append_conversation_entry(message_item(&other_conversation.id, "other context"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: primary_conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -1078,12 +1077,14 @@ fn tool_invocation_approval_derives_status_and_decision_columns() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "approval input"))
+        .append_conversation_entry(message_item(&conversation.id, "approval input"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -1180,12 +1181,14 @@ fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
         .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
         .unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "update input"))
+        .append_conversation_entry(message_item(&conversation.id, "update input"))
         .unwrap();
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Queued,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -1195,7 +1198,6 @@ fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
             &agent_run.id,
             UpdateAgentRunStatus {
                 status: AgentRunStatus::Running,
-                output: None,
                 error: None,
             },
         )
@@ -1298,26 +1300,352 @@ fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
     assert!(succeeded_tool.started_at.is_some());
     assert!(succeeded_tool.completed_at.is_some());
 
-    let output = AgentRunOutput {
-        final_item_id: None,
-        stopped_reason: AgentStoppedReason::Completed,
-    };
-    let completed_run = repo
-        .update_agent_run_status(
+    let finished = repo
+        .finish_agent_run(
             &agent_run.id,
-            UpdateAgentRunStatus {
+            FinishAgentRun {
                 status: AgentRunStatus::Completed,
-                output: Some(output.clone()),
+                stopped_reason: AgentStoppedReason::Completed,
                 error: None,
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: conversation.id.clone(),
+                    status: ConversationEntryStatus::Completed,
+                    agent_run_id: Some(agent_run.id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                        code: ConversationStatusCode::CompletedWithoutOutput,
+                        message: None,
+                    }),
+                })),
             },
         )
         .unwrap();
-    assert_eq!(completed_run.output, Some(output));
-    assert!(completed_run.completed_at.is_some());
+    assert_eq!(finished.run.status, AgentRunStatus::Completed);
+    assert_eq!(
+        finished.run.output.as_ref().unwrap().final_entry_id,
+        finished.final_entry.id
+    );
+    assert!(finished.run.completed_at.is_some());
     assert_eq!(repo.provider_steps_for_run(&agent_run.id).unwrap().len(), 1);
     assert_eq!(
         repo.tool_invocations_for_run(&agent_run.id).unwrap().len(),
         1
+    );
+}
+
+#[test]
+fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("agent-run-finalization"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_entry(message_item(&conversation.id, "failed input"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let error = RunErrorPayload {
+        code: "prompt_error".to_string(),
+        message: "forced provider-open failure".to_string(),
+        retryable: true,
+        provider: None,
+        raw: None,
+    };
+
+    let failed = repo
+        .finish_agent_run(
+            &run.id,
+            FinishAgentRun {
+                status: AgentRunStatus::Failed,
+                stopped_reason: AgentStoppedReason::Failed,
+                error: Some(error.clone()),
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: conversation.id.clone(),
+                    status: ConversationEntryStatus::Failed,
+                    agent_run_id: Some(run.id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Error(error.clone()),
+                })),
+            },
+        )
+        .unwrap();
+    let entry = failed.final_entry.clone();
+    assert!(matches!(entry.payload, ConversationEntryPayload::Error(_)));
+    assert_eq!(entry.status, ConversationEntryStatus::Failed);
+    assert_eq!(entry.agent_run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(failed.run.status, AgentRunStatus::Failed);
+    assert_eq!(failed.run.error, Some(error.clone()));
+    assert_eq!(
+        failed.run.output.as_ref().unwrap().final_entry_id,
+        entry.id.clone()
+    );
+    let item_count = repo.conversation_entries(&conversation.id).unwrap().len();
+
+    let duplicate = repo
+        .finish_agent_run(
+            &run.id,
+            FinishAgentRun {
+                status: AgentRunStatus::Failed,
+                stopped_reason: AgentStoppedReason::Failed,
+                error: Some(error.clone()),
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: conversation.id.clone(),
+                    status: ConversationEntryStatus::Failed,
+                    agent_run_id: Some(run.id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Error(error.clone()),
+                })),
+            },
+        )
+        .unwrap();
+    assert!(!duplicate.appended_final_entry);
+    assert_eq!(duplicate.run, failed.run);
+    assert_eq!(duplicate.final_entry, failed.final_entry);
+    assert_eq!(
+        repo.conversation_entries(&conversation.id).unwrap().len(),
+        item_count
+    );
+
+    let mismatched_input = repo
+        .append_conversation_entry(message_item(&conversation.id, "mismatched failure input"))
+        .unwrap();
+    let mismatched_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            trigger_entry_id: mismatched_input.id.clone(),
+            input: agent_run_input(&mismatched_input.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let count_before_mismatched_finish = repo.conversation_entries(&conversation.id).unwrap().len();
+    let mismatched = repo.finish_agent_run(
+        &mismatched_run.id,
+        FinishAgentRun {
+            status: AgentRunStatus::Failed,
+            stopped_reason: AgentStoppedReason::Failed,
+            error: Some(error.clone()),
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(mismatched_run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Error(error.clone()),
+            })),
+        },
+    );
+    assert!(mismatched.is_err());
+    assert_eq!(
+        repo.conversation_entries(&conversation.id).unwrap().len(),
+        count_before_mismatched_finish
+    );
+
+    let completed_input = repo
+        .append_conversation_entry(message_item(&conversation.id, "completed input"))
+        .unwrap();
+    let completed_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            trigger_entry_id: completed_input.id.clone(),
+            input: agent_run_input(&completed_input.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let completed = repo
+        .finish_agent_run(
+            &completed_run.id,
+            FinishAgentRun {
+                status: AgentRunStatus::Completed,
+                stopped_reason: AgentStoppedReason::Completed,
+                error: None,
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: conversation.id.clone(),
+                    status: ConversationEntryStatus::Completed,
+                    agent_run_id: Some(completed_run.id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                        code: ConversationStatusCode::CompletedWithoutOutput,
+                        message: None,
+                    }),
+                })),
+            },
+        )
+        .unwrap();
+    let status_entry = completed.final_entry;
+    assert!(matches!(
+        status_entry.payload,
+        ConversationEntryPayload::Status(ConversationStatusEntry {
+            code: ConversationStatusCode::CompletedWithoutOutput,
+            message: None,
+        })
+    ));
+    assert_eq!(completed.run.status, AgentRunStatus::Completed);
+    assert_eq!(
+        completed.run.output.unwrap().final_entry_id,
+        status_entry.id
+    );
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE agent_runs SET final_entry_id = ? WHERE id = ?")
+        .bind::<Text, _>(&status_entry.id)
+        .bind::<Text, _>(&failed.run.id)
+        .execute(&mut conn)
+        .unwrap();
+    let timeline_error = repo
+        .conversation_timeline_records(&conversation.id)
+        .unwrap_err();
+    assert!(
+        timeline_error
+            .to_string()
+            .contains("belongs to a different run")
+    );
+}
+
+#[test]
+fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("approval-entries")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.2", "GPT-5.2"))
+        .unwrap();
+    let user_item = repo
+        .append_conversation_entry(message_item(&conversation.id, "approval input"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
+            input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: run.id.clone(),
+            provider_step_id: None,
+            status: ToolInvocationStatus::Requested,
+            input: tool_input(),
+            output: None,
+            error: None,
+        })
+        .unwrap();
+    let request = approval_request();
+    let (request_entry, pending) = repo
+        .request_tool_invocation_approval_with_entry(
+            &tool.id,
+            NewToolInvocationApproval {
+                request: request.clone(),
+                expires_at: None,
+            },
+            NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::WaitingForApproval,
+                agent_run_id: Some(run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: Some(tool.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                    tool_invocation_id: tool.id.clone(),
+                    request,
+                }),
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        request_entry.payload,
+        ConversationEntryPayload::ApprovalRequest(_)
+    ));
+    assert_eq!(pending.status, ToolInvocationStatus::AwaitingApproval);
+    assert_eq!(
+        pending.approval.as_ref().unwrap().status,
+        ApprovalStatus::Pending
+    );
+
+    let decision = approval_decision();
+    let (decision_entry, approved) = repo
+        .decide_tool_invocation_approval_with_entry(
+            &tool.id,
+            ToolInvocationApprovalOutcome::Approved {
+                decided_by: decision.decided_by.clone(),
+                reason: decision.reason.clone(),
+            },
+            ToolInvocationStatus::Running,
+            NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: Some(tool.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                    tool_invocation_id: tool.id.clone(),
+                    decision: decision.clone(),
+                }),
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        decision_entry.payload,
+        ConversationEntryPayload::ApprovalDecision(_)
+    ));
+    assert_eq!(approved.status, ToolInvocationStatus::Running);
+    assert_eq!(approved.approval.unwrap().status, ApprovalStatus::Approved);
+    let entry_count = repo.conversation_entries(&conversation.id).unwrap().len();
+
+    let duplicate = repo.decide_tool_invocation_approval_with_entry(
+        &tool.id,
+        ToolInvocationApprovalOutcome::Approved {
+            decided_by: "second-user".to_string(),
+            reason: None,
+        },
+        ToolInvocationStatus::Running,
+        NewConversationEntry {
+            conversation_id: conversation.id.clone(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(run.id),
+            provider_step_id: None,
+            tool_invocation_id: Some(tool.id.clone()),
+            provider_item_id: None,
+            payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                tool_invocation_id: "duplicate-tool".to_string(),
+                decision,
+            }),
+        },
+    );
+    assert!(duplicate.is_err());
+    assert_eq!(
+        repo.conversation_entries(&conversation.id).unwrap().len(),
+        entry_count
     );
 }
 
@@ -1333,13 +1661,15 @@ fn active_execution_inserts_stamp_start_times() {
         .unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "run input"))
+        .append_conversation_entry(message_item(&conversation.id, "run input"))
         .unwrap();
 
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -1470,11 +1800,11 @@ fn typed_json_roundtrips_for_repository_records() {
     assert_eq!(conversation.settings_snapshot, conversation_settings());
 
     let user_item = repo
-        .append_conversation_item(message_item(&conversation.id, "hello json"))
+        .append_conversation_entry(message_item(&conversation.id, "hello json"))
         .unwrap();
     assert!(matches!(
         user_item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::User,
             ..
         }
@@ -1500,8 +1830,10 @@ fn typed_json_roundtrips_for_repository_records() {
 
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
             status: AgentRunStatus::Running,
+            trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -1838,7 +2170,7 @@ fn conversation_timeline_includes_attachments() {
         .unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let item = repo
-        .append_conversation_item(message_item(&conversation.id, "check this"))
+        .append_conversation_entry(message_item(&conversation.id, "check this"))
         .unwrap();
     let attachment = repo
         .insert_attachment(NewAttachment {
@@ -1865,6 +2197,107 @@ fn conversation_timeline_includes_attachments() {
     assert_eq!(timeline.items.len(), 1);
     assert_eq!(timeline.items[0].id, item.id);
     assert_eq!(timeline.attachments, vec![attachment]);
+}
+
+#[test]
+fn multimodal_user_message_persists_text_and_attachments_in_one_entry() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("multimodal-entry")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+
+    let entry = repo
+        .append_conversation_entry_with_attachments(
+            NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "describe these files".to_string(),
+                    }],
+                },
+            },
+            vec![
+                NewAttachment {
+                    conversation_id: conversation.id.clone(),
+                    kind: AttachmentKind::Image,
+                    storage_kind: AttachmentStorageKind::LocalFile,
+                    mime_type: Some("image/png".to_string()),
+                    name: Some("screenshot.png".to_string()),
+                    path: Some("/tmp/screenshot.png".to_string()),
+                    external_uri: None,
+                    provider_id: None,
+                    provider_file_id: None,
+                    sha256: None,
+                    size_bytes: Some(4),
+                    metadata: AttachmentMetadata {
+                        source: AttachmentSource::LocalFile {
+                            path: "/tmp/screenshot.png".to_string(),
+                        },
+                        width: Some(640),
+                        height: Some(480),
+                        duration_ms: None,
+                        preview_attachment_id: None,
+                    },
+                },
+                NewAttachment {
+                    conversation_id: conversation.id.clone(),
+                    kind: AttachmentKind::File,
+                    storage_kind: AttachmentStorageKind::LocalFile,
+                    mime_type: Some("text/plain".to_string()),
+                    name: Some("notes.txt".to_string()),
+                    path: Some("/tmp/notes.txt".to_string()),
+                    external_uri: None,
+                    provider_id: None,
+                    provider_file_id: None,
+                    sha256: None,
+                    size_bytes: Some(42),
+                    metadata: attachment_metadata(),
+                },
+            ],
+        )
+        .unwrap();
+
+    let attachments = repo.conversation_attachments(&conversation.id).unwrap();
+    assert_eq!(attachments.len(), 2);
+    let image = attachments
+        .iter()
+        .find(|attachment| attachment.kind == AttachmentKind::Image)
+        .unwrap();
+    let file = attachments
+        .iter()
+        .find(|attachment| attachment.kind == AttachmentKind::File)
+        .unwrap();
+    assert!(matches!(
+        &entry.payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::User,
+            content,
+        } if content == &vec![
+            ContentPart::Text {
+                text: "describe these files".to_string(),
+            },
+            ContentPart::Image {
+                attachment_id: image.id.clone(),
+            },
+            ContentPart::File {
+                attachment_id: file.id.clone(),
+            },
+        ]
+    ));
+
+    let timeline = repo
+        .conversation_timeline_records(&conversation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline.items, vec![entry]);
+    assert_eq!(timeline.attachments, attachments);
 }
 
 #[test]
@@ -1924,12 +2357,6 @@ struct CountRow {
 struct BusyTimeoutRow {
     #[diesel(sql_type = Integer)]
     timeout: i32,
-}
-
-#[derive(diesel::QueryableByName)]
-struct IntRow {
-    #[diesel(sql_type = Integer)]
-    value: i32,
 }
 
 #[derive(diesel::QueryableByName)]
@@ -2002,7 +2429,7 @@ fn conversation_settings() -> ConversationSettingsSnapshot {
     }
 }
 
-fn message_item(conversation_id: &str, text: &str) -> NewConversationItem {
+fn message_item(conversation_id: &str, text: &str) -> NewConversationEntry {
     message_item_with_role(conversation_id, TranscriptRole::User, text)
 }
 
@@ -2010,15 +2437,15 @@ fn message_item_with_role(
     conversation_id: &str,
     role: TranscriptRole,
     text: &str,
-) -> NewConversationItem {
-    NewConversationItem {
+) -> NewConversationEntry {
+    NewConversationEntry {
         conversation_id: conversation_id.to_string(),
-        status: ConversationItemStatus::Completed,
+        status: ConversationEntryStatus::Completed,
         agent_run_id: None,
         provider_step_id: None,
         tool_invocation_id: None,
         provider_item_id: None,
-        payload: ConversationItemPayload::Message {
+        payload: ConversationEntryPayload::Message {
             role,
             content: vec![ContentPart::Text {
                 text: text.to_string(),
@@ -2105,9 +2532,8 @@ fn attachment_metadata() -> AttachmentMetadata {
     }
 }
 
-fn agent_run_input(user_item_id: &str, provider_id: &str, model_id: &str) -> AgentRunInput {
+fn agent_run_input(_trigger_entry_id: &str, provider_id: &str, model_id: &str) -> AgentRunInput {
     AgentRunInput {
-        user_item_id: user_item_id.to_string(),
         prompt_snapshot: Some(prompt_content()),
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),

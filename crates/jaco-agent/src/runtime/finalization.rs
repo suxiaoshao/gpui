@@ -1,11 +1,12 @@
-use super::{AgentRuntime, emit_runtime};
+use super::AgentRuntime;
 use crate::{
-    AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, Result, persistence::run_error,
+    AgentRuntimeError, AgentRuntimeObserver, Result,
+    persistence::{AgentRunOutcome, finish_agent_run_spec, run_error},
 };
 use jaco_core::*;
 use jaco_db::{
-    AgentRunRecord, NewConversationItem, ToolInvocationApproval, ToolInvocationRecord,
-    UpdateAgentRunStatus, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    AgentRunRecord, NewConversationEntry, ToolInvocationApproval, ToolInvocationRecord,
+    UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 
 impl AgentRuntime {
@@ -42,7 +43,7 @@ impl AgentRuntime {
         invocation: &ToolInvocationRecord,
         status: ToolInvocationStatus,
         error: RunErrorPayload,
-    ) -> Result<ConversationItemId> {
+    ) -> Result<ConversationEntryId> {
         let output = ToolInvocationOutput {
             content: vec![ContentPart::Text {
                 text: error.message.clone(),
@@ -51,7 +52,7 @@ impl AgentRuntime {
             raw_output: None,
             is_error: true,
         };
-        let payload = ConversationItemPayload::ToolResult(ToolResultItem {
+        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
             tool_invocation_id: Some(invocation.id.clone()),
             call_id: invocation.call_id.clone(),
             content: output.content.clone(),
@@ -60,18 +61,42 @@ impl AgentRuntime {
             raw_output: None,
         });
         let approval = terminalized_pending_approval(invocation);
-        let (item, _) = self
+        let mut entries = Vec::new();
+        if approval
+            .as_ref()
+            .and_then(|approval| approval.decision.as_ref())
+            .is_some()
+        {
+            let decision = approval
+                .as_ref()
+                .and_then(|approval| approval.decision.clone())
+                .expect("approval decision checked above");
+            entries.push(NewConversationEntry {
+                conversation_id: conversation_id.to_string(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(invocation.agent_run_id.clone()),
+                provider_step_id: invocation.provider_step_id.clone(),
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                    tool_invocation_id: invocation.id.clone(),
+                    decision,
+                }),
+            });
+        }
+        entries.push(NewConversationEntry {
+            conversation_id: conversation_id.to_string(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(invocation.agent_run_id.clone()),
+            provider_step_id: invocation.provider_step_id.clone(),
+            tool_invocation_id: Some(invocation.id.clone()),
+            provider_item_id: None,
+            payload,
+        });
+        let items = self
             .repo
-            .append_conversation_item_and_update_tool_invocation_full(
-                NewConversationItem {
-                    conversation_id: conversation_id.to_string(),
-                    status: ConversationItemStatus::Completed,
-                    agent_run_id: Some(invocation.agent_run_id.clone()),
-                    provider_step_id: invocation.provider_step_id.clone(),
-                    tool_invocation_id: Some(invocation.id.clone()),
-                    provider_item_id: None,
-                    payload,
-                },
+            .append_conversation_entries_and_update_tool_invocation_full(
+                entries,
                 &invocation.id,
                 UpdateToolInvocationStatus {
                     status,
@@ -79,8 +104,14 @@ impl AgentRuntime {
                     error: Some(error),
                 },
                 approval,
-            )?;
-        Ok(item.id)
+            )?
+            .0;
+        items.last().map(|item| item.id.clone()).ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!(
+                "tool invocation {} finalization created no entries",
+                invocation.id
+            ))
+        })
     }
 
     pub(super) fn finalize_active_provider_steps(
@@ -118,20 +149,20 @@ impl AgentRuntime {
         self.finalize_active_provider_steps(agent_run_id, ProviderStepStatus::Failed, error)
     }
 
-    pub(super) fn latest_assistant_item_id_for_run(
+    pub(super) fn latest_assistant_entry_id_for_run(
         &self,
         run: &AgentRunRecord,
-    ) -> Result<Option<ConversationItemId>> {
+    ) -> Result<Option<ConversationEntryId>> {
         Ok(self
             .repo
-            .conversation_items(&run.conversation_id)?
+            .conversation_entries(&run.conversation_id)?
             .into_iter()
             .rev()
             .find(|item| {
                 item.agent_run_id.as_deref() == Some(run.id.as_str())
                     && matches!(
                         item.payload,
-                        ConversationItemPayload::Message {
+                        ConversationEntryPayload::Message {
                             role: TranscriptRole::Assistant,
                             ..
                         }
@@ -146,21 +177,20 @@ impl AgentRuntime {
         error: AgentRuntimeError,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRuntimeError> {
-        self.repo.update_agent_run_status(
+        let error_payload = run_error("setup_error", error.to_string(), true, None);
+        let run = self.repo.get_agent_run(agent_run_id)?.ok_or_else(|| {
+            AgentRuntimeError::Invariant(format!("agent run {agent_run_id} disappeared"))
+        })?;
+        self.finish_agent_run_with_observer(
             agent_run_id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Failed,
-                output: None,
-                error: Some(run_error("setup_error", error.to_string(), true, None)),
-            },
-        )?;
-        emit_runtime(
+            finish_agent_run_spec(
+                &run,
+                AgentRunOutcome::Failed {
+                    error: error_payload,
+                },
+            ),
             observer,
-            AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id: agent_run_id.to_string(),
-                status: AgentRunStatus::Failed,
-            },
-        );
+        )?;
         Ok(error)
     }
 }

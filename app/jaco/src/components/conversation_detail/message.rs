@@ -14,10 +14,8 @@ use gpui_component::{
     text::{TextView, TextViewState},
     v_flex,
 };
-use jaco_core::{
-    AgentRunId, AgentRunStatus, ConversationItemId, RunErrorPayload, ToolInvocationId,
-};
-use jaco_db::{AgentRunRecord, ConversationItemRecord};
+use jaco_core::{AgentRunId, AgentRunStatus, ConversationEntryId, ToolInvocationId};
+use jaco_db::{AgentRunRecord, ConversationEntryRecord};
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
@@ -74,7 +72,7 @@ impl TimelineRow {
         }
     }
 
-    pub(super) fn contains_item(&self, item_id: &ConversationItemId) -> bool {
+    pub(super) fn contains_item(&self, item_id: &ConversationEntryId) -> bool {
         match self {
             TimelineRow::User(row) => &row.item.id == item_id,
             TimelineRow::Agent(row) => row.items.iter().any(|item| &item.id == item_id),
@@ -93,7 +91,7 @@ impl RenderOnce for TimelineRow {
 
 #[derive(Clone)]
 pub(super) struct UserMessageRow {
-    pub(super) item: ConversationItemRecord,
+    pub(super) item: ConversationEntryRecord,
     pub(super) image_attachments: Vec<UserImageAttachment>,
     pub(super) text_state: Option<Entity<TextViewState>>,
     pub(super) on_copy: OnCopy,
@@ -185,9 +183,9 @@ impl RenderOnce for UserMessageRow {
 pub(super) struct AgentTurnRow {
     pub(super) run_id: Option<AgentRunId>,
     pub(super) run: Option<AgentRunRecord>,
-    pub(super) items: Vec<ConversationItemRecord>,
-    pub(super) final_item: Option<ConversationItemRecord>,
-    pub(super) text_states: HashMap<ConversationItemId, Entity<TextViewState>>,
+    pub(super) items: Vec<ConversationEntryRecord>,
+    pub(super) final_item: Option<ConversationEntryRecord>,
+    pub(super) text_states: HashMap<ConversationEntryId, Entity<TextViewState>>,
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
     pub(super) on_copy: OnCopy,
@@ -223,7 +221,7 @@ impl RenderOnce for AgentTurnRow {
                 i18n.t("conversation-copy-tooltip"),
                 i18n.t("conversation-copy-success"),
                 hover_time,
-                agent_final_markdown(self.final_item.as_ref(), self.run.as_ref(), i18n),
+                agent_final_markdown(self.final_item.as_ref(), i18n),
             )
         };
         let status_row = self.render_status_row(&id_suffix, cx);
@@ -349,7 +347,7 @@ impl AgentTurnRow {
             .items
             .iter()
             .filter_map(|item| match &item.payload {
-                jaco_core::ConversationItemPayload::ApprovalDecision(decision) => {
+                jaco_core::ConversationEntryPayload::ApprovalDecision(decision) => {
                     Some(decision.tool_invocation_id.clone())
                 }
                 _ => None,
@@ -359,7 +357,7 @@ impl AgentTurnRow {
             .items
             .iter()
             .filter_map(|item| match &item.payload {
-                jaco_core::ConversationItemPayload::ToolResult(_) => {
+                jaco_core::ConversationEntryPayload::ToolResult(_) => {
                     item.tool_invocation_id.clone()
                 }
                 _ => None,
@@ -370,7 +368,7 @@ impl AgentTurnRow {
         for item in detail_items {
             let text_state = text_states.get(&item.id).cloned();
             let approval_decidable = match &item.payload {
-                jaco_core::ConversationItemPayload::ApprovalRequest(request) => {
+                jaco_core::ConversationEntryPayload::ApprovalRequest(request) => {
                     approval_request_decidable(
                         request,
                         &decided_tool_invocation_ids,
@@ -399,7 +397,7 @@ impl AgentTurnRow {
 }
 
 fn approval_request_decidable(
-    request: &jaco_core::ApprovalRequestItem,
+    request: &jaco_core::ApprovalRequestEntry,
     decided_tool_invocation_ids: &HashSet<ToolInvocationId>,
     terminal_tool_invocation_ids: &HashSet<ToolInvocationId>,
 ) -> bool {
@@ -519,56 +517,32 @@ fn copy_button(
 }
 
 fn agent_copy_text(row: &AgentTurnRow, i18n: &I18n) -> String {
-    let final_markdown = agent_final_markdown(row.final_item.as_ref(), row.run.as_ref(), i18n);
+    let final_markdown = agent_final_markdown(row.final_item.as_ref(), i18n);
     if !row.expanded && !final_markdown.trim().is_empty() {
         return final_markdown;
     }
 
-    let mut parts = row
+    let parts = row
         .items
         .iter()
         .map(format::item_markdown)
         .filter(|text| !text.trim().is_empty())
         .collect::<Vec<_>>();
-    if row.final_item.is_none() && !final_markdown.trim().is_empty() {
-        parts.push(final_markdown);
-    }
     parts.join("\n\n")
 }
 
-fn agent_final_markdown(
-    final_item: Option<&ConversationItemRecord>,
-    run: Option<&AgentRunRecord>,
-    i18n: &I18n,
-) -> String {
-    if let Some(final_item) = final_item {
-        return format::item_markdown(final_item);
-    }
-
-    let Some(run) = run else {
+fn agent_final_markdown(final_item: Option<&ConversationEntryRecord>, i18n: &I18n) -> String {
+    let Some(final_item) = final_item else {
         return String::new();
     };
-    agent_run_terminal_fallback_markdown(run.status, run.error.as_ref(), i18n)
-}
-
-fn agent_run_terminal_fallback_markdown(
-    status: AgentRunStatus,
-    error: Option<&RunErrorPayload>,
-    i18n: &I18n,
-) -> String {
-    if !matches!(status, AgentRunStatus::Failed | AgentRunStatus::Canceled) {
-        return String::new();
-    }
-    if let Some(error) = error
-        && !error.message.trim().is_empty()
-    {
-        return format!("**{}:** {}", i18n.t("conversation-error"), error.message);
-    }
-
-    match status {
-        AgentRunStatus::Failed => i18n.t("conversation-agent-failed-fallback"),
-        AgentRunStatus::Canceled => i18n.t("conversation-agent-canceled-fallback"),
-        _ => String::new(),
+    match &final_item.payload {
+        jaco_core::ConversationEntryPayload::Error(error) => {
+            format!("**{}:** {}", i18n.t("conversation-error"), error.message)
+        }
+        jaco_core::ConversationEntryPayload::Status(status) => {
+            i18n.t(format::status_i18n_key(status.code))
+        }
+        _ => format::item_markdown(final_item),
     }
 }
 
@@ -618,16 +592,12 @@ fn duration_arg_label(i18n: &I18n, key: &str, duration: String) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use jaco_core::{
-        AgentRunStatus, ApprovalRequestItem, ApprovalRequestPayload, RunErrorPayload, ToolSource,
-    };
+    use jaco_core::{ApprovalRequestEntry, ApprovalRequestPayload, ToolSource};
 
-    use crate::foundation::I18n;
+    use super::approval_request_decidable;
 
-    use super::{agent_run_terminal_fallback_markdown, approval_request_decidable};
-
-    fn approval_request() -> ApprovalRequestItem {
-        ApprovalRequestItem {
+    fn approval_request() -> ApprovalRequestEntry {
+        ApprovalRequestEntry {
             tool_invocation_id: "tool-1".to_string(),
             request: ApprovalRequestPayload {
                 reason: "needs approval".to_string(),
@@ -663,40 +633,5 @@ mod tests {
             &decided_approval_ids,
             &terminal_tool_invocation_ids
         ));
-    }
-
-    #[test]
-    fn terminal_run_without_final_item_uses_run_error_fallback() {
-        let i18n = I18n::english_for_test();
-        let error = RunErrorPayload {
-            code: "setup_error".to_string(),
-            message: "missing API key".to_string(),
-            retryable: true,
-            provider: None,
-            raw: None,
-        };
-
-        assert_eq!(
-            agent_run_terminal_fallback_markdown(AgentRunStatus::Failed, Some(&error), &i18n),
-            "**Error:** missing API key"
-        );
-    }
-
-    #[test]
-    fn terminal_run_without_final_item_uses_status_fallback_when_error_is_missing() {
-        let i18n = I18n::english_for_test();
-
-        assert_eq!(
-            agent_run_terminal_fallback_markdown(AgentRunStatus::Failed, None, &i18n),
-            "Agent run failed"
-        );
-        assert_eq!(
-            agent_run_terminal_fallback_markdown(AgentRunStatus::Canceled, None, &i18n),
-            "Agent run canceled"
-        );
-        assert_eq!(
-            agent_run_terminal_fallback_markdown(AgentRunStatus::Completed, None, &i18n),
-            ""
-        );
     }
 }

@@ -5,10 +5,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use jaco_db::{
-    ConversationItemRecord, ConversationRecord, FreshStore, NewConversation, NewConversationItem,
-    NewProject, NewProvider, NewProviderModel, NewProviderStep, NewToolInvocation,
-    NewToolInvocationApproval, ProviderModelRecord, ProviderRecord, ProviderStepRecord,
-    ToolInvocationRecord, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    AgentRunFinalEntry, ConversationEntryRecord, ConversationRecord, FinishAgentRun, FreshStore,
+    NewConversation, NewConversationEntry, NewProject, NewProvider, NewProviderModel,
+    NewProviderStep, NewToolInvocation, NewToolInvocationApproval, ProviderModelRecord,
+    ProviderRecord, ProviderStepRecord, ToolInvocationRecord, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 use rig_core::{
     OneOrMany,
@@ -33,6 +34,7 @@ use serde_json::json;
 use std::{
     collections::VecDeque,
     future::pending,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -128,11 +130,11 @@ async fn no_tool_run_persists_provider_step_and_final_message() {
     );
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::Assistant,
             content,
         } if content[0].search_text() == Some("hello from model")
@@ -160,14 +162,14 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let assistant_items = items
         .iter()
         .filter(|item| {
             matches!(
                 item.payload,
-                ConversationItemPayload::Message {
+                ConversationEntryPayload::Message {
                     role: TranscriptRole::Assistant,
                     ..
                 }
@@ -175,14 +177,17 @@ async fn streaming_text_delta_updates_single_assistant_item() {
         })
         .collect::<Vec<_>>();
     assert_eq!(assistant_items.len(), 1);
-    assert_eq!(assistant_items[0].status, ConversationItemStatus::Completed);
     assert_eq!(
-        output.final_item_id.as_deref(),
+        assistant_items[0].status,
+        ConversationEntryStatus::Completed
+    );
+    assert_eq!(
+        Some(output.final_entry_id.as_str()),
         Some(assistant_items[0].id.as_str())
     );
     assert!(matches!(
         &assistant_items[0].payload,
-        ConversationItemPayload::Message { content, .. }
+        ConversationEntryPayload::Message { content, .. }
             if content[0].search_text() == Some("hello world")
     ));
 
@@ -205,6 +210,290 @@ async fn streaming_text_delta_updates_single_assistant_item() {
             ..
         } if text == "world"
     )));
+}
+
+#[tokio::test]
+async fn streaming_provider_open_error_stays_before_later_user_entry_after_reload() {
+    let fixture = Fixture::new("streaming-provider-open-error");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let db_path = fixture.db_path.clone();
+    let conversation_id = fixture.conversation.id.clone();
+    let initial_user_entry_id = fixture.user_item.id.clone();
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), FailBeforeFirstTokenModel)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let error = handle.agent_run.error.clone().expect("run error");
+    let output = handle.output.clone().expect("failed run output");
+    let error_entry_id = output.final_entry_id.clone();
+
+    let later_user = fixture
+        .repo
+        .append_conversation_entry(NewConversationEntry {
+            conversation_id: conversation_id.clone(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: None,
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "later user message".to_string(),
+                }],
+            },
+        })
+        .unwrap();
+
+    drop(runtime);
+    drop(fixture.repo);
+    let reopened = FreshStore::open(&db_path).unwrap().repository();
+    let timeline = reopened
+        .conversation_timeline_records(&conversation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline.items.len(), 3);
+    assert!(matches!(
+        timeline.items[0].payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::User,
+            ..
+        }
+    ));
+    assert_eq!(timeline.items[0].id, initial_user_entry_id);
+    assert!(matches!(
+        timeline.items[1].payload,
+        ConversationEntryPayload::Error(_)
+    ));
+    assert!(matches!(
+        timeline.items[2].payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::User,
+            ..
+        }
+    ));
+    assert_eq!(timeline.items[1].id, error_entry_id);
+    assert_eq!(timeline.items[2].id, later_user.id);
+    assert!(
+        timeline
+            .items
+            .windows(2)
+            .all(|items| items[0].seq < items[1].seq)
+    );
+    assert_eq!(
+        timeline.items[1].agent_run_id.as_deref(),
+        Some(handle.agent_run.id.as_str())
+    );
+    assert_eq!(
+        timeline.items[1].payload,
+        ConversationEntryPayload::Error(error.clone())
+    );
+
+    let persisted_run = reopened
+        .get_agent_run(&handle.agent_run.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted_run.status, AgentRunStatus::Failed);
+    assert_eq!(persisted_run.error, Some(error));
+    assert_eq!(persisted_run.output.unwrap().final_entry_id, error_entry_id);
+}
+
+#[tokio::test]
+async fn blocking_provider_error_persists_final_error_entry() {
+    let fixture = Fixture::new("blocking-provider-error");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+
+    let handle = runtime
+        .run_with_model(fixture.request(), FailBeforeFirstTokenModel)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let error_entry_id = handle
+        .output
+        .as_ref()
+        .expect("blocking provider error output")
+        .final_entry_id
+        .clone();
+    let items = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let error_entry = items.iter().find(|item| item.id == error_entry_id).unwrap();
+    assert!(matches!(
+        error_entry.payload,
+        ConversationEntryPayload::Error(_)
+    ));
+    assert_eq!(error_entry.status, ConversationEntryStatus::Failed);
+}
+
+#[tokio::test]
+async fn completed_without_output_uses_status_final_entry() {
+    let fixture = Fixture::new("completed-without-output");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+
+    let handle = runtime
+        .run_with_model(fixture.request(), MockCompletionModel::text(""))
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+    assert_eq!(handle.agent_run.error, None);
+    assert_eq!(
+        handle.output.as_ref().unwrap().stopped_reason,
+        AgentStoppedReason::Completed
+    );
+    let items = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let final_entry_id = &handle.output.as_ref().unwrap().final_entry_id;
+    let final_entry = items
+        .iter()
+        .find(|item| &item.id == final_entry_id)
+        .expect("completed run final entry");
+    assert_eq!(final_entry.status, ConversationEntryStatus::Completed);
+    assert!(matches!(
+        final_entry.payload,
+        ConversationEntryPayload::Status(ConversationStatusEntry {
+            code: ConversationStatusCode::CompletedWithoutOutput,
+            message: None,
+        })
+    ));
+    assert!(!items.iter().any(|item| matches!(
+        item.payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn partial_stream_failure_keeps_partial_entry_and_finishes_with_error() {
+    let fixture = Fixture::new("streaming-provider-error-after-text");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), FailAfterTextModel)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let final_entry_id = handle
+        .output
+        .as_ref()
+        .expect("partial failure output")
+        .final_entry_id
+        .clone();
+    let items = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let partial = items
+        .iter()
+        .find(|item| {
+            matches!(
+                &item.payload,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    content,
+                } if content[0].search_text() == Some("partial")
+            )
+        })
+        .expect("partial assistant entry");
+    assert_eq!(partial.status, ConversationEntryStatus::Failed);
+    let final_entry = items
+        .iter()
+        .find(|item| item.id == final_entry_id)
+        .expect("failed run final entry");
+    assert!(matches!(
+        &final_entry.payload,
+        ConversationEntryPayload::Error(_)
+    ));
+    assert!(partial.seq < final_entry.seq);
+    assert!(items.iter().any(|item| {
+        matches!(
+            item.payload,
+            ConversationEntryPayload::Error(ref error)
+                if Some(error) == handle.agent_run.error.as_ref()
+        )
+    }));
+    assert!(items.windows(2).all(|items| items[0].seq < items[1].seq));
+}
+
+#[tokio::test]
+async fn retry_runs_share_trigger_entry_and_keep_entry_sequence() {
+    let fixture = Fixture::new("retry-order");
+    let runtime = AgentRuntime::new(fixture.repo.clone());
+
+    let first = runtime
+        .run_with_model(fixture.streaming_request(), FailBeforeFirstTokenModel)
+        .await
+        .unwrap();
+    let second = runtime
+        .run_with_model(
+            fixture.request(),
+            MockCompletionModel::text("retry success"),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(first.agent_run.id, second.agent_run.id);
+    assert_eq!(
+        first.agent_run.trigger_entry_id,
+        second.agent_run.trigger_entry_id
+    );
+    assert_eq!(first.agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(second.agent_run.status, AgentRunStatus::Completed);
+
+    let entries = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    assert_eq!(entries.len(), 3);
+    assert!(matches!(
+        entries[0].payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::User,
+            ..
+        }
+    ));
+    assert_eq!(
+        entries[1].agent_run_id.as_deref(),
+        Some(first.agent_run.id.as_str())
+    );
+    assert!(matches!(
+        entries[1].payload,
+        ConversationEntryPayload::Error(_)
+    ));
+    assert_eq!(
+        entries[2].agent_run_id.as_deref(),
+        Some(second.agent_run.id.as_str())
+    );
+    assert!(matches!(
+        entries[2].payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            ..
+        }
+    ));
+    assert!(
+        entries
+            .windows(2)
+            .all(|entries| entries[0].seq < entries[1].seq)
+    );
+    assert_eq!(
+        first.agent_run.output.as_ref().unwrap().final_entry_id,
+        entries[1].id
+    );
+    assert_eq!(
+        second.agent_run.output.as_ref().unwrap().final_entry_id,
+        entries[2].id
+    );
 }
 
 #[tokio::test]
@@ -269,17 +558,20 @@ async fn streaming_reasoning_delta_updates_single_reasoning_item() {
     assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let reasoning_items = items
         .iter()
-        .filter(|item| matches!(item.payload, ConversationItemPayload::Reasoning { .. }))
+        .filter(|item| matches!(item.payload, ConversationEntryPayload::Reasoning { .. }))
         .collect::<Vec<_>>();
     assert_eq!(reasoning_items.len(), 1);
-    assert_eq!(reasoning_items[0].status, ConversationItemStatus::Completed);
+    assert_eq!(
+        reasoning_items[0].status,
+        ConversationEntryStatus::Completed
+    );
     assert!(matches!(
         &reasoning_items[0].payload,
-        ConversationItemPayload::Reasoning { text, summary: None }
+        ConversationEntryPayload::Reasoning { text, summary: None }
             if text == "thinking now"
     ));
     assert!(handle.events.iter().any(|event| matches!(
@@ -324,25 +616,25 @@ async fn streaming_tool_call_is_persisted_only_by_hook() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert_eq!(
         items
             .iter()
-            .filter(|item| matches!(item.payload, ConversationItemPayload::ToolCall(_)))
+            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
             .count(),
         1
     );
     assert_eq!(
         items
             .iter()
-            .filter(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
+            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolResult(_)))
             .count(),
         1
     );
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::Assistant,
             content,
         } if content[0].search_text() == Some("done")
@@ -370,13 +662,13 @@ async fn streaming_approval_required_preserves_partial_text() {
     let run = tokio::spawn(async move { runtime.run_with_model(request, model).await });
     let approval_request = broker.wait_for_request().await;
 
-    let items = repo.conversation_items(&conversation_id).unwrap();
+    let items = repo.conversation_entries(&conversation_id).unwrap();
     let assistant_item = items
         .iter()
         .find(|item| {
             matches!(
                 item.payload,
-                ConversationItemPayload::Message {
+                ConversationEntryPayload::Message {
                     role: TranscriptRole::Assistant,
                     ..
                 }
@@ -385,7 +677,7 @@ async fn streaming_approval_required_preserves_partial_text() {
         .unwrap();
     assert!(matches!(
         &assistant_item.payload,
-        ConversationItemPayload::Message { content, .. }
+        ConversationEntryPayload::Message { content, .. }
             if content[0].search_text() == Some("partial answer")
     ));
     let invocations = repo
@@ -429,24 +721,24 @@ async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() 
     );
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let assistant_item = items
         .iter()
         .find(|item| {
             matches!(
                 item.payload,
-                ConversationItemPayload::Message {
+                ConversationEntryPayload::Message {
                     role: TranscriptRole::Assistant,
                     ..
                 }
             )
         })
         .unwrap();
-    assert_eq!(assistant_item.status, ConversationItemStatus::Canceled);
+    assert_eq!(assistant_item.status, ConversationEntryStatus::Canceled);
     assert!(matches!(
         &assistant_item.payload,
-        ConversationItemPayload::Message { content, .. }
+        ConversationEntryPayload::Message { content, .. }
             if content[0].search_text() == Some("partial")
     ));
 
@@ -476,15 +768,28 @@ async fn non_streaming_cancellation_before_response_persistence_marks_run_cancel
     );
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert!(!items.iter().any(|item| matches!(
         item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::Assistant,
             ..
         }
     )));
+    let final_entry_id = &handle.output.as_ref().unwrap().final_entry_id;
+    let final_entry = items
+        .iter()
+        .find(|item| &item.id == final_entry_id)
+        .expect("canceled run final entry");
+    assert_eq!(final_entry.status, ConversationEntryStatus::Canceled);
+    assert!(matches!(
+        final_entry.payload,
+        ConversationEntryPayload::Status(ConversationStatusEntry {
+            code: ConversationStatusCode::Canceled,
+            message: None,
+        })
+    ));
     let provider_steps = fixture
         .repo
         .provider_steps_for_run(&handle.agent_run.id)
@@ -577,21 +882,21 @@ async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediatel
     assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let assistant_item = items
         .iter()
         .find(|item| {
             matches!(
                 item.payload,
-                ConversationItemPayload::Message {
+                ConversationEntryPayload::Message {
                     role: TranscriptRole::Assistant,
                     ..
                 }
             )
         })
         .unwrap();
-    assert_eq!(assistant_item.status, ConversationItemStatus::Canceled);
+    assert_eq!(assistant_item.status, ConversationEntryStatus::Canceled);
     let provider_steps = fixture
         .repo
         .provider_steps_for_run(&handle.agent_run.id)
@@ -615,11 +920,11 @@ async fn streaming_disabled_uses_non_streaming_prompt() {
     assert_eq!(model.request_count(), 1);
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::Assistant,
             content,
         } if content[0].search_text() == Some("non-stream response")
@@ -696,22 +1001,22 @@ async fn rig_tool_call_persists_tool_call_and_result() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert!(
         items
             .iter()
-            .any(|item| matches!(item.payload, ConversationItemPayload::ToolCall(_)))
+            .any(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
     );
     assert!(
         items
             .iter()
-            .any(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
+            .any(|item| matches!(item.payload, ConversationEntryPayload::ToolResult(_)))
     );
     let tool_result = items
         .iter()
         .find_map(|item| match &item.payload {
-            ConversationItemPayload::ToolResult(result) => Some(result),
+            ConversationEntryPayload::ToolResult(result) => Some(result),
             _ => None,
         })
         .unwrap();
@@ -805,12 +1110,12 @@ async fn tool_error_output_is_persisted_without_reconstructing_from_model_text()
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let tool_result = items
         .iter()
         .find_map(|item| match &item.payload {
-            ConversationItemPayload::ToolResult(result) => Some(result),
+            ConversationEntryPayload::ToolResult(result) => Some(result),
             _ => None,
         })
         .unwrap();
@@ -867,19 +1172,19 @@ async fn recoverable_builtin_argument_error_is_returned_to_model() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert_eq!(
         items
             .iter()
-            .filter(|item| matches!(item.payload, ConversationItemPayload::ToolCall(_)))
+            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
             .count(),
         1
     );
     let tool_result = items
         .iter()
         .find_map(|item| match &item.payload {
-            ConversationItemPayload::ToolResult(result) => Some(result),
+            ConversationEntryPayload::ToolResult(result) => Some(result),
             _ => None,
         })
         .unwrap();
@@ -892,7 +1197,7 @@ async fn recoverable_builtin_argument_error_is_returned_to_model() {
     );
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::Assistant,
             content,
         } if content[0].search_text() == Some("recovered")
@@ -939,16 +1244,16 @@ async fn recoverable_unknown_tool_is_returned_to_model() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::ToolCall(call)
+        ConversationEntryPayload::ToolCall(call)
             if call.runtime_tool_name == "missing_tool"
     )));
     assert!(items.iter().any(|item| matches!(
         &item.payload,
-        ConversationItemPayload::ToolResult(result)
+        ConversationEntryPayload::ToolResult(result)
             if result.is_error
                 && result.content[0]
                     .search_text()
@@ -1022,19 +1327,19 @@ async fn recoverable_missing_runtime_tool_is_returned_to_model() {
     assert!(invocations[0].output.as_ref().unwrap().is_error);
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     assert_eq!(
         items
             .iter()
-            .filter(|item| matches!(item.payload, ConversationItemPayload::ToolCall(_)))
+            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
             .count(),
         1
     );
     assert_eq!(
         items
             .iter()
-            .filter(|item| matches!(item.payload, ConversationItemPayload::ToolResult(_)))
+            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolResult(_)))
             .count(),
         1
     );
@@ -1086,6 +1391,22 @@ async fn max_turns_is_persisted_as_max_steps_stop() {
             .iter()
             .all(|invocation| invocation.status == ToolInvocationStatus::Succeeded)
     );
+    let items = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let final_entry_id = &handle.output.as_ref().unwrap().final_entry_id;
+    let final_entry = items
+        .iter()
+        .find(|item| &item.id == final_entry_id)
+        .expect("max-steps run final entry");
+    assert!(matches!(
+        final_entry.payload,
+        ConversationEntryPayload::Status(ConversationStatusEntry {
+            code: ConversationStatusCode::MaxStepsReached,
+            message: None,
+        })
+    ));
 }
 
 #[tokio::test]
@@ -1145,11 +1466,11 @@ async fn prompt_error_fails_active_tool_invocations() {
 
     let tool_results = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap()
         .into_iter()
         .filter_map(|item| match item.payload {
-            ConversationItemPayload::ToolResult(result) => Some(result),
+            ConversationEntryPayload::ToolResult(result) => Some(result),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1264,6 +1585,34 @@ async fn approval_policy_waits_inside_same_run_until_broker_decision() {
         invocation.approval.as_ref().map(|approval| approval.status),
         Some(ApprovalStatus::Approved)
     );
+    let entries = repo
+        .conversation_entries(&conversation_id)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| {
+            entry.agent_run_id.as_deref() == Some(approval_request.agent_run_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let approval_entries = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.payload,
+                ConversationEntryPayload::ApprovalRequest(_)
+                    | ConversationEntryPayload::ApprovalDecision(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(approval_entries.len(), 2);
+    assert!(matches!(
+        approval_entries[0].payload,
+        ConversationEntryPayload::ApprovalRequest(_)
+    ));
+    assert!(matches!(
+        approval_entries[1].payload,
+        ConversationEntryPayload::ApprovalDecision(_)
+    ));
+    assert!(approval_entries[0].seq < approval_entries[1].seq);
 }
 
 #[tokio::test]
@@ -1316,6 +1665,23 @@ async fn denied_approval_writes_error_tool_result_and_continues_same_run() {
     );
     assert!(invocation.output.as_ref().unwrap().is_error);
     assert_eq!(tool_result_texts(&fixture), vec!["not allowed".to_string()]);
+    let entries = repo
+        .conversation_entries(&conversation_id)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| {
+            entry.agent_run_id.as_deref() == Some(approval_request.agent_run_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let approval_decision = entries
+        .iter()
+        .find(|entry| matches!(entry.payload, ConversationEntryPayload::ApprovalDecision(_)))
+        .expect("denial decision entry");
+    let tool_result = entries
+        .iter()
+        .find(|entry| matches!(entry.payload, ConversationEntryPayload::ToolResult(_)))
+        .expect("denial tool result entry");
+    assert!(approval_decision.seq < tool_result.seq);
 }
 
 #[test]
@@ -1335,6 +1701,32 @@ fn recovery_fails_active_child_execution_rows() {
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].status, AgentRunStatus::Failed);
     assert_eq!(recovered[0].error.as_ref().unwrap().code, "interrupted");
+    let final_entry_id = &recovered[0].output.as_ref().unwrap().final_entry_id;
+    let entries = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let final_entry = entries
+        .iter()
+        .find(|entry| &entry.id == final_entry_id)
+        .expect("recovery final error entry");
+    assert!(matches!(
+        &final_entry.payload,
+        ConversationEntryPayload::Error(error) if error.code == "interrupted"
+    ));
+    assert_eq!(final_entry.status, ConversationEntryStatus::Failed);
+    let recovered_again = runtime.recover_interrupted_runs().unwrap();
+    assert!(recovered_again.is_empty());
+    assert_eq!(
+        fixture
+            .repo
+            .conversation_entries(&fixture.conversation.id)
+            .unwrap()
+            .iter()
+            .filter(|entry| matches!(entry.payload, ConversationEntryPayload::Error(_)))
+            .count(),
+        1
+    );
 
     let provider_step = fixture
         .repo
@@ -1407,14 +1799,14 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
     );
     let assistant_item = fixture
         .repo
-        .append_conversation_item(NewConversationItem {
+        .append_conversation_entry(NewConversationEntry {
             conversation_id: fixture.conversation.id.clone(),
-            status: ConversationItemStatus::Completed,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: Some(agent_run.id.clone()),
             provider_step_id: Some(provider_step.id.clone()),
             tool_invocation_id: None,
             provider_item_id: None,
-            payload: ConversationItemPayload::Message {
+            payload: ConversationEntryPayload::Message {
                 role: TranscriptRole::Assistant,
                 content: vec![ContentPart::Text {
                     text: "partial answer".to_string(),
@@ -1442,7 +1834,7 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
         AgentStoppedReason::Canceled
     );
     assert_eq!(
-        canceled.output.as_ref().unwrap().final_item_id.as_deref(),
+        Some(canceled.output.as_ref().unwrap().final_entry_id.as_str()),
         Some(assistant_item.id.as_str())
     );
     assert_eq!(
@@ -1606,6 +1998,19 @@ async fn setup_failure_marks_agent_run_failed() {
     assert_eq!(payload.code, "setup_error");
     assert!(payload.message.contains("missing-skill"));
     assert!(payload.retryable);
+    let final_entry_id = &failed[0].output.as_ref().unwrap().final_entry_id;
+    let entries = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap();
+    let final_entry = entries
+        .iter()
+        .find(|entry| &entry.id == final_entry_id)
+        .expect("setup failure final entry");
+    assert!(matches!(
+        &final_entry.payload,
+        ConversationEntryPayload::Error(error) if error.code == "setup_error"
+    ));
 }
 
 #[tokio::test]
@@ -1635,10 +2040,10 @@ async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
 
     let output = handle.output.as_ref().unwrap();
     assert_eq!(output.stopped_reason, AgentStoppedReason::Failed);
-    let final_item_id = output.final_item_id.as_ref().unwrap();
+    let final_entry_id = &output.final_entry_id;
     assert_eq!(
         handle.steps,
-        vec![AgentStep::ConversationItem(final_item_id.clone())]
+        vec![AgentStep::ConversationEntry(final_entry_id.clone())]
     );
 
     let timeline = fixture
@@ -1649,7 +2054,7 @@ async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
     let error_item = timeline
         .items
         .iter()
-        .find(|item| item.id == *final_item_id)
+        .find(|item| item.id == *final_entry_id)
         .unwrap();
     assert_eq!(
         error_item.agent_run_id.as_deref(),
@@ -1657,7 +2062,7 @@ async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
     );
     assert!(matches!(
         &error_item.payload,
-        ConversationItemPayload::Error(payload)
+        ConversationEntryPayload::Error(payload)
             if payload.code == "setup_error"
                 && payload.message.contains("missing provider secret `api_key`")
     ));
@@ -1688,12 +2093,12 @@ async fn skill_activation_is_persisted_as_snapshot() {
 
     let items = fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap();
     let skill = items
         .iter()
         .find_map(|item| match &item.payload {
-            ConversationItemPayload::SkillActivation(skill) => Some(skill),
+            ConversationEntryPayload::SkillActivation(skill) => Some(skill),
             _ => None,
         })
         .unwrap();
@@ -1706,7 +2111,7 @@ async fn skill_activation_is_persisted_as_snapshot() {
     );
     let skill_item = items
         .iter()
-        .find(|item| matches!(item.payload, ConversationItemPayload::SkillActivation(_)))
+        .find(|item| matches!(item.payload, ConversationEntryPayload::SkillActivation(_)))
         .unwrap();
     let provider_steps = fixture
         .repo
@@ -1736,14 +2141,14 @@ async fn tool_history_replay_preserves_provider_call_ids() {
     let fixture = Fixture::new("tool-history");
     fixture
         .repo
-        .append_conversation_item(NewConversationItem {
+        .append_conversation_entry(NewConversationEntry {
             conversation_id: fixture.conversation.id.clone(),
-            status: ConversationItemStatus::Completed,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: None,
             provider_step_id: None,
             tool_invocation_id: None,
             provider_item_id: None,
-            payload: ConversationItemPayload::ToolCall(ToolCallItem {
+            payload: ConversationEntryPayload::ToolCall(ToolCallEntry {
                 tool_invocation_id: None,
                 call_id: "call_previous".to_string(),
                 source: ToolSource::Local,
@@ -1757,14 +2162,14 @@ async fn tool_history_replay_preserves_provider_call_ids() {
         .unwrap();
     fixture
         .repo
-        .append_conversation_item(NewConversationItem {
+        .append_conversation_entry(NewConversationEntry {
             conversation_id: fixture.conversation.id.clone(),
-            status: ConversationItemStatus::Completed,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: None,
             provider_step_id: None,
             tool_invocation_id: None,
             provider_item_id: None,
-            payload: ConversationItemPayload::ToolResult(ToolResultItem {
+            payload: ConversationEntryPayload::ToolResult(ToolResultEntry {
                 tool_invocation_id: None,
                 call_id: "call_previous".to_string(),
                 content: vec![ContentPart::Text {
@@ -1778,14 +2183,14 @@ async fn tool_history_replay_preserves_provider_call_ids() {
         .unwrap();
     let next_user_item = fixture
         .repo
-        .append_conversation_item(NewConversationItem {
+        .append_conversation_entry(NewConversationEntry {
             conversation_id: fixture.conversation.id.clone(),
-            status: ConversationItemStatus::Completed,
+            status: ConversationEntryStatus::Completed,
             agent_run_id: None,
             provider_step_id: None,
             tool_invocation_id: None,
             provider_item_id: None,
-            payload: ConversationItemPayload::Message {
+            payload: ConversationEntryPayload::Message {
                 role: TranscriptRole::User,
                 content: vec![ContentPart::Text {
                     text: "continue".to_string(),
@@ -1795,7 +2200,7 @@ async fn tool_history_replay_preserves_provider_call_ids() {
         .unwrap();
     let runtime = AgentRuntime::new(fixture.repo.clone());
     let mut request = fixture.request();
-    request.user_item_id = next_user_item.id;
+    request.trigger_entry_id = next_user_item.id;
     let model = MockCompletionModel::text("ok");
 
     runtime
@@ -1843,22 +2248,36 @@ fn insert_waiting_approval(fixture: &Fixture) -> (AgentRunRecord, ToolInvocation
         None,
         ToolInvocationStatus::AwaitingApproval,
     );
+    let request = ApprovalRequestPayload {
+        reason: "approve echo".to_string(),
+        tool_source: ToolSource::Local,
+        tool_name: "echo".to_string(),
+        arguments_preview: "{\"text\":\"hi\"}".to_string(),
+        access_requests: Vec::new(),
+    };
     let invocation = fixture
         .repo
-        .request_tool_invocation_approval(
+        .request_tool_invocation_approval_with_entry(
             &invocation.id,
             NewToolInvocationApproval {
-                request: ApprovalRequestPayload {
-                    reason: "approve echo".to_string(),
-                    tool_source: ToolSource::Local,
-                    tool_name: "echo".to_string(),
-                    arguments_preview: "{\"text\":\"hi\"}".to_string(),
-                    access_requests: Vec::new(),
-                },
+                request: request.clone(),
                 expires_at: None,
             },
+            NewConversationEntry {
+                conversation_id: fixture.conversation.id.clone(),
+                status: ConversationEntryStatus::WaitingForApproval,
+                agent_run_id: Some(agent_run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: Some(invocation.id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                    tool_invocation_id: invocation.id.clone(),
+                    request,
+                }),
+            },
         )
-        .unwrap();
+        .unwrap()
+        .1;
     (agent_run, invocation)
 }
 
@@ -1867,13 +2286,53 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
         .repo
         .insert_agent_run(new_agent_run_input(&fixture.request()))
         .unwrap();
+    if is_terminal_agent_run_status(status) {
+        let (stopped_reason, code) = match status {
+            AgentRunStatus::Completed => (
+                AgentStoppedReason::Completed,
+                ConversationStatusCode::CompletedWithoutOutput,
+            ),
+            AgentRunStatus::Canceled => (
+                AgentStoppedReason::Canceled,
+                ConversationStatusCode::Canceled,
+            ),
+            AgentRunStatus::Failed => (
+                AgentStoppedReason::Failed,
+                ConversationStatusCode::CompletedWithoutOutput,
+            ),
+            AgentRunStatus::Queued | AgentRunStatus::Running => unreachable!(),
+        };
+        return fixture
+            .repo
+            .finish_agent_run(
+                &agent_run.id,
+                FinishAgentRun {
+                    status,
+                    stopped_reason,
+                    error: None,
+                    final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                        conversation_id: fixture.conversation.id.clone(),
+                        status: ConversationEntryStatus::Completed,
+                        agent_run_id: Some(agent_run.id.clone()),
+                        provider_step_id: None,
+                        tool_invocation_id: None,
+                        provider_item_id: None,
+                        payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                            code,
+                            message: None,
+                        }),
+                    })),
+                },
+            )
+            .unwrap()
+            .run;
+    }
     fixture
         .repo
         .update_agent_run_status(
             &agent_run.id,
             UpdateAgentRunStatus {
                 status,
-                output: None,
                 error: None,
             },
         )
@@ -1942,11 +2401,11 @@ fn insert_tool_invocation(
 fn tool_result_texts(fixture: &Fixture) -> Vec<String> {
     fixture
         .repo
-        .conversation_items(&fixture.conversation.id)
+        .conversation_entries(&fixture.conversation.id)
         .unwrap()
         .into_iter()
         .filter_map(|item| match item.payload {
-            ConversationItemPayload::ToolResult(result) => {
+            ConversationEntryPayload::ToolResult(result) => {
                 Some(result.content.into_iter().filter_map(|part| match part {
                     ContentPart::Text { text } => Some(text),
                     _ => None,
@@ -1960,17 +2419,19 @@ fn tool_result_texts(fixture: &Fixture) -> Vec<String> {
 
 struct Fixture {
     dir: TempDir,
+    db_path: PathBuf,
     repo: FreshRepository,
     conversation: ConversationRecord,
     provider: ProviderRecord,
     model: ProviderModelRecord,
-    user_item: ConversationItemRecord,
+    user_item: ConversationEntryRecord,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let db_path = store.path().to_path_buf();
         let repo = store.repository();
         let project = repo
             .insert_project(NewProject {
@@ -2037,14 +2498,14 @@ impl Fixture {
             })
             .unwrap();
         let user_item = repo
-            .append_conversation_item(NewConversationItem {
+            .append_conversation_entry(NewConversationEntry {
                 conversation_id: conversation.id.clone(),
-                status: ConversationItemStatus::Completed,
+                status: ConversationEntryStatus::Completed,
                 agent_run_id: None,
                 provider_step_id: None,
                 tool_invocation_id: None,
                 provider_item_id: None,
-                payload: ConversationItemPayload::Message {
+                payload: ConversationEntryPayload::Message {
                     role: TranscriptRole::User,
                     content: vec![ContentPart::Text {
                         text: "hello".to_string(),
@@ -2054,6 +2515,7 @@ impl Fixture {
             .unwrap();
         Self {
             dir,
+            db_path,
             repo,
             conversation,
             provider,
@@ -2086,6 +2548,74 @@ impl Fixture {
                 tool_name_strategy: ToolNameStrategy::Namespaced,
             },
         )
+    }
+}
+
+#[derive(Clone)]
+struct FailBeforeFirstTokenModel;
+
+impl CompletionModel for FailBeforeFirstTokenModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "forced provider-open failure".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        Err(CompletionError::ProviderError(
+            "forced provider-open failure".to_string(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct FailAfterTextModel;
+
+impl CompletionModel for FailAfterTextModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "forced mid-stream failure".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(futures::stream::iter([
+            Ok(RawStreamingChoice::Message("partial".to_string())),
+            Err(CompletionError::ProviderError(
+                "forced mid-stream failure".to_string(),
+            )),
+        ]));
+        Ok(StreamingCompletionResponse::stream(stream))
     }
 }
 

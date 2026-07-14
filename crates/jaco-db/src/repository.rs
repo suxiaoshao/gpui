@@ -4,7 +4,7 @@ use crate::{
     models::*,
     records::*,
     schema::{
-        agent_runs, attachments, conversation_items, conversations, projects, prompts,
+        agent_runs, attachments, conversation_entries, conversations, projects, prompts,
         provider_models, provider_steps, providers, shortcuts, tool_invocations, usage_events,
     },
 };
@@ -483,7 +483,7 @@ impl FreshRepository {
                 prompt_id: input.prompt_id,
                 default_provider_id: input.default_provider_id,
                 default_model_id: input.default_model_id,
-                last_item_seq: 0,
+                last_entry_seq: 0,
                 metadata_json: to_json(&input.metadata)?,
                 settings_snapshot_json: to_json(&input.settings_snapshot)?,
                 created_at: now,
@@ -532,7 +532,7 @@ impl FreshRepository {
                 prompt_id: input.conversation.prompt_id,
                 default_provider_id: input.conversation.default_provider_id,
                 default_model_id: input.conversation.default_model_id,
-                last_item_seq: 0,
+                last_entry_seq: 0,
                 metadata_json: to_json(&input.conversation.metadata)?,
                 settings_snapshot_json: to_json(&input.conversation.settings_snapshot)?,
                 created_at: now,
@@ -548,7 +548,7 @@ impl FreshRepository {
             let mut user_item = input.user_item;
             user_item.conversation_id = new_conversation_row.id;
             insert_attachments_into_message_item_with_conn(conn, &mut user_item, attachments)?;
-            let user_item = append_conversation_item_with_conn(conn, user_item)?;
+            let user_item = append_conversation_entry_with_conn(conn, user_item)?;
             let conversation = conversation_row(conn, &conversation.id)?
                 .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
                 .try_into()?;
@@ -712,33 +712,36 @@ impl FreshRepository {
             .collect())
     }
 
-    pub fn append_conversation_item(
+    pub fn append_conversation_entry(
         &self,
-        input: NewConversationItem,
-    ) -> Result<ConversationItemRecord> {
+        input: NewConversationEntry,
+    ) -> Result<ConversationEntryRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| append_conversation_item_with_conn(conn, input))
+        conn.immediate_transaction(|conn| append_conversation_entry_with_conn(conn, input))
     }
 
-    pub fn append_conversation_item_with_attachments(
+    pub fn append_conversation_entry_with_attachments(
         &self,
-        mut input: NewConversationItem,
+        mut input: NewConversationEntry,
         attachments: Vec<NewAttachment>,
-    ) -> Result<ConversationItemRecord> {
+    ) -> Result<ConversationEntryRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
-            append_conversation_item_with_conn(conn, input)
+            append_conversation_entry_with_conn(conn, input)
         })
     }
 
-    pub fn conversation_items(&self, conversation_id: &str) -> Result<Vec<ConversationItemRecord>> {
+    pub fn conversation_entries(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationEntryRecord>> {
         let mut conn = self.conn()?;
-        conversation_items::table
-            .filter(conversation_items::conversation_id.eq(conversation_id))
-            .order(conversation_items::seq.asc())
-            .select(SqlConversationItemRow::as_select())
-            .load::<SqlConversationItemRow>(&mut conn)?
+        conversation_entries::table
+            .filter(conversation_entries::conversation_id.eq(conversation_id))
+            .order(conversation_entries::seq.asc())
+            .select(SqlConversationEntryRow::as_select())
+            .load::<SqlConversationEntryRow>(&mut conn)?
             .into_iter()
             .map(TryInto::try_into)
             .collect()
@@ -766,9 +769,10 @@ impl FreshRepository {
         let project = self.get_project(&conversation.project_id)?.ok_or_else(|| {
             DbError::Invariant(format!("project {} is missing", conversation.project_id))
         })?;
-        let items = self.conversation_items(conversation_id)?;
+        let items = self.conversation_entries(conversation_id)?;
         let attachments = self.conversation_attachments(conversation_id)?;
         let runs = self.agent_runs_for_conversation(conversation_id)?;
+        validate_timeline_run_entries(&runs, &items)?;
         let mut tool_invocations = Vec::new();
         for run in &runs {
             tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
@@ -784,26 +788,26 @@ impl FreshRepository {
         }))
     }
 
-    pub fn update_conversation_item_payload(
+    pub fn update_conversation_entry_payload(
         &self,
         item_id: &str,
-        status: ConversationItemStatus,
-        payload: ConversationItemPayload,
-    ) -> Result<ConversationItemRecord> {
+        status: ConversationEntryStatus,
+        payload: ConversationEntryPayload,
+    ) -> Result<ConversationEntryRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
-            let changes = SqlConversationItemPayloadChanges {
+            let changes = SqlConversationEntryPayloadChanges {
                 kind: db_label(&payload.kind())?,
                 status: db_label(&status)?,
                 payload_json: to_json(&payload)?,
                 search_text: payload.search_text(),
                 updated_at: now,
             };
-            let item = diesel::update(conversation_items::table.find(item_id))
+            let item = diesel::update(conversation_entries::table.find(item_id))
                 .set(&changes)
-                .returning(SqlConversationItemRow::as_returning())
-                .get_result::<SqlConversationItemRow>(conn)?;
+                .returning(SqlConversationEntryRow::as_returning())
+                .get_result::<SqlConversationEntryRow>(conn)?;
             diesel::update(conversations::table.find(&item.conversation_id))
                 .set(conversations::updated_at.eq(now))
                 .execute(conn)?;
@@ -829,11 +833,11 @@ impl FreshRepository {
         }
 
         let mut conn = self.conn()?;
-        let rows = conversation_items::table
-            .filter(conversation_items::conversation_id.eq_any(conversation_ids))
+        let rows = conversation_entries::table
+            .filter(conversation_entries::conversation_id.eq_any(conversation_ids))
             .select((
-                conversation_items::conversation_id,
-                conversation_items::search_text,
+                conversation_entries::conversation_id,
+                conversation_entries::search_text,
             ))
             .load::<(String, String)>(&mut conn)?;
         let mut grouped = HashMap::<ConversationId, Vec<String>>::new();
@@ -857,16 +861,17 @@ impl FreshRepository {
     pub fn insert_agent_run(&self, input: NewAgentRun) -> Result<AgentRunRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let conversation_id =
-                derive_agent_run_conversation_id(conn, &input.input.user_item_id)?;
+            validate_agent_run_trigger(conn, &input.conversation_id, &input.trigger_entry_id)?;
             let now = now_string()?;
             let row = SqlNewAgentRunRow {
                 id: new_id(),
-                conversation_id,
+                conversation_id: input.conversation_id,
+                trigger_entry_id: input.trigger_entry_id,
                 trigger_kind: db_label(&input.trigger_kind)?,
                 status: db_label(&input.status)?,
                 input_json: to_json(&input.input)?,
-                output_json: None,
+                final_entry_id: None,
+                stopped_reason: None,
                 error_json: None,
                 created_at: now,
                 started_at: next_started_at(None, input.status, now),
@@ -921,19 +926,26 @@ impl FreshRepository {
         update: UpdateAgentRunStatus,
     ) -> Result<AgentRunRecord> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| update_agent_run_status_with_conn(conn, id, update))
+        conn.immediate_transaction(|conn| {
+            update_active_agent_run_status_with_conn(conn, id, update)
+        })
     }
 
-    pub fn append_conversation_item_and_update_agent_run(
+    pub fn finish_agent_run(&self, id: &str, finish: FinishAgentRun) -> Result<FinishedAgentRun> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| finish_agent_run_with_conn(conn, id, finish))
+    }
+
+    pub fn append_conversation_entry_and_update_agent_run(
         &self,
-        item: NewConversationItem,
+        item: NewConversationEntry,
         agent_run_id: &str,
         update: UpdateAgentRunStatus,
-    ) -> Result<(ConversationItemRecord, AgentRunRecord)> {
+    ) -> Result<(ConversationEntryRecord, AgentRunRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let item = append_conversation_item_with_conn(conn, item)?;
-            let run = update_agent_run_status_with_conn(conn, agent_run_id, update)?;
+            let item = append_conversation_entry_with_conn(conn, item)?;
+            let run = update_active_agent_run_status_with_conn(conn, agent_run_id, update)?;
             Ok((item, run))
         })
     }
@@ -1009,15 +1021,15 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| update_provider_step_status_with_conn(conn, id, update))
     }
 
-    pub fn append_conversation_item_and_update_provider_step(
+    pub fn append_conversation_entry_and_update_provider_step(
         &self,
-        item: NewConversationItem,
+        item: NewConversationEntry,
         provider_step_id: &str,
         update: UpdateProviderStepStatus,
-    ) -> Result<(ConversationItemRecord, ProviderStepRecord)> {
+    ) -> Result<(ConversationEntryRecord, ProviderStepRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            let item = append_conversation_item_with_conn(conn, item)?;
+            let item = append_conversation_entry_with_conn(conn, item)?;
             let step = update_provider_step_status_with_conn(conn, provider_step_id, update)?;
             Ok((item, step))
         })
@@ -1095,36 +1107,73 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| update_tool_invocation_status_with_conn(conn, id, update))
     }
 
-    pub fn append_conversation_item_and_update_tool_invocation(
+    pub fn append_conversation_entry_and_update_tool_invocation(
         &self,
-        item: NewConversationItem,
+        item: NewConversationEntry,
         tool_invocation_id: &str,
         update: UpdateToolInvocationStatus,
-    ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
-            let item = append_conversation_item_with_conn(conn, item)?;
-            let invocation =
-                update_tool_invocation_status_with_conn(conn, tool_invocation_id, update)?;
-            Ok((item, invocation))
-        })
+    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+        let (mut items, invocation) = self.append_conversation_entries_and_update_tool_invocation(
+            vec![item],
+            tool_invocation_id,
+            update,
+        )?;
+        Ok((items.remove(0), invocation))
     }
 
-    pub fn append_conversation_item_and_update_tool_invocation_full(
+    pub fn append_conversation_entry_and_update_tool_invocation_full(
         &self,
-        item: NewConversationItem,
+        item: NewConversationEntry,
         tool_invocation_id: &str,
         update: UpdateToolInvocationStatus,
         approval: Option<ToolInvocationApproval>,
-    ) -> Result<(ConversationItemRecord, ToolInvocationRecord)> {
+    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+        let (mut items, invocation) = self
+            .append_conversation_entries_and_update_tool_invocation_full(
+                vec![item],
+                tool_invocation_id,
+                update,
+                approval,
+            )?;
+        Ok((items.remove(0), invocation))
+    }
+
+    pub fn append_conversation_entries_and_update_tool_invocation(
+        &self,
+        items: Vec<NewConversationEntry>,
+        tool_invocation_id: &str,
+        update: UpdateToolInvocationStatus,
+    ) -> Result<(Vec<ConversationEntryRecord>, ToolInvocationRecord)> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
-            let item = append_conversation_item_with_conn(conn, item)?;
+            let items = items
+                .into_iter()
+                .map(|item| append_conversation_entry_with_conn(conn, item))
+                .collect::<Result<Vec<_>>>()?;
+            let invocation =
+                update_tool_invocation_status_with_conn(conn, tool_invocation_id, update)?;
+            Ok((items, invocation))
+        })
+    }
+
+    pub fn append_conversation_entries_and_update_tool_invocation_full(
+        &self,
+        items: Vec<NewConversationEntry>,
+        tool_invocation_id: &str,
+        update: UpdateToolInvocationStatus,
+        approval: Option<ToolInvocationApproval>,
+    ) -> Result<(Vec<ConversationEntryRecord>, ToolInvocationRecord)> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
+            let items = items
+                .into_iter()
+                .map(|item| append_conversation_entry_with_conn(conn, item))
+                .collect::<Result<Vec<_>>>()?;
             let invocation =
                 update_tool_invocation_full_with_conn(conn, tool_invocation_id, update, approval)?;
-            Ok((item, invocation))
+            Ok((items, invocation))
         })
     }
 
@@ -1150,6 +1199,35 @@ impl FreshRepository {
                 ToolInvocationStatus::AwaitingApproval,
                 Some(approval),
             )
+        })
+    }
+
+    pub fn request_tool_invocation_approval_with_entry(
+        &self,
+        id: &str,
+        approval: NewToolInvocationApproval,
+        entry: NewConversationEntry,
+    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, id)?;
+            let now = now_string()?;
+            let approval = ToolInvocationApproval {
+                status: ApprovalStatus::Pending,
+                request: approval.request,
+                decision: None,
+                requested_at: now,
+                decided_at: None,
+                expires_at: approval.expires_at,
+            };
+            let entry = append_conversation_entry_with_conn(conn, entry)?;
+            let invocation = update_tool_invocation_approval_with_conn(
+                conn,
+                id,
+                ToolInvocationStatus::AwaitingApproval,
+                Some(approval),
+            )?;
+            Ok((entry, invocation))
         })
     }
 
@@ -1187,6 +1265,56 @@ impl FreshRepository {
             let now = now_string()?;
             apply_approval_outcome(&mut approval, outcome, now);
             update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))
+        })
+    }
+
+    pub fn decide_tool_invocation_approval_with_entry(
+        &self,
+        id: &str,
+        outcome: ToolInvocationApprovalOutcome,
+        status: ToolInvocationStatus,
+        entry: NewConversationEntry,
+    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, id)?;
+            let existing = load_tool_invocation_row(conn, id)?;
+            let mut approval: ToolInvocationApproval =
+                from_json_opt(existing.approval_json.clone())?.ok_or_else(|| {
+                    DbError::Invariant(format!("tool invocation {id} has no approval"))
+                })?;
+            if approval.status != ApprovalStatus::Pending {
+                return Err(DbError::Invariant(format!(
+                    "tool invocation {id} approval is {:?}, not pending",
+                    approval.status
+                )));
+            }
+            let now = now_string()?;
+            apply_approval_outcome(&mut approval, outcome, now);
+            let entry = append_conversation_entry_with_conn(conn, entry)?;
+            let invocation =
+                update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))?;
+            Ok((entry, invocation))
+        })
+    }
+
+    pub fn record_auto_tool_invocation_approval_with_entries(
+        &self,
+        entries: Vec<NewConversationEntry>,
+        id: &str,
+        status: ToolInvocationStatus,
+        approval: ToolInvocationApproval,
+    ) -> Result<(Vec<ConversationEntryRecord>, ToolInvocationRecord)> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            ensure_tool_invocation_not_terminal(conn, id)?;
+            let entries = entries
+                .into_iter()
+                .map(|entry| append_conversation_entry_with_conn(conn, entry))
+                .collect::<Result<Vec<_>>>()?;
+            let invocation =
+                update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))?;
+            Ok((entries, invocation))
         })
     }
 
@@ -1382,13 +1510,13 @@ fn conversation_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<SqlC
         .optional()?)
 }
 
-fn conversation_item_row(
+fn conversation_entry_row(
     conn: &mut SqliteConnection,
     id: &str,
-) -> Result<Option<SqlConversationItemRow>> {
-    Ok(conversation_items::table
+) -> Result<Option<SqlConversationEntryRow>> {
+    Ok(conversation_entries::table
         .find(id)
-        .select(SqlConversationItemRow::as_select())
+        .select(SqlConversationEntryRow::as_select())
         .first(conn)
         .optional()?)
 }
@@ -1447,17 +1575,17 @@ fn load_tool_invocation_row(conn: &mut SqliteConnection, id: &str) -> Result<Sql
         .ok_or_else(|| DbError::Invariant(format!("tool invocation {id} is missing")))
 }
 
-fn append_conversation_item_with_conn(
+fn append_conversation_entry_with_conn(
     conn: &mut SqliteConnection,
-    input: NewConversationItem,
-) -> Result<ConversationItemRecord> {
+    input: NewConversationEntry,
+) -> Result<ConversationEntryRecord> {
     let conversation = conversation_row(conn, &input.conversation_id)?
         .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?;
     validate_execution_links(conn, &input.conversation_id, &input)?;
 
-    let seq = conversation.last_item_seq + 1;
+    let seq = conversation.last_entry_seq + 1;
     let now = now_string()?;
-    let row = SqlNewConversationItemRow {
+    let row = SqlNewConversationEntryRow {
         id: new_id(),
         conversation_id: input.conversation_id.clone(),
         seq,
@@ -1472,13 +1600,13 @@ fn append_conversation_item_with_conn(
         created_at: now,
         updated_at: now,
     };
-    let item = diesel::insert_into(conversation_items::table)
+    let item = diesel::insert_into(conversation_entries::table)
         .values(&row)
-        .returning(SqlConversationItemRow::as_returning())
-        .get_result::<SqlConversationItemRow>(conn)?;
+        .returning(SqlConversationEntryRow::as_returning())
+        .get_result::<SqlConversationEntryRow>(conn)?;
     diesel::update(conversations::table.find(&row.conversation_id))
         .set((
-            conversations::last_item_seq.eq(seq),
+            conversations::last_entry_seq.eq(seq),
             conversations::updated_at.eq(now),
         ))
         .execute(conn)?;
@@ -1487,13 +1615,13 @@ fn append_conversation_item_with_conn(
 
 fn insert_attachments_into_message_item_with_conn(
     conn: &mut SqliteConnection,
-    item: &mut NewConversationItem,
+    item: &mut NewConversationEntry,
     attachments: Vec<NewAttachment>,
 ) -> Result<()> {
     if attachments.is_empty() {
         return Ok(());
     }
-    let ConversationItemPayload::Message { content, .. } = &mut item.payload else {
+    let ConversationEntryPayload::Message { content, .. } = &mut item.payload else {
         return Err(DbError::Invariant(
             "attachments can only be added to message items".to_string(),
         ));
@@ -1554,6 +1682,52 @@ fn insert_attachment_with_conn(
         .try_into()
 }
 
+fn validate_timeline_run_entries(
+    runs: &[AgentRunRecord],
+    entries: &[ConversationEntryRecord],
+) -> Result<()> {
+    let entries_by_id = entries
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<HashMap<_, _>>();
+
+    for run in runs {
+        if !is_terminal_agent_run_status(run.status) {
+            continue;
+        }
+        let output = run.output.as_ref().ok_or_else(|| {
+            DbError::Invariant(format!("terminal run {} has no final entry", run.id))
+        })?;
+        let final_entry = entries_by_id
+            .get(output.final_entry_id.as_str())
+            .ok_or_else(|| {
+                DbError::Invariant(format!(
+                    "final entry {} for run {} is missing",
+                    output.final_entry_id, run.id
+                ))
+            })?;
+        if final_entry.agent_run_id.as_deref() != Some(run.id.as_str()) {
+            return Err(DbError::Invariant(format!(
+                "final entry {} for run {} belongs to a different run",
+                output.final_entry_id, run.id
+            )));
+        }
+        if run.status == AgentRunStatus::Failed
+            && !matches!(
+                &final_entry.payload,
+                ConversationEntryPayload::Error(error)
+                    if run.error.as_ref() == Some(error)
+            )
+        {
+            return Err(DbError::Invariant(format!(
+                "failed run {} final entry does not match its error",
+                run.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn conversation_matches_query(
     conversation: &ConversationRecord,
     project: Option<&ProjectRecord>,
@@ -1571,22 +1745,25 @@ fn contains_query(value: &str, query: &str) -> bool {
     value.to_lowercase().contains(query)
 }
 
-fn update_agent_run_status_with_conn(
+fn update_active_agent_run_status_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
     update: UpdateAgentRunStatus,
 ) -> Result<AgentRunRecord> {
     let existing = load_agent_run_row(conn, id)?;
-    if is_terminal_agent_run_status(db_label_parse(existing.status.clone())?) {
-        return existing.try_into();
+    let existing_status: AgentRunStatus = db_label_parse(existing.status.clone())?;
+    if is_terminal_agent_run_status(existing_status) || is_terminal_agent_run_status(update.status)
+    {
+        return Err(DbError::Invariant(
+            "active agent run status updates cannot use terminal state".to_string(),
+        ));
     }
     let now = now_string()?;
     let changes = SqlAgentRunStatusChanges {
         status: db_label(&update.status)?,
-        output_json: to_json_opt(&update.output)?,
         error_json: to_json_opt(&update.error)?,
         started_at: next_started_at(existing.started_at, update.status, now),
-        completed_at: next_agent_run_completed_at(existing.completed_at, update.status, now),
+        completed_at: existing.completed_at,
         updated_at: now,
     };
     diesel::update(agent_runs::table.find(id))
@@ -1594,6 +1771,143 @@ fn update_agent_run_status_with_conn(
         .returning(SqlAgentRunRow::as_returning())
         .get_result::<SqlAgentRunRow>(conn)?
         .try_into()
+}
+
+fn finish_agent_run_with_conn(
+    conn: &mut SqliteConnection,
+    id: &str,
+    finish: FinishAgentRun,
+) -> Result<FinishedAgentRun> {
+    let existing = load_agent_run_row(conn, id)?;
+    let existing_status: AgentRunStatus = db_label_parse(existing.status.clone())?;
+    if is_terminal_agent_run_status(existing_status) {
+        let run: AgentRunRecord = existing.try_into()?;
+        let final_entry_id = run
+            .output
+            .as_ref()
+            .map(|output| output.final_entry_id.as_str())
+            .ok_or_else(|| DbError::Invariant(format!("terminal run {id} has no final entry")))?;
+        let final_entry = conversation_entry_row(conn, final_entry_id)?
+            .ok_or_else(|| DbError::Invariant(format!("final entry {final_entry_id} is missing")))?
+            .try_into()?;
+        return Ok(FinishedAgentRun {
+            run,
+            final_entry,
+            appended_final_entry: false,
+        });
+    }
+
+    if !is_terminal_agent_run_status(finish.status) {
+        return Err(DbError::Invariant(
+            "finish_agent_run requires a terminal status".to_string(),
+        ));
+    }
+    let expected_stopped_reason = match finish.status {
+        AgentRunStatus::Completed => {
+            if !matches!(
+                finish.stopped_reason,
+                AgentStoppedReason::Completed | AgentStoppedReason::MaxSteps
+            ) {
+                return Err(DbError::Invariant(
+                    "completed run has an invalid stopped reason".to_string(),
+                ));
+            }
+            finish.stopped_reason
+        }
+        AgentRunStatus::Failed => AgentStoppedReason::Failed,
+        AgentRunStatus::Canceled => AgentStoppedReason::Canceled,
+        AgentRunStatus::Queued | AgentRunStatus::Running => unreachable!(),
+    };
+    if (finish.status == AgentRunStatus::Failed) != finish.error.is_some() {
+        return Err(DbError::Invariant(
+            "failed run must have an error and non-failed run must not have one".to_string(),
+        ));
+    }
+
+    let conversation_id = existing.conversation_id.clone();
+    let (final_entry, appended_final_entry) = match finish.final_entry {
+        AgentRunFinalEntry::Existing(final_entry_id) => {
+            let row = conversation_entry_row(conn, &final_entry_id)?.ok_or_else(|| {
+                DbError::Invariant(format!(
+                    "final conversation entry {final_entry_id} is missing"
+                ))
+            })?;
+            let entry: ConversationEntryRecord = row.try_into()?;
+            validate_final_entry(&entry, id, &conversation_id, finish.error.as_ref())?;
+            (entry, false)
+        }
+        AgentRunFinalEntry::Append(entry) => {
+            let mut entry = *entry;
+            entry.conversation_id = conversation_id.clone();
+            entry.agent_run_id = Some(id.to_string());
+            if finish.status == AgentRunStatus::Failed
+                && (entry.status != ConversationEntryStatus::Failed
+                    || entry.payload
+                        != ConversationEntryPayload::Error(finish.error.clone().unwrap()))
+            {
+                return Err(DbError::Invariant(
+                    "failed run final entry must be a failed entry with the same error payload"
+                        .to_string(),
+                ));
+            }
+            (append_conversation_entry_with_conn(conn, entry)?, true)
+        }
+    };
+
+    let now = now_string()?;
+    let changes = SqlAgentRunFinalChanges {
+        status: db_label(&finish.status)?,
+        final_entry_id: final_entry.id.clone(),
+        stopped_reason: db_label(&expected_stopped_reason)?,
+        error_json: to_json_opt(&finish.error)?,
+        started_at: next_started_at(existing.started_at, finish.status, now),
+        completed_at: Some(now),
+        updated_at: now,
+    };
+    let run = diesel::update(agent_runs::table.find(id))
+        .set(&changes)
+        .returning(SqlAgentRunRow::as_returning())
+        .get_result::<SqlAgentRunRow>(conn)?
+        .try_into()?;
+    Ok(FinishedAgentRun {
+        run,
+        final_entry,
+        appended_final_entry,
+    })
+}
+
+fn validate_final_entry(
+    entry: &ConversationEntryRecord,
+    agent_run_id: &str,
+    conversation_id: &str,
+    error: Option<&RunErrorPayload>,
+) -> Result<()> {
+    ensure_conversation_owner(
+        "final conversation entry",
+        &entry.id,
+        &entry.conversation_id,
+        conversation_id,
+    )?;
+    ensure_agent_link(
+        "final conversation entry",
+        &entry.id,
+        entry.agent_run_id.as_deref().ok_or_else(|| {
+            DbError::Invariant(format!(
+                "final conversation entry {} has no agent run",
+                entry.id
+            ))
+        })?,
+        Some(agent_run_id),
+    )?;
+    if let Some(error) = error
+        && (entry.status != ConversationEntryStatus::Failed
+            || entry.payload != ConversationEntryPayload::Error(error.clone()))
+    {
+        return Err(DbError::Invariant(
+            "failed run final entry must be a failed entry with the same error payload".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn update_provider_step_status_with_conn(
@@ -1716,7 +2030,7 @@ fn update_tool_invocation_approval_with_conn(
 fn validate_execution_links(
     conn: &mut SqliteConnection,
     conversation_id: &str,
-    item: &NewConversationItem,
+    item: &NewConversationEntry,
 ) -> Result<()> {
     let mut expected_agent_run_id = match item.agent_run_id.as_deref() {
         Some(agent_run_id) => {
@@ -1795,20 +2109,28 @@ fn validate_execution_links(
     Ok(())
 }
 
-fn derive_agent_run_conversation_id(
+fn validate_agent_run_trigger(
     conn: &mut SqliteConnection,
-    user_item_id: &str,
-) -> Result<ConversationId> {
-    let item = conversation_item_row(conn, user_item_id)?
-        .ok_or_else(|| DbError::Invariant(format!("user item {user_item_id} is missing")))?;
-    let item: ConversationItemRecord = item.try_into()?;
+    conversation_id: &str,
+    trigger_entry_id: &str,
+) -> Result<()> {
+    let item = conversation_entry_row(conn, trigger_entry_id)?.ok_or_else(|| {
+        DbError::Invariant(format!("trigger entry {trigger_entry_id} is missing"))
+    })?;
+    let item: ConversationEntryRecord = item.try_into()?;
+    ensure_conversation_owner(
+        "trigger entry",
+        trigger_entry_id,
+        &item.conversation_id,
+        conversation_id,
+    )?;
     match item.payload {
-        ConversationItemPayload::Message {
+        ConversationEntryPayload::Message {
             role: TranscriptRole::User,
             ..
-        } => Ok(item.conversation_id),
+        } => Ok(()),
         _ => Err(DbError::Invariant(format!(
-            "user item {user_item_id} must be a user message"
+            "trigger entry {trigger_entry_id} must be a user message"
         ))),
     }
 }
@@ -1840,7 +2162,7 @@ fn validate_provider_step_input_items(
     input: &NewProviderStep,
 ) -> Result<()> {
     for item_id in &input.request_snapshot.input_item_ids {
-        let item = conversation_item_row(conn, item_id)?.ok_or_else(|| {
+        let item = conversation_entry_row(conn, item_id)?.ok_or_else(|| {
             DbError::Invariant(format!("provider step input item {item_id} is missing"))
         })?;
         ensure_conversation_owner(

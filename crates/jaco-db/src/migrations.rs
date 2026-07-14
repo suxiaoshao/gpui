@@ -9,7 +9,7 @@ use diesel::{
 };
 use time::OffsetDateTime;
 
-pub(crate) const SCHEMA_VERSION: i32 = 2;
+pub(crate) const SCHEMA_VERSION: i32 = 1;
 
 pub(crate) struct Migration {
     pub(crate) name: &'static str,
@@ -94,7 +94,7 @@ CREATE TABLE conversations (
     prompt_id TEXT REFERENCES prompts(id) ON DELETE SET NULL,
     default_provider_id TEXT REFERENCES providers(id) ON DELETE SET NULL,
     default_model_id TEXT,
-    last_item_seq INTEGER NOT NULL DEFAULT 0,
+    last_entry_seq INTEGER NOT NULL DEFAULT 0,
     metadata_json JSON NOT NULL DEFAULT '{}',
     settings_snapshot_json JSON NOT NULL DEFAULT '{}',
     created_at DateTime NOT NULL,
@@ -124,15 +124,29 @@ CREATE TABLE attachments (
 CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    trigger_entry_id TEXT NOT NULL REFERENCES conversation_entries(id)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'retry')),
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
-    output_json JSON,
+    final_entry_id TEXT REFERENCES conversation_entries(id)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+    stopped_reason TEXT CHECK (stopped_reason IN ('completed', 'max_steps', 'canceled', 'failed')),
     error_json JSON,
     created_at DateTime NOT NULL,
     started_at DateTime,
     completed_at DateTime,
-    updated_at DateTime NOT NULL
+    updated_at DateTime NOT NULL,
+    CHECK (
+        (status IN ('queued', 'running') AND final_entry_id IS NULL AND stopped_reason IS NULL)
+        OR
+        (status IN ('completed', 'failed', 'canceled') AND final_entry_id IS NOT NULL AND stopped_reason IS NOT NULL)
+    ),
+    CHECK (
+        (status = 'failed' AND error_json IS NOT NULL)
+        OR
+        (status <> 'failed' AND error_json IS NULL)
+    )
 );
 
 CREATE TABLE provider_steps (
@@ -175,13 +189,14 @@ CREATE TABLE tool_invocations (
     updated_at DateTime NOT NULL
 );
 
-CREATE TABLE conversation_items (
+CREATE TABLE conversation_entries (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'status', 'error')),
+    kind TEXT NOT NULL CHECK (kind IN ('message', 'skill_activation', 'reasoning', 'tool_call', 'tool_result', 'approval_request', 'approval_decision', 'status', 'error')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled', 'waiting_for_approval')),
-    agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    agent_run_id TEXT REFERENCES agent_runs(id)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
     provider_step_id TEXT REFERENCES provider_steps(id) ON DELETE SET NULL,
     tool_invocation_id TEXT REFERENCES tool_invocations(id) ON DELETE SET NULL,
     provider_item_id TEXT,
@@ -224,8 +239,10 @@ CREATE TABLE shortcuts (
 );
 
 CREATE INDEX idx_conversations_project_id ON conversations(project_id);
-CREATE INDEX idx_conversation_items_conversation_seq ON conversation_items(conversation_id, seq);
+CREATE INDEX idx_conversation_entries_conversation_seq ON conversation_entries(conversation_id, seq);
+CREATE INDEX idx_conversation_entries_agent_run_seq ON conversation_entries(agent_run_id, seq);
 CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);
+CREATE INDEX idx_agent_runs_trigger_entry_created ON agent_runs(trigger_entry_id, created_at);
 CREATE INDEX idx_provider_steps_agent_seq ON provider_steps(agent_run_id, seq);
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
@@ -291,14 +308,6 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
             "schema_metadata was not created by migrations".to_string(),
         ));
     }
-    if let Some(database_version) = existing_schema_version(conn)?
-        && database_version > SCHEMA_VERSION
-    {
-        return Err(DbError::UnsupportedSchemaVersion {
-            database_version,
-            supported_version: SCHEMA_VERSION,
-        });
-    }
     let now = now_string()?;
     let payload = serde_json::json!({
         "storeKind": "fresh",
@@ -327,14 +336,6 @@ fn update_metadata(conn: &mut SqliteConnection) -> Result<()> {
         ))
         .execute(conn)?;
     Ok(())
-}
-
-fn existing_schema_version(conn: &mut SqliteConnection) -> Result<Option<i32>> {
-    Ok(schema_metadata::table
-        .find("default")
-        .select(schema_metadata::schema_version)
-        .first(conn)
-        .optional()?)
 }
 
 fn now_string() -> Result<OffsetDateTime> {

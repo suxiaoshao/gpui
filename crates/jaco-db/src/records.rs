@@ -45,7 +45,7 @@ pub struct ConversationRecord {
     pub prompt_id: Option<PromptId>,
     pub default_provider_id: Option<ProviderId>,
     pub default_model_id: Option<ProviderModelId>,
-    pub last_item_seq: i32,
+    pub last_entry_seq: i32,
     pub metadata: ConversationMetadata,
     pub settings_snapshot: ConversationSettingsSnapshot,
     pub created_at: OffsetDateTime,
@@ -69,51 +69,51 @@ pub struct NewConversation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewConversationWithUserItem {
     pub conversation: NewConversation,
-    pub user_item: NewConversationItem,
+    pub user_item: NewConversationEntry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationWithUserItemRecord {
     pub conversation: ConversationRecord,
-    pub user_item: ConversationItemRecord,
+    pub user_item: ConversationEntryRecord,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationTimelineRecords {
     pub conversation: ConversationRecord,
     pub project: ProjectRecord,
-    pub items: Vec<ConversationItemRecord>,
+    pub items: Vec<ConversationEntryRecord>,
     pub attachments: Vec<AttachmentRecord>,
     pub runs: Vec<AgentRunRecord>,
     pub tool_invocations: Vec<ToolInvocationRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConversationItemRecord {
-    pub id: ConversationItemId,
+pub struct ConversationEntryRecord {
+    pub id: ConversationEntryId,
     pub conversation_id: ConversationId,
     pub seq: i32,
-    pub kind: ConversationItemKind,
-    pub status: ConversationItemStatus,
+    pub kind: ConversationEntryKind,
+    pub status: ConversationEntryStatus,
     pub agent_run_id: Option<AgentRunId>,
     pub provider_step_id: Option<ProviderStepId>,
     pub tool_invocation_id: Option<ToolInvocationId>,
     pub provider_item_id: Option<String>,
-    pub payload: ConversationItemPayload,
+    pub payload: ConversationEntryPayload,
     pub search_text: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NewConversationItem {
+pub struct NewConversationEntry {
     pub conversation_id: ConversationId,
-    pub status: ConversationItemStatus,
+    pub status: ConversationEntryStatus,
     pub agent_run_id: Option<AgentRunId>,
     pub provider_step_id: Option<ProviderStepId>,
     pub tool_invocation_id: Option<ToolInvocationId>,
     pub provider_item_id: Option<String>,
-    pub payload: ConversationItemPayload,
+    pub payload: ConversationEntryPayload,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +155,7 @@ pub struct NewAttachment {
 pub struct AgentRunRecord {
     pub id: AgentRunId,
     pub conversation_id: ConversationId,
+    pub trigger_entry_id: ConversationEntryId,
     pub trigger_kind: AgentRunTriggerKind,
     pub status: AgentRunStatus,
     pub input: AgentRunInput,
@@ -168,6 +169,8 @@ pub struct AgentRunRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAgentRun {
+    pub conversation_id: ConversationId,
+    pub trigger_entry_id: ConversationEntryId,
     pub trigger_kind: AgentRunTriggerKind,
     pub status: AgentRunStatus,
     pub input: AgentRunInput,
@@ -176,8 +179,28 @@ pub struct NewAgentRun {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpdateAgentRunStatus {
     pub status: AgentRunStatus,
-    pub output: Option<AgentRunOutput>,
     pub error: Option<RunErrorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentRunFinalEntry {
+    Existing(ConversationEntryId),
+    Append(Box<NewConversationEntry>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinishAgentRun {
+    pub status: AgentRunStatus,
+    pub stopped_reason: AgentStoppedReason,
+    pub error: Option<RunErrorPayload>,
+    pub final_entry: AgentRunFinalEntry,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinishedAgentRun {
+    pub run: AgentRunRecord,
+    pub final_entry: ConversationEntryRecord,
+    pub appended_final_entry: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

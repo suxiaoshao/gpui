@@ -17,8 +17,7 @@ use gpui_component::{
     text::TextViewState,
     v_flex,
 };
-use jaco_core::{AgentRunId, ConversationId, ConversationItemId, ToolInvocationId};
-use jaco_db::AgentRunRecord;
+use jaco_core::{AgentRunId, ConversationEntryId, ConversationId, ToolInvocationId};
 use tracing::{Level, event};
 
 use crate::{
@@ -42,7 +41,7 @@ pub(crate) struct ConversationDetailPage {
 }
 
 struct MessageTextState {
-    id: ConversationItemId,
+    id: ConversationEntryId,
     state: Entity<TextViewState>,
     source: String,
     _subscription: Subscription,
@@ -275,8 +274,13 @@ impl ConversationDetailPage {
             .ok()
             .and_then(Option::as_ref)
             .map(|snapshot| {
+                let active_agent_run_id = self
+                    .runtime
+                    .read(cx)
+                    .active_agent_run_id(&self.conversation_id);
                 timeline::build_rows(
                     snapshot,
+                    active_agent_run_id.as_ref(),
                     &self.expanded_agent_runs,
                     &self.message_text_state_map(),
                     callbacks,
@@ -324,7 +328,7 @@ impl ConversationDetailPage {
 
     fn ensure_message_text_state(
         &mut self,
-        item_id: ConversationItemId,
+        item_id: ConversationEntryId,
         source: &str,
         cx: &mut Context<Self>,
     ) {
@@ -371,7 +375,7 @@ impl ConversationDetailPage {
         });
     }
 
-    fn message_text_state_map(&self) -> HashMap<ConversationItemId, Entity<TextViewState>> {
+    fn message_text_state_map(&self) -> HashMap<ConversationEntryId, Entity<TextViewState>> {
         self.message_text_states
             .iter()
             .map(|entry| (entry.id.clone(), entry.state.clone()))
@@ -444,7 +448,7 @@ impl ConversationDetailPage {
         if !format::is_terminal_run(run) {
             return true;
         }
-        !final_item_exists(run, snapshot)
+        false
     }
 
     fn render_missing(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -559,19 +563,6 @@ fn load_snapshot(
         event!(Level::ERROR, error = ?err, conversation_id, "load conversation failed");
         err.to_string()
     })
-}
-
-fn final_item_exists(run: &AgentRunRecord, snapshot: &ConversationLoadSnapshot) -> bool {
-    let Some(final_item_id) = run
-        .output
-        .as_ref()
-        .and_then(|output| output.final_item_id.as_ref())
-    else {
-        return snapshot.items.iter().any(|item| {
-            item.agent_run_id.as_ref() == Some(&run.id) && format::is_assistant_message(item)
-        });
-    };
-    snapshot.items.iter().any(|item| &item.id == final_item_id)
 }
 
 fn copy_to_clipboard(text: String, window: &mut Window, cx: &mut App) -> bool {

@@ -42,7 +42,7 @@ diesel::table! {
         prompt_id -> Nullable<Text>,
         default_provider_id -> Nullable<Text>,
         default_model_id -> Nullable<Text>,
-        last_item_seq -> Integer,
+        last_entry_seq -> Integer,
         metadata_json -> Json,
         settings_snapshot_json -> Json,
         created_at -> TimestamptzSqlite,
@@ -53,7 +53,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    conversation_items (id) {
+    conversation_entries (id) {
         id -> Text,
         conversation_id -> Text,
         seq -> Integer,
@@ -94,10 +94,12 @@ diesel::table! {
     agent_runs (id) {
         id -> Text,
         conversation_id -> Text,
+        trigger_entry_id -> Text,
         trigger_kind -> Text,
         status -> Text,
         input_json -> Json,
-        output_json -> Nullable<Json>,
+        final_entry_id -> Nullable<Text>,
+        stopped_reason -> Nullable<Text>,
         error_json -> Nullable<Json>,
         created_at -> TimestamptzSqlite,
         started_at -> Nullable<TimestamptzSqlite>,
@@ -227,7 +229,7 @@ diesel::table! {
 diesel::allow_tables_to_appear_in_same_query!(
     agent_runs,
     attachments,
-    conversation_items,
+    conversation_entries,
     conversations,
     projects,
     prompts,
