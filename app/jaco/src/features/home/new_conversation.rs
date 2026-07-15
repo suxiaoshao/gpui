@@ -91,8 +91,11 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
             picker
         });
-        let (selected_label, icon) =
-            project_control_presentation(&projects, selected_project_id.as_ref(), cx);
+        let (selected_label, icon) = project_control_presentation(
+            &projects,
+            selected_project_id.as_ref(),
+            cx.global::<I18n>(),
+        );
         let project = cx.new(|_| ProjectControlState {
             selected_label,
             placeholder: empty_label.into(),
@@ -174,6 +177,7 @@ impl NewConversationPage {
                     self.chat_form.update(cx, |chat_form, cx| {
                         chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
                     });
+                    self.sync_project_presentation(cx);
                     self.project.update(cx, |project, cx| {
                         project.open = false;
                         cx.notify();
@@ -229,6 +233,7 @@ impl NewConversationPage {
                 self.projects = Ok(projects);
                 self.selected_project_id = selected_project_id;
                 self.refresh_skill_catalog_for_selected(cx);
+                self.sync_project_presentation(cx);
             }
             Err(err) => {
                 self.projects = Err(err.to_string());
@@ -287,6 +292,8 @@ impl NewConversationPage {
                 });
                 if sync_picker {
                     self.sync_project_picker(window, cx);
+                } else {
+                    self.sync_project_presentation(cx);
                 }
                 self.set_project_picker_open(false, window, cx);
             }
@@ -324,6 +331,8 @@ impl NewConversationPage {
                 });
                 if sync_picker {
                     self.sync_project_picker(window, cx);
+                } else {
+                    self.sync_project_presentation(cx);
                 }
                 self.set_project_picker_open(false, window, cx);
             }
@@ -493,16 +502,24 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
         });
 
-        let (selected_label, icon) =
-            project_control_presentation(&self.projects, self.selected_project_id.as_ref(), cx);
+        self.sync_project_presentation(cx);
+
+        cx.notify();
+    }
+
+    fn sync_project_presentation(&mut self, cx: &mut Context<Self>) {
+        let none_label = cx.global::<I18n>().t("new-conversation-project-none");
+        let (selected_label, icon) = project_control_presentation(
+            &self.projects,
+            self.selected_project_id.as_ref(),
+            cx.global::<I18n>(),
+        );
         self.project.update(cx, |project, cx| {
             project.selected_label = selected_label;
-            project.placeholder = none_label.clone().into();
+            project.placeholder = none_label.into();
             project.icon = icon;
             cx.notify();
         });
-
-        cx.notify();
     }
 }
 
@@ -574,9 +591,8 @@ fn project_by_id<'a>(projects: &'a [ProjectRecord], id: &ProjectId) -> Option<&'
 fn project_control_presentation<E>(
     projects: &Result<Vec<ProjectRecord>, E>,
     selected_project_id: Option<&ProjectId>,
-    cx: &App,
+    i18n: &I18n,
 ) -> (SharedString, IconName) {
-    let i18n = cx.global::<I18n>();
     match projects {
         Err(_) => (
             i18n.t("new-conversation-project-load-failed").into(),
@@ -628,7 +644,30 @@ fn push_project_notification_async(
 #[cfg(test)]
 mod tests {
     use super::new_conversation_title;
-    use crate::foundation::I18n;
+    use super::project_control_presentation;
+    use crate::foundation::{I18n, assets::IconName};
+    use jaco_core::{ProjectKind, ProjectMetadata};
+    use jaco_db::ProjectRecord;
+    use time::OffsetDateTime;
+
+    fn project(id: &str, display_name: &str) -> ProjectRecord {
+        ProjectRecord {
+            id: id.to_string(),
+            path: format!("/tmp/{id}"),
+            display_name: display_name.to_string(),
+            kind: ProjectKind::Normal,
+            pinned: false,
+            removed: false,
+            metadata: ProjectMetadata {
+                scratch_reason: None,
+                git_root: None,
+                last_active_conversation_id: None,
+            },
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            last_opened_at: None,
+        }
+    }
 
     #[test]
     fn new_conversation_title_uses_app_neutral_copy() {
@@ -640,5 +679,19 @@ mod tests {
             new_conversation_title(&I18n::for_locale_tag("zh-CN")),
             "今天想让 Jaco 帮你做什么？"
         );
+    }
+
+    #[test]
+    fn project_control_presentation_uses_current_selection() {
+        let i18n = I18n::english_for_test();
+        let projects: Result<Vec<_>, String> =
+            Ok(vec![project("one", "One"), project("two", "Two")]);
+        let selected_project_id = "two".to_string();
+
+        let (label, icon) =
+            project_control_presentation(&projects, Some(&selected_project_id), &i18n);
+
+        assert_eq!(label.as_ref(), "Two");
+        assert!(matches!(icon, IconName::FolderOpen));
     }
 }
