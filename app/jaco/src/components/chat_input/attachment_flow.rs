@@ -1,14 +1,12 @@
-use super::ChatForm;
+use super::ChatInputController;
 use crate::{
     components::image_preview::{self, ImagePreviewAttachment},
     foundation, state,
     state::attachments::{
         AttachmentAddResult, ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
-        ModelAttachmentSupportIssue, add_attachments_from_clipboard as attachments_from_clipboard,
-        add_attachments_from_paths, model_support_issue,
+        add_attachments_from_clipboard as attachments_from_clipboard, add_attachments_from_paths,
     },
 };
-use fluent_bundle::FluentArgs;
 use gpui::*;
 use gpui_component::{
     WindowExt as _,
@@ -17,7 +15,7 @@ use gpui_component::{
 use std::path::PathBuf;
 use tracing::{Level, event};
 
-impl ChatForm {
+impl ChatInputController {
     pub(super) fn add_attachments_from_clipboard(
         &mut self,
         item: ClipboardItem,
@@ -104,10 +102,17 @@ impl ChatForm {
                 cx,
             );
         }
+        self.sync_form_attachments(window, cx);
+        self.sync_chat_form_projection(cx);
         cx.notify();
     }
 
-    pub(super) fn remove_attachment(&mut self, local_id: u64, cx: &mut Context<Self>) {
+    pub(super) fn remove_attachment(
+        &mut self,
+        local_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.attachments
             .retain(|attachment| attachment.local_id != local_id);
         if self
@@ -117,6 +122,8 @@ impl ChatForm {
         {
             self.preview_attachment = None;
         }
+        self.sync_form_attachments(window, cx);
+        self.sync_chat_form_projection(cx);
         cx.notify();
     }
 
@@ -242,39 +249,6 @@ impl ChatForm {
                 .with_type(notification_type),
             cx,
         );
-    }
-
-    pub(super) fn attachment_support_issue(&self) -> Option<ModelAttachmentSupportIssue> {
-        model_support_issue(&self.attachments, self.selected_model_capabilities())
-    }
-
-    pub(super) fn attachment_support_message(&self, cx: &Context<Self>) -> Option<SharedString> {
-        let issue = self.attachment_support_issue()?;
-        let i18n = cx.global::<foundation::I18n>();
-        let message = match issue {
-            ModelAttachmentSupportIssue::ImagesUnsupported => {
-                i18n.t("chat-form-attachment-model-no-images")
-            }
-            ModelAttachmentSupportIssue::FilesUnsupported => {
-                i18n.t("chat-form-attachment-model-no-files")
-            }
-            ModelAttachmentSupportIssue::TooManyImages { max_images } => {
-                let mut args = FluentArgs::new();
-                args.set("max", max_images.to_string());
-                i18n.t_with_args("chat-form-attachment-model-too-many-images", &args)
-            }
-            ModelAttachmentSupportIssue::TooManyFiles { max_files } => {
-                let mut args = FluentArgs::new();
-                args.set("max", max_files.to_string());
-                i18n.t_with_args("chat-form-attachment-model-too-many-files", &args)
-            }
-            ModelAttachmentSupportIssue::UnsupportedFileType { name } => {
-                let mut args = FluentArgs::new();
-                args.set("name", name);
-                i18n.t_with_args("chat-form-attachment-runtime-unsupported-file", &args)
-            }
-        };
-        Some(message.into())
     }
 }
 

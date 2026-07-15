@@ -21,8 +21,8 @@ use jaco_core::{AgentRunId, ConversationEntryId, ConversationId, ToolInvocationI
 use tracing::{Level, event};
 
 use crate::{
-    components::chat_form::{
-        ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit,
+    components::chat_input::{
+        ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
     foundation::{I18n, conversation_format as format},
     state::{self, conversations::ConversationLoadSnapshot},
@@ -31,7 +31,7 @@ use crate::{
 pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
     snapshot: Result<Option<ConversationLoadSnapshot>, String>,
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatInputController>,
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
@@ -75,8 +75,9 @@ impl ConversationDetailPage {
         cx: &mut Context<Self>,
     ) -> Self {
         let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatForm::new(window, cx);
-            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm);
+            let mut chat_form = ChatInputController::new(window, cx);
+            chat_form
+                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm, cx);
             chat_form
         });
         let runtime = state::conversation_runtime::runtime(cx);
@@ -86,14 +87,14 @@ impl ConversationDetailPage {
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
-            |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
-                ChatFormEvent::SendRequested(submit) => {
+            |page, _chat_form, event: &ChatInputEvent, window, cx| match event {
+                ChatInputEvent::SendRequested(submit) => {
                     page.submit_message((**submit).clone(), window, cx);
                 }
-                ChatFormEvent::StopRequested => {
+                ChatInputEvent::StopRequested => {
                     page.stop_agent_run(cx);
                 }
-                ChatFormEvent::AddRequested => {}
+                ChatInputEvent::AddRequested | ChatInputEvent::AddProjectRequested => {}
             },
         );
         let runtime_subscription = cx.subscribe_in(
@@ -134,7 +135,7 @@ impl ConversationDetailPage {
 
     fn submit_message(
         &mut self,
-        submit: ChatFormSubmit,
+        submit: ChatInputSubmit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -154,7 +155,7 @@ impl ConversationDetailPage {
             Ok(sent) => {
                 let _ = &sent.item.id;
                 self.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.clear_after_submit(cx);
+                    chat_form.clear_after_submit(window, cx);
                 });
                 self.reload(window, cx);
                 self.timeline.set_follow_mode(FollowMode::Tail);

@@ -381,13 +381,21 @@ impl Element for ComposerEditorElement {
         let marked_range = editor.marked_range().clone();
         let tokens = editor.tokens().to_vec();
         let placeholder = editor.placeholder().clone();
-        let show_cursor = editor.show_cursor(window, cx);
+        let disabled = editor.is_disabled();
+        let show_cursor = !disabled && editor.show_cursor(window, cx);
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
         let cursor_height = font_size.min(line_height);
-        let base_color = text_style.color;
-        let placeholder_color = cx.theme().muted_foreground.opacity(0.72);
+        let base_color = if disabled {
+            text_style.color.opacity(0.55)
+        } else {
+            text_style.color
+        };
+        let placeholder_color =
+            cx.theme()
+                .muted_foreground
+                .opacity(if disabled { 0.45 } else { 0.72 });
         let selection_color = cx.theme().blue.opacity(0.22);
         let wrap_width = bounds.size.width.max(px(1.));
         let _ = editor;

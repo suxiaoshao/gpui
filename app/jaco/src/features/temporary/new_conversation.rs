@@ -1,5 +1,5 @@
-use crate::components::chat_form::{
-    ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit,
+use crate::components::chat_input::{
+    ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
 };
 use gpui::*;
 use gpui_component::v_flex;
@@ -7,11 +7,11 @@ use gpui_component::v_flex;
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone)]
 pub(super) enum TemporaryNewConversationPaneEvent {
-    SendRequested(Box<ChatFormSubmit>),
+    SendRequested(Box<ChatInputSubmit>),
 }
 
 pub(super) struct TemporaryNewConversationPane {
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatInputController>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -20,8 +20,9 @@ impl EventEmitter<TemporaryNewConversationPaneEvent> for TemporaryNewConversatio
 impl TemporaryNewConversationPane {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatForm::new(window, cx);
-            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm);
+            let mut chat_form = ChatInputController::new(window, cx);
+            chat_form
+                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm, cx);
             chat_form
         });
         chat_form.update(cx, |chat_form, cx| {
@@ -30,13 +31,15 @@ impl TemporaryNewConversationPane {
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
-            |_pane, _chat_form, event: &ChatFormEvent, _window, cx| match event {
-                ChatFormEvent::SendRequested(submit) => {
+            |_pane, _chat_form, event: &ChatInputEvent, _window, cx| match event {
+                ChatInputEvent::SendRequested(submit) => {
                     cx.emit(TemporaryNewConversationPaneEvent::SendRequested(
                         submit.clone(),
                     ));
                 }
-                ChatFormEvent::StopRequested | ChatFormEvent::AddRequested => {}
+                ChatInputEvent::StopRequested
+                | ChatInputEvent::AddRequested
+                | ChatInputEvent::AddProjectRequested => {}
             },
         );
 
@@ -51,9 +54,9 @@ impl TemporaryNewConversationPane {
             .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
     }
 
-    pub(super) fn clear_after_submit(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_after_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.chat_form
-            .update(cx, |chat_form, cx| chat_form.clear_after_submit(cx));
+            .update(cx, |chat_form, cx| chat_form.clear_after_submit(window, cx));
     }
 }
 

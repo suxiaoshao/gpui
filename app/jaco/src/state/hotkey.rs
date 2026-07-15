@@ -10,7 +10,7 @@ use gpui_component::{
 };
 use jaco_core::{
     AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource, ToolApprovalMode,
+    ShortcutInputSource,
 };
 use jaco_db::ShortcutRecord;
 use platform_ext::{OcrError, ocr::ImageFrame};
@@ -18,9 +18,10 @@ use tracing::{Level, event};
 
 use crate::{
     app::{menus::ToggleTemporaryConversation, temporary_window},
+    components::run_settings::reasoning_selection_is_valid,
     database,
     errors::{JacoError, JacoResult},
-    features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryWindow},
+    features::screenshot::overlay as screenshot_overlay,
     foundation::I18n,
     platform::capture::CaptureError,
     state::{
@@ -756,7 +757,7 @@ impl GlobalHotkeyState {
             text.clone(),
             cx,
         )?;
-        self.open_created_shortcut_conversation(created, cx);
+        self.finish_shortcut_trigger(created, cx);
         Ok(())
     }
 
@@ -770,7 +771,7 @@ impl GlobalHotkeyState {
         let result =
             self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
         match result {
-            Ok(created) => self.open_created_shortcut_conversation(created, cx),
+            Ok(created) => self.finish_shortcut_trigger(created, cx),
             Err(err) => self.push_notification(
                 "notify-shortcut-trigger-model-unavailable-title",
                 err.to_string(),
@@ -788,6 +789,20 @@ impl GlobalHotkeyState {
         title_seed: String,
         cx: &mut App,
     ) -> JacoResult<state::conversations::CreatedConversation> {
+        if let Some(selection) = trigger
+            .shortcut
+            .settings_snapshot
+            .reasoning_selection
+            .as_ref()
+            && !reasoning_selection_is_valid(
+                trigger.provider_model.capabilities.reasoning.as_ref(),
+                selection,
+            )
+        {
+            return Err(JacoError::Window(
+                "shortcut reasoning setting is not supported by the selected model".to_string(),
+            ));
+        }
         state::conversations::create_conversation(
             state::conversations::CreateConversationRequest {
                 project_id: None,
@@ -801,7 +816,7 @@ impl GlobalHotkeyState {
                     .settings_snapshot
                     .reasoning_selection
                     .clone(),
-                approval_mode: ToolApprovalMode::RequestApproval,
+                approval_mode: trigger.shortcut.settings_snapshot.tool_policy.approval_mode,
                 prompt_id: trigger.prompt_id.clone(),
                 prompt_snapshot: trigger.prompt_snapshot.clone(),
                 trigger_kind: AgentRunTriggerKind::Shortcut,
@@ -810,35 +825,15 @@ impl GlobalHotkeyState {
         )
     }
 
-    fn open_created_shortcut_conversation(
+    fn finish_shortcut_trigger(
         &self,
         created: state::conversations::CreatedConversation,
         cx: &mut App,
     ) {
-        let Some(root) = temporary_window::open_temporary_window(cx) else {
+        if temporary_window::show_created_conversation(created, cx).is_none() {
             event!(
                 Level::ERROR,
-                "failed to open temporary window for shortcut conversation"
-            );
-            return;
-        };
-
-        if let Err(err) = root.update(cx, |root, window, cx| {
-            let Ok(view) = root.view().clone().downcast::<TemporaryWindow>() else {
-                event!(
-                    Level::ERROR,
-                    "temporary window root did not contain TemporaryWindow view"
-                );
-                return;
-            };
-            view.update(cx, |view, cx| {
-                view.open_created_conversation(created, window, cx);
-            });
-        }) {
-            event!(
-                Level::ERROR,
-                error = ?err,
-                "failed to open shortcut conversation in temporary window"
+                "failed to show shortcut conversation in temporary window"
             );
         }
     }

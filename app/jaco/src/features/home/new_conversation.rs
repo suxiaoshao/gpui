@@ -3,16 +3,12 @@ use std::{
     rc::Rc,
 };
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
-    button::{Button, ButtonVariants},
-    h_flex,
+    ActiveTheme, StyledExt, WindowExt as NotificationWindowExt,
     label::Label,
     list::ListState,
     notification::{Notification, NotificationType},
-    select::SelectItem,
     v_flex,
 };
 use jaco_core::ProjectId;
@@ -21,34 +17,29 @@ use tracing::{Level, event};
 
 use crate::{
     components::{
-        chat_form::{ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit},
-        picker::{PickerListDelegate, PickerPopoverConfig, PickerSection, picker_popover},
+        chat_form::{
+            ProjectControlState, ProjectPickerOption, ProjectPickerOptionKind,
+            project_picker_value, project_sections,
+        },
+        chat_input::{
+            ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
+        },
+        picker::PickerListDelegate,
     },
     foundation::{I18n, assets::IconName},
     state,
 };
 
-const PROJECT_BAR_VISIBLE_HEIGHT: f32 = 42.;
-const PROJECT_BAR_OVERLAP: f32 = 16.;
-const PROJECT_PICKER_TRIGGER_SIZE: f32 = 28.;
-const PROJECT_PICKER_TRIGGER_RADIUS: f32 = 999.;
-
 pub(crate) struct NewConversationPage {
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatInputController>,
     projects: Result<Vec<ProjectRecord>, String>,
     selected_project_id: Option<ProjectId>,
-    project_picker_open: bool,
-    project_picker: Entity<ListState<PickerListDelegate<ProjectPickerOption>>>,
+    project: Entity<ProjectControlState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NewConversationPage {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatForm::new(window, cx);
-            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm);
-            chat_form
-        });
         let projects = load_projects(cx);
         let selected_project_id = projects
             .as_ref()
@@ -60,10 +51,14 @@ impl NewConversationPage {
                 .and_then(|id| project_by_id(projects, id))
         });
         let state = cx.entity().downgrade();
-        let sections = project_sections(projects.as_ref().map(Vec::as_slice).unwrap_or(&[]), cx);
+        let empty_label = cx.global::<I18n>().t("new-conversation-project-empty");
+        let none_label = cx.global::<I18n>().t("new-conversation-project-none");
+        let sections = project_sections(
+            projects.as_ref().map(Vec::as_slice).unwrap_or(&[]),
+            none_label,
+        );
         let selected_value = project_picker_value(selected_project_id.as_ref());
         let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&selected_value));
-        let empty_label = cx.global::<I18n>().t("new-conversation-project-empty");
         let confirm = Rc::new({
             let state = state.clone();
             move |option: ProjectPickerOption, window: &mut Window, cx: &mut App| {
@@ -85,7 +80,7 @@ impl NewConversationPage {
                 PickerListDelegate::new(
                     sections,
                     Some(selected_value),
-                    empty_label.into(),
+                    empty_label.clone().into(),
                     confirm,
                     cancel,
                 ),
@@ -95,6 +90,21 @@ impl NewConversationPage {
             .searchable(true);
             picker.set_selected_index(selected_ix, window, cx);
             picker
+        });
+        let (selected_label, icon) =
+            project_control_presentation(&projects, selected_project_id.as_ref(), cx);
+        let project = cx.new(|_| ProjectControlState {
+            selected_label,
+            placeholder: empty_label.into(),
+            icon,
+            open: false,
+            picker: project_picker,
+        });
+        let chat_form = cx.new(|cx| {
+            let mut chat_form = ChatInputController::new_with_project(project.clone(), window, cx);
+            chat_form
+                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm, cx);
+            chat_form
         });
         let project_catalog = state::projects::catalog(cx);
         let project_subscription = cx.subscribe(
@@ -106,12 +116,15 @@ impl NewConversationPage {
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
-            |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
-                ChatFormEvent::SendRequested(submit) => {
+            |page, _chat_form, event: &ChatInputEvent, window, cx| match event {
+                ChatInputEvent::SendRequested(submit) => {
                     page.submit_new_conversation((**submit).clone(), window, cx);
                 }
-                ChatFormEvent::StopRequested => {}
-                ChatFormEvent::AddRequested => {}
+                ChatInputEvent::StopRequested => {}
+                ChatInputEvent::AddRequested => {}
+                ChatInputEvent::AddProjectRequested => {
+                    page.open_add_project_prompt(window, cx);
+                }
             },
         );
 
@@ -125,16 +138,15 @@ impl NewConversationPage {
             chat_form,
             projects: projects.map_err(|err| err.to_string()),
             selected_project_id,
-            project_picker_open: false,
-            project_picker,
+            project,
             _subscriptions: vec![project_subscription, chat_form_subscription],
         }
     }
 
     pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_picker_open {
-            self.project_picker
-                .update(cx, |picker, cx| picker.focus(window, cx));
+        if self.project.read(cx).open {
+            let picker = self.project.read(cx).picker.clone();
+            picker.update(cx, |picker, cx| picker.focus(window, cx));
             return;
         }
 
@@ -162,7 +174,10 @@ impl NewConversationPage {
                     self.chat_form.update(cx, |chat_form, cx| {
                         chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
                     });
-                    self.project_picker_open = false;
+                    self.project.update(cx, |project, cx| {
+                        project.open = false;
+                        cx.notify();
+                    });
                 }
             }
             Err(err) => {
@@ -230,11 +245,14 @@ impl NewConversationPage {
     }
 
     fn set_project_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.project_picker_open = open;
+        self.project.update(cx, |project, cx| {
+            project.open = open;
+            cx.notify();
+        });
         if open {
             self.sync_project_picker(window, cx);
-            self.project_picker
-                .update(cx, |picker, cx| picker.focus(window, cx));
+            let picker = self.project.read(cx).picker.clone();
+            picker.update(cx, |picker, cx| picker.focus(window, cx));
         }
         cx.notify();
     }
@@ -376,7 +394,7 @@ impl NewConversationPage {
 
     fn submit_new_conversation(
         &mut self,
-        submit: ChatFormSubmit,
+        submit: ChatInputSubmit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -397,7 +415,7 @@ impl NewConversationPage {
             Ok(created) => {
                 let conversation_id = created.record.conversation.id.clone();
                 self.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.clear_after_submit(cx);
+                    chat_form.clear_after_submit(window, cx);
                 });
                 state::workspace::workspace(cx).update(cx, |workspace, cx| {
                     workspace.reload_sidebar(cx);
@@ -458,11 +476,15 @@ impl NewConversationPage {
     }
 
     fn sync_project_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sections =
-            project_sections(self.projects.as_ref().map(Vec::as_slice).unwrap_or(&[]), cx);
+        let none_label = cx.global::<I18n>().t("new-conversation-project-none");
+        let sections = project_sections(
+            self.projects.as_ref().map(Vec::as_slice).unwrap_or(&[]),
+            none_label.clone(),
+        );
         let selected_value = project_picker_value(self.selected_project_id.as_ref());
 
-        self.project_picker.update(cx, |picker, cx| {
+        let picker = self.project.read(cx).picker.clone();
+        picker.update(cx, |picker, cx| {
             picker.delegate_mut().set_sections(sections);
             picker
                 .delegate_mut()
@@ -471,111 +493,16 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
         });
 
+        let (selected_label, icon) =
+            project_control_presentation(&self.projects, self.selected_project_id.as_ref(), cx);
+        self.project.update(cx, |project, cx| {
+            project.selected_label = selected_label;
+            project.placeholder = none_label.clone().into();
+            project.icon = icon;
+            cx.notify();
+        });
+
         cx.notify();
-    }
-
-    fn render_project_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = {
-            let i18n = cx.global::<I18n>();
-            match &self.projects {
-                Err(_) => i18n.t("new-conversation-project-load-failed"),
-                Ok(_) => self
-                    .selected_project()
-                    .map(|project| project.display_name.clone())
-                    .unwrap_or_else(|| i18n.t("new-conversation-project-none")),
-            }
-        };
-        let icon = if self.selected_project_id.is_some() {
-            IconName::FolderOpen
-        } else {
-            IconName::FolderX
-        };
-        let search_placeholder = cx.global::<I18n>().t("new-conversation-project-search");
-        let footer = self.render_project_picker_footer(cx);
-
-        picker_popover(
-            cx,
-            PickerPopoverConfig {
-                id: "new-conversation-project-popover",
-                open: self.project_picker_open,
-                trigger: project_picker_trigger(
-                    "new-conversation-project-trigger",
-                    icon,
-                    label,
-                    self.project_picker_open,
-                    cx,
-                ),
-                list: self.project_picker.clone(),
-                width: px(320.),
-                max_height: rems(18.).into(),
-                search_placeholder: Some(search_placeholder.into()),
-                footer: Some(footer),
-                on_open_change: cx.listener(|page, open: &bool, window, cx| {
-                    page.set_project_picker_open(*open, window, cx);
-                }),
-            },
-        )
-    }
-
-    fn render_project_picker_footer(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .p_1()
-            .child(
-                Button::new("new-conversation-add-project")
-                    .ghost()
-                    .icon(IconName::FolderPlus)
-                    .label(cx.global::<I18n>().t("button-add-project"))
-                    .small()
-                    .w_full()
-                    .on_click(cx.listener(|page, _, window, cx| {
-                        page.open_add_project_prompt(window, cx);
-                    })),
-            )
-            .into_any_element()
-    }
-
-    fn render_project_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .id("new-conversation-project-bar")
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .w_full()
-            .h(px(PROJECT_BAR_VISIBLE_HEIGHT + PROJECT_BAR_OVERLAP))
-            .pt(px(PROJECT_BAR_OVERLAP))
-            .px_3()
-            .items_center()
-            .rounded_tl(px(0.))
-            .rounded_tr(px(0.))
-            .rounded_bl(px(25.))
-            .rounded_br(px(25.))
-            .bg(cx.theme().muted)
-            .text_color(cx.theme().muted_foreground)
-            .border_1()
-            .border_color(cx.theme().border.opacity(0.35))
-            .child(self.render_project_selector(cx))
-    }
-
-    fn render_chat_form_layer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("new-conversation-chat-form-layer")
-            .w_full()
-            .rounded(px(25.))
-            .bg(cx.theme().background.blend(cx.theme().input_background()))
-            .child(self.chat_form.clone())
-    }
-
-    fn render_composer_stack(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id("new-conversation-composer-stack")
-            .w_full()
-            .relative()
-            .pb(px(PROJECT_BAR_VISIBLE_HEIGHT))
-            .child(self.render_project_bar(cx))
-            .child(self.render_chat_form_layer(cx))
     }
 }
 
@@ -605,127 +532,13 @@ impl Render for NewConversationPage {
                             .font_medium()
                             .text_color(cx.theme().foreground),
                     )
-                    .child(self.render_composer_stack(cx)),
+                    .child(self.chat_form.clone()),
             )
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ProjectPickerOption {
-    value: ProjectPickerValue,
-    kind: ProjectPickerOptionKind,
-}
-
-#[derive(Clone, Debug)]
-enum ProjectPickerOptionKind {
-    NoProject { label: SharedString },
-    Project(ProjectRecord),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ProjectPickerValue {
-    NoProject,
-    Project(ProjectId),
-}
-
-impl ProjectPickerOption {
-    fn no_project(label: impl Into<SharedString>) -> Self {
-        Self {
-            value: ProjectPickerValue::NoProject,
-            kind: ProjectPickerOptionKind::NoProject {
-                label: label.into(),
-            },
-        }
-    }
-
-    fn project(project: ProjectRecord) -> Self {
-        Self {
-            value: ProjectPickerValue::Project(project.id.clone()),
-            kind: ProjectPickerOptionKind::Project(project),
-        }
-    }
-}
-
-impl SelectItem for ProjectPickerOption {
-    type Value = ProjectPickerValue;
-
-    fn title(&self) -> SharedString {
-        match &self.kind {
-            ProjectPickerOptionKind::NoProject { label } => label.clone(),
-            ProjectPickerOptionKind::Project(project) => project.display_name.clone().into(),
-        }
-    }
-
-    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        match &self.kind {
-            ProjectPickerOptionKind::NoProject { label } => h_flex()
-                .w_full()
-                .min_w_0()
-                .items_center()
-                .gap_2()
-                .child(
-                    Icon::new(IconName::FolderX)
-                        .size_4()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(Label::new(label.clone()).text_sm().truncate())
-                .into_any_element(),
-            ProjectPickerOptionKind::Project(project) => h_flex()
-                .w_full()
-                .min_w_0()
-                .items_center()
-                .gap_2()
-                .child(
-                    Icon::new(IconName::FolderOpen)
-                        .size_4()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    Label::new(project.display_name.clone())
-                        .text_sm()
-                        .truncate(),
-                )
-                .into_any_element(),
-        }
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-
-    fn matches(&self, query: &str) -> bool {
-        let query = query.to_lowercase();
-        match &self.kind {
-            ProjectPickerOptionKind::NoProject { label } => {
-                label.as_ref().to_lowercase().contains(&query)
-            }
-            ProjectPickerOptionKind::Project(project) => {
-                project.display_name.to_lowercase().contains(&query)
-                    || project.path.to_lowercase().contains(&query)
-            }
-        }
     }
 }
 
 fn load_projects(cx: &App) -> jaco_db::Result<Vec<ProjectRecord>> {
     state::projects::normal_projects(cx)
-}
-
-fn project_sections(
-    projects: &[ProjectRecord],
-    cx: &App,
-) -> Vec<PickerSection<ProjectPickerOption>> {
-    let i18n = cx.global::<I18n>();
-    let mut items = projects
-        .iter()
-        .cloned()
-        .map(ProjectPickerOption::project)
-        .collect::<Vec<_>>();
-    items.push(ProjectPickerOption::no_project(
-        i18n.t("new-conversation-project-none"),
-    ));
-
-    vec![PickerSection::untitled(items)]
 }
 
 fn default_project_id(cx: &App) -> Option<ProjectId> {
@@ -754,65 +567,33 @@ fn initial_project_id(
         .map(|project| project.id.clone())
 }
 
-fn project_picker_value(project_id: Option<&ProjectId>) -> ProjectPickerValue {
-    project_id
-        .cloned()
-        .map(ProjectPickerValue::Project)
-        .unwrap_or(ProjectPickerValue::NoProject)
-}
-
 fn project_by_id<'a>(projects: &'a [ProjectRecord], id: &ProjectId) -> Option<&'a ProjectRecord> {
     projects.iter().find(|project| &project.id == id)
 }
 
-fn new_conversation_title(i18n: &I18n) -> String {
-    i18n.t("new-conversation-title")
+fn project_control_presentation<E>(
+    projects: &Result<Vec<ProjectRecord>, E>,
+    selected_project_id: Option<&ProjectId>,
+    cx: &App,
+) -> (SharedString, IconName) {
+    let i18n = cx.global::<I18n>();
+    match projects {
+        Err(_) => (
+            i18n.t("new-conversation-project-load-failed").into(),
+            IconName::FolderX,
+        ),
+        Ok(projects) => match selected_project_id.and_then(|id| project_by_id(projects, id)) {
+            Some(project) => (project.display_name.clone().into(), IconName::FolderOpen),
+            None => (
+                i18n.t("new-conversation-project-none").into(),
+                IconName::FolderX,
+            ),
+        },
+    }
 }
 
-fn project_picker_trigger(
-    id: &'static str,
-    icon: IconName,
-    label: impl Into<SharedString>,
-    open: bool,
-    cx: &App,
-) -> Button {
-    let foreground = cx.theme().muted_foreground;
-    let hover_foreground = cx.theme().foreground.opacity(0.78);
-    let active_background = cx.theme().foreground.opacity(0.08);
-
-    Button::new(id)
-        .ghost()
-        .with_size(px(PROJECT_PICKER_TRIGGER_SIZE))
-        .h(px(PROJECT_PICKER_TRIGGER_SIZE))
-        .px(px(8.))
-        .py(px(0.))
-        .rounded(px(PROJECT_PICKER_TRIGGER_RADIUS))
-        .text_color(foreground)
-        .when(open, |this| {
-            this.bg(active_background).text_color(hover_foreground)
-        })
-        .child(
-            h_flex()
-                .items_center()
-                .min_w_0()
-                .gap_1p5()
-                .child(Icon::new(icon).size_4())
-                .child(
-                    Label::new(label.into())
-                        .text_sm()
-                        .font_medium()
-                        .whitespace_nowrap()
-                        .truncate(),
-                )
-                .child(
-                    Icon::new(if open {
-                        IconName::ChevronUp
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .size_3(),
-                ),
-        )
+fn new_conversation_title(i18n: &I18n) -> String {
+    i18n.t("new-conversation-title")
 }
 
 fn push_project_notification(

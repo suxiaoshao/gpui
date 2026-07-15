@@ -1,12 +1,12 @@
-pub(super) const STRIP_GAP: f32 = 8.;
-pub(super) const STRIP_BOTTOM_MARGIN: f32 = 8.;
-pub(super) const IMAGE_THUMBNAIL_SIZE: f32 = 80.;
-pub(super) const FILE_CARD_WIDTH: f32 = 220.;
-pub(super) const FILE_CARD_HEIGHT: f32 = 56.;
-pub(super) const CARD_RADIUS: f32 = 8.;
-pub(super) const REMOVE_BUTTON_SIZE: f32 = 20.;
+pub(crate) const STRIP_GAP: f32 = 8.;
+pub(crate) const STRIP_BOTTOM_MARGIN: f32 = 8.;
+pub(crate) const IMAGE_THUMBNAIL_SIZE: f32 = 80.;
+pub(crate) const FILE_CARD_WIDTH: f32 = 220.;
+pub(crate) const FILE_CARD_HEIGHT: f32 = 56.;
+pub(crate) const CARD_RADIUS: f32 = 8.;
+pub(crate) const REMOVE_BUTTON_SIZE: f32 = 20.;
 
-pub(super) fn format_file_size(size: Option<u64>) -> String {
+pub(crate) fn format_file_size(size: Option<u64>) -> String {
     let Some(size) = size else {
         return "Unknown size".to_string();
     };

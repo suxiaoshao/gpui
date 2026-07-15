@@ -1,5 +1,11 @@
 use crate::{
+    components::chat_form::{
+        AddAttachmentControl, AttachmentControlState, ChatForm, ChatFormControls, ControlSlot,
+        PrimaryActionControlState, RunSettingsControls,
+    },
+    components::chat_input::ComposerEditor,
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    components::run_settings::RunSettingsController,
     foundation::{I18n, assets::IconName},
     state::{self, providers::ProviderModelChoice, shortcuts::ShortcutDraft},
 };
@@ -56,6 +62,8 @@ pub(super) struct ShortcutEditDialogState {
     mode: ShortcutEditMode,
     shortcut_id: Option<ShortcutId>,
     form: Entity<ShortcutEditFormStore>,
+    run_settings: Entity<RunSettingsController>,
+    chat_form: Entity<ChatForm>,
     existing_shortcuts: Vec<ShortcutRecord>,
     temporary_hotkey: Option<String>,
 }
@@ -98,11 +106,40 @@ impl ShortcutEditDialogState {
                 cx,
             )
         });
+        let run_settings_form = form.read(cx).run_settings_store();
+        let run_settings = cx.new(|cx| {
+            RunSettingsController::new_without_model_fallback(run_settings_form, window, cx)
+        });
+        let run_settings_states = run_settings.read(cx).control_states();
+        let placeholder = cx.global::<I18n>().t("chat-form-placeholder");
+        let composer = cx.new(|cx| ComposerEditor::new(placeholder, window, cx));
+        let attachments = cx.new(|_| AttachmentControlState::default());
+        let primary_action = cx.new(|_| PrimaryActionControlState::default());
+        let chat_form = cx.new(|cx| {
+            ChatForm::new(
+                ChatFormControls {
+                    project: ControlSlot::Hidden,
+                    composer: ControlSlot::Disabled(composer.clone()),
+                    attachments: ControlSlot::Disabled(attachments),
+                    add_attachment: ControlSlot::Disabled(AddAttachmentControl),
+                    run_settings: RunSettingsControls {
+                        model: ControlSlot::Enabled(run_settings_states.model),
+                        reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
+                        approval: ControlSlot::Enabled(run_settings_states.approval),
+                    },
+                    primary_action: ControlSlot::Disabled(primary_action),
+                },
+                window,
+                cx,
+            )
+        });
 
         Self {
             mode,
             shortcut_id,
             form,
+            run_settings,
+            chat_form,
             existing_shortcuts,
             temporary_hotkey,
         }
@@ -118,6 +155,9 @@ impl ShortcutEditDialogState {
             existing_shortcuts,
             temporary_hotkey,
         };
+        self.run_settings.update(cx, |settings, cx| {
+            settings.prepare_submit(window, cx);
+        });
         let result = self.form.update(cx, |form, cx| {
             form.set_validation_context(validation_context, cx);
             form.submit_sync(
@@ -129,7 +169,7 @@ impl ShortcutEditDialogState {
                         });
                     };
                     let prompt_id = draft.prompt.selected;
-                    let Some(model_key) = draft.model.selected else {
+                    let Some(model_key) = draft.run_settings.model else {
                         return Err(ShortcutSaveError::Notify {
                             title_key: "notify-save-shortcut-failed",
                             message: "validated shortcut model is missing".to_string(),
@@ -142,6 +182,8 @@ impl ShortcutEditDialogState {
                         provider_id: model_key.provider_id,
                         model_id: model_key.model_id,
                         input_source: draft.input_source,
+                        reasoning_selection: draft.run_settings.reasoning_selection,
+                        approval_mode: draft.run_settings.approval_mode,
                     };
                     let result = match mode {
                         ShortcutEditMode::Create => {
@@ -243,27 +285,27 @@ impl Render for ShortcutEditDialogState {
         let (
             hotkey_input,
             prompt_select,
-            model_select,
             hotkey_error,
-            model_error,
             hotkey_required,
-            model_required,
             input_source,
             enabled,
+            run_settings_form,
         ) = {
             let form = self.form.read(cx);
+            let run_settings_form = form.run_settings_store();
             (
                 form.hotkey_state(),
                 form.prompt_state().read(cx).select.clone(),
-                form.model_state().read(cx).select.clone(),
                 field_error_message(field_errors(&form.hotkey), cx),
-                field_error_message(field_errors(&form.model), cx),
                 form.hotkey_required(),
-                form.model_required(),
                 form.input_source_value(),
                 form.enabled_value(),
+                run_settings_form.clone(),
             )
         };
+        let run_settings_form = run_settings_form.read(cx);
+        let model_error = field_error_message(field_errors(&run_settings_form.model), cx);
+        let model_required = run_settings_form.model_required();
         v_flex()
             .w_full()
             .gap_4()
@@ -286,12 +328,7 @@ impl Render for ShortcutEditDialogState {
             ))
             .child(form_field(
                 field_model.clone(),
-                Select::new(&model_select)
-                    .placeholder(field_model)
-                    .search_placeholder(cx.global::<I18n>().t("chat-form-model-search-placeholder"))
-                    .menu_max_h(rems(18.))
-                    .w_full()
-                    .into_any_element(),
+                self.chat_form.clone().into_any_element(),
                 model_error,
                 model_required,
                 cx,
@@ -665,12 +702,9 @@ mod tests {
         confirm_shortcut_edit_dialog, field_error_message, field_errors,
         input_source_from_toggle_states, open_shortcut_edit_dialog, validation_message,
     };
-    use crate::{
-        database::FreshStoreGlobal, foundation, state, state::providers::ProviderModelChoice,
-    };
+    use crate::{database::FreshStoreGlobal, foundation, state};
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::{IndexPath, WindowExt};
-    use jaco_core::conservative_model_capabilities;
+    use gpui_component::WindowExt;
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -725,22 +759,17 @@ mod tests {
     }
 
     #[gpui::test]
-    fn model_select_updates_shortcut_dialog_selection(cx: &mut TestAppContext) {
+    fn shortcut_dialog_contains_run_settings_group(cx: &mut TestAppContext) {
         let _dir = init_shortcut_dialog_test(cx);
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let models = vec![
-            model_choice("provider-1", "openai", "OpenAI", "gpt-5"),
-            model_choice("provider-2", "ollama", "Ollama", "llama3.2"),
-        ];
-        let expected_key = models[1].key();
         let form = cx.update(|window, cx| {
             open_shortcut_edit_dialog(
                 ShortcutEditMode::Create,
                 None,
                 ShortcutDialogChoices {
                     prompts: Vec::new(),
-                    models,
+                    models: Vec::new(),
                 },
                 Vec::new(),
                 None,
@@ -749,19 +778,15 @@ mod tests {
             )
         });
 
-        let model_select = form.read_with(&cx, |dialog, cx| {
-            dialog.form.read(cx).model_state().read(cx).select.clone()
-        });
-        cx.update(|window, cx| {
-            model_select.update(cx, |select, cx| {
-                select.set_selected_index(Some(IndexPath::default().section(1).row(0)), window, cx);
-            });
-        });
-
-        assert_eq!(
-            model_select.read_with(&cx, |select, _| select.selected_value().cloned()),
-            Some(expected_key)
-        );
+        assert!(form.read_with(&cx, |dialog, cx| {
+            dialog
+                .form
+                .read(cx)
+                .run_settings_store()
+                .read(cx)
+                .model_value()
+                .is_none()
+        }));
     }
 
     #[test]
@@ -819,22 +844,6 @@ mod tests {
             _cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             gpui::div()
-        }
-    }
-
-    fn model_choice(
-        provider_id: &str,
-        provider_kind: &str,
-        provider_display_name: &str,
-        model_id: &str,
-    ) -> ProviderModelChoice {
-        ProviderModelChoice {
-            provider_id: provider_id.to_string(),
-            provider_kind: provider_kind.to_string(),
-            provider_display_name: provider_display_name.to_string(),
-            model_id: model_id.to_string(),
-            model_display_name: None,
-            capabilities: conservative_model_capabilities(provider_kind),
         }
     }
 }

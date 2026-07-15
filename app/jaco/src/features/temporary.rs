@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::{
     app::{menus, temporary_window},
     components::{
-        chat_form::{COMPOSER_EDITOR_KEY_CONTEXT, ChatFormSubmit},
+        chat_input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
         conversation_detail::ConversationDetailPage,
     },
     foundation::{self, I18n, assets::IconName},
@@ -420,7 +420,7 @@ impl TemporaryWindow {
 
     fn submit_new_conversation(
         &mut self,
-        submit: ChatFormSubmit,
+        submit: ChatInputSubmit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -442,7 +442,7 @@ impl TemporaryWindow {
             Ok(created) => {
                 let conversation_id = created.record.conversation.id.clone();
                 self.new_conversation.update(cx, |pane, cx| {
-                    pane.clear_after_submit(cx);
+                    pane.clear_after_submit(window, cx);
                 });
                 self.query.clear();
                 self.search_input.update(cx, |input, cx| {
@@ -482,7 +482,7 @@ impl TemporaryWindow {
         created: state::conversations::CreatedConversation,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let conversation_id = created.record.conversation.id.clone();
         self.query.clear();
         self.search_input.update(cx, |input, cx| {
@@ -501,8 +501,8 @@ impl TemporaryWindow {
             workspace.reload_sidebar(cx);
         });
         self.runtime.update(cx, |runtime, cx| {
-            runtime.start_run(created.run_request, window, cx);
-        });
+            runtime.start_run(created.run_request, window, cx)
+        })
     }
 
     fn conversation_page(

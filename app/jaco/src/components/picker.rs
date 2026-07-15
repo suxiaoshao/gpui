@@ -170,10 +170,6 @@ where
         self.selected_value = selected_value;
     }
 
-    pub(crate) fn set_empty_label(&mut self, empty_label: impl Into<SharedString>) {
-        self.empty_label = empty_label.into();
-    }
-
     pub(crate) fn selected_index(&self) -> Option<IndexPath> {
         Self::selected_index_for(&self.sections, self.selected_value.as_ref())
     }
@@ -324,11 +320,26 @@ where
         };
 
         self.selected_value = Some(item.value().clone());
-        (self.on_confirm)(item.as_ref().clone(), window, cx);
+        let on_confirm = self.on_confirm.clone();
+        let item = item.as_ref().clone();
+        // `confirm` is called while `ListState` is locked by its action
+        // handler. The callback is allowed to update the picker owner (and
+        // often the picker itself), so it must run at the app/window
+        // boundary after this list update has completed. `Context::defer_in`
+        // would re-lock this same `ListState` and reproduce the panic.
+        window.defer(cx, move |window, cx| {
+            (on_confirm)(item, window, cx);
+        });
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        (self.on_cancel)(window, cx);
+        let on_cancel = self.on_cancel.clone();
+        // See `confirm`: cancellation can close/reconcile the owning
+        // control, so dispatch it after the list update has released its
+        // entity lock.
+        window.defer(cx, move |window, cx| {
+            (on_cancel)(window, cx);
+        });
     }
 }
 
@@ -433,10 +444,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::{PickerListDelegate, PickerSection};
-    use gpui::{App, IntoElement, SharedString, Window};
-    use gpui_component::IndexPath;
+    use gpui::{
+        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext,
+        Window, div,
+    };
     use gpui_component::select::SelectItem;
-    use std::rc::Rc;
+    use gpui_component::{
+        IndexPath,
+        list::{ListDelegate, ListState},
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     #[derive(Clone, Debug)]
     struct TestItem {
@@ -532,5 +552,71 @@ mod tests {
 
         assert_eq!(delegate.sections[0].items.len(), 1);
         assert_eq!(delegate.sections[0].items[0].value(), &2);
+    }
+
+    struct TestRoot;
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
+        ));
+        let callback_ran = Rc::new(Cell::new(false));
+        let on_confirm = Rc::new({
+            let list_slot = list_slot.clone();
+            let callback_ran = callback_ran.clone();
+            move |_item: TestItem, _window: &mut Window, cx: &mut App| {
+                let list = list_slot
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+                    .expect("picker list should be initialized");
+                list.update(cx, |_, _| callback_ran.set(true));
+            }
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    PickerListDelegate::new(
+                        PickerSection::flat([TestItem {
+                            title: "one",
+                            value: 1,
+                            description: "first",
+                        }]),
+                        None,
+                        "Empty".into(),
+                        on_confirm,
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("picker list should be initialized");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(callback_ran.get());
     }
 }

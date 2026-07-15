@@ -203,6 +203,7 @@ pub(crate) enum ComposerEditorEvent {
 impl EventEmitter<ComposerEditorEvent> for ComposerEditor {}
 
 pub(crate) struct ComposerEditor {
+    disabled: bool,
     text: String,
     placeholder: SharedString,
     selection: Selection,
@@ -288,6 +289,7 @@ impl ComposerEditor {
         ];
 
         Self {
+            disabled: false,
             text: String::new(),
             placeholder: placeholder.into(),
             selection: Selection::default(),
@@ -337,7 +339,25 @@ impl ComposerEditor {
     }
 
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.focus_handle.focus(window, cx);
+    }
+
+    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled == disabled {
+            return;
+        }
+        self.disabled = disabled;
+        if disabled {
+            self.close_skill_completion(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.disabled
     }
 
     pub(crate) fn set_skill_entries(
@@ -600,7 +620,7 @@ impl ComposerEditor {
         self.tokens = parse_skill_tokens(&self.text, &self.skills, &mut self.next_token_id);
     }
 
-    pub(super) fn skill_completion_open(&self) -> bool {
+    pub(crate) fn skill_completion_open(&self) -> bool {
         self.completion_trigger.is_some()
     }
 
@@ -614,6 +634,11 @@ impl ComposerEditor {
     }
 
     fn refresh_skill_completion(&mut self, cx: &mut Context<Self>) {
+        if self.disabled {
+            self.close_skill_completion(cx);
+            return;
+        }
+
         let trigger = self
             .selection
             .is_empty()
@@ -684,7 +709,7 @@ impl ComposerEditor {
     }
 
     fn confirm_completion_if_open(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.skill_completion_open() {
+        if self.disabled || !self.skill_completion_open() {
             return false;
         }
 
@@ -721,7 +746,7 @@ impl ComposerEditor {
         self.close_skill_completion(cx);
     }
 
-    pub(super) fn render_skill_completion_panel(
+    pub(crate) fn render_skill_completion_panel(
         &mut self,
         max_height: Pixels,
         window: &mut Window,
@@ -761,6 +786,9 @@ impl ComposerEditor {
         record_history: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         self.pause_cursor_blink(cx);
         if record_history {
             self.record_before_change();
@@ -956,6 +984,9 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         self.focus(window, cx);
         if event.click_count == 1
             && !event.modifiers.shift
@@ -977,20 +1008,32 @@ impl ComposerEditor {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.selecting {
             self.move_to(self.index_for_mouse_position(event.position), true, cx);
         }
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.selecting = false;
     }
 
     fn on_backspace(&mut self, _: &ComposerBackspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.delete_range_or_bell(self.selection_or_previous_char(), window, cx);
     }
 
     fn on_delete(&mut self, _: &ComposerDelete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.delete_range_or_bell(self.selection_or_next_char(), window, cx);
     }
 
@@ -1000,6 +1043,9 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = if self.selection.is_empty() {
             previous_word_start(&self.text, self.cursor())..self.cursor()
         } else {
@@ -1014,6 +1060,9 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = if self.selection.is_empty() {
             self.cursor()..next_word_end(&self.text, self.cursor())
         } else {
@@ -1028,6 +1077,9 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = if self.selection.is_empty() {
             line_start(&self.text, self.cursor())..self.cursor()
         } else {
@@ -1042,6 +1094,9 @@ impl ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = if self.selection.is_empty() {
             self.cursor()..buffer::line_end(&self.text, self.cursor())
         } else {
@@ -1205,10 +1260,16 @@ impl ComposerEditor {
     }
 
     fn on_newline(&mut self, _: &ComposerNewline, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.replace_selection("\n", true, cx);
     }
 
     fn on_submit(&mut self, _: &ComposerSubmit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.confirm_completion_if_open(window, cx) {
             return;
         }
@@ -1242,6 +1303,9 @@ impl ComposerEditor {
     }
 
     fn on_undo(&mut self, _: &ComposerUndo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if let Some(state) = self.history.undo(self.current_state()) {
             self.restore_state(state, cx);
             self.refresh_skill_completion(cx);
@@ -1249,6 +1313,9 @@ impl ComposerEditor {
     }
 
     fn on_redo(&mut self, _: &ComposerRedo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if let Some(state) = self.history.redo(self.current_state()) {
             self.restore_state(state, cx);
             self.refresh_skill_completion(cx);
@@ -1264,6 +1331,9 @@ impl ComposerEditor {
     }
 
     fn on_cut(&mut self, _: &ComposerCut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.selection.is_empty() {
             return;
         }
@@ -1274,6 +1344,9 @@ impl ComposerEditor {
     }
 
     fn on_paste(&mut self, _: &ComposerPaste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if let Some(item) = cx.read_from_clipboard() {
             if clipboard_item_has_attachments(&item) {
                 cx.emit(ComposerEditorEvent::PasteAttachmentRequested(item));
@@ -1336,6 +1409,9 @@ impl EntityInputHandler for ComposerEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = range_utf16
             .map(|range| utf16_range_to_byte_range(&self.text, range))
             .or_else(|| self.marked_range.clone())
@@ -1359,6 +1435,9 @@ impl EntityInputHandler for ComposerEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         self.pause_cursor_blink(cx);
         if self.composition_base.is_none() {
             self.composition_base = Some(self.current_state());

@@ -1,12 +1,12 @@
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
 use jaco_core::{
-    PromptId, ProviderId, ProviderModelId, RunSettingsSnapshot, ShortcutAction, ShortcutId,
-    ShortcutInputSource,
+    PromptId, ProviderId, ProviderModelId, ReasoningSelectionSnapshot, RunSettingsSnapshot,
+    ShortcutAction, ShortcutId, ShortcutInputSource, ToolApprovalMode,
 };
 use jaco_db::{DbError, NewShortcut, ShortcutRecord, UpdateShortcut};
 use tracing::{Level, event};
 
-use crate::{database, state};
+use crate::{components::run_settings::reasoning_selection_is_valid, database, state};
 
 #[derive(Clone)]
 pub(crate) struct ShortcutCatalogGlobal(Entity<ShortcutCatalogStore>);
@@ -58,6 +58,8 @@ pub(crate) struct ShortcutDraft {
     pub(crate) provider_id: ProviderId,
     pub(crate) model_id: ProviderModelId,
     pub(crate) input_source: ShortcutInputSource,
+    pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
+    pub(crate) approval_mode: ToolApprovalMode,
 }
 
 impl ShortcutCatalogStore {
@@ -279,6 +281,14 @@ fn settings_snapshot_for_draft(
             draft.provider_id, draft.model_id
         )));
     }
+    if let Some(selection) = draft.reasoning_selection.as_ref()
+        && !reasoning_selection_is_valid(model.capabilities.reasoning.as_ref(), selection)
+    {
+        return Err(DbError::Invariant(format!(
+            "reasoning setting is not supported by model {}/{}",
+            draft.provider_id, draft.model_id
+        )));
+    }
 
     Ok(RunSettingsSnapshot {
         prompt,
@@ -286,8 +296,12 @@ fn settings_snapshot_for_draft(
         model_id: draft.model_id.clone(),
         model_capabilities: model.capabilities,
         provider_settings: provider.settings,
-        reasoning_selection: None,
-        tool_policy: state::conversations::default_tool_policy(),
+        reasoning_selection: draft.reasoning_selection.clone(),
+        tool_policy: {
+            let mut policy = state::conversations::default_tool_policy();
+            policy.approval_mode = draft.approval_mode;
+            policy
+        },
     })
 }
 

@@ -1,18 +1,18 @@
 use crate::{
     components::{
         hotkey_input::{HotkeyInput, HotkeyInputEvent, string_to_keystroke},
-        model_picker::{ModelOption, model_select_groups},
+        run_settings::{RunSettingsFormStore, RunSettingsInput},
     },
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use gpui::*;
 use gpui_component::{
     IndexPath,
-    select::{SearchableVec, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState},
+    select::{SelectEvent, SelectItem, SelectState},
 };
 use gpui_form::{
     ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
-    FormComponentEventSink, FormField, FormMeta, RequiredValue, SubmitTransform, SubscriptionSet,
+    FormComponentEventSink, FormField, FormMeta, SubmitTransform, SubscriptionSet,
     TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
     ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
 };
@@ -27,8 +27,6 @@ use super::{
 type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
 
 pub(super) type ShortcutPromptSelectStateInner = SelectState<Vec<PromptChoice>>;
-pub(super) type ShortcutModelSelectStateInner =
-    SelectState<SearchableVec<SelectGroup<ModelOption>>>;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(
@@ -41,8 +39,8 @@ pub(super) struct ShortcutEditFormInput {
     pub(super) hotkey: Option<String>,
     #[form(binding = "ShortcutPromptSelectBinding")]
     pub(super) prompt: ShortcutPromptSelection,
-    #[form(binding = "ShortcutModelSelectBinding", required)]
-    pub(super) model: ShortcutModelSelection,
+    #[form(component = "group", store = "RunSettingsFormStore")]
+    pub(super) run_settings: RunSettingsInput,
     #[form(component = "value")]
     pub(super) input_source: ShortcutInputSource,
     #[form(binding = "BoolInputBinding")]
@@ -76,10 +74,14 @@ impl ShortcutEditFormInput {
                 selected: selected_prompt,
                 choices: prompts,
             },
-            model: ShortcutModelSelection {
-                selected: selected_model,
-                choices: models,
-            },
+            run_settings: RunSettingsInput::new(
+                selected_model,
+                shortcut
+                    .and_then(|shortcut| shortcut.settings_snapshot.reasoning_selection.clone()),
+                shortcut
+                    .map(|shortcut| shortcut.settings_snapshot.tool_policy.approval_mode)
+                    .unwrap_or(jaco_core::ToolApprovalMode::RequestApproval),
+            ),
             input_source,
             enabled,
         }
@@ -109,7 +111,6 @@ impl ValidationAdapter<ShortcutEditFormInput> for ShortcutEditValidator {
     ) -> ValidationAdapterReport {
         let mut issues = Vec::new();
         let hotkey_path = gpui_form::FieldPath::from_static(ShortcutEditFormField::Hotkey.key());
-        let model_path = gpui_form::FieldPath::from_static(ShortcutEditFormField::Model.key());
 
         if scope_includes_path(&scope, &hotkey_path)
             && let Err(error) = validate_shortcut_hotkey(
@@ -120,14 +121,6 @@ impl ValidationAdapter<ShortcutEditFormInput> for ShortcutEditValidator {
             )
         {
             issues.push(shortcut_issue(hotkey_path, trigger, error));
-        }
-
-        if scope_includes_path(&scope, &model_path) && draft.model.selected.is_none() {
-            issues.push(shortcut_issue(
-                model_path,
-                trigger,
-                ShortcutValidationError::ModelRequired,
-            ));
         }
 
         ValidationAdapterReport::new(issues)
@@ -164,7 +157,7 @@ fn normalize_shortcut_input(draft: &ShortcutEditFormInput) -> ShortcutEditFormIn
     ShortcutEditFormInput {
         hotkey,
         prompt: draft.prompt.clone(),
-        model: draft.model.clone(),
+        run_settings: draft.run_settings.clone(),
         input_source: draft.input_source,
         enabled: draft.enabled,
     }
@@ -191,7 +184,6 @@ fn shortcut_error_code(error: &ShortcutValidationError) -> &'static str {
         ShortcutValidationError::HotkeyPlainKey => "hotkey_plain_key",
         ShortcutValidationError::TemporaryConflict => "temporary_conflict",
         ShortcutValidationError::BindingConflict => "binding_conflict",
-        ShortcutValidationError::ModelRequired => "model_required",
     }
 }
 
@@ -210,18 +202,6 @@ fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> 
 pub(super) struct ShortcutPromptSelection {
     pub(super) selected: Option<PromptId>,
     choices: Vec<PromptChoice>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct ShortcutModelSelection {
-    pub(super) selected: Option<ProviderModelKey>,
-    choices: Vec<ProviderModelChoice>,
-}
-
-impl RequiredValue for ShortcutModelSelection {
-    fn is_empty_value(&self) -> bool {
-        self.selected.is_none()
-    }
 }
 
 pub(super) struct ShortcutHotkeyBinding;
@@ -400,124 +380,6 @@ impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBindi
             &select,
             window,
             move |form, _select, event: &SelectEvent<Vec<PromptChoice>>, window, cx| {
-                let SelectEvent::Confirm(_) = event;
-                sink.emit(
-                    form,
-                    FormComponentEvent::Change(FieldChangeCause::UserInput),
-                    window,
-                    cx,
-                );
-            },
-        ));
-        subscriptions
-    }
-}
-
-pub(super) struct ShortcutModelSelectState {
-    pub(super) select: Entity<ShortcutModelSelectStateInner>,
-    choices: Vec<ProviderModelChoice>,
-}
-
-pub(super) struct ShortcutModelSelectBinding;
-
-impl FormComponentBinding<ShortcutModelSelection> for ShortcutModelSelectBinding {
-    type State = ShortcutModelSelectState;
-    type Draft = ShortcutModelSelection;
-
-    fn new_state(
-        initial: &ShortcutModelSelection,
-        _options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let choices = initial.choices.clone();
-        let model_options = model_select_groups(&choices);
-        let selected_index = initial
-            .selected
-            .as_ref()
-            .and_then(|selected| model_options.position(selected));
-        cx.new(|cx| {
-            let select = cx.new(|cx| {
-                SelectState::new(model_options, selected_index, window, cx).searchable(true)
-            });
-            ShortcutModelSelectState { select, choices }
-        })
-    }
-
-    fn draft_from_value(value: &ShortcutModelSelection) -> Self::Draft {
-        value.clone()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        let state = state.read(cx);
-        ShortcutModelSelection {
-            selected: state.select.read(cx).selected_value().cloned(),
-            choices: state.choices.clone(),
-        }
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: gpui_form::FieldPath,
-        _trigger: gpui_form::ValidationTrigger,
-        _cx: &App,
-    ) -> Result<ShortcutModelSelection, Box<FieldError>> {
-        Ok(draft.clone())
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &ShortcutModelSelection,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |state, cx| {
-            if state.choices != value.choices {
-                state.choices = value.choices.clone();
-                state.select.update(cx, |select, cx| {
-                    select.set_items(model_select_groups(&value.choices), window, cx);
-                });
-            }
-            state.select.update(cx, |select, cx| {
-                if let Some(selected) = value.selected.as_ref() {
-                    select.set_selected_value(selected, window, cx);
-                } else {
-                    select.set_selected_index(None, window, cx);
-                }
-            });
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        let select = state.read(cx).select.clone();
-        let focus_handle = {
-            let select = select.read(cx);
-            select.focus_handle(cx)
-        };
-        focus_handle.focus(window, cx);
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let select = state.read(cx).select.clone();
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &select,
-            window,
-            move |form,
-                  _select,
-                  event: &SelectEvent<SearchableVec<SelectGroup<ModelOption>>>,
-                  window,
-                  cx| {
                 let SelectEvent::Confirm(_) = event;
                 sink.emit(
                     form,
