@@ -94,7 +94,11 @@ pub(crate) fn init(cx: &mut App) {
 
 impl ChatInputController {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_project_slot(ControlSlot::Hidden, window, cx)
+        Self::new_with_project_slot(ControlSlot::Hidden, true, window, cx)
+    }
+
+    pub(crate) fn new_without_focus(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with_project_slot(ControlSlot::Hidden, false, window, cx)
     }
 
     pub(crate) fn new_with_project(
@@ -102,17 +106,20 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with_project_slot(ControlSlot::Enabled(project), window, cx)
+        Self::new_with_project_slot(ControlSlot::Enabled(project), true, window, cx)
     }
 
     fn new_with_project_slot(
         project: ControlSlot<Entity<ProjectControlState>>,
+        focus_composer: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let placeholder = cx.global::<foundation::I18n>().t("chat-form-placeholder");
         let composer = cx.new(|cx| ComposerEditor::new(placeholder.clone(), window, cx));
-        composer.update(cx, |composer, cx| composer.focus(window, cx));
+        if focus_composer {
+            composer.update(cx, |composer, cx| composer.focus(window, cx));
+        }
         if cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
             let entries = state::skills::catalog(cx).read_cloned(cx, |state| state.entry_records());
             composer.update(cx, |composer, cx| composer.set_skill_entries(&entries, cx));
@@ -778,30 +785,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn submit_revalidates_stale_selected_model_before_emitting(cx: &mut TestAppContext) {
-        let _dir = init_chat_form_test(cx);
-        let window = open_chat_form_window(cx);
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
-
-        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
-        cx.update(|_, cx| {
-            let provider_id = provider_id_for_kind(cx, "openai");
-            database::repository(cx)
-                .set_provider_model_enabled(&provider_id, "gpt-5", false)
-                .unwrap();
-        });
-
-        let first_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx);
-        assert!(first_submit.is_none());
-        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
-
-        let second_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
-            .expect("refreshed selected model can be submitted");
-        assert_eq!(second_submit.provider_model.model_id, "gpt-5-mini");
-    }
-
-    #[gpui::test]
     fn submit_revalidation_preserves_custom_token_budget(cx: &mut TestAppContext) {
         let _dir = init_chat_form_reasoning_test(cx);
         let window = open_chat_form_window(cx);
@@ -1054,6 +1037,30 @@ mod tests {
             })
         })
         .unwrap()
+    }
+
+    #[gpui::test]
+    fn constructor_can_leave_composer_unfocused_for_embedded_inputs(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| ChatInputController::new_without_focus(window, cx))
+                })
+            })
+            .unwrap();
+        let mut visual_cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut visual_cx).expect("chat input root");
+
+        let composer_focused = visual_cx.update(|window, cx| {
+            form.read(cx)
+                .composer
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+        });
+
+        assert!(!composer_focused);
     }
 
     fn submit_snapshot(

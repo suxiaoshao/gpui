@@ -14,18 +14,14 @@ type OnSelect = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 #[derive(IntoElement, Clone)]
 pub(super) struct TemporaryConversationListItem {
     node: Rc<TemporaryConversationNode>,
-    row_ix: usize,
     is_selected: bool,
-    on_select: OnSelect,
 }
 
 impl TemporaryConversationListItem {
-    fn new(node: Rc<TemporaryConversationNode>, row_ix: usize, on_select: OnSelect) -> Self {
+    fn new(node: Rc<TemporaryConversationNode>) -> Self {
         Self {
             node,
-            row_ix,
             is_selected: false,
-            on_select,
         }
     }
 }
@@ -44,8 +40,6 @@ impl Selectable for TemporaryConversationListItem {
 impl RenderOnce for TemporaryConversationListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let node = self.node;
-        let row_ix = self.row_ix;
-        let on_select = self.on_select;
 
         h_flex()
             .id(format!("temporary-conversation-row-{}", node.id))
@@ -59,9 +53,6 @@ impl RenderOnce for TemporaryConversationListItem {
                 this.hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
             })
             .when(self.is_selected, |this| this.bg(cx.theme().accent))
-            .on_click(move |_, window, cx| {
-                on_select(row_ix, window, cx);
-            })
             .child(
                 Label::new(node.title.clone())
                     .flex_1()
@@ -119,7 +110,7 @@ impl ListDelegate for TemporaryConversationListDelegate {
         self.items
             .get(ix.row)
             .cloned()
-            .map(|node| TemporaryConversationListItem::new(node, ix.row, self.on_select.clone()))
+            .map(TemporaryConversationListItem::new)
     }
 
     fn render_empty(
@@ -166,7 +157,102 @@ impl ListDelegate for TemporaryConversationListDelegate {
         if let Some(ix) = self.ix
             && self.items.get(ix.row).is_some()
         {
-            (self.on_select)(ix.row, window, cx);
+            let on_select = self.on_select.clone();
+            // `confirm` runs while `ListState` is locked, and selecting a
+            // conversation synchronizes the same list from its owner.
+            window.defer(cx, move |window, cx| {
+                on_select(ix.row, window, cx);
+            });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TemporaryConversationListDelegate;
+    use crate::state::workspace::SidebarConversationNode;
+    use gpui::{
+        App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
+    };
+    use gpui_component::{
+        IndexPath,
+        list::{ListDelegate, ListState},
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    fn test_node() -> SidebarConversationNode {
+        SidebarConversationNode {
+            id: "conversation".to_string(),
+            project_id: String::new(),
+            title: "Conversation".into(),
+            updated_at: 0,
+            pinned: false,
+        }
+    }
+
+    struct TestRoot;
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<TemporaryConversationListDelegate>>>,
+        ));
+        let callback_ran = Rc::new(Cell::new(false));
+        let on_select = Rc::new({
+            let list_slot = list_slot.clone();
+            let callback_ran = callback_ran.clone();
+            move |_index: usize, _window: &mut Window, cx: &mut App| {
+                let list = list_slot
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+                    .expect("temporary conversation list should be initialized");
+                list.update(cx, |_, _| callback_ran.set(true));
+            }
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    TemporaryConversationListDelegate::new(
+                        vec![test_node()],
+                        false,
+                        "Empty".into(),
+                        "No results".into(),
+                        None,
+                        on_select,
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("temporary conversation list should be initialized");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(callback_ran.get());
     }
 }

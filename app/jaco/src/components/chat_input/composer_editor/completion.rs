@@ -231,11 +231,22 @@ impl ListDelegate for SkillCompletionDelegate {
         let Some(row) = self.selected_row() else {
             return;
         };
-        (self.on_confirm)(row, window, cx);
+        let on_confirm = self.on_confirm.clone();
+        // `confirm` runs while `ListState` is locked. The callback updates the
+        // composer and may update this completion list, so cross the window
+        // boundary before invoking it.
+        window.defer(cx, move |window, cx| {
+            on_confirm(row, window, cx);
+        });
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        (self.on_cancel)(window, cx);
+        let on_cancel = self.on_cancel.clone();
+        // Keep cancellation on the same boundary as confirmation so the
+        // callback cannot re-enter the list if its owner reconciles state.
+        window.defer(cx, move |window, cx| {
+            on_cancel(window, cx);
+        });
     }
 }
 
@@ -259,6 +270,101 @@ pub(super) fn skill_completion_rows(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod reentrancy_tests {
+    use super::{ComposerSkill, SkillCompletionDelegate, SkillCompletionRow};
+    use gpui::{
+        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext,
+        Window, div,
+    };
+    use gpui_component::{
+        IndexPath,
+        list::{ListDelegate, ListState},
+    };
+    use jaco_core::SkillSourceKind;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    fn test_row() -> SkillCompletionRow {
+        SkillCompletionRow {
+            skill: ComposerSkill {
+                name: "rust".to_string(),
+                description: Some("Rust skill".to_string()),
+                source_kind: SkillSourceKind::User,
+                skill_file_path: "/skills/rust/SKILL.md".to_string(),
+                directory_path: "/skills/rust".to_string(),
+            },
+            name: "rust".into(),
+            description: "Rust skill".into(),
+            source_label: "User".into(),
+            search_text: "rust Rust skill".to_string(),
+        }
+    }
+
+    struct TestRoot;
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<SkillCompletionDelegate>>>,
+        ));
+        let callback_ran = Rc::new(Cell::new(false));
+        let on_confirm = Rc::new({
+            let list_slot = list_slot.clone();
+            let callback_ran = callback_ran.clone();
+            move |_row: SkillCompletionRow, _window: &mut Window, cx: &mut App| {
+                let list = list_slot
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+                    .expect("skill completion list should be initialized");
+                list.update(cx, |_, _| callback_ran.set(true));
+            }
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    SkillCompletionDelegate::new(
+                        vec![test_row()],
+                        SharedString::from("Empty"),
+                        on_confirm,
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("skill completion list should be initialized");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(callback_ran.get());
+    }
 }
 
 pub(super) fn skill_completion_trigger(

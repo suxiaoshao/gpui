@@ -74,8 +74,29 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_focus(conversation_id, true, window, cx)
+    }
+
+    pub(crate) fn new_without_focus(
+        conversation_id: ConversationId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_focus(conversation_id, false, window, cx)
+    }
+
+    fn new_with_focus(
+        conversation_id: ConversationId,
+        focus_composer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatInputController::new(window, cx);
+            let mut chat_form = if focus_composer {
+                ChatInputController::new(window, cx)
+            } else {
+                ChatInputController::new_without_focus(window, cx)
+            };
             chat_form
                 .set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm, cx);
             chat_form

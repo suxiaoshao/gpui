@@ -20,7 +20,9 @@ impl EventEmitter<TemporaryNewConversationPaneEvent> for TemporaryNewConversatio
 impl TemporaryNewConversationPane {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatInputController::new(window, cx);
+            // The temporary window owns keyboard focus through its search input;
+            // route changes must not focus the composer as a side effect.
+            let mut chat_form = ChatInputController::new_without_focus(window, cx);
             chat_form
                 .set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm, cx);
             chat_form

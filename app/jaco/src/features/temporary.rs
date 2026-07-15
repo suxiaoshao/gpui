@@ -514,7 +514,9 @@ impl TemporaryWindow {
         self.conversation_pages
             .entry(conversation_id.clone())
             .or_insert_with(|| {
-                cx.new(|cx| ConversationDetailPage::new(conversation_id, window, cx))
+                // Keep search focus while the route is materialized after an
+                // arrow-key selection.
+                cx.new(|cx| ConversationDetailPage::new_without_focus(conversation_id, window, cx))
             })
             .clone()
     }

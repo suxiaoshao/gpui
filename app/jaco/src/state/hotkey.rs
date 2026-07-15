@@ -743,7 +743,7 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) -> JacoResult<()> {
-        let text = cx
+        let title_seed = cx
             .global::<I18n>()
             .t("shortcut-input-screenshot")
             .to_string();
@@ -752,9 +752,9 @@ impl GlobalHotkeyState {
         let attachment = screenshot_composer_attachment(&image, &png)?;
         let created = self.create_shortcut_conversation(
             &trigger,
-            vec![ContentPart::Text { text: text.clone() }],
+            Vec::new(),
             vec![attachment],
-            text.clone(),
+            title_seed,
             cx,
         )?;
         self.finish_shortcut_trigger(created, cx);
