@@ -1,8 +1,6 @@
 use jaco_agent::SkillActivationRequest;
 use jaco_core::{ContentPart, SkillSourceKind};
 
-use crate::state::attachments::ComposerAttachment;
-
 use super::token::{ComposerToken, skill_requests};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,13 +23,12 @@ pub(crate) struct ComposerSnapshot {
     pub(crate) content_parts: Vec<ContentPart>,
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
     pub(crate) token_ranges: Vec<ComposerTokenSnapshot>,
-    pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) send_policy: ComposerSendPolicy,
 }
 
 impl ComposerSnapshot {
     pub(crate) fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.skill_requests.is_empty() && self.attachments.is_empty()
+        self.text.trim().is_empty() && self.skill_requests.is_empty()
     }
 }
 
@@ -58,7 +55,6 @@ pub(super) fn build_snapshot(text: &str, tokens: &[ComposerToken]) -> ComposerSn
                 directory_path: token.skill.directory_path.clone(),
             })
             .collect(),
-        attachments: Vec::new(),
         send_policy: ComposerSendPolicy::EnterToSend,
     }
 }

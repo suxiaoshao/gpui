@@ -51,6 +51,15 @@ impl ProjectPickerOption {
             kind: ProjectPickerOptionKind::Project(project),
         }
     }
+
+    pub(crate) fn trigger_presentation(&self) -> (SharedString, IconName) {
+        match &self.kind {
+            ProjectPickerOptionKind::NoProject { label } => (label.clone(), IconName::FolderX),
+            ProjectPickerOptionKind::Project(project) => {
+                (project.display_name.clone().into(), IconName::FolderOpen)
+            }
+        }
+    }
 }
 
 impl SelectItem for ProjectPickerOption {
@@ -115,9 +124,6 @@ impl SelectItem for ProjectPickerOption {
 }
 
 pub(crate) struct ProjectControlState {
-    pub(crate) selected_label: SharedString,
-    pub(crate) placeholder: SharedString,
-    pub(crate) icon: IconName,
     pub(crate) open: bool,
     pub(crate) picker: Entity<ListState<PickerListDelegate<ProjectPickerOption>>>,
 }

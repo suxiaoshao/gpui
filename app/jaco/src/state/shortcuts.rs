@@ -1,4 +1,5 @@
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
+use gpui::{App, Global};
+use gpui_store::{SharedStore, StoreState};
 use jaco_core::{
     PromptId, ProviderId, ProviderModelId, ReasoningSelectionSnapshot, RunSettingsSnapshot,
     ShortcutAction, ShortcutId, ShortcutInputSource, ToolApprovalMode,
@@ -9,46 +10,28 @@ use tracing::{Level, event};
 use crate::{components::run_settings::reasoning_selection_is_valid, database, state};
 
 #[derive(Clone)]
-pub(crate) struct ShortcutCatalogGlobal(Entity<ShortcutCatalogStore>);
+pub(crate) struct ShortcutCatalogGlobal(SharedStore<ShortcutCatalogSnapshot>);
 
 impl ShortcutCatalogGlobal {
-    pub(crate) fn entity(&self) -> Entity<ShortcutCatalogStore> {
+    pub(crate) fn store(&self) -> SharedStore<ShortcutCatalogSnapshot> {
         self.0.clone()
     }
 }
 
 impl Global for ShortcutCatalogGlobal {}
 
-pub(crate) struct ShortcutCatalogStore {
-    revision: u64,
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ShortcutCatalogSnapshot {
+    shortcuts: Vec<ShortcutRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ShortcutCatalogEvent {
-    Changed(ShortcutCatalogChange),
-}
+impl StoreState for ShortcutCatalogSnapshot {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ShortcutCatalogChange {
-    Created {
-        shortcut_id: ShortcutId,
-    },
-    Updated {
-        shortcut_id: ShortcutId,
-    },
-    Deleted {
-        shortcut_id: ShortcutId,
-    },
-    EnabledChanged {
-        shortcut_id: ShortcutId,
-        enabled: bool,
-    },
-    Reregistered {
-        shortcut_id: ShortcutId,
-    },
+impl ShortcutCatalogSnapshot {
+    pub(crate) fn shortcuts(&self) -> &[ShortcutRecord] {
+        &self.shortcuts
+    }
 }
-
-impl EventEmitter<ShortcutCatalogEvent> for ShortcutCatalogStore {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ShortcutDraft {
@@ -62,19 +45,67 @@ pub(crate) struct ShortcutDraft {
     pub(crate) approval_mode: ToolApprovalMode,
 }
 
-impl ShortcutCatalogStore {
-    fn new() -> Self {
-        Self { revision: 0 }
-    }
+fn refresh_snapshot(cx: &mut App) -> jaco_db::Result<()> {
+    let shortcuts = database::repository(cx).list_shortcuts()?;
+    catalog(cx).update(cx, |snapshot| {
+        snapshot.shortcuts = shortcuts;
+    });
+    Ok(())
+}
 
-    pub(crate) fn create_shortcut(
-        &mut self,
-        draft: ShortcutDraft,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ShortcutRecord> {
-        let repository = database::repository(cx);
-        let settings_snapshot = settings_snapshot_for_draft(&draft, cx)?;
-        let shortcut = repository.insert_shortcut(NewShortcut {
+pub(crate) fn init(cx: &mut App) {
+    let shortcuts = database::repository(cx)
+        .list_shortcuts()
+        .unwrap_or_default();
+    let store = SharedStore::new(cx, ShortcutCatalogSnapshot { shortcuts });
+    cx.set_global(ShortcutCatalogGlobal(store));
+}
+
+pub(crate) fn catalog(cx: &App) -> SharedStore<ShortcutCatalogSnapshot> {
+    cx.global::<ShortcutCatalogGlobal>().store()
+}
+
+pub(crate) fn list_shortcuts(cx: &App) -> jaco_db::Result<Vec<ShortcutRecord>> {
+    if cx.has_global::<ShortcutCatalogGlobal>() {
+        return Ok(catalog(cx).read_cloned(cx, |snapshot| &snapshot.shortcuts));
+    }
+    database::repository(cx).list_shortcuts()
+}
+
+pub(crate) fn create_shortcut(
+    cx: &mut App,
+    draft: ShortcutDraft,
+) -> jaco_db::Result<ShortcutRecord> {
+    let repository = database::repository(cx);
+    let settings_snapshot = settings_snapshot_for_draft(&draft, cx)?;
+    let shortcut = repository.insert_shortcut(NewShortcut {
+        hotkey: draft.hotkey,
+        enabled: draft.enabled,
+        prompt_id: draft.prompt_id,
+        provider_id: Some(draft.provider_id),
+        model_id: Some(draft.model_id),
+        input_source: draft.input_source,
+        action: ShortcutAction::OpenTemporaryConversation,
+        settings_snapshot,
+    })?;
+    state::GlobalHotkeyState::sync_shortcut_registration(None, Some(&shortcut), cx);
+    refresh_snapshot(cx)?;
+    Ok(shortcut)
+}
+
+pub(crate) fn update_shortcut(
+    cx: &mut App,
+    id: &ShortcutId,
+    draft: ShortcutDraft,
+) -> jaco_db::Result<ShortcutRecord> {
+    let repository = database::repository(cx);
+    let previous = repository
+        .get_shortcut(id)?
+        .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
+    let settings_snapshot = settings_snapshot_for_draft(&draft, cx)?;
+    let shortcut = repository.update_shortcut(
+        id,
+        UpdateShortcut {
             hotkey: draft.hotkey,
             enabled: draft.enabled,
             prompt_id: draft.prompt_id,
@@ -83,148 +114,22 @@ impl ShortcutCatalogStore {
             input_source: draft.input_source,
             action: ShortcutAction::OpenTemporaryConversation,
             settings_snapshot,
-        })?;
-        state::GlobalHotkeyState::sync_shortcut_registration(None, Some(&shortcut), cx);
-        self.emit_changed(
-            ShortcutCatalogChange::Created {
-                shortcut_id: shortcut.id.clone(),
-            },
-            cx,
-        );
-        Ok(shortcut)
-    }
-
-    pub(crate) fn update_shortcut(
-        &mut self,
-        id: &ShortcutId,
-        draft: ShortcutDraft,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ShortcutRecord> {
-        let repository = database::repository(cx);
-        let previous = repository
-            .get_shortcut(id)?
-            .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
-        let settings_snapshot = settings_snapshot_for_draft(&draft, cx)?;
-        let shortcut = repository.update_shortcut(
-            id,
-            UpdateShortcut {
-                hotkey: draft.hotkey,
-                enabled: draft.enabled,
-                prompt_id: draft.prompt_id,
-                provider_id: Some(draft.provider_id),
-                model_id: Some(draft.model_id),
-                input_source: draft.input_source,
-                action: ShortcutAction::OpenTemporaryConversation,
-                settings_snapshot,
-            },
-        )?;
-        state::GlobalHotkeyState::sync_shortcut_registration(Some(&previous), Some(&shortcut), cx);
-        self.emit_changed(
-            ShortcutCatalogChange::Updated {
-                shortcut_id: shortcut.id.clone(),
-            },
-            cx,
-        );
-        Ok(shortcut)
-    }
-
-    pub(crate) fn delete_shortcut(
-        &mut self,
-        id: &ShortcutId,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<usize> {
-        let repository = database::repository(cx);
-        let previous = repository.get_shortcut(id)?;
-        let deleted = repository.delete_shortcut(id)?;
-        if deleted > 0 {
-            state::GlobalHotkeyState::sync_shortcut_registration(previous.as_ref(), None, cx);
-            self.emit_changed(
-                ShortcutCatalogChange::Deleted {
-                    shortcut_id: id.clone(),
-                },
-                cx,
-            );
-        }
-        Ok(deleted)
-    }
-
-    pub(crate) fn set_shortcut_enabled(
-        &mut self,
-        id: &ShortcutId,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ShortcutRecord> {
-        let repository = database::repository(cx);
-        let previous = repository
-            .get_shortcut(id)?
-            .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
-        let shortcut = repository.set_shortcut_enabled(id, enabled)?;
-        state::GlobalHotkeyState::sync_shortcut_registration(Some(&previous), Some(&shortcut), cx);
-        self.emit_changed(
-            ShortcutCatalogChange::EnabledChanged {
-                shortcut_id: shortcut.id.clone(),
-                enabled: shortcut.enabled,
-            },
-            cx,
-        );
-        Ok(shortcut)
-    }
-
-    pub(crate) fn reregister_shortcut(
-        &mut self,
-        id: &ShortcutId,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ShortcutRecord> {
-        let shortcut = database::repository(cx)
-            .get_shortcut(id)?
-            .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
-        state::GlobalHotkeyState::sync_shortcut_registration(Some(&shortcut), Some(&shortcut), cx);
-        self.emit_changed(
-            ShortcutCatalogChange::Reregistered {
-                shortcut_id: shortcut.id.clone(),
-            },
-            cx,
-        );
-        Ok(shortcut)
-    }
-
-    fn emit_changed(&mut self, change: ShortcutCatalogChange, cx: &mut Context<Self>) {
-        self.revision += 1;
-        cx.emit(ShortcutCatalogEvent::Changed(change));
-        cx.notify();
-    }
-}
-
-pub(crate) fn init(cx: &mut App) {
-    let store = cx.new(|_| ShortcutCatalogStore::new());
-    cx.set_global(ShortcutCatalogGlobal(store));
-}
-
-pub(crate) fn catalog(cx: &App) -> Entity<ShortcutCatalogStore> {
-    cx.global::<ShortcutCatalogGlobal>().entity()
-}
-
-pub(crate) fn list_shortcuts(cx: &App) -> jaco_db::Result<Vec<ShortcutRecord>> {
-    database::repository(cx).list_shortcuts()
-}
-
-pub(crate) fn create_shortcut(
-    cx: &mut App,
-    draft: ShortcutDraft,
-) -> jaco_db::Result<ShortcutRecord> {
-    catalog(cx).update(cx, |catalog, cx| catalog.create_shortcut(draft, cx))
-}
-
-pub(crate) fn update_shortcut(
-    cx: &mut App,
-    id: &ShortcutId,
-    draft: ShortcutDraft,
-) -> jaco_db::Result<ShortcutRecord> {
-    catalog(cx).update(cx, |catalog, cx| catalog.update_shortcut(id, draft, cx))
+        },
+    )?;
+    state::GlobalHotkeyState::sync_shortcut_registration(Some(&previous), Some(&shortcut), cx);
+    refresh_snapshot(cx)?;
+    Ok(shortcut)
 }
 
 pub(crate) fn delete_shortcut(cx: &mut App, id: &ShortcutId) -> jaco_db::Result<usize> {
-    catalog(cx).update(cx, |catalog, cx| catalog.delete_shortcut(id, cx))
+    let repository = database::repository(cx);
+    let previous = repository.get_shortcut(id)?;
+    let deleted = repository.delete_shortcut(id)?;
+    if deleted > 0 {
+        state::GlobalHotkeyState::sync_shortcut_registration(previous.as_ref(), None, cx);
+        refresh_snapshot(cx)?;
+    }
+    Ok(deleted)
 }
 
 pub(crate) fn set_shortcut_enabled(
@@ -232,16 +137,25 @@ pub(crate) fn set_shortcut_enabled(
     id: &ShortcutId,
     enabled: bool,
 ) -> jaco_db::Result<ShortcutRecord> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.set_shortcut_enabled(id, enabled, cx)
-    })
+    let repository = database::repository(cx);
+    let previous = repository
+        .get_shortcut(id)?
+        .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
+    let shortcut = repository.set_shortcut_enabled(id, enabled)?;
+    state::GlobalHotkeyState::sync_shortcut_registration(Some(&previous), Some(&shortcut), cx);
+    refresh_snapshot(cx)?;
+    Ok(shortcut)
 }
 
 pub(crate) fn reregister_shortcut(
     cx: &mut App,
     id: &ShortcutId,
 ) -> jaco_db::Result<ShortcutRecord> {
-    catalog(cx).update(cx, |catalog, cx| catalog.reregister_shortcut(id, cx))
+    let shortcut = database::repository(cx)
+        .get_shortcut(id)?
+        .ok_or_else(|| DbError::Invariant(format!("shortcut {id} is missing")))?;
+    state::GlobalHotkeyState::sync_shortcut_registration(Some(&shortcut), Some(&shortcut), cx);
+    Ok(shortcut)
 }
 
 fn settings_snapshot_for_draft(

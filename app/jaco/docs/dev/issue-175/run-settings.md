@@ -1,5 +1,10 @@
 # 外置共享 RunSettings 契约
 
+> 当前实现：controller 同步 UI projection，form 保存 draft；catalog reload 只更新 options/capability，pure
+> resolver 在提交边界解析有效设置。最终以 [state-ownership-sync-plan.md](state-ownership-sync-plan.md)
+> 为准：form 是 draft owner，catalog 是 options/capability owner，component 是 interaction owner；catalog
+> 更新不写 form；submit resolver 是无副作用纯函数。
+
 RunSettings负责model、reasoning、Token Budget和Tool Access。它提供gpui-form store、form-agnostic UI control
 states与controller；ChatForm只接收`RunSettingsControls`，不依赖RunSettingsFormStore。
 
@@ -18,8 +23,9 @@ pub(crate) struct RunSettingsInput {
 }
 ```
 
-choices和capability只存在于UI control cache，不进入typed draft。提交和快捷键保存/触发路径使用 fresh
-catalog/capability 校验 enabled provider/model 和 reasoning compatibility。
+choices和capability不进入typed draft，但其事实源应是 app-owned typed catalog snapshot；UI control state 只缓存
+用于 render/picker 的 projection。提交和快捷键保存/触发路径必须读取同一份 fresh catalog/capability snapshot，校验
+enabled provider/model 和 reasoning compatibility。
 
 ## 2. UI control states
 
@@ -52,7 +58,8 @@ pub(crate) struct RunSettingsControlStates {
 }
 ```
 
-这些 state 是 picker/token input 的 UI projection；controller 将其同步到 RunSettingsFormStore 的 value/group fields。
+这些 state 是 picker/token input 的 UI projection；controller 将用户事件显式写入 RunSettingsFormStore 的 value/group
+fields，不能把 control cache 当成 submit/validation 事实源。
 ChatForm view根据外层ControlSlot availability传disabled给trigger；ReasoningControl内部另从capability派生“没有
 合法选项”的disabled，Token Budget随reasoning state。
 
@@ -79,7 +86,7 @@ normalization为合法preferred -> computed default -> None；custom budget按bo
 pub(crate) struct RunSettingsController {
     form: Entity<RunSettingsFormStore>,
     states: RunSettingsControlStates,
-    subscriptions: Vec<Subscription>,
+    subscriptions: SubscriptionSet,
 }
 
 impl RunSettingsController {
@@ -90,21 +97,34 @@ impl RunSettingsController {
     ) -> Self;
 
     pub(crate) fn control_states(&self) -> RunSettingsControlStates;
-    pub(crate) fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>);
-    pub(crate) fn prepare_submit(&mut self, window: &mut Window, cx: &mut Context<Self>);
-    pub(crate) fn selected_model(&self, cx: &App) -> Option<ProviderModelChoice>;
+    pub(crate) fn apply_catalog_snapshot(
+        &mut self,
+        catalog: &ProviderCatalogState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    );
 }
+
+pub(crate) fn resolve_run_settings(
+    draft: &RunSettingsInput,
+    catalog: &ProviderCatalogState,
+    policy: ModelResolutionPolicy,
+) -> Result<RunSettingsSubmitSnapshot, RunSettingsSubmitError>;
 ```
 
 Controller是唯一联动owner。它只持有`RunSettingsControlStates`，不得引用ChatForm侧的`RunSettingsControls`；
 调用方从`control_states()`取得同一组Entity后，再按自己的`ControlSlot` availability包装。
 
 - model user confirm -> reasoning重置computed default，approval保持；
-- catalog reload -> 保留存在的model和合法reasoning，否则fallback；
+- catalog snapshot -> 只更新 model items/capability/disabled/unavailable presentation，不修改 form draft、不选
+  fallback；
 - reasoning confirm/token input -> 同一reasoning field，custom value clamp并写回可见input；
 - approval confirm -> approval field；
 - opening picker -> 关闭另外两个；
-- `prepare_submit`在parent submit前clamp并通过field setter同步UI/draft。
+- `resolve_run_settings` 是无副作用纯函数：接收一次 form draft + catalog snapshot，执行调用方指定的 fallback
+  policy、归一化 reasoning，并返回后续 attachment 校验和 `ChatInputSubmit` 唯一使用的
+  `RunSettingsSubmitSnapshot`；它不更新 form/UI/config，禁止 submit 后再从 control cache 读取
+  selected/capability。
 
 ## 5. Rendering/style
 
@@ -117,8 +137,8 @@ RunSettings模块不引用ControlSlot或ChatFormControls。调用方从`control_
 侧的 RunSettingsControls；state 内的 open-change handler 只作为 picker UI event sink，form、catalog 和联动逻辑仍
 只由 RunSettingsController 持有，ChatForm 不再持有 controller entity。
 
-model choices的唯一来源是`state::providers::enabled_provider_models(cx)`。controller订阅现有
-`ProviderCatalogEvent::Changed`并调用`reload_models`；加载错误保留error state并清空selected model，空列表保持
+model choices的唯一来源是 provider catalog typed snapshot，controller订阅 snapshot 变化并调用 projection
+刷新；加载错误保留旧 catalog snapshot 和 form selected draft，只更新 error/unavailable presentation；空列表保持
 model required，不自动选择不存在的值。model不可用时Shortcut状态优先显示`ModelUnavailable`；model可用但已保存
 reasoning snapshot不被当前capability接受时显示`CapabilityMismatch`。
 
@@ -145,7 +165,7 @@ ChatInputController可选择安装config persistence subscription；Shortcut con
 `ShortcutEditFormInput`删除独立model字段并增加：
 
 ```rust
-#[form(component = "group", store = "RunSettingsFormStore")]
+#[form(group(store = "RunSettingsFormStore"))]
 pub(super) run_settings: RunSettingsInput,
 ```
 
@@ -173,9 +193,17 @@ No change。
 - Conversation和Shortcut传给ChatForm的是同一组RunSettingsControlStates包装出的同类RunSettingsControls和相同debug
   selectors。
 
-## 10. 明确不做
+## 10. 后续所有权修正
+
+本文件记录 issue #175 原始 RunSettings 重构。当前 control states 只缓存 choices/capability 和交互 projection，
+不缓存 selected business value；`RunSettingsFormStore` 是唯一 typed draft owner，catalog snapshot、read-only
+control projection 和纯函数 `resolve_run_settings` 是明确边界，并覆盖 model fallback 后的 attachment capability
+校验。
+
+## 11. 明确不做
 
 - 不让ChatForm持有RunSettingsFormStore或controller。
 - 不复制controller到调用方；调用方只决定slot availability和persistence adapter。
 - 不持久化choices/capability/UI open state。
-- 不改gpui-form、DB schema、依赖、icon或asset。
+- 不增加 form-local selection/rebase/conflict API。pure draft、typed field handle 和 app-owned catalog projection
+  已按 crate 计划接入；剩余 settings 迁移仍不新增 form↔store 依赖，不改 DB schema、依赖、icon 或 asset。

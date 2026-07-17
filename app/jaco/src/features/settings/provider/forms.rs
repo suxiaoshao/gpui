@@ -23,18 +23,16 @@ mod ollama;
 mod secret;
 
 pub(super) use api_key::{
-    ApiKeyProviderFormEvent, ApiKeyProviderFormField, ApiKeyProviderFormInput,
-    ApiKeyProviderFormStore,
+    ApiKeyProviderFormField, ApiKeyProviderFormInput, ApiKeyProviderFormStore,
 };
 pub(super) use custom_openai::{
-    ApiModeChoice, CustomOpenAiProviderFormEvent, CustomOpenAiProviderFormField,
-    CustomOpenAiProviderFormInput, CustomOpenAiProviderFormStore, ProviderApiMode,
+    ApiModeChoice, CustomOpenAiProviderFormField, CustomOpenAiProviderFormInput,
+    CustomOpenAiProviderFormStore, ProviderApiMode, localized_api_mode_choices,
 };
 pub(super) use ollama::{
-    OllamaProviderFormEvent, OllamaProviderFormField, OllamaProviderFormInput,
-    OllamaProviderFormStore,
+    OllamaProviderFormField, OllamaProviderFormInput, OllamaProviderFormStore,
 };
-pub(super) use secret::{ProviderSecretInputBinding, ProviderSecretValue};
+pub(super) use secret::{ProviderSecretCodec, ProviderSecretValue, bind_provider_secret};
 
 const FIELD_NAME: &str = "name";
 const FIELD_API_KEY: &str = "api_key";

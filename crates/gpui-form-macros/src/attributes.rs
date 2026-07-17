@@ -61,12 +61,8 @@ pub(crate) enum TransformAdapterKind {
 #[derive(Default)]
 pub(crate) struct FieldAttributes {
     pub(crate) component: FieldKind,
-    pub(crate) binding: Option<Path>,
+    pub(crate) codec: Option<Path>,
     pub(crate) store: Option<Type>,
-    pub(crate) label: Option<LitStr>,
-    pub(crate) description: Option<LitStr>,
-    pub(crate) placeholder: Option<LitStr>,
-    pub(crate) masked: bool,
     pub(crate) required: bool,
     pub(crate) validate_on_mount: bool,
     pub(crate) validate_on_change: bool,
@@ -88,23 +84,18 @@ impl FieldAttributes {
             if let Some(component) = args.component {
                 parsed.component = component;
             }
-            if args.binding.is_some() {
-                parsed.binding = args.binding;
-                parsed.component = FieldKind::Binding;
+            if args.group {
+                parsed.component = FieldKind::Group;
+            }
+            if args.array {
+                parsed.component = FieldKind::Array;
+            }
+            if args.codec.is_some() {
+                parsed.codec = args.codec;
             }
             if args.store.is_some() {
                 parsed.store = args.store;
             }
-            if args.label.is_some() {
-                parsed.label = args.label;
-            }
-            if args.description.is_some() {
-                parsed.description = args.description;
-            }
-            if args.placeholder.is_some() {
-                parsed.placeholder = args.placeholder;
-            }
-            parsed.masked |= args.masked;
             parsed.required |= args.required;
             parsed.validate_on_mount |= args.validate_on_mount;
             parsed.validate_on_change |= args.validate_on_change;
@@ -172,12 +163,10 @@ impl Parse for FormArgs {
 #[derive(Default)]
 struct FieldArgs {
     component: Option<FieldKind>,
-    binding: Option<Path>,
+    group: bool,
+    array: bool,
+    codec: Option<Path>,
     store: Option<Type>,
-    label: Option<LitStr>,
-    description: Option<LitStr>,
-    placeholder: Option<LitStr>,
-    masked: bool,
     required: bool,
     validate_on_mount: bool,
     validate_on_change: bool,
@@ -193,42 +182,65 @@ impl Parse for FieldArgs {
         while !input.is_empty() {
             let key: Ident = input.parse()?;
 
-            if key == "component" {
+            if key == "group" {
+                args.group = true;
+                let content;
+                syn::parenthesized!(content in input);
+                let nested = content.parse::<FieldArgs>()?;
+                args.store = nested.store;
+            } else if key == "array" {
+                args.array = true;
+                let content;
+                syn::parenthesized!(content in input);
+                let nested = content.parse::<FieldArgs>()?;
+                args.store = nested.store;
+            } else if key == "component" {
                 input.parse::<Token![=]>()?;
                 let value: LitStr = input.parse()?;
                 let component = value.value();
-                if FieldKind::is_removed_alias(&component) {
-                    return Err(syn::Error::new(
-                        value.span(),
-                        "built-in gpui-form component aliases were removed; use #[form(binding = \"TypeName\")] with an app or adapter binding",
-                    ));
-                }
-                args.component =
-                    Some(FieldKind::parse(&component).ok_or_else(|| {
-                        syn::Error::new(value.span(), "unsupported form component")
-                    })?);
+                args.component = Some(match component.as_str() {
+                    "value" => FieldKind::Value,
+                    "group" | "nested" => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "group is a form structure; use #[form(group(store = \"ChildFormStore\"))]",
+                        ));
+                    }
+                    "array" | "dynamic_array" => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "array is a form structure; use #[form(array(store = \"ChildFormStore\"))]",
+                        ));
+                    }
+                    _ if FieldKind::is_removed_alias(&component) => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "component state is not created by gpui-form; create it in the caller and bind it with a component adapter",
+                        ));
+                    }
+                    _ => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "unsupported form component; use a pure field, group, or array",
+                        ));
+                    }
+                });
             } else if key == "binding" {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "component state is not created by gpui-form; create it in the caller and bind it with a component adapter",
+                ));
+            } else if key == "codec" {
                 input.parse::<Token![=]>()?;
-                args.binding = Some(parse_path_value(input)?);
+                args.codec = Some(parse_path_value(input)?);
             } else if key == "state" {
                 return Err(syn::Error::new(
                     key.span(),
-                    "use #[form(binding = \"TypeName\")] for app component bindings",
+                    "component state is not created by gpui-form; create it in the caller and bind it with a component adapter",
                 ));
             } else if key == "store" {
                 input.parse::<Token![=]>()?;
                 args.store = Some(parse_type_value(input)?);
-            } else if key == "label" {
-                input.parse::<Token![=]>()?;
-                args.label = Some(input.parse()?);
-            } else if key == "description" {
-                input.parse::<Token![=]>()?;
-                args.description = Some(input.parse()?);
-            } else if key == "placeholder" {
-                input.parse::<Token![=]>()?;
-                args.placeholder = Some(input.parse()?);
-            } else if key == "mask" || key == "masked" {
-                args.masked = parse_optional_bool_value(input)?;
             } else if key == "required" {
                 args.required = parse_optional_bool_value(input)?;
             } else if key == "validate" {

@@ -19,6 +19,7 @@ use crate::{
             AttachmentControlState, ChatForm, ChatFormControls, ChatFormUiEvent, ControlSlot,
             PrimaryActionControlState, ProjectControlState, RunSettingsControls,
         },
+        run_settings::{ModelResolutionPolicy, resolve_run_settings},
         run_settings::{RunSettingsController, RunSettingsInput},
     },
     errors::JacoError,
@@ -60,6 +61,7 @@ impl EventEmitter<ChatInputEvent> for ChatInputController {}
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ChatInputSubmit {
     pub(crate) composer: ComposerSnapshot,
+    pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) provider_model: ProviderModelChoice,
     pub(crate) reasoning_selection: Option<ReasoningSelectionSnapshot>,
     pub(crate) approval_mode: ToolApprovalMode,
@@ -76,12 +78,9 @@ pub(crate) struct ChatInputController {
     chat_form: Entity<ChatForm>,
     form: Entity<ChatInputFormStore>,
     run_settings: Entity<RunSettingsController>,
-    attachments_state: Entity<AttachmentControlState>,
     primary_action_state: Entity<PrimaryActionControlState>,
     chat_form_config: StoreBinding<ChatFormConfig, JacoError>,
-    attachments: Vec<ComposerAttachment>,
     next_attachment_id: u64,
-    preview_attachment: Option<ComposerAttachment>,
     agent_running: bool,
     skill_catalog_scope: state::skills::SkillCatalogScope,
     skill_catalog_task: Task<()>,
@@ -213,7 +212,9 @@ impl ChatInputController {
         let run_settings_form_observer = run_settings_form.clone();
         let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_form, window, cx));
         let run_settings_states = run_settings.read(cx).control_states();
-        let attachments_state = cx.new(|_| AttachmentControlState::default());
+        let attachments_state = cx.new(|_| AttachmentControlState {
+            form: Some(form.clone()),
+        });
         let primary_action_state = cx.new(|_| PrimaryActionControlState::default());
         let chat_form = cx.new(|cx| {
             ChatForm::new(
@@ -225,6 +226,7 @@ impl ChatInputController {
                         crate::components::chat_form::AddAttachmentControl,
                     ),
                     run_settings: RunSettingsControls {
+                        form: run_settings_states.form.clone(),
                         model: ControlSlot::Enabled(run_settings_states.model),
                         reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
                         approval: ControlSlot::Enabled(run_settings_states.approval),
@@ -276,12 +278,9 @@ impl ChatInputController {
             chat_form,
             form,
             run_settings,
-            attachments_state,
             primary_action_state,
             chat_form_config,
-            attachments: Vec::new(),
             next_attachment_id: 1,
-            preview_attachment: None,
             agent_running: false,
             skill_catalog_scope: state::skills::SkillCatalogScope::Global,
             skill_catalog_task: Task::ready(()),
@@ -395,8 +394,6 @@ impl ChatInputController {
 
     pub(crate) fn clear_after_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
-        self.attachments.clear();
-        self.preview_attachment = None;
         let empty_composer = self.composer.read(cx).snapshot();
         self.form.update(cx, |form, cx| {
             form.set_composer_value(
@@ -417,30 +414,12 @@ impl ChatInputController {
     }
 
     pub(crate) fn sync_chat_form_projection(&mut self, cx: &mut Context<Self>) {
-        let attachments = self.attachments.clone();
         let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
-        self.attachments_state.update(cx, |state, cx| {
-            state.attachments = attachments;
-            state.preview = self.preview_attachment.clone();
-            cx.notify();
-        });
         self.primary_action_state.update(cx, |state, cx| {
             state.agent_running = agent_running;
             state.can_submit = can_submit;
             cx.notify();
-        });
-    }
-
-    pub(super) fn sync_form_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let attachments = self.attachments.clone();
-        self.form.update(cx, |form, cx| {
-            form.set_attachments_value(
-                attachments,
-                gpui_form::FieldChangeCause::External,
-                window,
-                cx,
-            );
         });
     }
 
@@ -464,43 +443,39 @@ impl ChatInputController {
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
         let composer_has_content = self.composer.read(cx).can_submit();
-        !self.agent_running
-            && (composer_has_content || !self.attachments.is_empty())
-            && self.run_settings.read(cx).selected_model(cx).is_some()
-            && self.attachment_support_issue_for(cx).is_none()
-    }
-
-    fn attachment_support_issue_for(
-        &self,
-        cx: &App,
-    ) -> Option<state::attachments::ModelAttachmentSupportIssue> {
-        let selected_model = self.run_settings.read(cx).selected_model(cx);
-        state::attachments::model_support_issue(
-            &self.attachments,
-            selected_model.as_ref().map(|choice| &choice.capabilities),
+        let draft = self.form.read(cx).draft();
+        let has_attachments = !draft.attachments.is_empty();
+        let resolved = resolve_run_settings(
+            &draft.run_settings,
+            &load_model_choices(cx),
+            ModelResolutionPolicy::FallbackToFirstEnabled,
         )
+        .ok();
+        !self.agent_running
+            && (composer_has_content || has_attachments)
+            && resolved.as_ref().is_some_and(|settings| {
+                state::attachments::model_support_issue(
+                    &draft.attachments,
+                    Some(&settings.provider_model.capabilities),
+                )
+                .is_none()
+            })
     }
 
     fn submit_snapshot(
         &mut self,
-        mut snapshot: ComposerSnapshot,
+        snapshot: ComposerSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputSubmit> {
-        snapshot.attachments = self.attachments.clone();
-        if snapshot.is_empty() {
-            return None;
-        }
-        if self.attachment_support_issue_for(cx).is_some() {
+        let attachments = self.form.read(cx).draft().attachments.clone();
+        if snapshot.is_empty() && attachments.is_empty() {
             return None;
         }
         if self.agent_running {
             return None;
         }
-        self.run_settings
-            .update(cx, |settings, cx| settings.prepare_submit(window, cx));
         let form_snapshot = snapshot.clone();
-        let form_attachments = self.attachments.clone();
         self.form.update(cx, |form, cx| {
             form.set_composer_value(
                 form_snapshot,
@@ -508,22 +483,28 @@ impl ChatInputController {
                 window,
                 cx,
             );
-            form.set_attachments_value(
-                form_attachments,
-                gpui_form::FieldChangeCause::External,
-                window,
-                cx,
-            );
         });
-        let run_settings_form = self.run_settings.read(cx).form();
-        let run_settings = run_settings_form.read(cx).draft();
-        let provider_model = self.run_settings.read(cx).selected_model(cx)?;
-        self.save_chat_form_config(cx);
+        let run_settings = self.form.read(cx).draft().run_settings;
+        let resolved = resolve_run_settings(
+            &run_settings,
+            &load_model_choices(cx),
+            ModelResolutionPolicy::FallbackToFirstEnabled,
+        )
+        .ok()?;
+        if state::attachments::model_support_issue(
+            &attachments,
+            Some(&resolved.provider_model.capabilities),
+        )
+        .is_some()
+        {
+            return None;
+        }
         Some(ChatInputSubmit {
             composer: snapshot,
-            provider_model,
-            reasoning_selection: run_settings.reasoning_selection,
-            approval_mode: run_settings.approval_mode,
+            attachments,
+            provider_model: resolved.provider_model,
+            reasoning_selection: resolved.reasoning_selection,
+            approval_mode: resolved.approval_mode,
         })
     }
 
@@ -536,8 +517,7 @@ impl ChatInputController {
             return Some(ChatInputPrimaryButtonAction::Stop);
         }
 
-        let mut snapshot = self.composer.read(cx).snapshot();
-        snapshot.attachments = self.attachments.clone();
+        let snapshot = self.composer.read(cx).snapshot();
         self.submit_snapshot(snapshot, window, cx)
             .map(|submit| ChatInputPrimaryButtonAction::Send(Box::new(submit)))
     }
@@ -762,7 +742,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn provider_catalog_event_refreshes_mounted_chat_form(cx: &mut TestAppContext) {
+    fn provider_catalog_refresh_updates_options_without_rebasing_form(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -781,7 +761,14 @@ mod tests {
             .unwrap();
         });
 
-        assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
+        // Catalog refreshes update the available options, but must not silently
+        // rewrite the form draft. The unavailable draft is resolved explicitly
+        // by the submit policy below.
+        assert_eq!(selected_model_id(&form, &cx), None);
+
+        let submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+            .expect("submit policy falls back to an enabled model");
+        assert_eq!(submit.provider_model.model_id, "gpt-5-mini");
     }
 
     #[gpui::test]
@@ -1172,7 +1159,6 @@ mod tests {
             }],
             skill_requests: Vec::new(),
             token_ranges: Vec::new(),
-            attachments: Vec::new(),
             send_policy: ComposerSendPolicy::EnterToSend,
         }
     }

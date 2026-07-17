@@ -92,7 +92,16 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.attachments.extend(result.attachments);
+        self.form.update(cx, |form, cx| {
+            let mut attachments = form.draft().attachments.clone();
+            attachments.extend(result.attachments);
+            form.set_attachments_value(
+                attachments,
+                gpui_form::FieldChangeCause::UserInput,
+                window,
+                cx,
+            );
+        });
         for rejected in result.rejected {
             self.push_form_notification(
                 "chat-form-attachment-add-failed",
@@ -102,7 +111,6 @@ impl ChatInputController {
                 cx,
             );
         }
-        self.sync_form_attachments(window, cx);
         self.sync_chat_form_projection(cx);
         cx.notify();
     }
@@ -113,16 +121,16 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.attachments
-            .retain(|attachment| attachment.local_id != local_id);
-        if self
-            .preview_attachment
-            .as_ref()
-            .is_some_and(|attachment| attachment.local_id == local_id)
-        {
-            self.preview_attachment = None;
-        }
-        self.sync_form_attachments(window, cx);
+        self.form.update(cx, |form, cx| {
+            let mut attachments = form.draft().attachments.clone();
+            attachments.retain(|attachment| attachment.local_id != local_id);
+            form.set_attachments_value(
+                attachments,
+                gpui_form::FieldChangeCause::UserInput,
+                window,
+                cx,
+            );
+        });
         self.sync_chat_form_projection(cx);
         cx.notify();
     }
@@ -215,7 +223,6 @@ impl ChatInputController {
             window,
             cx,
         );
-        self.preview_attachment = Some(attachment);
     }
 
     fn open_file_preview(

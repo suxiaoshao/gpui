@@ -170,6 +170,15 @@ where
         self.selected_value = selected_value;
     }
 
+    pub(crate) fn selected_item(&self) -> Option<Rc<T>> {
+        let selected_value = self.selected_value.as_ref()?;
+        self.all_sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .find(|item| item.value() == selected_value)
+            .cloned()
+    }
+
     pub(crate) fn selected_index(&self) -> Option<IndexPath> {
         Self::selected_index_for(&self.sections, self.selected_value.as_ref())
     }
@@ -524,6 +533,33 @@ mod tests {
             PickerListDelegate::selected_index_for(&sections, Some(&2)),
             Some(IndexPath::default().section(1).row(0))
         );
+    }
+
+    #[test]
+    fn selected_item_uses_full_catalog_after_filtering() {
+        let mut delegate = PickerListDelegate::new(
+            PickerSection::flat([
+                TestItem {
+                    title: "one",
+                    value: 1,
+                    description: "first",
+                },
+                TestItem {
+                    title: "two",
+                    value: 2,
+                    description: "second",
+                },
+            ]),
+            Some(1),
+            "Empty".into(),
+            Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| {}),
+        );
+
+        delegate.last_query = "second".to_string();
+        delegate.apply_query();
+
+        assert_eq!(delegate.selected_item().expect("selected item").value, 1);
     }
 
     #[test]

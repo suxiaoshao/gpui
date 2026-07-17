@@ -11,6 +11,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_store::StoreSelection;
 use jaco_core::ProjectId;
 use jaco_db::ProjectRecord;
 use tracing::{Level, event};
@@ -18,21 +19,21 @@ use tracing::{Level, event};
 use crate::{
     components::{
         chat_form::{
-            ProjectControlState, ProjectPickerOption, ProjectPickerOptionKind,
-            project_picker_value, project_sections,
+            ProjectControlState, ProjectPickerOption, ProjectPickerValue, project_picker_value,
+            project_sections,
         },
         chat_input::{
             ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
         },
         picker::PickerListDelegate,
     },
-    foundation::{I18n, assets::IconName},
+    foundation::I18n,
     state,
 };
 
 pub(crate) struct NewConversationPage {
     chat_form: Entity<ChatInputController>,
-    projects: Result<Vec<ProjectRecord>, String>,
+    projects: StoreSelection<Vec<ProjectRecord>>,
     selected_project_id: Option<ProjectId>,
     project: Entity<ProjectControlState>,
     _subscriptions: Vec<Subscription>,
@@ -40,23 +41,20 @@ pub(crate) struct NewConversationPage {
 
 impl NewConversationPage {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let projects = load_projects(cx);
-        let selected_project_id = projects
-            .as_ref()
-            .ok()
-            .and_then(|projects| initial_project_id(projects, default_project_id(cx).as_ref()));
-        let selected_project = projects.as_ref().ok().and_then(|projects| {
+        let projects =
+            state::projects::catalog(cx).select_cloned(cx, |snapshot| snapshot.projects());
+        let selected_project_id =
+            projects.read(|projects| initial_project_id(projects, default_project_id(cx).as_ref()));
+        let selected_project = projects.read(|projects| {
             selected_project_id
                 .as_ref()
                 .and_then(|id| project_by_id(projects, id))
+                .cloned()
         });
         let state = cx.entity().downgrade();
         let empty_label = cx.global::<I18n>().t("new-conversation-project-empty");
         let none_label = cx.global::<I18n>().t("new-conversation-project-none");
-        let sections = project_sections(
-            projects.as_ref().map(Vec::as_slice).unwrap_or(&[]),
-            none_label,
-        );
+        let sections = projects.read(|projects| project_sections(projects, none_label));
         let selected_value = project_picker_value(selected_project_id.as_ref());
         let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&selected_value));
         let confirm = Rc::new({
@@ -91,15 +89,7 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
             picker
         });
-        let (selected_label, icon) = project_control_presentation(
-            &projects,
-            selected_project_id.as_ref(),
-            cx.global::<I18n>(),
-        );
         let project = cx.new(|_| ProjectControlState {
-            selected_label,
-            placeholder: empty_label.into(),
-            icon,
             open: false,
             picker: project_picker,
         });
@@ -110,10 +100,13 @@ impl NewConversationPage {
             chat_form
         });
         let project_catalog = state::projects::catalog(cx);
-        let project_subscription = cx.subscribe(
-            &project_catalog,
-            |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
-                page.reload_projects_from_catalog(cx);
+        let project_subscription = cx.observe_in(
+            &project_catalog.entity(),
+            window,
+            |_, _catalog, window, cx| {
+                cx.defer_in(window, move |page, window, cx| {
+                    page.reload_projects_from_catalog(window, cx);
+                });
             },
         );
         let chat_form_subscription = cx.subscribe_in(
@@ -139,7 +132,7 @@ impl NewConversationPage {
 
         Self {
             chat_form,
-            projects: projects.map_err(|err| err.to_string()),
+            projects,
             selected_project_id,
             project,
             _subscriptions: vec![project_subscription, chat_form_subscription],
@@ -160,85 +153,54 @@ impl NewConversationPage {
     pub(crate) fn select_project_id_from_sidebar(
         &mut self,
         project_id: ProjectId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match load_projects(cx) {
-            Ok(projects) => {
-                let project = project_by_id(&projects, &project_id).cloned();
-                self.projects = Ok(projects);
-                if let Some(project) = project {
-                    let save_result = state::config::update_app_settings(cx, |payload| {
-                        payload.default_project_id = Some(project.id.clone());
-                    });
-                    if let Err(err) = save_result {
-                        event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
-                    }
-                    self.selected_project_id = Some(project.id.clone());
-                    self.chat_form.update(cx, |chat_form, cx| {
-                        chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
-                    });
-                    self.sync_project_presentation(cx);
-                    self.project.update(cx, |project, cx| {
-                        project.open = false;
-                        cx.notify();
-                    });
-                }
+        if let Some(project) = self
+            .projects
+            .read(|projects| project_by_id(projects, &project_id).cloned())
+        {
+            let save_result = state::config::update_app_settings(cx, |payload| {
+                payload.default_project_id = Some(project.id.clone());
+            });
+            if let Err(err) = save_result {
+                event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
             }
-            Err(err) => {
-                self.projects = Err(err.to_string());
-            }
+            self.selected_project_id = Some(project.id.clone());
+            self.chat_form.update(cx, |chat_form, cx| {
+                chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
+            });
+            self.sync_project_picker(window, cx);
+            self.project.update(cx, |project, cx| {
+                project.open = false;
+                cx.notify();
+            });
         }
         cx.notify();
     }
 
-    fn selected_project(&self) -> Option<&ProjectRecord> {
-        let projects = self.projects.as_ref().ok()?;
+    fn selected_project(&self) -> Option<ProjectRecord> {
         let selected_project_id = self.selected_project_id.as_ref()?;
-        project_by_id(projects, selected_project_id)
+        self.projects
+            .read(|projects| project_by_id(projects, selected_project_id).cloned())
     }
 
     fn reload_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match load_projects(cx) {
-            Ok(projects) => {
-                let selected_project_id = selected_or_initial_project_id(
-                    &projects,
-                    self.selected_project_id.as_ref(),
-                    default_project_id(cx).as_ref(),
-                );
-                self.projects = Ok(projects);
-                self.selected_project_id = selected_project_id;
-                self.refresh_skill_catalog_for_selected(cx);
-                self.sync_project_picker(window, cx);
-                true
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-projects-failed");
-                let message = err.to_string();
-                self.projects = Err(message.clone());
-                push_project_notification(window, cx, title, message, NotificationType::Error);
-                self.sync_project_picker(window, cx);
-                false
-            }
-        }
+        self.reload_projects_from_catalog(window, cx);
+        true
     }
 
-    fn reload_projects_from_catalog(&mut self, cx: &mut Context<Self>) {
-        match load_projects(cx) {
-            Ok(projects) => {
-                let selected_project_id = selected_or_initial_project_id(
-                    &projects,
-                    self.selected_project_id.as_ref(),
-                    default_project_id(cx).as_ref(),
-                );
-                self.projects = Ok(projects);
-                self.selected_project_id = selected_project_id;
-                self.refresh_skill_catalog_for_selected(cx);
-                self.sync_project_presentation(cx);
-            }
-            Err(err) => {
-                self.projects = Err(err.to_string());
-            }
-        }
+    fn reload_projects_from_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected_project_id = self.projects.read(|projects| {
+            selected_or_initial_project_id(
+                projects,
+                self.selected_project_id.as_ref(),
+                default_project_id(cx).as_ref(),
+            )
+        });
+        self.selected_project_id = selected_project_id;
+        self.refresh_skill_catalog_for_selected(cx);
+        self.sync_project_picker(window, cx);
         cx.notify();
     }
 
@@ -268,20 +230,22 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match option.kind {
-            ProjectPickerOptionKind::NoProject { .. } => self.select_no_project(false, window, cx),
-            ProjectPickerOptionKind::Project(project) => {
-                self.select_project(project, false, window, cx)
+        match option.value {
+            ProjectPickerValue::NoProject => self.select_no_project(window, cx),
+            ProjectPickerValue::Project(project_id) => {
+                if let Some(project) = self
+                    .projects
+                    .read(|projects| project_by_id(projects, &project_id).cloned())
+                {
+                    self.select_project(project, window, cx);
+                } else {
+                    self.sync_project_picker(window, cx);
+                }
             }
         }
     }
 
-    fn select_no_project(
-        &mut self,
-        sync_picker: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn select_no_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match state::config::update_app_settings(cx, |payload| {
             payload.default_project_id = None;
         }) {
@@ -290,11 +254,7 @@ impl NewConversationPage {
                 self.chat_form.update(cx, |chat_form, cx| {
                     chat_form.refresh_skill_catalog(None, cx);
                 });
-                if sync_picker {
-                    self.sync_project_picker(window, cx);
-                } else {
-                    self.sync_project_presentation(cx);
-                }
+                self.sync_project_picker(window, cx);
                 self.set_project_picker_open(false, window, cx);
             }
             Err(err) => {
@@ -306,9 +266,7 @@ impl NewConversationPage {
                     err.to_string(),
                     NotificationType::Error,
                 );
-                if sync_picker {
-                    self.sync_project_picker(window, cx);
-                }
+                self.sync_project_picker(window, cx);
             }
         }
     }
@@ -316,7 +274,6 @@ impl NewConversationPage {
     fn select_project(
         &mut self,
         project: ProjectRecord,
-        sync_picker: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -329,11 +286,7 @@ impl NewConversationPage {
                 self.chat_form.update(cx, |chat_form, cx| {
                     chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
                 });
-                if sync_picker {
-                    self.sync_project_picker(window, cx);
-                } else {
-                    self.sync_project_presentation(cx);
-                }
+                self.sync_project_picker(window, cx);
                 self.set_project_picker_open(false, window, cx);
             }
             Err(err) => {
@@ -345,9 +298,7 @@ impl NewConversationPage {
                     err.to_string(),
                     NotificationType::Error,
                 );
-                if sync_picker {
-                    self.sync_project_picker(window, cx);
-                }
+                self.sync_project_picker(window, cx);
             }
         }
     }
@@ -410,7 +361,7 @@ impl NewConversationPage {
         let request = state::conversations::CreateConversationRequest {
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
-            attachments: submit.composer.attachments.clone(),
+            attachments: submit.attachments.clone(),
             title_seed: submit.composer.text.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
@@ -457,7 +408,7 @@ impl NewConversationPage {
             Ok(result) => {
                 let project = result.project.clone();
                 let _ = self.reload_projects(window, cx);
-                self.select_project(project.clone(), true, window, cx);
+                self.select_project(project.clone(), window, cx);
                 let (title, notification_type) = if result.was_existing {
                     (
                         cx.global::<I18n>().t("notify-project-already-exists"),
@@ -486,10 +437,9 @@ impl NewConversationPage {
 
     fn sync_project_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let none_label = cx.global::<I18n>().t("new-conversation-project-none");
-        let sections = project_sections(
-            self.projects.as_ref().map(Vec::as_slice).unwrap_or(&[]),
-            none_label.clone(),
-        );
+        let sections = self
+            .projects
+            .read(|projects| project_sections(projects, none_label.clone()));
         let selected_value = project_picker_value(self.selected_project_id.as_ref());
 
         let picker = self.project.read(cx).picker.clone();
@@ -502,24 +452,7 @@ impl NewConversationPage {
             picker.set_selected_index(selected_ix, window, cx);
         });
 
-        self.sync_project_presentation(cx);
-
         cx.notify();
-    }
-
-    fn sync_project_presentation(&mut self, cx: &mut Context<Self>) {
-        let none_label = cx.global::<I18n>().t("new-conversation-project-none");
-        let (selected_label, icon) = project_control_presentation(
-            &self.projects,
-            self.selected_project_id.as_ref(),
-            cx.global::<I18n>(),
-        );
-        self.project.update(cx, |project, cx| {
-            project.selected_label = selected_label;
-            project.placeholder = none_label.into();
-            project.icon = icon;
-            cx.notify();
-        });
     }
 }
 
@@ -554,10 +487,6 @@ impl Render for NewConversationPage {
     }
 }
 
-fn load_projects(cx: &App) -> jaco_db::Result<Vec<ProjectRecord>> {
-    state::projects::normal_projects(cx)
-}
-
 fn default_project_id(cx: &App) -> Option<ProjectId> {
     state::config::app_settings(cx)
         .default_project_id()
@@ -586,26 +515,6 @@ fn initial_project_id(
 
 fn project_by_id<'a>(projects: &'a [ProjectRecord], id: &ProjectId) -> Option<&'a ProjectRecord> {
     projects.iter().find(|project| &project.id == id)
-}
-
-fn project_control_presentation<E>(
-    projects: &Result<Vec<ProjectRecord>, E>,
-    selected_project_id: Option<&ProjectId>,
-    i18n: &I18n,
-) -> (SharedString, IconName) {
-    match projects {
-        Err(_) => (
-            i18n.t("new-conversation-project-load-failed").into(),
-            IconName::FolderX,
-        ),
-        Ok(projects) => match selected_project_id.and_then(|id| project_by_id(projects, id)) {
-            Some(project) => (project.display_name.clone().into(), IconName::FolderOpen),
-            None => (
-                i18n.t("new-conversation-project-none").into(),
-                IconName::FolderX,
-            ),
-        },
-    }
 }
 
 fn new_conversation_title(i18n: &I18n) -> String {
@@ -644,30 +553,7 @@ fn push_project_notification_async(
 #[cfg(test)]
 mod tests {
     use super::new_conversation_title;
-    use super::project_control_presentation;
-    use crate::foundation::{I18n, assets::IconName};
-    use jaco_core::{ProjectKind, ProjectMetadata};
-    use jaco_db::ProjectRecord;
-    use time::OffsetDateTime;
-
-    fn project(id: &str, display_name: &str) -> ProjectRecord {
-        ProjectRecord {
-            id: id.to_string(),
-            path: format!("/tmp/{id}"),
-            display_name: display_name.to_string(),
-            kind: ProjectKind::Normal,
-            pinned: false,
-            removed: false,
-            metadata: ProjectMetadata {
-                scratch_reason: None,
-                git_root: None,
-                last_active_conversation_id: None,
-            },
-            created_at: OffsetDateTime::UNIX_EPOCH,
-            updated_at: OffsetDateTime::UNIX_EPOCH,
-            last_opened_at: None,
-        }
-    }
+    use crate::foundation::I18n;
 
     #[test]
     fn new_conversation_title_uses_app_neutral_copy() {
@@ -679,19 +565,5 @@ mod tests {
             new_conversation_title(&I18n::for_locale_tag("zh-CN")),
             "今天想让 Jaco 帮你做什么？"
         );
-    }
-
-    #[test]
-    fn project_control_presentation_uses_current_selection() {
-        let i18n = I18n::english_for_test();
-        let projects: Result<Vec<_>, String> =
-            Ok(vec![project("one", "One"), project("two", "Two")]);
-        let selected_project_id = "two".to_string();
-
-        let (label, icon) =
-            project_control_presentation(&projects, Some(&selected_project_id), &i18n);
-
-        assert_eq!(label.as_ref(), "Two");
-        assert!(matches!(icon, IconName::FolderOpen));
     }
 }

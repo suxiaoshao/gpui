@@ -1,4 +1,4 @@
-use gpui::{App, Entity, Window};
+use gpui::{App, Window};
 
 use crate::{
     ErrorVisibility, FieldChangeCause, FieldError, FieldMeta, FieldValidationReport, FormMeta,
@@ -40,12 +40,10 @@ impl ValidationTriggers {
 
 pub trait FormField {
     type Value: Clone + PartialEq + 'static;
-    type ComponentState: 'static;
 
     fn value(&self) -> &Self::Value;
     fn set_value(&mut self, value: Self::Value, cause: FieldChangeCause);
     fn reset(&mut self, window: &mut Window, cx: &mut App);
-    fn component_state(&self) -> Option<Entity<Self::ComponentState>>;
     fn meta(&self) -> &FieldMeta;
     fn is_required(&self) -> bool;
     fn errors(&self) -> &[FieldError];
@@ -236,12 +234,13 @@ where
     pub fn clear_errors(&mut self) {
         self.errors.clear();
     }
+
+    pub fn remove_internal_error(&mut self, code: &str) {
+        self.errors.retain(|error| {
+            !(error.source == crate::ValidationSource::Internal && error.code == code)
+        });
+    }
 }
-
-#[derive(Debug)]
-pub struct NoComponentState;
-
-impl gpui::EventEmitter<()> for NoComponentState {}
 
 #[derive(Debug)]
 pub struct ValueFieldStore<T>
@@ -275,7 +274,6 @@ where
     T: Clone + PartialEq + 'static,
 {
     type Value = T;
-    type ComponentState = NoComponentState;
 
     fn value(&self) -> &Self::Value {
         self.core.value()
@@ -287,10 +285,6 @@ where
 
     fn reset(&mut self, _window: &mut Window, _cx: &mut App) {
         self.core.reset();
-    }
-
-    fn component_state(&self) -> Option<Entity<Self::ComponentState>> {
-        None
     }
 
     fn meta(&self) -> &FieldMeta {

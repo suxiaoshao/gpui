@@ -8,6 +8,9 @@ projection boundaries explicit.
 Internal design notes live in
 [`docs/development-plan.md`](docs/development-plan.md).
 
+The catalog-specific follow-up contract is documented in
+[`docs/catalog-snapshot-projection-plan.md`](docs/catalog-snapshot-projection-plan.md).
+
 ## Core Ideas
 
 - No mandatory action enum.
@@ -31,6 +34,90 @@ Internal design notes live in
   else the user implements.
 - Backend capability is type-level: a projection backend should not expose
   `set`, `update`, `bind`, `try_set`, `try_update`, or writable bindings.
+
+## Source of Truth, Catalog Projections, and Forms
+
+`gpui-store` stores committed typed snapshots. A revision or external event is
+metadata that tells the store when to reconcile; it is not the catalog data
+itself. If a project/provider/model catalog is represented by an entity that
+only carries a revision, every consumer is forced to query and cache its own
+rows, labels, and capabilities. That creates multiple business owners and can
+leave a projection stale. Start with a small app-owned read model such as
+`Arc<[ProjectSummary]>` in `SharedStore<S, MemoryBackend>` and replace it after
+an explicit repository reload command. Add a custom backend only when it owns
+genuinely reusable load/subscribe/reconcile behavior.
+
+`StoreSelection<T>` is a one-way read projection. It may cache a selected row,
+label, or capability for rendering, but it has no business setter and must not
+be used by submit or validation as a replacement for the form draft or the
+committed store. `StoreBinding<T>` is different: it is appropriate only when a
+field intentionally writes back to the same backing store.
+
+There is no implicit form-to-store or store-to-form synchronization. Applications
+should use an explicit boundary:
+
+```text
+committed domain value -> app-authorized form baseline replacement
+catalog snapshot -> component options/projection only
+form submit -> repository/store command
+command success -> committed snapshot reconcile
+```
+
+`gpui-store` does not depend on `gpui-form`; the form crate owns draft and
+validation. Catalog/options updates never replace a form baseline. Selection and backend observers must
+also obey GPUI reentrancy: read and compute in the source callback, then notify
+or schedule an explicit cross-entity command. Do not recursively update the
+same source entity while it is already being updated.
+
+### Example: Typed Catalog Snapshot
+
+Use a memory-backed shared store when a repository remains the durable owner but
+multiple UI surfaces need the same committed catalog snapshot:
+
+```rust
+use std::sync::Arc;
+
+use gpui_store::{SharedStore, StoreSelection, StoreState};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ModelCatalog {
+    models: Arc<[ModelSummary]>,
+}
+
+impl StoreState for ModelCatalog {}
+
+fn init_catalog(cx: &mut App) {
+    SharedStore::install_global(cx, ModelCatalog::default());
+}
+
+struct ModelPickerController {
+    models: StoreSelection<Arc<[ModelSummary]>>,
+}
+
+impl ModelPickerController {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let catalog = SharedStore::<ModelCatalog>::global(cx);
+        Self {
+            models: catalog.select(cx, |state| state.models.clone()),
+        }
+    }
+}
+```
+
+After an explicit repository reload succeeds, replace the complete committed
+field once:
+
+```rust
+fn install_reloaded_models(models: Vec<ModelSummary>, cx: &mut App) {
+    let catalog = SharedStore::<ModelCatalog>::global(cx);
+    catalog.set(cx, |state| &mut state.models, Arc::from(models));
+}
+```
+
+The consumer converts `models` into component items. It does not write a form
+selection. A submit path separately reads the form draft and one catalog
+snapshot, then applies product-specific availability/fallback policy in a pure
+resolver.
 
 ## Main Types
 

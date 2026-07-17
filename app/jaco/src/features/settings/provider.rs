@@ -15,17 +15,20 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     form::field as component_form_field,
     h_flex,
-    input::Input,
+    input::{Input, InputState},
     label::Label,
     list::{List, ListEvent, ListState},
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
-    select::Select,
+    searchable_list::SearchableListDelegate,
+    select::{Select, SelectState},
     switch::Switch,
     tag::Tag,
     v_flex,
 };
-use gpui_form::{ErrorParamValue, FieldError, FormValidationReport, SubmitError};
+use gpui_form::{
+    ErrorParamValue, FieldError, FormStoreEvent, FormValidationReport, SubmitError, SubscriptionSet,
+};
 use jaco_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use jaco_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
@@ -51,9 +54,10 @@ use self::{
         ProviderModelDraft, ProviderValidationState,
     },
     forms::{
-        ApiKeyProviderFormEvent, ApiKeyProviderFormField, CustomOpenAiProviderFormEvent,
-        CustomOpenAiProviderFormField, OllamaProviderFormEvent, OllamaProviderFormField,
-        ProviderFormField, ProviderSettingsForm, ProviderSettingsFormOutput, field_errors,
+        ApiKeyProviderFormField, ApiKeyProviderFormStore, ApiModeChoice,
+        CustomOpenAiProviderFormField, CustomOpenAiProviderFormStore, OllamaProviderFormField,
+        OllamaProviderFormStore, ProviderFormField, ProviderSettingsForm,
+        ProviderSettingsFormOutput, bind_provider_secret, field_errors, localized_api_mode_choices,
     },
     list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
@@ -71,6 +75,233 @@ pub(super) struct ProviderListItem {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ProviderEditorKey {
     kind: ProviderKindKey,
+}
+
+enum ProviderFormComponents {
+    ApiKey {
+        api_key: Entity<gpui_component::input::InputState>,
+        base_url: Entity<gpui_component::input::InputState>,
+    },
+    Ollama {
+        base_url: Entity<gpui_component::input::InputState>,
+        bearer_token: Entity<gpui_component::input::InputState>,
+    },
+    CustomOpenAi {
+        name: Entity<gpui_component::input::InputState>,
+        api_key: Entity<gpui_component::input::InputState>,
+        base_url: Entity<gpui_component::input::InputState>,
+        api_mode: Entity<SelectState<Vec<ApiModeChoice>>>,
+    },
+}
+
+fn new_provider_input<T>(
+    value: String,
+    placeholder: String,
+    masked: bool,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Entity<InputState>
+where
+    T: 'static,
+{
+    cx.new(|cx| {
+        let mut input = InputState::new(window, cx)
+            .default_value(value)
+            .placeholder(placeholder);
+        if masked {
+            input = input.masked(true);
+        }
+        input
+    })
+}
+
+impl ProviderFormComponents {
+    fn bind<T>(
+        form: &ProviderSettingsForm,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> (Self, SubscriptionSet)
+    where
+        T: 'static,
+    {
+        let mut subscriptions = SubscriptionSet::new();
+
+        match form {
+            ProviderSettingsForm::ApiKey(form) => {
+                let base_url = {
+                    let form = form.read(cx);
+                    form.base_url_draft()
+                };
+                let api_key_input = new_provider_input(
+                    String::new(),
+                    cx.global::<I18n>().t("provider-placeholder-api-key"),
+                    true,
+                    window,
+                    cx,
+                );
+                let base_url_input = new_provider_input(
+                    base_url,
+                    cx.global::<I18n>()
+                        .t("provider-placeholder-base-url-default"),
+                    false,
+                    window,
+                    cx,
+                );
+                subscriptions.extend(
+                    bind_provider_secret(
+                        ApiKeyProviderFormStore::api_key_handle(form),
+                        &api_key_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind provider API key input"),
+                );
+                subscriptions.extend(
+                    gpui_form_gpui_component::bind_input(
+                        ApiKeyProviderFormStore::base_url_handle(form),
+                        &base_url_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind provider base URL input"),
+                );
+                (
+                    Self::ApiKey {
+                        api_key: api_key_input,
+                        base_url: base_url_input,
+                    },
+                    subscriptions,
+                )
+            }
+            ProviderSettingsForm::Ollama(form) => {
+                let base_url = {
+                    let form = form.read(cx);
+                    form.base_url_draft()
+                };
+                let base_url_input = new_provider_input(
+                    base_url,
+                    cx.global::<I18n>()
+                        .t("provider-placeholder-ollama-base-url"),
+                    false,
+                    window,
+                    cx,
+                );
+                let bearer_token_input = new_provider_input(
+                    String::new(),
+                    cx.global::<I18n>().t("provider-placeholder-bearer-token"),
+                    true,
+                    window,
+                    cx,
+                );
+                subscriptions.extend(
+                    gpui_form_gpui_component::bind_input(
+                        OllamaProviderFormStore::base_url_handle(form),
+                        &base_url_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind Ollama base URL input"),
+                );
+                subscriptions.extend(
+                    bind_provider_secret(
+                        OllamaProviderFormStore::bearer_token_handle(form),
+                        &bearer_token_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind Ollama bearer token input"),
+                );
+                (
+                    Self::Ollama {
+                        base_url: base_url_input,
+                        bearer_token: bearer_token_input,
+                    },
+                    subscriptions,
+                )
+            }
+            ProviderSettingsForm::CustomOpenAi(form) => {
+                let (name, base_url, api_mode) = {
+                    let form = form.read(cx);
+                    (
+                        form.name_draft(),
+                        form.base_url_draft(),
+                        form.api_mode_draft(),
+                    )
+                };
+                let name_input = new_provider_input(
+                    name,
+                    cx.global::<I18n>().t("provider-placeholder-provider-name"),
+                    false,
+                    window,
+                    cx,
+                );
+                let api_key_input = new_provider_input(
+                    String::new(),
+                    cx.global::<I18n>().t("provider-placeholder-api-key"),
+                    true,
+                    window,
+                    cx,
+                );
+                let base_url_input = new_provider_input(
+                    base_url,
+                    cx.global::<I18n>()
+                        .t("provider-placeholder-custom-base-url"),
+                    false,
+                    window,
+                    cx,
+                );
+                let choices = localized_api_mode_choices(cx.global::<I18n>());
+                let api_mode_input = cx.new(|cx| {
+                    SelectState::new(choices.clone(), choices.position(&api_mode), window, cx)
+                });
+                subscriptions.extend(
+                    gpui_form_gpui_component::bind_input(
+                        CustomOpenAiProviderFormStore::name_handle(form),
+                        &name_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind custom provider name input"),
+                );
+                subscriptions.extend(
+                    bind_provider_secret(
+                        CustomOpenAiProviderFormStore::api_key_handle(form),
+                        &api_key_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind custom provider API key input"),
+                );
+                subscriptions.extend(
+                    gpui_form_gpui_component::bind_input(
+                        CustomOpenAiProviderFormStore::base_url_handle(form),
+                        &base_url_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind custom provider base URL input"),
+                );
+                subscriptions.extend(
+                    gpui_form_gpui_component::bind_select(
+                        CustomOpenAiProviderFormStore::api_mode_handle(form),
+                        &api_mode_input,
+                        window,
+                        cx,
+                    )
+                    .expect("bind custom provider API mode select"),
+                );
+                (
+                    Self::CustomOpenAi {
+                        name: name_input,
+                        api_key: api_key_input,
+                        base_url: base_url_input,
+                        api_mode: api_mode_input,
+                    },
+                    subscriptions,
+                )
+            }
+        }
+    }
 }
 
 impl ProviderEditorKey {
@@ -91,7 +322,8 @@ struct ProviderEditorState {
     validation: ProviderValidationState,
     #[allow(dead_code)]
     manual_model_editor: Option<Entity<ManualModelEditor>>,
-    _field_subscriptions: Vec<Subscription>,
+    components: ProviderFormComponents,
+    _field_subscriptions: SubscriptionSet,
     fetch_task: Option<Task<()>>,
 }
 
@@ -100,7 +332,10 @@ impl ProviderEditorState {
         draft: ProviderDraft,
         form: ProviderSettingsForm,
         models: Vec<ProviderModelDraft>,
+        window: &mut Window,
+        cx: &mut Context<ProviderSettingsPage>,
     ) -> Self {
+        let (components, _field_subscriptions) = ProviderFormComponents::bind(&form, window, cx);
         Self {
             draft,
             form,
@@ -108,7 +343,8 @@ impl ProviderEditorState {
             saved_snapshot: None,
             validation: ProviderValidationState::Idle,
             manual_model_editor: None,
-            _field_subscriptions: Vec::new(),
+            components,
+            _field_subscriptions,
             fetch_task: None,
         }
     }
@@ -241,7 +477,7 @@ impl ProviderSettingsPage {
         let draft = Self::draft_for_item(item);
         let models = Self::load_models_for_draft(&draft, cx).unwrap_or_default();
         let form = ProviderSettingsForm::new(item.spec.form_kind, &draft, window, cx);
-        let mut editor = ProviderEditorState::new(draft, form, models);
+        let mut editor = ProviderEditorState::new(draft, form, models, window, cx);
         Self::rebuild_editor_form(&mut editor, &item.spec, window, cx);
         editor.saved_snapshot = Some(Self::snapshot_for_editor(&editor, cx));
         editor
@@ -276,117 +512,54 @@ impl ProviderSettingsPage {
     ) {
         editor._field_subscriptions.clear();
         editor.form = ProviderSettingsForm::new(spec.form_kind, &editor.draft, window, cx);
+        let (components, mut subscriptions) =
+            ProviderFormComponents::bind(&editor.form, window, cx);
+        editor.components = components;
         match &editor.form {
             ProviderSettingsForm::ApiKey(form) => {
-                editor._field_subscriptions.push(cx.subscribe_in(
+                let form_id = form.entity_id();
+                subscriptions.push(cx.subscribe_in(
                     form,
                     window,
-                    Self::on_api_key_form_event,
+                    move |page,
+                          _form,
+                          _event: &FormStoreEvent<ApiKeyProviderFormField>,
+                          _window,
+                          cx| {
+                        page.on_provider_form_changed(form_id, cx);
+                    },
                 ));
             }
             ProviderSettingsForm::Ollama(form) => {
-                editor._field_subscriptions.push(cx.subscribe_in(
+                let form_id = form.entity_id();
+                subscriptions.push(cx.subscribe_in(
                     form,
                     window,
-                    Self::on_ollama_form_event,
+                    move |page,
+                          _form,
+                          _event: &FormStoreEvent<OllamaProviderFormField>,
+                          _window,
+                          cx| {
+                        page.on_provider_form_changed(form_id, cx);
+                    },
                 ));
             }
             ProviderSettingsForm::CustomOpenAi(form) => {
-                editor._field_subscriptions.push(cx.subscribe_in(
+                let form_id = form.entity_id();
+                subscriptions.push(cx.subscribe_in(
                     form,
                     window,
-                    Self::on_custom_openai_form_event,
+                    move |page,
+                          _form,
+                          _event: &FormStoreEvent<CustomOpenAiProviderFormField>,
+                          _window,
+                          cx| {
+                        page.on_provider_form_changed(form_id, cx);
+                    },
                 ));
             }
         }
-    }
-
-    fn on_api_key_form_event(
-        &mut self,
-        form: &Entity<forms::ApiKeyProviderFormStore>,
-        event: &ApiKeyProviderFormEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let field = match event {
-            ApiKeyProviderFormEvent::FieldChanged(ApiKeyProviderFormField::ApiKey) => {
-                ProviderFormField::ApiKey
-            }
-            ApiKeyProviderFormEvent::FieldChanged(ApiKeyProviderFormField::BaseUrl) => {
-                ProviderFormField::BaseUrl
-            }
-            ApiKeyProviderFormEvent::FieldChanged(ApiKeyProviderFormField::Enabled) => {
-                return self.on_provider_form_changed(form.entity_id(), cx);
-            }
-            ApiKeyProviderFormEvent::FieldFocused(_) | ApiKeyProviderFormEvent::FieldBlurred(_) => {
-                return;
-            }
-        };
-        self.on_provider_form_field_changed(form.entity_id(), field, cx);
-    }
-
-    fn on_ollama_form_event(
-        &mut self,
-        form: &Entity<forms::OllamaProviderFormStore>,
-        event: &OllamaProviderFormEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let field = match event {
-            OllamaProviderFormEvent::FieldChanged(OllamaProviderFormField::BaseUrl) => {
-                ProviderFormField::BaseUrl
-            }
-            OllamaProviderFormEvent::FieldChanged(OllamaProviderFormField::BearerToken) => {
-                ProviderFormField::BearerToken
-            }
-            OllamaProviderFormEvent::FieldChanged(OllamaProviderFormField::Enabled) => {
-                return self.on_provider_form_changed(form.entity_id(), cx);
-            }
-            OllamaProviderFormEvent::FieldFocused(_) | OllamaProviderFormEvent::FieldBlurred(_) => {
-                return;
-            }
-        };
-        self.on_provider_form_field_changed(form.entity_id(), field, cx);
-    }
-
-    fn on_custom_openai_form_event(
-        &mut self,
-        form: &Entity<forms::CustomOpenAiProviderFormStore>,
-        event: &CustomOpenAiProviderFormEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let field = match event {
-            CustomOpenAiProviderFormEvent::FieldChanged(CustomOpenAiProviderFormField::Name) => {
-                ProviderFormField::Name
-            }
-            CustomOpenAiProviderFormEvent::FieldChanged(CustomOpenAiProviderFormField::ApiKey) => {
-                ProviderFormField::ApiKey
-            }
-            CustomOpenAiProviderFormEvent::FieldChanged(CustomOpenAiProviderFormField::BaseUrl) => {
-                ProviderFormField::BaseUrl
-            }
-            CustomOpenAiProviderFormEvent::FieldChanged(CustomOpenAiProviderFormField::ApiMode) => {
-                ProviderFormField::ApiMode
-            }
-            CustomOpenAiProviderFormEvent::FieldChanged(CustomOpenAiProviderFormField::Enabled) => {
-                return self.on_provider_form_changed(form.entity_id(), cx);
-            }
-            CustomOpenAiProviderFormEvent::FieldFocused(_)
-            | CustomOpenAiProviderFormEvent::FieldBlurred(_) => {
-                return;
-            }
-        };
-        self.on_provider_form_field_changed(form.entity_id(), field, cx);
-    }
-
-    fn on_provider_form_field_changed(
-        &mut self,
-        form_id: EntityId,
-        _field: ProviderFormField,
-        cx: &mut Context<Self>,
-    ) {
-        self.on_provider_form_changed(form_id, cx);
+        editor._field_subscriptions = subscriptions;
     }
 
     fn on_provider_form_changed(&mut self, form_id: EntityId, cx: &mut Context<Self>) {
@@ -1078,7 +1251,7 @@ impl ProviderSettingsPage {
                     .text_sm()
                     .font_medium(),
             )
-            .children(self.render_config_fields(&editor.form, locked, cx))
+            .children(self.render_config_fields(&editor.form, &editor.components, locked, cx))
             .child(self.render_validation_state(&editor.validation, cx))
             .child(
                 h_flex()
@@ -1113,25 +1286,20 @@ impl ProviderSettingsPage {
     fn render_config_fields(
         &self,
         form: &ProviderSettingsForm,
+        components: &ProviderFormComponents,
         locked: bool,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         match form {
             ProviderSettingsForm::ApiKey(form) => {
-                let (
-                    api_key,
-                    api_key_errors,
-                    api_key_required,
-                    base_url,
-                    base_url_errors,
-                    base_url_required,
-                ) = {
+                let ProviderFormComponents::ApiKey { api_key, base_url } = components else {
+                    unreachable!("provider API key form and controls must match")
+                };
+                let (api_key_errors, api_key_required, base_url_errors, base_url_required) = {
                     let form = form.read(cx);
                     (
-                        form.api_key_state().read(cx).input(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
-                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
                     )
@@ -1139,7 +1307,7 @@ impl ProviderSettingsPage {
                 vec![
                     self.render_secret_input_row(
                         ProviderFormField::ApiKey,
-                        api_key,
+                        api_key.clone(),
                         api_key_errors,
                         api_key_required,
                         locked,
@@ -1147,7 +1315,7 @@ impl ProviderSettingsPage {
                     ),
                     self.render_text_input_row(
                         ProviderFormField::BaseUrl,
-                        base_url,
+                        base_url.clone(),
                         base_url_errors,
                         base_url_required,
                         locked,
@@ -1156,20 +1324,23 @@ impl ProviderSettingsPage {
                 ]
             }
             ProviderSettingsForm::Ollama(form) => {
-                let (
+                let ProviderFormComponents::Ollama {
                     base_url,
+                    bearer_token,
+                } = components
+                else {
+                    unreachable!("provider Ollama form and controls must match")
+                };
+                let (
                     base_url_errors,
                     base_url_required,
-                    bearer_token,
                     bearer_token_errors,
                     bearer_token_required,
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
-                        form.bearer_token_state().read(cx).input(),
                         field_errors(&form.bearer_token),
                         form.bearer_token_required(),
                     )
@@ -1177,7 +1348,7 @@ impl ProviderSettingsPage {
                 vec![
                     self.render_text_input_row(
                         ProviderFormField::BaseUrl,
-                        base_url,
+                        base_url.clone(),
                         base_url_errors,
                         base_url_required,
                         locked,
@@ -1185,7 +1356,7 @@ impl ProviderSettingsPage {
                     ),
                     self.render_secret_input_row(
                         ProviderFormField::BearerToken,
-                        bearer_token,
+                        bearer_token.clone(),
                         bearer_token_errors,
                         bearer_token_required,
                         locked,
@@ -1194,32 +1365,33 @@ impl ProviderSettingsPage {
                 ]
             }
             ProviderSettingsForm::CustomOpenAi(form) => {
-                let (
+                let ProviderFormComponents::CustomOpenAi {
                     name,
+                    api_key,
+                    base_url,
+                    api_mode,
+                } = components
+                else {
+                    unreachable!("provider custom form and controls must match")
+                };
+                let (
                     name_errors,
                     name_required,
-                    api_key,
                     api_key_errors,
                     api_key_required,
-                    base_url,
                     base_url_errors,
                     base_url_required,
-                    api_mode,
                     api_mode_errors,
                     api_mode_required,
                 ) = {
                     let form = form.read(cx);
                     (
-                        form.name_state(),
                         field_errors(&form.name),
                         form.name_required(),
-                        form.api_key_state().read(cx).input(),
                         field_errors(&form.api_key),
                         form.api_key_required(),
-                        form.base_url_state(),
                         field_errors(&form.base_url),
                         form.base_url_required(),
-                        form.api_mode_state(),
                         field_errors(&form.api_mode),
                         form.api_mode_required(),
                     )
@@ -1227,7 +1399,7 @@ impl ProviderSettingsPage {
                 vec![
                     self.render_text_input_row(
                         ProviderFormField::Name,
-                        name,
+                        name.clone(),
                         name_errors,
                         name_required,
                         locked,
@@ -1235,7 +1407,7 @@ impl ProviderSettingsPage {
                     ),
                     self.render_secret_input_row(
                         ProviderFormField::ApiKey,
-                        api_key,
+                        api_key.clone(),
                         api_key_errors,
                         api_key_required,
                         locked,
@@ -1243,7 +1415,7 @@ impl ProviderSettingsPage {
                     ),
                     self.render_text_input_row(
                         ProviderFormField::BaseUrl,
-                        base_url,
+                        base_url.clone(),
                         base_url_errors,
                         base_url_required,
                         locked,
@@ -1251,7 +1423,7 @@ impl ProviderSettingsPage {
                     ),
                     self.render_select_row(
                         ProviderFormField::ApiMode,
-                        api_mode,
+                        api_mode.clone(),
                         api_mode_errors,
                         api_mode_required,
                         locked,
@@ -1626,8 +1798,8 @@ impl From<ProviderModelRecord> for ProviderModelDraft {
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelFetchSupport, ProviderEditorKey, ProviderFetchPrecondition, ProviderListItem,
-        ProviderSettingsPage, draft_from_record, draft_from_spec, fetch_support,
+        ModelFetchSupport, ProviderEditorKey, ProviderFetchPrecondition, ProviderFormComponents,
+        ProviderListItem, ProviderSettingsPage, draft_from_record, draft_from_spec, fetch_support,
         provider_fetch_precondition,
     };
     use crate::database::{self, FreshStoreGlobal};
@@ -2741,9 +2913,9 @@ mod tests {
         value: &str,
         cx: &mut VisualTestContext,
     ) {
-        let input = page.read_with(cx, |page, cx| {
+        let input = page.read_with(cx, |page, _cx| {
             let editor = page.editors.get(key).expect("editor exists");
-            input_state_for_test(&editor.form, field, cx).expect("text input exists")
+            input_state_for_test(&editor.components, field).expect("text input exists")
         });
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
@@ -2760,9 +2932,9 @@ mod tests {
         value: &str,
         cx: &mut VisualTestContext,
     ) {
-        let input = page.read_with(cx, |page, cx| {
+        let input = page.read_with(cx, |page, _cx| {
             let editor = page.editors.get(key).expect("editor exists");
-            input_state_for_test(&editor.form, secret_field_for_test(field), cx)
+            input_state_for_test(&editor.components, secret_field_for_test(field))
                 .expect("secret input exists")
         });
         cx.update(|window, cx| {
@@ -2790,7 +2962,7 @@ mod tests {
         cx: &App,
     ) -> String {
         let editor = page.editors.get(key).expect("editor exists");
-        input_state_for_test(&editor.form, secret_field_for_test(field), cx)
+        input_state_for_test(&editor.components, secret_field_for_test(field))
             .expect("secret input exists")
             .read(cx)
             .value()
@@ -2806,31 +2978,31 @@ mod tests {
     }
 
     fn input_state_for_test(
-        form: &ProviderSettingsForm,
+        components: &ProviderFormComponents,
         field: ProviderFormField,
-        cx: &App,
     ) -> Option<Entity<gpui_component::input::InputState>> {
-        match (form, field) {
-            (ProviderSettingsForm::ApiKey(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_state().read(cx).input())
+        match (components, field) {
+            (ProviderFormComponents::ApiKey { api_key, .. }, ProviderFormField::ApiKey) => {
+                Some(api_key.clone())
             }
-            (ProviderSettingsForm::ApiKey(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_state())
+            (ProviderFormComponents::ApiKey { base_url, .. }, ProviderFormField::BaseUrl) => {
+                Some(base_url.clone())
             }
-            (ProviderSettingsForm::Ollama(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_state())
+            (ProviderFormComponents::Ollama { base_url, .. }, ProviderFormField::BaseUrl) => {
+                Some(base_url.clone())
             }
-            (ProviderSettingsForm::Ollama(form), ProviderFormField::BearerToken) => {
-                Some(form.read(cx).bearer_token_state().read(cx).input())
+            (
+                ProviderFormComponents::Ollama { bearer_token, .. },
+                ProviderFormField::BearerToken,
+            ) => Some(bearer_token.clone()),
+            (ProviderFormComponents::CustomOpenAi { name, .. }, ProviderFormField::Name) => {
+                Some(name.clone())
             }
-            (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::Name) => {
-                Some(form.read(cx).name_state())
+            (ProviderFormComponents::CustomOpenAi { api_key, .. }, ProviderFormField::ApiKey) => {
+                Some(api_key.clone())
             }
-            (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::ApiKey) => {
-                Some(form.read(cx).api_key_state().read(cx).input())
-            }
-            (ProviderSettingsForm::CustomOpenAi(form), ProviderFormField::BaseUrl) => {
-                Some(form.read(cx).base_url_state())
+            (ProviderFormComponents::CustomOpenAi { base_url, .. }, ProviderFormField::BaseUrl) => {
+                Some(base_url.clone())
             }
             _ => None,
         }

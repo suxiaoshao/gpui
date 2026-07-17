@@ -1,15 +1,23 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{LitStr, Result};
+use syn::Result;
 
 use crate::{attributes::FieldAttributes, field_kind::FieldKind};
 
-use super::{FieldModel, arrays::vec_inner_type, field_variant_ident};
+use super::{FieldModel, arrays::vec_inner_type};
 
 pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ty = model.ty;
     Ok(match model.attrs.component {
-        FieldKind::Value => quote!(::gpui_form::ValueFieldStore<#ty>),
+        FieldKind::Value => {
+            let codec = model
+                .attrs
+                .codec
+                .as_ref()
+                .map(|codec| quote!(#codec))
+                .unwrap_or_else(|| quote!(::gpui_form::IdentityCodec<#ty>));
+            quote!(::gpui_form::DraftFieldStore<#ty, #codec>)
+        }
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
             quote!(::gpui_form::FieldGroupStore<#ty, #store>)
@@ -24,17 +32,10 @@ pub(super) fn store_field_type(model: &FieldModel<'_>) -> Result<TokenStream> {
                 >
             )
         }
-        FieldKind::Binding => {
-            let binding = model.attrs.binding.as_ref().expect("checked");
-            quote!(::gpui_form::ComponentFieldStore<#ty, #binding>)
-        }
     })
 }
 
-pub(super) fn field_initializer(
-    model: &FieldModel<'_>,
-    field_enum_ident: &syn::Ident,
-) -> Result<TokenStream> {
+pub(super) fn field_initializer(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
     let value_ident = &model.value_ident;
     let state_ident = &model.state_ident;
@@ -42,14 +43,20 @@ pub(super) fn field_initializer(
     let ty = model.ty;
     let triggers = validation_triggers(&model.attrs);
     let required = model.attrs.required;
-    let field_variant_ident = field_variant_ident(name);
-    let field_variant = quote!(#field_enum_ident::#field_variant_ident);
-
+    let codec = model
+        .attrs
+        .codec
+        .as_ref()
+        .map(|codec| quote!(#codec))
+        .unwrap_or_else(|| quote!(::gpui_form::IdentityCodec<#ty>));
     Ok(match model.attrs.component {
         FieldKind::Value => quote! {
-            let mut #ident = ::gpui_form::macro_support::value_field(#name, #value_ident);
-            #ident.core_mut().set_validation_triggers(#triggers);
-            #ident.core_mut().set_required(#required);
+            let mut #ident = ::gpui_form::macro_support::draft_field::<#ty, #codec>(
+                #name,
+                #value_ident,
+                #triggers,
+                #required,
+            );
         },
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
@@ -146,67 +153,6 @@ pub(super) fn field_initializer(
                 #ident.set_required(#required);
             }
         }
-        FieldKind::Binding => {
-            let binding = model.attrs.binding.as_ref().expect("checked");
-            let options = component_state_options(&model.attrs);
-            quote! {
-                let #state_ident = <#binding as ::gpui_form::FormComponentBinding<#ty>>::new_state(
-                    &#value_ident,
-                    #options,
-                    window,
-                    cx,
-                );
-                let mut #ident = ::gpui_form::macro_support::component_field::<#ty, #binding>(
-                    #value_ident,
-                    #state_ident.clone(),
-                    #triggers,
-                    #required,
-                );
-                let __gpui_form_component_event_sink =
-                    ::gpui_form::FormComponentEventSink::new(
-                        |this: &mut Self,
-                         __gpui_form_event: ::gpui_form::FormComponentEvent,
-                         _window: &mut ::gpui_form::__private::gpui::Window,
-                         cx: &mut ::gpui_form::__private::gpui::Context<Self>| {
-                            let __gpui_form_outcome = this.#ident.apply_component_event(
-                                ::gpui_form::macro_support::field_path(#name),
-                                __gpui_form_event,
-                                cx,
-                            );
-                            let __gpui_form_field_allows_validation_trigger =
-                                if let Some(__gpui_form_trigger) =
-                                    ::gpui_form::macro_support::component_field_event_trigger(
-                                        __gpui_form_outcome,
-                                    )
-                                {
-                                    this.#ident
-                                        .core()
-                                        .validation_triggers()
-                                        .contains(__gpui_form_trigger)
-                                } else {
-                                    false
-                                };
-                            this.finish_component_field_event(
-                                #field_variant,
-                                ::gpui_form::macro_support::field_path(#name),
-                                __gpui_form_outcome,
-                                __gpui_form_field_allows_validation_trigger,
-                                cx,
-                            );
-                        },
-                    );
-                let __gpui_form_component_subscriptions =
-                    <#binding as ::gpui_form::FormComponentBinding<#ty>>::install_subscriptions(
-                        #state_ident.clone(),
-                        __gpui_form_component_event_sink,
-                        window,
-                        cx,
-                    );
-                #ident.core_mut()
-                    .subscriptions_mut()
-                    .extend(__gpui_form_component_subscriptions);
-            }
-        }
     })
 }
 
@@ -214,9 +160,6 @@ pub(super) fn write_field_statement(model: &FieldModel<'_>) -> Result<TokenStrea
     let ident = model.ident;
     let value_ident = &model.value_ident;
     Ok(match model.attrs.component {
-        FieldKind::Binding => quote! {
-            self.#ident.write_component_value(&#value_ident, cause, window, cx);
-        },
         FieldKind::Group => quote! {
             self.#ident.write_child_value(#value_ident, cause, window, cx);
         },
@@ -281,31 +224,5 @@ fn validation_triggers(attrs: &FieldAttributes) -> TokenStream {
             on_submit: #on_submit,
             on_dynamic: #on_dynamic,
         }
-    }
-}
-
-fn component_state_options(attrs: &FieldAttributes) -> TokenStream {
-    let label = option_lit_str(&attrs.label);
-    let description = option_lit_str(&attrs.description);
-    let placeholder = option_lit_str(&attrs.placeholder);
-    let masked = attrs.masked;
-    let required = attrs.required;
-
-    quote! {
-        ::gpui_form::ComponentStateOptions {
-            label_key: #label,
-            description_key: #description,
-            placeholder_key: #placeholder,
-            masked: #masked,
-            disabled: false,
-            required: #required,
-        }
-    }
-}
-
-fn option_lit_str(value: &Option<LitStr>) -> TokenStream {
-    match value {
-        Some(value) => quote!(Some(#value)),
-        None => quote!(None),
     }
 }

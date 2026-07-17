@@ -4,7 +4,6 @@ pub(crate) enum FieldKind {
     Value,
     Group,
     Array,
-    Binding,
 }
 
 impl FieldKind {

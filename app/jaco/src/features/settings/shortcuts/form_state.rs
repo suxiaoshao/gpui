@@ -1,32 +1,17 @@
+use super::validation::{ShortcutValidationError, canonical_hotkey, validate_shortcut_hotkey};
 use crate::{
-    components::{
-        hotkey_input::{HotkeyInput, HotkeyInputEvent, string_to_keystroke},
-        run_settings::{RunSettingsFormStore, RunSettingsInput},
-    },
-    state::providers::{ProviderModelChoice, ProviderModelKey},
+    components::run_settings::{RunSettingsFormStore, RunSettingsInput},
+    state::providers::ProviderModelKey,
 };
-use gpui::*;
-use gpui_component::{
-    IndexPath,
-    select::{SelectEvent, SelectItem, SelectState},
-};
+use gpui::{App, AppContext as _};
 use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FormComponentBinding, FormComponentEvent,
-    FormComponentEventSink, FormField, FormMeta, SubmitTransform, SubscriptionSet,
-    TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
-    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
+    FieldError, FormField, FormMeta, SubmitTransform, TransformContext, TransformReport,
+    ValidationAdapter, ValidationAdapterReport, ValidationContext, ValidationIssue,
+    ValidationScope, ValidationSource, ValidationTrigger,
 };
+use gpui_form_gpui_component::SelectFieldValue;
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
-
-use super::{
-    choices::PromptChoice,
-    validation::{ShortcutValidationError, canonical_hotkey, validate_shortcut_hotkey},
-};
-
-type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
-
-pub(super) type ShortcutPromptSelectStateInner = SelectState<Vec<PromptChoice>>;
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(
@@ -35,33 +20,27 @@ pub(super) type ShortcutPromptSelectStateInner = SelectState<Vec<PromptChoice>>;
     transform(adapter = ShortcutEditTransform)
 )]
 pub(super) struct ShortcutEditFormInput {
-    #[form(binding = "ShortcutHotkeyBinding", required)]
+    #[form(component = "value", required, validate(on_submit))]
     pub(super) hotkey: Option<String>,
-    #[form(binding = "ShortcutPromptSelectBinding")]
+    #[form(component = "value")]
     pub(super) prompt: ShortcutPromptSelection,
-    #[form(component = "group", store = "RunSettingsFormStore")]
+    #[form(group(store = "RunSettingsFormStore"))]
     pub(super) run_settings: RunSettingsInput,
     #[form(component = "value")]
     pub(super) input_source: ShortcutInputSource,
-    #[form(binding = "BoolInputBinding")]
+    #[form(component = "value")]
     pub(super) enabled: bool,
 }
 
 impl ShortcutEditFormInput {
-    pub(super) fn new(
-        shortcut: Option<&ShortcutRecord>,
-        prompts: Vec<PromptChoice>,
-        models: Vec<ProviderModelChoice>,
-    ) -> Self {
+    pub(super) fn new(shortcut: Option<&ShortcutRecord>) -> Self {
         let selected_prompt = shortcut.and_then(|shortcut| shortcut.prompt_id.clone());
-        let selected_model = shortcut
-            .and_then(|shortcut| {
-                Some(ProviderModelKey {
-                    provider_id: shortcut.provider_id.as_ref()?.clone(),
-                    model_id: shortcut.model_id.as_ref()?.clone(),
-                })
+        let selected_model = shortcut.and_then(|shortcut| {
+            Some(ProviderModelKey {
+                provider_id: shortcut.provider_id.as_ref()?.clone(),
+                model_id: shortcut.model_id.as_ref()?.clone(),
             })
-            .or_else(|| models.first().map(ProviderModelChoice::key));
+        });
         let input_source = shortcut
             .map(|shortcut| shortcut.input_source)
             .unwrap_or(ShortcutInputSource::SelectionOrClipboard);
@@ -70,10 +49,7 @@ impl ShortcutEditFormInput {
 
         Self {
             hotkey,
-            prompt: ShortcutPromptSelection {
-                selected: selected_prompt,
-                choices: prompts,
-            },
+            prompt: ShortcutPromptSelection(selected_prompt),
             run_settings: RunSettingsInput::new(
                 selected_model,
                 shortcut
@@ -163,6 +139,21 @@ fn normalize_shortcut_input(draft: &ShortcutEditFormInput) -> ShortcutEditFormIn
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ShortcutPromptSelection(pub(super) Option<PromptId>);
+
+impl SelectFieldValue for ShortcutPromptSelection {
+    type Selected = Option<PromptId>;
+
+    fn to_selected_value(&self) -> Option<Self::Selected> {
+        Some(self.0.clone())
+    }
+
+    fn from_selected_value(selected: Option<Self::Selected>, previous: &Self) -> Self {
+        Self(selected.unwrap_or_else(|| previous.0.clone()))
+    }
+}
+
 fn shortcut_issue(
     path: gpui_form::FieldPath,
     trigger: ValidationTrigger,
@@ -198,217 +189,12 @@ fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> 
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ShortcutPromptSelection {
-    pub(super) selected: Option<PromptId>,
-    choices: Vec<PromptChoice>,
-}
-
-pub(super) struct ShortcutHotkeyBinding;
-
-impl FormComponentBinding<Option<String>> for ShortcutHotkeyBinding {
-    type State = HotkeyInput;
-    type Draft = Option<String>;
-
-    fn new_state(
-        initial: &Option<String>,
-        _options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let hotkey = initial.as_deref().and_then(string_to_keystroke);
-        cx.new(|cx| {
-            HotkeyInput::new("shortcut-dialog-hotkey", window, cx)
-                .w_full()
-                .default_value(hotkey)
-        })
-    }
-
-    fn draft_from_value(value: &Option<String>) -> Self::Draft {
-        value.clone()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        state.read(cx).current_hotkey_string()
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: gpui_form::FieldPath,
-        _trigger: gpui_form::ValidationTrigger,
-        _cx: &App,
-    ) -> Result<Option<String>, Box<FieldError>> {
-        Ok(draft.clone())
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &Option<String>,
-        _cause: FieldChangeCause,
-        _window: &mut Window,
-        cx: &mut App,
-    ) {
-        let hotkey = value.as_deref().and_then(string_to_keystroke);
-        state.update(cx, |input, cx| {
-            input.set_hotkey(hotkey, cx);
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        state.update(cx, |input, cx| {
-            input.focus(window, cx);
-        });
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &state,
-            window,
-            move |form, _state, event: &HotkeyInputEvent, window, cx| match event {
-                HotkeyInputEvent::Change => sink.emit(
-                    form,
-                    FormComponentEvent::Change(FieldChangeCause::UserInput),
-                    window,
-                    cx,
-                ),
-            },
-        ));
-        subscriptions
-    }
-}
-
-pub(super) struct ShortcutPromptSelectState {
-    pub(super) select: Entity<ShortcutPromptSelectStateInner>,
-    choices: Vec<PromptChoice>,
-}
-
-pub(super) struct ShortcutPromptSelectBinding;
-
-impl FormComponentBinding<ShortcutPromptSelection> for ShortcutPromptSelectBinding {
-    type State = ShortcutPromptSelectState;
-    type Draft = ShortcutPromptSelection;
-
-    fn new_state(
-        initial: &ShortcutPromptSelection,
-        _options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let choices = initial.choices.clone();
-        let selected_index = prompt_selected_index(&choices, &initial.selected);
-        cx.new(|cx| {
-            let select = cx.new(|cx| {
-                SelectState::new(choices.clone(), selected_index, window, cx).searchable(true)
-            });
-            ShortcutPromptSelectState { select, choices }
-        })
-    }
-
-    fn draft_from_value(value: &ShortcutPromptSelection) -> Self::Draft {
-        value.clone()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        let state = state.read(cx);
-        ShortcutPromptSelection {
-            selected: state.select.read(cx).selected_value().cloned().flatten(),
-            choices: state.choices.clone(),
-        }
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: gpui_form::FieldPath,
-        _trigger: gpui_form::ValidationTrigger,
-        _cx: &App,
-    ) -> Result<ShortcutPromptSelection, Box<FieldError>> {
-        Ok(draft.clone())
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &ShortcutPromptSelection,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |state, cx| {
-            if state.choices != value.choices {
-                state.choices = value.choices.clone();
-                state.select.update(cx, |select, cx| {
-                    select.set_items(value.choices.clone(), window, cx);
-                });
-            }
-            state.select.update(cx, |select, cx| {
-                select.set_selected_value(&value.selected, window, cx);
-            });
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        let select = state.read(cx).select.clone();
-        let focus_handle = {
-            let select = select.read(cx);
-            select.focus_handle(cx)
-        };
-        focus_handle.focus(window, cx);
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let select = state.read(cx).select.clone();
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &select,
-            window,
-            move |form, _select, event: &SelectEvent<Vec<PromptChoice>>, window, cx| {
-                let SelectEvent::Confirm(_) = event;
-                sink.emit(
-                    form,
-                    FormComponentEvent::Change(FieldChangeCause::UserInput),
-                    window,
-                    cx,
-                );
-            },
-        ));
-        subscriptions
-    }
-}
-
-fn prompt_selected_index(
-    choices: &[PromptChoice],
-    selected: &Option<PromptId>,
-) -> Option<IndexPath> {
-    choices
-        .iter()
-        .position(|choice| choice.value() == selected)
-        .map(|row| IndexPath::default().row(row))
-}
-
-pub(super) fn field_errors<Field>(field: &Field) -> Vec<FieldError>
+pub(super) fn field_errors<Field>(field: &Field, form_meta: &FormMeta) -> Vec<FieldError>
 where
     Field: FormField,
 {
     field
-        .visible_errors(&FormMeta::default())
+        .visible_errors(form_meta)
         .into_iter()
         .cloned()
         .collect()

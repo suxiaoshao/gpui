@@ -10,11 +10,10 @@ pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenSt
     let ident = model.ident;
     let name = &model.name;
     Ok(match model.attrs.component {
-        FieldKind::Binding => {
+        FieldKind::Value => {
             quote! {
-                if let Err(__gpui_form_error) = self.#ident.prepare_submit(
+                if let Err(__gpui_form_error) = self.#ident.prepare_submit_at(
                     ::gpui_form::macro_support::field_path(#name),
-                    cx,
                 ) {
                     report.push_field_error(*__gpui_form_error);
                 }
@@ -67,7 +66,6 @@ pub(super) fn prepare_submit_statement(model: &FieldModel<'_>) -> Result<TokenSt
                 self.#refresh_meta_ident();
             }
         }
-        _ => quote! {},
     })
 }
 
@@ -78,14 +76,10 @@ pub(super) fn required_validation_statement(model: &FieldModel<'_>) -> Result<To
 
     let ident = model.ident;
     let name = &model.name;
-    let label_param = if let Some(label) = &model.attrs.label {
-        quote!(#label)
-    } else {
-        quote!(__gpui_form_required_path.to_string())
-    };
+    let label_param = quote!(__gpui_form_required_path.to_string());
 
     Ok(match model.attrs.component {
-        FieldKind::Value | FieldKind::Binding => quote! {
+        FieldKind::Value => quote! {
             let __gpui_form_required_path = ::gpui_form::macro_support::field_path(#name);
             if ::gpui_form::macro_support::scope_contains_path(
                 &scope,

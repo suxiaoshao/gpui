@@ -32,10 +32,11 @@ pipeline，并通过 `SubmitError::Invalid(FormValidationReport)` 返回。
 | Trait | 处理 |
 | --- | --- |
 | `FormStore` | 保留并扩展，是用户操作 form 的主入口。 |
-| `FormComponentBinding` | 保留，是 UI component state 与 typed field store 的边界。 |
+| `FieldCodec` / `DraftFieldStore` | 保留，是 raw draft 解析和 leaf form state 的纯 core 边界。 |
+| `FormFieldHandle` | 保留，是 adapter 访问单一 form draft 的 typed boundary。 |
 | `ValidationAdapter` | 保留，负责 validation strategy；未来 async validation 单独设计，不混入 submit handler。 |
 | `SubmitTransform` | 保留，负责 draft -> normalized output；不负责业务保存。 |
-| `FormField` | 保留，统一 typed field store 的 value/meta/errors/focus/component state 访问。 |
+| `FormField` | 保留，统一 typed field store 的 value/draft/meta/errors 访问；不包含 component state。 |
 | `GeneratedFormStore` | 保留但隐藏为 macro/internal helper；不要在 app 计划中要求用户直接依赖。 |
 | `FormState` | 删除。当前没有 impl/调用路径，职责与 `FormStore` / internals 重叠。 |
 | `FormFragment` | 删除。当前 group 实现没有接入这个 trait。 |
@@ -90,11 +91,12 @@ pub enum SubmitError<E> {
 共享管线：
 
 ```text
-UI component state
+form-owned draft
   -> generated form store prepare_submit(...)
   -> internal parse/preflight report
   -> SubmitTransform normalize output
-  -> write normalized output back to draft/component state
+  -> write normalized output back to form draft
+  -> typed field event lets any mounted adapter update its component mirror
   -> submit validation adapter
   -> final FormValidationReport
 ```

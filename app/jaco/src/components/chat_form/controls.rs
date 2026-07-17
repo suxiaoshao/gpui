@@ -2,9 +2,8 @@ use gpui::{Entity, SharedString};
 
 use super::project_control::ProjectControlState;
 
-use crate::{
-    components::run_settings::{ApprovalControlState, ModelControlState, ReasoningControlState},
-    state::attachments::ComposerAttachment,
+use crate::components::run_settings::{
+    ApprovalControlState, ModelControlState, ReasoningControlState,
 };
 
 /// Availability is part of the ChatForm composition contract.  A hidden
@@ -44,8 +43,7 @@ impl<T> ControlSlot<T> {
 
 #[derive(Clone, Default)]
 pub(crate) struct AttachmentControlState {
-    pub(crate) attachments: Vec<ComposerAttachment>,
-    pub(crate) preview: Option<ComposerAttachment>,
+    pub(crate) form: Option<Entity<crate::components::chat_input::ChatInputFormStore>>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +57,7 @@ pub(crate) struct PrimaryActionControlState {
 
 #[derive(Clone)]
 pub(crate) struct RunSettingsControls {
+    pub(crate) form: Entity<crate::components::run_settings::RunSettingsFormStore>,
     pub(crate) model: ControlSlot<Entity<ModelControlState>>,
     pub(crate) reasoning: ControlSlot<Entity<ReasoningControlState>>,
     pub(crate) approval: ControlSlot<Entity<ApprovalControlState>>,

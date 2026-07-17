@@ -62,13 +62,13 @@ impl HomeView {
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
                 }),
-                cx.observe(&workspace, move |_state, workspace, cx| {
+                cx.observe_in(&workspace, window, move |_state, workspace, window, cx| {
                     let pending_project_id = workspace.update(cx, |workspace, _cx| {
                         workspace.take_pending_new_conversation_project_id()
                     });
                     if let Some(project_id) = pending_project_id {
                         new_conversation_for_workspace.update(cx, |page, cx| {
-                            page.select_project_id_from_sidebar(project_id, cx);
+                            page.select_project_id_from_sidebar(project_id, window, cx);
                         });
                     }
                     cx.notify();

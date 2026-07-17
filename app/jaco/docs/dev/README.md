@@ -5,4 +5,4 @@
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
 | [#173](https://github.com/suxiaoshao/gpui/issues/173) ConversationEntry 与 AgentRun 分层重建 | 实现完成，自动化、bundle、隔离数据启动与窗口交互 smoke 均已验证 | [issue-173/README.md](issue-173/README.md) |
-| [#175](https://github.com/suxiaoshao/gpui/issues/175) 纯 UI ChatForm、快捷键运行设置与临时窗口 | 实施完成；代码级验证通过，桌面快捷键/弹窗验收按请求跳过 | [issue-175/README.md](issue-175/README.md) |
+| [#175](https://github.com/suxiaoshao/gpui/issues/175) 纯 UI ChatForm、快捷键运行设置与临时窗口 | 原功能实施完成；form/component config/catalog 三通道重构计划待实施 | [issue-175/README.md](issue-175/README.md)、[state-ownership-sync-plan.md](issue-175/state-ownership-sync-plan.md) |

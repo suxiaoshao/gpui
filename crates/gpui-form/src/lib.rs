@@ -1,5 +1,5 @@
-//! Shared form state, component binding, validation, and submit transform
-//! primitives for GPUI applications.
+//! Shared form state, validation, and submit transform primitives for GPUI
+//! applications.
 //!
 //! Unsupported field options fail at macro expansion time instead of being
 //! ignored.
@@ -12,18 +12,17 @@
 //! }
 //! ```
 //!
-//! The removed app-specific `state = "..."` attribute is also rejected; use
-//! `binding = "TypeName"` instead.
+//! Component state and subscriptions are owned by the caller and connected via
+//! adapter crates.
 //!
 //! ```compile_fail
 //! #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 //! struct OldCustomStateFormInput {
-//!     #[form(state = "CustomState")]
+//!     #[form(binding = "CustomBinding")]
 //!     secret: String,
 //! }
 //! ```
 
-pub mod component;
 pub mod core;
 pub mod macro_support;
 pub mod pipeline;
@@ -37,23 +36,17 @@ pub mod __private {
 #[cfg(test)]
 mod test_support;
 
-pub use component::binding::{
-    ComponentStateOptions, FormComponentBinding, FormComponentEvent, FormComponentEventSink,
-    NoComponentBinding,
-};
-pub use component::fields::{
-    ComponentFieldEventKind, ComponentFieldEventOutcome, ComponentFieldStore, FieldDraftSync,
-};
 pub use core::array::{
     ArrayIndexError, FieldArrayItem, FieldArrayStore, FormItemId, FormItemIdGenerator, FormRowValue,
 };
+pub use core::codec::{DraftFieldStore, DraftUpdate, FieldCodec, FieldCodecError, IdentityCodec};
 pub use core::error::{
     ErrorParamValue, ErrorParams, FieldError, FieldValidationReport, FormError,
     FormValidationReport, ValidationSeverity, ValidationSource,
 };
-pub use core::field::{
-    FieldCore, FormField, NoComponentState, ValidationTriggers, ValueFieldStore,
-};
+pub use core::events::{FieldDraftEvent, FormDraftEvent, FormStoreEvent};
+pub use core::field::{FieldCore, FormField, ValidationTriggers, ValueFieldStore};
+pub use core::field_handle::{FormFieldHandle, FormFieldHandleError};
 pub use core::form::FormStore;
 pub use core::group::FieldGroupStore;
 pub use core::meta::{FieldMeta, FormMeta};

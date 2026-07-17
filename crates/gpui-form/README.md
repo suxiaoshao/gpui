@@ -1,900 +1,435 @@
 # gpui-form
 
-`gpui-form` is an early GPUI-native form state and validation crate.
+`gpui-form` is a form-state library for GPUI applications. It owns form draft,
+dirty/touched/error metadata, validation, transformation, and submission. UI
+components are connected by adapter crates and remain owned by the application.
 
-This README describes the current user-facing design. The core runtime modules,
-`FormItemId(u64)` dynamic array lifecycle, validation/transform adapter traits,
-component state holder types, and a GPUI-aware `#[derive(FormStore)]` path are
-implemented. The derive macro currently supports default value fields, explicit
-`binding = "..."` leaf component fields, explicit child-store `group` and
-`array` fields, plus live `garde` validation and `garde + validify` submit
-pipeline generation.
+> Status: the pure draft/handle API and caller-owned component adapter contract
+> are implemented. The workspace has migrated off the legacy state-owning
+> binding surface; new code should use the API shown here.
 
-`gpui-form` core is UI-library agnostic: it does not depend on
-`gpui-component` and does not provide built-in leaf component aliases such as
-`component = "input"` or `component = "select"`. Applications that use
-`gpui-component` opt into `gpui-form-gpui-component`, which provides
-`TextInputBinding`, `NumberInputBinding`, `SelectBinding`, `ComboboxBinding`,
-and `BoolBinding`. Internally, the runtime modules are grouped under `core`,
-`component`, `pipeline`, and `view`; the derive expansion is split by generated
-responsibility under `gpui-form-macros/src/expand/`.
+## Why this crate exists
 
-## Design Reference
+A GPUI form usually needs more than a collection of component states:
 
-The current draft borrows these ideas from the cloned reference libraries:
+- invalid raw input must survive long enough to display and validate;
+- dirty state must compare against a stable baseline;
+- nested groups and dynamic arrays need one validation path;
+- programmatic replacement must be distinguishable from user editing;
+- submit must read one authoritative snapshot;
+- component options and focus state must not become business data.
 
-- TanStack Form: each field owns `value + meta`, with interaction metadata such
-  as touched, blurred, dirty, validating, errors, and derived valid/pristine
-  flags.
-- React Hook Form: the form exposes typed field registration/state APIs such as
-  set value, get field state, trigger validation, handle submit, reset, and
-  field-focused errors. For dynamic arrays, `gpui-form` keeps the same stable
-  runtime-identity goal, but uses a Rust `FormItemId(u64)` newtype instead of
-  UUID strings or domain ids.
-- Garde / Validify: validation rules should be delegated to `garde`, while
-  submit-time modification should be delegated to `validify::Modify` instead of
-  being reimplemented in `gpui-form`.
-- GPUI / gpui-component: component state such as `InputState` and `SelectState`
-  must stay owned by GPUI entities, so generated field stores should expose the
-  concrete component state needed by each field.
+`gpui-form` provides that form-domain layer without depending on a component
+library or an application store.
 
-## Validation Boundary
+## State ownership
 
-`gpui-form` owns form state, event triggers, field paths, error visibility,
-component state, and subscriptions. `garde` owns validation rules. `validify`
-owns submit-time modification through `Modify`.
+The public model has three deliberately separate channels:
 
-Live validation is read-only. `on_change` and `on_blur` can run `validify` on a
-clone to build a normalized preview, then call `garde::Validate` on that preview.
-They must not rewrite `InputState` or other component state. When the user clicks
-submit, `gpui-form` runs `validify::Modify`, writes the normalized value back to
-the visible draft, and then runs `garde::Validate`. That write-back happens even
-when submit validation fails.
+| State | Owner | Examples |
+| --- | --- | --- |
+| Form draft | `gpui-form` | raw text, typed selection, dirty, touched, errors |
+| Component configuration | application | items, capabilities, disabled, placeholder, mask |
+| Component interaction | component entity | focus, open, query, highlight, scroll, IME, tasks |
 
-## Core User Model
+The text or selection cached inside a component is only a UI mirror. Validation,
+transformation, and submit read the form draft, never the component entity.
 
-Users write the final submit input as an ordinary Rust struct. A derive macro
-generates a matching form store type. Each generated field has a one-to-one
-relationship with the target struct field. UI metadata stays in `#[form(...)]`;
-validation metadata stays in `#[garde(...)]`, and modification metadata stays in
-`#[modify(...)]` from `validify`.
+## Quick start
+
+Define the domain input and derive its form store:
 
 ```rust
-use garde::Validate;
-use gpui_form::FormStore;
-use validify::Validify;
+use gpui_form::{FieldChangeCause, FormStore};
 
-type ConnectionNameBinding = gpui_form_gpui_component::TextInputBinding<String>;
-type ConnectionKindBinding =
-    gpui_form_gpui_component::SelectBinding<Option<ConnectionKind>, ConnectionKindOptions>;
-type EndpointUrlBinding = gpui_form_gpui_component::TextInputBinding<Option<String>>;
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProviderKind {
+    OpenAi,
+    Ollama,
+}
 
-#[derive(Clone, Debug, PartialEq, FormStore, Validate, Validify)]
-#[garde(allow_unvalidated)]
+#[derive(Clone, Debug, PartialEq, FormStore)]
 #[form(
-    store = ConnectionFormStore,
+    store = "ProviderFormStore",
     validation(adapter = "garde"),
     transform(adapter = "validify")
 )]
-pub struct ConnectionInput {
-    #[form(
-        binding = "ConnectionNameBinding",
-        label = "form-example-connection-name-label",
-        validate(on_change, on_blur, on_submit)
-    )]
-    #[modify(trim)]
-    #[garde(length(min = 1, max = 80))]
-    pub display_name: String,
+pub struct ProviderInput {
+    #[form(validate(on_change, on_blur, on_submit))]
+    pub name: String,
 
-    #[form(
-        binding = "ConnectionKindBinding",
-        label = "form-example-connection-kind-label",
-        validate(on_submit)
-    )]
-    #[garde(skip)]
-    pub kind: Option<ConnectionKind>,
+    pub kind: Option<ProviderKind>,
 
-    #[form(
-        binding = "EndpointUrlBinding",
-        label = "form-example-endpoint-url-label",
-        validate(on_blur, on_submit)
-    )]
-    #[modify(trim)]
-    #[garde(url)]
-    pub endpoint_url: Option<String>,
-
-    #[form(binding = "SecretRefBinding", label = "form-example-secret-label")]
-    #[garde(skip)]
-    pub secret_ref: Option<String>,
+    #[form(codec = "PortCodec", validate(on_blur, on_submit))]
+    pub port: u16,
 }
 ```
 
-The macro expands to a form store shape equivalent to:
+`name` and `kind` use `IdentityCodec<Value>` because their UI draft is already
+the domain type. `PortCodec` converts the component-friendly `String` draft into
+`u16`.
+
+Create the generated form entity from a committed value:
 
 ```rust
-pub struct ConnectionFormStore {
-    pub display_name: ComponentFieldStore<String, ConnectionNameBinding>,
-    pub kind: ComponentFieldStore<Option<ConnectionKind>, ConnectionKindBinding>,
-    pub endpoint_url: ComponentFieldStore<Option<String>, EndpointUrlBinding>,
-    pub secret_ref: ComponentFieldStore<Option<String>, SecretRefBinding>,
-    validation: GardeAdapter<ConnectionInput>,
-    transform: ValidifyTransform<ConnectionInput, ConnectionInput>,
-    meta: FormMeta,
+let form = cx.new(|cx| {
+    ProviderFormStore::from_value(
+        ProviderInput {
+            name: "Local".into(),
+            kind: Some(ProviderKind::Ollama),
+            port: 11434,
+        },
+        window,
+        cx,
+    )
+});
+```
+
+The generated store owns every field draft and its baseline. A component adapter
+receives a typed field handle; it does not receive the whole form:
+
+```rust
+let name = ProviderFormStore::name_handle(&form);
+let kind = ProviderFormStore::kind_handle(&form);
+let port = ProviderFormStore::port_handle(&form);
+```
+
+## Field codecs
+
+A codec defines the form-owned draft representation for one domain value:
+
+```rust
+pub trait FieldCodec<Value>: 'static
+where
+    Value: Clone + PartialEq + 'static,
+{
+    type Draft: Clone + PartialEq + 'static;
+
+    fn draft_from_value(value: &Value) -> Self::Draft;
+
+    fn parse(draft: &Self::Draft) -> Result<Value, FieldCodecError>;
 }
 ```
 
-The generated store is draft-only. Editing the form updates field stores, not the
-original `ConnectionInput`. The domain value is created only after successful
-submit validation. Submit first writes the `validify`-normalized value back into
-the visible draft, then validates that normalized value with `garde`.
+`FieldCodecError` contains only a stable error code, message key, and params.
+The field runtime adds the current field path, validation trigger, and internal
+validation source. Codecs therefore remain pure, context-free, and easy to unit
+test.
+
+Use the implicit `IdentityCodec<Value>` for checkboxes, typed selections, and
+other fields whose UI draft is already the domain value. Use an explicit codec
+when the user must be allowed to hold an intermediate representation:
+
+```text
+text input   String draft -> String / Option<String>
+number input String draft -> integer / float
+custom input AppDraft     -> DomainValue
+```
+
+Parsing belongs to the form boundary. A number component may display `"-"` or
+`"1."`; the form keeps that raw draft and reports a parse error instead of
+forcing the component to invent a valid domain value.
+
+## Generated API
+
+For a leaf field named `model`, the derive generates typed accessors equivalent
+to:
 
 ```rust
-let original = ConnectionInput {
-    display_name: "Production".into(),
-    kind: Some(ConnectionKind::Https),
-    endpoint_url: Some("https://example.com".into()),
-    secret_ref: Some("secrets.production.token".into()),
-};
+impl ProviderFormStore {
+    pub fn model_draft(&self) -> ModelDraft;
+    pub fn model_value(&self) -> ModelValue;
 
-let form = cx.new(|cx| ConnectionFormStore::from_value(original, window, cx));
+    pub fn set_model_draft(
+        &mut self,
+        draft: ModelDraft,
+        cause: FieldChangeCause,
+        cx: &mut Context<Self>,
+    );
 
-// Later, from a submit action:
-match form.update(cx, |form, window, cx| form.submit(window, cx)) {
-    Ok(input) => save_connection(input, cx),
-    Err(report) => show_first_error(report, cx),
+    pub fn set_model_value(
+        &mut self,
+        value: ModelValue,
+        cause: FieldChangeCause,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    );
+
+    pub fn model_handle(
+        form: &Entity<Self>,
+    ) -> FormFieldHandle<Self, ModelDraft>;
+
+    pub fn model_required(&self) -> bool;
+
+    pub fn set_model_required(
+        &mut self,
+        required: bool,
+        cx: &mut Context<Self>,
+    );
 }
 ```
 
-## Rendering with gpui-component
+`FormFieldHandle<Form, Draft>` is a small, cloneable adapter boundary. It holds a
+weak form entity, generated field path, and typed read/write/event-filtering
+functions. Its public operations are `draft`, `set_user_draft`, explicit-cause
+`set_draft`, and `subscribe_in` for `FieldDraftEvent<Draft>`. An adapter does not
+subscribe to the whole form and guess which field changed, or re-read the form
+inside an event callback. The handle cannot create a component, change component
+configuration, query a catalog, or submit the form.
 
-Generated binding fields expose component-specific state for the selected UI
-adapter. For `gpui-component`, select and combobox bindings usually include the
-searchable-list delegate type in the binding alias because the generated store
-type needs it as a Rust generic parameter.
+Use `FieldChangeCause::UserInput` for genuine user edits. Programmatic setters use an
+explicit non-user cause so validation and metadata can apply the intended
+policy.
+
+The derive also keeps a typed `ProviderFormField` enum for stable field identity.
+Whole-form observers receive the library-provided
+`FormStoreEvent<ProviderFormField>`, whose `FieldChanged` payload contains the
+field and `FieldChangeCause`. The derive does not generate a separate public
+event enum for every form, and focus/blur are not separate event variants.
+
+`required` belongs to form validation. A generated `set_<field>_required` is a
+pure form command: it takes no `Window`, never configures a component, and does
+not emit a draft-change event. Applications configure any visual required
+affordance separately.
+
+## Connecting UI components
+
+The application creates and configures component state, then asks an adapter
+crate to mirror its value with a field handle:
 
 ```rust
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = ChoiceFormStore)]
-pub struct ChoiceInput {
-    #[form(binding = "ChoiceTargetBinding")]
-    pub target: Option<String>,
+use gpui_component::{input::InputState, select::SelectState};
+use gpui_form::SubscriptionSet;
+use gpui_form_gpui_component::{bind_input, bind_select};
 
-    #[form(binding = "ChoiceTagsBinding")]
-    pub tags: Vec<String>,
+pub struct ProviderEditor {
+    form: Entity<ProviderFormStore>,
+    name_state: Entity<InputState>,
+    kind_state: Entity<SelectState<ProviderDelegate>>,
+    subscriptions: SubscriptionSet,
+}
+
+impl ProviderEditor {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, ComponentBindError> {
+        let form = cx.new(|cx| {
+            ProviderFormStore::from_value(default_provider(), window, cx)
+        });
+
+        let name_state = cx.new(|cx| InputState::new(window, cx));
+        let kind_state = cx.new(|cx| {
+            SelectState::new(
+                ProviderDelegate::new(load_provider_kinds()),
+                None,
+                window,
+                cx,
+            )
+        });
+
+        let mut subscriptions = SubscriptionSet::new();
+        subscriptions.extend(bind_input(
+            ProviderFormStore::name_handle(&form),
+            &name_state,
+            window,
+            cx,
+        )?);
+        subscriptions.extend(bind_select(
+            ProviderFormStore::kind_handle(&form),
+            &kind_state,
+            window,
+            cx,
+        )?);
+
+        Ok(Self {
+            form,
+            name_state,
+            kind_state,
+            subscriptions,
+        })
+    }
 }
 ```
 
-`Option<T>` is supported by `SelectFieldValue`, and `Vec<T>` / `Option<T>` are
-supported by `ComboboxFieldValue`. A required non-`Option` domain enum can opt in
-by implementing the corresponding value trait.
+The adapter returns subscriptions; the caller decides their lifetime by storing
+them in the core, component-library-neutral `SubscriptionSet`. The field handle
+is only the typed connection point; it does not own a component or a
+subscription. Use separate sets when different mounted subtrees need independent
+teardown.
 
-Nested structs use an explicit generated child store:
+The adapter has only two responsibilities:
 
-```rust
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = ProfileFormStore)]
-pub struct ProfileInput {
-    #[form(binding = "StringInputBinding")]
-    pub nickname: String,
-}
+1. publish genuine component user events into the form field;
+2. mirror programmatic form changes back into the component.
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = AccountFormStore)]
-pub struct AccountInput {
-    #[form(component = "group", store = "ProfileFormStore")]
-    pub profile: ProfileInput,
-}
-```
+It uses an explicit direction guard so one synchronous event cannot re-enter an
+entity already being updated.
 
-The parent group stores the child `Entity<ProfileFormStore>`, caches the child
-draft/meta for parent `draft()` and `meta()`, and stores the child observe
-subscription in the group store.
+`SubscriptionSet` is not tied to `gpui-component`. A custom control or another
+component library can provide its own `bind_*` function that accepts a
+`FormFieldHandle` and component entity and returns `Result<SubscriptionSet, _>`.
+No core adapter trait or dependency on `gpui-form-gpui-component` is required.
+
+## Dynamic options and component configuration
+
+Options are application data, not form data. For select/combobox items, use the
+adapter's component-specific config command:
 
 ```rust
-use gpui_component::form::{field, v_form};
-use gpui_component::input::Input;
-use gpui_component::select::Select;
-
-fn render_connection_form(
-    form: Entity<ConnectionFormStore>,
+fn refresh_provider_kinds(
+    &mut self,
+    kinds: Vec<ProviderKind>,
     window: &mut Window,
-    cx: &mut Context<SettingsPanel>,
-) -> impl IntoElement {
-    let form_read = form.read(cx);
-
-    v_form()
-        .child(
-            field()
-                .label(form_read.display_name.label(cx))
-                .required(form_read.display_name_required())
-                .description(form_read.display_name.help_text(cx))
-                .child(Input::new(form_read.display_name_state()))
-                .error(form_read.display_name.visible_error_text(cx)),
-        )
-        .child(
-            field()
-                .label(form_read.kind.label(cx))
-                .required(form_read.kind_required())
-                .child(Select::new(form_read.kind_state()))
-                .error(form_read.kind.visible_error_text(cx)),
-        )
-        .child(
-            field()
-                .label(form_read.endpoint_url.label(cx))
-                .child(Input::new(form_read.endpoint_url_state()))
-                .error(form_read.endpoint_url.visible_error_text(cx)),
-        )
+    cx: &mut Context<Self>,
+) -> Result<(), ComponentBindError> {
+    set_select_items(
+        ProviderFormStore::kind_handle(&self.form),
+        &self.kind_state,
+        ProviderDelegate::new(kinds),
+        window,
+        cx,
+    )
 }
 ```
 
-The field remains the source of truth for form interaction state. Component state
-is the UI adapter for a concrete control, not the submitted domain value.
+`set_select_items` reads the authoritative form draft, replaces the delegate,
+and reprojects the component's selected item/label from the new items. If the
+draft is absent, it clears only the UI selection and exposes an unavailable
+presentation; it does not change the form or choose a business fallback.
 
-The derive macro also generates typed accessors so app code does not need to
-reach into each field store for common component handles and values:
+Simple configuration such as disabled state, placeholder, capabilities, or
+masking can be updated directly through the component API. These changes must
+not write a form field. The final submit resolver decides whether an unavailable
+draft is rejected or resolved.
+
+This distinction prevents a catalog refresh from silently changing user input.
+
+## Reading and replacing values
+
+Read drafts and metadata through the form entity:
 
 ```rust
-let display_name = form_read.display_name_value();
-let enabled = form_read.enabled_value();
-let input = form_read.display_name_state();
-let select = form_read.kind_state();
+let dirty = form.read(cx).meta().is_dirty;
+let kind = form.read(cx).kind_draft().clone();
 ```
 
-For programmatic changes, prefer generated field setters over reading the whole
-draft, patching one field, and calling `write_draft`:
+There are only two whole-form replacement operations:
 
 ```rust
+form.update(cx, |form, cx| form.reset(window, cx));
+
 form.update(cx, |form, cx| {
-    form.set_enabled_value(true, FieldChangeCause::UserInput, window, cx);
+    form.replace_from_value(new_committed_value, cx);
 });
 ```
 
-The setter updates the field draft value, writes the matching component state,
-runs field-triggered validation for the supplied cause, emits the typed
-`FieldChanged` event, refreshes form meta, and notifies the view.
-
-Generated stores also expose typed external-error helpers:
-
-```rust
-form.update(cx, |form, cx| {
-    form.clear_all_errors(cx);
-    form.apply_field_error(ConnectionFormField::DisplayName, error, cx);
-});
-```
-
-These helpers are for app-specific validation or service errors that are already
-mapped to a generated field enum. They keep `FieldPath` as an internal validation
-routing detail instead of making app code build string paths.
-
-## Dynamic Array Identity
-
-Dynamic array fields expose stable runtime item ids for rendering and event
-ownership. The ids are generated when rows are created and are not part of the
-submitted domain value.
-
-Derived array fields use an explicit generated child store:
+`replace_from_value` deliberately discards the current draft, replaces the
+baseline, clears errors and submit metadata, and emits field events so mounted
+adapters update their mirrors. The caller must decide whether discarding a dirty
+draft is acceptable:
 
 ```rust
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = HeaderFormStore)]
-pub struct HeaderInput {
-    #[form(binding = "StringInputBinding")]
-    pub key: String,
+if !form.read(cx).meta().is_dirty {
+    form.update(cx, |form, cx| {
+        form.replace_from_value(reloaded_value, cx);
+    });
 }
+```
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = HeaderListFormStore)]
-pub struct HeaderListInput {
-    #[form(component = "array", store = "HeaderFormStore")]
+The core library does not implement automatic store binding, incoming-value
+conflicts, revision counters, or catalog rebase.
+
+## Validation and submit
+
+Validation is triggered from form events and reads form-owned draft/value state.
+The final submit path is:
+
+```text
+form draft
+  -> codec parse
+  -> field/form validation
+  -> transform or normalize
+  -> final validation report
+  -> typed output / submit handler
+```
+
+Submit never asks a component for its current text or selection:
+
+```rust
+form.update(cx, |form, cx| {
+    form.submit(window, cx)
+});
+```
+
+Parse and validation failures remain in field/form metadata. An async submit
+task is owned by the form submit runtime and is not part of component state.
+
+## Groups and arrays
+
+Nested groups and dynamic arrays remain explicit form structures:
+
+```rust
+#[derive(Clone, PartialEq, FormStore)]
+#[form(store = "ServerFormStore")]
+pub struct ServerInput {
+    #[form(group(store = "TlsFormStore"))]
+    pub tls: TlsInput,
+
+    #[form(array(store = "HeaderFormStore"))]
     pub headers: Vec<HeaderInput>,
 }
 ```
 
-The generated parent store exposes helpers named after the field:
+Groups own nested form stores. Arrays own stable row identities plus structural
+operations such as append, remove, move, swap, and replace. Neither abstraction
+owns UI entities. Whole-form replacement can rebase rows when the incoming array
+has the same length; a structural length change is reported as an internal
+validation error and should instead use the array's explicit row operations.
 
-```rust
-form.headers_append(value, window, cx);
-form.headers_insert(index, value, window, cx)?;
-form.headers_remove(index, cx)?;
-form.headers_remove_id(row_id, cx);
-form.headers_move(from, to, cx)?;
-form.headers_swap(a, b, cx)?;
-form.headers_replace(values, window, cx);
-form.headers_reset_items(values, window, cx);
-let rows = form.headers_values_with_id();
+## What belongs outside gpui-form
+
+Keep these concerns in the application or a dedicated adapter:
+
+- creation and rendering of GPUI component entities;
+- select/combobox items and catalog reloads;
+- disabled/read-only/capability policy;
+- placeholder, label, description, mask, and localization;
+- repository loading and persistence;
+- product-specific fallback and submit resolution;
+- focus, picker visibility, query, highlight, scroll, and IME state.
+
+This is intentional: changing any of those concerns should not require changing
+the form schema or core form runtime.
+
+## Crates
+
+| Crate | Responsibility |
+| --- | --- |
+| `gpui-form` | pure form draft, metadata, validation, transform, submit, field handles |
+| `gpui-form-macros` | derive field stores, accessors, field identity, handles, groups, and arrays |
+| `gpui-form-gpui-component` | bind app-created `gpui-component` states to field handles |
+
+See [`docs/README.md`](docs/README.md) for architecture, migration, and feature
+plans. The authoritative component-separation plan is
+[`docs/external-state-synchronization-plan.md`](docs/external-state-synchronization-plan.md).
+
+## Migration status
+
+The migration is complete. The public surface contains no generic
+component-state associated type, component-construction derive attribute,
+generated component-state accessor, or compatibility binding implementation.
+All workspace callers, including provider secrets and MCP dynamic rows, create
+their component state explicitly and own adapter subscriptions at the page or
+controller boundary.
+
+## Validation commands
+
+```bash
+cargo fmt --all
+cargo test -p gpui-form
+cargo test -p gpui-form-macros
+cargo test -p gpui-form-gpui-component
+cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component \
+  --all-targets --all-features -- -D warnings
 ```
-
-These helpers take `Context<ParentStore>` where new child rows or row
-subscriptions are created, so every child `Entity<HeaderFormStore>` and observe
-subscription is owned by the array item lifecycle.
-
-```rust
-pub struct FieldArrayItem<Item> {
-    pub id: FormItemId,
-    pub index: usize,
-    pub item: Item,
-}
-
-pub struct FormItemId(u64);
-```
-
-Array operations follow the `FormItemId(u64)` runtime identity lifecycle:
-
-- `append` / `insert` create new ids.
-- `remove` / `remove_id` drop the removed item id, component state, and
-  subscriptions.
-- `move` / `reorder` move ids together with their items.
-- `reset` / `replace` rebuild the item list and ids.
-- `values_with_id` returns `FormRowValue<T>` snapshots for app validators that
-  need to report row-specific errors without leaking the id into the submitted
-  domain value.
-
-Array row types should carry business meaning. Do not use one generic
-`KeyValueRow` and then patch child placeholders from the parent array. If the
-rows have different labels, placeholders, required rules, or normalization
-rules, define separate row inputs:
-
-```rust
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = EnvironmentRowFormStore)]
-pub struct EnvironmentRowInput {
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-variable")]
-    pub key: String,
-
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-value")]
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = HeaderRowFormStore)]
-pub struct HeaderRowInput {
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-name")]
-    pub name: String,
-
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-value")]
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = SecretHeaderRowFormStore)]
-pub struct SecretHeaderRowInput {
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-header-name")]
-    pub name: String,
-
-    #[form(binding = "StringInputBinding", placeholder = "form-example-placeholder-secret-ref")]
-    pub secret_ref: String,
-}
-
-#[derive(Clone, Debug, PartialEq, FormStore)]
-#[form(store = CommandFormStore)]
-pub struct CommandInput {
-    #[form(component = "array", store = "EnvironmentRowFormStore")]
-    pub environment: Vec<EnvironmentRowInput>,
-
-    #[form(component = "array", store = "HeaderRowFormStore")]
-    pub headers: Vec<HeaderRowInput>,
-
-    #[form(component = "array", store = "SecretHeaderRowFormStore")]
-    pub secret_headers: Vec<SecretHeaderRowInput>,
-}
-```
-
-## Field Trait
-
-Every generated field implements a shared field trait. The exact names are still
-draft, but each field should support this surface:
-
-```rust
-pub trait FormField {
-    type Value;
-    type ComponentState;
-
-    fn value(&self) -> &Self::Value;
-    fn set_value(&mut self, value: Self::Value, cause: FieldChangeCause);
-    fn reset(&mut self);
-
-    fn component_state(&self) -> &Entity<Self::ComponentState>;
-
-    fn meta(&self) -> FieldMeta;
-    fn errors(&self) -> &[FieldError];
-    fn visible_errors(&self) -> &[FieldError];
-    fn visible_error_text(&self, cx: &App) -> Option<SharedString>;
-
-    fn mark_touched(&mut self);
-    fn mark_blurred(&mut self);
-    fn mark_dirty(&mut self);
-
-    fn validate(&mut self, trigger: ValidationTrigger) -> FieldValidationResult;
-}
-```
-
-`FieldPath` is not a field-store property. The derive macro owns field
-addresses and uses them only when creating `ValidationScope` values and routing
-`FormValidationReport` errors back into concrete fields.
-
-The derive macro also generates typed field and event enums from the store name.
-For `ConnectionFormStore`, the generated types are:
-
-```rust
-pub enum ConnectionFormField {
-    Enabled,
-    DisplayName,
-    SecretRef,
-    EndpointUrl,
-}
-
-pub enum ConnectionFormEvent {
-    FieldChanged(ConnectionFormField),
-    FieldFocused(ConnectionFormField),
-    FieldBlurred(ConnectionFormField),
-}
-```
-
-App code should subscribe to the form entity for business side effects instead
-of subscribing to each underlying `InputState`:
-
-```rust
-cx.subscribe_in(&form, window, |this, _form, event: &ConnectionFormEvent, _window, cx| {
-    if let ConnectionFormEvent::FieldChanged(field) = event {
-        this.handle_field_change(field.key(), cx);
-    }
-});
-```
-
-Suggested field metadata:
-
-```rust
-pub struct FieldMeta {
-    pub is_touched: bool,
-    pub is_blurred: bool,
-    pub is_dirty: bool,
-    pub is_default_value: bool,
-    pub is_validating: bool,
-}
-```
-
-Suggested form metadata:
-
-```rust
-pub struct FormMeta {
-    pub is_dirty: bool,
-    pub is_touched: bool,
-    pub is_validating: bool,
-    pub last_submit_outcome: Option<SubmitOutcome>,
-    pub submission_attempts: u32,
-}
-```
-
-`FormMeta::is_pristine()` is computed from the meta snapshot. Submit runtime
-queries such as `FormStore::is_submitting()` and `FormStore::can_attempt_submit()`
-are computed from the store's `SubmitRuntime` and current meta snapshot.
-Field/form validity comes from the current `FieldError` / `FormError` set and
-the final `FormValidationReport`, not from cached meta booleans.
-
-## Validation Triggers
-
-Fields can be configured from `#[form(...)]` for different validation causes.
-Validation rules are supplied by `garde`; submit-time modification is supplied
-by `validify::Modify`.
-
-```rust
-#[derive(Clone, Debug, PartialEq, FormStore, garde::Validate)]
-#[garde(allow_unvalidated)]
-#[form(store = ShortcutFormStore, validation(adapter = "garde"))]
-pub struct ShortcutInput {
-    #[form(binding = "ShortcutTitleBinding", validate(on_change, on_blur, on_submit))]
-    #[garde(length(min = 1, max = 80))]
-    pub title: String,
-
-    #[form(binding = "ShortcutActionBinding", validate(on_submit))]
-    #[garde(skip)]
-    pub action: ShortcutAction,
-}
-```
-
-Target trigger model:
-
-```rust
-pub enum ValidationTrigger {
-    Mount,
-    Change,
-    Blur,
-    Submit,
-    Dynamic,
-}
-```
-
-Errors should preserve their source trigger and adapter source so UI can choose
-between "show all errors" and "show the error produced by this interaction".
-
-```rust
-pub struct FieldError {
-    pub path: FieldPath,
-    pub trigger: ValidationTrigger,
-    pub source: ValidationSource,
-    pub code: &'static str,
-    pub message_key: &'static str,
-    pub params: ErrorParams,
-}
-
-pub enum ValidationSource {
-    Garde,
-    App(&'static str),
-    Internal,
-}
-```
-
-## Component Binding
-
-Users provide component state by implementing a binding. The binding is
-responsible for creating UI state, reading a raw `Draft` from that state,
-parsing the draft into the typed field value, writing typed values back to the
-state, installing UI subscriptions, and mapping component events to form
-events.
-
-```rust
-pub trait FormComponentBinding<Value>: 'static {
-    type State: 'static;
-    type Draft: Clone + PartialEq + 'static;
-
-    fn new_state(
-        initial: &Value,
-        options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State>;
-
-    fn draft_from_value(value: &Value) -> Self::Draft;
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft;
-    fn parse_draft(
-        draft: &Self::Draft,
-        path: FieldPath,
-        trigger: ValidationTrigger,
-        cx: &App,
-    ) -> Result<Value, Box<FieldError>>;
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &Value,
-        cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    );
-    fn set_disabled(
-        state: &Entity<Self::State>,
-        disabled: bool,
-        window: &mut Window,
-        cx: &mut App,
-    );
-    fn set_required(
-        state: &Entity<Self::State>,
-        required: bool,
-        window: &mut Window,
-        cx: &mut App,
-    );
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static;
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool;
-}
-```
-
-`ComponentStateOptions` is the field attribute payload passed into bindings:
-
-```rust
-pub struct ComponentStateOptions {
-    pub label_key: Option<&'static str>,
-    pub description_key: Option<&'static str>,
-    pub placeholder_key: Option<&'static str>,
-    pub masked: bool,
-    pub disabled: bool,
-    pub required: bool,
-}
-```
-
-Example:
-
-```rust
-pub struct SecretRefBinding;
-
-pub struct SecretRefState {
-    input: Entity<InputState>,
-    reveal: bool,
-}
-
-impl FormComponentBinding<Option<String>> for SecretRefBinding {
-    type State = SecretRefState;
-    type Draft = String;
-
-    fn new_state(
-        initial: &Option<String>,
-        options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let placeholder = options
-            .placeholder_key
-            .map(|key| gpui_form::resolve_form_text(key, cx));
-
-        cx.new(|cx| SecretRefState {
-            input: cx.new(|cx| {
-                let mut input =
-                    InputState::new(window, cx).default_value(initial.clone().unwrap_or_default());
-                if let Some(placeholder) = placeholder {
-                    input = input.placeholder(placeholder);
-                }
-                if options.masked {
-                    input = input.masked(true);
-                }
-                input
-            }),
-            reveal: false,
-        })
-    }
-
-    fn draft_from_value(value: &Option<String>) -> Self::Draft {
-        value.clone().unwrap_or_default()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        state.read(cx).input.read(cx).value().to_string()
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: FieldPath,
-        _trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<Option<String>, Box<FieldError>> {
-        Ok((!draft.is_empty()).then_some(draft.clone()))
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &Option<String>,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let input = state.read(cx).input.clone();
-        input.update(cx, |input, cx| {
-            input.set_value(value.clone().unwrap_or_default(), window, cx);
-        });
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let input = state.read(cx).input.clone();
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &input,
-            window,
-            move |form, _input, event: &InputEvent, window, cx| {
-                let event = match event {
-                    InputEvent::Change => {
-                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-                    }
-                    InputEvent::Focus => Some(FormComponentEvent::Focus),
-                    InputEvent::Blur => Some(FormComponentEvent::Blur),
-                    InputEvent::PressEnter { .. } => None,
-                };
-                if let Some(event) = event {
-                    sink.emit(form, event, window, cx);
-                }
-            },
-        ));
-        subscriptions
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        let input = state.read(cx).input.clone();
-        input.update(cx, |input, cx| {
-            input.focus(window, cx);
-        });
-        true
-    }
-}
-```
-
-Then the target struct can opt into it:
-
-```rust
-#[derive(Clone, Debug, PartialEq, FormStore)]
-pub struct CommandInput {
-    #[form(binding = "CommandArgsBinding")]
-    pub args: Vec<String>,
-}
-```
-
-Field UI options are passed to the binding through `ComponentStateOptions`.
-Post-creation placeholder patching helpers should not be needed: the row field
-declares the placeholder and the binding applies it when creating its state.
-
-## Manual FormState Implementation
-
-The derive macro should not be the only path. Advanced users can implement a
-form state trait by hand for forms that are generated dynamically or backed by
-non-standard controls.
-
-The first implementation assumes the normalized output has the same shape as the
-domain input. App-specific repository command conversion should happen after
-`submit` returns `Ok(input)`.
-
-```rust
-pub trait FormState {
-    type Draft;
-    type Output;
-    type Validation: ValidationAdapter<Self::Draft>;
-    type Transform: SubmitTransform<Self::Draft, Self::Output>;
-
-    fn meta(&self) -> FormMeta;
-    fn draft(&self) -> Self::Draft;
-    fn validation(&self) -> &Self::Validation;
-    fn transform(&self) -> &Self::Transform;
-    fn write_normalized_output(&mut self, output: Self::Output, window: &mut Window, cx: &mut App);
-    fn field_paths(&self) -> &[FieldPath];
-    fn field(&self, path: &FieldPath) -> Option<&dyn AnyFormField>;
-    fn field_mut(&mut self, path: &FieldPath) -> Option<&mut dyn AnyFormField>;
-
-    fn validate(&mut self, trigger: ValidationTrigger) -> FormValidationReport;
-    fn submit(&mut self, window: &mut Window, cx: &mut App) -> Result<Self::Output, FormValidationReport>;
-    fn reset(&mut self, window: &mut Window, cx: &mut App);
-    fn focus_first_error(&mut self, window: &mut Window, cx: &mut App) -> bool;
-}
-```
-
-Manual example:
-
-```rust
-pub struct DynamicHeaderForm {
-    rows: Vec<HeaderRowField>,
-    meta: FormMeta,
-    validation: GardeAdapter<Vec<HeaderRowInput>>,
-    transform: ValidifyTransform<Vec<HeaderRowInput>, Vec<HeaderRowInput>>,
-}
-
-impl FormState for DynamicHeaderForm {
-    type Draft = Vec<HeaderRowInput>;
-    type Output = Vec<HeaderRowInput>;
-    type Validation = GardeAdapter<Vec<HeaderRowInput>>;
-    type Transform = ValidifyTransform<Vec<HeaderRowInput>, Vec<HeaderRowInput>>;
-
-    fn meta(&self) -> FormMeta {
-        self.meta.clone()
-    }
-
-    fn draft(&self) -> Self::Draft {
-        todo!("build draft from row field values")
-    }
-
-    fn validation(&self) -> &Self::Validation {
-        &self.validation
-    }
-
-    fn transform(&self) -> &Self::Transform {
-        &self.transform
-    }
-
-    fn write_normalized_output(&mut self, output: Self::Output, window: &mut Window, cx: &mut App) {
-        todo!("write normalized row values back into row fields and component states")
-    }
-
-    fn field_paths(&self) -> &[FieldPath] {
-        todo!("return stable row paths")
-    }
-
-    fn field(&self, path: &FieldPath) -> Option<&dyn AnyFormField> {
-        todo!("lookup row field")
-    }
-
-    fn field_mut(&mut self, path: &FieldPath) -> Option<&mut dyn AnyFormField> {
-        todo!("lookup row field")
-    }
-
-    fn validate(&mut self, trigger: ValidationTrigger) -> FormValidationReport {
-        let preview = self
-            .transform
-            .preview(&self.draft(), &TransformContext::default())
-            .expect("preview transform should not fail");
-
-        self.validation
-            .validate(&preview, trigger, ValidationScope::Form, &ValidationContext::default())
-            .into_form_report()
-    }
-
-    fn submit(&mut self, window: &mut Window, cx: &mut App) -> Result<Self::Output, FormValidationReport> {
-        let normalized = self
-            .transform
-            .transform_on_submit(&self.draft(), &TransformContext::default())
-            .map_err(TransformReport::into_form_report)?;
-
-        self.write_normalized_output(normalized.clone(), window, cx);
-
-        self.validation
-            .validate(&normalized, ValidationTrigger::Submit, ValidationScope::Form, &ValidationContext::default())
-            .into_result()?;
-
-        Ok(normalized)
-    }
-
-    fn reset(&mut self, window: &mut Window, cx: &mut App) {
-        todo!("reset rows and component states")
-    }
-
-    fn focus_first_error(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        todo!("focus first invalid row")
-    }
-}
-```
-
-## Submit Flow
-
-The submit path validates all fields, focuses the first visible error, and only
-then returns the final domain input. Submit also writes normalized values back
-to the form draft before returning either `Ok` or `Err`.
-
-```rust
-fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let result = self.connection_form.update(cx, |form, cx| {
-        form.submit(window, cx)
-    });
-
-    match result {
-        Ok(input) => {
-            self.repository.save_connection(input);
-        }
-        Err(report) => {
-            self.connection_form.update(cx, |form, cx| {
-                form.focus_first_error(window, cx);
-                form.mark_submit_attempted(report);
-            });
-        }
-    }
-}
-```
-
-## Attribute Sketch
-
-The derive macro should keep GPUI field configuration near the domain input
-field, while validation libraries keep their own validation attributes.
-
-```rust
-#[derive(FormStore, garde::Validate, validify::Validify)]
-#[garde(allow_unvalidated)]
-#[form(
-    store = ConnectionFormStore,
-    validation(adapter = "garde"),
-    transform(adapter = "validify")
-)]
-pub struct ConnectionInput {
-    #[form(binding = "ConnectionNameBinding")]
-    #[form(label = "form-example-connection-name-label")]
-    #[form(description = "form-example-connection-name-description")]
-    #[form(placeholder = "form-example-connection-name-placeholder")]
-    #[form(validate(on_change, on_blur, on_submit))]
-    #[modify(trim)]
-    #[garde(length(min = 1, max = 80))]
-    pub display_name: String,
-
-    #[form(binding = "ConnectionKindBinding")]
-    #[garde(skip)]
-    pub kind: Option<ConnectionKind>,
-}
-```
-
-Open questions for the macro:
-
-- Whether labels and descriptions are always i18n keys.
-- Whether stale validation reports should be explicitly cleared when dynamic
-  arrays are reordered before the next validation run.

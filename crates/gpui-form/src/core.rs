@@ -1,6 +1,9 @@
 pub mod array;
+pub mod codec;
 pub mod error;
+pub mod events;
 pub mod field;
+pub mod field_handle;
 pub mod form;
 pub mod group;
 pub mod meta;

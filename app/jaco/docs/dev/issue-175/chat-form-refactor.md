@@ -1,5 +1,9 @@
 # 纯 UI ChatForm 与 ControlSlot 契约
 
+> 后续架构修正：`ChatForm` 继续纯 UI，但 component state 不再作为 form/control business owner。最终以
+> [state-ownership-sync-plan.md](state-ownership-sync-plan.md) 为准：form value、app-owned options/config、
+> component interaction 三通道分离，submit 不读取 component state。
+
 本文固定 ChatForm 的纯UI边界、ControlSlot语义、external ChatInput FormStore/controller，以及四个调用方如何
 组合相同控件。ChatForm不得import `gpui_form`、state config/repository/provider catalog或domain submit service。
 实现已落地：`ChatForm` 保持在 `components/chat_form.rs`，ControlSlot/data contracts 在
@@ -153,18 +157,16 @@ Project picker自己的option/trigger render在
 pub(crate) struct ChatInputInput {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) attachments: Vec<ComposerAttachment>,
-    #[form(component = "group", store = "RunSettingsFormStore")]
+    #[form(group(store = "RunSettingsFormStore"))]
     pub(crate) run_settings: RunSettingsInput,
 }
 ```
 
-`ChatInputInput` 的 composer/attachments 使用 value fields，RunSettings 使用 nested group；draft期间
-`ComposerSnapshot.attachments`为空，controller 在 submit 前合并 attachment projection，并执行 empty input、missing
-model、attachment capability 和 agent-running context 的业务校验。
-
-当前 ChatInput form store 负责 composer、attachments 与 nested RunSettings draft；controller 继续作为附件、技能、
-配置持久化和 submit validation 的业务 owner，并在提交前把 projection 同步回 typed fields。项目选择仍由
-NewConversationPage 持有，新增项目只发 `AddProjectRequested`。
+`ChatInputInput` 的 composer/attachments 使用 value fields，RunSettings 使用 nested group。后续所有权修正后，
+`ChatInputFormStore` 是 composer/attachments 的唯一 typed draft owner；`AttachmentControlState` 只由它派生为
+render projection，不再被 controller 作为另一份附件事实源。submit 先读取 draft，再由
+纯函数 `resolve_run_settings` 得到最终 model/reasoning/approval，最后用同一个 model 校验附件并构造
+payload。项目选择仍由 `NewConversationPage` 持有，新增项目只发 `AddProjectRequested`。
 
 ## 8. ChatInputController
 
@@ -177,7 +179,7 @@ pub(crate) struct ChatInputController {
     skill_catalog_scope: SkillCatalogScope,
     skill_catalog_task: Task<()>,
     agent_running: bool,
-    subscriptions: Vec<Subscription>,
+    subscriptions: SubscriptionSet,
 }
 
 pub(crate) enum ChatInputEvent {
@@ -213,8 +215,8 @@ pub(crate) fn set_agent_running(&mut self, running: bool, cx: &mut Context<Self>
 pub(crate) fn refresh_skill_catalog(&mut self, project_root: Option<&Path>, cx: &mut Context<Self>);
 ```
 
-`ChatInputController`直接订阅`ComposerEditorEvent`：`Changed`同步表单值，`PasteAttachmentRequested`进入
-attachment owner，`SubmitRequested`调用primary action/submit流程。
+`ChatInputController`直接订阅`ComposerEditorEvent`：`Changed`提交显式 form command，
+`PasteAttachmentRequested`进入 attachment command，`SubmitRequested`调用 primary action/submit流程。
 `ChatForm`只渲染editor，不代理这些业务事件。
 
 `ChatInputController::new`的`run_settings_form`必须来自同一个`ChatInputFormStore::run_settings_store()` child
@@ -222,14 +224,15 @@ accessor；禁止在controller内重新创建RunSettingsFormStore。`controls(cx
 `RunSettingsControlStates`并包装成Conversation默认使用的Enabled slots；NewConversation从parent的
 `chat_input_store()`继续取得同一child。ChatInputControls提供composer/attachments/add/run_settings/primary action
 states，由调用方包装进ControlSlot。
-controller处理attachment/drop/primary-action等ChatFormUiEvent、attachment tasks、skill catalog、submit validation
-和可选ChatFormConfig persistence。`AddProjectRequested`由NewConversationPage路由到project logic。纯ChatForm不
+controller处理attachment/drop/primary-action等ChatFormUiEvent、attachment tasks、skill catalog、submit snapshot
+resolution 和可选ChatFormConfig persistence。`AddProjectRequested`由NewConversationPage路由到project logic。纯ChatForm不
 订阅controller domain event，也不保存Rc domain callback。
 
 ## 9. Project external form
 
-当前实现没有新增 `NewConversationFormStore`：`NewConversationPage` 继续拥有 `projects`、
-`selected_project_id`、`ProjectControlState`、catalog subscription 和 folder prompt/add 逻辑，并通过
+当前实现没有新增 `NewConversationFormStore`：`NewConversationPage` 继续拥有 canonical
+`selected_project_id`、catalog owner/subscription 和 folder prompt/add 逻辑；`ProjectControlState` 只保存
+open/query/highlight 等 interaction，selection 与 catalog 通过纯函数派生 presentation 并作为 render input，通过
 `ChatInputController::new_with_project(project_state, ...)` 将 project slot 注入 ChatForm。项目选择仍更新默认配置和
 skill scope；不得为 project page 另建平行 ChatInput 或 RunSettings draft。
 
@@ -265,7 +268,15 @@ skill scope；不得为 project page 另建平行 ChatInput 或 RunSettings draf
 测试留在`components/chat_input/{form_state,chat_input}.rs`，Shortcut child validation/render测试留在
 `features/settings/shortcuts/{form_state,dialog}.rs`，不使用无法定位实现位置的纯source扫描替代行为测试。
 
-## 12. 明确不做
+## 12. 后续所有权修正
+
+本文件描述的是 issue #175 原始 UI/form 重构的已落地边界。实现中仍存在 controller/control cache 与 form/store
+之间的重复副本，不能通过继续添加 observer mirror 解决。后续实施必须遵循
+[state-ownership-sync-plan.md](state-ownership-sync-plan.md)：form draft 和 committed catalog 各自只有一个可写
+owner，control state 是单向 projection；catalog/options 刷新只更新 component config，明确替换同一 domain
+value 时才由 app 检查 dirty 后调用 `replace_from_value`，submit 使用 form-owned draft 和 final resolver。
+
+## 13. 明确不做
 
 - 不创建ChatFormMode或show/disabled bool集合。
 - 不把Shortcut包装成dummy ChatInputFormStore。

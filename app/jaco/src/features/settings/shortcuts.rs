@@ -44,7 +44,6 @@ struct ShortcutSettingsSnapshot {
     shortcuts: Vec<ShortcutRecord>,
     prompts: Vec<PromptRecord>,
     providers: Vec<(ProviderRecord, Vec<ProviderModelRecord>)>,
-    model_choices: Vec<state::providers::ProviderModelChoice>,
     diagnostics: state::hotkey::ShortcutRuntimeDiagnostics,
 }
 
@@ -66,8 +65,14 @@ impl ShortcutsSettingsPage {
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let shortcut_catalog = state::shortcuts::catalog(cx);
-        let shortcut_subscription =
-            cx.subscribe_in(&shortcut_catalog, window, Self::on_shortcut_catalog_event);
+        let shortcut_subscription = shortcut_catalog.observe_select_in(
+            cx,
+            window,
+            |state| state.shortcuts().to_vec(),
+            |page, _shortcuts, window, cx| {
+                page.reload_snapshot(window, cx);
+            },
+        );
         let prompt_catalog = state::prompts::catalog(cx);
         let prompt_subscription = prompt_catalog.observe_select_in(
             cx,
@@ -78,8 +83,13 @@ impl ShortcutsSettingsPage {
             },
         );
         let provider_catalog = state::providers::catalog(cx);
-        let provider_subscription =
-            cx.subscribe_in(&provider_catalog, window, Self::on_provider_catalog_event);
+        let provider_subscription = cx.observe_in(
+            &provider_catalog.entity(),
+            window,
+            |page, _catalog, window, cx| {
+                page.reload_snapshot(window, cx);
+            },
+        );
 
         Self {
             search_input,
@@ -98,7 +108,6 @@ impl ShortcutsSettingsPage {
             shortcuts: state::shortcuts::list_shortcuts(cx)?,
             prompts: state::prompts::list_prompts(cx)?,
             providers: state::providers::providers_with_models(cx)?,
-            model_choices: state::providers::enabled_provider_models(cx)?,
             diagnostics: state::GlobalHotkeyState::diagnostics_snapshot(cx),
         })
     }
@@ -113,26 +122,6 @@ impl ShortcutsSettingsPage {
         if matches!(event, InputEvent::Change) {
             cx.notify();
         }
-    }
-
-    fn on_shortcut_catalog_event(
-        &mut self,
-        _: &Entity<state::shortcuts::ShortcutCatalogStore>,
-        _: &state::shortcuts::ShortcutCatalogEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reload_snapshot(window, cx);
-    }
-
-    fn on_provider_catalog_event(
-        &mut self,
-        _: &Entity<state::providers::ProviderCatalogStore>,
-        _: &state::providers::ProviderCatalogEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reload_snapshot(window, cx);
     }
 
     fn reload_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -183,7 +172,6 @@ impl ShortcutsSettingsPage {
         let Some(snapshot) = self.snapshot.as_ref().ok() else {
             return ShortcutDialogChoices {
                 prompts: Vec::new(),
-                models: Vec::new(),
             };
         };
         let mut prompts = Vec::new();
@@ -197,10 +185,7 @@ impl ShortcutsSettingsPage {
                 .filter(|prompt| prompt.enabled)
                 .map(PromptChoice::from_prompt),
         );
-        ShortcutDialogChoices {
-            prompts,
-            models: snapshot.model_choices.clone(),
-        }
+        ShortcutDialogChoices { prompts }
     }
 
     fn open_add_shortcut_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {

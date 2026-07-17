@@ -6,12 +6,9 @@ use gpui::{
 };
 use gpui_form::FormStore as _;
 
-type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
-
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = SubmitFormStore)]
 struct SubmitInput {
-    #[form(binding = "StringInputBinding")]
     name: String,
 }
 

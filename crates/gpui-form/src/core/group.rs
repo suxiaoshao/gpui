@@ -2,7 +2,7 @@ use gpui::{App, Entity, Window};
 
 use crate::{
     FieldChangeCause, FieldError, FieldMeta, FieldPath, FieldValidationReport, FormError,
-    FormField, FormMeta, FormStore, NoComponentState, SubscriptionSet, ValidationTrigger,
+    FormField, FormMeta, FormStore, SubscriptionSet, ValidationTrigger,
     macro_support::GeneratedFormStore,
 };
 
@@ -127,6 +127,24 @@ where
         let meta = self.store.read(cx).meta().clone();
         self.sync_from_child(value, meta);
     }
+
+    /// Replaces the child form and this group's baseline without requiring a
+    /// window or touching any component state.
+    pub fn replace_baseline(&mut self, value: Value, cx: &mut App)
+    where
+        Store: GeneratedFormStore<Value>,
+    {
+        let next_value = value.clone();
+        self.store.update(cx, |store, cx| {
+            store.replace_from_value(next_value, cx);
+        });
+        self.default_value = value.clone();
+        self.value = value;
+        self.meta = FormMeta::default();
+        self.field_meta = FieldMeta::default();
+        self.errors.clear();
+        self.revision = self.revision.saturating_add(1);
+    }
 }
 
 impl<Value, Store> FormField for FieldGroupStore<Value, Store>
@@ -135,7 +153,6 @@ where
     Store: GeneratedFormStore<Value> + FormStore<Output = Value>,
 {
     type Value = Value;
-    type ComponentState = NoComponentState;
 
     fn value(&self) -> &Self::Value {
         &self.value
@@ -169,10 +186,6 @@ where
         self.sync_from_child(default_value, FormMeta::default());
         self.field_meta = FieldMeta::default();
         self.errors.clear();
-    }
-
-    fn component_state(&self) -> Option<Entity<Self::ComponentState>> {
-        None
     }
 
     fn meta(&self) -> &FieldMeta {

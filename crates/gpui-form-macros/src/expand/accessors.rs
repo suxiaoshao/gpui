@@ -6,6 +6,22 @@ use crate::field_kind::FieldKind;
 
 use super::{FieldModel, arrays::vec_inner_type, field_variant_ident};
 
+pub(super) fn field_draft_type(model: &FieldModel<'_>) -> TokenStream {
+    let ty = model.ty;
+    match model.attrs.component {
+        FieldKind::Value => {
+            let codec = model
+                .attrs
+                .codec
+                .as_ref()
+                .map(|codec| quote!(#codec))
+                .unwrap_or_else(|| quote!(::gpui_form::IdentityCodec<#ty>));
+            quote!(<#codec as ::gpui_form::FieldCodec<#ty>>::Draft)
+        }
+        _ => quote!(#ty),
+    }
+}
+
 pub(super) fn draft_field_value(model: &FieldModel<'_>) -> TokenStream {
     let ident = model.ident;
     match model.attrs.component {
@@ -16,7 +32,70 @@ pub(super) fn draft_field_value(model: &FieldModel<'_>) -> TokenStream {
                 .map(|item| item.item.value().clone())
                 .collect()
         },
+        FieldKind::Value if model.attrs.codec.is_some() => {
+            // The generated form snapshot keeps the domain shape used by
+            // validation/transform/group stores. Raw drafts are exposed via
+            // `<field>_draft()` and `FormFieldHandle`; an invalid raw draft
+            // therefore does not make the domain snapshot unconstructible.
+            quote!(::gpui_form::FormField::value(&self.#ident).clone())
+        }
+        FieldKind::Value => quote!(self.#ident.draft().clone()),
         _ => quote!(::gpui_form::FormField::value(&self.#ident).clone()),
+    }
+}
+
+pub(super) fn replace_field_statement(
+    model: &FieldModel<'_>,
+    field_enum_ident: &syn::Ident,
+) -> TokenStream {
+    let ident = model.ident;
+    let value_ident = &model.value_ident;
+    let name = &model.name;
+    let variant_ident = field_variant_ident(name);
+    match model.attrs.component {
+        FieldKind::Value => quote! {
+            let __gpui_form_field_changed = self.#ident.replace_baseline(#value_ident);
+            if __gpui_form_field_changed {
+                cx.emit(::gpui_form::FormDraftEvent::new(
+                    ::gpui_form::FieldPath::field(#name),
+                    self.#ident.draft().clone(),
+                    ::gpui_form::FieldChangeCause::External,
+                ));
+                cx.emit(::gpui_form::FormStoreEvent::FieldChanged {
+                    field: #field_enum_ident::#variant_ident,
+                    cause: ::gpui_form::FieldChangeCause::External,
+                });
+            }
+        },
+        FieldKind::Group => quote! {
+            self.#ident.replace_baseline(#value_ident, cx);
+        },
+        FieldKind::Array => quote! {
+            let __gpui_form_array_values = #value_ident;
+            if self.#ident.len() != __gpui_form_array_values.len() {
+                self.#ident.set_errors(::std::vec![::gpui_form::FieldError::new(
+                    ::gpui_form::macro_support::field_path(#name),
+                    ::gpui_form::ValidationTrigger::Submit,
+                    ::gpui_form::ValidationSource::Internal,
+                    "array_length_changed",
+                    "gpui-form-error-array-length-changed",
+                )]);
+            } else {
+                self.#ident.clear_errors();
+                for (__gpui_form_item, __gpui_form_value) in self
+                    .#ident
+                    .items_mut()
+                    .iter_mut()
+                    .zip(__gpui_form_array_values.iter().cloned())
+                {
+                    __gpui_form_item
+                        .item
+                        .replace_baseline(__gpui_form_value, cx);
+                }
+                self.#ident
+                    .rebase_default_values(__gpui_form_array_values);
+            }
+        },
     }
 }
 
@@ -31,14 +110,51 @@ pub(super) fn field_meta_value(model: &FieldModel<'_>) -> TokenStream {
 pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
     let ty = model.ty;
+    let name = &model.name;
     let value_ident = format_ident!("{}_value", ident);
+    let draft_ident = format_ident!("{}_draft", ident);
+    let handle_ident = format_ident!("{}_handle", ident);
+    let read_handle_ident = format_ident!("__read_{}_handle", ident);
+    let write_handle_ident = format_ident!("__write_{}_handle", ident);
+    let set_draft_ident = format_ident!("set_{}_draft", ident);
 
     Ok(match model.attrs.component {
-        FieldKind::Value => quote! {
-            pub fn #value_ident(&self) -> #ty {
-                ::gpui_form::FormField::value(&self.#ident).clone()
+        FieldKind::Value => {
+            let draft_ty = field_draft_type(model);
+            quote! {
+                pub fn #value_ident(&self) -> #ty {
+                    ::gpui_form::FormField::value(&self.#ident).clone()
+                }
+
+                pub fn #draft_ident(&self) -> #draft_ty {
+                    self.#ident.draft().clone()
+                }
+
+                pub fn #handle_ident(
+                    form: &::gpui_form::__private::gpui::Entity<Self>,
+                ) -> ::gpui_form::FormFieldHandle<Self, #draft_ty> {
+                    ::gpui_form::FormFieldHandle::new(
+                        form.downgrade(),
+                        ::gpui_form::FieldPath::field(#name),
+                        Self::#read_handle_ident,
+                        Self::#write_handle_ident,
+                    )
+                }
+
+                fn #read_handle_ident(form: &Self) -> #draft_ty {
+                    form.#ident.draft().clone()
+                }
+
+                fn #write_handle_ident(
+                    form: &mut Self,
+                    draft: #draft_ty,
+                    cause: ::gpui_form::FieldChangeCause,
+                    cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+                ) {
+                    form.#set_draft_ident(draft, cause, cx);
+                }
             }
-        },
+        }
         FieldKind::Group => {
             let store = model.attrs.store.as_ref().expect("checked");
             let store_ident = format_ident!("{}_store", ident);
@@ -74,28 +190,12 @@ pub(super) fn field_accessor_methods(model: &FieldModel<'_>) -> Result<TokenStre
                 }
             }
         }
-        FieldKind::Binding => {
-            let binding = model.attrs.binding.as_ref().expect("checked");
-            let state_ident = format_ident!("{}_state", ident);
-            quote! {
-                pub fn #value_ident(&self) -> #ty {
-                    ::gpui_form::FormField::value(&self.#ident).clone()
-                }
-
-                pub fn #state_ident(
-                    &self,
-                ) -> ::gpui_form::__private::gpui::Entity<
-                    <#binding as ::gpui_form::FormComponentBinding<#ty>>::State,
-                > {
-                    self.#ident.state()
-                }
-            }
-        }
     })
 }
 
 pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = model.ident;
+    let name = &model.name;
     let required_ident = format_ident!("{}_required", ident);
     let set_required_ident = format_ident!("set_{}_required", ident);
 
@@ -117,23 +217,24 @@ pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStre
             }
             self.#ident.set_required(required);
         },
-        FieldKind::Binding => quote! {
-            if ::gpui_form::FormField::is_required(&self.#ident) == required {
-                return;
-            }
-            self.#ident.set_required(required, window, cx);
-        },
         FieldKind::Value => quote! {
             if ::gpui_form::FormField::is_required(&self.#ident) == required {
                 return;
             }
             self.#ident.core_mut().set_required(required);
+            self.#ident.core_mut().remove_internal_error("required");
+            if self.#ident.core().validation_triggers().contains(
+                ::gpui_form::ValidationTrigger::Dynamic,
+            ) {
+                self.apply_validation_for_scope(
+                    ::gpui_form::ValidationTrigger::Dynamic,
+                    ::gpui_form::ValidationScope::Field(
+                        ::gpui_form::macro_support::field_path(#name),
+                    ),
+                    cx,
+                );
+            }
         },
-    };
-
-    let window_arg = match model.attrs.component {
-        FieldKind::Binding => quote!(window),
-        _ => quote!(_window),
     };
 
     Ok(quote! {
@@ -144,7 +245,6 @@ pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStre
         pub fn #set_required_ident(
             &mut self,
             required: bool,
-            #window_arg: &mut ::gpui_form::__private::gpui::Window,
             cx: &mut ::gpui_form::__private::gpui::Context<Self>,
         ) {
             #set_required_body
@@ -156,7 +256,6 @@ pub(super) fn field_required_methods(model: &FieldModel<'_>) -> Result<TokenStre
 pub(super) fn field_setter_methods(
     model: &FieldModel<'_>,
     field_enum_ident: &syn::Ident,
-    event_ident: &syn::Ident,
 ) -> Result<TokenStream> {
     let ident = model.ident;
     let ty = model.ty;
@@ -164,17 +263,15 @@ pub(super) fn field_setter_methods(
     let name = &model.name;
     let variant_ident = field_variant_ident(name);
     let field_variant = quote!(#field_enum_ident::#variant_ident);
-
+    let set_draft_ident = format_ident!("set_{}_draft", ident);
+    let draft_ty = field_draft_type(model);
     let write_value = match model.attrs.component {
         FieldKind::Value => quote! {
             ::gpui_form::FormField::set_value(&mut self.#ident, value, cause);
         },
-        FieldKind::Binding => quote! {
-            self.#ident.write_component_value(&value, cause, window, cx);
-        },
         FieldKind::Group => {
             return Ok(quote! {
-                pub fn #set_value_ident(
+            pub fn #set_value_ident(
                     &mut self,
                     value: #ty,
                     cause: ::gpui_form::FieldChangeCause,
@@ -183,7 +280,6 @@ pub(super) fn field_setter_methods(
                 ) {
                     self.#ident.write_child_value(value, cause, window, cx);
                     self.refresh_meta();
-                    cx.emit(#event_ident::FieldChanged(#field_variant));
                     cx.notify();
                 }
             });
@@ -191,7 +287,36 @@ pub(super) fn field_setter_methods(
         FieldKind::Array => return Ok(quote!()),
     };
 
+    let draft_setter = match model.attrs.component {
+        FieldKind::Value => quote! {
+            pub fn #set_draft_ident(
+                &mut self,
+                draft: #draft_ty,
+                cause: ::gpui_form::FieldChangeCause,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                if !self.#ident.set_draft(draft, cause) {
+                    return;
+                }
+                self.refresh_meta();
+                cx.emit(::gpui_form::FormDraftEvent::new(
+                    ::gpui_form::FieldPath::field(#name),
+                    self.#ident.draft().clone(),
+                    cause,
+                ));
+                cx.emit(::gpui_form::FormStoreEvent::FieldChanged {
+                    field: #field_variant,
+                    cause,
+                });
+                cx.notify();
+            }
+        },
+        _ => quote!(),
+    };
+
     Ok(quote! {
+        #draft_setter
+
         pub fn #set_value_ident(
             &mut self,
             value: #ty,
@@ -227,7 +352,15 @@ pub(super) fn field_setter_methods(
                 );
             }
             self.refresh_meta();
-            cx.emit(#event_ident::FieldChanged(#field_variant));
+            cx.emit(::gpui_form::FormDraftEvent::new(
+                ::gpui_form::FieldPath::field(#name),
+                self.#ident.draft().clone(),
+                cause,
+            ));
+            cx.emit(::gpui_form::FormStoreEvent::FieldChanged {
+                field: #field_variant,
+                cause,
+            });
             cx.notify();
         }
     })

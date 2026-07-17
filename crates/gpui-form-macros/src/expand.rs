@@ -17,7 +17,7 @@ mod validation;
 
 use accessors::{
     draft_field_value, field_accessor_methods, field_meta_value, field_required_methods,
-    field_setter_methods, focus_error_statement, reset_field_statement,
+    field_setter_methods, focus_error_statement, replace_field_statement, reset_field_statement,
 };
 use arrays::{array_helper_methods, vec_inner_type};
 use errors::{apply_field_error_arm, clear_all_error_statement, clear_field_error_arm};
@@ -133,12 +133,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .collect::<Result<Vec<_>>>()?;
 
     for model in &field_models {
-        if model.attrs.component == FieldKind::Binding && model.attrs.binding.is_none() {
-            return Err(syn::Error::new_spanned(
-                model.field,
-                "component bindings require #[form(binding = \"TypeName\")]",
-            ));
-        }
         if matches!(model.attrs.component, FieldKind::Group | FieldKind::Array)
             && model.attrs.store.is_none()
         {
@@ -163,6 +157,15 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 store_where
                     .predicates
                     .push(parse_quote!(#ty: Clone + PartialEq + 'static));
+                let codec = model
+                    .attrs
+                    .codec
+                    .as_ref()
+                    .map(|codec| quote!(#codec))
+                    .unwrap_or_else(|| quote!(::gpui_form::IdentityCodec<#ty>));
+                store_where
+                    .predicates
+                    .push(parse_quote!(#codec: ::gpui_form::FieldCodec<#ty>));
             }
             FieldKind::Group => {
                 let store = model.attrs.store.as_ref().expect("checked");
@@ -185,22 +188,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                         + ::gpui_form::FormStore<Output = #item_ty>
                 ));
             }
-            FieldKind::Binding => {
-                let binding = model.attrs.binding.as_ref().expect("checked");
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: Clone + PartialEq + 'static));
-                store_where
-                    .predicates
-                    .push(parse_quote!(#binding: ::gpui_form::FormComponentBinding<#ty>));
-            }
         }
         if model.attrs.required
             && !form_uses_custom_validation
-            && matches!(
-                model.attrs.component,
-                FieldKind::Value | FieldKind::Binding | FieldKind::Array
-            )
+            && matches!(model.attrs.component, FieldKind::Value | FieldKind::Array)
         {
             let ty = model.ty;
             store_where
@@ -212,7 +203,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
 
     let (impl_generics, ty_generics, where_clause) = store_generics.split_for_impl();
     let field_enum_ident = related_store_ident(&store_ident, "Field");
-    let event_ident = related_store_ident(&store_ident, "Event");
     let validation_context_ty = validation_context_type(&attrs.validation);
     let validation_field = validation_field(&attrs.validation, input_ident, &ty_generics);
     let validation_init = validation_init(&attrs.validation);
@@ -249,7 +239,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .collect::<Result<Vec<_>>>()?;
     let field_initializers = field_models
         .iter()
-        .map(|model| field_initializer(model, &field_enum_ident))
+        .map(field_initializer)
         .collect::<Result<Vec<_>>>()?;
     let write_field_statements = field_models
         .iter()
@@ -258,6 +248,10 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
     let draft_field_values = field_models
         .iter()
         .map(draft_field_value)
+        .collect::<Vec<_>>();
+    let replace_field_statements = field_models
+        .iter()
+        .map(|model| replace_field_statement(model, &field_enum_ident))
         .collect::<Vec<_>>();
     let field_meta_values = field_models
         .iter()
@@ -301,7 +295,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .collect::<Result<Vec<_>>>()?;
     let field_setter_methods = field_models
         .iter()
-        .map(|model| field_setter_methods(model, &field_enum_ident, &event_ident))
+        .map(|model| field_setter_methods(model, &field_enum_ident))
         .collect::<Result<Vec<_>>>()?;
     let clear_all_error_statements = field_models
         .iter()
@@ -337,23 +331,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 match key {
                     #(#field_names => Some(Self::#field_variant_idents),)*
                     _ => None,
-                }
-            }
-        }
-
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        #input_vis enum #event_ident {
-            FieldChanged(#field_enum_ident),
-            FieldFocused(#field_enum_ident),
-            FieldBlurred(#field_enum_ident),
-        }
-
-        impl #event_ident {
-            pub const fn field(self) -> #field_enum_ident {
-                match self {
-                    Self::FieldChanged(field)
-                    | Self::FieldFocused(field)
-                    | Self::FieldBlurred(field) => field,
                 }
             }
         }
@@ -423,6 +400,21 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                         #field_idents: #draft_field_values,
                     )*
                 }
+            }
+
+            pub fn replace_from_value(
+                &mut self,
+                value: #input_ident #ty_generics,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                let #input_ident { #(#field_idents: #value_idents),* } = value;
+
+                #(#replace_field_statements)*
+
+                self.form_errors.clear();
+                self.submit_runtime = ::gpui_form::SubmitRuntime::default();
+                self.refresh_meta();
+                cx.notify();
             }
 
             pub fn write_draft(
@@ -545,51 +537,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 report
             }
 
-            fn finish_component_field_event(
-                &mut self,
-                field: #field_enum_ident,
-                path: ::gpui_form::FieldPath,
-                outcome: ::gpui_form::ComponentFieldEventOutcome,
-                field_allows_validation_trigger: bool,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                let Some(__gpui_form_event_kind) = outcome.field_event_kind() else {
-                    return;
-                };
-
-                if let Some(__gpui_form_trigger) =
-                    ::gpui_form::macro_support::component_field_event_trigger(outcome)
-                {
-                    let __gpui_form_should_validate = match outcome {
-                        ::gpui_form::ComponentFieldEventOutcome::Changed { cause, .. } => {
-                            cause.triggers_change_validation()
-                        }
-                        _ => true,
-                    };
-                    if __gpui_form_should_validate && field_allows_validation_trigger {
-                        self.apply_validation_for_scope(
-                            __gpui_form_trigger,
-                            ::gpui_form::ValidationScope::Field(path),
-                            cx,
-                        );
-                    }
-                }
-
-                self.refresh_meta();
-                match __gpui_form_event_kind {
-                    ::gpui_form::ComponentFieldEventKind::Changed => {
-                        cx.emit(#event_ident::FieldChanged(field));
-                    }
-                    ::gpui_form::ComponentFieldEventKind::Focused => {
-                        cx.emit(#event_ident::FieldFocused(field));
-                    }
-                    ::gpui_form::ComponentFieldEventKind::Blurred => {
-                        cx.emit(#event_ident::FieldBlurred(field));
-                    }
-                }
-                cx.notify();
-            }
-
             fn apply_validation_report(
                 &mut self,
                 report: &::gpui_form::FormValidationReport,
@@ -671,6 +618,14 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
 
             fn draft(&self) -> #input_ident #ty_generics {
                 self.draft()
+            }
+
+            fn replace_from_value(
+                &mut self,
+                value: #input_ident #ty_generics,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                Self::replace_from_value(self, value, cx);
             }
 
             fn field_paths(&self) -> &[::gpui_form::FieldPath] {
@@ -874,8 +829,15 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             }
         }
 
-        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<#event_ident>
+        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<::gpui_form::FormDraftEvent>
             for #store_ident #ty_generics
+            #where_clause
+        {
+        }
+
+        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<
+            ::gpui_form::FormStoreEvent<#field_enum_ident>,
+        > for #store_ident #ty_generics
             #where_clause
         {
         }

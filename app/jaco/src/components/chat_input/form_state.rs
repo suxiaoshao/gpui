@@ -12,7 +12,7 @@ pub(crate) struct ChatInputInput {
     pub(crate) composer: ComposerSnapshot,
     #[form(component = "value")]
     pub(crate) attachments: Vec<ComposerAttachment>,
-    #[form(component = "group", store = "RunSettingsFormStore")]
+    #[form(group(store = "RunSettingsFormStore"))]
     pub(crate) run_settings: RunSettingsInput,
 }
 

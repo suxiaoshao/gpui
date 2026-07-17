@@ -28,6 +28,10 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - If a shadcn component is not available in gpui-component, prefer composing available gpui-component pieces before creating app-local generic controls.
 - If a need is just size, selected state, disabled state, variant, styling, theme tokens, overlay behavior, or list/select delegation, prefer existing gpui-component traits and helpers over new app-local generic abstractions.
 - Treat bundled component docs as a portable snapshot. When precision matters, verify against the current checkout, Cargo dependency source, story/demo code, or docs.rs for the version in use.
+- A component `State` may physically contain a selected/text value, dynamic
+  options/delegate data, and focus/query/scroll state. Treat these as separate
+  ownership channels: form/domain owns the value, app/catalog owns options, and
+  the component owns interaction. Never make the whole state the submit source.
 
 ## Component Selection
 

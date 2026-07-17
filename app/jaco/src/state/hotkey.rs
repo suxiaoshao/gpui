@@ -743,10 +743,6 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) -> JacoResult<()> {
-        let title_seed = cx
-            .global::<I18n>()
-            .t("shortcut-input-screenshot")
-            .to_string();
         let png = screenshot_png_bytes(&image)
             .map_err(|err| JacoError::Window(format!("encode screenshot failed: {err}")))?;
         let attachment = screenshot_composer_attachment(&image, &png)?;
@@ -754,7 +750,7 @@ impl GlobalHotkeyState {
             &trigger,
             Vec::new(),
             vec![attachment],
-            title_seed,
+            String::new(),
             cx,
         )?;
         self.finish_shortcut_trigger(created, cx);
@@ -830,12 +826,18 @@ impl GlobalHotkeyState {
         created: state::conversations::CreatedConversation,
         cx: &mut App,
     ) {
-        if temporary_window::show_created_conversation(created, cx).is_none() {
-            event!(
-                Level::ERROR,
-                "failed to show shortcut conversation in temporary window"
-            );
-        }
+        // Selection/OCR/screenshot completion normally arrives from inside a
+        // `GlobalHotkeyState` update. The temporary-window lifecycle performs
+        // nested global/window/entity updates, so dispatch it after the
+        // current update scope has released its borrows.
+        cx.defer(move |cx| {
+            if temporary_window::show_created_conversation(created, cx).is_none() {
+                event!(
+                    Level::ERROR,
+                    "failed to show shortcut conversation in temporary window"
+                );
+            }
+        });
     }
 
     pub(crate) fn handle_screenshot_capture_failure(&self, error: CaptureError, cx: &mut App) {

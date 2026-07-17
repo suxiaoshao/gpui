@@ -3,7 +3,9 @@
 状态：capability-safe backend API 已实现。早期实验 API 已移除，默认不再要求用户定义
 `Change` / action / reducer；`StoreSource` 命名已经迁移为 `StoreBackend` /
 `StoreCommitBackend`，只读 projection 在类型层面没有 `set/update/bind`，可提交
-backend 只能通过 fallible `try_*` API 更新。
+backend 只能通过 fallible `try_*` API 更新。catalog snapshot 与 projection 的后续计划见
+[`catalog-snapshot-projection-plan.md`](catalog-snapshot-projection-plan.md)；该计划保留现有
+crate API 边界，不把 Jaco 类型下沉到 `gpui-store`。
 
 本文档是内部开发计划，不是 README。README 展示目标使用方式；本文档固定模块结构、内部类型、数据流和实现阶段。
 
@@ -27,6 +29,24 @@ backend 只能通过 fallible `try_*` API 更新。
 - committed backend 先提交 draft，提交成功后才更新 store snapshot。
 - read-only projection 只能从外部 committed snapshot 同步，不暴露 generic local setter。
 - optional delta 只作为性能或 effect routing 逃生口。
+
+## Source of Truth 与 app catalog 边界
+
+`SharedStore`/`LocalStore` 的 state 必须是实际 typed snapshot；`revision`、event 和
+`StoreUpdateOrigin` 只是变更元数据。project/provider catalog 如果只保存 revision，调用方
+就会各自查询、缓存 rows/label/capability，形成多个可写或事实 owner。catalog 应由 app 定义
+最小 read model。第一阶段优先由明确的 repository reload command 更新
+`SharedStore<S, MemoryBackend>`；只有存在可复用的外部 load/subscribe/reconcile 生命周期时才实现 backend。
+
+`StoreSelection` 继续是只读 projection；`StoreBinding` 只用于有明确逆向写入的同一 store。
+不要用 selection 或 binding 充当 form draft 的镜像，也不要在本 crate 中引入隐式
+form↔store bridge。catalog/options 只更新组件配置，不进入 form；同一 domain value 的整体替换和 submit
+commit 由接入 app 显式协调。
+
+所有 backend/selection observer 都必须满足 GPUI reentrancy 约束：source callback 只读取、
+计算、替换自己的 snapshot 或通知 owner；需要更新另一个 entity 时排到显式 command/task
+边界，禁止在同一个 source `Entity::update` 内递归 update source。详尽的 Jaco 迁移顺序、
+typed catalog contract 和验证见 `catalog-snapshot-projection-plan.md`。
 
 `Change` / `Delta` 从核心必需品降级为高级可选能力。
 
@@ -1116,6 +1136,21 @@ external event owned by SharedStore
 - development plan 保持内部设计细节。
 - 如果保留底层 primitive，要明确它们是 escape hatch。
 - 应用接入必须另写应用专项文档，不写进本 crate 计划。
+
+### Phase 7: Snapshot-backed app catalog integration
+
+状态：已实施；实现入口为
+[`catalog-snapshot-projection-plan.md`](catalog-snapshot-projection-plan.md)。
+
+- 保持 `gpui-store` public API 以现有 `SharedStore`、`LocalStore`、`StoreSelection`、
+  `StoreBinding` 和 backend capability 为边界，不新增跨 store computed selector。
+- 要求接入 app 的 catalog state 保存实际 typed snapshot；revision/event 只作为 metadata。
+- 只读 catalog 使用 `StoreBackend<S>` projection，不实现 `StoreCommitBackend<S>`；repository
+  command 成功后再 reconcile committed snapshot。
+- 将 selection/binding 的 read-only/writable 语义、backend error atomicity、owner drop 和
+  GPUI reentrancy 固化为 focused tests。
+- Jaco 的 project/provider 类型、DB 查询和表单 hydrate 不下沉到本 crate；Jaco 的迁移顺序见
+  app-local `state-ownership-sync-plan.md`。
 
 ## 验证计划
 

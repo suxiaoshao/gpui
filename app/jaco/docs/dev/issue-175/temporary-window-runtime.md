@@ -76,6 +76,7 @@ impl TemporaryWindowLifecycleState {
 ```text
 hotkey input
   -> create_conversation (DB commit, run 尚未启动)
+  -> defer temporary-window dispatch until the hotkey update ends
   -> temporary_window::show_created_conversation
   -> route created conversation
   -> start_run exactly once
@@ -96,9 +97,15 @@ fn finish_shortcut_trigger(
     created: state::conversations::CreatedConversation,
     cx: &mut App,
 ) {
-    let _ = temporary_window::show_created_conversation(created, cx);
+    cx.defer(move |cx| {
+        let _ = temporary_window::show_created_conversation(created, cx);
+    });
 }
 ```
+
+`finish_shortcut_trigger` 必须在当前 `GlobalHotkeyState` 更新闭包结束后再路由窗口；selection、OCR 和 screenshot
+完成路径都可能从该更新闭包中进入，直接同步更新 temporary window 会重新借用 GPUI 的 global/window/entity，触发
+`RefCell already borrowed`。defer 只负责跨越更新边界，不改变 Conversation 创建或 AgentRun 的业务顺序。
 
 selection/clipboard、直接 image 和 OCR fallback 在 `create_shortcut_conversation` 成功后都只调用该函数。
 `create_shortcut_conversation` 同时改为读取：
@@ -145,15 +152,11 @@ fallback、不自动重试，保留临时历史可恢复性，并记录结构化
 
 ### `app/temporary_window.rs`
 
-- 保留现有 hide/toggle/reveal 边界测试。
-- 增加已存在临时 window 与首次创建两种路径，断言都使用 `WindowKind::PopUp` 对应的同一 lifecycle
-  入口。
-- 增加 downcast/update 失败路径，断言返回 `None` 且不 panic。
-- 提取可观察的 prepare/schedule seam 并增加顺序测试：route/start-run 发生在 reveal scheduling 之前，且每个
-  created request 只启动一次。
-- 覆盖`ConversationRuntimeStore::start_run`返回`false`的路径，断言不会再次提交active run。
-- 自动化测试止于 prepare/schedule seam；不对 native reveal timing 编写测试。窗口类型、屏幕定位、失焦与
-  前台 app restore 固定由第 8 节隔离 bundle 验收覆盖。
+- 当前自动化测试覆盖显示器选择、窗口尺寸回退、失焦隐藏和 `ModalPanel` 窗口级别等纯函数边界。
+- `show_created_conversation` 的已存在窗口/首次创建、Root downcast/update 失败、route/start-run/reveal
+  顺序和 `start_run(false)` 幂等性目前由实现路径固定，尚未抽出可测试 seam。
+- 不对 native reveal timing 编写测试；窗口类型、屏幕定位、失焦、前台 app restore，以及上述 lifecycle 顺序由
+  第 8 节隔离 bundle 验收覆盖，统一归入 WP-110。
 
 ## 8. 隔离桌面验收
 

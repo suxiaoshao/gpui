@@ -3,7 +3,9 @@
 本文档记录 `gpui-form` 自身需要补齐的通用能力。它不写入 `jaco` 的 Provider、MCP、Prompt 或
 Shortcut 业务规则；app-specific 字段、i18n key、DB/config/keychain 写回和数据源放在接入 app 文档中。
 
-最后同步时间：2026-07-03。本文中的通用能力已经落地；验收标准保留在文末，供后续回归检查。
+最后同步时间：2026-07-03。本文中的 validation pipeline 能力已经落地；本文保留强化前后的历史
+设计记录和验收标准。组件 binding 的当前边界以
+`external-state-synchronization-plan.md` 与 `../README.md` 为准，本文不再定义 adapter API。
 
 ## 目标
 
@@ -257,8 +259,9 @@ keychain 语义塞进 core crate。
 
 ```text
 component event
-  -> binding emits FormComponentEvent
-  -> ComponentFieldStore syncs Draft -> Value parse
+  -> component-specific adapter reads the user draft once
+  -> FormFieldHandle writes DraftFieldStore
+  -> FieldCodec parses Draft -> Value when the trigger requires it
   -> generated form receives FieldChanged/FieldBlurred
   -> if field validate trigger enabled: run validation adapter with ValidationScope::Field(path)
   -> merge required report + custom report
@@ -270,7 +273,7 @@ component event
 
 ```text
 form.submit_sync / form.submit_async
-  -> internal prepare_submit for component parse errors
+  -> internal prepare_submit parses form-owned drafts
   -> transform_on_submit(draft)
   -> write normalized output back with NormalizeOnSubmit
   -> run required + custom validation with ValidationTrigger::Submit

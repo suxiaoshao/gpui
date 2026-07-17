@@ -129,24 +129,24 @@ submit 拆成两个层次：
   provider/MCP 状态。
 - `gpui-form` store 持有与表单提交等价的 submit task；task 内容由 app 在调用 `submit_async(...)` 时
   传入 handler 提供。
-- `InputState` 等组件 state 是 raw UI source；`FieldCore<T>` 是 parse/commit 后的 typed draft source。
-  number 字段的 dirty/default snapshot 必须以 raw input 基线计算，不能只看 typed value 是否变化。
+- `DraftFieldStore<Value, Codec>` 是 raw/typed draft、baseline、parse error 和 dirty 的唯一 source。
+  component state 只是 UI mirror；number dirty/default 必须以 form-owned raw input 基线计算。
 - `FormValidationReport` 是当前合法性和错误渲染的 source；`FormMeta` 不参与合法性判定。
 - group/array parent 可以缓存 child value/meta 作为 render snapshot，但 final report 必须从 child store 当前状态递归读取。
 
 ## UI、i18n、icon、依赖和存储
 
-- 所用组件：普通 input 继续使用 `InputState` + `Input`；number binding 使用 `InputState` +
-  `NumberInput`，具体 raw input dirty 设计见 `number-input-design.md`；select/combobox/bool binding 和 app
-  自定义 `FormComponentBinding` 不变。
+- 所用组件：app 继续创建 `InputState` + `Input`、`InputState` + `NumberInput`、select/combobox/bool state；
+  `gpui-form-gpui-component` adapter subscriptions 只同步 value mirror，生命周期由调用方持有。具体 number raw draft 见
+  `number-input-design.md`。
 - 自定义类型：新增 `SubmitRuntime`、`SubmitError` 和 `SubmitOutcome`；新增
   `FieldPath::join_path` 和 `FormValidationReport::with_field_prefix`
   辅助 group/array report 聚合。
 - i18n：不新增用户可见文案；number parse 继续使用 `gpui-form-error-number-parse`。
 - icon：无。
 - 数据库变更：无。
-- 数据获取方式：form core 无网络/DB 读取；只从当前 form store、GPUI component state 和调用方传入的
-  submit handler 读取。
+- 数据获取方式：form core 无网络/DB/component 读取；只从当前 form store 和调用方传入的 submit handler
+  读取。
 - 新增依赖：无。
 
 ## jaco 使用约束

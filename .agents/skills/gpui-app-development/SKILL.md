@@ -36,7 +36,25 @@ Use this skill for workspace-specific GPUI app decisions. Use `gpui` for framewo
 - Avoid ineffective synchronization data such as `is_loading` plus `load_task`, `selected_id` plus a duplicated selected record, or `status == Running` plus `task: Option<Task<_>>` when the extra field carries no independent meaning.
 - Add a separate field only when it represents independent information, a durable business state, or user-visible history that cannot be derived from the existing field.
 - For GPUI tasks, store the `Task` to keep it alive or cancel it on drop. If in-flight UI state has no extra semantics, derive loading/disabled guards from `task.is_some()`. Use an underscore prefix only for fields that are intentionally held but never read.
-- For new `gpui-store` usage, choose `LocalStore` versus `SharedStore` by ownership and notification boundary. Choose `StoreSource` separately by synchronization backend. Do not migrate an app to `gpui-store` opportunistically while doing unrelated work.
+- For new `gpui-store` usage, choose `LocalStore` versus `SharedStore` by ownership and notification boundary. Choose `StoreBackend` separately by synchronization backend. Do not migrate an app to `gpui-store` opportunistically while doing unrelated work.
+
+### Draft, committed state, projection, and ephemeral UI
+
+Keep these layers separate when a screen edits data that also arrives from an external store:
+
+1. committed store/repository state is the durable or shared source;
+2. form entity is the single owner of the editable typed draft;
+3. external component options/catalog/capabilities are app-owned configuration;
+4. component state contains only interaction state plus replaceable value/config mirrors;
+5. picker open/focus, query, highlight, scroll, preview, and in-flight tasks are UI-ephemeral state.
+
+Do not mirror a selected id with a selected record, a form value with a control cache, or a catalog
+revision with separately cached rows unless the extra value is explicitly a read-only projection. Use
+an explicit whole-value replace/commit command for domain values; catalog/options updates only
+refresh component configuration. Do not install observer write-back loops or read component state
+for submit. For the Jaco #175 example, the durable contract is recorded in
+`app/jaco/docs/dev/issue-175/state-ownership-sync-plan.md`; the form and store crate contracts are in
+their own docs.
 
 ## Product UI Guidance
 

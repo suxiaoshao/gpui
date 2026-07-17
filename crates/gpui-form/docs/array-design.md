@@ -171,8 +171,8 @@ app calls generated headers_reset_items(values)
 
 `gpui-form` 不提供 array row UI 组件。
 
-- Row input 组件继续由 child form fields 决定，例如 `InputState`、`SelectState`、`ComboboxState` 或 app-defined
-  `FormComponentBinding`。
+- Row input 组件由 app 创建，例如 `InputState`、`SelectState`、`ComboboxState` 或 app-defined component；
+  child form 只暴露 generated field handles，component-specific adapter 返回 value mirror subscriptions，调用方持有。
 - Add/remove/move/swap 按钮由接入 app 使用 `gpui-component::Button` 或自己的 row action 组件实现。
 - Array design 只影响 store/meta/subscription，不新增 GPUI element 或 view 组件。
 

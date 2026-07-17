@@ -18,6 +18,10 @@ impl FieldPath {
         }
     }
 
+    pub fn field(field: &'static str) -> Self {
+        Self::from_static(field)
+    }
+
     pub fn from_segments(segments: impl IntoIterator<Item = FieldPathSegment>) -> Self {
         Self {
             segments: segments.into_iter().collect(),

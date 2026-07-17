@@ -1,12 +1,8 @@
 use std::{marker::PhantomData, str::FromStr};
 
-use gpui::{App, AppContext as _, Context, Entity, Window};
-use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
-use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationSource,
-    ValidationTrigger, resolve_form_text,
-};
+use gpui::Entity;
+use gpui_component::input::{InputState, NumberInput, StepAction};
+use gpui_form::{FieldCodec, FieldCodecError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumberInputKind {
@@ -62,20 +58,6 @@ impl NumberInputPolicy {
             NumberInputKind::Float => allows_float(text),
         }
     }
-
-    fn apply_to(self, mut input: InputState) -> InputState {
-        input = input.validate(move |text, _| self.allows_input(text));
-        if let Some(step) = self.component_step {
-            input = input.step(step);
-        }
-        if let Some(min) = self.min {
-            input = input.min(min);
-        }
-        if let Some(max) = self.max {
-            input = input.max(max);
-        }
-        input
-    }
 }
 
 fn allows_unsigned_integer(text: &str) -> bool {
@@ -115,6 +97,29 @@ pub trait NumberFieldValue: Clone + PartialEq + ToString + FromStr + 'static {
 
     fn step_draft(_draft: &str, _action: StepAction) -> Option<String> {
         None
+    }
+}
+
+/// Codec for numeric controls whose UI draft is edited as text.
+/// Range, step and presentation policy stay in the component configuration;
+/// this type only owns text-to-domain parsing for the form field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NumberCodec<N>(PhantomData<fn() -> N>);
+
+impl<N> FieldCodec<N> for NumberCodec<N>
+where
+    N: NumberFieldValue,
+{
+    type Draft = String;
+
+    fn draft_from_value(value: &N) -> Self::Draft {
+        value.to_string()
+    }
+
+    fn parse(draft: &Self::Draft) -> Result<N, FieldCodecError> {
+        draft
+            .parse::<N>()
+            .map_err(|_| FieldCodecError::new("parse", "gpui-form-error-number-parse"))
     }
 }
 
@@ -191,139 +196,6 @@ impl NumberFieldValue for f32 {
 impl NumberFieldValue for f64 {
     fn input_policy() -> NumberInputPolicy {
         NumberInputPolicy::float()
-    }
-}
-
-pub struct NumberInputBinding<N>(PhantomData<fn() -> N>);
-
-impl<N> FormComponentBinding<N> for NumberInputBinding<N>
-where
-    N: NumberFieldValue,
-{
-    type State = InputState;
-    type Draft = String;
-
-    fn new_state(
-        initial: &N,
-        options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let policy = N::input_policy();
-        let state = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).default_value(initial.to_string());
-            input = policy.apply_to(input);
-            if let Some(placeholder_key) = options.placeholder_key {
-                input = input.placeholder(resolve_form_text(placeholder_key, cx));
-            }
-            if options.masked {
-                input = input.masked(true);
-            }
-            input
-        });
-        if policy.component_step.is_none() {
-            state.update(cx, |input, cx| {
-                input.set_step(None, window, cx);
-            });
-        }
-        state
-    }
-
-    fn draft_from_value(value: &N) -> Self::Draft {
-        value.to_string()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        state.read(cx).unmask_value().to_string()
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        path: FieldPath,
-        trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<N, Box<FieldError>> {
-        draft.parse::<N>().map_err(|_| {
-            Box::new(
-                FieldError::new(
-                    path,
-                    trigger,
-                    ValidationSource::Internal,
-                    "parse",
-                    "gpui-form-error-number-parse",
-                )
-                .with_param("value", draft.clone()),
-            )
-        })
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &N,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |input, cx| {
-            input.set_value(value.to_string(), window, cx);
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        state.update(cx, |input, cx| {
-            input.focus(window, cx);
-        });
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let mut subscriptions = SubscriptionSet::new();
-        let input_sink = sink.clone();
-        subscriptions.push(cx.subscribe_in(
-            &state,
-            window,
-            move |form, _state, event: &InputEvent, window, cx| {
-                let event = match event {
-                    InputEvent::Change => {
-                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-                    }
-                    InputEvent::Focus => Some(FormComponentEvent::Focus),
-                    InputEvent::Blur => Some(FormComponentEvent::Blur),
-                    InputEvent::PressEnter { .. } => None,
-                };
-                if let Some(event) = event {
-                    input_sink.emit(form, event, window, cx);
-                }
-            },
-        ));
-        subscriptions.push(cx.subscribe_in(
-            &state,
-            window,
-            move |form, state, event: &NumberInputEvent, window, cx| {
-                let NumberInputEvent::Step(action) = event;
-                let draft = state.read(cx).unmask_value().to_string();
-                if let Some(next) = N::step_draft(&draft, *action) {
-                    state.update(cx, |input, cx| {
-                        input.set_value(next, window, cx);
-                    });
-                    sink.emit(
-                        form,
-                        FormComponentEvent::Change(FieldChangeCause::UserInput),
-                        window,
-                        cx,
-                    );
-                }
-            },
-        ));
-        subscriptions
     }
 }
 

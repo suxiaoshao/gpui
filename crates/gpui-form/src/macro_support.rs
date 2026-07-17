@@ -1,9 +1,8 @@
-use gpui::{App, Context, Entity, Window};
+use gpui::{App, Context, Window};
 
 use crate::{
-    ComponentFieldEventOutcome, ComponentFieldStore, FieldChangeCause, FieldError, FieldPath,
-    FormComponentBinding, FormItemId, FormMeta, FormValidationReport, ValidationScope,
-    ValidationSource, ValidationTriggers, ValueFieldStore,
+    DraftFieldStore, FieldChangeCause, FieldCodec, FieldError, FieldPath, FormItemId, FormMeta,
+    FormValidationReport, ValidationScope, ValidationSource, ValidationTriggers,
 };
 
 #[doc(hidden)]
@@ -12,35 +11,20 @@ pub fn field_path(name: &'static str) -> FieldPath {
 }
 
 #[doc(hidden)]
-pub fn value_field<T>(_name: &'static str, value: T) -> ValueFieldStore<T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    ValueFieldStore::new(value)
-}
-
-#[doc(hidden)]
-pub fn component_field<Value, Binding>(
+pub fn draft_field<Value, Codec>(
+    _name: &'static str,
     value: Value,
-    state: Entity<Binding::State>,
     triggers: ValidationTriggers,
     required: bool,
-) -> ComponentFieldStore<Value, Binding>
+) -> DraftFieldStore<Value, Codec>
 where
     Value: Clone + PartialEq + 'static,
-    Binding: FormComponentBinding<Value>,
+    Codec: FieldCodec<Value>,
 {
-    let mut field = ComponentFieldStore::<Value, Binding>::new(value, state);
+    let mut field = DraftFieldStore::<Value, Codec>::new(value);
     field.core_mut().set_validation_triggers(triggers);
     field.core_mut().set_required(required);
     field
-}
-
-#[doc(hidden)]
-pub fn component_field_event_trigger(
-    outcome: ComponentFieldEventOutcome,
-) -> Option<crate::ValidationTrigger> {
-    outcome.validation_trigger()
 }
 
 #[doc(hidden)]
@@ -86,6 +70,7 @@ fn array_item_path(path: &FieldPath, id: FormItemId) -> FieldPath {
 pub trait GeneratedFormStore<Input>: Sized + 'static {
     fn from_value(value: Input, window: &mut Window, cx: &mut Context<Self>) -> Self;
     fn draft(&self) -> Input;
+    fn replace_from_value(&mut self, value: Input, cx: &mut Context<Self>);
     fn field_paths(&self) -> &[FieldPath];
     fn write_draft(
         &mut self,

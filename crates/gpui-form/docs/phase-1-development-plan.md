@@ -4,19 +4,17 @@
 > `crates/gpui-form/docs/development-plan.md`；dynamic array 的后续设计见
 > `crates/gpui-form/docs/array-design.md`；validation report 路由设计见
 > `crates/gpui-form/docs/validation-routing.md`。leaf field binding 的最终架构已调整为
-> `crates/gpui-form/docs/binding-architecture.md`：`gpui-form` core 不再默认依赖 `gpui-component`，
-> 所有 leaf field 统一使用 Draft-aware `ComponentFieldStore<Value, Binding>`，当前文中关于内置
-> `TextFieldStore` / `NumberFieldStore` / `BoolFieldStore` / `SelectFieldStore` / `ComboboxFieldStore`
-> 的内容保留为第一阶段历史记录。
+> `crates/gpui-form/docs/external-state-synchronization-plan.md`：`gpui-form` core 最终不持有任何
+> component entity，leaf 使用 pure `DraftFieldStore<Value, Codec>`，application-created component state
+> 通过 component-specific adapter 返回的 subscriptions 与 generated field handle 连接，生命周期由调用方
+> `SubscriptionSet` 持有。本文出现的 component store/binding/derive API 全部是
+> 第一阶段历史事实，不是当前推荐或目标 API；新代码不得据此接入。
 
-状态：第一阶段 crate runtime、基础 derive 宏、显式 child-store nested group、dynamic array 宏、组件 binding
-和 `garde + validify` submit pipeline 已落地。宏已生成 typed field setter、clear/apply field errors、
-array remove-by-id 和 values-with-id helper。runtime 顶层模块已按 `core` / `component` / `pipeline` /
-`view` 分组；derive 宏展开逻辑已从单个 `expand.rs` 拆成按职责划分的子模块。字段级 `required`
-元数据、generated getter/setter 和 binding 同步能力已落地；下游 app 仍需要自己把 generated
-`*_required()` 接到 `gpui_component::form::field().required(...)`，并保留业务 validator。
-本文档用于固定 `gpui-form` 的实现计划、边界和待确认问题；文档中标为目标形态的 API 仍可能在后续
-binding macro 和 app 接入阶段调整。
+状态：历史第一阶段实现记录。第一阶段曾包含 state-owning component binding；该架构已经被
+`external-state-synchronization-plan.md` 的 breaking refactor 取代。本文中的旧 binding、component
+state、`ComponentStateOptions` 和宏展开示例只用于解释迁移背景，不是当前 API、实现状态或新代码参考。
+当前 runtime、derive、adapter 和 workspace 迁移状态以 `development-plan.md` 与
+`external-state-synchronization-plan.md` 为准。
 
 ## 目标
 
