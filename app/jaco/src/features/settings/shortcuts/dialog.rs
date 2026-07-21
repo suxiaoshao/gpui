@@ -830,6 +830,7 @@ mod tests {
     #[gpui::test]
     fn missing_hotkey_confirm_keeps_shortcut_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_shortcut_dialog_test(cx);
+        let required_message = foundation::I18n::english_for_test().t("gpui-form-error-required");
         let window = open_shortcut_state_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).expect("shortcut dialog root");
@@ -847,7 +848,7 @@ mod tests {
                 )
                 .map(|message| message.to_string())
             }),
-            Some("此字段为必填项。".to_string())
+            Some(required_message.clone())
         );
         assert_eq!(
             form_store.read_with(&cx, |_store, cx| {
@@ -859,7 +860,7 @@ mod tests {
                 field_error_message(model.errors(cx).unwrap_or_default(), cx)
                     .map(|message| message.to_string())
             }),
-            Some("此字段为必填项。".to_string())
+            Some(required_message)
         );
         cx.update(|_, cx| {
             assert!(
@@ -916,7 +917,7 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            foundation::init_i18n(cx);
+            cx.set_global(foundation::I18n::english_for_test());
             state::shortcuts::init(cx);
         });
         dir

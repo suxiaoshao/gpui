@@ -743,6 +743,7 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) -> JacoResult<()> {
+        let title_seed = screenshot_title_seed(cx.global::<I18n>());
         let png = screenshot_png_bytes(&image)
             .map_err(|err| JacoError::Window(format!("encode screenshot failed: {err}")))?;
         let attachment = screenshot_composer_attachment(&image, &png)?;
@@ -750,7 +751,7 @@ impl GlobalHotkeyState {
             &trigger,
             Vec::new(),
             vec![attachment],
-            String::new(),
+            title_seed,
             cx,
         )?;
         self.finish_shortcut_trigger(created, cx);
@@ -931,6 +932,10 @@ fn normalized_text(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+fn screenshot_title_seed(i18n: &I18n) -> String {
+    i18n.t("shortcut-input-screenshot").to_string()
+}
+
 fn screenshot_png_bytes(image: &ImageFrame) -> Result<Vec<u8>, String> {
     use image::ImageEncoder as _;
 
@@ -977,8 +982,10 @@ mod tests {
     use super::{
         FakeHotkeyBackend, GlobalHotkeyState, normalized_text, screenshot_capture_error_message,
         screenshot_composer_attachment, screenshot_ocr_error_message, screenshot_png_bytes,
+        screenshot_title_seed,
     };
     use crate::{
+        foundation::I18n,
         platform::capture::CaptureError,
         state::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
     };
@@ -986,6 +993,18 @@ mod tests {
     use gpui::Task;
     use platform_ext::{OcrError, ocr::ImageFrame};
     use std::str::FromStr;
+
+    #[test]
+    fn screenshot_title_seed_uses_localized_label() {
+        assert_eq!(
+            screenshot_title_seed(&I18n::english_for_test()),
+            "Screenshot"
+        );
+        assert_eq!(
+            screenshot_title_seed(&I18n::for_locale_tag("zh-CN")),
+            "截图"
+        );
+    }
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {
