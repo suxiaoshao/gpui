@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputContentType, InputEvent, InputState};
 
 use crate::{
     features::request::{HttpForm, HttpFormEvent},
@@ -60,6 +60,6 @@ impl UrlInput {
 
 impl Render for UrlInput {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Input::new(&self.input)
+        Input::new(&self.input).content_type(InputContentType::Url)
     }
 }

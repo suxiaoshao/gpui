@@ -255,15 +255,17 @@ impl McpSettingsPage {
         div()
             .w(px(320.))
             .min_w(px(260.))
+            .flex_shrink_0()
             .h_full()
-            .overflow_y_scrollbar()
+            .overflow_hidden()
             .border_r_1()
             .border_color(cx.theme().border)
             .pr_3()
             .child(
                 v_flex()
-                    .w_full()
+                    .size_full()
                     .gap_2()
+                    .overflow_y_scrollbar()
                     .children(rows.iter().cloned().map(move |row| {
                         let selected = row.server_id == selected_id;
                         let select_page = page.clone();
@@ -312,8 +314,10 @@ impl McpSettingsPage {
         };
         let i18n = cx.global::<I18n>();
         v_flex()
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .min_w_0()
+            .h_full()
             .overflow_y_scrollbar()
             .pl_4()
             .gap_4()

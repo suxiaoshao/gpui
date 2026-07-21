@@ -50,9 +50,11 @@ impl RenderOnce for TemporaryConversationListItem {
             .py_2()
             .cursor_pointer()
             .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+                this.hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             })
-            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .when(self.is_selected, |this| {
+                this.bg(cx.theme().tokens.accent.background)
+            })
             .child(
                 Label::new(node.title.clone())
                     .flex_1()

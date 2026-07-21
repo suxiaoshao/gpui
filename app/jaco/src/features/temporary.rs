@@ -549,7 +549,7 @@ impl TemporaryWindow {
             .min_w_0()
             .border_r_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
+            .bg(cx.theme().tokens.sidebar.background)
             .when_some(last_error, |this, error| {
                 this.child(
                     h_flex()
@@ -605,7 +605,7 @@ impl Render for TemporaryWindow {
             .key_context(KEY_CONTEXT)
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))

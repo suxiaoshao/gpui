@@ -371,7 +371,7 @@ impl QueryView {
                 .border_1()
                 .border_color(cx.theme().border)
                 .rounded_lg()
-                .bg(cx.theme().accent.opacity(0.35))
+                .bg(cx.theme().tokens.accent.background.opacity(0.35))
                 .px_3()
                 .py_2()
                 .child(

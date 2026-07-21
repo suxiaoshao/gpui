@@ -10,8 +10,11 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
+    input::{
+        Input, InputContentType, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
+    },
     label::Label,
+    progress::Progress,
     table::{Column, DataTable, TableDelegate, TableState},
 };
 use r2d2::PooledConnection;
@@ -869,7 +872,7 @@ impl Render for FetchView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .child(
                 div()
@@ -920,11 +923,15 @@ impl FetchView {
             .p_3()
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .rounded_lg()
             .child(section_title(IconName::Settings, section_config, cx))
             .child(field_label(IconName::Link, field_url, field_color, cx))
-            .child(Input::new(&self.url_input).disabled(is_running))
+            .child(
+                Input::new(&self.url_input)
+                    .content_type(InputContentType::Url)
+                    .disabled(is_running),
+            )
             .child(
                 div()
                     .flex()
@@ -996,7 +1003,7 @@ impl FetchView {
             .p_3()
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .rounded_lg()
             .child(section_title(IconName::Info, section_status, cx))
             .child(status_body)
@@ -1044,7 +1051,11 @@ impl FetchView {
                     title,
                     cx.theme().primary,
                 ))
-                .child(progress_bar(progress, cx))
+                .child(
+                    Progress::new("fetch-progress")
+                        .value(progress_percent(progress))
+                        .with_size(px(8.)),
+                )
                 .child(metrics_grid(progress, cx)),
             action_panel(
                 IconName::CircleStop,
@@ -1195,7 +1206,7 @@ impl FetchView {
             .flex_col()
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .rounded_lg()
             .child(
                 div()
@@ -1278,22 +1289,10 @@ fn status_title(icon: IconName, label: String, color: Hsla) -> Div {
         .child(Label::new(label).text_lg().font_medium().text_color(color))
 }
 
-fn progress_bar(progress: &FetchProgress, cx: &mut Context<FetchView>) -> Div {
+fn progress_percent(progress: &FetchProgress) -> f32 {
     let page_count = progress.page_count().max(1) as f32;
     let completed = progress.completed_pages().min(progress.page_count()) as f32;
-    let width = (completed / page_count).clamp(0.0, 1.0);
-    div()
-        .w_full()
-        .h(px(8.))
-        .rounded_full()
-        .bg(cx.theme().border.opacity(0.35))
-        .child(
-            div()
-                .h_full()
-                .w(relative(width))
-                .rounded_full()
-                .bg(cx.theme().primary),
-        )
+    (completed / page_count * 100.0).clamp(0.0, 100.0)
 }
 
 fn metrics_grid(progress: &FetchProgress, cx: &mut Context<FetchView>) -> Div {
@@ -1432,7 +1431,7 @@ impl TableDelegate for FetchLogTableDelegate {
             .log_at(row_ix, cx)
             .is_some_and(|log| log.status == FetchPageLogStatus::Failed)
         {
-            row = row.bg(cx.theme().danger.opacity(0.06));
+            row = row.bg(cx.theme().tokens.danger.background.opacity(0.06));
         }
         row
     }
@@ -1574,8 +1573,8 @@ fn retry_page_after_failure(
 #[cfg(test)]
 mod tests {
     use super::{
-        FetchFailure, FetchProgress, FetchStatus, FetchTaskState, resume_page_after_interrupt,
-        retry_page_after_failure,
+        FetchFailure, FetchProgress, FetchStatus, FetchTaskState, progress_percent,
+        resume_page_after_interrupt, retry_page_after_failure,
     };
     use crate::{fetch::FetchErrorKind, foundation::i18n::I18n};
 
@@ -1597,6 +1596,21 @@ mod tests {
     #[test]
     fn retries_from_failed_page_inside_range() {
         assert_eq!(retry_page_after_failure(Some(42), 1, 5201), Some(42));
+    }
+
+    #[test]
+    fn progress_percent_clamps_to_component_range() {
+        let progress = |last_success_page| FetchProgress {
+            start_page: 3,
+            end_page: 6,
+            current_page: 3,
+            last_success_page,
+            total: 0,
+        };
+
+        assert_eq!(progress_percent(&progress(None)), 0.0);
+        assert_eq!(progress_percent(&progress(Some(4))), 50.0);
+        assert_eq!(progress_percent(&progress(Some(10))), 100.0);
     }
 
     #[test]

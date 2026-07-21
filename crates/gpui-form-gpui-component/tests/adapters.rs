@@ -1,5 +1,5 @@
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext,
+    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, View, VisualTestContext,
     Window, WindowHandle, div,
 };
 use gpui_component::{
@@ -9,7 +9,7 @@ use gpui_component::{
 };
 use gpui_form::FormStore as _;
 use gpui_form_gpui_component::{
-    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInputState,
+    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputState,
 };
 
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
@@ -105,6 +105,31 @@ fn open_harness(cx: &mut TestAppContext) -> WindowHandle<AdapterHarness> {
         })
         .expect("open adapter test window")
     })
+}
+
+#[gpui::test]
+fn integer_inputs_use_backing_entity_identity(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+
+    cx.update(|window, cx| {
+        let first = {
+            let root = root.read(cx);
+            std::ops::Deref::deref(root.integer_control.as_ref().expect("integer control")).clone()
+        };
+        let second = cx.new(|cx| IntegerInputState::<u32>::new(window, cx));
+
+        assert_eq!(
+            IntegerInput::new(&first).entity_id(),
+            Some(first.entity_id())
+        );
+        assert_eq!(
+            IntegerInput::new(&second).entity_id(),
+            Some(second.entity_id())
+        );
+        assert_ne!(first.entity_id(), second.entity_id());
+    });
 }
 
 fn entities(

@@ -240,6 +240,7 @@ pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, JacoE
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
             titlebar: Some(main_titlebar_options(title)),
+            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         },

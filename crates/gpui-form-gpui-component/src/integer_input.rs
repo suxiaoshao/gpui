@@ -5,8 +5,8 @@ mod policy;
 use std::{fmt::Display, ops::Deref, str::FromStr};
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, Refineable, RenderOnce, SharedString, StyleRefinement, Styled, Subscription,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, IntoElement, Refineable, SharedString, StyleRefinement, Styled, Subscription, View,
     Window,
 };
 use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
@@ -427,10 +427,14 @@ where
         &mut self.style
     }
 }
-impl<N> RenderOnce for IntegerInput<N>
+impl<N> View for IntegerInput<N>
 where
     N: IntegerValue,
 {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let editor = self.state.read(cx).editor().clone();
         let mut input = NumberInput::new(&editor)

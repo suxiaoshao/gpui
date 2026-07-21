@@ -222,7 +222,7 @@ impl Render for SettingsView {
             )
             .into_any_element()
         } else {
-            SettingsPageFrame::new(
+            let frame = SettingsPageFrame::new(
                 active_page_title,
                 match active_page_key {
                     SettingsPageKey::General => general::render(window, cx),
@@ -238,15 +238,19 @@ impl Render for SettingsView {
                     }
                     SettingsPageKey::Mcp => self.mcp_settings.clone().into_any_element(),
                 },
-            )
-            .when(
-                matches!(
-                    active_page_key,
-                    SettingsPageKey::Provider | SettingsPageKey::Skills | SettingsPageKey::Mcp
-                ),
-                |frame| frame.no_outer_body_scroll(),
-            )
-            .into_any_element()
+            );
+            frame
+                .when(active_page_key == SettingsPageKey::Appearance, |frame| {
+                    frame.no_outer_body_scroll_full_bleed()
+                })
+                .when(
+                    matches!(
+                        active_page_key,
+                        SettingsPageKey::Provider | SettingsPageKey::Skills | SettingsPageKey::Mcp
+                    ),
+                    |frame| frame.no_outer_body_scroll(),
+                )
+                .into_any_element()
         };
         let resize_view = cx.entity().downgrade();
         let select_view = cx.entity().downgrade();
@@ -384,6 +388,7 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
             titlebar: Some(settings_titlebar_options(title)),
+            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Blurred,
             is_resizable: true,
             kind: WindowKind::Normal,

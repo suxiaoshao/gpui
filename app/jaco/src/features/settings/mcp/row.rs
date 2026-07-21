@@ -110,7 +110,7 @@ impl RenderOnce for McpServerRowView {
             })
             .p_3()
             .cursor_pointer()
-            .hover(|this| this.bg(cx.theme().muted.opacity(0.35)))
+            .hover(|this| this.bg(cx.theme().tokens.muted.background.opacity(0.35)))
             .on_click(move |_, window, cx| on_click(server_id.clone(), window, cx))
             .child(
                 Icon::new(transport_icon(&row))

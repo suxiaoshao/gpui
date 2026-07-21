@@ -51,6 +51,7 @@ pub(crate) fn open_about_window(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::centered(about_window_size(), cx)),
             titlebar: Some(about_titlebar_options(title)),
+            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Opaque,
             is_resizable: false,
             is_minimizable: false,
@@ -223,7 +224,7 @@ impl Render for AboutWindow {
             .key_context(ABOUT_CONTEXT)
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))

@@ -20,7 +20,7 @@
 
 ## 环境要求
 
-- Rust 1.92+（Edition 2024）
+- Rust 1.95+（Edition 2024）
 - 推荐：`cargo-watch`（可选，热重载）
 - 可选：`diesel_cli`（仅 jaco 用于管理迁移）
 

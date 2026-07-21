@@ -45,7 +45,7 @@ Use this index to choose the smallest existing component set for an app UI task.
 | App navigation | [Sidebar](sidebar.md), [Tabs](tabs.md), [Pagination](pagination.md) |
 | Scroll and resize | [Scrollable](scrollable.md), [Resizable](resizable.md), [VirtualList](virtual-list.md) |
 | Data presentation | [Table](table.md), [DataTable](data-table.md), [List](list.md), [Tree](tree.md), [DescriptionList](description-list.md) |
-| Charts | [Chart](chart.md), [Plot](plot.md) |
+| Charts, including Sankey flow diagrams | [Chart](chart.md), [Plot](plot.md) |
 | Calendar views | [Calendar](calendar.md), [DatePicker](date-picker.md) |
 | Window chrome | [TitleBar](title-bar.md) |
 | Status bars and contextual footer regions | [StatusBar](status-bar.md) |

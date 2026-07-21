@@ -88,9 +88,11 @@ impl RenderOnce for ConversationSearchItem {
             .py_2()
             .cursor_pointer()
             .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+                this.hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             })
-            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .when(self.is_selected, |this| {
+                this.bg(cx.theme().tokens.accent.background)
+            })
             .on_click(move |_, window, cx| {
                 let on_confirm = on_confirm.clone();
                 let conversation_id = conversation_id.clone();
@@ -106,7 +108,7 @@ impl RenderOnce for ConversationSearchItem {
                     .items_center()
                     .justify_center()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
+                    .bg(cx.theme().tokens.border.background.opacity(0.35))
                     .child(
                         Icon::new(IconName::MessageSquare)
                             .size_4()

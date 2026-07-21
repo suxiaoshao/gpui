@@ -303,10 +303,58 @@ impl AssetSource for Assets {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_ICON_ASSET_PATH, Assets, IconName, ProviderLogoName, bundled_theme_sets};
+    use super::{
+        APP_ICON_ASSET_PATH, Assets, AssetsInner, IconName, ProviderLogoName, bundled_theme_sets,
+    };
     use app_assets::{SvgIconMetadata, SvgIconNamed};
     use gpui::{AssetSource, SharedString};
-    use gpui_component::IconNamed;
+    use gpui_component::{IconNamed, ThemeRegistry, ThemeSet};
+    use std::collections::BTreeSet;
+
+    const EXPECTED_THEME_FILES: [&str; 22] = [
+        "adventure.json",
+        "alduin.json",
+        "asciinema.json",
+        "aurora.json",
+        "ayu.json",
+        "catppuccin.json",
+        "everforest.json",
+        "fahrenheit.json",
+        "flexoki.json",
+        "gruvbox.json",
+        "harper.json",
+        "hybrid.json",
+        "jellybeans.json",
+        "kibble.json",
+        "macos-classic.json",
+        "matrix.json",
+        "mellifluous.json",
+        "molokai.json",
+        "solarized.json",
+        "spaceduck.json",
+        "tokyonight.json",
+        "twilight.json",
+    ];
+    const HISTORICAL_TAB_OVERLAY_VARIANTS: [&str; 11] = [
+        "Ayu Dark",
+        "Catppuccin Macchiato",
+        "Catppuccin Mocha",
+        "Fahrenheit",
+        "macOS Classic Dark",
+        "Molokai Light",
+        "Molokai Dark",
+        "Spaceduck",
+        "Tokyo Night",
+        "Tokyo Storm",
+        "Tokyo Moon",
+    ];
+    const TAB_COLOR_KEYS: [&str; 5] = [
+        "tab.active.background",
+        "tab.active.foreground",
+        "tab.background",
+        "tab.foreground",
+        "tab_bar.background",
+    ];
 
     #[test]
     fn declared_icons_have_lucide_paths() {
@@ -461,15 +509,80 @@ mod tests {
     }
 
     #[test]
-    fn assets_embed_bundled_theme_sets() {
-        let theme_sets = bundled_theme_sets();
+    fn assets_embed_exact_upstream_theme_inventory() {
+        let actual = AssetsInner::iter()
+            .filter_map(|path| {
+                path.strip_prefix("themes/gpui-component/")
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<BTreeSet<_>>();
+        let expected = EXPECTED_THEME_FILES
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
 
-        assert!(theme_sets.len() >= 20);
-        assert!(
-            theme_sets
-                .iter()
-                .any(|theme_set| theme_set.contains("Ayu Light"))
-        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn bundled_theme_sets_parse_and_register() {
+        let theme_sets = bundled_theme_sets();
+        let mut registry = ThemeRegistry::default();
+
+        for theme_set in &theme_sets {
+            registry
+                .load_themes_from_str(theme_set)
+                .expect("bundled theme set parses");
+        }
+
+        assert_eq!(theme_sets.len(), EXPECTED_THEME_FILES.len());
+        for name in ["Ayu Light", "Aurora Light"] {
+            assert!(registry.themes().contains_key(name), "missing theme {name}");
+        }
+    }
+
+    #[test]
+    fn historical_tab_overlay_variants_keep_complete_token_groups() {
+        let expected = HISTORICAL_TAB_OVERLAY_VARIANTS
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+        let mut actual = BTreeSet::new();
+
+        for theme_set in bundled_theme_sets() {
+            let value: serde_json::Value =
+                serde_json::from_str(&theme_set).expect("bundled theme set is valid JSON");
+            for theme in value["themes"].as_array().expect("theme variants") {
+                let name = theme["name"].as_str().expect("theme name");
+                if expected.contains(name) {
+                    let colors = theme["colors"].as_object().expect("theme colors");
+                    assert!(
+                        TAB_COLOR_KEYS.iter().all(|key| colors.contains_key(*key)),
+                        "historical tab overlay for {name} must remain an atomic five-token group"
+                    );
+                    actual.insert(name.to_owned());
+                }
+            }
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn aurora_theme_preserves_gradient_tokens() {
+        let source = AssetsInner::get("themes/gpui-component/aurora.json")
+            .expect("Aurora theme is embedded");
+        let theme_set: ThemeSet =
+            serde_json::from_slice(source.data.as_ref()).expect("Aurora theme set parses");
+
+        assert!(theme_set.themes.iter().any(|config| {
+            app_theme::preview_theme(&std::rc::Rc::new(config.clone()))
+                .tokens
+                .button_primary
+                .background
+                .as_solid()
+                .is_none()
+        }));
     }
 
     #[test]

@@ -210,7 +210,7 @@ impl Render for HomeView {
             .key_context(KEY_CONTEXT)
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))

@@ -1,10 +1,9 @@
 use gpui::{
-    App, Decorations, Entity, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window,
-    WindowControlArea, div, point, prelude::FluentBuilder as _, px,
+    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
+    SharedString, Styled, Window, div, point, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt as _, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -25,8 +24,6 @@ pub(crate) const FEIWEN_TRAFFIC_LIGHT_INSET: Pixels = px(14.);
 const FEIWEN_TITLE_BAR_LEFT_PADDING: Pixels = px(86.);
 #[cfg(not(target_os = "macos"))]
 const FEIWEN_TITLE_BAR_LEFT_PADDING: Pixels = px(12.);
-
-const WINDOW_CONTROL_WIDTH: Pixels = px(44.);
 
 pub(crate) fn traffic_light_position() -> gpui::Point<Pixels> {
     point(FEIWEN_TRAFFIC_LIGHT_INSET, FEIWEN_TRAFFIC_LIGHT_INSET)
@@ -175,95 +172,23 @@ impl FeiwenTitleBar {
     }
 }
 
-struct TitleBarState {
-    should_move: bool,
-}
-
-impl Render for TitleBarState {
-    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
 impl RenderOnce for FeiwenTitleBar {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let is_client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
-        let is_web = cfg!(target_family = "wasm");
-        let is_linux = cfg!(target_os = "linux");
-        let is_macos = cfg!(target_os = "macos");
-        let state = window.use_state(cx, |_, _| TitleBarState { should_move: false });
-
-        div().flex_shrink_0().child(
-            div()
-                .id("feiwen-title-bar")
-                .flex()
-                .items_center()
-                .h(FEIWEN_TITLE_BAR_HEIGHT)
-                .pl(FEIWEN_TITLE_BAR_LEFT_PADDING)
-                .border_b_1()
-                .border_color(cx.theme().title_bar_border)
-                .bg(cx.theme().title_bar)
-                .when(is_linux, |this| {
-                    this.on_double_click(|_, window, _| window.zoom_window())
-                })
-                .when(is_macos, |this| {
-                    this.on_double_click(|_, window, _| window.titlebar_double_click())
-                })
-                .on_mouse_down_out(window.listener_for(&state, |state, _, _, _| {
-                    state.should_move = false;
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    window.listener_for(&state, |state, _, _, _| {
-                        state.should_move = true;
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    window.listener_for(&state, |state, _, _, _| {
-                        state.should_move = false;
-                    }),
-                )
-                .on_mouse_move(window.listener_for(&state, |state, _, window, _| {
-                    if state.should_move {
-                        state.should_move = false;
-                        window.start_window_move();
-                    }
-                }))
-                .child(
-                    h_flex()
-                        .id("feiwen-titlebar-content")
-                        .h_full()
-                        .min_w_0()
-                        .flex_1()
-                        .justify_between()
-                        .gap_3()
-                        .when(!is_web, |this| {
-                            this.window_control_area(WindowControlArea::Drag)
-                                .when(window.is_fullscreen(), |this| this.pl_3())
-                                .when(is_linux && is_client_decorated, |this| {
-                                    this.child(
-                                        div()
-                                            .top_0()
-                                            .left_0()
-                                            .absolute()
-                                            .size_full()
-                                            .h_full()
-                                            .on_mouse_down(
-                                                MouseButton::Right,
-                                                move |ev, window, _| {
-                                                    window.show_window_menu(ev.position)
-                                                },
-                                            ),
-                                    )
-                                })
-                        })
-                        .child(self.leading(cx))
-                        .child(self.center(cx))
-                        .child(self.trailing(cx)),
-                )
-                .child(WindowControls),
-        )
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        TitleBar::new()
+            .h(FEIWEN_TITLE_BAR_HEIGHT)
+            .pl(FEIWEN_TITLE_BAR_LEFT_PADDING)
+            .child(
+                h_flex()
+                    .id("feiwen-titlebar-content")
+                    .h_full()
+                    .min_w_0()
+                    .flex_1()
+                    .justify_between()
+                    .gap_3()
+                    .child(self.leading(cx))
+                    .child(self.center(cx))
+                    .child(self.trailing(cx)),
+            )
     }
 }
 
@@ -337,135 +262,6 @@ fn update_router_from_titlebar(workspace: &Entity<Workspace>, target: RouterType
         cx.notify();
     });
     cx.refresh_windows();
-}
-
-#[derive(IntoElement, Clone)]
-enum ControlIcon {
-    Minimize,
-    Restore,
-    Maximize,
-    Close,
-}
-
-impl ControlIcon {
-    fn id(&self) -> &'static str {
-        match self {
-            Self::Minimize => "minimize",
-            Self::Restore => "restore",
-            Self::Maximize => "maximize",
-            Self::Close => "close",
-        }
-    }
-
-    fn icon(&self) -> IconName {
-        match self {
-            Self::Minimize => IconName::WindowMinimize,
-            Self::Restore => IconName::WindowRestore,
-            Self::Maximize => IconName::WindowMaximize,
-            Self::Close => IconName::WindowClose,
-        }
-    }
-
-    fn window_control_area(&self) -> WindowControlArea {
-        match self {
-            Self::Minimize => WindowControlArea::Min,
-            Self::Restore | Self::Maximize => WindowControlArea::Max,
-            Self::Close => WindowControlArea::Close,
-        }
-    }
-
-    fn is_close(&self) -> bool {
-        matches!(self, Self::Close)
-    }
-
-    fn hover_fg(&self, cx: &App) -> Hsla {
-        if self.is_close() {
-            cx.theme().danger_foreground
-        } else {
-            cx.theme().secondary_foreground
-        }
-    }
-
-    fn hover_bg(&self, cx: &App) -> Hsla {
-        if self.is_close() {
-            cx.theme().danger
-        } else {
-            cx.theme().secondary_hover
-        }
-    }
-
-    fn active_bg(&self, cx: &mut App) -> Hsla {
-        if self.is_close() {
-            cx.theme().danger_active
-        } else {
-            cx.theme().secondary_active
-        }
-    }
-}
-
-impl RenderOnce for ControlIcon {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let is_linux = cfg!(target_os = "linux");
-        let is_windows = cfg!(target_os = "windows");
-        let hover_fg = self.hover_fg(cx);
-        let hover_bg = self.hover_bg(cx);
-        let active_bg = self.active_bg(cx);
-        let icon = self.clone();
-
-        div()
-            .id(self.id())
-            .flex()
-            .w(WINDOW_CONTROL_WIDTH)
-            .h_full()
-            .flex_shrink_0()
-            .justify_center()
-            .items_center()
-            .text_color(cx.theme().foreground)
-            .hover(|style| style.bg(hover_bg).text_color(hover_fg))
-            .active(|style| style.bg(active_bg).text_color(hover_fg))
-            .when(is_windows, |this| {
-                this.window_control_area(self.window_control_area())
-            })
-            .when(is_linux, |this| {
-                this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                })
-                .on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    match icon {
-                        Self::Minimize => window.minimize_window(),
-                        Self::Restore | Self::Maximize => window.zoom_window(),
-                        Self::Close => window.remove_window(),
-                    }
-                })
-            })
-            .child(Icon::new(self.icon()).small())
-    }
-}
-
-#[derive(IntoElement)]
-struct WindowControls;
-
-impl RenderOnce for WindowControls {
-    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
-        if cfg!(target_os = "macos") || cfg!(target_family = "wasm") {
-            return div().id("window-controls");
-        }
-
-        h_flex()
-            .id("window-controls")
-            .items_center()
-            .flex_shrink_0()
-            .h_full()
-            .child(ControlIcon::Minimize)
-            .child(if window.is_maximized() {
-                ControlIcon::Restore
-            } else {
-                ControlIcon::Maximize
-            })
-            .child(ControlIcon::Close)
-    }
 }
 
 #[cfg(test)]

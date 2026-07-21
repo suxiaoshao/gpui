@@ -762,7 +762,7 @@ impl ComposerEditor {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
+            .bg(cx.theme().tokens.popover.background)
             .shadow_lg()
             .child(
                 List::new(&self.completion_list)

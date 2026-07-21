@@ -20,6 +20,8 @@ Use this file when building custom interactions or wiring component state.
 - Buttons and desktop controls normally keep desktop cursor behavior unless the component is link-like.
 - For titlebar or draggable regions, inspect `TitleBar` behavior first: drag area, double-click zoom, platform system buttons, and Linux window menu are platform-specific.
 - In interactive child regions inside draggable areas, stop propagation intentionally so clicks do not start window drag.
+- A window whose app-owned titlebar calls `start_window_move` must set
+  `WindowOptions::app_owns_titlebar_drag = true`.
 
 ## Overlays and Menus
 
@@ -31,6 +33,12 @@ Use this file when building custom interactions or wiring component state.
 
 - For select/list-like controls, prefer `SelectDelegate`, `SelectItem`, or `ListDelegate`.
 - Keep filtering, selection, disabled state, and rendering in the delegate shape when possible; avoid creating a second app-local list framework.
+- Never synchronously update a `ListState` entity from inside one of its own
+  delegate callbacks. Defer mutations of the owner that can flow back into the
+  same list until the delegate update has returned.
+- `ComboboxState::set_selected_values` resolves values through the current
+  delegate. Use it after catalog replacement when the authoritative selection
+  must be projected against the new options; it does not represent user input.
 
 ## Form And Dynamic Configuration Boundaries
 
@@ -45,8 +53,9 @@ Do not treat the whole entity as one business owner.
 - Updating items/options must not be reported as user input and must not mutate
   the form merely because the component internally changes an index.
 - If replacing items leaves a component's cached selected item/label stale, use
-  a component-specific projection command that reapplies the authoritative form
-  value after replacing items; do not select a business fallback.
+  a component-specific projection command such as
+  `ComboboxState::set_selected_values` to reapply the authoritative form value
+  against the current delegate; do not select a business fallback.
 - Submit and validation must read the form/domain value, never a component cache.
 - When an adapter mirrors values in both directions, use an explicit direction
   guard so a component user event cannot synchronously update the same component

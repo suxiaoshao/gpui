@@ -16,7 +16,7 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
     h_flex,
-    input::Input,
+    input::{Input, InputContentType},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
@@ -661,7 +661,7 @@ impl McpServerEditDialogState {
                     .rounded(cx.theme().radius)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().muted.opacity(0.25))
+                    .bg(cx.theme().tokens.muted.background.opacity(0.25))
                     .p_3()
                     .child(
                         h_flex()
@@ -1100,7 +1100,10 @@ impl Render for McpServerEditDialogState {
                         this.child(section_label(http_section_label, cx))
                             .child(form_field(
                                 url_label,
-                                Input::new(&url_input).w_full().into_any_element(),
+                                Input::new(&url_input)
+                                    .w_full()
+                                    .content_type(InputContentType::Url)
+                                    .into_any_element(),
                                 url_errors,
                                 url_required,
                                 cx,
@@ -1697,7 +1700,7 @@ fn render_validation_summary(messages: Vec<SharedString>, cx: &mut App) -> AnyEl
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().danger.opacity(0.55))
-        .bg(cx.theme().danger.opacity(0.08))
+        .bg(cx.theme().tokens.danger.background.opacity(0.08))
         .p_3()
         .child(
             Label::new(cx.global::<I18n>().t("mcp-validation-summary"))

@@ -404,7 +404,7 @@ fn render_prompt_preview(prompt: PromptRecord, cx: &mut App) -> AnyElement {
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().background)
+                .bg(cx.theme().tokens.background.background)
                 .p_3()
                 .child(
                     div()
@@ -433,7 +433,7 @@ fn render_prompt_preview_header(
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .bg(cx.theme().accent.opacity(0.65))
+                .bg(cx.theme().tokens.accent.background.opacity(0.65))
                 .child(Icon::new(IconName::FilePen).text_color(cx.theme().accent_foreground)),
         )
         .child(

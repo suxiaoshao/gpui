@@ -1,6 +1,6 @@
 #[cfg(feature = "system-accent")]
 use gpui::BorrowAppContext;
-use gpui::{App, Global, Hsla, SharedString, Task, Window, WindowAppearance, rgba};
+use gpui::{App, Global, Hsla, SharedString, Task, Window, WindowAppearance};
 use gpui_component::{
     Colorize, Theme, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode as ComponentThemeMode,
     ThemeRegistry, highlighter::HighlightThemeStyle,
@@ -357,8 +357,10 @@ fn adapt_material_scheme(
     scheme: &MaterializedScheme,
 ) -> ThemeConfig {
     let palette = MaterialPalette::new(mode, scheme);
-    let colors = build_material_theme_colors(mode, scheme, &palette);
-    let highlight = apply_material_highlight_tokens(scheme);
+    let code = MaterialCodePalette::new(scheme);
+    let editor = MaterialEditorChrome::new(scheme, &code);
+    let colors = build_material_theme_colors(mode, scheme, &palette, &code);
+    let highlight = material_highlight_theme_style(scheme, &code, &editor);
 
     ThemeConfig {
         name: SharedString::from(format!(
@@ -367,11 +369,86 @@ fn adapt_material_scheme(
             if mode.is_dark() { "Dark" } else { "Light" }
         )),
         mode,
-        radius: Some(8),
-        radius_lg: Some(8),
         colors: colors.into(),
         highlight: Some(highlight),
         ..Default::default()
+    }
+}
+
+#[derive(Clone)]
+struct MaterialCodePalette {
+    plain_text: SharedString,
+    muted_text: SharedString,
+    keyword: SharedString,
+    keyword_background: SharedString,
+    function: SharedString,
+    type_: SharedString,
+    property: SharedString,
+    attribute_link: SharedString,
+    tag: SharedString,
+    string: SharedString,
+    constant: SharedString,
+}
+
+impl MaterialCodePalette {
+    fn new(scheme: &MaterializedScheme) -> Self {
+        let keyword = material_semantic_roles_for_seed(scheme, SYNTAX_KEYWORD_SEED_COLOR).color;
+
+        Self {
+            plain_text: hex(scheme.on_surface),
+            muted_text: hex(scheme.on_surface_variant),
+            keyword: hex(keyword),
+            keyword_background: hex_alpha(keyword, MATERIAL_PRESSED_STATE_LAYER_ALPHA),
+            function: hex(
+                material_semantic_roles_for_seed(scheme, SYNTAX_FUNCTION_SEED_COLOR).color,
+            ),
+            type_: hex(material_semantic_roles_for_seed(scheme, SYNTAX_TYPE_SEED_COLOR).color),
+            property: hex(material_semantic_roles_for_seed_and_chroma(
+                scheme,
+                SYNTAX_PROPERTY_SEED_COLOR,
+                SYNTAX_PROPERTY_CHROMA,
+            )
+            .color),
+            attribute_link: hex(material_semantic_roles_for_seed_and_chroma(
+                scheme,
+                SYNTAX_ATTRIBUTE_SEED_COLOR,
+                SYNTAX_ATTRIBUTE_CHROMA,
+            )
+            .color),
+            tag: hex(material_semantic_roles_for_seed_and_chroma(
+                scheme,
+                SYNTAX_TAG_SEED_COLOR,
+                SYNTAX_TAG_CHROMA,
+            )
+            .color),
+            string: hex(material_semantic_roles_for_seed(scheme, SYNTAX_STRING_SEED_COLOR).color),
+            constant: hex(material_semantic_roles_for_seed_and_chroma(
+                scheme,
+                SYNTAX_CONSTANT_SEED_COLOR,
+                SYNTAX_CONSTANT_CHROMA,
+            )
+            .color),
+        }
+    }
+}
+
+struct MaterialEditorChrome {
+    background: SharedString,
+    active_line: SharedString,
+    line_number: SharedString,
+    active_line_number: SharedString,
+    invisible: SharedString,
+}
+
+impl MaterialEditorChrome {
+    fn new(scheme: &MaterializedScheme, code: &MaterialCodePalette) -> Self {
+        Self {
+            background: hex(scheme.surface_container_lowest),
+            active_line: hex(scheme.surface_container_low),
+            line_number: code.muted_text.clone(),
+            active_line_number: code.plain_text.clone(),
+            invisible: hex_alpha(scheme.on_surface_variant, MATERIAL_EDITOR_INVISIBLE_ALPHA),
+        }
     }
 }
 
@@ -380,13 +457,13 @@ struct MaterialThemeColors {
     control: MaterialControlTokens,
     interaction: MaterialInteractionTokens,
     status: MaterialStatusTokens,
+    code: MaterialCodePalette,
     overlay: SharedString,
     window_border: SharedString,
 }
 
 struct MaterialSurfaceTokens {
     background: SharedString,
-    foreground: SharedString,
     border: SharedString,
     accordion: SharedString,
     accordion_hover: SharedString,
@@ -400,7 +477,6 @@ struct MaterialSurfaceTokens {
     list_even: SharedString,
     list_head: SharedString,
     muted: SharedString,
-    muted_foreground: SharedString,
     popover: SharedString,
     popover_foreground: SharedString,
     scrollbar: SharedString,
@@ -433,28 +509,59 @@ struct MaterialSurfaceTokens {
 }
 
 struct MaterialControlTokens {
-    button_primary: SharedString,
-    button_primary_active: SharedString,
-    button_primary_foreground: SharedString,
-    button_primary_hover: SharedString,
+    primary: MaterialButtonTokens,
+    secondary: MaterialButtonTokens,
     caret: SharedString,
     link: SharedString,
     link_active: SharedString,
     link_hover: SharedString,
-    primary: SharedString,
-    primary_active: SharedString,
-    primary_foreground: SharedString,
-    primary_hover: SharedString,
     progress_bar: SharedString,
     ring: SharedString,
-    secondary: SharedString,
-    secondary_active: SharedString,
-    secondary_foreground: SharedString,
-    secondary_hover: SharedString,
     sidebar_primary: SharedString,
     sidebar_primary_foreground: SharedString,
     slider_bar: SharedString,
     slider_thumb: SharedString,
+}
+
+#[derive(Clone)]
+struct MaterialButtonTokens {
+    background: SharedString,
+    hover: SharedString,
+    active: SharedString,
+    foreground: SharedString,
+}
+
+#[derive(Clone, Copy)]
+struct MaterialColorPair {
+    color: Argb,
+    on_color: Argb,
+}
+
+#[derive(Clone, Copy)]
+struct MaterialButtonStateLayers {
+    hover_alpha: u8,
+    pressed_alpha: u8,
+}
+
+impl MaterialButtonStateLayers {
+    const fn material_3() -> Self {
+        Self {
+            hover_alpha: MATERIAL_HOVER_STATE_LAYER_ALPHA,
+            pressed_alpha: MATERIAL_PRESSED_STATE_LAYER_ALPHA,
+        }
+    }
+}
+
+fn material_button_tokens(
+    colors: MaterialColorPair,
+    states: MaterialButtonStateLayers,
+) -> MaterialButtonTokens {
+    MaterialButtonTokens {
+        background: hex(colors.color),
+        hover: state_layer(colors.color, colors.on_color, states.hover_alpha),
+        active: state_layer(colors.color, colors.on_color, states.pressed_alpha),
+        foreground: hex(colors.on_color),
+    }
 }
 
 struct MaterialInteractionTokens {
@@ -481,34 +588,24 @@ struct MaterialStatusTokens {
     chart_5: SharedString,
     chart_bullish: SharedString,
     chart_bearish: SharedString,
-    danger: SharedString,
-    danger_active: SharedString,
-    danger_foreground: SharedString,
-    danger_hover: SharedString,
-    info: SharedString,
-    info_active: SharedString,
-    info_foreground: SharedString,
-    info_hover: SharedString,
-    success: SharedString,
-    success_active: SharedString,
-    success_foreground: SharedString,
-    success_hover: SharedString,
-    warning: SharedString,
-    warning_active: SharedString,
-    warning_foreground: SharedString,
-    warning_hover: SharedString,
+    danger: MaterialButtonTokens,
+    info: MaterialButtonTokens,
+    success: MaterialButtonTokens,
+    warning: MaterialButtonTokens,
 }
 
 fn build_material_theme_colors(
     mode: ComponentThemeMode,
     scheme: &MaterializedScheme,
     palette: &MaterialPalette,
+    code: &MaterialCodePalette,
 ) -> MaterialThemeColors {
     MaterialThemeColors {
         surface: material_surface_tokens(scheme, palette),
-        control: material_control_tokens(scheme, palette),
+        control: material_control_tokens(scheme),
         interaction: material_interaction_tokens(mode, scheme, palette),
-        status: material_status_tokens(scheme, palette),
+        status: material_status_tokens(scheme),
+        code: code.clone(),
         overlay: palette.overlay.clone(),
         window_border: palette.divider.clone(),
     }
@@ -520,7 +617,6 @@ fn material_surface_tokens(
 ) -> MaterialSurfaceTokens {
     MaterialSurfaceTokens {
         background: hex(scheme.surface),
-        foreground: hex(scheme.on_surface),
         border: palette.divider.clone(),
         accordion: hex(scheme.surface_container_low),
         accordion_hover: hex(scheme.surface_container),
@@ -534,7 +630,6 @@ fn material_surface_tokens(
         list_even: hex(scheme.surface_container_lowest),
         list_head: hex(scheme.surface_container_low),
         muted: hex(scheme.surface_container),
-        muted_foreground: hex(scheme.on_surface_variant),
         popover: hex(scheme.surface_container_low),
         popover_foreground: hex(scheme.on_surface),
         scrollbar: hex_alpha(scheme.surface, 0x00),
@@ -567,29 +662,32 @@ fn material_surface_tokens(
     }
 }
 
-fn material_control_tokens(
-    scheme: &MaterializedScheme,
-    palette: &MaterialPalette,
-) -> MaterialControlTokens {
+fn material_control_tokens(scheme: &MaterializedScheme) -> MaterialControlTokens {
+    let states = MaterialButtonStateLayers::material_3();
+    let primary = material_button_tokens(
+        MaterialColorPair {
+            color: scheme.primary,
+            on_color: scheme.on_primary,
+        },
+        states,
+    );
+    let secondary = material_button_tokens(
+        MaterialColorPair {
+            color: scheme.secondary_container,
+            on_color: scheme.on_secondary_container,
+        },
+        states,
+    );
+
     MaterialControlTokens {
-        button_primary: hex(scheme.primary),
-        button_primary_active: palette.primary.active.clone(),
-        button_primary_foreground: hex(scheme.on_primary),
-        button_primary_hover: palette.primary.hover.clone(),
+        primary,
+        secondary,
         caret: hex(scheme.primary),
         link: hex(scheme.primary),
         link_active: hex(scheme.primary),
         link_hover: hex(scheme.primary),
-        primary: hex(scheme.primary),
-        primary_active: palette.primary.active.clone(),
-        primary_foreground: hex(scheme.on_primary),
-        primary_hover: palette.primary.hover.clone(),
         progress_bar: hex(scheme.primary),
         ring: hex(scheme.primary),
-        secondary: hex(scheme.secondary_container),
-        secondary_active: palette.secondary.active.clone(),
-        secondary_foreground: hex(scheme.on_secondary_container),
-        secondary_hover: palette.secondary.hover.clone(),
         sidebar_primary: hex(scheme.primary),
         sidebar_primary_foreground: hex(scheme.on_primary),
         slider_bar: hex(scheme.primary),
@@ -619,16 +717,14 @@ fn material_interaction_tokens(
     }
 }
 
-fn material_status_tokens(
-    scheme: &MaterializedScheme,
-    palette: &MaterialPalette,
-) -> MaterialStatusTokens {
+fn material_status_tokens(scheme: &MaterializedScheme) -> MaterialStatusTokens {
     let primary_roles = material_semantic_roles_for_palette(scheme, scheme.primary_palette.clone());
     let danger_roles = material_semantic_roles_for_palette(scheme, scheme.error_palette.clone());
     let info_roles = material_semantic_roles_for_seed(scheme, INFO_SEED_COLOR);
     let success_roles = material_semantic_roles_for_seed(scheme, SUCCESS_SEED_COLOR);
     let warning_roles = material_semantic_roles_for_seed(scheme, WARNING_SEED_COLOR);
     let chart_extra_roles = material_semantic_roles_for_seed(scheme, CHART_EXTRA_SEED_COLOR);
+    let states = MaterialButtonStateLayers::material_3();
 
     MaterialStatusTokens {
         chart_1: hex(primary_roles.color),
@@ -638,22 +734,10 @@ fn material_status_tokens(
         chart_5: hex(chart_extra_roles.color),
         chart_bullish: hex(success_roles.color),
         chart_bearish: hex(danger_roles.color),
-        danger: hex(danger_roles.color),
-        danger_active: palette.role_active(danger_roles.color, danger_roles.on_color),
-        danger_foreground: hex(danger_roles.on_color),
-        danger_hover: palette.role_hover(danger_roles.color, danger_roles.on_color),
-        info: hex(info_roles.color),
-        info_foreground: hex(info_roles.on_color),
-        info_hover: palette.role_hover(info_roles.color, info_roles.on_color),
-        info_active: palette.role_active(info_roles.color, info_roles.on_color),
-        success: hex(success_roles.color),
-        success_foreground: hex(success_roles.on_color),
-        success_hover: palette.role_hover(success_roles.color, success_roles.on_color),
-        success_active: palette.role_active(success_roles.color, success_roles.on_color),
-        warning: hex(warning_roles.color),
-        warning_active: palette.role_active(warning_roles.color, warning_roles.on_color),
-        warning_hover: palette.role_hover(warning_roles.color, warning_roles.on_color),
-        warning_foreground: hex(warning_roles.on_color),
+        danger: material_button_tokens(danger_roles, states),
+        info: material_button_tokens(info_roles, states),
+        success: material_button_tokens(success_roles, states),
+        warning: material_button_tokens(warning_roles, states),
     }
 }
 
@@ -664,6 +748,7 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
             control,
             interaction,
             status,
+            code,
             overlay,
             window_border,
         } = tokens;
@@ -675,34 +760,34 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.accordion_hover = Some(surface.accordion_hover);
         colors.background = Some(surface.background);
         colors.border = Some(surface.border);
-        colors.button = Some(control.secondary.clone());
-        colors.button_active = Some(control.secondary_active.clone());
-        colors.button_foreground = Some(control.secondary_foreground.clone());
-        colors.button_hover = Some(control.secondary_hover.clone());
-        colors.button_danger = Some(status.danger.clone());
-        colors.button_danger_active = Some(status.danger_active.clone());
-        colors.button_danger_foreground = Some(status.danger_foreground.clone());
-        colors.button_danger_hover = Some(status.danger_hover.clone());
-        colors.button_info = Some(status.info.clone());
-        colors.button_info_active = Some(status.info_active.clone());
-        colors.button_info_foreground = Some(status.info_foreground.clone());
-        colors.button_info_hover = Some(status.info_hover.clone());
-        colors.button_primary = Some(control.button_primary);
-        colors.button_primary_active = Some(control.button_primary_active);
-        colors.button_primary_foreground = Some(control.button_primary_foreground);
-        colors.button_primary_hover = Some(control.button_primary_hover);
-        colors.button_secondary = Some(control.secondary.clone());
-        colors.button_secondary_active = Some(control.secondary_active.clone());
-        colors.button_secondary_foreground = Some(control.secondary_foreground.clone());
-        colors.button_secondary_hover = Some(control.secondary_hover.clone());
-        colors.button_success = Some(status.success.clone());
-        colors.button_success_active = Some(status.success_active.clone());
-        colors.button_success_foreground = Some(status.success_foreground.clone());
-        colors.button_success_hover = Some(status.success_hover.clone());
-        colors.button_warning = Some(status.warning.clone());
-        colors.button_warning_active = Some(status.warning_active.clone());
-        colors.button_warning_foreground = Some(status.warning_foreground.clone());
-        colors.button_warning_hover = Some(status.warning_hover.clone());
+        colors.button = Some(control.secondary.background.clone());
+        colors.button_active = Some(control.secondary.active.clone());
+        colors.button_foreground = Some(control.secondary.foreground.clone());
+        colors.button_hover = Some(control.secondary.hover.clone());
+        colors.button_danger = Some(status.danger.background.clone());
+        colors.button_danger_active = Some(status.danger.active.clone());
+        colors.button_danger_foreground = Some(status.danger.foreground.clone());
+        colors.button_danger_hover = Some(status.danger.hover.clone());
+        colors.button_info = Some(status.info.background.clone());
+        colors.button_info_active = Some(status.info.active.clone());
+        colors.button_info_foreground = Some(status.info.foreground.clone());
+        colors.button_info_hover = Some(status.info.hover.clone());
+        colors.button_primary = Some(control.primary.background.clone());
+        colors.button_primary_active = Some(control.primary.active.clone());
+        colors.button_primary_foreground = Some(control.primary.foreground.clone());
+        colors.button_primary_hover = Some(control.primary.hover.clone());
+        colors.button_secondary = Some(control.secondary.background.clone());
+        colors.button_secondary_active = Some(control.secondary.active.clone());
+        colors.button_secondary_foreground = Some(control.secondary.foreground.clone());
+        colors.button_secondary_hover = Some(control.secondary.hover.clone());
+        colors.button_success = Some(status.success.background.clone());
+        colors.button_success_active = Some(status.success.active.clone());
+        colors.button_success_foreground = Some(status.success.foreground.clone());
+        colors.button_success_hover = Some(status.success.hover.clone());
+        colors.button_warning = Some(status.warning.background.clone());
+        colors.button_warning_active = Some(status.warning.active.clone());
+        colors.button_warning_foreground = Some(status.warning.foreground.clone());
+        colors.button_warning_hover = Some(status.warning.hover.clone());
         colors.caret = Some(control.caret);
         colors.chart_1 = Some(status.chart_1);
         colors.chart_2 = Some(status.chart_2);
@@ -711,22 +796,22 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.chart_5 = Some(status.chart_5);
         colors.chart_bullish = Some(status.chart_bullish);
         colors.chart_bearish = Some(status.chart_bearish);
-        colors.danger = Some(status.danger);
-        colors.danger_active = Some(status.danger_active);
-        colors.danger_foreground = Some(status.danger_foreground);
-        colors.danger_hover = Some(status.danger_hover);
+        colors.danger = Some(status.danger.background);
+        colors.danger_active = Some(status.danger.active);
+        colors.danger_foreground = Some(status.danger.foreground);
+        colors.danger_hover = Some(status.danger.hover);
         colors.description_list_label = Some(surface.description_list_label);
         colors.description_list_label_foreground = Some(surface.description_list_label_foreground);
         colors.drag_border = Some(interaction.drag_border);
         colors.drop_target = Some(interaction.drop_target);
-        colors.foreground = Some(surface.foreground);
+        colors.foreground = Some(code.plain_text);
         colors.group_box = Some(surface.group_box);
         colors.group_box_foreground = Some(surface.group_box_foreground);
         colors.group_box_title_foreground = Some(surface.group_box_title_foreground);
-        colors.info = Some(status.info);
-        colors.info_active = Some(status.info_active);
-        colors.info_foreground = Some(status.info_foreground);
-        colors.info_hover = Some(status.info_hover);
+        colors.info = Some(status.info.background);
+        colors.info_active = Some(status.info.active);
+        colors.info_foreground = Some(status.info.foreground);
+        colors.info_hover = Some(status.info.hover);
         colors.input = Some(surface.input);
         colors.link = Some(control.link);
         colors.link_active = Some(control.link_active);
@@ -738,23 +823,23 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.list_head = Some(surface.list_head);
         colors.list_hover = Some(interaction.list_hover);
         colors.muted = Some(surface.muted);
-        colors.muted_foreground = Some(surface.muted_foreground);
+        colors.muted_foreground = Some(code.muted_text);
         colors.overlay = Some(overlay);
         colors.popover = Some(surface.popover);
         colors.popover_foreground = Some(surface.popover_foreground);
-        colors.primary = Some(control.primary);
-        colors.primary_active = Some(control.primary_active);
-        colors.primary_foreground = Some(control.primary_foreground);
-        colors.primary_hover = Some(control.primary_hover);
+        colors.primary = Some(control.primary.background);
+        colors.primary_active = Some(control.primary.active);
+        colors.primary_foreground = Some(control.primary.foreground);
+        colors.primary_hover = Some(control.primary.hover);
         colors.progress_bar = Some(control.progress_bar);
         colors.ring = Some(control.ring);
         colors.scrollbar = Some(surface.scrollbar);
         colors.scrollbar_thumb = Some(surface.scrollbar_thumb);
         colors.scrollbar_thumb_hover = Some(surface.scrollbar_thumb_hover);
-        colors.secondary = Some(control.secondary);
-        colors.secondary_active = Some(control.secondary_active);
-        colors.secondary_foreground = Some(control.secondary_foreground);
-        colors.secondary_hover = Some(control.secondary_hover);
+        colors.secondary = Some(control.secondary.background);
+        colors.secondary_active = Some(control.secondary.active);
+        colors.secondary_foreground = Some(control.secondary.foreground);
+        colors.secondary_hover = Some(control.secondary.hover);
         colors.selection = Some(interaction.selection);
         colors.sidebar = Some(surface.sidebar);
         colors.sidebar_accent = Some(interaction.sidebar_accent);
@@ -768,10 +853,10 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.status_bar_border = Some(surface.status_bar_border);
         colors.slider_bar = Some(control.slider_bar);
         colors.slider_thumb = Some(control.slider_thumb);
-        colors.success = Some(status.success);
-        colors.success_active = Some(status.success_active);
-        colors.success_foreground = Some(status.success_foreground);
-        colors.success_hover = Some(status.success_hover);
+        colors.success = Some(status.success.background);
+        colors.success_active = Some(status.success.active);
+        colors.success_foreground = Some(status.success.foreground);
+        colors.success_hover = Some(status.success.hover);
         colors.switch = Some(surface.switch);
         colors.switch_thumb = Some(surface.switch_thumb);
         colors.tab = Some(surface.tab);
@@ -793,67 +878,39 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.tiles = Some(surface.tiles);
         colors.title_bar = Some(surface.title_bar);
         colors.title_bar_border = Some(surface.title_bar_border);
-        colors.warning = Some(status.warning);
-        colors.warning_active = Some(status.warning_active);
-        colors.warning_foreground = Some(status.warning_foreground);
-        colors.warning_hover = Some(status.warning_hover);
+        colors.warning = Some(status.warning.background);
+        colors.warning_active = Some(status.warning.active);
+        colors.warning_foreground = Some(status.warning.foreground);
+        colors.warning_hover = Some(status.warning.hover);
         colors.window_border = Some(window_border);
 
         colors
     }
 }
 
-fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThemeStyle {
+fn material_highlight_theme_style(
+    scheme: &MaterializedScheme,
+    code: &MaterialCodePalette,
+    editor: &MaterialEditorChrome,
+) -> HighlightThemeStyle {
     let danger_roles = material_semantic_roles_for_palette(scheme, scheme.error_palette.clone());
     let info_roles = material_semantic_roles_for_seed(scheme, INFO_SEED_COLOR);
     let success_roles = material_semantic_roles_for_seed(scheme, SUCCESS_SEED_COLOR);
     let warning_roles = material_semantic_roles_for_seed(scheme, WARNING_SEED_COLOR);
-    let syntax_keyword_roles = material_semantic_roles_for_seed(scheme, SYNTAX_KEYWORD_SEED_COLOR);
-    let syntax_function_roles =
-        material_semantic_roles_for_seed(scheme, SYNTAX_FUNCTION_SEED_COLOR);
-    let syntax_type_roles = material_semantic_roles_for_seed(scheme, SYNTAX_TYPE_SEED_COLOR);
-    let syntax_property_roles = material_semantic_roles_for_seed_and_chroma(
-        scheme,
-        SYNTAX_PROPERTY_SEED_COLOR,
-        SYNTAX_PROPERTY_CHROMA,
-    );
-    let syntax_attribute_roles = material_semantic_roles_for_seed_and_chroma(
-        scheme,
-        SYNTAX_ATTRIBUTE_SEED_COLOR,
-        SYNTAX_ATTRIBUTE_CHROMA,
-    );
-    let syntax_tag_roles = material_semantic_roles_for_seed_and_chroma(
-        scheme,
-        SYNTAX_TAG_SEED_COLOR,
-        SYNTAX_TAG_CHROMA,
-    );
-    let syntax_string_roles = material_semantic_roles_for_seed(scheme, SYNTAX_STRING_SEED_COLOR);
-    let syntax_constant_roles = material_semantic_roles_for_seed_and_chroma(
-        scheme,
-        SYNTAX_CONSTANT_SEED_COLOR,
-        SYNTAX_CONSTANT_CHROMA,
-    );
-
-    let editor_background = hex(scheme.surface_container_lowest);
-    let editor_foreground = hex(scheme.on_surface);
-    let editor_active_line = hex(scheme.surface_container_low);
-    let editor_line_number = hex(scheme.on_surface_variant);
-    let editor_active_line_number = hex(scheme.on_surface);
-    let editor_invisible = hex_alpha(scheme.on_surface_variant, MATERIAL_EDITOR_INVISIBLE_ALPHA);
 
     let mut root = Map::new();
-    root.insert("editor.background".into(), json!(editor_background));
-    root.insert("editor.foreground".into(), json!(editor_foreground));
+    root.insert("editor.background".into(), json!(editor.background));
+    root.insert("editor.foreground".into(), json!(code.plain_text));
     root.insert(
         "editor.active_line.background".into(),
-        json!(editor_active_line),
+        json!(editor.active_line),
     );
-    root.insert("editor.line_number".into(), json!(editor_line_number));
+    root.insert("editor.line_number".into(), json!(editor.line_number));
     root.insert(
         "editor.active_line_number".into(),
-        json!(editor_active_line_number),
+        json!(editor.active_line_number),
     );
-    root.insert("editor.invisible".into(), json!(editor_invisible));
+    root.insert("editor.invisible".into(), json!(editor.invisible));
     root.insert("error".into(), json!(hex(danger_roles.color)));
     root.insert(
         "error.background".into(),
@@ -890,113 +947,77 @@ fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThem
         )),
     );
     root.insert("success.border".into(), json!(hex(success_roles.color)));
-    root.insert("hint".into(), json!(hex(syntax_keyword_roles.color)));
-    root.insert(
-        "hint.background".into(),
-        json!(hex_alpha(
-            syntax_keyword_roles.color,
-            MATERIAL_PRESSED_STATE_LAYER_ALPHA
-        )),
-    );
-    root.insert("hint.border".into(), json!(hex(syntax_keyword_roles.color)));
+    root.insert("hint".into(), json!(code.keyword));
+    root.insert("hint.background".into(), json!(code.keyword_background));
+    root.insert("hint.border".into(), json!(code.keyword));
 
     let mut syntax = Map::new();
-    insert_syntax_color(&mut syntax, "attribute", hex(syntax_attribute_roles.color));
-    insert_syntax_color(&mut syntax, "boolean", hex(syntax_constant_roles.color));
-    insert_syntax_color(&mut syntax, "comment", hex(scheme.on_surface_variant));
-    insert_syntax_color(&mut syntax, "comment.doc", hex(scheme.on_surface_variant));
-    insert_syntax_color(&mut syntax, "constant", hex(syntax_constant_roles.color));
-    insert_syntax_color(&mut syntax, "constructor", hex(syntax_type_roles.color));
-    insert_syntax_color(&mut syntax, "embedded", editor_foreground.clone());
-    insert_syntax_color(&mut syntax, "function", hex(syntax_function_roles.color));
-    insert_syntax_color(&mut syntax, "keyword", hex(syntax_keyword_roles.color));
+    insert_syntax_color(&mut syntax, "attribute", code.attribute_link.clone());
+    insert_syntax_color(&mut syntax, "boolean", code.constant.clone());
+    insert_syntax_color(&mut syntax, "comment", code.muted_text.clone());
+    insert_syntax_color(&mut syntax, "comment.doc", code.muted_text.clone());
+    insert_syntax_color(&mut syntax, "constant", code.constant.clone());
+    insert_syntax_color(&mut syntax, "constructor", code.type_.clone());
+    insert_syntax_color(&mut syntax, "embedded", code.plain_text.clone());
+    insert_syntax_color(&mut syntax, "function", code.function.clone());
+    insert_syntax_color(&mut syntax, "keyword", code.keyword.clone());
     insert_syntax_text_style(
         &mut syntax,
         "link_text",
-        hex(syntax_attribute_roles.color),
+        code.attribute_link.clone(),
         Some("normal"),
         None,
     );
     insert_syntax_text_style(
         &mut syntax,
         "link_uri",
-        hex(syntax_attribute_roles.color),
+        code.attribute_link.clone(),
         Some("italic"),
         None,
     );
-    insert_syntax_color(&mut syntax, "number", hex(syntax_constant_roles.color));
-    insert_syntax_color(&mut syntax, "operator", hex(scheme.on_surface_variant));
-    insert_syntax_color(&mut syntax, "property", hex(syntax_property_roles.color));
-    insert_syntax_color(&mut syntax, "punctuation", hex(scheme.on_surface_variant));
-    insert_syntax_color(
-        &mut syntax,
-        "punctuation.bracket",
-        hex(scheme.on_surface_variant),
-    );
+    insert_syntax_color(&mut syntax, "number", code.constant.clone());
+    insert_syntax_color(&mut syntax, "operator", code.muted_text.clone());
+    insert_syntax_color(&mut syntax, "property", code.property.clone());
+    insert_syntax_color(&mut syntax, "punctuation", code.muted_text.clone());
+    insert_syntax_color(&mut syntax, "punctuation.bracket", code.muted_text.clone());
     insert_syntax_color(
         &mut syntax,
         "punctuation.delimiter",
-        hex(scheme.on_surface_variant),
+        code.muted_text.clone(),
     );
     insert_syntax_color(
         &mut syntax,
         "punctuation.list_marker",
-        hex(scheme.on_surface_variant),
+        code.muted_text.clone(),
     );
-    insert_syntax_color(
-        &mut syntax,
-        "punctuation.special",
-        hex(syntax_constant_roles.color),
-    );
-    insert_syntax_color(&mut syntax, "string", hex(syntax_string_roles.color));
-    insert_syntax_color(&mut syntax, "string.escape", hex(syntax_string_roles.color));
-    insert_syntax_color(&mut syntax, "string.regex", hex(syntax_string_roles.color));
-    insert_syntax_color(
-        &mut syntax,
-        "string.special",
-        hex(syntax_constant_roles.color),
-    );
-    insert_syntax_color(
-        &mut syntax,
-        "string.special.symbol",
-        hex(syntax_constant_roles.color),
-    );
-    insert_syntax_color(&mut syntax, "tag", hex(syntax_tag_roles.color));
-    insert_syntax_color(
-        &mut syntax,
-        "text.literal",
-        hex(syntax_constant_roles.color),
-    );
-    insert_syntax_text_style(
-        &mut syntax,
-        "title",
-        hex(syntax_function_roles.color),
-        None,
-        Some(600),
-    );
-    insert_syntax_color(&mut syntax, "type", hex(syntax_type_roles.color));
-    insert_syntax_color(&mut syntax, "variable", editor_foreground);
-    insert_syntax_color(
-        &mut syntax,
-        "variable.special",
-        hex(syntax_function_roles.color),
-    );
-    insert_syntax_color(&mut syntax, "variant", hex(syntax_type_roles.color));
+    insert_syntax_color(&mut syntax, "punctuation.special", code.constant.clone());
+    insert_syntax_color(&mut syntax, "string", code.string.clone());
+    insert_syntax_color(&mut syntax, "string.escape", code.string.clone());
+    insert_syntax_color(&mut syntax, "string.regex", code.string.clone());
+    insert_syntax_color(&mut syntax, "string.special", code.constant.clone());
+    insert_syntax_color(&mut syntax, "string.special.symbol", code.constant.clone());
+    insert_syntax_color(&mut syntax, "tag", code.tag.clone());
+    insert_syntax_color(&mut syntax, "text.literal", code.constant.clone());
+    insert_syntax_text_style(&mut syntax, "title", code.function.clone(), None, Some(600));
+    insert_syntax_color(&mut syntax, "type", code.type_.clone());
+    insert_syntax_color(&mut syntax, "variable", code.plain_text.clone());
+    insert_syntax_color(&mut syntax, "variable.special", code.function.clone());
+    insert_syntax_color(&mut syntax, "variant", code.type_.clone());
     root.insert("syntax".into(), Value::Object(syntax));
 
     let mut style: HighlightThemeStyle = serde_json::from_value(Value::Object(root))
         .expect("generated Material You highlight theme should be valid");
-    style.editor_background = Some(material_hsla(scheme.surface_container_lowest, u8::MAX));
-    style.editor_foreground = Some(material_hsla(scheme.on_surface, u8::MAX));
-    style.editor_active_line = Some(material_hsla(scheme.surface_container_low, u8::MAX));
-    style.editor_line_number = Some(material_hsla(scheme.on_surface_variant, u8::MAX));
-    style.editor_active_line_number = Some(material_hsla(scheme.on_surface, u8::MAX));
-    style.editor_invisible = Some(material_hsla(
-        scheme.on_surface_variant,
-        MATERIAL_EDITOR_INVISIBLE_ALPHA,
-    ));
-    style.editor_gutter_background = style.editor_background;
+    style.editor_background = Some(material_color(&editor.background));
+    style.editor_foreground = Some(material_color(&code.plain_text));
+    style.editor_active_line = Some(material_color(&editor.active_line));
+    style.editor_line_number = Some(material_color(&editor.line_number));
+    style.editor_active_line_number = Some(material_color(&editor.active_line_number));
+    style.editor_invisible = Some(material_color(&editor.invisible));
     style
+}
+
+fn material_color(color: &str) -> Hsla {
+    Hsla::parse_hex(color).expect("generated Material You color should be valid")
 }
 
 fn insert_syntax_color(syntax: &mut Map<String, Value>, name: &str, color: SharedString) {
@@ -1026,15 +1047,11 @@ struct MaterialPalette {
     divider: SharedString,
     overlay: SharedString,
     on_surface: Argb,
-    primary: MaterialInteractiveRole,
-    secondary: MaterialInteractiveRole,
-    action: MaterialActionPalette,
+    button_states: MaterialButtonStateLayers,
 }
 
 impl MaterialPalette {
     fn new(mode: ComponentThemeMode, scheme: &MaterializedScheme) -> Self {
-        let action = MaterialActionPalette::new();
-
         Self {
             divider: hex_alpha(scheme.on_surface, MATERIAL_SOFT_DIVIDER_ALPHA),
             overlay: if mode.is_dark() {
@@ -1043,73 +1060,19 @@ impl MaterialPalette {
                 "#0000001F".into()
             },
             on_surface: scheme.on_surface,
-            primary: MaterialInteractiveRole::new(scheme.primary, scheme.on_primary, &action),
-            secondary: MaterialInteractiveRole::new(
-                scheme.secondary_container,
-                scheme.on_secondary_container,
-                &action,
-            ),
-            action,
+            button_states: MaterialButtonStateLayers::material_3(),
         }
     }
 
     fn action_hover(&self, container: Argb) -> SharedString {
-        state_layer(container, self.on_surface, self.action.hover_alpha)
+        state_layer(container, self.on_surface, self.button_states.hover_alpha)
     }
-
-    fn role_hover(&self, container: Argb, content: Argb) -> SharedString {
-        state_layer(container, content, self.action.hover_alpha)
-    }
-
-    fn role_active(&self, container: Argb, content: Argb) -> SharedString {
-        state_layer(container, content, self.action.active_alpha)
-    }
-}
-
-#[derive(Clone)]
-struct MaterialInteractiveRole {
-    hover: SharedString,
-    active: SharedString,
-}
-
-impl MaterialInteractiveRole {
-    fn new(container: Argb, content: Argb, action: &MaterialActionPalette) -> Self {
-        Self {
-            hover: state_layer(container, content, action.hover_alpha),
-            active: state_layer(container, content, action.active_alpha),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct MaterialActionPalette {
-    hover_alpha: u8,
-    active_alpha: u8,
-}
-
-impl MaterialActionPalette {
-    fn new() -> Self {
-        Self {
-            hover_alpha: MATERIAL_HOVER_STATE_LAYER_ALPHA,
-            active_alpha: MATERIAL_PRESSED_STATE_LAYER_ALPHA,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct MaterialSemanticRoles {
-    color: Argb,
-    on_color: Argb,
-    #[cfg(test)]
-    container: Argb,
-    #[cfg(test)]
-    on_container: Argb,
 }
 
 fn material_semantic_roles_for_seed(
     scheme: &MaterializedScheme,
     design_color: Argb,
-) -> MaterialSemanticRoles {
+) -> MaterialColorPair {
     material_semantic_roles_for_seed_and_chroma(scheme, design_color, SEMANTIC_CHROMA)
 }
 
@@ -1117,7 +1080,7 @@ fn material_semantic_roles_for_seed_and_chroma(
     scheme: &MaterializedScheme,
     design_color: Argb,
     chroma: f64,
-) -> MaterialSemanticRoles {
+) -> MaterialColorPair {
     material_semantic_roles_for_palette(
         scheme,
         semantic_palette(scheme.source_color, design_color, chroma),
@@ -1127,7 +1090,7 @@ fn material_semantic_roles_for_seed_and_chroma(
 fn material_semantic_roles_for_palette(
     scheme: &MaterializedScheme,
     semantic_palette: TonalPalette,
-) -> MaterialSemanticRoles {
+) -> MaterialColorPair {
     // material-color-utils exposes dynamic role contrast through MaterialDynamicColors.
     // Replacing the DynamicScheme error palette lets app-specific semantic palettes
     // reuse Material's error/on-error tone rules for status, chart, and syntax roles.
@@ -1148,18 +1111,10 @@ fn material_semantic_roles_for_palette(
     let dynamic_colors = MaterialDynamicColors::new_with_spec(scheme.spec_version);
     let color = dynamic_colors.error();
     let on_color = dynamic_colors.on_error();
-    #[cfg(test)]
-    let container = dynamic_colors.error_container();
-    #[cfg(test)]
-    let on_container = dynamic_colors.on_error_container();
 
-    MaterialSemanticRoles {
+    MaterialColorPair {
         color: dynamic_scheme.get_argb(&color),
         on_color: dynamic_scheme.get_argb(&on_color),
-        #[cfg(test)]
-        container: dynamic_scheme.get_argb(&container),
-        #[cfg(test)]
-        on_container: dynamic_scheme.get_argb(&on_container),
     }
 }
 
@@ -1181,16 +1136,6 @@ fn hex_alpha(color: Argb, alpha: u8) -> SharedString {
         color.blue(),
         alpha
     )
-    .into()
-}
-
-fn material_hsla(color: Argb, alpha: u8) -> Hsla {
-    rgba(u32::from_be_bytes([
-        color.red(),
-        color.green(),
-        color.blue(),
-        alpha,
-    ]))
     .into()
 }
 

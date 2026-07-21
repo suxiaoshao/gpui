@@ -173,7 +173,7 @@ impl RenderOnce for SkillCatalogEntryView {
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().background)
+                .bg(cx.theme().tokens.background.background)
                 .p_3()
                 .child(body),
         )
@@ -271,7 +271,7 @@ fn render_content_state(
                         .rounded(cx.theme().radius)
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().background)
+                        .bg(cx.theme().tokens.background.background)
                         .child(
                             div()
                                 .id(format!("skill-content-scroll-area-{stable_id}"))
@@ -318,7 +318,7 @@ fn path_chip(path: SharedString, cx: &App) -> impl IntoElement {
         .w_full()
         .min_w_0()
         .rounded(cx.theme().radius)
-        .bg(cx.theme().muted.opacity(0.32))
+        .bg(cx.theme().tokens.muted.background.opacity(0.32))
         .px_2()
         .py_1()
         .child(

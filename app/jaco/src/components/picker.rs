@@ -5,7 +5,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
-    list::{List, ListDelegate, ListState},
+    list::{List, ListDelegate, ListItem, ListState},
     popover::Popover,
     select::SelectItem,
     v_flex,
@@ -107,25 +107,13 @@ where
     T: SelectItem + Clone + 'static,
 {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .id(self.id)
+        ListItem::new(self.id)
             .w_full()
-            .relative()
-            .gap_x_1()
             .min_h(px(28.))
             .px_3()
             .py_1()
             .rounded(cx.theme().radius)
-            .text_base()
-            .text_color(cx.theme().foreground)
-            .items_center()
-            .justify_between()
-            .when(self.is_selected, |this| {
-                this.bg(cx.theme().secondary_active)
-            })
-            .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().secondary_hover))
-            })
+            .selected(self.is_selected)
             .child(
                 h_flex()
                     .relative()
@@ -434,7 +422,7 @@ where
                 .rounded(px(12.))
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
+                .bg(cx.theme().tokens.popover.background)
                 .shadow_lg()
                 .child(
                     List::new(&config.list)

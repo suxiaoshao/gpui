@@ -9,6 +9,17 @@
 
 ## 跨功能迁移
 
+- [内置主题来源与同步规则](theme-sources.md)
+- **当前迁移（2026-07-21）**：[Jaco GPUI `1d217ee39d381ac101b7cf49d3d22451ac1093fe` ->
+  `1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba`、gpui-component
+  `c36b0c6ae6d14c33473f6610a27c3abc584afdf9` ->
+  `5b45bcb26b9343d91a123a4d5ed8a654360512e5` 迁移](migrations/gpui-1a246efd-component-5b45bcb.md)：
+  依赖与非视觉兼容部分已完成；会改变颜色、边框、圆角、间距或组件外观的改动已回退，待重新讨论；覆盖 Jaco window/timer/layout、JSON themes 与 Aurora、ThemeToken 背景、
+  ListItem/picker/defer、Scrollable/Input，以及共享 `app-theme` 在 editor/Markdown 中的运行时消费回归；
+  generated Material 配色不由 Jaco 生成。当前 gpui-component `5b45bcb` 的 TextView 会缓存
+  parse-time highlight theme，因此主题切换验收受上游
+  [`UPSTREAM-TEXT-15`](../../../../docs/dev/migrations/gpui-1a246efd-component-5b45bcb/upstream-text-theme.md)
+  阻断；Jaco 不添加主题监听或重解析 workaround。
 - [Jaco gpui-form 类型化双向绑定迁移](gpui-form-migration.md)：源码、自动化验证、依赖升级、
   `trybuild` compile-fail harness、residual audit 与定向 Computer Use smoke 已完成；临时窗口
   全局快捷键与有数据列表键盘流程仍需人工验证。

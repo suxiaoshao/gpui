@@ -138,10 +138,10 @@ impl ProjectsSettingsPage {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .px_3()
             .py_2()
-            .hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+            .hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             .child(
                 div()
                     .flex()
@@ -150,7 +150,7 @@ impl ProjectsSettingsPage {
                     .items_center()
                     .justify_center()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
+                    .bg(cx.theme().tokens.border.background.opacity(0.35))
                     .child(Icon::new(IconName::Folder).text_color(cx.theme().muted_foreground)),
             )
             .child(

@@ -101,7 +101,7 @@ fn render_user_image_attachment(attachment: UserImageAttachment, cx: &mut App) -
         .rounded(px(USER_IMAGE_RADIUS))
         .border_1()
         .border_color(cx.theme().border)
-        .bg(cx.theme().muted.opacity(0.18))
+        .bg(cx.theme().tokens.muted.background.opacity(0.18))
         .overflow_hidden()
         .cursor(CursorStyle::PointingHand)
         .hover(|this| this.border_color(cx.theme().primary.opacity(0.55)))

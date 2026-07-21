@@ -132,7 +132,7 @@ impl SkillDetailDialog {
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().danger.opacity(0.35))
-                .bg(cx.theme().danger.opacity(0.08))
+                .bg(cx.theme().tokens.danger.background.opacity(0.08))
                 .p_3()
                 .text_color(cx.theme().danger)
                 .child(gpui_component::Icon::new(IconName::CircleAlert).with_size(px(16.)))
@@ -166,7 +166,7 @@ impl SkillDetailDialog {
                             .rounded(cx.theme().radius)
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().background)
+                            .bg(cx.theme().tokens.background.background)
                             .child(
                                 div()
                                     .id("skill-detail-content-scroll")
@@ -239,7 +239,7 @@ fn path_chip(path: SharedString, cx: &mut App) -> gpui::AnyElement {
         .max_w_full()
         .min_w_0()
         .rounded(cx.theme().radius)
-        .bg(cx.theme().muted)
+        .bg(cx.theme().tokens.muted.background)
         .px_2()
         .py_1()
         .child(

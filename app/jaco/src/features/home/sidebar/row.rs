@@ -96,7 +96,7 @@ impl RenderOnce for ShortcutSidebarActionRow {
             .text_color(cx.theme().sidebar_foreground.opacity(0.7))
             .cursor_pointer()
             .hover(|this| {
-                this.bg(cx.theme().sidebar_accent.opacity(0.8))
+                this.bg(cx.theme().tokens.sidebar_accent.background.opacity(0.8))
                     .text_color(cx.theme().sidebar_accent_foreground)
                     .pr(ACTION_HOVER_PADDING)
             })
@@ -168,7 +168,7 @@ impl RenderOnce for ProjectSidebarRow {
             .text_color(cx.theme().sidebar_foreground.opacity(0.7))
             .cursor_pointer()
             .hover(|this| {
-                this.bg(cx.theme().sidebar_accent.opacity(0.8))
+                this.bg(cx.theme().tokens.sidebar_accent.background.opacity(0.8))
                     .text_color(cx.theme().sidebar_accent_foreground)
                     .pr(ACTION_HOVER_PADDING)
             })
@@ -288,7 +288,7 @@ impl RenderOnce for ConversationSidebarRow {
             .cursor_pointer()
             .when(self.active, |this| {
                 this.font_medium()
-                    .bg(cx.theme().sidebar_accent)
+                    .bg(cx.theme().tokens.sidebar_accent.background)
                     .text_color(cx.theme().sidebar_accent_foreground)
             })
             .hover({
@@ -298,7 +298,7 @@ impl RenderOnce for ConversationSidebarRow {
                     if active {
                         this
                     } else {
-                        this.bg(cx.theme().sidebar_accent.opacity(0.8))
+                        this.bg(cx.theme().tokens.sidebar_accent.background.opacity(0.8))
                             .text_color(cx.theme().sidebar_accent_foreground)
                     }
                 }

@@ -77,9 +77,11 @@ impl RenderOnce for SkillCompletionItem {
             .gap_2()
             .px_3()
             .cursor_pointer()
-            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .when(self.is_selected, |this| {
+                this.bg(cx.theme().tokens.accent.background)
+            })
             .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+                this.hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             })
             .child(
                 h_flex()

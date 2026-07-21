@@ -10,6 +10,7 @@ use gpui_component::{
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
     label::Label,
+    scroll::ScrollableElement,
     v_flex,
 };
 use jaco_core::{AppThemeMode, AppThemeSettings};
@@ -22,17 +23,29 @@ pub(super) struct AppearanceSettingsPage {
     _subscriptions: Vec<Subscription>,
 }
 
-const SETTINGS_THEME_GRID_WIDTH_CHROME: f32 = 338.;
 const THEME_TILE_MIN_WIDTH: f32 = 178.;
 const THEME_TILE_MAX_WIDTH: f32 = 220.;
-const THEME_TILE_HEIGHT: f32 = 128.;
+const THEME_TILE_MIN_HEIGHT: f32 = 128.;
+const THEME_TILE_RADIUS: f32 = 8.;
+const THEME_TILE_INNER_RADIUS: f32 = THEME_TILE_RADIUS - 1.;
 const THEME_TILE_GAP: f32 = 12.;
+const SETTINGS_BODY_PADDING: f32 = 16.;
+const SETTINGS_CONTENT_MAX_WIDTH: f32 = 960.;
 
 #[derive(Clone)]
 struct ThemeGridText {
     selected_prefix: SharedString,
     selected_label: SharedString,
     delete_material_theme_label: SharedString,
+}
+
+struct ThemeGridRenderData {
+    title: SharedString,
+    text: ThemeGridText,
+    mode: gpui_component::ThemeMode,
+    selected_id: String,
+    choices: Vec<app_theme::ThemeChoice>,
+    deletable_material_theme_ids: Vec<String>,
 }
 
 impl AppearanceSettingsPage {
@@ -140,15 +153,14 @@ impl AppearanceSettingsPage {
         button.on_click(move |_, window, cx| Self::set_theme_mode(mode, window, cx))
     }
 
-    fn render_theme_grid(
+    fn theme_grid_data(
         &self,
         title: SharedString,
         text: ThemeGridText,
         mode: gpui_component::ThemeMode,
         selected_id: &str,
-        columns: u16,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> ThemeGridRenderData {
         let settings = state::config::app_settings(cx).theme().clone();
         let custom_theme_colors = custom_theme_colors_for_choices(&settings);
         let deletable_material_theme_ids = settings
@@ -160,62 +172,17 @@ impl AppearanceSettingsPage {
         let registry = gpui_component::ThemeRegistry::global(cx);
         let choices = app_theme::theme_choices(registry, mode, &custom_theme_colors);
         let selected_id = app_theme::normalize_theme_id(selected_id);
-        let selected_name = choices
-            .iter()
-            .find(|choice| choice.id == selected_id)
-            .map(|choice| choice.name.clone())
-            .unwrap_or_else(|| SharedString::from(selected_id.clone()));
-        let selected_summary = SharedString::from(format!(
-            "{} {}",
-            text.selected_prefix.as_ref(),
-            selected_name.as_ref()
-        ));
-        let selected_border = cx.theme().primary;
-        let mut tiles = Vec::with_capacity(choices.len());
-        for choice in choices {
-            let selected = choice.id == selected_id;
-            let can_delete_material_theme = deletable_material_theme_ids
-                .iter()
-                .any(|theme_id| theme_id == &choice.id);
-            tiles.push(self.render_theme_tile(
-                choice,
-                mode,
-                selected,
-                selected_border,
-                can_delete_material_theme,
-                &text,
-            ));
+        ThemeGridRenderData {
+            title,
+            text,
+            mode,
+            selected_id,
+            choices,
+            deletable_material_theme_ids,
         }
-
-        v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_center()
-                    .justify_between()
-                    .child(Label::new(title).text_sm().font_medium())
-                    .child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(selected_summary),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .grid()
-                    .grid_cols(columns)
-                    .gap(px(THEME_TILE_GAP))
-                    .children(tiles),
-            )
     }
 
     fn render_theme_tile(
-        &self,
         choice: app_theme::ThemeChoice,
         mode: gpui_component::ThemeMode,
         selected: bool,
@@ -225,6 +192,7 @@ impl AppearanceSettingsPage {
     ) -> AnyElement {
         let preview = app_theme::preview_theme(&choice.config);
         let colors = preview.colors;
+        let tokens = preview.tokens;
         let id = choice.id.clone();
         let select_id = id.clone();
         let label = choice.name.clone();
@@ -279,11 +247,11 @@ impl AppearanceSettingsPage {
         div()
             .id(format!("theme-preview-{}-{}", mode.name(), id))
             .w_full()
-            .h(px(THEME_TILE_HEIGHT))
-            .rounded(px(8.))
+            .min_h(px(THEME_TILE_MIN_HEIGHT))
+            .rounded(px(THEME_TILE_RADIUS))
             .border_1()
             .border_color(border_color)
-            .bg(colors.background)
+            .bg(tokens.background.background)
             .overflow_hidden()
             .when(selected, |this| this.shadow_md())
             .hover(move |this| this.border_color(selected_border).shadow_xs())
@@ -297,32 +265,35 @@ impl AppearanceSettingsPage {
             })
             .child(
                 h_flex()
+                    .w_full()
                     .h(px(24.))
+                    .rounded_t(px(THEME_TILE_INNER_RADIUS))
                     .px_2()
                     .gap_1()
                     .items_center()
-                    .bg(colors.title_bar)
+                    .bg(tokens.title_bar.background)
                     .child(
                         div()
                             .size(px(7.))
                             .rounded_full()
-                            .bg(colors.danger.opacity(0.85)),
+                            .bg(tokens.danger.background.opacity(0.85)),
                     )
                     .child(
                         div()
                             .size(px(7.))
                             .rounded_full()
-                            .bg(colors.warning.opacity(0.85)),
+                            .bg(tokens.warning.background.opacity(0.85)),
                     )
                     .child(
                         div()
                             .size(px(7.))
                             .rounded_full()
-                            .bg(colors.success.opacity(0.85)),
+                            .bg(tokens.success.background.opacity(0.85)),
                     ),
             )
             .child(
                 v_flex()
+                    .w_full()
                     .gap_1()
                     .p_3()
                     .child(
@@ -365,7 +336,7 @@ impl AppearanceSettingsPage {
                             .px_2()
                             .items_center()
                             .justify_between()
-                            .bg(colors.secondary)
+                            .bg(tokens.secondary.background)
                             .child(
                                 div()
                                     .w(relative(0.58))
@@ -374,7 +345,12 @@ impl AppearanceSettingsPage {
                                     .rounded_full()
                                     .bg(colors.secondary_foreground.opacity(0.55)),
                             )
-                            .child(div().size(px(14.)).rounded(px(4.)).bg(colors.primary)),
+                            .child(
+                                div()
+                                    .size(px(14.))
+                                    .rounded(px(4.))
+                                    .bg(tokens.primary.background),
+                            ),
                     ),
             )
             .into_any_element()
@@ -382,7 +358,7 @@ impl AppearanceSettingsPage {
 }
 
 impl Render for AppearanceSettingsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
             mode_title,
             mode_system,
@@ -423,9 +399,7 @@ impl Render for AppearanceSettingsPage {
             selected_label: selected_label.into(),
             delete_material_theme_label: delete_material_theme.into(),
         };
-        let theme_grid_columns = theme_grid_columns(theme_grid_available_width(window));
-
-        v_flex()
+        let controls = v_flex()
             .gap_5()
             .child(
                 v_flex()
@@ -486,23 +460,98 @@ impl Render for AppearanceSettingsPage {
                             ),
                     ),
             )
-            .child(self.render_theme_grid(
-                light_title.into(),
-                theme_grid_text.clone(),
-                gpui_component::ThemeMode::Light,
-                &light_theme_id,
-                theme_grid_columns,
-                cx,
-            ))
-            .child(self.render_theme_grid(
-                dark_title.into(),
-                theme_grid_text,
-                gpui_component::ThemeMode::Dark,
-                &dark_theme_id,
-                theme_grid_columns,
-                cx,
-            ))
+            .into_any_element();
+        let light_grid = self.theme_grid_data(
+            light_title.into(),
+            theme_grid_text.clone(),
+            gpui_component::ThemeMode::Light,
+            &light_theme_id,
+            cx,
+        );
+        let dark_grid = self.theme_grid_data(
+            dark_title.into(),
+            theme_grid_text,
+            gpui_component::ThemeMode::Dark,
+            &dark_theme_id,
+            cx,
+        );
+
+        container_query(move |size, _window, cx| {
+            let columns = theme_grid_columns(theme_grid_content_width(size.width.as_f32()));
+            v_flex().size_full().overflow_y_scrollbar().child(
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .max_w(px(SETTINGS_CONTENT_MAX_WIDTH))
+                    .p_4()
+                    .gap_5()
+                    .child(controls)
+                    .child(render_theme_grid_content(light_grid, columns, cx))
+                    .child(render_theme_grid_content(dark_grid, columns, cx)),
+            )
+        })
     }
+}
+
+fn render_theme_grid_content(data: ThemeGridRenderData, columns: u16, cx: &mut App) -> AnyElement {
+    let selected_name = data
+        .choices
+        .iter()
+        .find(|choice| choice.id == data.selected_id)
+        .map(|choice| choice.name.clone())
+        .unwrap_or_else(|| SharedString::from(data.selected_id.clone()));
+    let selected_summary = SharedString::from(format!(
+        "{} {}",
+        data.text.selected_prefix.as_ref(),
+        selected_name.as_ref()
+    ));
+    let selected_border = cx.theme().primary;
+    let tiles = data
+        .choices
+        .into_iter()
+        .map(|choice| {
+            let selected = choice.id == data.selected_id;
+            let can_delete_material_theme = data
+                .deletable_material_theme_ids
+                .iter()
+                .any(|theme_id| theme_id == &choice.id);
+            AppearanceSettingsPage::render_theme_tile(
+                choice,
+                data.mode,
+                selected,
+                selected_border,
+                can_delete_material_theme,
+                &data.text,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    v_flex()
+        .gap_2()
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .justify_between()
+                .child(Label::new(data.title).text_sm().font_medium())
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(selected_summary),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .grid()
+                .grid_cols(columns)
+                .gap(px(THEME_TILE_GAP))
+                .children(tiles),
+        )
+        .into_any_element()
 }
 
 fn light_theme_id(settings: &AppThemeSettings) -> String {
@@ -610,11 +659,6 @@ fn selected_badge(label: SharedString, color: Hsla) -> impl IntoElement {
         .child(label)
 }
 
-fn theme_grid_available_width(window: &Window) -> f32 {
-    (window.viewport_size().width.as_f32() - SETTINGS_THEME_GRID_WIDTH_CHROME)
-        .max(THEME_TILE_MIN_WIDTH)
-}
-
 fn theme_grid_columns(available_width: f32) -> u16 {
     if !available_width.is_finite() || available_width <= THEME_TILE_MIN_WIDTH {
         return 1;
@@ -637,6 +681,11 @@ fn theme_grid_columns(available_width: f32) -> u16 {
     }
 }
 
+fn theme_grid_content_width(container_width: f32) -> f32 {
+    (container_width.min(SETTINGS_CONTENT_MAX_WIDTH) - SETTINGS_BODY_PADDING * 2.)
+        .max(THEME_TILE_MIN_WIDTH)
+}
+
 fn theme_tile_width_for_columns(available_width: f32, columns: u16) -> f32 {
     let columns = columns.max(1) as f32;
     let gaps = THEME_TILE_GAP * (columns - 1.);
@@ -648,7 +697,7 @@ mod tests {
     use super::{
         THEME_TILE_MAX_WIDTH, THEME_TILE_MIN_WIDTH, custom_theme_colors_for_choices,
         delete_custom_theme_color, set_dark_theme_id, set_light_theme_id, theme_grid_columns,
-        theme_tile_width_for_columns,
+        theme_grid_content_width, theme_tile_width_for_columns,
     };
     use jaco_core::AppThemeSettings;
 
@@ -689,6 +738,13 @@ mod tests {
             tile_width <= THEME_TILE_MAX_WIDTH,
             "tile width {tile_width} should not exceed {THEME_TILE_MAX_WIDTH}"
         );
+    }
+
+    #[test]
+    fn theme_grid_content_width_accounts_for_inner_padding_and_max_width() {
+        assert_eq!(theme_grid_content_width(748.), 716.);
+        assert_eq!(theme_grid_content_width(960.), 928.);
+        assert_eq!(theme_grid_content_width(1600.), 928.);
     }
 
     #[test]

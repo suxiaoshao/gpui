@@ -318,8 +318,9 @@ fn set_temporary_window_level(window: &mut Window) {
 }
 
 fn delay_close_temporary_window(window: &mut Window, cx: &mut App) -> Task<()> {
+    let timer = cx.background_executor().timer(Duration::from_secs(600));
     window.spawn(cx, async |cx| {
-        smol::Timer::after(Duration::from_secs(600)).await;
+        timer.await;
         if let Err(err) = cx.window_handle().update(cx, |_root, window, _cx| {
             window.remove_window();
         }) {

@@ -523,7 +523,7 @@ impl Render for ConversationDetailPage {
             .size_full()
             .min_w_0()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .child(
                 div()
                     .flex_1()
@@ -690,5 +690,49 @@ mod tests {
             message_text_update("hello world", "hello markdown"),
             MessageTextUpdate::Replace
         );
+    }
+
+    #[test]
+    fn streaming_markdown_keeps_latest_complete_source() {
+        let chunks = [
+            "Paragraph with `inline code`.\n\n",
+            "```ru",
+            "st\nfn main() {\n",
+            "    println!(\"hello\");\n}\n",
+            "```\n\n",
+            "```unknown-language\nplain fallback\n```\n",
+            "```\nuntyped fallback\n```",
+        ];
+        let expected = chunks.concat();
+        let mut current = String::new();
+
+        for chunk in chunks {
+            let next = format!("{current}{chunk}");
+            assert_eq!(
+                message_text_update(&current, &next),
+                MessageTextUpdate::Append(chunk)
+            );
+            current.push_str(chunk);
+        }
+
+        assert_eq!(current, expected);
+    }
+
+    #[test]
+    fn streaming_markdown_preserves_split_fences_and_plain_fallback_source() {
+        let chunks = [
+            "before\n\n`",
+            "``javascript\nconst value = 1;\n",
+            "```\n\n```not-registered\nvalue\n",
+            "```\n\nafter",
+        ];
+        let mut source = String::new();
+        for chunk in chunks {
+            source.push_str(chunk);
+        }
+
+        assert!(source.contains("```javascript\nconst value = 1;\n```"));
+        assert!(source.contains("```not-registered\nvalue\n```"));
+        assert!(source.ends_with("after"));
     }
 }

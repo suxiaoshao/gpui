@@ -113,7 +113,7 @@ pub(super) fn render_error(error: String, cx: &mut App) -> AnyElement {
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().danger)
-        .bg(cx.theme().danger.opacity(0.08))
+        .bg(cx.theme().tokens.danger.background.opacity(0.08))
         .text_color(cx.theme().danger)
         .p_3()
         .child(Icon::new(IconName::CircleAlert).with_size(px(16.)))

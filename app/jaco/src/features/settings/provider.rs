@@ -15,7 +15,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     form::field as component_form_field,
     h_flex,
-    input::Input,
+    input::{Input, InputContentType},
     label::Label,
     list::{List, ListEvent, ListState},
     notification::{Notification, NotificationType},
@@ -1363,6 +1363,12 @@ impl ProviderSettingsPage {
         locked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let input = Input::new(&input).w_full().disabled(locked);
+        let input = if field == ProviderFormField::BaseUrl {
+            input.content_type(InputContentType::Url)
+        } else {
+            input
+        };
         component_form_field()
             .label(cx.global::<I18n>().t(field.label_key()))
             .required(required)
@@ -1370,7 +1376,7 @@ impl ProviderSettingsPage {
                 v_flex()
                     .w_full()
                     .gap_1()
-                    .child(Input::new(&input).w_full().disabled(locked))
+                    .child(input)
                     .child(provider_field_error_list(errors, cx)),
             )
             .into_any_element()
@@ -1392,7 +1398,13 @@ impl ProviderSettingsPage {
                 v_flex()
                     .w_full()
                     .gap_1()
-                    .child(Input::new(&input).w_full().disabled(locked).mask_toggle())
+                    .child(
+                        Input::new(&input)
+                            .w_full()
+                            .disabled(locked)
+                            .content_type(InputContentType::Password)
+                            .mask_toggle(),
+                    )
                     .child(provider_field_error_list(errors, cx)),
             )
             .into_any_element()
