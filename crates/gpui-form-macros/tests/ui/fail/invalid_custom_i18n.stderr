@@ -1,0 +1,5 @@
+error: i18n is only supported by the Garde adapter
+ --> tests/ui/fail/invalid_custom_i18n.rs:4:50
+  |
+4 | #[form(validation(adapter = AppValidator, i18n = AppI18nProvider))]
+  |                                                  ^^^^^^^^^^^^^^^

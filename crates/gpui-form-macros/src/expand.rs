@@ -1,105 +1,33 @@
 use proc_macro2::TokenStream;
-use quote::{ToTokens, format_ident, quote};
-use std::collections::HashSet;
-use syn::{Data, DeriveInput, Field, Fields, GenericParam, Result, Type, parse_quote, parse2};
+use quote::{format_ident, quote};
+use syn::{Data, DeriveInput, Fields, GenericParam, Result, Type, parse2};
 
-use crate::{
-    attributes::{FieldAttributes, FormAttributes, ValidationAdapterKind},
-    field_kind::FieldKind,
-};
-
-mod accessors;
-mod arrays;
-mod errors;
-mod fields;
-mod pipeline;
-mod validation;
-
-use accessors::{
-    draft_field_value, field_accessor_methods, field_meta_value, field_required_methods,
-    field_setter_methods, focus_error_statement, replace_field_statement, reset_field_statement,
-};
-use arrays::{array_helper_methods, vec_inner_type};
-use errors::{apply_field_error_arm, clear_all_error_statement, clear_field_error_arm};
-use fields::{field_initializer, store_field_type, write_field_statement};
-use pipeline::{
-    submit_transform, submit_validation, transform_field, transform_init, validate_method_body,
-    validation_context_type, validation_field, validation_init,
-};
-use validation::{
-    apply_validation_statement, current_validation_report_statement, prepare_submit_statement,
-    required_validation_statement,
+use crate::attributes::{
+    FieldAttributes, FieldShape, FormAttributes, TransformAdapterKind, ValidationAdapterKind,
 };
 
 struct FieldModel<'a> {
-    field: &'a Field,
     ident: &'a syn::Ident,
     ty: &'a Type,
     name: String,
-    value_ident: syn::Ident,
-    state_ident: syn::Ident,
+    variant: syn::Ident,
     attrs: FieldAttributes,
-}
-
-fn related_store_ident(store_ident: &syn::Ident, suffix: &str) -> syn::Ident {
-    let store_name = store_ident.to_string();
-    let base = store_name.strip_suffix("Store").unwrap_or(&store_name);
-    format_ident!("{base}{suffix}")
-}
-
-fn field_variant_ident(name: &str) -> syn::Ident {
-    let name = name.strip_prefix("r#").unwrap_or(name);
-    let mut variant = String::new();
-    let mut uppercase_next = true;
-
-    for ch in name.chars() {
-        if ch == '_' || ch == '-' {
-            uppercase_next = true;
-            continue;
-        }
-
-        if uppercase_next {
-            variant.extend(ch.to_uppercase());
-            uppercase_next = false;
-        } else {
-            variant.push(ch);
-        }
-    }
-
-    if variant.is_empty() {
-        variant.push_str("Field");
-    }
-
-    format_ident!("{variant}")
-}
-
-fn dedupe_where_predicates(where_clause: &mut syn::WhereClause) {
-    let mut seen = HashSet::new();
-    let mut predicates = syn::punctuated::Punctuated::new();
-
-    for predicate in where_clause.predicates.iter().cloned() {
-        if seen.insert(predicate.to_token_stream().to_string()) {
-            predicates.push(predicate);
-        }
-    }
-
-    where_clause.predicates = predicates;
 }
 
 pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
     let input = parse2::<DeriveInput>(input)?;
-    let input_ident = &input.ident;
-    let input_vis = &input.vis;
+    let model_ident = &input.ident;
+    let visibility = &input.vis;
     let attrs = FormAttributes::parse(&input.attrs)?;
-    let form_uses_custom_validation =
-        matches!(attrs.validation, ValidationAdapterKind::Custom { .. });
     let store_ident = attrs
         .store
-        .unwrap_or_else(|| format_ident!("{}FormStore", input_ident));
+        .clone()
+        .unwrap_or_else(|| format_ident!("{}FormStore", model_ident));
+    let field_ident = format_ident!("{}Field", model_ident);
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => fields,
+            Fields::Named(fields) => &fields.named,
             _ => {
                 return Err(syn::Error::new_spanned(
                     &input.ident,
@@ -115,274 +43,187 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         }
     };
 
-    let field_models = fields
-        .named
+    let fields = fields
         .iter()
         .map(|field| {
             let ident = field.ident.as_ref().expect("named field");
+            let name = ident.to_string().trim_start_matches("r#").to_string();
             Ok(FieldModel {
-                field,
                 ident,
                 ty: &field.ty,
-                name: ident.to_string(),
-                value_ident: format_ident!("__gpui_form_{}_value", ident),
-                state_ident: format_ident!("__gpui_form_{}_state", ident),
+                variant: variant_ident(&name),
+                name,
                 attrs: FieldAttributes::parse(&field.attrs)?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
-    for model in &field_models {
-        if matches!(model.attrs.component, FieldKind::Group | FieldKind::Array)
-            && model.attrs.store.is_none()
-        {
-            return Err(syn::Error::new_spanned(
-                model.field,
-                "group and array form components require #[form(store = \"ChildFormStore\")]",
-            ));
+    for field in &fields {
+        if matches!(field.attrs.shape, FieldShape::Array { .. }) {
+            vec_inner(field.ty).ok_or_else(|| {
+                syn::Error::new_spanned(field.ty, "#[form(array(...))] requires a Vec<T> field")
+            })?;
         }
     }
 
-    let mut store_generics = input.generics.clone();
-    for param in store_generics.params.iter_mut() {
-        if let GenericParam::Type(type_param) = param {
-            type_param.default = None;
+    let mut generics = input.generics.clone();
+    for parameter in &mut generics.params {
+        if let GenericParam::Type(parameter) = parameter {
+            parameter.default = None;
         }
     }
-    let store_where = store_generics.make_where_clause();
-    for model in &field_models {
-        let ty = model.ty;
-        match model.attrs.component {
-            FieldKind::Value => {
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: Clone + PartialEq + 'static));
-                let codec = model
-                    .attrs
-                    .codec
-                    .as_ref()
-                    .map(|codec| quote!(#codec))
-                    .unwrap_or_else(|| quote!(::gpui_form::IdentityCodec<#ty>));
-                store_where
-                    .predicates
-                    .push(parse_quote!(#codec: ::gpui_form::FieldCodec<#ty>));
-            }
-            FieldKind::Group => {
-                let store = model.attrs.store.as_ref().expect("checked");
-                store_where
-                    .predicates
-                    .push(parse_quote!(#ty: Clone + PartialEq + 'static));
-                store_where.predicates.push(parse_quote!(
-                    #store: ::gpui_form::macro_support::GeneratedFormStore<#ty>
-                        + ::gpui_form::FormStore<Output = #ty>
-                ));
-            }
-            FieldKind::Array => {
-                let store = model.attrs.store.as_ref().expect("checked");
-                let item_ty = vec_inner_type(model)?;
-                store_where
-                    .predicates
-                    .push(parse_quote!(#item_ty: Clone + PartialEq + 'static));
-                store_where.predicates.push(parse_quote!(
-                    #store: ::gpui_form::macro_support::GeneratedFormStore<#item_ty>
-                        + ::gpui_form::FormStore<Output = #item_ty>
-                ));
-            }
-        }
-        if model.attrs.required
-            && !form_uses_custom_validation
-            && matches!(model.attrs.component, FieldKind::Value | FieldKind::Array)
-        {
-            let ty = model.ty;
-            store_where
+    let where_clause = generics.make_where_clause();
+    for field in &fields {
+        let ty = field.ty;
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#ty: Clone + PartialEq + 'static));
+        if field.attrs.required {
+            where_clause
                 .predicates
-                .push(parse_quote!(#ty: ::gpui_form::RequiredValue));
+                .push(syn::parse_quote!(#ty: ::gpui_form::typed::RequiredValue));
+        }
+        match &field.attrs.shape {
+            FieldShape::Group => where_clause
+                .predicates
+                .push(syn::parse_quote!(#ty: ::gpui_form::typed::StructuralValidate)),
+            FieldShape::Array { .. } => {
+                let item = vec_inner(ty).expect("identified array type was validated");
+                where_clause
+                    .predicates
+                    .push(syn::parse_quote!(#item: ::gpui_form::typed::StructuralValidate));
+            }
+            FieldShape::Value => {}
         }
     }
-    dedupe_where_predicates(store_where);
 
-    let (impl_generics, ty_generics, where_clause) = store_generics.split_for_impl();
-    let field_enum_ident = related_store_ident(&store_ident, "Field");
-    let validation_context_ty = validation_context_type(&attrs.validation);
-    let validation_field = validation_field(&attrs.validation, input_ident, &ty_generics);
-    let validation_init = validation_init(&attrs.validation);
-    let transform_field = transform_field(&attrs.transform, input_ident, &ty_generics);
-    let transform_init = transform_init(&attrs.transform);
-    let validate_method_body = validate_method_body(
-        &attrs.validation,
-        &attrs.transform,
-        input_ident,
-        &ty_generics,
-    );
-    let submit_transform = submit_transform(&attrs.transform, input_ident, &ty_generics);
-    let submit_validation = submit_validation(&attrs.validation, input_ident, &ty_generics);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let model_ty = quote!(#model_ident #ty_generics);
+    let (validation_context_ty, validation_adapter_ty) =
+        validation_parts(&attrs.validation, &model_ty);
+    let transform_ty = transform_parts(&attrs.transform, &model_ty);
+    let default_constructor = matches!(attrs.validation, ValidationAdapterKind::None).then(|| {
+        quote! {
+            pub fn from_value(
+                value: #model_ty,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) -> Self {
+                <Self as ::gpui_form::typed::FormStore>::from_value(value, cx)
+            }
+        }
+    });
 
-    let field_idents = field_models
+    let variants = fields
         .iter()
-        .map(|model| model.ident)
+        .map(|field| &field.variant)
         .collect::<Vec<_>>();
-    let value_idents = field_models
+    let names = fields
         .iter()
-        .map(|model| &model.value_ident)
+        .map(|field| field.name.as_str())
         .collect::<Vec<_>>();
-    let field_names = field_models
+    let required = fields
         .iter()
-        .map(|model| &model.name)
+        .map(|field| field.attrs.required)
         .collect::<Vec<_>>();
-    let field_variant_idents = field_models
+    let trigger_values = fields
         .iter()
-        .map(|model| field_variant_ident(&model.name))
+        .map(|field| trigger_tokens(field.attrs.triggers))
         .collect::<Vec<_>>();
-    let store_field_types = field_models
+    let schema_consts = fields
         .iter()
-        .map(store_field_type)
-        .collect::<Result<Vec<_>>>()?;
-    let field_initializers = field_models
-        .iter()
-        .map(field_initializer)
-        .collect::<Result<Vec<_>>>()?;
-    let write_field_statements = field_models
-        .iter()
-        .map(write_field_statement)
-        .collect::<Result<Vec<_>>>()?;
-    let draft_field_values = field_models
-        .iter()
-        .map(draft_field_value)
+        .map(|field| format_ident!("{}_SCHEMA", field.name.to_uppercase()))
         .collect::<Vec<_>>();
-    let replace_field_statements = field_models
+
+    let accessors = fields
         .iter()
-        .map(|model| replace_field_statement(model, &field_enum_ident))
+        .map(|field| field_accessor(&field_ident, &model_ty, field))
         .collect::<Vec<_>>();
-    let field_meta_values = field_models
+    let array_accessors = fields
         .iter()
-        .map(field_meta_value)
+        .filter_map(|field| array_item_accessor(&model_ty, field))
+        .collect::<Result<Vec<_>>>()?;
+    let structural_required_checks = fields.iter().filter(|field| field.attrs.required).map(|field| {
+        let ident = field.ident;
+        let variant = &field.variant;
+        let name = field.name.as_str();
+        quote! {
+            let path = base.join_field(#name);
+            if scope.includes(Some(&path))
+                && (trigger == ::gpui_form::typed::ValidationTrigger::Submit
+                    || <#field_ident as ::gpui_form::typed::FormFieldId>::schema(#field_ident::#variant)
+                        .triggers()
+                        .includes(trigger))
+                && ::gpui_form::typed::RequiredValue::is_missing(&self.#ident)
+            {
+                issues.push(::gpui_form::typed::required_issue(path, trigger));
+            }
+        }
+    });
+    let structural_statements = fields
+        .iter()
+        .filter_map(structural_validation_statement)
         .collect::<Vec<_>>();
-    let reset_field_statements = field_models
+    let mapper_arms = fields
         .iter()
-        .map(reset_field_statement)
-        .collect::<Vec<_>>();
-    let apply_validation_statements = field_models
-        .iter()
-        .map(apply_validation_statement)
+        .map(garde_mapper_statement)
         .collect::<Result<Vec<_>>>()?;
-    let prepare_submit_statements = field_models
-        .iter()
-        .map(prepare_submit_statement)
-        .collect::<Result<Vec<_>>>()?;
-    let current_validation_report_statements = field_models
-        .iter()
-        .map(current_validation_report_statement)
-        .collect::<Result<Vec<_>>>()?;
-    let required_validation_statements = if form_uses_custom_validation {
-        Vec::new()
-    } else {
-        field_models
-            .iter()
-            .map(required_validation_statement)
-            .collect::<Result<Vec<_>>>()?
-    };
-    let focus_error_statements = field_models
-        .iter()
-        .map(focus_error_statement)
-        .collect::<Vec<_>>();
-    let field_accessor_methods = field_models
-        .iter()
-        .map(field_accessor_methods)
-        .collect::<Result<Vec<_>>>()?;
-    let field_required_methods = field_models
-        .iter()
-        .map(field_required_methods)
-        .collect::<Result<Vec<_>>>()?;
-    let field_setter_methods = field_models
-        .iter()
-        .map(|model| field_setter_methods(model, &field_enum_ident))
-        .collect::<Result<Vec<_>>>()?;
-    let clear_all_error_statements = field_models
-        .iter()
-        .map(clear_all_error_statement)
-        .collect::<Result<Vec<_>>>()?;
-    let clear_field_error_arms = field_models
-        .iter()
-        .map(|model| clear_field_error_arm(model, &field_enum_ident))
-        .collect::<Result<Vec<_>>>()?;
-    let apply_field_error_arms = field_models
-        .iter()
-        .map(|model| apply_field_error_arm(model, &field_enum_ident))
-        .collect::<Result<Vec<_>>>()?;
-    let array_helper_methods = field_models
-        .iter()
-        .filter(|model| model.attrs.component == FieldKind::Array)
-        .map(array_helper_methods)
-        .collect::<Result<Vec<_>>>()?;
-    let expanded = quote! {
+
+    Ok(quote! {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        #input_vis enum #field_enum_ident {
-            #(#field_variant_idents,)*
+        #visibility enum #field_ident {
+            #(#variants,)*
         }
 
-        impl #field_enum_ident {
+        impl #field_ident {
+            #(pub const #schema_consts: ::gpui_form::typed::FieldSchema =
+                ::gpui_form::typed::FieldSchema::new(
+                    #names,
+                    #required,
+                    #trigger_values,
+                );)*
+
+            pub const ALL: &'static [Self] = &[#(Self::#variants,)*];
+
             pub const fn key(self) -> &'static str {
                 match self {
-                    #(Self::#field_variant_idents => #field_names,)*
-                }
-            }
-
-            pub fn from_key(key: &str) -> Option<Self> {
-                match key {
-                    #(#field_names => Some(Self::#field_variant_idents),)*
-                    _ => None,
+                    #(Self::#variants => #names,)*
                 }
             }
         }
 
-        #input_vis struct #store_ident #store_generics {
-            #(
-                pub #field_idents: #store_field_types,
-            )*
-            meta: ::gpui_form::FormMeta,
-            submit_runtime: ::gpui_form::SubmitRuntime,
-            form_errors: ::std::vec::Vec<::gpui_form::FormError>,
-            field_paths: ::std::vec::Vec<::gpui_form::FieldPath>,
-            #validation_field
-            #transform_field
+        impl ::gpui_form::typed::FormFieldId for #field_ident {
+            fn path(self) -> ::gpui_form::typed::FieldPath {
+                ::gpui_form::typed::FieldPath::field(self.key())
+            }
+
+            fn schema(self) -> &'static ::gpui_form::typed::FieldSchema {
+                match self {
+                    #(Self::#variants => &Self::#schema_consts,)*
+                }
+            }
+        }
+
+        #visibility struct #store_ident #generics #where_clause {
+            runtime: ::gpui_form::__private::FormRuntime<#model_ty, #validation_context_ty>,
         }
 
         impl #impl_generics #store_ident #ty_generics #where_clause {
-            pub fn from_value(
-                value: #input_ident #ty_generics,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) -> Self {
-                let #input_ident { #(#field_idents: #value_idents),* } = value;
-
-                #(#field_initializers)*
-
-                Self {
-                    #(#field_idents,)*
-                    meta: ::gpui_form::FormMeta::default(),
-                    submit_runtime: ::gpui_form::SubmitRuntime::default(),
-                    form_errors: ::std::vec::Vec::new(),
-                    field_paths: ::std::vec![
-                        #(::gpui_form::macro_support::field_path(#field_names),)*
-                    ],
-                    #validation_init
-                    #transform_init
-                }
-            }
+            #default_constructor
 
             pub fn from_value_with_validation_context(
-                value: #input_ident #ty_generics,
+                value: #model_ty,
                 validation_context: #validation_context_ty,
-                window: &mut ::gpui_form::__private::gpui::Window,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) -> Self {
-                let mut form = Self::from_value(value, window, cx);
-                form.validation_context = validation_context;
-                form
+                <Self as ::gpui_form::typed::FormStore>::from_value_with_validation_context(
+                    value,
+                    validation_context,
+                    cx,
+                )
             }
 
             pub fn validation_context(&self) -> &#validation_context_ty {
-                &self.validation_context
+                <Self as ::gpui_form::typed::FormStore>::validation_context(self)
             }
 
             pub fn set_validation_context(
@@ -390,458 +231,528 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 validation_context: #validation_context_ty,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) {
-                self.validation_context = validation_context;
-                cx.notify();
+                <Self as ::gpui_form::typed::FormStore>::set_validation_context(
+                    self, validation_context, cx,
+                );
             }
 
-            pub fn draft(&self) -> #input_ident #ty_generics {
-                #input_ident {
-                    #(
-                        #field_idents: #draft_field_values,
-                    )*
-                }
-            }
+            #(#accessors)*
+            #(#array_accessors)*
 
-            pub fn replace_from_value(
+            fn __validate_snapshot(
                 &mut self,
-                value: #input_ident #ty_generics,
+                snapshot: &#model_ty,
+                trigger: ::gpui_form::typed::ValidationTrigger,
+                scope: ::gpui_form::typed::ValidationScope,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) {
-                let #input_ident { #(#field_idents: #value_idents),* } = value;
-
-                #(#replace_field_statements)*
-
-                self.form_errors.clear();
-                self.submit_runtime = ::gpui_form::SubmitRuntime::default();
-                self.refresh_meta();
-                cx.notify();
-            }
-
-            pub fn write_draft(
-                &mut self,
-                value: #input_ident #ty_generics,
-                cause: ::gpui_form::FieldChangeCause,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) {
-                let #input_ident { #(#field_idents: #value_idents),* } = value;
-
-                #(#write_field_statements)*
-
-                self.refresh_meta();
-            }
-
-            pub fn field_paths(&self) -> &[::gpui_form::FieldPath] {
-                &self.field_paths
-            }
-
-            pub fn meta(&self) -> &::gpui_form::FormMeta {
-                &self.meta
-            }
-
-            pub fn is_submitting(&self) -> bool {
-                self.submit_runtime.is_submitting()
-            }
-
-            pub fn is_submitted(&self) -> bool {
-                self.submit_runtime.submission_attempts() > 0 && !self.is_submitting()
-            }
-
-            pub fn can_attempt_submit(&self) -> bool {
-                !self.is_submitting() && !self.meta.is_validating
-            }
-
-            pub fn form_errors(&self) -> &[::gpui_form::FormError] {
-                &self.form_errors
-            }
-
-            #(#field_accessor_methods)*
-
-            #(#field_required_methods)*
-
-            #(#field_setter_methods)*
-
-            #(#array_helper_methods)*
-
-            pub fn clear_all_errors(
-                &mut self,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                self.clear_all_errors_with_app(cx);
-                cx.notify();
-            }
-
-            pub fn clear_field_errors(
-                &mut self,
-                field: #field_enum_ident,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                match field {
-                    #(#clear_field_error_arms)*
-                }
-                self.refresh_meta();
-                cx.notify();
-            }
-
-            pub fn apply_field_error(
-                &mut self,
-                field: #field_enum_ident,
-                error: ::gpui_form::FieldError,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                match field {
-                    #(#apply_field_error_arms)*
-                }
-                self.refresh_meta();
-                cx.notify();
-            }
-
-            fn refresh_meta(&mut self) {
-                let field_meta = [
-                    #(#field_meta_values,)*
-                ];
-                self.meta = ::gpui_form::FormMeta::aggregate(field_meta)
-                    .with_submit_runtime(&self.submit_runtime);
-            }
-
-            fn clear_all_errors_with_app(
-                &mut self,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) {
-                #(#clear_all_error_statements)*
-                self.form_errors.clear();
-                self.refresh_meta();
-            }
-
-            fn validation_report_for_scope(
-                &self,
-                trigger: ::gpui_form::ValidationTrigger,
-                scope: ::gpui_form::ValidationScope,
-                cx: &::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                #validate_method_body
-                let __gpui_form_required_trigger = trigger;
-                #(#required_validation_statements)*
-                report
-            }
-
-            fn apply_validation_for_scope(
-                &mut self,
-                trigger: ::gpui_form::ValidationTrigger,
-                scope: ::gpui_form::ValidationScope,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                let report = self.validation_report_for_scope(trigger, scope.clone(), cx);
-                self.apply_validation_report(&report, &scope, cx);
-                self.refresh_meta();
-                report
-            }
-
-            fn apply_validation_report(
-                &mut self,
-                report: &::gpui_form::FormValidationReport,
-                scope: &::gpui_form::ValidationScope,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) {
-                #(#apply_validation_statements)*
-
-                if matches!(scope, &::gpui_form::ValidationScope::Form) {
-                    self.form_errors = report.form_errors().to_vec();
-                }
-            }
-
-            fn prepare_submit_report(
-                &mut self,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                let mut report = ::gpui_form::FormValidationReport::empty();
-                #(#prepare_submit_statements)*
-                self.refresh_meta();
-                report
-            }
-
-            fn prepare_submit_output(
-                &mut self,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> Result<#input_ident #ty_generics, ::gpui_form::FormValidationReport> {
-                let preflight_report = self.prepare_submit_report(cx);
-                if !preflight_report.is_valid() {
-                    return Err(preflight_report);
-                }
-                #submit_transform
-                self.write_draft(
-                    normalized.clone(),
-                    ::gpui_form::FieldChangeCause::NormalizeOnSubmit,
-                    window,
+                let mut generated_issues = ::std::vec::Vec::new();
+                ::gpui_form::typed::StructuralValidate::structural_issues(
+                    snapshot,
+                    &::gpui_form::typed::FieldPath::root(),
+                    trigger,
+                    &scope,
+                    &mut generated_issues,
+                );
+                let adapter_report = ::gpui_form::typed::ValidationAdapter::validate(
+                    &<#validation_adapter_ty as Default>::default(),
+                    snapshot,
+                    trigger,
+                    scope.clone(),
+                    ::gpui_form::typed::ValidationContext {
+                        external: self.runtime.validation_context(),
+                    },
                     cx,
                 );
-                #submit_validation
-                let scope = ::gpui_form::ValidationScope::Form;
-                let validation_input = normalized.clone();
-                let __gpui_form_required_trigger = ::gpui_form::ValidationTrigger::Submit;
-                #(#required_validation_statements)*
-                self.apply_validation_report(&report, &::gpui_form::ValidationScope::Form, cx);
-                self.refresh_meta();
-                let final_report = self.current_validation_report(cx);
-                if final_report.is_valid() {
-                    Ok(normalized)
-                } else {
-                    Err(final_report)
-                }
-            }
-
-            fn current_validation_report(
-                &self,
-                cx: &::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                let mut report = ::gpui_form::FormValidationReport::new(
-                    ::std::vec::Vec::new(),
-                    self.form_errors.clone(),
-                );
-                #(#current_validation_report_statements)*
-                report
+                let adapter_issues = adapter_report
+                    .into_issues()
+                    .into_iter()
+                    .filter(|issue| {
+                        issue.path.as_ref().is_none_or(|path| {
+                            #field_ident::ALL.iter().any(|field| {
+                                path.starts_with(&::gpui_form::typed::FormFieldId::path(*field))
+                                    && ::gpui_form::typed::FormFieldId::schema(*field)
+                                        .triggers()
+                                        .includes(trigger)
+                            })
+                        })
+                    })
+                    .collect();
+                self.runtime
+                    .validation_mut()
+                    .replace_generated(&scope, generated_issues);
+                self.runtime
+                    .validation_mut()
+                    .replace_adapter(adapter_issues);
+                cx.emit(::gpui_form::typed::FormEvent::RuntimeChanged);
+                cx.notify();
             }
         }
 
-        impl #impl_generics ::gpui_form::macro_support::GeneratedFormStore<#input_ident #ty_generics>
-            for #store_ident #ty_generics
-            #where_clause
-        {
-            fn from_value(
-                value: #input_ident #ty_generics,
-                window: &mut ::gpui_form::__private::gpui::Window,
+        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<
+            ::gpui_form::typed::FormEvent<#field_ident>
+        > for #store_ident #ty_generics #where_clause {}
+
+        impl #impl_generics ::gpui_form::typed::FormStore for #store_ident #ty_generics #where_clause {
+            type Model = #model_ty;
+            type Output = <#transform_ty as ::gpui_form::typed::SubmitTransform<#model_ty>>::Output;
+            type Field = #field_ident;
+            type ValidationContext = #validation_context_ty;
+            type ValidationAdapter = #validation_adapter_ty;
+            type SubmitTransform = #transform_ty;
+
+            fn from_value_with_validation_context(
+                value: Self::Model,
+                validation_context: Self::ValidationContext,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) -> Self {
-                Self::from_value(value, window, cx)
+                let mut form = Self {
+                    runtime: ::gpui_form::__private::FormRuntime::new(value, validation_context),
+                };
+                <Self as ::gpui_form::typed::FormStore>::validate(
+                    &mut form,
+                    ::gpui_form::typed::ValidationTrigger::Mount,
+                    ::gpui_form::typed::ValidationScope::Form,
+                    cx,
+                );
+                form
             }
 
-            fn draft(&self) -> #input_ident #ty_generics {
-                self.draft()
+            fn __runtime(&self) -> &::gpui_form::__private::FormRuntime<Self::Model, Self::ValidationContext> {
+                &self.runtime
             }
 
-            fn replace_from_value(
-                &mut self,
-                value: #input_ident #ty_generics,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                Self::replace_from_value(self, value, cx);
-            }
-
-            fn field_paths(&self) -> &[::gpui_form::FieldPath] {
-                &self.field_paths
-            }
-
-            fn meta(&self) -> &::gpui_form::FormMeta {
-                &self.meta
-            }
-
-            fn write_draft(
-                &mut self,
-                value: #input_ident #ty_generics,
-                cause: ::gpui_form::FieldChangeCause,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) {
-                Self::write_draft(self, value, cause, window, cx);
-            }
-
-            fn apply_validation_report(
-                &mut self,
-                report: &::gpui_form::FormValidationReport,
-                scope: &::gpui_form::ValidationScope,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) {
-                Self::apply_validation_report(self, report, scope, cx);
-                self.refresh_meta();
-            }
-
-            fn prepare_submit(
-                &mut self,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                Self::prepare_submit_report(self, cx)
-            }
-
-            fn current_validation_report(
-                &self,
-                cx: &::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                Self::current_validation_report(self, cx)
-            }
-
-            fn clear_all_errors(&mut self, cx: &mut ::gpui_form::__private::gpui::App) {
-                Self::clear_all_errors_with_app(self, cx);
-            }
-        }
-
-        impl #impl_generics ::gpui_form::FormStore for #store_ident #ty_generics #where_clause {
-            type Output = #input_ident #ty_generics;
-
-            fn meta(&self) -> &::gpui_form::FormMeta {
-                &self.meta
-            }
-
-            fn is_submitting(&self) -> bool {
-                self.submit_runtime.is_submitting()
-            }
-
-            fn reset(
-                &mut self,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
-                #(#reset_field_statements)*
-                self.form_errors.clear();
-                self.submit_runtime = ::gpui_form::SubmitRuntime::default();
-                self.refresh_meta();
-                cx.notify();
+            fn __runtime_mut(&mut self) -> &mut ::gpui_form::__private::FormRuntime<Self::Model, Self::ValidationContext> {
+                &mut self.runtime
             }
 
             fn validate(
                 &mut self,
-                trigger: ::gpui_form::ValidationTrigger,
-                _window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> ::gpui_form::FormValidationReport {
-                self.apply_validation_for_scope(trigger, ::gpui_form::ValidationScope::Form, cx)
+                trigger: ::gpui_form::typed::ValidationTrigger,
+                scope: ::gpui_form::typed::ValidationScope,
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) {
+                let snapshot = self.runtime.value().clone();
+                self.__validate_snapshot(&snapshot, trigger, scope, cx);
             }
 
             fn prepare_submit(
                 &mut self,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
-            ) -> Result<Self::Output, ::gpui_form::FormValidationReport> {
-                self.submit_runtime.begin_submit();
-                let result = self.prepare_submit_output(window, cx);
-                if result.is_ok() {
-                    self.submit_runtime.finish_success();
-                } else {
-                    self.submit_runtime.finish_failure();
+                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+            ) -> Result<Self::Output, ::gpui_form::typed::SubmitError> {
+                let snapshot = self.runtime.value().clone();
+                self.__validate_snapshot(
+                    &snapshot,
+                    ::gpui_form::typed::ValidationTrigger::Submit,
+                    ::gpui_form::typed::ValidationScope::Form,
+                    cx,
+                );
+                let report = self.runtime.validation().report();
+                if !report.is_valid() {
+                    return Err(::gpui_form::typed::SubmitError::Validation(report));
                 }
-                self.refresh_meta();
-                cx.notify();
-                result
-            }
-
-            fn submit_sync<H, Success, Error>(
-                &mut self,
-                handler: H,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
-            ) -> Result<Success, ::gpui_form::SubmitError<Error>>
-            where
-                H: FnOnce(
-                    Self::Output,
-                    &mut ::gpui_form::__private::gpui::Window,
-                    &mut ::gpui_form::__private::gpui::App,
-                ) -> Result<Success, Error>,
-            {
-                if self.submit_runtime.is_submitting() {
-                    return Err(::gpui_form::SubmitError::Busy);
+                if self.runtime.validation().is_validating() {
+                    return Err(::gpui_form::typed::SubmitError::ValidationPending);
                 }
-                self.submit_runtime.begin_submit();
-                let output = match self.prepare_submit_output(window, cx) {
-                    Ok(output) => output,
-                    Err(report) => {
-                        self.submit_runtime.finish_failure();
-                        self.refresh_meta();
-                        cx.notify();
-                        return Err(::gpui_form::SubmitError::Invalid(report));
-                    }
-                };
-                let result = handler(output, window, cx);
-                if result.is_ok() {
-                    self.submit_runtime.finish_success();
-                } else {
-                    self.submit_runtime.finish_failure();
-                }
-                self.refresh_meta();
-                cx.notify();
-                result.map_err(::gpui_form::SubmitError::Handler)
-            }
-
-            fn submit_async<H, Success, TaskError, StartError>(
-                &mut self,
-                handler: H,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::Context<'_, Self>,
-            ) -> Result<(), ::gpui_form::SubmitError<StartError>>
-            where
-                Success: 'static,
-                TaskError: 'static,
-                H: FnOnce(
-                    Self::Output,
-                    &mut ::gpui_form::__private::gpui::Window,
-                    &mut ::gpui_form::__private::gpui::App,
-                ) -> Result<
-                    ::gpui_form::__private::gpui::Task<Result<Success, TaskError>>,
-                    StartError,
-                >,
-            {
-                if self.submit_runtime.is_submitting() {
-                    return Err(::gpui_form::SubmitError::Busy);
-                }
-                self.submit_runtime.begin_submit();
-                let output = match self.prepare_submit_output(window, cx) {
-                    Ok(output) => output,
-                    Err(report) => {
-                        self.submit_runtime.finish_failure();
-                        self.refresh_meta();
-                        cx.notify();
-                        return Err(::gpui_form::SubmitError::Invalid(report));
-                    }
-                };
-                let handler_task = match handler(output, window, cx) {
-                    Ok(task) => task,
-                    Err(error) => {
-                        self.submit_runtime.finish_failure();
-                        self.refresh_meta();
-                        cx.notify();
-                        return Err(::gpui_form::SubmitError::Handler(error));
-                    }
-                };
-                let task = cx.spawn(async move |this, cx| {
-                    let result = handler_task.await;
-                    let _ = this.update(cx, |this, cx| {
-                        if result.is_ok() {
-                            this.submit_runtime.finish_success();
-                        } else {
-                            this.submit_runtime.finish_failure();
-                        }
-                        this.refresh_meta();
-                        cx.notify();
-                    });
-                });
-                self.submit_runtime.set_task(task);
-                self.refresh_meta();
-                cx.notify();
-                Ok(())
-            }
-
-            fn focus_first_error(
-                &mut self,
-                window: &mut ::gpui_form::__private::gpui::Window,
-                cx: &mut ::gpui_form::__private::gpui::App,
-            ) -> bool {
-                #(#focus_error_statements)*
-                false
+                ::gpui_form::typed::SubmitTransform::transform(
+                    &<#transform_ty as Default>::default(),
+                    &snapshot,
+                ).map_err(::gpui_form::typed::SubmitError::Transform)
             }
         }
 
-        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<::gpui_form::FormDraftEvent>
-            for #store_ident #ty_generics
-            #where_clause
-        {
+        impl #impl_generics ::gpui_form::typed::StructuralValidate for #model_ident #ty_generics #where_clause {
+            fn structural_issues(
+                &self,
+                base: &::gpui_form::typed::FieldPath,
+                trigger: ::gpui_form::typed::ValidationTrigger,
+                scope: &::gpui_form::typed::ValidationScope,
+                issues: &mut ::std::vec::Vec<::gpui_form::typed::ValidationIssue>,
+            ) {
+                #(#structural_required_checks)*
+                #(#structural_statements)*
+            }
         }
 
-        impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<
-            ::gpui_form::FormStoreEvent<#field_enum_ident>,
-        > for #store_ident #ty_generics
-            #where_clause
+        impl #impl_generics ::gpui_form::typed::GardePathMapper for #model_ident #ty_generics #where_clause {
+            fn map_garde_path(
+                &self,
+                path: &str,
+            ) -> Result<::gpui_form::typed::FieldPath, ::gpui_form::typed::GardePathError> {
+                if path.is_empty() {
+                    return Ok(::gpui_form::typed::FieldPath::root());
+                }
+                #(#mapper_arms)*
+                Err(::gpui_form::typed::GardePathError::UnknownField {
+                    path: path.to_owned(),
+                })
+            }
+        }
+    })
+}
+
+fn variant_ident(name: &str) -> syn::Ident {
+    let mut result = String::new();
+    let mut uppercase = true;
+    for character in name.chars() {
+        if character == '_' || character == '-' {
+            uppercase = true;
+        } else if uppercase {
+            result.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            result.push(character);
+        }
+    }
+    format_ident!("{result}")
+}
+
+fn trigger_tokens(triggers: crate::attributes::ValidationTriggers) -> TokenStream {
+    let mount = triggers.mount;
+    let change = triggers.change;
+    let blur = triggers.blur;
+    let dynamic = triggers.dynamic;
+    let submit = triggers.submit;
+    quote!(::gpui_form::typed::ValidationTriggers {
+        mount: #mount,
+        change: #change,
+        blur: #blur,
+        dynamic: #dynamic,
+        submit: #submit,
+    })
+}
+
+fn validation_parts(
+    validation: &ValidationAdapterKind,
+    model: &TokenStream,
+) -> (TokenStream, TokenStream) {
+    match validation {
+        ValidationAdapterKind::None => (
+            quote!(::gpui_form::typed::NoValidationContext),
+            quote!(::gpui_form::typed::NoopValidationAdapter),
+        ),
+        ValidationAdapterKind::Garde { i18n } => {
+            let provider = i18n
+                .as_ref()
+                .map(|provider| quote!(#provider))
+                .unwrap_or_else(|| quote!(::gpui_form::typed::DefaultGardeI18nProvider));
+            (
+                quote!(<#model as ::garde::Validate>::Context),
+                quote!(::gpui_form::typed::GardeAdapter<#model, #provider>),
+            )
+        }
+        ValidationAdapterKind::Custom { adapter, context } => {
+            let context = context
+                .as_ref()
+                .map(|context| quote!(#context))
+                .unwrap_or_else(
+                    || quote!(<#adapter as ::gpui_form::typed::ValidationAdapter<#model>>::Context),
+                );
+            (context, quote!(#adapter))
+        }
+    }
+}
+
+fn transform_parts(transform: &TransformAdapterKind, model: &TokenStream) -> TokenStream {
+    match transform {
+        TransformAdapterKind::Identity => quote!(::gpui_form::typed::IdentityTransform<#model>),
+        TransformAdapterKind::Validify => quote!(::gpui_form::typed::ValidifyTransform<#model>),
+        TransformAdapterKind::Custom { adapter } => quote!(#adapter),
+    }
+}
+
+fn field_accessor(
+    field_enum: &syn::Ident,
+    model: &TokenStream,
+    field: &FieldModel<'_>,
+) -> TokenStream {
+    let ident = field.ident;
+    let ty = field.ty;
+    let variant = &field.variant;
+    let name = field.name.as_str();
+    let method = format_ident!("{}_field", field.name);
+    let nested_method = format_ident!("{}_in", field.name);
+    let read = format_ident!("__read_{}", field.name);
+    let write = format_ident!("__write_{}", field.name);
+    let validate_change = field.attrs.triggers.change;
+    quote! {
+        pub fn #method(
+            form: &::gpui_form::__private::gpui::Entity<Self>,
+        ) -> ::gpui_form::typed::FormField<Self, #ty> {
+            ::gpui_form::typed::FormField::new(
+                form.downgrade(),
+                #field_enum::#variant,
+                ::gpui_form::typed::FieldPath::field(#name),
+                Self::#read,
+                Self::#write,
+            )
+        }
+
+        pub fn #nested_method<ParentForm>(
+            parent: ::gpui_form::typed::FormField<ParentForm, #model>,
+        ) -> ::gpui_form::typed::FormField<ParentForm, #ty>
+        where
+            ParentForm: ::gpui_form::typed::FormStore,
         {
+            parent.project(
+                #name,
+                |model| &model.#ident,
+                |model, value| model.#ident = value,
+            )
+        }
+
+        fn #read(&self) -> &#ty {
+            &self.runtime.value().#ident
+        }
+
+        fn #write(
+            &mut self,
+            value: #ty,
+            cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+        ) -> Result<bool, ::gpui_form::typed::FormFieldError> {
+            if self.runtime.value().#ident == value {
+                return Ok(false);
+            }
+            let mut next = self.runtime.value().clone();
+            next.#ident = value;
+            let revision = self.runtime.commit_field_value(next)
+                .expect("unequal field value must advance form revision");
+            self.runtime.validation_mut().invalidate_path(
+                &::gpui_form::typed::FieldPath::field(#name),
+            );
+            if #validate_change {
+                <Self as ::gpui_form::typed::FormStore>::validate(
+                    self,
+                    ::gpui_form::typed::ValidationTrigger::Change,
+                    ::gpui_form::typed::ValidationScope::Field(
+                        ::gpui_form::typed::FieldPath::field(#name),
+                    ),
+                    cx,
+                );
+            }
+            cx.emit(::gpui_form::typed::FormEvent::FieldChanged {
+                field: #field_enum::#variant,
+                path: ::gpui_form::typed::FieldPath::field(#name),
+                revision,
+            });
+            cx.notify();
+            Ok(true)
+        }
+    }
+}
+
+fn array_item_accessor(
+    model_ty: &TokenStream,
+    field: &FieldModel<'_>,
+) -> Option<Result<TokenStream>> {
+    let FieldShape::Array { id } = &field.attrs.shape else {
+        return None;
+    };
+    let item_ty = match vec_inner(field.ty) {
+        Some(item) => item,
+        None => {
+            return Some(Err(syn::Error::new_spanned(
+                field.ty,
+                "identified array requires Vec<T>",
+            )));
         }
     };
+    let field_method = format_ident!("{}_field", field.name);
+    let nested_field_method = format_ident!("{}_in", field.name);
+    let item_method = format_ident!("{}_item", field.name);
+    let nested_item_method = format_ident!("{}_item_in", field.name);
+    Some(Ok(quote! {
+        pub fn #item_method(
+            form: &::gpui_form::__private::gpui::Entity<Self>,
+            id: ::gpui_form::typed::FormItemId,
+        ) -> ::gpui_form::typed::FormField<Self, #item_ty> {
+            Self::#field_method(form).identified_item(id, |item| &item.#id)
+        }
 
-    Ok(expanded)
+        pub fn #nested_item_method<ParentForm>(
+            parent: ::gpui_form::typed::FormField<ParentForm, #model_ty>,
+            id: ::gpui_form::typed::FormItemId,
+        ) -> ::gpui_form::typed::FormField<ParentForm, #item_ty>
+        where
+            ParentForm: ::gpui_form::typed::FormStore,
+        {
+            Self::#nested_field_method(parent).identified_item(id, |item| &item.#id)
+        }
+    }))
+}
+
+fn structural_validation_statement(field: &FieldModel<'_>) -> Option<TokenStream> {
+    let ident = field.ident;
+    let name = field.name.as_str();
+    match &field.attrs.shape {
+        FieldShape::Value => None,
+        FieldShape::Group => Some(quote! {
+            let field_path = base.join_field(#name);
+            if scope.includes(Some(&field_path)) {
+                ::gpui_form::typed::StructuralValidate::structural_issues(
+                    &self.#ident,
+                    &field_path,
+                    trigger,
+                    scope,
+                    issues,
+                );
+            }
+        }),
+        FieldShape::Array { id } => Some(quote! {
+            let array_path = base.join_field(#name);
+            if scope.includes(Some(&array_path)) {
+                let mut id_counts = ::std::collections::BTreeMap::new();
+                for (index, item) in self.#ident.iter().enumerate() {
+                    match ::gpui_form::typed::ToFormItemId::to_form_item_id(&item.#id) {
+                        Some(item_id) => {
+                            *id_counts.entry(item_id).or_insert(0usize) += 1;
+                        }
+                        None => issues.push(
+                            ::gpui_form::typed::ValidationIssue::field(
+                                array_path.clone(),
+                                trigger,
+                                ::gpui_form::typed::ValidationSource::Internal,
+                                "invalid_item_id",
+                                ::gpui_form::typed::ValidationMessage::key(
+                                    "gpui-form-error-internal",
+                                ),
+                            )
+                            .with_param("path", array_path.to_string())
+                            .with_param("reason", format!("array item {index} has no valid stable id")),
+                        ),
+                    }
+                }
+                for (item_id, count) in &id_counts {
+                    if *count > 1 {
+                        let item_path = array_path.join_item(*item_id);
+                        issues.push(
+                            ::gpui_form::typed::ValidationIssue::field(
+                                item_path.clone(),
+                                trigger,
+                                ::gpui_form::typed::ValidationSource::Internal,
+                                "duplicate_item_id",
+                                ::gpui_form::typed::ValidationMessage::key(
+                                    "gpui-form-error-internal",
+                                ),
+                            )
+                            .with_param("path", item_path.to_string())
+                            .with_param("reason", "array item stable id is duplicated"),
+                        );
+                    }
+                }
+                for item in &self.#ident {
+                    let Some(item_id) =
+                        ::gpui_form::typed::ToFormItemId::to_form_item_id(&item.#id)
+                    else {
+                        continue;
+                    };
+                    if id_counts.get(&item_id) != Some(&1usize) {
+                        continue;
+                    }
+                    let item_path = array_path.join_item(item_id);
+                    ::gpui_form::typed::StructuralValidate::structural_issues(
+                        item,
+                        &item_path,
+                        trigger,
+                        scope,
+                        issues,
+                    );
+                }
+            }
+        }),
+    }
+}
+
+fn garde_mapper_statement(field: &FieldModel<'_>) -> Result<TokenStream> {
+    let ident = field.ident;
+    let name = field.name.as_str();
+    Ok(match &field.attrs.shape {
+        FieldShape::Value => quote! {
+            if path == #name {
+                return Ok(::gpui_form::typed::FieldPath::field(#name));
+            }
+        },
+        FieldShape::Group => quote! {
+            if path == #name {
+                return Ok(::gpui_form::typed::FieldPath::field(#name));
+            }
+            if let Some(child_path) = path.strip_prefix(concat!(#name, ".")) {
+                let child = ::gpui_form::typed::GardePathMapper::map_garde_path(
+                    &self.#ident,
+                    child_path,
+                )?;
+                return Ok(::gpui_form::typed::FieldPath::field(#name).join_path(&child));
+            }
+        },
+        FieldShape::Array { id } => {
+            let item_ty = vec_inner(field.ty).expect("validated Vec");
+            quote! {
+                if let Some(index_and_suffix) = path.strip_prefix(concat!(#name, "[")) {
+                    let Some(close) = index_and_suffix.find(']') else {
+                        return Err(::gpui_form::typed::GardePathError::InvalidIndex {
+                            path: path.to_owned(),
+                            value: index_and_suffix.to_owned(),
+                        });
+                    };
+                    let index_value = &index_and_suffix[..close];
+                    let index = index_value.parse::<usize>().map_err(|_| {
+                        ::gpui_form::typed::GardePathError::InvalidIndex {
+                            path: path.to_owned(),
+                            value: index_value.to_owned(),
+                        }
+                    })?;
+                    let item: &#item_ty = self.#ident.get(index).ok_or_else(|| {
+                        ::gpui_form::typed::GardePathError::IndexOutOfBounds {
+                            path: path.to_owned(),
+                            index,
+                            len: self.#ident.len(),
+                        }
+                    })?;
+                    let item_id = ::gpui_form::typed::ToFormItemId::to_form_item_id(&item.#id)
+                        .ok_or_else(|| ::gpui_form::typed::GardePathError::InvalidItemId {
+                            path: path.to_owned(),
+                            index,
+                        })?;
+                    if self.#ident.iter().filter_map(|candidate| {
+                        ::gpui_form::typed::ToFormItemId::to_form_item_id(&candidate.#id)
+                    }).filter(|candidate| *candidate == item_id).count() != 1 {
+                        return Err(::gpui_form::typed::GardePathError::DuplicateItemId {
+                            path: path.to_owned(),
+                            index,
+                        });
+                    }
+                    let base = ::gpui_form::typed::FieldPath::field(#name).join_item(item_id);
+                    let suffix = &index_and_suffix[close + 1..];
+                    if suffix.is_empty() {
+                        return Ok(base);
+                    }
+                    let Some(child_path) = suffix.strip_prefix('.') else {
+                        return Err(::gpui_form::typed::GardePathError::UnknownField {
+                            path: path.to_owned(),
+                        });
+                    };
+                    let child = ::gpui_form::typed::GardePathMapper::map_garde_path(
+                        item,
+                        child_path,
+                    )?;
+                    return Ok(base.join_path(&child));
+                }
+            }
+        }
+    })
+}
+
+fn vec_inner(ty: &Type) -> Option<&Type> {
+    let Type::Path(path) = ty else { return None };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    arguments.args.iter().find_map(|argument| match argument {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    })
 }

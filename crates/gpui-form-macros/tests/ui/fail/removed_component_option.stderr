@@ -1,0 +1,5 @@
+error: `component` is no longer a form field option; controls own component state and typed values need no codec
+ --> tests/ui/fail/removed_component_option.rs:5:12
+  |
+5 |     #[form(component = InputState)]
+  |            ^^^^^^^^^

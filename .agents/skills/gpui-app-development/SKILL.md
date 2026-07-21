@@ -43,18 +43,21 @@ Use this skill for workspace-specific GPUI app decisions. Use `gpui` for framewo
 Keep these layers separate when a screen edits data that also arrives from an external store:
 
 1. committed store/repository state is the durable or shared source;
-2. form entity is the single owner of the editable typed draft;
-3. external component options/catalog/capabilities are app-owned configuration;
-4. component state contains only interaction state plus replaceable value/config mirrors;
-5. picker open/focus, query, highlight, scroll, preview, and in-flight tasks are UI-ephemeral state.
+2. one generated form store owns the current editable typed model and baseline;
+3. that form store owns validation report/generations and submit runtime;
+4. bound controls project typed form fields and own subscriptions plus interaction-local state;
+5. external component options/catalog/capabilities are app-owned configuration;
+6. picker open/focus, query, highlight, scroll, preview, IME, and in-flight tasks are component-instance UI state.
 
-Do not mirror a selected id with a selected record, a form value with a control cache, or a catalog
-revision with separately cached rows unless the extra value is explicitly a read-only projection. Use
-an explicit whole-value replace/commit command for domain values; catalog/options updates only
-refresh component configuration. Do not install observer write-back loops or read component state
-for submit. For the Jaco #175 example, the durable contract is recorded in
-`app/jaco/docs/dev/issue-175/state-ownership-sync-plan.md`; the form and store crate contracts are in
-their own docs.
+Do not mirror a selected id with a selected record, a form value with a component business cache,
+or a catalog revision with separately cached rows unless the extra value is explicitly a read-only
+projection. Submit through `form.prepare_submit()` so validation, transform, and persistence use the
+same typed value. Catalog/options updates only refresh component configuration and never choose a
+fallback value or rebase the form. Focus is
+owned by the concrete component/page because one data field may be represented by multiple components;
+the form may return an error path but must not store a `FocusHandle`. For Jaco, the
+durable target is `app/jaco/docs/dev/gpui-form-migration.md`; the form and store crate
+contracts remain in their own docs.
 
 ## Product UI Guidance
 

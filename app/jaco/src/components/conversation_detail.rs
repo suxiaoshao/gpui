@@ -552,7 +552,9 @@ impl Render for ConversationDetailPage {
                             list(timeline.clone(), move |ix, window, cx| {
                                 page.upgrade()
                                     .and_then(|page| page.read(cx).timeline_rows.row(ix))
-                                    .map(|row| row.render(window, cx).into_any_element())
+                                    .map(|row| {
+                                        gpui::RenderOnce::render(row, window, cx).into_any_element()
+                                    })
                                     .unwrap_or_else(|| div().into_any_element())
                             })
                             .size_full(),

@@ -1,6 +1,6 @@
 #[cfg(feature = "system-accent")]
 use gpui::BorrowAppContext;
-use gpui::{App, Global, Hsla, SharedString, Task, Window, WindowAppearance};
+use gpui::{App, Global, Hsla, SharedString, Task, Window, WindowAppearance, rgba};
 use gpui_component::{
     Colorize, Theme, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode as ComponentThemeMode,
     ThemeRegistry, highlighter::HighlightThemeStyle,
@@ -675,10 +675,34 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.accordion_hover = Some(surface.accordion_hover);
         colors.background = Some(surface.background);
         colors.border = Some(surface.border);
+        colors.button = Some(control.secondary.clone());
+        colors.button_active = Some(control.secondary_active.clone());
+        colors.button_foreground = Some(control.secondary_foreground.clone());
+        colors.button_hover = Some(control.secondary_hover.clone());
+        colors.button_danger = Some(status.danger.clone());
+        colors.button_danger_active = Some(status.danger_active.clone());
+        colors.button_danger_foreground = Some(status.danger_foreground.clone());
+        colors.button_danger_hover = Some(status.danger_hover.clone());
+        colors.button_info = Some(status.info.clone());
+        colors.button_info_active = Some(status.info_active.clone());
+        colors.button_info_foreground = Some(status.info_foreground.clone());
+        colors.button_info_hover = Some(status.info_hover.clone());
         colors.button_primary = Some(control.button_primary);
         colors.button_primary_active = Some(control.button_primary_active);
         colors.button_primary_foreground = Some(control.button_primary_foreground);
         colors.button_primary_hover = Some(control.button_primary_hover);
+        colors.button_secondary = Some(control.secondary.clone());
+        colors.button_secondary_active = Some(control.secondary_active.clone());
+        colors.button_secondary_foreground = Some(control.secondary_foreground.clone());
+        colors.button_secondary_hover = Some(control.secondary_hover.clone());
+        colors.button_success = Some(status.success.clone());
+        colors.button_success_active = Some(status.success_active.clone());
+        colors.button_success_foreground = Some(status.success_foreground.clone());
+        colors.button_success_hover = Some(status.success_hover.clone());
+        colors.button_warning = Some(status.warning.clone());
+        colors.button_warning_active = Some(status.warning_active.clone());
+        colors.button_warning_foreground = Some(status.warning_foreground.clone());
+        colors.button_warning_hover = Some(status.warning_hover.clone());
         colors.caret = Some(control.caret);
         colors.chart_1 = Some(status.chart_1);
         colors.chart_2 = Some(status.chart_2);
@@ -960,8 +984,19 @@ fn apply_material_highlight_tokens(scheme: &MaterializedScheme) -> HighlightThem
     insert_syntax_color(&mut syntax, "variant", hex(syntax_type_roles.color));
     root.insert("syntax".into(), Value::Object(syntax));
 
-    serde_json::from_value(Value::Object(root))
-        .expect("generated Material You highlight theme should be valid")
+    let mut style: HighlightThemeStyle = serde_json::from_value(Value::Object(root))
+        .expect("generated Material You highlight theme should be valid");
+    style.editor_background = Some(material_hsla(scheme.surface_container_lowest, u8::MAX));
+    style.editor_foreground = Some(material_hsla(scheme.on_surface, u8::MAX));
+    style.editor_active_line = Some(material_hsla(scheme.surface_container_low, u8::MAX));
+    style.editor_line_number = Some(material_hsla(scheme.on_surface_variant, u8::MAX));
+    style.editor_active_line_number = Some(material_hsla(scheme.on_surface, u8::MAX));
+    style.editor_invisible = Some(material_hsla(
+        scheme.on_surface_variant,
+        MATERIAL_EDITOR_INVISIBLE_ALPHA,
+    ));
+    style.editor_gutter_background = style.editor_background;
+    style
 }
 
 fn insert_syntax_color(syntax: &mut Map<String, Value>, name: &str, color: SharedString) {
@@ -1146,6 +1181,16 @@ fn hex_alpha(color: Argb, alpha: u8) -> SharedString {
         color.blue(),
         alpha
     )
+    .into()
+}
+
+fn material_hsla(color: Argb, alpha: u8) -> Hsla {
+    rgba(u32::from_be_bytes([
+        color.red(),
+        color.green(),
+        color.blue(),
+        alpha,
+    ]))
     .into()
 }
 

@@ -1,18 +1,11 @@
 use super::ComposerSnapshot;
-use crate::{
-    components::run_settings::{RunSettingsFormStore, RunSettingsInput},
-    state::attachments::ComposerAttachment,
-};
-use gpui::AppContext as _;
-
+use crate::{components::run_settings::RunSettingsInput, state::attachments::ComposerAttachment};
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ChatInputFormStore)]
 pub(crate) struct ChatInputInput {
-    #[form(component = "value")]
     pub(crate) composer: ComposerSnapshot,
-    #[form(component = "value")]
     pub(crate) attachments: Vec<ComposerAttachment>,
-    #[form(group(store = "RunSettingsFormStore"))]
+    #[form(group)]
     pub(crate) run_settings: RunSettingsInput,
 }
 

@@ -14,6 +14,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
+use gpui_form::typed::FormStore as _;
 
 use crate::{
     components::{
@@ -78,7 +79,6 @@ impl ChatForm {
             composer.update(cx, |composer, cx| composer.set_disabled(true, cx));
         }
         let mut subscriptions = Vec::new();
-        subscriptions.push(cx.observe(&controls.run_settings.form, |_, _, cx| cx.notify()));
         if let Some(state) = controls.run_settings.model.value().cloned() {
             subscriptions.push(cx.observe(&state, |_, _, cx| cx.notify()));
         }
@@ -238,7 +238,11 @@ impl ChatForm {
         let enabled = self.controls.attachments.is_enabled();
         let form = attachments.read(cx).form.clone();
         let attachments = form
-            .map(|form| form.read(cx).draft().attachments.clone())
+            .and_then(|form| {
+                crate::components::chat_input::ChatInputFormStore::attachments_field(&form)
+                    .value(cx)
+                    .ok()
+            })
             .unwrap_or_default();
         (!attachments.is_empty()).then(|| {
             div()
@@ -463,32 +467,25 @@ impl ChatForm {
         &self,
         cx: &mut Context<Self>,
     ) -> (Option<AnyElement>, Option<AnyElement>, Option<AnyElement>) {
-        let form = self.controls.run_settings.form.clone();
         let model = match &self.controls.run_settings.model {
             ControlSlot::Hidden => None,
             ControlSlot::Disabled(state) => Some(run_settings::render_model_selector(
-                form.clone(),
                 state.clone(),
                 false,
                 cx,
             )),
-            ControlSlot::Enabled(state) => Some(run_settings::render_model_selector(
-                form.clone(),
-                state.clone(),
-                true,
-                cx,
-            )),
+            ControlSlot::Enabled(state) => {
+                Some(run_settings::render_model_selector(state.clone(), true, cx))
+            }
         };
         let reasoning = match &self.controls.run_settings.reasoning {
             ControlSlot::Hidden => None,
             ControlSlot::Disabled(state) => Some(run_settings::render_reasoning_selector(
-                form.clone(),
                 state.clone(),
                 false,
                 cx,
             )),
             ControlSlot::Enabled(state) => Some(run_settings::render_reasoning_selector(
-                form.clone(),
                 state.clone(),
                 true,
                 cx,
@@ -497,13 +494,11 @@ impl ChatForm {
         let approval = match &self.controls.run_settings.approval {
             ControlSlot::Hidden => None,
             ControlSlot::Disabled(state) => Some(run_settings::render_approval_selector(
-                form.clone(),
                 state.clone(),
                 false,
                 cx,
             )),
             ControlSlot::Enabled(state) => Some(run_settings::render_approval_selector(
-                form.clone(),
                 state.clone(),
                 true,
                 cx,

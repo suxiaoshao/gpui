@@ -19,6 +19,7 @@ use tracing::{Level, event};
 use window_ext::{NativeWindowHandle, WindowExt as SystemWindowExt};
 
 mod appearance;
+mod form_validation;
 mod general;
 mod layout;
 mod mcp;

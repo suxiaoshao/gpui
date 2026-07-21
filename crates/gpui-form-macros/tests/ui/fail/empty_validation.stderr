@@ -1,0 +1,5 @@
+error: unexpected end of input, validation requires an adapter
+ --> tests/ui/fail/empty_validation.rs:4:19
+  |
+4 | #[form(validation())]
+  |                   ^

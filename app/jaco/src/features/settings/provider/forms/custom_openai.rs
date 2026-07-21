@@ -26,18 +26,6 @@ impl ProviderApiMode {
     }
 }
 
-impl gpui_form_gpui_component::SelectFieldValue for ProviderApiMode {
-    type Selected = ProviderApiMode;
-
-    fn to_selected_value(&self) -> Option<Self::Selected> {
-        Some(*self)
-    }
-
-    fn from_selected_value(selected: Option<Self::Selected>, previous: &Self) -> Self {
-        selected.unwrap_or(*previous)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::features::settings::provider) struct ApiModeChoice {
     value: ProviderApiMode,
@@ -84,25 +72,26 @@ pub(in crate::features::settings::provider) fn localized_api_mode_choices(
     ]
 }
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[garde(context(super::ProviderValidationContext))]
 #[form(
     store = CustomOpenAiProviderFormStore,
-    validation(adapter = super::CustomOpenAiProviderValidator, context = super::ProviderValidationContext),
+    validation(adapter = "garde", i18n = super::JacoGardeI18nProvider),
     transform(adapter = super::CustomOpenAiProviderTransform)
 )]
 pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput {
-    #[form(component = "value")]
+    #[garde(skip)]
     pub(super) enabled: bool,
-    #[form(component = "value", required, validate(on_change, on_blur, on_submit))]
+    #[form(required, validate(on_change, on_blur, on_submit))]
+    #[garde(custom(super::validate_required_provider_text))]
     pub(super) name: String,
-    #[form(
-        codec = "super::ProviderSecretCodec",
-        required,
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
+    #[garde(custom(super::validate_provider_secret))]
     pub(super) api_key: super::ProviderSecretValue,
-    #[form(component = "value", required, validate(on_change, on_blur, on_submit))]
+    #[form(required, validate(on_change, on_blur, on_submit))]
+    #[garde(custom(super::validate_required_provider_url))]
     pub(super) base_url: String,
-    #[form(component = "value", validate(on_change, on_submit))]
+    #[form(validate(on_change, on_submit))]
+    #[garde(skip)]
     pub(super) api_mode: ProviderApiMode,
 }

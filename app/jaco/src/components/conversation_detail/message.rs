@@ -83,8 +83,10 @@ impl TimelineRow {
 impl RenderOnce for TimelineRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self {
-            TimelineRow::User(row) => (*row).render(window, cx).into_any_element(),
-            TimelineRow::Agent(row) => (*row).render(window, cx).into_any_element(),
+            TimelineRow::User(row) => gpui::RenderOnce::render(*row, window, cx).into_any_element(),
+            TimelineRow::Agent(row) => {
+                gpui::RenderOnce::render(*row, window, cx).into_any_element()
+            }
         }
     }
 }

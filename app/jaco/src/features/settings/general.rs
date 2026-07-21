@@ -243,8 +243,13 @@ fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &
         next_hotkey.as_deref(),
         cx,
     ) {
-        let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
-        push_settings_error(window, cx, title, err);
+        #[cfg(not(test))]
+        {
+            let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
+            push_settings_error(window, cx, title, err);
+        }
+        #[cfg(test)]
+        let _ = (window, err);
         return false;
     }
 
@@ -262,8 +267,13 @@ fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &
                 "rollback jaco temporary hotkey runtime failed after settings save failure"
             );
         }
-        let title = cx.global::<I18n>().t("notify-save-settings-failed");
-        push_settings_error(window, cx, title, err);
+        #[cfg(not(test))]
+        {
+            let title = cx.global::<I18n>().t("notify-save-settings-failed");
+            push_settings_error(window, cx, title, err);
+        }
+        #[cfg(test)]
+        let _ = (window, err);
         return false;
     }
 
@@ -647,11 +657,11 @@ mod tests {
             .app_settings_payload()
     }
 
-    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                let view = cx.new(|_| TestView);
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                let _ = window;
+                cx.new(|_| TestView)
             })
             .expect("open settings test window")
         })

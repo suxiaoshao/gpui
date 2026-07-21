@@ -39,9 +39,9 @@ crate API 边界，不把 Jaco 类型下沉到 `gpui-store`。
 `SharedStore<S, MemoryBackend>`；只有存在可复用的外部 load/subscribe/reconcile 生命周期时才实现 backend。
 
 `StoreSelection` 继续是只读 projection；`StoreBinding` 只用于有明确逆向写入的同一 store。
-不要用 selection 或 binding 充当 form draft 的镜像，也不要在本 crate 中引入隐式
-form↔store bridge。catalog/options 只更新组件配置，不进入 form；同一 domain value 的整体替换和 submit
-commit 由接入 app 显式协调。
+不要用 selection 或 binding 充当 form-owned current value 的镜像，也不要在本 crate 中引入隐式
+form↔store bridge。catalog/options 只更新组件配置，不 hydrate/rebase generated form store；
+committed value 的 `form.rebase(...)`、`form.prepare_submit()` 与 repository/store commit 由接入 app 显式协调。
 
 所有 backend/selection observer 都必须满足 GPUI reentrancy 约束：source callback 只读取、
 计算、替换自己的 snapshot 或通知 owner；需要更新另一个 entity 时排到显式 command/task
@@ -1150,7 +1150,7 @@ external event owned by SharedStore
 - 将 selection/binding 的 read-only/writable 语义、backend error atomicity、owner drop 和
   GPUI reentrancy 固化为 focused tests。
 - Jaco 的 project/provider 类型、DB 查询和表单 hydrate 不下沉到本 crate；Jaco 的迁移顺序见
-  app-local `state-ownership-sync-plan.md`。
+  `app/jaco/docs/dev/gpui-form-migration.md`。
 
 ## 验证计划
 

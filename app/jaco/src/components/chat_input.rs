@@ -10,23 +10,21 @@ mod form_state;
 pub(crate) use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
 pub(crate) use form_state::{ChatInputFormStore, ChatInputInput};
 
-use crate::components::run_settings::{
-    computed_default_reasoning_selection, reasoning_selection_is_valid,
-};
+use crate::components::run_settings::reasoning_selection_is_valid;
 use crate::{
     components::{
         chat_form::{
             AttachmentControlState, ChatForm, ChatFormControls, ChatFormUiEvent, ControlSlot,
             PrimaryActionControlState, ProjectControlState, RunSettingsControls,
         },
-        run_settings::{ModelResolutionPolicy, resolve_run_settings},
+        run_settings::resolve_run_settings,
         run_settings::{RunSettingsController, RunSettingsInput},
     },
     errors::JacoError,
     foundation, state,
     state::providers::{ProviderModelChoice, ProviderModelKey},
     state::{
-        attachments::ComposerAttachment,
+        attachments::{ComposerAttachment, ModelAttachmentSupportIssue},
         config::{ChatFormConfig, ChatFormModelConfig},
     },
 };
@@ -67,6 +65,38 @@ pub(crate) struct ChatInputSubmit {
     pub(crate) approval_mode: ToolApprovalMode,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ChatInputSubmitError {
+    Empty,
+    AgentRunning,
+    RunSettings(crate::components::run_settings::RunSettingsSubmitError),
+    Attachment(ModelAttachmentSupportIssue),
+}
+
+pub(crate) fn build_chat_input_submit(
+    prepared: ChatInputInput,
+    catalog: &Result<Vec<ProviderModelChoice>, SharedString>,
+) -> Result<ChatInputSubmit, ChatInputSubmitError> {
+    if prepared.composer.is_empty() && prepared.attachments.is_empty() {
+        return Err(ChatInputSubmitError::Empty);
+    }
+    let resolved = resolve_run_settings(&prepared.run_settings, catalog)
+        .map_err(ChatInputSubmitError::RunSettings)?;
+    if let Some(issue) = state::attachments::model_support_issue(
+        &prepared.attachments,
+        Some(&resolved.provider_model.capabilities),
+    ) {
+        return Err(ChatInputSubmitError::Attachment(issue));
+    }
+    Ok(ChatInputSubmit {
+        composer: prepared.composer,
+        attachments: prepared.attachments,
+        provider_model: resolved.provider_model,
+        reasoning_selection: resolved.reasoning_selection,
+        approval_mode: resolved.approval_mode,
+    })
+}
+
 #[derive(Debug, PartialEq)]
 enum ChatInputPrimaryButtonAction {
     Send(Box<ChatInputSubmit>),
@@ -77,7 +107,7 @@ pub(crate) struct ChatInputController {
     composer: Entity<ComposerEditor>,
     chat_form: Entity<ChatForm>,
     form: Entity<ChatInputFormStore>,
-    run_settings: Entity<RunSettingsController>,
+    run_settings: Entity<RunSettingsController<ChatInputFormStore>>,
     primary_action_state: Entity<PrimaryActionControlState>,
     chat_form_config: StoreBinding<ChatFormConfig, JacoError>,
     next_attachment_id: u64,
@@ -134,14 +164,7 @@ impl ChatInputController {
         );
         let configured_chat_form = chat_form_config.cloned();
         let selected_model_key =
-            configured_model_key_in(&model_choices, configured_chat_form.model.as_ref()).or_else(
-                || {
-                    model_choices
-                        .as_ref()
-                        .ok()
-                        .and_then(|choices| choices.first().map(ProviderModelChoice::key))
-                },
-            );
+            configured_model_key_in(&model_choices, configured_chat_form.model.as_ref());
         let selected_reasoning_selection = initial_reasoning_selection(
             &model_choices,
             selected_model_key.as_ref(),
@@ -154,14 +177,8 @@ impl ChatInputController {
             |form, composer, event: &ComposerEditorEvent, window, cx| match event {
                 ComposerEditorEvent::Changed => {
                     let snapshot = composer.read(cx).snapshot();
-                    form.form.update(cx, |form, cx| {
-                        form.set_composer_value(
-                            snapshot,
-                            gpui_form::FieldChangeCause::UserInput,
-                            window,
-                            cx,
-                        );
-                    });
+                    let _ =
+                        ChatInputFormStore::composer_field(&form.form).set_user_value(snapshot, cx);
                     cx.notify();
                 }
                 ComposerEditorEvent::PasteAttachmentRequested(item) => {
@@ -204,13 +221,11 @@ impl ChatInputController {
                         selected_approval_mode,
                     ),
                 ),
-                window,
                 cx,
             )
         });
-        let run_settings_form = form.read(cx).run_settings_store();
-        let run_settings_form_observer = run_settings_form.clone();
-        let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_form, window, cx));
+        let run_settings_field = ChatInputFormStore::run_settings_field(&form);
+        let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_field, window, cx));
         let run_settings_states = run_settings.read(cx).control_states();
         let attachments_state = cx.new(|_| AttachmentControlState {
             form: Some(form.clone()),
@@ -226,7 +241,6 @@ impl ChatInputController {
                         crate::components::chat_form::AddAttachmentControl,
                     ),
                     run_settings: RunSettingsControls {
-                        form: run_settings_states.form.clone(),
                         model: ControlSlot::Enabled(run_settings_states.model),
                         reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
                         approval: ControlSlot::Enabled(run_settings_states.approval),
@@ -267,7 +281,7 @@ impl ChatInputController {
             },
         );
         subscriptions.push(chat_form_subscription);
-        subscriptions.push(cx.observe(&run_settings_form_observer, |form, _, cx| {
+        subscriptions.push(cx.observe(&form, |form, _, cx| {
             form.save_chat_form_config(cx);
             form.sync_chat_form_projection(cx);
             cx.notify();
@@ -392,23 +406,11 @@ impl ChatInputController {
         cx.notify();
     }
 
-    pub(crate) fn clear_after_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn clear_after_submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
         let empty_composer = self.composer.read(cx).snapshot();
-        self.form.update(cx, |form, cx| {
-            form.set_composer_value(
-                empty_composer,
-                gpui_form::FieldChangeCause::External,
-                window,
-                cx,
-            );
-            form.set_attachments_value(
-                Vec::new(),
-                gpui_form::FieldChangeCause::External,
-                window,
-                cx,
-            );
-        });
+        let _ = ChatInputFormStore::composer_field(&self.form).set(empty_composer, cx);
+        let _ = ChatInputFormStore::attachments_field(&self.form).set(Vec::new(), cx);
         self.sync_chat_form_projection(cx);
         cx.notify();
     }
@@ -424,7 +426,9 @@ impl ChatInputController {
     }
 
     fn save_chat_form_config(&self, cx: &mut Context<Self>) {
-        let settings = self.run_settings.read(cx).form().read(cx).draft();
+        let Some(settings) = self.run_settings.read(cx).value(cx) else {
+            return;
+        };
         let model = settings.model.as_ref().map(|key| ChatFormModelConfig {
             provider_id: key.provider_id.clone(),
             model_id: key.model_id.clone(),
@@ -442,70 +446,39 @@ impl ChatInputController {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
-        let composer_has_content = self.composer.read(cx).can_submit();
-        let draft = self.form.read(cx).draft();
-        let has_attachments = !draft.attachments.is_empty();
-        let resolved = resolve_run_settings(
-            &draft.run_settings,
-            &load_model_choices(cx),
-            ModelResolutionPolicy::FallbackToFirstEnabled,
-        )
-        .ok();
+        let composer = self.composer.read(cx).snapshot();
+        let attachments = ChatInputFormStore::attachments_field(&self.form)
+            .value(cx)
+            .unwrap_or_default();
+        let Some(run_settings) = self.run_settings.read(cx).value(cx) else {
+            return false;
+        };
+        let choices = load_model_choices(cx);
         !self.agent_running
-            && (composer_has_content || has_attachments)
-            && resolved.as_ref().is_some_and(|settings| {
-                state::attachments::model_support_issue(
-                    &draft.attachments,
-                    Some(&settings.provider_model.capabilities),
-                )
-                .is_none()
-            })
+            && build_chat_input_submit(
+                ChatInputInput::new(composer, attachments, run_settings),
+                &choices,
+            )
+            .is_ok()
     }
 
     fn submit_snapshot(
         &mut self,
         snapshot: ComposerSnapshot,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputSubmit> {
-        let attachments = self.form.read(cx).draft().attachments.clone();
-        if snapshot.is_empty() && attachments.is_empty() {
-            return None;
-        }
         if self.agent_running {
             return None;
         }
         let form_snapshot = snapshot.clone();
-        self.form.update(cx, |form, cx| {
-            form.set_composer_value(
-                form_snapshot,
-                gpui_form::FieldChangeCause::External,
-                window,
-                cx,
-            );
+        let _ = ChatInputFormStore::composer_field(&self.form).set(form_snapshot, cx);
+        let prepared = self.form.update(cx, |form, cx| {
+            gpui_form::typed::FormStore::prepare_submit(form, cx)
         });
-        let run_settings = self.form.read(cx).draft().run_settings;
-        let resolved = resolve_run_settings(
-            &run_settings,
-            &load_model_choices(cx),
-            ModelResolutionPolicy::FallbackToFirstEnabled,
-        )
-        .ok()?;
-        if state::attachments::model_support_issue(
-            &attachments,
-            Some(&resolved.provider_model.capabilities),
-        )
-        .is_some()
-        {
-            return None;
-        }
-        Some(ChatInputSubmit {
-            composer: snapshot,
-            attachments,
-            provider_model: resolved.provider_model,
-            reasoning_selection: resolved.reasoning_selection,
-            approval_mode: resolved.approval_mode,
-        })
+        let prepared = prepared.ok()?;
+        let choices = load_model_choices(cx);
+        build_chat_input_submit(prepared, &choices).ok()
     }
 
     fn primary_button_action(
@@ -542,7 +515,10 @@ impl Render for ChatInputController {
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {
-    state::providers::enabled_provider_models(cx).map_err(|err| err.to_string().into())
+    if !cx.has_global::<state::providers::ProviderCatalogGlobal>() {
+        return Err("provider catalog is unavailable".into());
+    }
+    Ok(state::providers::catalog(cx).read_cloned(cx, |snapshot| &snapshot.enabled_models))
 }
 
 fn selected_model_choice_in<'a>(
@@ -580,7 +556,6 @@ fn initial_reasoning_selection(
             reasoning_selection_is_valid(choice.capabilities.reasoning.as_ref(), selection)
         })
         .cloned()
-        .or_else(|| computed_default_reasoning_selection(choice.capabilities.reasoning.as_ref()))
 }
 
 fn model_empty_label(
@@ -611,8 +586,9 @@ mod tests {
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
     use gpui::{
-        Anchor, App, AppContext as _, Bounds, SharedString, TestAppContext, VisualTestContext,
-        WindowHandle, point, px, size,
+        Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
+        SharedString, Styled as _, TestAppContext, VisualTestContext, WindowHandle, div, point, px,
+        size,
     };
     use jaco_core::{
         CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
@@ -707,9 +683,10 @@ mod tests {
     #[gpui::test]
     fn skill_completion_popup_matches_chat_form_bounds(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
-        let window = open_chat_form_window(cx);
+        let window = open_chat_form_layout_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let host = window.root(&mut cx).unwrap();
+        let form = host.read_with(&cx, |host, _| host.form.clone());
 
         cx.simulate_resize(size(px(800.), px(600.)));
         cx.update(|_, cx| {
@@ -717,13 +694,24 @@ mod tests {
                 form.apply_skill_catalog_entries(vec![test_skill_entry("gpui")], cx);
             });
         });
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.focus_composer(window, cx));
+        });
         cx.simulate_input("$");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(form.read(cx).composer.read(cx).skill_completion_open());
+            window.refresh();
+        });
+        cx.run_until_parked();
 
         let form_bounds = cx.debug_bounds("jaco-chat-form").expect("chat form bounds");
+        let viewport = cx.update(|window, _| window.viewport_size());
         let popup_bounds = cx
             .debug_bounds("jaco-skill-completion-popup")
-            .expect("skill completion popup bounds");
-        let viewport = cx.update(|window, _| window.viewport_size());
+            .unwrap_or_else(|| {
+                panic!("skill completion popup bounds; form={form_bounds:?}, viewport={viewport:?}")
+            });
 
         let width_delta =
             (popup_bounds.size.width.as_f32() - form_bounds.size.width.as_f32()).abs();
@@ -744,6 +732,7 @@ mod tests {
     #[gpui::test]
     fn provider_catalog_refresh_updates_options_without_rebasing_form(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
@@ -762,18 +751,16 @@ mod tests {
         });
 
         // Catalog refreshes update the available options, but must not silently
-        // rewrite the form draft. The unavailable draft is resolved explicitly
-        // by the submit policy below.
+        // rewrite the form value or choose another model.
         assert_eq!(selected_model_id(&form, &cx), None);
 
-        let submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
-            .expect("submit policy falls back to an enabled model");
-        assert_eq!(submit.provider_model.model_id, "gpt-5-mini");
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_none());
     }
 
     #[gpui::test]
     fn submit_revalidation_preserves_custom_token_budget(cx: &mut TestAppContext) {
         let _dir = init_chat_form_reasoning_test(cx);
+        configure_chat_form_model(cx, "claude-3-7-sonnet");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
@@ -781,6 +768,14 @@ mod tests {
         cx.update(|window, cx| {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
+                    settings.select_reasoning_value(
+                        ReasoningSelectionSnapshot::TokenBudget {
+                            mode: TokenBudgetSelectionMode::Custom,
+                            value: Some(4096),
+                        },
+                        window,
+                        cx,
+                    );
                     settings.set_custom_token_budget(2048, window, cx);
                 });
             });
@@ -801,6 +796,7 @@ mod tests {
     #[gpui::test]
     fn submit_includes_selected_approval_mode(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
@@ -890,6 +886,7 @@ mod tests {
     #[gpui::test]
     fn custom_token_budget_persists_config(cx: &mut TestAppContext) {
         let dir = init_chat_form_reasoning_test(cx);
+        configure_chat_form_model(cx, "claude-3-7-sonnet");
         let config_path = test_config_path(&dir);
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -898,6 +895,14 @@ mod tests {
         cx.update(|window, cx| {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
+                    settings.select_reasoning_value(
+                        ReasoningSelectionSnapshot::TokenBudget {
+                            mode: TokenBudgetSelectionMode::Custom,
+                            value: Some(4096),
+                        },
+                        window,
+                        cx,
+                    );
                     settings.set_custom_token_budget(2048, window, cx);
                 });
             });
@@ -917,6 +922,7 @@ mod tests {
     #[gpui::test]
     fn running_agent_blocks_submit_and_primary_button_stops(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
@@ -1026,6 +1032,37 @@ mod tests {
         .unwrap()
     }
 
+    struct ChatInputLayoutTestHost {
+        form: Entity<ChatInputController>,
+    }
+
+    impl Render for ChatInputLayoutTestHost {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().w(px(600.)).h(px(180.)).child(self.form.clone()))
+        }
+    }
+
+    fn open_chat_form_layout_window(
+        cx: &mut TestAppContext,
+    ) -> WindowHandle<ChatInputLayoutTestHost> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let form = cx.new(|cx| ChatInputController::new(window, cx));
+                cx.new(|_| ChatInputLayoutTestHost { form })
+            })
+        })
+        .unwrap()
+    }
+
     #[gpui::test]
     fn constructor_can_leave_composer_unfocused_for_embedded_inputs(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
@@ -1080,6 +1117,19 @@ mod tests {
             .find(|provider| provider.kind == kind)
             .expect("provider exists")
             .id
+    }
+
+    fn configure_chat_form_model(cx: &mut TestAppContext, model_id: &str) {
+        cx.update(|cx| {
+            let provider_id = provider_id_for_kind(cx, "openai");
+            state::config::update_chat_form_config(cx, |config| {
+                config.model = Some(ChatFormModelConfig {
+                    provider_id,
+                    model_id: model_id.to_string(),
+                });
+            })
+            .expect("configure chat form model");
+        });
     }
 
     fn test_config_path(dir: &TempDir) -> PathBuf {

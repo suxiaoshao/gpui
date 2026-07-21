@@ -1,21 +1,16 @@
-//! `gpui-component` adapters for `gpui-form`.
-//!
-//! `gpui-form` owns form state, validation, and submit behavior. This crate
-//! owns the optional adapter layer for applications that use `gpui-component`
-//! controls.
+//! Typed `gpui-component` controls for `gpui-form`.
 
-pub mod binding;
-pub mod bool;
-pub mod combobox;
-pub mod input;
-pub mod number;
-pub mod select;
+mod combobox;
+mod error;
+mod input;
+pub mod integer_input;
+mod select;
 
-pub use binding::{ComponentBindError, bind_bool, bind_input, bind_number, subscribe_form_changes};
-pub use bool::{BoolComponentEvent, BoolComponentState};
-pub use combobox::{
-    ComboboxFieldValue, bind_combobox, focus_combobox, new_combobox_state, set_combobox_items,
+pub use combobox::FormCombobox;
+pub use error::{FormControlError, IntegerInputPolicyError};
+pub use input::FormInput;
+pub use integer_input::{
+    FormIntegerInput, IntegerInput, IntegerInputError, IntegerInputEvent, IntegerInputPolicy,
+    IntegerInputState, IntegerValue,
 };
-pub use input::{OptionalTextCodec, TextFieldValue};
-pub use number::{NumberCodec, NumberFieldValue, NumberInputKind, NumberInputPolicy, number_input};
-pub use select::{SelectFieldValue, bind_select, focus_select, new_select_state, set_select_items};
+pub use select::FormSelect;

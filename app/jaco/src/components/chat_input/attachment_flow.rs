@@ -92,16 +92,10 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.form.update(cx, |form, cx| {
-            let mut attachments = form.draft().attachments.clone();
-            attachments.extend(result.attachments);
-            form.set_attachments_value(
-                attachments,
-                gpui_form::FieldChangeCause::UserInput,
-                window,
-                cx,
-            );
-        });
+        let field = super::ChatInputFormStore::attachments_field(&self.form);
+        let mut attachments = field.value(cx).unwrap_or_default();
+        attachments.extend(result.attachments);
+        let _ = field.set_user_value(attachments, cx);
         for rejected in result.rejected {
             self.push_form_notification(
                 "chat-form-attachment-add-failed",
@@ -118,19 +112,13 @@ impl ChatInputController {
     pub(super) fn remove_attachment(
         &mut self,
         local_id: u64,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.form.update(cx, |form, cx| {
-            let mut attachments = form.draft().attachments.clone();
-            attachments.retain(|attachment| attachment.local_id != local_id);
-            form.set_attachments_value(
-                attachments,
-                gpui_form::FieldChangeCause::UserInput,
-                window,
-                cx,
-            );
-        });
+        let field = super::ChatInputFormStore::attachments_field(&self.form);
+        let mut attachments = field.value(cx).unwrap_or_default();
+        attachments.retain(|attachment| attachment.local_id != local_id);
+        let _ = field.set_user_value(attachments, cx);
         self.sync_chat_form_projection(cx);
         cx.notify();
     }

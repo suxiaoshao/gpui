@@ -57,7 +57,6 @@ pub(crate) struct PrimaryActionControlState {
 
 #[derive(Clone)]
 pub(crate) struct RunSettingsControls {
-    pub(crate) form: Entity<crate::components::run_settings::RunSettingsFormStore>,
     pub(crate) model: ControlSlot<Entity<ModelControlState>>,
     pub(crate) reasoning: ControlSlot<Entity<ReasoningControlState>>,
     pub(crate) approval: ControlSlot<Entity<ApprovalControlState>>,

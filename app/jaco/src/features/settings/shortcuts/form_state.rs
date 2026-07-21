@@ -1,34 +1,43 @@
-use super::validation::{ShortcutValidationError, canonical_hotkey, validate_shortcut_hotkey};
+use super::validation::{canonical_hotkey, validate_shortcut_hotkey};
 use crate::{
-    components::run_settings::{RunSettingsFormStore, RunSettingsInput},
+    components::run_settings::RunSettingsInput,
+    features::settings::form_validation::{JacoGardeI18nProvider, JacoValidationContext},
     state::providers::ProviderModelKey,
 };
-use gpui::{App, AppContext as _};
-use gpui_form::{
-    FieldError, FormField, FormMeta, SubmitTransform, TransformContext, TransformReport,
-    ValidationAdapter, ValidationAdapterReport, ValidationContext, ValidationIssue,
-    ValidationScope, ValidationSource, ValidationTrigger,
-};
-use gpui_form_gpui_component::SelectFieldValue;
+use fluent_bundle::FluentArgs;
+use gpui_form::typed::{SubmitTransform, TransformReport};
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ShortcutValidationDependencies {
+    pub(super) shortcut_id: Option<jaco_core::ShortcutId>,
+    pub(super) existing_shortcuts: Vec<ShortcutRecord>,
+    pub(super) temporary_hotkey: Option<String>,
+}
+
+pub(super) type ShortcutEditValidationContext =
+    JacoValidationContext<ShortcutValidationDependencies>;
+
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[garde(context(ShortcutEditValidationContext))]
 #[form(
     store = ShortcutEditFormStore,
-    validation(adapter = ShortcutEditValidator, context = ShortcutEditValidationContext),
+    validation(adapter = "garde", i18n = JacoGardeI18nProvider),
     transform(adapter = ShortcutEditTransform)
 )]
 pub(super) struct ShortcutEditFormInput {
-    #[form(component = "value", required, validate(on_submit))]
+    #[form(required, validate(on_change, on_blur, on_submit))]
+    #[garde(custom(validate_hotkey))]
     pub(super) hotkey: Option<String>,
-    #[form(component = "value")]
+    #[garde(skip)]
     pub(super) prompt: ShortcutPromptSelection,
-    #[form(group(store = "RunSettingsFormStore"))]
+    #[form(group)]
+    #[garde(skip)]
     pub(super) run_settings: RunSettingsInput,
-    #[form(component = "value")]
+    #[garde(skip)]
     pub(super) input_source: ShortcutInputSource,
-    #[form(component = "value")]
+    #[garde(skip)]
     pub(super) enabled: bool,
 }
 
@@ -41,14 +50,8 @@ impl ShortcutEditFormInput {
                 model_id: shortcut.model_id.as_ref()?.clone(),
             })
         });
-        let input_source = shortcut
-            .map(|shortcut| shortcut.input_source)
-            .unwrap_or(ShortcutInputSource::SelectionOrClipboard);
-        let enabled = shortcut.map(|shortcut| shortcut.enabled).unwrap_or(true);
-        let hotkey = shortcut.map(|shortcut| shortcut.hotkey.clone());
-
         Self {
-            hotkey,
+            hotkey: shortcut.map(|shortcut| shortcut.hotkey.clone()),
             prompt: ShortcutPromptSelection(selected_prompt),
             run_settings: RunSettingsInput::new(
                 selected_model,
@@ -58,144 +61,52 @@ impl ShortcutEditFormInput {
                     .map(|shortcut| shortcut.settings_snapshot.tool_policy.approval_mode)
                     .unwrap_or(jaco_core::ToolApprovalMode::RequestApproval),
             ),
-            input_source,
-            enabled,
+            input_source: shortcut
+                .map(|shortcut| shortcut.input_source)
+                .unwrap_or(ShortcutInputSource::SelectionOrClipboard),
+            enabled: shortcut.map(|shortcut| shortcut.enabled).unwrap_or(true),
         }
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct ShortcutEditValidationContext {
-    pub(super) shortcut_id: Option<jaco_core::ShortcutId>,
-    pub(super) existing_shortcuts: Vec<ShortcutRecord>,
-    pub(super) temporary_hotkey: Option<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct ShortcutEditValidator;
-
-impl ValidationAdapter<ShortcutEditFormInput> for ShortcutEditValidator {
-    type Context = ShortcutEditValidationContext;
-
-    fn validate(
-        &self,
-        draft: &ShortcutEditFormInput,
-        trigger: ValidationTrigger,
-        scope: ValidationScope,
-        context: ValidationContext<'_, Self::Context>,
-        _cx: &App,
-    ) -> ValidationAdapterReport {
-        let mut issues = Vec::new();
-        let hotkey_path = gpui_form::FieldPath::from_static(ShortcutEditFormField::Hotkey.key());
-
-        if scope_includes_path(&scope, &hotkey_path)
-            && let Err(error) = validate_shortcut_hotkey(
-                draft.hotkey.clone(),
-                context.external.shortcut_id.as_ref(),
-                &context.external.existing_shortcuts,
-                context.external.temporary_hotkey.as_deref(),
-            )
-        {
-            issues.push(shortcut_issue(hotkey_path, trigger, error));
-        }
-
-        ValidationAdapterReport::new(issues)
-    }
+fn validate_hotkey(
+    value: &Option<String>,
+    context: &ShortcutEditValidationContext,
+) -> garde::Result {
+    validate_shortcut_hotkey(
+        value.clone(),
+        context.dependencies.shortcut_id.as_ref(),
+        &context.dependencies.existing_shortcuts,
+        context.dependencies.temporary_hotkey.as_deref(),
+    )
+    .map(|_| ())
+    .map_err(|error| context.error(error.i18n_key(), &FluentArgs::new()))
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ShortcutEditTransform;
 
-impl SubmitTransform<ShortcutEditFormInput, ShortcutEditFormInput> for ShortcutEditTransform {
-    fn preview(
-        &self,
-        draft: &ShortcutEditFormInput,
-        _context: &TransformContext,
-    ) -> Result<ShortcutEditFormInput, TransformReport> {
-        Ok(normalize_shortcut_input(draft))
-    }
+impl SubmitTransform<ShortcutEditFormInput> for ShortcutEditTransform {
+    type Output = ShortcutEditFormInput;
 
-    fn transform_on_submit(
-        &self,
-        draft: &ShortcutEditFormInput,
-        _context: &TransformContext,
-    ) -> Result<ShortcutEditFormInput, TransformReport> {
-        Ok(normalize_shortcut_input(draft))
+    fn transform(&self, model: &ShortcutEditFormInput) -> Result<Self::Output, TransformReport> {
+        Ok(normalize_shortcut_input(model))
     }
 }
 
-fn normalize_shortcut_input(draft: &ShortcutEditFormInput) -> ShortcutEditFormInput {
-    let hotkey = draft
+fn normalize_shortcut_input(model: &ShortcutEditFormInput) -> ShortcutEditFormInput {
+    let hotkey = model
         .hotkey
         .as_ref()
         .map(|hotkey| canonical_hotkey(hotkey).unwrap_or_else(|_| hotkey.trim().to_string()));
-
     ShortcutEditFormInput {
         hotkey,
-        prompt: draft.prompt.clone(),
-        run_settings: draft.run_settings.clone(),
-        input_source: draft.input_source,
-        enabled: draft.enabled,
+        prompt: model.prompt.clone(),
+        run_settings: model.run_settings.clone(),
+        input_source: model.input_source,
+        enabled: model.enabled,
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct ShortcutPromptSelection(pub(super) Option<PromptId>);
-
-impl SelectFieldValue for ShortcutPromptSelection {
-    type Selected = Option<PromptId>;
-
-    fn to_selected_value(&self) -> Option<Self::Selected> {
-        Some(self.0.clone())
-    }
-
-    fn from_selected_value(selected: Option<Self::Selected>, previous: &Self) -> Self {
-        Self(selected.unwrap_or_else(|| previous.0.clone()))
-    }
-}
-
-fn shortcut_issue(
-    path: gpui_form::FieldPath,
-    trigger: ValidationTrigger,
-    error: ShortcutValidationError,
-) -> ValidationIssue {
-    ValidationIssue::field(
-        path,
-        trigger,
-        ValidationSource::App("jaco-shortcut".into()),
-        shortcut_error_code(&error),
-        error.i18n_key(),
-    )
-}
-
-fn shortcut_error_code(error: &ShortcutValidationError) -> &'static str {
-    match error {
-        ShortcutValidationError::HotkeyRequired => "hotkey_required",
-        ShortcutValidationError::HotkeyInvalid => "hotkey_invalid",
-        ShortcutValidationError::HotkeyPlainKey => "hotkey_plain_key",
-        ShortcutValidationError::TemporaryConflict => "temporary_conflict",
-        ShortcutValidationError::BindingConflict => "binding_conflict",
-    }
-}
-
-fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> bool {
-    match scope {
-        ValidationScope::Form => true,
-        ValidationScope::Field(field_path) => field_path == path,
-        ValidationScope::Group(group_path) => path.starts_with(group_path),
-        ValidationScope::ArrayItem {
-            path: array_path, ..
-        } => path.starts_with(array_path),
-    }
-}
-
-pub(super) fn field_errors<Field>(field: &Field, form_meta: &FormMeta) -> Vec<FieldError>
-where
-    Field: FormField,
-{
-    field
-        .visible_errors(form_meta)
-        .into_iter()
-        .cloned()
-        .collect()
-}

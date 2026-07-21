@@ -1,8 +1,7 @@
 # 纯 UI ChatForm 与 ControlSlot 契约
 
-> 后续架构修正：`ChatForm` 继续纯 UI，但 component state 不再作为 form/control business owner。最终以
-> [state-ownership-sync-plan.md](state-ownership-sync-plan.md) 为准：form value、app-owned options/config、
-> component interaction 三通道分离，submit 不读取 component state。
+> `ChatForm` 继续是纯 UI。本文件中的旧 form wiring 只记录 issue #175 的实施历史；最终 form API 与迁移步骤统一以
+> [Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md) 为准。
 
 本文固定 ChatForm 的纯UI边界、ControlSlot语义、external ChatInput FormStore/controller，以及四个调用方如何
 组合相同控件。ChatForm不得import `gpui_form`、state config/repository/provider catalog或domain submit service。
@@ -157,59 +156,48 @@ Project picker自己的option/trigger render在
 pub(crate) struct ChatInputInput {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) attachments: Vec<ComposerAttachment>,
-    #[form(group(store = "RunSettingsFormStore"))]
+    #[form(group)]
     pub(crate) run_settings: RunSettingsInput,
 }
 ```
 
-`ChatInputInput` 的 composer/attachments 使用 value fields，RunSettings 使用 nested group。后续所有权修正后，
-`ChatInputFormStore` 是 composer/attachments 的唯一 typed draft owner；`AttachmentControlState` 只由它派生为
-render projection，不再被 controller 作为另一份附件事实源。submit 先读取 draft，再由
-纯函数 `resolve_run_settings` 得到最终 model/reasoning/approval，最后用同一个 model 校验附件并构造
-payload。项目选择仍由 `NewConversationPage` 持有，新增项目只发 `AddProjectRequested`。
+`ChatInputFormStore` 持有唯一 typed model；bound controls 写入 typed fields。
+submit 通过 `prepare_submit` 获得同一版本的 output，再解析 settings、校验附件并构造 payload。
+项目选择仍由 `NewConversationPage` 持有，新增项目只发 `AddProjectRequested`。
 
 ## 8. ChatInputController
 
 ```rust
 pub(crate) struct ChatInputController {
+    composer: Entity<ComposerEditor>,
+    chat_form: Entity<ChatForm>,
     form: Entity<ChatInputFormStore>,
-    run_settings_form: Entity<RunSettingsFormStore>,
     run_settings: Entity<RunSettingsController>,
-    chat_form_config: Option<StoreBinding<ChatFormConfig, JacoError>>,
+    primary_action_state: Entity<PrimaryActionControlState>,
+    chat_form_config: StoreBinding<ChatFormConfig, JacoError>,
     skill_catalog_scope: SkillCatalogScope,
     skill_catalog_task: Task<()>,
     agent_running: bool,
-    subscriptions: SubscriptionSet,
+    _subscriptions: Vec<Subscription>,
 }
 
 pub(crate) enum ChatInputEvent {
-    SendRequested(Box<ChatFormSubmit>),
+    SendRequested(Box<ChatInputSubmit>),
     StopRequested,
-}
-
-#[derive(Clone)]
-pub(crate) struct ChatInputControls {
-    pub(crate) composer: Entity<ComposerEditor>,
-    pub(crate) attachments: Entity<AttachmentControlState>,
-    pub(crate) add_attachment: AddAttachmentControl,
-    pub(crate) run_settings: RunSettingsControls,
-    pub(crate) primary_action: Entity<PrimaryActionControlState>,
 }
 ```
 
 constructors：
 
 ```rust
-pub(crate) fn new(
-    form: Entity<ChatInputFormStore>,
-    run_settings_form: Entity<RunSettingsFormStore>,
-    chat_form_config: Option<StoreBinding<ChatFormConfig, JacoError>>,
+pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self;
+pub(crate) fn new_without_focus(window: &mut Window, cx: &mut Context<Self>) -> Self;
+pub(crate) fn new_with_project(
+    project: Entity<ProjectControlState>,
     window: &mut Window,
     cx: &mut Context<Self>,
 ) -> Self;
 
-pub(crate) fn controls(&self, cx: &App) -> ChatInputControls;
-pub(crate) fn handle_primary_action(&mut self, window: &mut Window, cx: &mut Context<Self>);
 pub(crate) fn clear_after_submit(&mut self, window: &mut Window, cx: &mut Context<Self>);
 pub(crate) fn set_agent_running(&mut self, running: bool, cx: &mut Context<Self>);
 pub(crate) fn refresh_skill_catalog(&mut self, project_root: Option<&Path>, cx: &mut Context<Self>);
@@ -219,13 +207,12 @@ pub(crate) fn refresh_skill_catalog(&mut self, project_root: Option<&Path>, cx: 
 `PasteAttachmentRequested`进入 attachment command，`SubmitRequested`调用 primary action/submit流程。
 `ChatForm`只渲染editor，不代理这些业务事件。
 
-`ChatInputController::new`的`run_settings_form`必须来自同一个`ChatInputFormStore::run_settings_store()` child
-accessor；禁止在controller内重新创建RunSettingsFormStore。`controls(cx)`从RunSettingsController读取同一组
-`RunSettingsControlStates`并包装成Conversation默认使用的Enabled slots；NewConversation从parent的
-`chat_input_store()`继续取得同一child。ChatInputControls提供composer/attachments/add/run_settings/primary action
-states，由调用方包装进ControlSlot。
+`ChatInputController` 从 `ChatInputFormStore::run_settings_field(&form)` 取得 parent group field，并用该 field
+创建唯一 `RunSettingsController`。Token Budget 这类子控件通过 `FormField::project_value`
+读写同一个 parent group，不创建 child form store或平行 draft。Controller 直接用同一组
+`RunSettingsControlStates` 构造 `ChatFormControls`，项目场景只替换 project `ControlSlot`。
 controller处理attachment/drop/primary-action等ChatFormUiEvent、attachment tasks、skill catalog、submit snapshot
-resolution 和可选ChatFormConfig persistence。`AddProjectRequested`由NewConversationPage路由到project logic。纯ChatForm不
+resolution 和 ChatFormConfig persistence。`AddProjectRequested`由NewConversationPage路由到project logic。纯ChatForm不
 订阅controller domain event，也不保存Rc domain callback。
 
 ## 9. Project external form
@@ -268,13 +255,12 @@ skill scope；不得为 project page 另建平行 ChatInput 或 RunSettings draf
 测试留在`components/chat_input/{form_state,chat_input}.rs`，Shortcut child validation/render测试留在
 `features/settings/shortcuts/{form_state,dialog}.rs`，不使用无法定位实现位置的纯source扫描替代行为测试。
 
-## 12. 后续所有权修正
+## 12. 当前所有权边界
 
-本文件描述的是 issue #175 原始 UI/form 重构的已落地边界。实现中仍存在 controller/control cache 与 form/store
-之间的重复副本，不能通过继续添加 observer mirror 解决。后续实施必须遵循
-[state-ownership-sync-plan.md](state-ownership-sync-plan.md)：form draft 和 committed catalog 各自只有一个可写
-owner，control state 是单向 projection；catalog/options 刷新只更新 component config，明确替换同一 domain
-value 时才由 app 检查 dirty 后调用 `replace_from_value`，submit 使用 form-owned draft 和 final resolver。
+本文件描述 issue #175 已落地的 UI/form 边界，并遵循
+[Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md)：generated form store 持有 typed current value，
+owning bound control 持有 focus/subscriptions，catalog/options 只更新 control config。当前实现不使用
+child form store、平行 string draft 或 `SubscriptionSet`。
 
 ## 13. 明确不做
 

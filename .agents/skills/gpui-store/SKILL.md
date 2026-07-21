@@ -38,19 +38,21 @@ Before integrating `gpui-store` into an app, also read the current app state flo
   revision/event-only entity is metadata, not a catalog source; do not make each page query and cache
   its own rows, labels, or capabilities.
 - `StoreSelection<T>` is a one-way read projection. It may cache render data, but it has no business
-  setter and must not be read by submit/validation as a replacement for the committed store or form
-  draft.
+  setter and must not be read by submit/validation as a replacement for the committed store or the
+  form-owned current value.
 - `StoreBinding<T>` is only for an intentional writable lens whose setter writes back to the same
   backing store. Do not use it to create a form mirror or a second persistence owner.
-- There is no implicit form↔store synchronization. A committed domain value may
-  be explicitly installed as a new form baseline, but catalog/options snapshots
-  are dependencies and must never hydrate/rebase the form. Form submit commits
-  through the app, then the store reconciles the committed snapshot.
+- There is no implicit form↔store synchronization. After loading a committed
+  domain value, the app explicitly calls `form.rebase(committed_value)`. Bound
+  controls reproject that form-owned value. Catalog/options snapshots are
+  dependencies and must never hydrate/rebase the form or replace selected values.
+  Submit starts from `form.prepare_submit()`, commits through the app, then the
+  store reconciles the committed snapshot and the form rebases the saved value.
 - Backend/selection observers read and compute, then replace their own snapshot or notify. They must
   not recursively update the source entity while it is already in `Entity::update`; schedule an
   explicit cross-entity command/task when another entity must change.
-- For the Jaco #175 ownership migration, read the app state flow first and follow
-  `app/jaco/docs/dev/issue-175/state-ownership-sync-plan.md`; do not add a generic cross-store
+- For Jaco form migration, read the app state flow first and follow
+  `app/jaco/docs/dev/gpui-form-migration.md`; do not add a generic cross-store
   selector or a `gpui-store` dependency on `gpui-form` as a shortcut.
 
 ## Ownership Choice

@@ -13,11 +13,6 @@ pub(crate) struct TokenBudgetBounds {
 }
 
 impl TokenBudgetBounds {
-    pub(crate) fn clamp(self, value: u32) -> u32 {
-        let value = value.max(self.min.unwrap_or(0));
-        self.max.map_or(value, |max| value.min(max))
-    }
-
     pub(crate) fn step(self) -> u32 {
         self.max
             .filter(|max| *max <= 256)
@@ -40,6 +35,7 @@ pub(crate) fn reasoning_selections(
     legacy_level_selections(reasoning)
 }
 
+#[cfg(test)]
 pub(crate) fn computed_default_reasoning_selection(
     reasoning: Option<&ReasoningCapabilitySnapshot>,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -86,6 +82,31 @@ pub(crate) fn custom_token_budget_value(
             .find_map(|selection| custom_token_budget_value(Some(selection))),
         _ => None,
     }
+}
+
+pub(crate) fn set_existing_custom_token_budget(
+    selection: &mut Option<ReasoningSelectionSnapshot>,
+    value: u32,
+) -> bool {
+    fn update(selection: &mut ReasoningSelectionSnapshot, value: u32) -> bool {
+        match selection {
+            ReasoningSelectionSnapshot::TokenBudget {
+                mode: TokenBudgetSelectionMode::Custom,
+                value: current,
+            } => {
+                *current = Some(value);
+                true
+            }
+            ReasoningSelectionSnapshot::Composite { selections } => selections
+                .iter_mut()
+                .any(|selection| update(selection, value)),
+            _ => false,
+        }
+    }
+
+    selection
+        .as_mut()
+        .is_some_and(|selection| update(selection, value))
 }
 
 pub(crate) fn reasoning_selection_label(
@@ -263,6 +284,7 @@ fn token_budget_selection_is_valid(
     }
 }
 
+#[cfg(test)]
 fn default_selection_for_control(
     control: &ReasoningControlSnapshot,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -299,6 +321,7 @@ fn default_selection_for_control(
     }
 }
 
+#[cfg(test)]
 fn default_composite_selection(
     controls: &[ReasoningControlSnapshot],
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -322,6 +345,7 @@ fn default_composite_selection(
         .or_else(|| controls.iter().find_map(default_selection_for_control))
 }
 
+#[cfg(test)]
 fn default_level_selection(
     values: &[String],
     default_value: Option<&str>,
@@ -360,6 +384,7 @@ fn legacy_level_selections(
     selections
 }
 
+#[cfg(test)]
 fn legacy_default_selection(
     reasoning: &ReasoningCapabilitySnapshot,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -377,6 +402,7 @@ fn legacy_default_selection(
         .or_else(|| options.first().cloned())
 }
 
+#[cfg(test)]
 fn default_token_budget_selection(
     min: Option<u32>,
     max: Option<u32>,

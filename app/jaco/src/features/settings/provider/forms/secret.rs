@@ -1,12 +1,8 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::ops::Deref;
 
-use gpui::{Context, Entity, EventEmitter, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
-use gpui_form::{
-    FieldChangeCause, FieldCodec, FieldCodecError, FieldDraftEvent, FormDraftEvent,
-    FormFieldHandle, RequiredValue, SubscriptionSet,
-};
+use gpui_form::typed::{FormField, FormStore};
 
 use super::ProviderFormField;
 
@@ -35,115 +31,101 @@ impl ProviderSecretValue {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::features::settings::provider) struct ProviderSecretDraft {
-    pub(in crate::features::settings::provider) field: ProviderFormField,
-    pub(in crate::features::settings::provider) value: String,
-    pub(in crate::features::settings::provider) changed: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::features::settings::provider) struct ProviderSecretCodec;
-
-impl FieldCodec<ProviderSecretValue> for ProviderSecretCodec {
-    type Draft = ProviderSecretDraft;
-
-    fn draft_from_value(value: &ProviderSecretValue) -> Self::Draft {
-        ProviderSecretDraft {
-            field: value.field,
-            value: value.value.clone(),
-            changed: value.changed,
-        }
-    }
-
-    fn parse(draft: &Self::Draft) -> Result<ProviderSecretValue, FieldCodecError> {
-        Ok(ProviderSecretValue::new(
-            draft.field,
-            draft.value.clone(),
-            draft.changed,
-        ))
-    }
-}
-
-impl RequiredValue for ProviderSecretValue {
-    fn is_empty_value(&self) -> bool {
+impl gpui_form::typed::RequiredValue for ProviderSecretValue {
+    fn is_missing(&self) -> bool {
         self.value.trim().is_empty()
     }
 }
 
-/// Adapter for a provider secret input. The form owns the `ProviderSecretDraft`;
-/// this component only mirrors its text and marks the draft as changed after a
-/// user edit.
-pub(in crate::features::settings::provider) fn bind_provider_secret<Form, Owner>(
-    field: FormFieldHandle<Form, ProviderSecretDraft>,
-    state: &Entity<InputState>,
-    window: &mut Window,
-    cx: &mut Context<Owner>,
-) -> Result<SubscriptionSet, gpui_form_gpui_component::ComponentBindError>
+/// Owning control for a provider secret. Its lifetime owns both projection
+/// subscriptions, so dropping the control detaches it from the shared form.
+pub(in crate::features::settings::provider) struct ProviderSecretInputState<Form>
 where
-    Form: EventEmitter<FormDraftEvent> + 'static,
-    Owner: 'static,
+    Form: FormStore,
 {
-    let draft = field
-        .draft(cx)
-        .map_err(gpui_form_gpui_component::ComponentBindError::from)?;
-    state.update(cx, |input, cx| input.set_value(draft.value, window, cx));
+    subscriptions: Vec<Subscription>,
+    input: Entity<InputState>,
+    _marker: std::marker::PhantomData<Form>,
+}
 
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    enum SyncState {
-        #[default]
-        Idle,
-        FromForm,
-        FromComponent,
-    }
-
-    let sync = Rc::new(Cell::new(SyncState::Idle));
-    let mut subscriptions = SubscriptionSet::new();
-
-    let form_sync = sync.clone();
-    let form_state = state.clone();
-    subscriptions.push(field.subscribe_in(
-        window,
-        cx,
-        move |_owner, event: &FieldDraftEvent<ProviderSecretDraft>, window, cx| {
-            if form_sync.get() == SyncState::FromComponent {
-                return;
-            }
-            form_sync.set(SyncState::FromForm);
-            form_state.update(cx, |input, cx| {
-                input.set_value(event.draft.value.clone(), window, cx);
+impl<Form> ProviderSecretInputState<Form>
+where
+    Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+{
+    pub(in crate::features::settings::provider) fn new<Owner>(
+        field: FormField<Form, ProviderSecretValue>,
+        placeholder: String,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, gpui_form_gpui_component::FormControlError>
+    where
+        Owner: 'static,
+    {
+        let value = field
+            .value(cx)
+            .map_err(gpui_form_gpui_component::FormControlError::from)?;
+        let state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(placeholder)
+        });
+        state.update(cx, |input, cx| input.set_value(value.value, window, cx));
+        let attachment = field.attach_control(cx)?;
+        let form_state = state.clone();
+        let projected_field = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_owner, window, cx| {
+            let state = form_state.clone();
+            let field = projected_field.clone();
+            cx.defer_in(window, move |_owner, window, cx| {
+                let Ok(value) = field.value(cx) else { return };
+                state.update(cx, |input, cx| {
+                    input.set_value(value.value, window, cx);
+                });
             });
-            form_sync.set(SyncState::Idle);
-        },
-    )?);
-
-    let component_sync = sync;
-    let component_field = field;
-    subscriptions.push(cx.subscribe_in(
-        state,
-        window,
-        move |_owner, state, event: &InputEvent, window, cx| {
-            if !matches!(event, InputEvent::Change) || component_sync.get() == SyncState::FromForm {
-                return;
-            }
-            let value = state.read(cx).value().to_string();
-            let Ok(mut draft) = component_field.draft(cx) else {
-                return;
-            };
-            draft.value = value;
-            draft.changed = true;
-            let sync = component_sync.clone();
-            let field = component_field.clone();
-            cx.defer_in(window, move |_owner, _window, cx| {
-                if sync.get() == SyncState::FromForm {
-                    return;
+        })?;
+        let component_attachment = attachment;
+        let input_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_owner, state, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value().to_string();
+                    let Ok(mut value) = field.value(cx) else {
+                        return;
+                    };
+                    value.value = text;
+                    value.changed = true;
+                    component_attachment.defer_set_user_value(value, window, cx);
                 }
-                sync.set(SyncState::FromComponent);
-                let _ = field.set_draft(draft, FieldChangeCause::UserInput, cx);
-                sync.set(SyncState::Idle);
-            });
-        },
-    ));
+                InputEvent::Blur => component_attachment.defer_blur(window, cx),
+                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
+            },
+        );
 
-    Ok(subscriptions)
+        Ok(Self {
+            subscriptions: vec![form_subscription, input_subscription],
+            input: state,
+            _marker: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<Form> Deref for ProviderSecretInputState<Form>
+where
+    Form: FormStore,
+{
+    type Target = Entity<InputState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.input
+    }
+}
+
+impl<Form> Drop for ProviderSecretInputState<Form>
+where
+    Form: FormStore,
+{
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
 }

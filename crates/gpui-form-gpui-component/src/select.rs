@@ -1,159 +1,126 @@
-use std::{cell::Cell, rc::Rc};
+use std::ops::Deref;
 
-use crate::binding::ComponentBindError;
-use gpui::{App, AppContext as _, Context, Entity, Focusable, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::{
     searchable_list::{SearchableListDelegate, SearchableListItem},
     select::{SelectEvent, SelectState},
 };
-use gpui_form::{FormDraftEvent, FormFieldHandle, SubscriptionSet};
+use gpui_form::typed::{FormControl, FormField, FormStore};
 
-pub trait SelectFieldValue: Clone + PartialEq + 'static {
-    type Selected: Clone + PartialEq + 'static;
+use crate::FormControlError;
 
-    fn to_selected_value(&self) -> Option<Self::Selected>;
-    fn from_selected_value(selected: Option<Self::Selected>, previous: &Self) -> Self;
+type SelectValue<D> = <<D as SearchableListDelegate>::Item as SearchableListItem>::Value;
+
+pub struct FormSelect<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    subscriptions: Vec<Subscription>,
+    select: Entity<SelectState<D>>,
 }
 
-impl<T> SelectFieldValue for Option<T>
+impl<D> FormSelect<D>
 where
-    T: Clone + PartialEq + 'static,
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
 {
-    type Selected = T;
-
-    fn to_selected_value(&self) -> Option<Self::Selected> {
-        self.clone()
+    pub fn new<Form, Owner, Build>(
+        field: FormField<Form, Option<SelectValue<D>>>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormControlError>
+    where
+        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<SelectState<D>>) -> SelectState<D>,
+    {
+        <Self as FormControl<Option<SelectValue<D>>>>::new(field, build, window, cx)
     }
+}
 
-    fn from_selected_value(selected: Option<Self::Selected>, _previous: &Self) -> Self {
-        selected
+impl<D> Deref for FormSelect<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    type Target = Entity<SelectState<D>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.select
     }
 }
 
-pub fn new_select_state<T, D>(
-    initial: &T,
-    delegate: D,
-    searchable: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> Entity<SelectState<D>>
+impl<D> Drop for FormSelect<D>
 where
-    T: SelectFieldValue,
     D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem<Value = T::Selected>,
+    D::Item: SearchableListItem,
 {
-    let selected_index = initial
-        .to_selected_value()
-        .and_then(|value| delegate.position(&value));
-    cx.new(|cx| SelectState::new(delegate, selected_index, window, cx).searchable(searchable))
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
 }
 
-pub fn focus_select<D>(state: &Entity<SelectState<D>>, window: &mut Window, cx: &mut App) -> bool
+impl<D> FormControl<Option<SelectValue<D>>> for FormSelect<D>
 where
     D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
 {
-    let focus_handle = state.read(cx).focus_handle(cx);
-    focus_handle.focus(window, cx);
-    true
-}
+    type State = SelectState<D>;
+    type Error = FormControlError;
 
-pub fn bind_select<Form, Value, D, Owner>(
-    field: FormFieldHandle<Form, Value>,
-    state: &Entity<SelectState<D>>,
-    window: &mut Window,
-    cx: &mut Context<Owner>,
-) -> Result<SubscriptionSet, ComponentBindError>
-where
-    Form: gpui::EventEmitter<FormDraftEvent> + 'static,
-    Value: SelectFieldValue + Default,
-    D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem<Value = Value::Selected>,
-    Owner: 'static,
-{
-    let initial = field.draft(cx).map_err(ComponentBindError::from)?;
-    state.update(cx, |select, cx| {
-        if let Some(value) = initial.to_selected_value().as_ref() {
-            select.set_selected_value(value, window, cx);
-        } else {
-            select.set_selected_index(None, window, cx);
-        }
-    });
+    fn new<Form, Owner, Build>(
+        field: FormField<Form, Option<SelectValue<D>>>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, Self::Error>
+    where
+        Form: FormStore,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
+    {
+        let value = field.value(cx)?;
+        let attachment = field.attach_control(cx)?;
+        let select = cx.new(|cx| build(window, cx));
+        select.update(cx, |select, cx| match &value {
+            Some(value) => select.set_selected_value(value, window, cx),
+            None => select.set_selected_index(None, window, cx),
+        });
 
-    let sync = Rc::new(Cell::new(false));
-    let mut subscriptions = SubscriptionSet::new();
-    let form_sync = sync.clone();
-    let form_state = state.clone();
-    subscriptions.push(
-        field.subscribe_in(window, cx, move |_owner, event, window, cx| {
-            if form_sync.get() {
-                return;
-            }
-            form_sync.set(true);
-            let value = event.draft.to_selected_value();
-            form_state.update(cx, |select, cx| {
-                if let Some(value) = value.as_ref() {
-                    select.set_selected_value(value, window, cx);
-                } else {
-                    select.set_selected_index(None, window, cx);
-                }
-            });
-            form_sync.set(false);
-        })?,
-    );
-
-    let component_sync = sync;
-    let component_field = field;
-    subscriptions.push(cx.subscribe_in(
-        state,
-        window,
-        move |_owner, state, event: &SelectEvent<D>, window, cx| {
-            let SelectEvent::Confirm(_) = event;
-            if component_sync.get() {
-                return;
-            }
-            let Ok(previous) = component_field.draft(cx) else {
-                return;
-            };
-            let selected = state.read(cx).selected_value().cloned();
-            let next = Value::from_selected_value(selected, &previous);
-            let sync = component_sync.clone();
-            let field = component_field.clone();
-            cx.defer_in(window, move |_owner, _window, cx| {
-                if sync.get() {
+        let weak_select = select.downgrade();
+        let projection = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
+            let weak_select = weak_select.clone();
+            let projection = projection.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let Some(select) = weak_select.upgrade() else {
                     return;
-                }
-                sync.set(true);
-                let _ = field.set_user_draft(next, cx);
-                sync.set(false);
+                };
+                let Ok(value) = projection.value(cx) else {
+                    return;
+                };
+                select.update(cx, |select, cx| match &value {
+                    Some(value) => select.set_selected_value(value, window, cx),
+                    None => select.set_selected_index(None, window, cx),
+                });
             });
-        },
-    ));
+        })?;
 
-    Ok(subscriptions)
-}
+        let select_attachment = attachment.clone();
+        let select_subscription = cx.subscribe_in(
+            &select,
+            window,
+            move |_, _, event: &SelectEvent<D>, window, cx| {
+                let SelectEvent::Confirm(value) = event;
+                select_attachment.defer_set_user_value(value.clone(), window, cx);
+            },
+        );
 
-pub fn set_select_items<Form, Value, D, Owner>(
-    field: FormFieldHandle<Form, Value>,
-    state: &Entity<SelectState<D>>,
-    delegate: D,
-    window: &mut Window,
-    cx: &mut Context<Owner>,
-) -> Result<(), ComponentBindError>
-where
-    Form: gpui::EventEmitter<FormDraftEvent> + 'static,
-    Value: SelectFieldValue + Default,
-    D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem<Value = Value::Selected>,
-    Owner: 'static,
-{
-    state.update(cx, |select, cx| select.set_items(delegate, window, cx));
-    let draft = field.draft(cx).map_err(ComponentBindError::from)?;
-    state.update(cx, |select, cx| {
-        if let Some(value) = draft.to_selected_value().as_ref() {
-            select.set_selected_value(value, window, cx);
-        } else {
-            select.set_selected_index(None, window, cx);
-        }
-    });
-    Ok(())
+        Ok(Self {
+            subscriptions: vec![form_subscription, select_subscription],
+            select,
+        })
+    }
 }

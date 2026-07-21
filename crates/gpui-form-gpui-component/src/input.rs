@@ -1,44 +1,102 @@
-use gpui_form::{FieldCodec, FieldCodecError};
+use std::ops::Deref;
 
-/// Codec for controls whose empty text represents an absent optional value.
-/// The UI remains a plain text input; the form owns the conversion policy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OptionalTextCodec;
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
+use gpui_component::input::{InputEvent, InputState};
+use gpui_form::typed::{FormControl, FormField, FormStore};
 
-impl FieldCodec<Option<String>> for OptionalTextCodec {
-    type Draft = String;
+use crate::FormControlError;
 
-    fn draft_from_value(value: &Option<String>) -> Self::Draft {
-        value.clone().unwrap_or_default()
-    }
+pub struct FormInput {
+    subscriptions: Vec<Subscription>,
+    input: Entity<InputState>,
+}
 
-    fn parse(draft: &Self::Draft) -> Result<Option<String>, FieldCodecError> {
-        Ok((!draft.is_empty()).then(|| draft.clone()))
+impl FormInput {
+    pub fn new<Form, Owner, Build>(
+        field: FormField<Form, String>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormControlError>
+    where
+        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<InputState>) -> InputState,
+    {
+        <Self as FormControl<String>>::new(field, build, window, cx)
     }
 }
 
-/// A small conversion helper for custom text-backed fields.
-pub trait TextFieldValue: Clone + PartialEq + 'static {
-    fn to_text(&self) -> String;
-    fn from_text(text: String) -> Self;
-}
+impl Deref for FormInput {
+    type Target = Entity<InputState>;
 
-impl TextFieldValue for String {
-    fn to_text(&self) -> String {
-        self.clone()
-    }
-
-    fn from_text(text: String) -> Self {
-        text
+    fn deref(&self) -> &Self::Target {
+        &self.input
     }
 }
 
-impl TextFieldValue for Option<String> {
-    fn to_text(&self) -> String {
-        self.clone().unwrap_or_default()
+impl Drop for FormInput {
+    fn drop(&mut self) {
+        self.subscriptions.clear();
     }
+}
 
-    fn from_text(text: String) -> Self {
-        (!text.is_empty()).then_some(text)
+impl FormControl<String> for FormInput {
+    type State = InputState;
+    type Error = FormControlError;
+
+    fn new<Form, Owner, Build>(
+        field: FormField<Form, String>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, Self::Error>
+    where
+        Form: FormStore,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
+    {
+        let value = field.value(cx)?;
+        let attachment = field.attach_control(cx)?;
+        let input = cx.new(|cx| build(window, cx));
+        input.update(cx, |input, cx| input.set_value(value, window, cx));
+
+        let weak_input = input.downgrade();
+        let projection = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
+            let weak_input = weak_input.clone();
+            let projection = projection.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let Some(input) = weak_input.upgrade() else {
+                    return;
+                };
+                let Ok(value) = projection.value(cx) else {
+                    return;
+                };
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            });
+        })?;
+
+        let input_attachment = attachment.clone();
+        let input_subscription = cx.subscribe_in(
+            &input,
+            window,
+            move |_, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    input_attachment.defer_set_user_value(
+                        input.read(cx).value().to_string(),
+                        window,
+                        cx,
+                    );
+                }
+                InputEvent::Blur => input_attachment.defer_blur(window, cx),
+                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
+            },
+        );
+
+        Ok(Self {
+            subscriptions: vec![form_subscription, input_subscription],
+            input,
+        })
     }
 }

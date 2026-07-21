@@ -1,0 +1,5 @@
+error: Garde validation context comes from garde::Validate::Context
+ --> tests/ui/fail/invalid_garde_context.rs:4:48
+  |
+4 | #[form(validation(adapter = "garde", context = AppContext))]
+  |                                                ^^^^^^^^^^
