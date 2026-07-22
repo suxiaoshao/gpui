@@ -5,15 +5,21 @@
 - 文档位置：`crates/gpui-form/dev/typed-form-store.md`。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
 - 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 issue #175 的产品需求。
-- 当前阶段：**核心源码、集成测试、宏 compile-fail harness 与 workspace 自动化门禁已完成；
-  Jaco 已完成定向 Computer Use smoke，但临时窗口全局快捷键与有数据列表的完整交互仍需人工验证。**
+- 当前阶段：**2026-07-22 重新打开的 core/macro validation 门禁已经关闭。`FORM-45` 与 macro
+  `MACRO-35` 已在同一 changeset 完成，nested group/array 的 change trigger、完整路径 adapter issue
+  trigger、array container/item/item-leaf mapping 与 stable-ID immutable 契约均已由定向测试和
+  workspace release gate 验证。**
 - 当前代码状态：`crates/gpui-form` 已落地单一类型化 model/runtime、revision/CAS、类型化字段与
   projection、同步/异步/control validation、stable-ID array 和纯 `prepare_submit` 契约；active
-  source 的旧 submit runtime、来源跳过、draft/codec/focus 状态与兼容 API 已清除。
+  source 的旧 submit runtime、来源跳过、draft/codec/focus 状态与兼容 API 已清除。Nested write 现在
+  只生成 pure model lens，由 core 统一拥有 transaction；完整路径 schema resolver 统一处理 group、
+  root array、array item、array item leaf 与 group/array 交叉嵌套。Garde container exact path 和
+  identified-item stable ID 不可变性也已纳入同一契约。
 - 2026-07-21 验证证据：crate tests、workspace build/test、严格 clippy、dependency tree、
   residual scan 与 `trybuild 1.0.118` compile-fail fixtures 均通过；隔离数据目录的 bundle 已完成
   home、provider 与 shortcut 定向 smoke。Computer Use 不能触发全局快捷键，且隔离库没有临时对话
-  数据，因此临时窗口上下键/搜索焦点仍保留为人工验证缺口。
+  数据，因此临时窗口上下键/搜索焦点仍保留为人工验证缺口。这些是历史证据，不覆盖新加入的
+  FORM-45/MACRO-35 group/array contract，也不能用于关闭当前 review gate。
 - 发布门禁：这是破坏性 workspace 内部迁移。`gpui-form`、`gpui-form-macros`、
   `gpui-form-gpui-component` 和 Jaco 调用方必须在同一迁移序列中完成，不能单独发布中间态。
 
@@ -30,6 +36,8 @@
 5. 让 `prepare_submit` 只负责同一份 model snapshot 的同步验证、pending 检查和纯转换；持久化
    task、loading、retry 和 provider/database 错误由页面或应用 store 持有。
 6. 用 `FormRevision` 与 `rebase_if_revision` 防止异步保存响应覆盖用户的新编辑。
+7. 让每一个真实 `FieldPath` 都由当前 model 精确解析到声明该规则的 `FieldSchema`；group、array、
+   stable-ID item 与交叉嵌套不得退回 root-prefix 或 ancestor trigger。
 
 ### 非目标
 
@@ -90,6 +98,9 @@
 | `crates/gpui-form/src/control.rs` | `FormControl` 固定 associated `Form`/`Config`，返回 `Entity<Self>`；attachment 直接同步 update form | trait 改为任意 Form + build closure，wrapper 本身 deref 原生 entity；public attachment 只暴露 deferred intent，weak/liveness 保持 crate-private |
 | `crates/gpui-form/src/validation.rs` | `ValidationContext` 有冗余 `submitted`；Field scope 只匹配完全相等 path；runtime 只保存 generation，不保存 task；`RequiredValue for bool` 永远返回非空 | 删除 submitted；实现祖先/后代 scope；form 保留 Task；`false` 为 missing |
 | `crates/gpui-form/src/path.rs` | path 只有 Field/Item，动态 projection 复用普通 field segment | 新增 `Projection`，同时区分 projected path 与真实 validation path |
+| `crates/gpui-form/src/field.rs`（2026-07-22 review） | `project`/`identified_item` 的 raw write 最终调用 ancestor writer；`FormField::write_value` 自己不拥有 invalidation/change validation/event，因此 nested leaf 会使用 group/array ancestor 的 trigger。`identified_item` 还允许整项或 ID leaf 把被寻址 item 的 stable ID 改掉 | raw write 只修改 candidate typed model；outermost `FormField` 以自己的 `path`/`validation_path` 执行一次 core transaction，所有非相等写入统一运行 Change scope；identified-item lens 在 commit 前拒绝 identity change |
+| `crates/gpui-form/src/schema.rs`（2026-07-22 review） | 只有 root `FormFieldId::schema()`，没有从完整 `FieldPath` 解析 nested group/array/item leaf schema 的能力 | 增加 model-owned、可验证 stable-ID item 的精确 schema resolver；adapter 过滤禁止用 root-prefix 近似 |
+| `crates/gpui-form-macros/src/expand.rs`（2026-07-22 review） | generated root setter 复制 commit/invalidation/change validation/event/notify，并用 ancestor field 的 `validate_change` gate；adapter issue 只查 `RootField::ALL` 的 path prefix；array Garde mapper 只接受 `rows[index]`，遗漏合法 container path `rows` | setter 只生成 typed root projection；core 统一 lifecycle；mapper 完整处理 container/item/leaf，adapter report 由 core 按完整路径 schema + scope + trigger 规范化 |
 | `crates/gpui-form/tests/derive.rs` | 测试 attempts 和低层 begin/finish async token | 按最终 revision、投影和高层 async 契约重写 |
 | `crates/gpui-form/src/core.rs`、`pipeline.rs`、`view.rs` | 旧目录入口仍以孤立文件存在，但 `lib.rs` 已不加载 | 删除，避免两套架构继续误导实现者 |
 
@@ -103,6 +114,7 @@
 | Garde `0.23.0` `I18n` | 方法返回 `Cow<'static, str>`；例如 `length_lower_than(&self, min: usize)`、`email_invalid(&self, reason: InvalidEmail)` | provider 必须实现精确签名，不能传不存在的 actual 参数 |
 | Garde `0.23.0` `with_i18n` | handler 只在当前线程和同步闭包栈内生效 | handler 不跨 `await`；异步验证不复用 thread-local handler |
 | Garde `0.23.0` error/path | error 最终只保存字符串；公开 `Path` 支持 `Display`，内部 iterator 是 doc-hidden；Vec path 使用当前 index | 保存 `ValidationMessage::Localized`；不逆向解析字符串；generated mapper 把 index 映射到 stable ID |
+| Garde `0.23.0` Vec/item validation | Vec 为每个 item 追加 index segment；item 类型级 custom rule 把 issue 附着在当前 item root，因此合法路径同时包含 container `rows`、item root `rows[index]` 与 item leaf `rows[index].name` | mapper 必须覆盖三种形态；stable item root 由直接所属 array schema 控制，不能误报成 unknown/internal |
 | Validify `2.0.0` | `Modify::modify(&mut self)` 原地修改 value | `ValidifyTransform` 只修改一次 clone，不回写 form |
 
 ### 依赖证据
@@ -114,6 +126,7 @@
 | `garde` | `0.23.0` | workspace；`default-features = false`；`derive,url,email,pattern` | package/version/features 不变；随 `DEP-00` 提交同一份更新后的 lockfile |
 | `validify` | `2.0.0` | `gpui-form` optional dependency | package/version/features 不变；随 `DEP-00` 使用更新后的 lockfile |
 | `gpui-form-macros` | workspace | derive re-export | 同步迁移 API，不改依赖来源 |
+| `trybuild` | `1.0.118` 已由 macro dev dependency 锁定 | corrective FORM-45 的 core dev dependency | 只复用同一已锁版本验证 generated recursive bounds；不进入 runtime graph |
 
 ### 明确不变的系统面
 
@@ -123,8 +136,10 @@
 - 图标与 assets：无变化。
 - 应用 i18n 文件：无变化；core 仅定义 `ValidationMessage` 和 Garde provider 边界。
 - 平台：无 macOS/Linux/Windows 特有分支。
-- 依赖：[用户决定] 接受 Zed/GPUI 与 gpui-component 升级。root manifest source 与
-  `Cargo.lock` 只按 adapter `DEP-00` 修改；feature、MSRV 和平台 bootstrap 不另行改变。
+- 依赖：[用户决定] 接受 Zed/GPUI 与 gpui-component 升级。root manifest source 只由 adapter
+  `DEP-00` 修改；corrective FORM-45 仅把已锁定的 `trybuild 1.0.118` 加到 core dev-dependencies，
+  `Cargo.lock` 只接受 Cargo 生成的 root package metadata 变化。Runtime feature、MSRV 和平台
+  bootstrap 不另行改变。
 
 ## 3. 冻结设计
 
@@ -202,8 +217,8 @@ where
     field: Form::Field,
     path: FieldPath,
     validation_path: FieldPath,
-    read: Arc<dyn Fn(&Form) -> Option<T>>,
-    write: Arc<dyn Fn(&mut Form, T, &mut Context<Form>) -> Result<bool, FormFieldError>>,
+    read: Arc<dyn Fn(&Form::Model) -> Option<T>>,
+    write: Arc<dyn Fn(&mut Form::Model, T) -> Result<(), FormFieldError>>,
 }
 ```
 
@@ -215,7 +230,8 @@ where
 - `FieldPath::Display` 对 Projection 使用 `::<name>`，确保不会与真实字段字符串冲突。
 - `value`、`set`、`set_user_value`、`errors`、`is_validating` 和 `validate` 在 form 已释放时
   返回 `FormFieldError::FormReleased`；动态/identified/projection path 不再存在时返回
-  `ValueUnavailable`。
+  `ValueUnavailable`。通过 identified-item handle 替换整项或写入其 ID leaf 时，只要 candidate 的
+  ID 无法转换或不等于 handle 捕获的 ID，就返回 `FormFieldError::ItemIdentityChanged`。
 - 只读 field query 使用 owned 返回值，签名固定为：
 
   ```rust,ignore
@@ -229,10 +245,81 @@ where
   callback 的来源，不进入事件 payload。
 - 每次调用 generated accessor 都只创建一个便宜 handle；不会创建 child entity、复制业务
   值或安装 subscription。多个控件可消费同一字段。
+- `read`/`write` 是纯 typed lens，只能读取或修改传入的 `Form::Model` candidate；它们不能访问
+  `FormRuntime`、revision、validation、`Context<Form>`、event 或 notify。`project` 与
+  `identified_item` 只能组合这两个 model lens，因此 nested accessor 在类型边界上无法提前提交或
+  复用 ancestor lifecycle。
+- `FormField::write_value` 是唯一 write transaction：在一次 form update 中 clone current model，
+  对 candidate 执行 lens，调用一次 `commit_field_value`；若 candidate 与 current model 相等则完整
+  no-op。成功 commit 后以当前 handle 的 `validation_path` 做 invalidation 与
+  `Change + ValidationScope::Field`，最后只以当前 handle 的 `path` 发出一个 `FieldChanged` 并
+  notify 一次。
+- 每次成功 write 都运行 Change validation，不再由 root、group 或 array schema 预先 gate。规则
+  是否参与由 validation traversal 对完整 scope 中的每一个精确 schema 判断：写 leaf 时可同时运行
+  leaf 与声明了 Change 的 ancestor 规则；写 whole group、whole array 或 array item 时重新验证对应
+  subtree 与 ancestors，不能只看发起 accessor 的 ancestor trigger。
 
 identified array item 的 read/write 必须遍历并确认 **恰好一个** ID 匹配；0 个或大于 1 个
 都返回 `ValueUnavailable`。generated structural traversal 同时把缺失、重复或不可转换 ID
-写入 blocking structural bucket；禁止选择第一个重复项。
+写入 blocking structural bucket；禁止选择第一个重复项。Item lens 在把修改后的 item 写回
+candidate array 前必须再次读取其 ID 并确认仍等于寻址 ID，因此整项替换和继续投影到 ID leaf 的
+写入都不能改变 identity；失败发生在 candidate 上，model/revision/validation/task/event/notify
+全部不变。Whole-array write 仍可显式完成 add/remove/reorder，由 structural validation 检查最终 ID
+的有效性与唯一性。
+
+Stable ID 的“不复用”是 model/caller invariant，而不是 runtime history：core 不保存 retired ID
+集合，也不尝试判断两个相同 ID 是否代表不同业务对象。在同一个 form session 内，
+`(array path, stable ID)` 始终表示同一个名义 identity；whole-array replacement 中保留相同 ID
+表示更新同一 logical item，ID 变化表示 remove + insert。调用者若创建新的 logical item，必须分配
+新的 stable ID；reset/rebase 后再次出现相同 ID 仍按同一名义 identity 解释。库负责强制当前
+candidate 内的 ID 可转换且唯一，以及 captured identified-item handle 不能改写自己的 ID；它不会
+维护跨 snapshot 的 identity 墓碑或猜测“相同 ID、不同对象”。
+
+### 3.3.1 完整路径 schema 解析
+
+Core 增加只供 runtime/macro glue 使用的精确解析契约；公开的 root field enum/schema API 保持不变：
+
+```rust,ignore
+#[doc(hidden)]
+pub trait FormModelSchema {
+    fn schema_at_path(
+        &self,
+        segments: &[FieldPathSegment],
+    ) -> Result<&'static FieldSchema, FormSchemaPathError>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum FormSchemaPathError {
+    EmptyPath,
+    UnknownField,
+    UnexpectedItem,
+    MissingItem(FormItemId),
+    DuplicateItem(FormItemId),
+    Projection,
+    TrailingSegments,
+}
+```
+
+- resolver 是 `&self` 方法而不是 static prefix table，因为 array path 必须在本次 validated model
+  中确认 stable ID 恰好匹配一个 item；missing 与 duplicate 不能被忽略。Stable path 已经携带
+  `FormItemId`，因此 resolver 不再定义不可达的 `InvalidItemId`：model 中无法转换 ID 的 item 由
+  structural validation 报告，Garde index 指向该 item 时由 mapper 返回
+  `GardePathError::InvalidItemId`；它不会让无关的有效 sibling path 解析失败。
+- 普通 leaf 精确结束时返回 leaf schema；group/array 字段精确结束时返回该声明字段自己的 schema。
+  group 后的 `Field` 递归 child model；array 后必须先出现 `Item(stable_id)`，并先在当前 model 中
+  证明恰好一个 item 匹配。若 item 后还有 `Field`，再递归该 item model。group-in-array、
+  array-in-group 与任意更深交叉嵌套都使用同一递归规则。
+- `Item(stable_id)` 是动态寻址 segment，不生成 synthetic item schema。合法的直接 item-root
+  (`rows[#id]`) 由**直接拥有它的 array 字段 schema**控制；这是明确的 ownership rule，不是
+  “最近 ancestor fallback”。因此 array schema 的精确 domain 仅为 container `rows` 与直接 item
+  root `rows[#id]`，不能覆盖 `rows[#id].name` 或更深后代；后者必须解析到 item 的 leaf/group/array
+  schema。嵌套数组的 item root 使用最近、直接所属的 array schema。
+- `Projection` 不是 model schema path；adapter issue 不得附着到 projection。空路径只能用
+  `ValidationIssue::form` 表达，不能伪装成 `Some(FieldPath::root())`。
+- resolver 的任何失败都转换为 `ValidationSource::Internal`、code
+  `form_schema_path_resolution` 的 blocking form issue，并携带原始 path/reason；禁止 drop、prefix
+  fallback、选择第一个 item 或复用最近 ancestor schema。
 
 ### 3.4 事件与控件同步
 
@@ -372,7 +459,8 @@ impl<Form, T> ControlAttachment<Form, T> {
 
 ```rust,ignore
 pub trait FormStore: EventEmitter<FormEvent<Self::Field>> + Sized + 'static {
-    type Model: Clone + PartialEq + 'static;
+    type Model:
+        Clone + PartialEq + StructuralValidate + FormModelSchema + 'static;
     type Output: 'static;
     type Field: FormFieldId;
     type ValidationContext: 'static;
@@ -417,6 +505,15 @@ pub trait FormStore: EventEmitter<FormEvent<Self::Field>> + Sized + 'static {
         scope: ValidationScope,
         cx: &mut Context<Self>,
     );
+
+    #[doc(hidden)]
+    fn __validate_snapshot(
+        &mut self,
+        snapshot: &Self::Model,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        cx: &mut Context<Self>,
+    );
     fn prepare_submit(
         &mut self,
         cx: &mut Context<Self>,
@@ -440,6 +537,10 @@ pub trait FormStore: EventEmitter<FormEvent<Self::Field>> + Sized + 'static {
   不清理 issue/task，也不隐式运行任何 trigger。
 - macro 展开需要访问的 `FormRuntime`、runtime getter 和 commit helper 只通过
   `gpui_form::__private`/`#[doc(hidden)]` 暴露；README/Guide 不把它们当用户 API。
+- `__validate_snapshot` 只更新 validation buckets，不 emit、不 notify。公开 `validate` 与
+  `prepare_submit` 使用它后各发一次 `RuntimeChanged`；field write transaction 使用它后只发一次
+  `FieldChanged`。这样 validation 与 value change 在同一次 transaction 内完成，同时避免 nested
+  write 或 generated setter 产生双 event/双 notify。
 - generated store 只保存第 3.1 节的单一 `FormRuntime`；adapter 和 transform 只通过
   associated type 指定，不保存实例。每次同步验证使用
   `Self::ValidationAdapter::default()`，提交转换使用
@@ -488,9 +589,22 @@ trigger 语义：
 - Submit：`prepare_submit` 对同一 snapshot 执行；required 总是参与，其他规则按
   `on_submit` 声明参与。
 
-scope 的 includes 规则固定为：Field 包含自身、后代及祖先 group/array path，不包含兄弟
-叶子；Group 和 ArrayItem 包含自己的子树及祖先；Form 包含全部数据 path。projection 的
-validate/blur 使用 `validation_path`，而非技术 projection path。
+scope 的 includes 规则固定为：Field 包含自身、后代及路径上的所有结构祖先（group、array
+container 与 direct item root），不包含兄弟叶子或兄弟 item；Group 和 ArrayItem 包含自己的子树及
+所有结构祖先；Form 包含全部数据 path。projection 的 validate/blur 使用 `validation_path`，而非
+技术 projection path。`ArrayItem` scope 的 item root 是有明确 owner 的 subtree 边界，但不因此
+获得 synthetic schema。
+
+数组 scope 的精确矩阵必须满足：
+
+- `Field(rows[#a].name)` 包含 `rows[#a].name`、`rows[#a]` 与 `rows`，不包含
+  `rows[#b]` 或 `rows[#b].name`；因此修改 item leaf 会重跑同一 item-root issue 和 owning array
+  container issue，但不会重跑 sibling item-root issue；
+- `ArrayItem(rows[#a])` 包含 `rows[#a]` 的完整 subtree 与 `rows`，不包含 `rows[#b]`；
+- `Field(rows)`/whole-array write 包含 `rows` 及所有当前 item root/descendant；
+- 交叉嵌套按每个 segment 逐级应用同一规则，例如
+  `sections[#sid].rows[#rid].name` 的祖先依次包含该 `rows` item root、`rows` container、外层
+  section item root 与 `sections` container，任何 sibling item 都不参与。
 
 一次非相等字段写入顺序固定为：
 
@@ -500,7 +614,9 @@ validate/blur 使用 `validation_path`，而非技术 projection path。
 4. 取消并清除与写入 path 相交的 async pending/issue；
 5. 写入失效阶段不清除 adapter-wide form issue 或任何 active control issue；第 6 步若实际运行
    adapter，则按正常 adapter run 语义整批替换 adapter-wide bucket；
-6. 对新 model 执行 Change + 字段 `validation_path` scope；
+6. 无条件对新 model 执行 Change + 字段 `validation_path` scope；generated required/structural
+   traversal 与 adapter report normalization 再按每个 issue 的精确 schema trigger 选择规则，不能
+   用发起 write 的 root field trigger 提前跳过；
 7. 发出一个 `FieldChanged` value event 并 notify。
 
 相等写入在第 1 步比较后立即返回，后续步骤均不发生。
@@ -525,6 +641,32 @@ struct FormValidationRuntime {
 - 最终 report 顺序固定为 generated schema/path 顺序、adapter batch 原顺序、async key 顺序、
   control ID 顺序；本地化消息不参与 identity、排序或去重。
 - 不参与当前 trigger/scope 的 field bucket 保持原样。
+
+Adapter report 的 path/scope/trigger 过滤由 core 统一规范化，adapter 自行过滤只能作为减少工作量的
+优化，不能成为正确性前提。固定顺序为：
+
+1. `ValidationSource::Internal` 是既有的异常通道，不是普通验证规则：mapping/adapter internal
+   issue 无条件保留，不接受 scope 或 trigger 过滤；core 后续产生的 schema-resolution internal
+   issue 同样无条件保留。这样 Field/Group/ArrayItem run 也不能隐藏内部契约错误，无需再增加一套
+   failure collection；
+2. 其余 form-level issue 仅在 `scope.includes(None)` 时保留；它属于当前显式 adapter run，不查询
+   字段 schema；
+3. 普通 field issue 先调用本次 model 的
+   `FormModelSchema::schema_at_path(path.segments())`；任何外部
+   adapter 给出的非法 path 都必须暴露，不能先按 scope 丢掉而隐藏 mapper/schema 错误；
+4. 解析成功后再检查 `scope.includes(Some(path))`，最后检查精确 owner schema 是否包含当前
+   trigger。Group/array ancestor 的 trigger 不得代替 nested leaf trigger；array schema 只按上述
+   明确规则拥有 container 与直接 item root；兄弟字段不参与；
+5. schema path 解析失败时丢弃原 adapter issue，改为一个 blocking
+   `form_schema_path_resolution` internal form issue；错误不能因为当前 trigger 不在 ancestor schema
+   中而被一起过滤掉；
+6. 规范化后的完整 report 整批替换 adapter-wide bucket。Macro 只生成 model schema traversal，
+   不再生成 root-prefix filter closure。
+
+内建 `GardeAdapter` 必须把本次 Garde validation 产生的完整 mapped report 交给上述流程，在返回
+report 前不按 scope 或 trigger 丢 issue。Custom adapter 可以把 scope 当作减少昂贵计算的提示，但
+其返回的每个 issue 仍由 core 重新执行 `resolver -> scope -> trigger`；adapter 过滤不能改变 core
+正确性或隐藏非法 stable path。
 
 ### 3.8 Required 精确语义
 
@@ -575,10 +717,18 @@ P: GardeI18nProvider<T::Context>,
 3. 空 path 产生 form-level Garde issue；非空 path 先通过 `value.map_garde_path`；
 4. generated mapper 仅消费公开 `Path::Display` 字符串，并用当前被验证 model 把 Vec index
    映射为 stable `FormItemId`；
-5. scope 过滤使用映射后的 stable `FieldPath`；
+5. 映射后的 stable `FieldPath` 进入第 3.7 节统一 normalization：先由当前 model 递归解析完整
+   group/array/item/leaf path 的精确 schema，再依次校验 scope 与 trigger；
 6. Garde 最终字符串保存为 `ValidationMessage::Localized`；不再包进通用 key；
 7. unknown field、malformed/out-of-bounds index、invalid ID、duplicate ID 都转换为
    `ValidationSource::Internal`、code `garde_path_mapping` 的 blocking form issue。
+
+Garde 的 display-path mapping 与 form schema resolution 是两个连续但不同的阶段：前者只把外部
+index path 变成当前 model 的 stable path，后者证明该 stable path 的明确 schema owner 并读取其
+trigger。Mapper 必须分别接受 `rows`、`rows[2]`、`rows[2].name`：container 映射到 `rows`；item
+root 映射到 `rows[#id]` 并由直接所属 array schema 控制；item leaf 映射到
+`rows[#id].name` 并解析到 `name` schema。不得把 item-root ownership 扩大为 descendant prefix
+fallback。
 
 `GardePathError` 必须有结构化 variant：`UnknownField`、`InvalidIndex`、
 `IndexOutOfBounds`、`InvalidItemId`、`DuplicateItemId`。禁止调用 doc-hidden path iterator，
@@ -683,7 +833,7 @@ crates/gpui-form/
     field.rs        # FormField typed lens、projection、subscription、async 高层入口
     form.rs         # FormRevision、FormEvent、FormRuntime、FormStore
     path.rs         # FieldPath 与 Field/Item/Projection segment
-    schema.rs       # FormFieldId、FieldSchema、ValidationTriggers
+    schema.rs       # FormFieldId/FieldSchema/ValidationTriggers、完整 stable path schema resolver
     submit.rs       # SubmitError；不保存 runtime/task
     transform.rs    # SubmitTransform、Identity/Validify、TransformReport
     trigger.rs      # ValidationTrigger；删除 FieldChangeSource
@@ -721,7 +871,7 @@ crates/gpui-form/
 | GPUI `Entity`/`WeakEntity`/`Subscription`/`Task`/`defer_in` | 直接复用 | 不自建 entity store、subscription set、task registry 或 event loop |
 | Garde `Validate`/`validate_with`/`I18n`/`with_i18n`/Path Display | 适配复用 | 只保留 typed context、provider 和 stable-path mapper；不复制规则、不调用隐藏 iterator、不二次包装英文文本 |
 | Validify `Modify` | 直接复用 | adapter 只负责 clone 后调用一次，不复制 modifier 逻辑 |
-| 现有 `FormItemId`/`ToFormItemId` | 保留并强化 | 增加重复/缺失检测，不改 stable u64 identity |
+| 现有 `FormItemId`/`ToFormItemId` | 保留并强化 | 增加重复/缺失检测；identified-item 整项与 ID leaf 写入都不能改变捕获的 stable identity |
 | 现有 `ValidationMessage`/`Issue`/`Report` | 保留并整理 bucket | 消息不作为 identity；支持 key 与 localized 两种边界 |
 | `SubmitRuntime`/`SubmitOutcome`/`Busy`/attempts | 删除 | persistence 完全外置 |
 | `FieldChangeSource`/public `ControlId`/origin skip/read-back | 删除 | 所有 value event 对所有 control 重投影；identity/weak 只留在 crate-private runtime |
@@ -749,7 +899,21 @@ adapter DEP-00
 `FORM-70` 是唯一最终发布门槛；它只在 macro、adapter 与 Jaco 各自完成后执行 workspace、
 跨包残留与公开状态收口。
 
+2026-07-22 review 打开的是已完成主迁移上的原子纠偏门禁，不重跑 downstream migration：
+
+```text
+已落地 FORM-20/FORM-40 + MACRO-20/MACRO-30
+  -> core FORM-45 <-> macro MACRO-35（同一 changeset）
+  -> macro MACRO-40（只同步纠偏后的公开文档；在此中间节点保持未完成状态）
+  -> 重新执行 core FORM-70 release gate（已完成最终状态翻转）
+```
+
 ### FORM-10：收敛模块、公开类型与 breaking surface
+
+**状态**
+
+- `[历史基线已完成]`。本工作包只拥有模块清理、revision/path 与旧 public surface 删除；
+  `ItemIdentityChanged` 是 2026-07-22 新增的 corrective error，只由 FORM-45 引入和验收。
 
 **Prerequisites**
 
@@ -773,7 +937,8 @@ adapter DEP-00
 **API contract**
 
 - 新增 `FormRevision`、`FieldPathSegment::Projection`、`FieldPath::join_projection`。
-- `FormFieldError` 最终仅保留 `FormReleased`、`ValueUnavailable`。
+- 历史 `FormFieldError` 保留 `FormReleased`、`ValueUnavailable`；FORM-45 再增加
+  `ItemIdentityChanged`，本工作包不拥有该 corrective variant。
 - `ValidationTrigger` 保留五个 variant；删除整个 `FieldChangeSource`。
 - `typed` 只重导出第 3 节稳定 public API；macro helper 放 `__private`，不得从 Guide 暴露。
 
@@ -814,9 +979,17 @@ adapter DEP-00
 **Done condition**
 
 - public module tree 与第 4 节一致；孤立文件已删除；没有新 `mod.rs`。
-- 新 revision/path 类型及 error variant 有测试；旧类型不再从 crate root/typed 重导出。
+- 新 revision/path 类型有测试；旧类型不再从 crate root/typed 重导出。Corrective error 由 FORM-45
+  单独验收。
 
 ### FORM-20：实现 FormRuntime、revision/CAS 与 typed field lens
+
+**状态**
+
+- `[历史基线已完成]`。本工作包只拥有单 runtime、revision/CAS、public typed handle/event、
+  projection 与订阅基线。当前 raw writer 仍可接触 generated Form/Context，nested accessor 仍复用
+  ancestor lifecycle；pure candidate lens、唯一 transaction 与 stable-ID mutation protection 统一由
+  FORM-45 修正，本工作包不得作为这些行为的完成证据。
 
 **Prerequisites**
 
@@ -837,7 +1010,8 @@ adapter DEP-00
 
 **API contract**
 
-- 实现第 3.1、3.2、3.3、3.4、3.6 节全部签名和语义。
+- 实现第 3.1、3.2、3.4、3.6 节以及第 3.3 节的历史 typed handle/path/query 基线；第 3.3 节修订后的
+  pure model lens、唯一 write transaction 和 immutable identified identity 由 FORM-45 独占。
 - generated store 只持有一个 `FormRuntime<Model, Context>`；该 runtime 及宏需要的
   getter/commit helper 为 doc-hidden。`ValidationAdapter`/`SubmitTransform` 只作为 associated
   type 存在，generated store 不保存其实例。
@@ -853,11 +1027,14 @@ adapter DEP-00
    adapter/transform instance 字段，由实际 validation/submit 路径调用 associated type 的
    `default()`。
 2. 用 `FormStore` default method 实现 getters、dirty、whole-form lifecycle、CAS 和 context setter。
-3. 提供一个 doc-hidden typed commit helper，统一 equal compare、revision、validation invalidation、
-   Change validation、value event 和 notify 顺序。
-4. 重写 `FormField` read/write closure，删除 source 参数和 control 专用写入路径。
+3. 建立 public `FormField::{set,set_user_value}` 与 generated writer 的历史接线、revision/event
+   基线；generated/raw writer 中仍存在的 lifecycle 与 ancestor delegation 由 FORM-45 收敛为唯一
+   transaction。
+4. 删除 public source 与 control 专用写入路径；raw closure 从 Form/Context 收紧为纯 candidate-model
+   lens 的工作只归 FORM-45。
 5. 增加 validation path；真实 nested accessor 推进真实 path，`project_value` 使用 Projection。
-6. identified item read/write 统计匹配数，仅 1 个时成功。
+6. identified item read/write 统计匹配数，仅 1 个时成功；write-back identity check、整项/ID leaf
+   mutation error 与 complete no-op 由 FORM-45 增加。
 7. subscription 在任何 FieldChanged/ModelReplaced 后重新读取自己字段；不做 origin/path/equal
    skip，并显式忽略 RuntimeChanged。
 
@@ -865,6 +1042,8 @@ adapter DEP-00
 
 - weak form upgrade 失败返回 `FormReleased`，不得 panic。
 - projection/array item 0 或多值返回 `ValueUnavailable`，不得 fallback。
+- identified item 的 replacement identity corrective 语义不属于本历史包；FORM-45 必须在 candidate
+  commit 前返回 `ItemIdentityChanged`，不能靠事后 structural validation 修复。
 - failed CAS 必须在取消 task、清 issue、发 event 之前返回。
 - lifecycle 清除全部 required/structural/generated field bucket、adapter-wide bucket、async
   pending/issue/task，但不主动销毁活跃 control lease。
@@ -902,7 +1081,8 @@ adapter DEP-00
 - field event 不再携带 source；所有 FieldChanged/ModelReplaced 都让 mounted consumer 统一回投影，
   RuntimeChanged 不触发 field projection。
 - generated store 只有一个共享 runtime owner；adapter/transform 无实例字段。
-- nested/identified/projection handle 不创建平行业务值或 child entity。
+- nested/identified/projection handle 不创建平行业务值或 child entity；identified handle 的 immutable
+  ID corrective gate 由 FORM-45 测试关闭。
 
 ### FORM-30：实现 attachment 生命周期与最小 `FormControl` trait
 
@@ -1000,6 +1180,13 @@ adapter DEP-00
 
 ### FORM-40：重建同步验证、required、scope 与 Garde adapter
 
+**状态**
+
+- `[历史基线已完成]`。本工作包记录 2026-07-21 已落地的 bucket、required、基础 scope 与 Garde
+  stable-index mapping；2026-07-22 新发现的完整 schema resolver、direct item-root scope、array
+  container/item-root mapping 与无事件 hidden pass 统一由 FORM-45/MACRO-35 纠偏。本工作包不得再次
+  被当成这些新增工作的实现 owner 或验收证据。
+
 **Prerequisites**
 
 - FORM-20；FORM-30 的 control issue lease 可用。
@@ -1022,29 +1209,39 @@ adapter DEP-00
 
 **API contract**
 
-- 实现第 3.7、3.8、3.9 节所有类型、bucket、trigger/scope、required 和 Garde 契约。
+- 实现第 3.7、3.8、3.9 节的历史 bucket、trigger/basic scope、required、Garde i18n 与 indexed
+  stable-path mapping 基线；第 3.3.1 节完整路径 schema resolution，以及第 3.7/3.9 节新增的
+  direct item-root scope、array container/item-root mapping 和 `resolver -> scope -> trigger` 顺序由
+  FORM-45/MACRO-35 独占。
 - 删除 `ValidationContext.submitted`、`RequiredValue::is_empty_value` 旧名。
 - `set_validation_context` 不验证；constructor mount 恰好一次。
-- unknown external path 和 Garde mapping error 是 blocking internal form issue。
+- 已有 unknown/index Garde mapping error 是 blocking internal form issue；完整 stable schema path 的
+  typed failure 由 FORM-45 增加。
 
 **Implementation flow**
 
 1. 把 runtime 从单一 Vec/HashMap 改成分离的 deterministic buckets。
-2. 实现 path 关系函数并让 Field/Group/ArrayItem scope 包含 subtree + ancestors。
+2. 实现历史 path 关系与 Field/Group/ArrayItem subtree + ancestor 基线；direct item-root ancestor 与
+   sibling-item 隔离矩阵由 FORM-45 补齐。
 3. 实现精确 typed write invalidation：只清除相交的 required/structural/generated synchronous
    field bucket，取消并清除相交 async entry；失效阶段保留 adapter-wide batch 和所有 active
    control issue，随后 Change adapter run 可以按正常规则整批替换 adapter-wide batch；
    whole-form lifecycle 才执行完整 data-level clear。
 4. 实现 `RequiredValue::is_missing` 精确内置集合，并让 macro 在 unsupported type 上失败。
-5. 每次 run 都临时构造 `Self::ValidationAdapter::default()`，让其 report 整批替换唯一
-   adapter-wide bucket；generated store/runtime 不保存 adapter instance，并删除 submitted flag。
-6. 重写 Garde provider 调用、Localized message 和 stable path mapping error。
-7. 保证一次 validation run 最多 emit 一个 RuntimeChanged + notify；未参与 bucket 不变。
+5. 每次 run 都临时构造 `Self::ValidationAdapter::default()`，让 report 整批替换唯一 adapter-wide
+   bucket；generated store/runtime 不保存 adapter instance，并删除 submitted flag。完整路径 resolver
+   和精确 trigger filtering 由 FORM-45 替换历史 root-prefix 实现。
+6. 重写 Garde provider 调用、Localized message 与 indexed stable path mapping error；array container、
+   direct item root 与 item leaf 三种完整 mapper 形态由 MACRO-35 补齐。
+7. 保证 public validation run 最多 emit 一个 RuntimeChanged + notify；field write 的无事件 hidden pass
+   与单一 `FieldChanged` 收口由 FORM-45/MACRO-35 完成。
 
 **Errors and lifecycle**
 
 - validator panic 不被吞掉或转成字符串；按 Rust/GPUI 默认 panic 策略暴露实现错误。
 - Garde path mapping 失败转 typed internal issue，不 panic、不忽略、不 fallback 到 index。
+- 已映射 path 的 schema resolution 失败同样转 typed blocking internal issue；array direct item root
+  是合法路径并由直接所属 array schema 管理，不属于 failure。
 - locale/context 变化不自动清旧报告；调用方显式 Dynamic validation 后整批替换目标报告。
 - active control issue 与同步 data bucket 分开，sync validation 不会误删它。
 
@@ -1080,8 +1277,228 @@ adapter DEP-00
 
 **Done condition**
 
-- 五种 trigger、四种 scope、所有 required 内置类型和 Garde mapping/i18n 都有测试。
+- 历史五种 trigger/basic scope、所有 required 内置类型和 indexed Garde mapping/i18n 都有测试；完整
+  nested group/array scope 与三形态 mapper 只能由 FORM-45/MACRO-35 的新增测试关闭。
 - report 只通过 bucket 替换；没有 submitted flag、英文 Garde 二次包装或 index path fallback。
+
+### FORM-45：纠正 nested write transaction 与完整路径 schema 解析
+
+**状态**
+
+- `[已完成]`。2026-07-22 已与 macro `MACRO-35` 在同一 changeset 完成：core 统一拥有 field write
+  transaction 和 hidden validation pass，generated accessor 只提供 pure model lens；完整路径 schema
+  resolver、精确 trigger normalization、array 三种 owner、stable-ID immutable 与递归 bounds 均已
+  落地。
+- 验证证据：`corrective_transactions`、`corrective_validation`、`corrective_garde`、
+  `nested_validation`、core/macro trybuild 全部通过；generated writer/root-prefix legacy residual scan
+  无命中。
+
+**Prerequisites**
+
+- FORM-20、FORM-40 的既有 runtime、scope、bucket 与 stable-ID 基础保持可用。
+- 公开 README/Guide 已冻结“core owns transaction、nested leaf owns its trigger、ancestor 不复制
+  trigger”和 stable ID immutable。它们尚未定义 Garde 合法 direct item-root 的 owner；本计划依据
+  Garde 0.23.0 行为将其补充为直接所属 array schema，并要求 FORM-70 同步双语 Guide。
+- 与 macro `MACRO-35` 协同：先增加 core trait/error/hidden hook，再生成所有 model
+  implementation，最后切换 transaction 并运行 integration tests；不可发布只完成其中一侧的
+  中间态。
+
+**Evidence**
+
+- `src/field.rs` 的 `project` 与 `identified_item` 调用 parent writer；raw writer 仍能接触整个 Form
+  与 `Context<Form>`。
+- `gpui-form-macros/src/expand.rs` 的 root `__write_*` 同时 commit、invalidate、按 root
+  `validate_change` gate、emit 和 notify；nested leaf 因而绕过自己的 schema。
+- 同一 expansion 的 adapter filter 只用 `RootField::ALL + path.starts_with(root_path)`；
+  `auth.username`、`rows[#id].name` 和更深交叉路径都会使用 ancestor schema。
+- array Garde mapper 只有 `path.strip_prefix("rows[")` 分支，没有 `path == "rows"`，因此合法的
+  container/array-length issue 会误报 `UnknownField`；虽然 empty suffix 会产生 `rows[#id]`，计划此前
+  没有定义该合法 item 类型级 issue 的 schema owner。
+- `identified_item` 直接把 replacement 写回命中的 vector slot，没有确认 replacement 仍保留捕获的
+  stable ID；继续投影到 ID leaf 也可绕过公开 Guide 的 identity immutable 契约。
+- 现有 array tests 只证明 index→stable ID mapping 与 duplicate structural issue，没有证明
+  container/item-root/item-leaf 三种 path、identity immutability 或完整 trigger/schema 的端到端行为。
+
+**Files**
+
+- 修改：`src/field.rs`、`src/form.rs`、`src/schema.rs`、`src/validation.rs`、`src/typed.rs`。
+- 修改：`tests/form_store.rs`、`tests/validation.rs`、`tests/derive.rs`、`tests/submit.rs`。
+- 修改：`Cargo.toml`；由 Cargo 添加已在 workspace lockfile 中存在的精确 dev dependency
+  `trybuild 1.0.118`。如 root package dependency metadata 变化，只接受 Cargo 生成的同一份
+  `Cargo.lock` 变更。
+- 新增：`tests/ui.rs`，以及 `tests/ui/fail/` 下
+  `recursive_group_bounds`、`recursive_array_bounds`、`recursive_garde_mapper_bounds`、
+  `array_id_to_form_item_id` 各自对应的 `.rs`/`.stderr`；这些 fixture 在可引用 core contract 的
+  crate 中固定 generated recursive bound 与字段 span 诊断。
+- 原子配套修改由 macro `MACRO-35` 拥有；本工作包不直接复制 macro expansion lifecycle。
+
+**API contract**
+
+- 精确实现第 3.3、3.3.1、3.6、3.7、3.9 节修订后的契约。
+- `FormField` 的 raw lens 固定为
+  `Fn(&Form::Model) -> Option<T>` 与
+  `Fn(&mut Form::Model, T) -> Result<(), FormFieldError>`；不得接收 Form/runtime/context。
+- 增加 doc-hidden `FormModelSchema`、`FormSchemaPathError` 与
+  `FormStore::__validate_snapshot`；它们只供 core/macro glue 使用，不进入 README quick start。
+- 增加 `FormFieldError::ItemIdentityChanged`；identified-item lens 必须在 candidate 上验证 replacement
+  ID，整项和 ID leaf 写入共享同一保护，不能依赖事后 structural validation 回滚。
+- `FormStore::Model` 增加 `StructuralValidate + FormModelSchema` bound。Core 提供 adapter report
+  normalization，macro 不再生成任何 prefix filter。
+- `FormField::set`/`set_user_value`、public `validate` 与 `prepare_submit` 签名保持不变。
+- Whole-array accessor 是容器级 replacement，不受某个 captured item identity 约束；其中的 ID
+  add/remove/change 明确定义为旧 logical item 被移除、新 logical item 被插入，再由最终 candidate 的
+  structural validation 检查所有 ID 有效且唯一。只有通过 identified-item handle 的整项/ID-leaf
+  写入禁止改变被寻址 identity。
+- Core 不保存 ID 历史。Whole-array replacement 中保留同一 ID 明确定义为更新同一 logical item；
+  “新的 logical item 必须使用新 ID”由 model/caller 保证。公开 Guide 必须说明这是会话期名义
+  identity 契约，而不是 runtime 能检测的历史不变量。
+
+**Path/schema matrix**
+
+| Stable path | 解析结果 | Trigger owner |
+| --- | --- | --- |
+| `auth` | group field schema | `auth` |
+| `auth.username` | nested leaf schema | `username` |
+| `settings.auth` | nested group exact schema | `auth` |
+| `rows` | array field schema | `rows` |
+| `rows[#id]` | unique direct item root；复用直接所属 array schema | `rows`，仅此 exact item root |
+| `rows[#id].name` | unique item 的 nested leaf schema | `name` |
+| `settings.rows` | nested array exact schema | `rows` |
+| `settings.rows[#rid]` | group 内 array 的 direct item root | `settings.rows` 的 `rows` |
+| `settings.rows[#rid].name` | group 内 array item leaf | `name` |
+| `sections[#sid]` | outer direct item root | `sections` |
+| `sections[#sid].auth` | item 内 nested group exact schema | `auth` |
+| `sections[#sid].auth.username` | item 内 group leaf | `username` |
+| `sections[#sid].rows` | item 内 nested array exact schema | 内层 `rows` |
+| `settings.rows[#id].auth.username` | 递归跨 group/array 后的 leaf schema | `username` |
+| `sections[#sid].rows[#rid]` | unique nested item root；复用最近直接所属 array schema | `rows`，不是 `sections` |
+| `sections[#sid].rows[#rid].name` | nested array item leaf | `name` |
+| 缺失/重复 item ID | `MissingItem` / `DuplicateItem` resolver error | 无；转 blocking internal issue |
+| 含 `Projection` 的 adapter path | `Projection` error | 无；field 自身改用真实 `validation_path` |
+| `Some(FieldPath::root())` | `EmptyPath` | form issue 必须使用 `path = None` |
+
+**Implementation flow**
+
+1. 在 `schema.rs` 实现第 3.3.1 节 trait/error；在 `typed.rs` 与 `__private` 只暴露 macro/runtime
+   必需表面。Resolver 接收当前 model 和 path segments，动态检查 array item 的唯一 stable ID。
+2. 把 `FormField` read/write closure 改成纯 model lens。每次 write 在一个 entity update 内 clone
+   current model、修改 candidate，再由唯一 core transaction compare/commit；nested project 与
+   identified item 只能组合 lens，不能调用 ancestor transaction。
+3. identified-item lens 在将 candidate item 写回 slot 前验证新 ID 可转换且等于捕获 ID；否则返回
+   `ItemIdentityChanged`。该检查自然覆盖继续投影的 ID leaf；不能先 commit 再用 structural issue
+   兜底。Whole-array write 的 add/remove/reorder 继续由 array accessor + structural traversal 管理；
+   同一 ID 表示更新同一名义 item，ID 变化表示 remove + insert，core 不增加 retired-ID history。
+4. commit 返回 `None` 时立即结束；不得 invalidate、validate、emit 或 notify。返回 revision 时用
+   `validation_path` 清相交 generated/required/structural/async 状态，再无条件运行一次
+   `Change + Field(validation_path)` 的 hidden validation pass。
+5. hidden pass 不 emit/notifies。Core 的 public `validate`/`prepare_submit` 分别在 pass 后发一个
+   `RuntimeChanged`；write 只发一个包含实际 handle `path` 和 revision 的 `FieldChanged`，整个
+   transaction notify 一次。
+6. 把 adapter report normalization 移到 core并严格复用第 3.7 节顺序：先无条件保留已有
+   adapter/mapping Internal；其余 form-level issue 检查 `scope.includes(None)`；普通 field issue
+   再执行完整 schema resolver、scope 与精确 owner trigger。Resolver error 替换为无条件保留的
+   blocking internal issue。
+7. resolver 对 array 明确区分 container、direct item root 与 descendant：`rows` 和
+   `rows[#id]` 归 `rows` schema，`rows[#id].leaf` 递归 leaf schema；nested item root 只归最近直接
+   array。Macro mapper 另行补齐 `path == rows`，不能让 core 猜 Garde display path。
+8. group/array whole write 与 array item write 不做单一 schema gate：Change scope 自然覆盖
+   ancestors + subtree，structural/generated traversal 和 adapter normalization 分别选择每个精确
+   字段的 trigger。Nested leaf write 同理，且不运行 sibling leaf。
+9. 完成 macro `MACRO-35` 后删除 core 可达的旧 writer signature/prefix filter，运行下表全部测试与
+   residual scan；任何 compatibility wrapper 都视为失败。
+
+**Errors and lifecycle**
+
+- missing/duplicate identified item 在 lens 阶段返回 `ValueUnavailable`，candidate 未 commit，整个
+  transaction 无副作用；schema resolver 遇到同类 adapter path 时转 blocking internal issue。
+- identified-item replacement 的 ID invalid/different 返回 `ItemIdentityChanged`；candidate 被丢弃，
+  与 equal/missing/duplicate failure 一样不改变 model、revision、issues、tasks、event 或 notify。
+- resolver 不能 panic、选择第一个 item、退回 vector index、最近 ancestor 或 root field schema。
+- adapter 的非法原 issue 不和 internal issue 同时保留，避免一个错误出现两次；internal issue 不再
+  接受 ancestor trigger filter。
+- 非法 stable path 即使不在当前 validation scope 内，也必须先由 resolver 转成 blocking internal
+  issue；scope 不能隐藏 adapter/schema contract violation。
+- validation pass 与 field event 在同一 form update 内完成；不存在 nested entity update、部分
+  revision 或两个 observer notification。
+
+**UI/data/database/icons/i18n/dependencies**
+
+- UI、component/focus、数据库/schema、网络、icons/assets、应用 locale 与平台：`No change`。
+- 数据：不改变任何 model 或持久化形状；只收紧 model lens、runtime transaction 与 validation
+  metadata traversal。
+- 依赖：不新增 runtime dependency/feature；给 `gpui-form` 增加已锁定的 dev-only
+  `trybuild 1.0.118`，仅用于 generated bound 的 compile-fail contract。实施时先申请命令权限并运行
+  `cargo add --package gpui-form --dev trybuild@1.0.118`，不得手工编辑 manifest/lockfile。
+
+**Tests**
+
+| Requirement | Test file | Proposed test name | Assertions |
+| --- | --- | --- | --- |
+| nested group leaf write | `tests/form_store.rs` | `nested_group_leaf_write_runs_leaf_change_validation_once` | parent 无 Change、leaf 有 Change；新值已 commit，验证/event/notify 各一次 |
+| whole group write | 同上 | `whole_group_write_validates_group_subtree_and_ancestors_once` | group exact + descendants + ancestors 参与，不运行 sibling group |
+| root array whole write | 同上 | `root_array_write_runs_descendant_leaf_change_validation` | array 无 Change、item leaf 有；所有 changed subtree leaf 按 schema 重验 |
+| identified item whole write | 同上 | `identified_array_item_write_runs_descendant_leaf_change_validation` | direct item root 由 array schema 管理；item subtree + ancestors scope 正确 |
+| identified item leaf write | 同上 | `identified_array_leaf_write_runs_leaf_change_validation_once` | leaf trigger 生效，不由 array trigger gate |
+| group/array 交叉 | 同上 | `array_in_group_and_group_in_array_writes_use_leaf_schema` | 两个方向与两层 nested array 都命中最内 leaf，不命中 sibling |
+| cross-nested resolver matrix | `tests/validation.rs` | `cross_nested_paths_resolve_each_container_item_and_leaf` | `settings.rows[#rid](.name)`、`sections[#sid].auth(.username)`、`sections[#sid].rows[#rid](.name)` 每一级均命中明确 schema |
+| item-root scope ancestors | `tests/validation.rs` | `item_leaf_scope_includes_own_item_root_and_array_not_siblings` | leaf write 保留同 item root + owning array issue；排除 sibling item root/leaf |
+| parent exact trigger | `tests/validation.rs` | `ancestor_group_and_array_rules_run_only_for_exact_parent_issues` | parent issue 用 parent schema；descendant issue 不继承 parent trigger |
+| all triggers | 同上 | `nested_adapter_issue_uses_exact_leaf_schema_for_every_trigger` | Mount/Change/Blur/Dynamic/Submit 逐项以 leaf schema 过滤 |
+| nested exact containers | 同上 | `nested_group_and_array_container_paths_use_declared_schema` | `settings.auth`、`settings.rows`、`sections[#sid].auth`、`sections[#sid].rows` 分别命中 exact group/array schema |
+| nested submit blocks | `tests/submit.rs` | `nested_garde_submit_issue_blocks_prepare_submit` | group parent 无 Submit、leaf 有；invalid output 不进入 transform |
+| array container path | `tests/validation.rs` | `garde_array_container_issue_uses_array_schema` | `rows` length/custom issue 不再 UnknownField，按 array trigger 过滤 |
+| array item root path | 同上 | `garde_array_item_root_issue_uses_direct_array_schema` | `rows[index]` 映射 stable ID；只用直接所属 array trigger |
+| array item leaf path | 同上 | `garde_array_issue_uses_item_leaf_schema_after_reorder` | index 映射当前 stable ID 后解析 leaf schema；reorder 后仍正确 |
+| nested array item root | 同上 | `nested_array_item_root_uses_nearest_array_schema` | `sections[#sid].rows[#rid]` 用 rows，不用 sections；不影响 sibling |
+| nested Garde array container | 同上 | `garde_nested_array_container_issue_uses_exact_schema` | `sections[index].rows` 映射为 `sections[#sid].rows`，使用内层 rows schema，不回退 sections |
+| cross-nested Garde paths | 同上 | `garde_cross_nested_paths_map_every_container_item_and_leaf` | 覆盖 `settings.rows[index](.name)`、`sections[index].auth.username`、`sections[index].rows[index](.name)` 的完整 stable path |
+| double-index reorder | 同上 | `garde_nested_array_reorder_maps_both_indices_to_stable_ids` | outer sections 与 inner rows 同时重排后，两个 index 都映射当前 snapshot 的正确 stable ID，issue 仍落到原 logical leaf |
+| outer/direct/nested item roots | 同上 | `array_item_root_owners_are_independent_at_every_depth` | 外层 section、direct row、nested row 分别使用各自直接 array owner，不扩散到父/兄弟 item |
+| stable ID differs | `tests/form_store.rs` | `identified_item_rejects_different_stable_id` | 整项 replacement 和 ID leaf set 改成另一有效 ID 均返回 ItemIdentityChanged；完整 no-op |
+| stable ID invalid | 同上 | `identified_item_rejects_unconvertible_stable_id` | 自定义 `ToFormItemId -> None` fixture 的整项/ID leaf 均返回 ItemIdentityChanged；完整 no-op |
+| whole-array identity replacement | 同上 | `whole_array_id_changes_are_remove_and_insert` | `a -> b` 后旧 handle 为 ValueUnavailable、新 handle 可读；被移除后代的 sync/async state 清除/取消；最终集合的重复/不可转换 ID 产生 blocking structural issue |
+| stable ID nominal contract | 同上 | `same_stable_id_is_the_same_nominal_item_without_history` | whole-array/reset/rebase 保留同一 ID，或 remove 后重新出现同一 ID 时，既有 handle 都按同一名义 item 读取；core 不保存 retired-ID history，caller 不得把它当新 item |
+| whole-array reorder | 同上 | `identified_handle_survives_whole_array_reorder` | 保留 ID 的 reorder 后旧 handle 继续读取同一 logical item，path/revision 语义不退回 index |
+| reset restores baseline ID | 同上 | `reset_restores_temporarily_removed_baseline_item_handle` | whole-array 暂时移除 baseline ID 后旧 handle 不可用；reset 恢复 baseline 后同一 handle 重新可读，视为同一名义 item |
+| rebase/CAS ID sets | 同上 | `rebase_and_successful_cas_replace_identified_item_sets` | rebase 与成功 rebase_if_revision 改变 ID 集合后，旧 handle 不可用、新 handle 可读，旧后代 sync/async state 清除/取消；失败 CAS 仍完整 no-op |
+| nested structural IDs | `tests/validation.rs` | `nested_array_structural_id_issues_use_exact_container_paths` | group 内 array 与 array item 内 array 的 duplicate/unconvertible ID 分别落在 `settings.rows`、`sections[#sid].rows`；blocking 且不污染有效 sibling |
+| recursive generated bounds | `tests/ui.rs` | `recursive_schema_bounds_fail_at_declared_fields` | group/array 缺少 StructuralValidate/FormModelSchema、Garde 模式缺少 GardePathMapper、ID 缺少 ToFormItemId 时均由 trybuild 固定字段 span 诊断 |
+| resolver failures | `tests/validation.rs` | `malformed_unknown_projection_and_item_schema_paths_block` | 每个 typed reason 都产生单一 blocking internal issue |
+| out-of-scope resolver failure | `tests/validation.rs` | `invalid_adapter_path_outside_scope_still_blocks` | resolver 先于 scope；非法 sibling path 不被 scope 静默丢弃 |
+| mapping failure scope | 同上 | `garde_mapping_failure_survives_field_scope` | malformed/out-of-bounds/invalid ID 在 Field scope 仍无条件保留为 blocking Internal |
+| built-in Garde normalization | 同上 | `garde_returns_full_report_for_core_normalization` | mapper 后不预过滤；core 独立完成 resolver/scope/trigger |
+| equal nested write | `tests/form_store.rs` | `nested_equal_write_is_complete_noop` | model/revision/report/task/event/notify 均不变 |
+| transaction 唯一性 | 同上 | `nested_write_commits_validates_emits_and_notifies_once` | 无 ancestor transaction、无 RuntimeChanged + FieldChanged 双事件 |
+| projection | 同上 | `projection_write_uses_parent_validation_path_once` | event path 保留 Projection，失效/Change scope 使用真实 parent |
+
+**Validation**
+
+```bash
+cargo fmt --all --check
+cargo test -p gpui-form --all-features --locked --test form_store
+cargo test -p gpui-form --all-features --locked --test validation
+cargo test -p gpui-form --all-features --locked --test derive
+cargo test -p gpui-form --all-features --locked --test submit
+cargo test -p gpui-form --all-features --locked --test ui
+cargo test -p gpui-form-macros --locked
+cargo clippy -p gpui-form -p gpui-form-macros --all-targets --all-features --locked -- -D warnings
+rg -n "validate_change|path\.starts_with.*FormFieldId|Fn\(&mut Form,.*Context<Form>" \
+  crates/gpui-form/src crates/gpui-form-macros/src
+git diff --check
+```
+
+**Done condition**
+
+- group、root array、array item、array item leaf、group/array 交叉嵌套与 projection 都只经过一个
+  core write transaction。
+- container/direct-item-root/item-leaf 在 root、group 内 array、array item 内 array 三个层级都由
+  完整路径解析到明确 schema；recursive trait bound 与 ID field bound 有可执行 compile-fail 门禁。
+- adapter issue 必须精确解析到声明字段 schema，所有 resolver failure 都阻止提交；不存在
+  root-prefix、未声明 ancestor fallback 或 synthetic array-item schema；direct item root 到 owning
+  array schema 是独立、受限且有测试的显式规则。
+- array container/item root/item leaf、group/array 交叉嵌套、nested array 与 identified-item stable
+  ID 不变量均有端到端测试；不能只靠 stable path mapper unit test 关闭工作包。
+- 上述 residual scan 无 active-source 命中；定向 tests/clippy 全部通过，才能继续最终 FORM-70。
 
 ### FORM-50：用 retained task/generation 实现高层异步验证
 
@@ -1234,16 +1651,27 @@ adapter DEP-00
 
 ### FORM-70：执行最终 workspace、残留与公开状态 release gate
 
+**状态**
+
+- `[已完成]`。2026-07-22 已执行第 7 节 core、macro、adapter、Jaco 与 workspace 非 UI gate：
+  workspace build/test/check、全 workspace 严格 clippy、dependency tree、legacy residual、双语公开文档
+  与 `git diff --check` 均通过。未启动 Jaco、未进行新的 Computer Use/UI 测试；远端 macOS、Linux、
+  Windows CI 继续作为 PR 合入门禁。
+
 **Prerequisites**
 
 - FORM-60。
-- `crates/gpui-form-macros/dev/form-store-derive.md` 的 `MACRO-40`。
+- 2026-07-22 corrective gate：FORM-45 与
+  `crates/gpui-form-macros/dev/form-store-derive.md` 的 `MACRO-35` 已在同一 changeset 完成。
+- `crates/gpui-form-macros/dev/form-store-derive.md` 的 `MACRO-40` 已在 corrective changeset 后完成
+  双语文档纠偏；其当时保留的中间未完成状态已由本 FORM-70 gate 翻转。
 - `crates/gpui-form-gpui-component/dev/typed-bound-controls.md` 的 `CONTROL-50`。
 - `app/jaco/docs/dev/gpui-form-migration.md` 的 `JACO-FORM-70`。
 
 **Evidence**
 
-- Core 的 breaking source/API 已在 FORM-10 至 FORM-60 完成并通过 crate tests。
+- Core 的 breaking source/API 已在 FORM-10 至 FORM-60 完成并通过 crate tests，但旧证据不能关闭
+  新发现的 nested group/array gate；FORM-45/MACRO-35 的定向测试是新增 prerequisite。
 - Macro、adapter 与 Jaco 分别拥有自己的实现、调用点迁移和局部残留 gate；只有全部完成后，
   workspace validation 与“实施完成”状态才有意义。
 
@@ -1251,8 +1679,12 @@ adapter DEP-00
 
 - 审核并按最终实现同步：`README.md`、`README.zh-CN.md`、`docs/guide.md`、
   `docs/guide.zh-CN.md`、`dev/README.md`、`dev/typed-form-store.md`。
-- 只在验证发现目标文档与最终 public API 不一致时修改上述 core 文档；不得在本 gate 修改
-  macro、adapter 或 Jaco 源码来掩盖其未完成工作包。
+- 审核并只做最终状态翻转：`crates/gpui-form-macros/README.md`、
+  `crates/gpui-form-macros/README.zh-CN.md`、`crates/gpui-form-macros/docs/guide.md`、
+  `crates/gpui-form-macros/docs/guide.zh-CN.md`、
+  `crates/gpui-form-macros/dev/form-store-derive.md`。
+- 只在验证发现目标文档与最终 public API 不一致时修改上述文档；不得在本 gate 修改 macro、
+  adapter 或 Jaco 源码来掩盖其未完成工作包。
 
 **API contract**
 
@@ -1263,16 +1695,19 @@ adapter DEP-00
 
 **Implementation flow**
 
-1. 确认四个 prerequisite 的完成证据与局部测试结果。
+1. 确认 FORM-45/MACRO-35 原子 changeset，以及 macro、adapter、Jaco 三个既有 prerequisite 的
+   完成证据与局部测试结果。
 2. 运行第 7 节完整 workspace validation、dependency identity 与跨包 residual scan。
-3. 对照最终 rustdoc/public exports 审核英文 README/Guide，再同步中文镜像；不改变已经冻结的行为。
+3. 对照最终 rustdoc/public exports 审核 MACRO-40 已同步的英文 README/Guide 与中文镜像；只在
+   发现 public API 偏差时修正文档，不重复拥有 direct-item-root/stable-ID 措辞的首次同步。
 4. 验证链接、章节、代码围栏和 `git diff --check`。
-5. 全部通过后更新 core 公开状态；任一失败则保持“目标 API/实施未完成”状态并返回对应 owner 的
-   工作包修复。
+5. 全部通过后在同一 changeset 统一更新 core/macro 的双语公开状态，并把两份实施计划的
+   corrective 工作包与最终 gate 状态翻转为完成；任一失败则全部保持“目标 API/实施未完成”状态，
+   返回对应 owner 的工作包修复。
 
 **Errors and lifecycle**
 
-- 这是只读验证加 core 文档状态收口，没有运行时 partial success、retry 或 cancellation。
+- 这是只读验证加 core/macro 文档状态收口，没有运行时 partial success、retry 或 cancellation。
 - Dependency duplicate、legacy residual、跨 crate 编译失败、平台 CI 失败或 EN/ZH 语义偏差均为
   release blocker；不得增加 compatibility wrapper、fallback 或跳过测试。
 
@@ -1293,6 +1728,7 @@ adapter DEP-00
 | legacy deletion | 第 7 节跨包 residual commands | active source 无旧 draft/bind/source/submit runtime API |
 | public docs | headings/fences/link check + doc/compile examples | English 默认；中文语义镜像；示例匹配最终 API |
 | runtime UI | Jaco/adapter 已记录 Computer Use smoke | 无重入、失焦或 stale projection 回归 |
+| nested schema gate | FORM-45/MACRO-35 全部定向 tests + residual scan | group/array 交叉路径、Garde container/item/leaf、stable ID immutable/nominal identity 与单 transaction 均通过 |
 
 **Validation**
 
@@ -1302,7 +1738,8 @@ adapter DEP-00
 **Done condition**
 
 - 所有 prerequisites、workspace validation、dependency identity、residual、公开文档和平台 CI 均通过。
-- Core 文档状态可安全标记为实施完成；没有为了通过 gate 修改 downstream owner 的源码或引入兼容层。
+- Core 与 macro 的双语公开文档及两份实施计划状态可在同一 changeset 安全标记为实施完成；没有
+  为了通过 gate 修改 downstream owner 的源码或引入兼容层。
 
 ## 7. 跨工作包验证
 
@@ -1366,5 +1803,8 @@ rg --files crates/gpui-form/src | rg '/(core|pipeline|view)(\\.rs|/)'
   `No change`。
 - [x] 每项需求都映射到具体测试名、命令和 done condition。
 - [x] 删除清单和残留 symbol scan 已固定，不给实现者留下兼容策略选择。
-- [x] `FORM-60` 只完成 core source/API 与 crate tests；唯一最终 release gate 是
-  `MACRO-40 -> CONTROL-50 -> JACO-FORM-70 -> FORM-70`，验证路径和命令已明确。
+- [x] `FORM-45` 与 `MACRO-35` 已在同一 changeset 完成；2026-07-22 新增的 nested group/array、
+  Garde path、stable identity 与 single-transaction tests 已关闭两条 review comment 的本地门禁。
+- [x] `FORM-60` 只完成既有 core source/API 与 crate tests；当前唯一最终 release gate 是
+  `FORM-45 <-> MACRO-35 -> MACRO-40 文档纠偏 -> FORM-70`。既有
+  `CONTROL-50 -> JACO-FORM-70` 证据继续作为 FORM-70 的其他 prerequisite，不需要重做业务迁移。

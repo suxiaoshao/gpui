@@ -271,6 +271,15 @@ Both methods store the typed value before running change validation. An equal
 field write is a no-op: it does not advance the revision, rerun validation, or
 emit another projection event.
 
+Generated accessors, `project`, and identified-item accessors are pure lenses:
+they can only read or modify a cloned `Form::Model` candidate. They cannot
+commit the runtime, validate, emit events, or notify observers. The outer
+`FormField` owns the single write transaction for every root or nested handle:
+apply the lens, commit once, invalidate the handle's real validation path, run
+one scoped change-validation pass, then emit one `FieldChanged` for the
+handle's actual path and notify once. A lens error and an equal candidate are
+complete no-ops.
+
 ### Whole-form lifecycle
 
 Use whole-form operations when installing application data:
@@ -367,6 +376,35 @@ no-ops. Preservation here describes the invalidation phase: if the adapter
 participates in the subsequent change-validation run, that run replaces its
 adapter-wide bucket normally. Change validation never owns or clears a control
 issue.
+
+### Exact schema ownership and adapter normalization
+
+Adapter field issues are normalized from their complete stable path. The core
+always resolves the path against the model snapshot first, then checks the
+validation scope, and finally checks the exact owner's trigger. It never uses a
+root-prefix or nearest-ancestor fallback. This order means an invalid adapter
+path becomes a blocking internal issue even when that path is outside the
+requested field scope; scope filtering cannot hide an adapter/schema contract
+error. Existing internal adapter or path-mapping issues are also retained
+without scope or trigger filtering. Non-internal form-level issues participate
+only in form scope.
+
+Schema ownership follows these rules recursively through groups, arrays inside
+groups, arrays inside array items, and deeper combinations:
+
+| Stable path shape | Schema owner |
+| --- | --- |
+| `auth` | the declared `auth` group field |
+| `auth.username` | the nested `username` field |
+| `rows` | the declared `rows` array field |
+| `rows[#id]` | the directly owning `rows` array field |
+| `rows[#id].name` | the item model's `name` field |
+
+An item segment is dynamic addressing, not a synthetic field schema. A nested
+array's direct item root is owned only by that nearest array declaration;
+descendants recurse into the item model. Missing or duplicate item IDs make the
+path unresolvable. Projection paths are control/application paths and cannot be
+used by synchronous model adapters.
 
 ### Required values
 
@@ -484,10 +522,16 @@ Omitting `i18n` selects `DefaultGardeI18nProvider`.
 
 Garde exposes vector positions in its displayed paths. Generated
 `GardePathMapper` implementations map each current index to the validated
-model's stable `FormItemId` before scope filtering. Unknown fields, malformed
-or out-of-bounds indices, unconvertible IDs, and duplicate IDs become blocking
-internal form issues. The adapter does not use Garde's doc-hidden path iterator
-and never leaves a mutable vector index in a final `FieldPath`.
+model's stable `FormItemId`. Array paths are supported in all three shapes:
+the container (`rows`), direct item root (`rows[2]`), and item leaf
+(`rows[2].name`), including recursively nested arrays. Mapping only converts
+the display path; the core then independently performs exact schema resolution,
+scope filtering, and trigger filtering in that order. The built-in adapter
+returns the complete mapped report to this normalization step instead of
+pre-filtering it. Unknown fields, malformed or out-of-bounds indices,
+unconvertible IDs, and duplicate IDs become blocking internal form issues. The
+adapter does not use Garde's doc-hidden path iterator and never leaves a mutable
+vector index in a final `FieldPath`.
 
 When the locale changes, the application updates the validation context and
 explicitly requests dynamic validation for messages that must be regenerated:
@@ -526,18 +570,16 @@ impl ValidationAdapter<ProviderInput> for ProviderValidator {
         &self,
         value: &ProviderInput,
         trigger: ValidationTrigger,
-        scope: ValidationScope,
+        _scope: ValidationScope,
         context: ValidationContext<'_, Self::Context>,
         _cx: &App,
     ) -> ValidationAdapterReport {
         let mut report = ValidationAdapterReport::default();
         let path = ProviderInputField::ModelId.path();
 
-        if scope.includes(Some(&path))
-            && value.model_id.as_ref().is_some_and(|id| {
-                !context.external.model_ids.contains(id)
-            })
-        {
+        if value.model_id.as_ref().is_some_and(|id| {
+            !context.external.model_ids.contains(id)
+        }) {
             report.push(ValidationIssue::field(
                 path,
                 trigger,
@@ -557,6 +599,12 @@ the typed external context and has no redundant `submitted` flag. A custom
 adapter implements `Default + 'static`. Each validation run constructs
 `Self::ValidationAdapter::default()`; the form never stores an adapter instance,
 so runtime dependencies belong in its context.
+
+Custom adapters may use the supplied scope as a performance hint, but
+correctness must not depend on doing so. Every returned field issue is
+normalized again by the core in `schema resolver -> scope -> exact trigger`
+order. Returning an invalid stable path is therefore observable as a blocking
+internal issue rather than silently disappearing outside the current scope.
 
 Map external library paths to generated `FieldPath`s. An unknown path is a
 blocking internal form-level issue rather than an ignored string. Rendering,
@@ -823,6 +871,13 @@ A custom implementation follows these rules:
 8. keep options, disabled state, placeholders, accessibility configuration,
    and presentation outside the form field.
 
+`ValueUnavailable` means a projected value is absent or an identified item no
+longer has exactly one matching ID. `ItemIdentityChanged` is different: an
+identified-item whole-value write or an ID-leaf write attempted to replace the
+captured stable ID with a different or unconvertible ID. That write is rejected
+on the cloned candidate, so model, revision, validation, async tasks, events,
+and notifications remain unchanged.
+
 The attachment's public mutation surface is limited to the four deferred intent
 methods above. It exposes no immediate write, authoritative read-back, weak
 handle, control ID, or origin token. A successful deferred write is followed by
@@ -929,13 +984,27 @@ let header_name = HeaderRowInputFormStore::name_in(
 Repeated accessor calls create cheap handles, not values, subscriptions, or
 child entities. Multiple controls may consume one field safely.
 
-Stable IDs are unique within the array, immutable for a logical item, and not
-reused for another item during one form session. A missing, duplicate, or
-unconvertible ID makes the affected handle return
-`FormFieldError::ValueUnavailable` and creates a blocking structural issue for
-submit. The library never picks the first duplicate. Reordering preserves
-addressing but invalidates old descendant validation results; fresh validation
-maps issues to the current stable IDs.
+Stable IDs are unique within the current array and immutable through an
+identified-item handle. A missing or duplicate addressed item returns
+`FormFieldError::ValueUnavailable`; structural validation reports duplicate or
+unconvertible IDs as blocking issues. Replacing an identified item—or writing
+its ID leaf—with a different or unconvertible ID returns
+`FormFieldError::ItemIdentityChanged`. Both error paths are complete no-ops,
+and the library never chooses the first duplicate. A whole-array write remains
+the explicit way to add, remove, reorder, or replace items.
+
+Stable identity is nominal: within a form session, `(array path, stable ID)`
+means the same logical item. The runtime does not keep retired-ID history or
+guess whether a later value with the same ID is a different object. Preserving
+an ID in a whole-array write means updating that nominal item; changing the ID
+means remove plus insert. Applications must allocate a new ID for a new logical
+item. Reordering preserves addressing but invalidates old descendant validation
+results; fresh validation maps issues to the current stable IDs.
+
+Validation schemas also follow the complete stable path. An array declaration
+owns its container and only its direct item roots; a leaf beneath an item uses
+the item model's leaf schema. Groups and nested arrays recurse by the same rule,
+so each level's own `validate(...)` triggers remain independent.
 
 Use `project_value` only for a computed or conditionally available typed value:
 

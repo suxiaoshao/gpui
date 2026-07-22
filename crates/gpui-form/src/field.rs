@@ -16,6 +16,7 @@ use crate::{
 pub enum FormFieldError {
     FormReleased,
     ValueUnavailable,
+    ItemIdentityChanged,
 }
 
 impl fmt::Display for FormFieldError {
@@ -23,14 +24,17 @@ impl fmt::Display for FormFieldError {
         match self {
             Self::FormReleased => f.write_str("the form owning this field has been released"),
             Self::ValueUnavailable => f.write_str("the field value is no longer available"),
+            Self::ItemIdentityChanged => {
+                f.write_str("an identified array item cannot change its stable id")
+            }
         }
     }
 }
 
 impl std::error::Error for FormFieldError {}
 
-type ReadField<Form, T> = dyn Fn(&Form) -> Option<T>;
-type WriteField<Form, T> = dyn Fn(&mut Form, T, &mut Context<Form>) -> Result<bool, FormFieldError>;
+type ReadField<Form, T> = dyn Fn(&<Form as FormStore>::Model) -> Option<T>;
+type WriteField<Form, T> = dyn Fn(&mut <Form as FormStore>::Model, T) -> Result<(), FormFieldError>;
 
 pub struct FormField<Form, T>
 where
@@ -71,16 +75,19 @@ where
         form: WeakEntity<Form>,
         field: Form::Field,
         path: FieldPath,
-        read: fn(&Form) -> &T,
-        write: fn(&mut Form, T, &mut Context<Form>) -> Result<bool, FormFieldError>,
+        read: fn(&Form::Model) -> &T,
+        write: fn(&mut Form::Model, T),
     ) -> Self {
         Self::new_dynamic(
             form,
             field,
             path.clone(),
             path,
-            move |form| Some(read(form).clone()),
-            write,
+            move |model| Some(read(model).clone()),
+            move |model, value| {
+                write(model, value);
+                Ok(())
+            },
         )
     }
 
@@ -89,8 +96,8 @@ where
         field: Form::Field,
         path: FieldPath,
         validation_path: FieldPath,
-        read: impl Fn(&Form) -> Option<T> + 'static,
-        write: impl Fn(&mut Form, T, &mut Context<Form>) -> Result<bool, FormFieldError> + 'static,
+        read: impl Fn(&Form::Model) -> Option<T> + 'static,
+        write: impl Fn(&mut Form::Model, T) -> Result<(), FormFieldError> + 'static,
     ) -> Self {
         Self {
             form,
@@ -116,7 +123,7 @@ where
     pub fn value(&self, cx: &App) -> Result<T, FormFieldError> {
         let read = self.read.clone();
         self.form
-            .read_with(cx, move |form, _| read(form))
+            .read_with(cx, move |form, _| read(form.value()))
             .map_err(|_| FormFieldError::FormReleased)?
             .ok_or(FormFieldError::ValueUnavailable)
     }
@@ -130,11 +137,35 @@ where
 
     fn write_value(&self, value: T, cx: &mut App) -> Result<(), FormFieldError> {
         let write = self.write.clone();
-        let changed = self
-            .form
-            .update(cx, move |form, form_cx| write(form, value, form_cx))
+        let field = self.field;
+        let path = self.path.clone();
+        let validation_path = self.validation_path.clone();
+        self.form
+            .update(cx, move |form, form_cx| {
+                let mut candidate = form.value().clone();
+                write(&mut candidate, value)?;
+                let Some(revision) = form.__runtime_mut().commit_field_value(candidate) else {
+                    return Ok(());
+                };
+                form.__runtime_mut()
+                    .validation_mut()
+                    .invalidate_path(&validation_path);
+                let snapshot = form.value().clone();
+                form.__validate_snapshot(
+                    &snapshot,
+                    ValidationTrigger::Change,
+                    ValidationScope::Field(validation_path),
+                    form_cx,
+                );
+                form_cx.emit(FormEvent::FieldChanged {
+                    field,
+                    path,
+                    revision,
+                });
+                form_cx.notify();
+                Ok(())
+            })
             .map_err(|_| FormFieldError::FormReleased)??;
-        let _ = changed;
         Ok(())
     }
 
@@ -156,13 +187,13 @@ where
             self.field,
             path.clone(),
             path,
-            move |form| parent_read(form).map(|parent| read_child(&parent).clone()),
-            move |form, value, cx| {
-                let Some(mut parent) = write_read(form) else {
+            move |model| parent_read(model).map(|parent| read_child(&parent).clone()),
+            move |model, value| {
+                let Some(mut parent) = write_read(model) else {
                     return Err(FormFieldError::ValueUnavailable);
                 };
                 write_child(&mut parent, value);
-                parent_write(form, parent, cx)
+                parent_write(model, parent)
             },
         )
     }
@@ -184,15 +215,15 @@ where
             self.field,
             self.path.join_projection(name),
             self.validation_path.clone(),
-            move |form| parent_read(form).and_then(|parent| read_child(&parent)),
-            move |form, value, cx| {
-                let Some(mut parent) = write_read(form) else {
+            move |model| parent_read(model).and_then(|parent| read_child(&parent)),
+            move |model, value| {
+                let Some(mut parent) = write_read(model) else {
                     return Err(FormFieldError::ValueUnavailable);
                 };
                 if !write_child(&mut parent, value) {
                     return Err(FormFieldError::ValueUnavailable);
                 }
-                parent_write(form, parent, cx)
+                parent_write(model, parent)
             },
         )
     }
@@ -245,7 +276,7 @@ where
         let source = source.into();
         self.form
             .update(cx, move |form, form_cx| {
-                let value = read(form).ok_or(FormFieldError::ValueUnavailable)?;
+                let value = read(form.value()).ok_or(FormFieldError::ValueUnavailable)?;
                 let generation = form
                     .__runtime_mut()
                     .validation_mut()
@@ -318,7 +349,7 @@ where
         let read = self.read.clone();
         self.form
             .update(cx, move |form, form_cx| {
-                if read(form).is_none() {
+                if read(form.value()).is_none() {
                     return Err(FormFieldError::ValueUnavailable);
                 }
                 update(form, form_cx);
@@ -383,16 +414,19 @@ where
             self.field,
             path.clone(),
             path,
-            move |form| {
-                let items = parent_read(form)?;
+            move |model| {
+                let items = parent_read(model)?;
                 let mut matches = items
                     .iter()
                     .filter(|item| item_id(item).to_form_item_id() == Some(id));
                 let value = matches.next()?.clone();
                 matches.next().is_none().then_some(value)
             },
-            move |form, value, cx| {
-                let Some(mut items) = write_read(form) else {
+            move |model, value| {
+                if item_id(&value).to_form_item_id() != Some(id) {
+                    return Err(FormFieldError::ItemIdentityChanged);
+                }
+                let Some(mut items) = write_read(model) else {
                     return Err(FormFieldError::ValueUnavailable);
                 };
                 let matches = items
@@ -405,7 +439,7 @@ where
                     return Err(FormFieldError::ValueUnavailable);
                 };
                 items[*index] = value;
-                parent_write(form, items, cx)
+                parent_write(model, items)
             },
         )
     }

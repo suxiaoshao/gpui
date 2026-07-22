@@ -292,7 +292,13 @@ impl Parse for FieldArgs {
                     let literal = content.parse::<LitStr>().map_err(|_| {
                         content.error("array id must be a string literal: id = \"field_name\"")
                     })?;
-                    let id = Ident::new(&literal.value(), literal.span());
+                    let mut id = syn::parse_str::<Ident>(&literal.value()).map_err(|_| {
+                        syn::Error::new(
+                            literal.span(),
+                            "array id must name a valid Rust field identifier",
+                        )
+                    })?;
+                    id.set_span(literal.span());
                     if !content.is_empty() {
                         return Err(content.error("unexpected array configuration"));
                     }

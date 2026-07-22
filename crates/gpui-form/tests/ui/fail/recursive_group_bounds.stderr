@@ -1,0 +1,35 @@
+error[E0277]: the trait bound `Child: gpui_form::FormModelSchema` is not satisfied
+  --> tests/ui/fail/recursive_group_bounds.rs:20:12
+   |
+20 |     child: Child,
+   |            ^^^^^ unsatisfied trait bound
+   |
+help: the trait `gpui_form::FormModelSchema` is not implemented for `Child`
+  --> tests/ui/fail/recursive_group_bounds.rs:2:1
+   |
+ 2 | struct Child {
+   | ^^^^^^^^^^^^
+help: the trait `gpui_form::FormModelSchema` is implemented for `Root`
+  --> tests/ui/fail/recursive_group_bounds.rs:17:28
+   |
+17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Child: gpui_form::StructuralValidate` is not satisfied
+  --> tests/ui/fail/recursive_group_bounds.rs:20:12
+   |
+20 |     child: Child,
+   |            ^^^^^ unsatisfied trait bound
+   |
+help: the trait `gpui_form::StructuralValidate` is not implemented for `Child`
+  --> tests/ui/fail/recursive_group_bounds.rs:2:1
+   |
+ 2 | struct Child {
+   | ^^^^^^^^^^^^
+help: the trait `gpui_form::StructuralValidate` is implemented for `Root`
+  --> tests/ui/fail/recursive_group_bounds.rs:17:28
+   |
+17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)

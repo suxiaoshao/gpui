@@ -4749,6 +4749,7 @@ dependencies = [
  "gpui-component",
  "gpui-form-gpui-component",
  "gpui-form-macros",
+ "trybuild",
  "validify",
 ]
 

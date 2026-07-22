@@ -190,7 +190,10 @@ state 当作权威值。
 
 Nested group 和 stable-ID array 仍属于同一个顶层 model。生成的字段 accessor 可以直接
 组合而不会创建 child form entity；`FormField::project_value` 可以暴露计算得到的类型化值，
-而不会创建平行业务值。
+而不会创建平行业务值。每个 accessor 都只是作用于 cloned model candidate 的纯 lens；成功写入时，
+`FormField` 统一负责唯一一次 commit、带 scope 的 `on_change` validation、event 与 notify。
+Nested adapter issue 会按完整 stable path 匹配，因此 group/array leaf 使用自己的 schema，
+不会错误复用 ancestor 的 validation trigger。
 
 ## Crate
 

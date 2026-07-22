@@ -51,8 +51,10 @@ Generated store 只包含一个 internal、doc-hidden
 
 Derive 还支持 Garde 或 custom validation adapter、submit transform、generic model、nested
 group 与 stable-ID array。Nested model 独立 derive `FormStore`，但不会创建 child form entity；
-生成的 `*_in`、`*_item` 和 `*_item_in` 始终是指向唯一 root form value 的 typed lens。UI
-control 属于 adapter crate，不由 derive macro 生成。
+生成的 `*_in`、`*_item` 和 `*_item_in` 始终是指向唯一 root form value 的 typed lens。
+宏只生成纯 model projection 与递归 stable-path schema resolution；core `FormField` transaction
+恰好一次完成 commit、validation、event 与 notify。因此 array container、direct item root 和
+item leaf 分别拥有明确的 schema owner。UI control 属于 adapter crate，不由 derive macro 生成。
 
 需要显式命名 generated store 时使用 `#[form(store = ValueEditorStore)]`，对应的 generated
 store 名是 `ValueEditorStore`。这个属性只覆盖 store 名；field enum 始终根据 model 命名为

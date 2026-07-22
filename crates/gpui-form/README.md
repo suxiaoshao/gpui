@@ -197,7 +197,11 @@ authoritative.
 Nested groups and stable-ID arrays remain inside the same top-level model.
 Generated field accessors compose without creating child form entities, and
 `FormField::project_value` exposes a computed typed value without creating a
-parallel business value.
+parallel business value. Every accessor is a pure lens over a cloned model
+candidate; `FormField` owns the one commit, scoped `on_change` validation pass,
+event, and notification for a successful write. Nested adapter issues are
+matched against their complete stable path, so group and array leaves use
+their own schema rather than an ancestor's validation triggers.
 
 ## Crates
 

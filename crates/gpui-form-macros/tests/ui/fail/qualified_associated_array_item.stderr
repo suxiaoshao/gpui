@@ -1,0 +1,5 @@
+error: identified array items cannot use an associated type; use a nominal item type with a named stable-id field
+  --> tests/ui/fail/qualified_associated_array_item.rs:10:16
+   |
+10 |     items: Vec<<T as HasItem>::Item>,
+   |                ^^^^^^^^^^^^^^^^^^^^

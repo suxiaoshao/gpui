@@ -8,7 +8,7 @@ pub use crate::{
     field::{FormField, FormFieldError},
     form::{FormEvent, FormRevision, FormStore},
     path::{FieldPath, FieldPathSegment},
-    schema::{FieldSchema, FormFieldId, ValidationTriggers},
+    schema::{FieldSchema, FormFieldId, FormModelSchema, FormSchemaPathError, ValidationTriggers},
     submit::SubmitError,
     transform::{IdentityTransform, SubmitTransform, TransformReport},
     trigger::ValidationTrigger,
@@ -16,7 +16,7 @@ pub use crate::{
         AsyncValidationIssue, FormValidationRuntime, GardePathError, GardePathMapper,
         NoValidationContext, NoopValidationAdapter, RequiredValue, StructuralValidate,
         ValidationAdapter, ValidationAdapterReport, ValidationContext, ValidationContextValue,
-        ValidationScope, required_issue,
+        ValidationScope, normalize_adapter_report, required_issue,
     },
 };
 

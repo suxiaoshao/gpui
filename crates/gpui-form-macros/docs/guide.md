@@ -221,8 +221,11 @@ intersecting asynchronous validation; preserve the adapter-wide form bucket and
 all active control issues; run `on_change` for the field's validation path; emit
 one typed form event; and notify observers once. When the projected value equals
 the current field value, the whole transaction is a no-op. The macro supplies
-field projections and schema; it does not duplicate that lifecycle inside every
-accessor. Validation query methods return owned snapshots:
+pure field projections over a cloned `Model` candidate and recursive schema;
+those projections cannot access the runtime, validation, `Context`, events, or
+notification. It therefore cannot duplicate or prematurely invoke the
+lifecycle inside a root or nested accessor. Validation query methods return
+owned snapshots:
 `validation_report() -> ValidationReport` and
 `errors_at(path) -> Vec<ValidationIssue>`.
 
@@ -238,6 +241,13 @@ store. A Garde-backed model uses its associated context and the selected I18n
 provider. The derive implements `GardePathMapper` so external vector indices
 can be converted to generated stable paths. Custom adapters receive the same
 model, trigger, scope, and typed validation context through the core trait.
+
+The derive also implements recursive model schema resolution for every full
+stable path. The core normalizes each adapter issue in the fixed order
+`schema resolver -> scope -> exact owner trigger`; generated code does not use
+root-prefix filtering or copy leaf triggers onto ancestors. A resolver failure
+becomes a blocking internal issue before scope filtering, so an invalid adapter
+path cannot be hidden by a narrow validation run.
 
 `prepare_submit` uses one model snapshot and has a fixed order:
 
@@ -320,20 +330,42 @@ ChildFormStore::items_item_in(parent_field, item_id);
 These are typed lenses over the root form. They do not allocate another form
 store, own subscriptions, or copy business state.
 
-Stable IDs are unique within the array, immutable for a logical item, and never
-reused for another item during one form session. A missing or ambiguous item
-causes reads and writes through its generated handle to return
-`FormFieldError::ValueUnavailable`; accessors never choose the first duplicate.
-Duplicate or unconvertible IDs become blocking internal structural issues, and
-submit checks this invariant without requiring `validate(...)` on the array.
-Stable IDs preserve addressing across reorder, not an old validation result:
-reordering with a whole-array write invalidates descendant synchronous issues
-and async checks, and the next validation run maps fresh issues to those IDs.
+Stable IDs are unique within the current array and immutable through an
+identified-item handle. A missing or ambiguous item causes reads and writes
+through its generated handle to return `FormFieldError::ValueUnavailable`;
+accessors never choose the first duplicate. Replacing an identified item, or
+writing its generated ID leaf, with a different or unconvertible ID returns
+`FormFieldError::ItemIdentityChanged`. Either error is rejected on the cloned
+candidate and is a complete no-op. Duplicate or unconvertible IDs become
+blocking internal structural issues, and submit checks this invariant without
+requiring `validate(...)` on the array. Whole-array writes remain available for
+explicit add, remove, reorder, and replacement operations.
+
+Stable identity is nominal rather than historical. During one form session,
+the same `(array path, stable ID)` denotes the same logical item. The runtime
+does not track retired IDs; preserving an ID in a whole-array write updates that
+nominal item, while changing it is remove plus insert. Applications must assign
+a new ID to a new logical item. Reordering preserves addressing, but the
+whole-array write invalidates descendant synchronous issues and asynchronous
+checks so the next validation run maps fresh issues to the current IDs.
 
 Nested leaf validation is controlled by the leaf's generated schema. Ancestor
 groups and arrays do not repeat those triggers, and a nested `required` rule
-always propagates to submit. `validate(...)` on a group or array applies only
-to an issue attached to that exact parent path, such as an array-length rule.
+always propagates to submit. Exact ownership is recursive:
+
+| Stable path shape | Generated schema owner |
+| --- | --- |
+| `auth` | the declared `auth` group field |
+| `auth.username` | the child model's `username` field |
+| `headers` | the declared `headers` array field |
+| `headers[#id]` | the directly owning `headers` array field |
+| `headers[#id].name` | the item model's `name` field |
+
+The same rule applies to arrays inside groups, arrays inside identified items,
+and deeper combinations. An item root has no synthetic schema and does not
+grant the array ownership of item descendants. `validate(...)` on a group or
+array therefore applies only to an issue attached to that exact parent path—or
+for an array, its direct item root—not to a nested leaf.
 
 Garde recursion is a separate opt-in. When Garde owns nested rules, mark the
 group and array with `#[garde(dive)]`; the nested types also implement
@@ -353,11 +385,16 @@ struct ServerInput {
 }
 ```
 
-The derive implements `GardePathMapper`: paths such as `headers[2].name` are
-bounds-checked against the validated model, converted to the stable item ID,
-and then filtered by the nested leaf schema. Unknown fields, invalid indices,
-out-of-bounds indices, duplicate IDs, and invalid item IDs return a typed
-`GardePathError`; the runtime turns the failure into a blocking internal issue.
+The derive implements `GardePathMapper` for all array shapes: container
+(`headers`), direct item root (`headers[2]`), and item leaf
+(`headers[2].name`), recursively through nested groups and arrays. Indexed
+paths are bounds-checked against the validated model and converted to stable
+item IDs. Mapping does not inspect schema triggers; the built-in Garde adapter
+returns the complete mapped report, and the core separately performs exact
+schema resolution, scope filtering, and trigger filtering. Unknown fields,
+invalid indices, out-of-bounds indices, duplicate IDs, and invalid item IDs
+return a typed `GardePathError`; the runtime turns the failure into a blocking
+internal issue.
 
 ## Compile-time diagnostics
 

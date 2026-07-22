@@ -57,7 +57,10 @@ The derive also supports Garde or custom validation adapters, submit
 transforms, generic models, nested groups, and stable-ID arrays. Nested models
 derive `FormStore` independently but do not create child form entities;
 generated `*_in`, `*_item`, and `*_item_in` accessors remain typed lenses over
-the one root form value.
+the one root form value. The macro generates only pure model projections and
+recursive stable-path schema resolution; the core `FormField` transaction owns
+commit, validation, events, and notification exactly once. Array containers,
+direct item roots, and item leaves therefore keep distinct schema ownership.
 
 Use `#[form(store = ValueEditorStore)]` when the generated store needs an
 explicit name. This overrides only the store name; the field enum remains named

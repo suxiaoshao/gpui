@@ -3,12 +3,13 @@ use gpui::{Context, EventEmitter};
 use crate::{
     error::{ValidationIssue, ValidationReport},
     path::FieldPath,
-    schema::FormFieldId,
+    schema::{FormFieldId, FormModelSchema},
     submit::SubmitError,
     transform::SubmitTransform,
     trigger::ValidationTrigger,
     validation::{
-        FormValidationRuntime, ValidationAdapter, ValidationContextValue, ValidationScope,
+        FormValidationRuntime, StructuralValidate, ValidationAdapter, ValidationContextValue,
+        ValidationScope,
     },
 };
 
@@ -125,7 +126,7 @@ pub enum FormEvent<Field> {
 }
 
 pub trait FormStore: EventEmitter<FormEvent<Self::Field>> + Sized + 'static {
-    type Model: Clone + PartialEq + 'static;
+    type Model: Clone + PartialEq + StructuralValidate + FormModelSchema + 'static;
     type Output: 'static;
     type Field: FormFieldId;
     type ValidationContext: ValidationContextValue;
@@ -148,14 +149,50 @@ pub trait FormStore: EventEmitter<FormEvent<Self::Field>> + Sized + 'static {
     fn __runtime(&self) -> &FormRuntime<Self::Model, Self::ValidationContext>;
     #[doc(hidden)]
     fn __runtime_mut(&mut self) -> &mut FormRuntime<Self::Model, Self::ValidationContext>;
+    #[doc(hidden)]
+    fn __validate_snapshot(
+        &mut self,
+        snapshot: &Self::Model,
+        trigger: ValidationTrigger,
+        scope: ValidationScope,
+        cx: &mut Context<Self>,
+    );
 
     fn validate(
         &mut self,
         trigger: ValidationTrigger,
         scope: ValidationScope,
         cx: &mut Context<Self>,
-    );
-    fn prepare_submit(&mut self, cx: &mut Context<Self>) -> Result<Self::Output, SubmitError>;
+    ) {
+        let snapshot = self.value().clone();
+        self.__validate_snapshot(&snapshot, trigger, scope, cx);
+        cx.emit(FormEvent::RuntimeChanged);
+        cx.notify();
+    }
+
+    fn prepare_submit(&mut self, cx: &mut Context<Self>) -> Result<Self::Output, SubmitError> {
+        let snapshot = self.value().clone();
+        self.__validate_snapshot(
+            &snapshot,
+            ValidationTrigger::Submit,
+            ValidationScope::Form,
+            cx,
+        );
+        let report = self.validation_report();
+        let is_validating = self.is_validating();
+        cx.emit(FormEvent::RuntimeChanged);
+        cx.notify();
+
+        if !report.is_valid() {
+            return Err(SubmitError::Validation(report));
+        }
+        if is_validating {
+            return Err(SubmitError::ValidationPending);
+        }
+        Self::SubmitTransform::default()
+            .transform(&snapshot)
+            .map_err(SubmitError::Transform)
+    }
 
     fn value(&self) -> &Self::Model {
         self.__runtime().value()

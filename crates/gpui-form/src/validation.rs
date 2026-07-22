@@ -11,6 +11,7 @@ use crate::{
     control::{ControlId, ControlLifetime},
     error::{ValidationIssue, ValidationMessage, ValidationReport, ValidationSource},
     path::FieldPath,
+    schema::FormModelSchema,
     trigger::ValidationTrigger,
 };
 
@@ -125,6 +126,47 @@ impl ValidationAdapterReport {
     pub fn into_issues(self) -> Vec<ValidationIssue> {
         self.issues
     }
+}
+
+#[doc(hidden)]
+pub fn normalize_adapter_report<Model>(
+    model: &Model,
+    trigger: ValidationTrigger,
+    scope: &ValidationScope,
+    report: ValidationAdapterReport,
+) -> Vec<ValidationIssue>
+where
+    Model: FormModelSchema,
+{
+    report
+        .into_issues()
+        .into_iter()
+        .filter_map(|issue| {
+            if issue.source == ValidationSource::Internal {
+                return Some(issue);
+            }
+
+            let Some(path) = issue.path.as_ref() else {
+                return scope.includes(None).then_some(issue);
+            };
+            let schema = match model.schema_at_path(path.segments()) {
+                Ok(schema) => schema,
+                Err(reason) => {
+                    return Some(
+                        ValidationIssue::form(
+                            trigger,
+                            ValidationSource::Internal,
+                            "form_schema_path_resolution",
+                            ValidationMessage::key("gpui-form-error-internal"),
+                        )
+                        .with_param("path", path.to_string())
+                        .with_param("reason", reason.to_string()),
+                    );
+                }
+            };
+            (scope.includes(Some(path)) && schema.triggers().includes(trigger)).then_some(issue)
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -479,7 +521,7 @@ where
         &self,
         model: &T,
         trigger: ValidationTrigger,
-        scope: ValidationScope,
+        _scope: ValidationScope,
         context: ValidationContext<'_, Self::Context>,
         cx: &App,
     ) -> ValidationAdapterReport {
@@ -495,26 +537,23 @@ where
         for (path, error) in report.into_inner() {
             let garde_path = path.to_string();
             if garde_path.is_empty() {
-                if scope.includes(None) {
-                    issues.push(ValidationIssue::form(
-                        trigger,
-                        ValidationSource::Garde,
-                        "garde",
-                        ValidationMessage::localized(error.message().to_string()),
-                    ));
-                }
+                issues.push(ValidationIssue::form(
+                    trigger,
+                    ValidationSource::Garde,
+                    "garde",
+                    ValidationMessage::localized(error.message().to_string()),
+                ));
                 continue;
             }
 
             match model.map_garde_path(&garde_path) {
-                Ok(path) if scope.includes(Some(&path)) => issues.push(ValidationIssue::field(
+                Ok(path) => issues.push(ValidationIssue::field(
                     path,
                     trigger,
                     ValidationSource::Garde,
                     "garde",
                     ValidationMessage::localized(error.message().to_string()),
                 )),
-                Ok(_) => {}
                 Err(reason) => issues.push(
                     ValidationIssue::form(
                         trigger,
