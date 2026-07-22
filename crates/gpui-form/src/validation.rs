@@ -636,7 +636,7 @@ fn decode_garde_message(message: &str) -> DecodedGardeMessage {
 
 #[cfg(feature = "garde-adapter")]
 fn decode_garde_hex(encoded: &str) -> Result<Vec<u8>, &'static str> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return Err("Garde message envelope has an odd hexadecimal payload length");
     }
     let mut decoded = Vec::with_capacity(encoded.len() / 2);
