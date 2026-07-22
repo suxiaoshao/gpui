@@ -56,7 +56,7 @@ pub(crate) enum ValidationAdapterKind {
     #[default]
     None,
     Garde {
-        i18n: Option<Box<TypePath>>,
+        messages: Option<Box<TypePath>>,
     },
     Custom {
         adapter: Box<TypePath>,
@@ -360,7 +360,8 @@ fn parse_validation(input: ParseStream<'_>) -> Result<ValidationAdapterKind> {
     }
     let mut adapter = None;
     let mut context = None;
-    let mut i18n = None;
+    let mut messages = None;
+    let mut messages_span = None;
     while !input.is_empty() {
         let key: Ident = input.parse()?;
         input.parse::<Token![=]>()?;
@@ -380,7 +381,7 @@ fn parse_validation(input: ParseStream<'_>) -> Result<ValidationAdapterKind> {
                             "unsupported validation adapter",
                         ));
                     }
-                    adapter = Some(ValidationAdapterKind::Garde { i18n: None });
+                    adapter = Some(ValidationAdapterKind::Garde { messages: None });
                 } else {
                     adapter = Some(ValidationAdapterKind::Custom {
                         adapter: Box::new(parse_type_path(input)?),
@@ -398,13 +399,20 @@ fn parse_validation(input: ParseStream<'_>) -> Result<ValidationAdapterKind> {
                 context = Some(Box::new(parse_type_path(input)?));
             }
             "i18n" => {
-                if i18n.is_some() {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "validation option `i18n` was removed; use `messages = ProviderType` for a Garde semantic-message provider",
+                ));
+            }
+            "messages" => {
+                if messages.is_some() {
                     return Err(syn::Error::new(
                         key.span(),
-                        "duplicate validation option `i18n`",
+                        "duplicate validation option `messages`",
                     ));
                 }
-                i18n = Some(Box::new(parse_type_path(input)?));
+                messages_span = Some(key.span());
+                messages = Some(Box::new(parse_type_path(input)?));
             }
             _ => return Err(syn::Error::new(key.span(), "unsupported validation option")),
         }
@@ -415,17 +423,21 @@ fn parse_validation(input: ParseStream<'_>) -> Result<ValidationAdapterKind> {
             context.unwrap(),
             "Garde validation context comes from garde::Validate::Context",
         )),
-        ValidationAdapterKind::Garde { .. } => Ok(ValidationAdapterKind::Garde { i18n }),
-        ValidationAdapterKind::Custom { .. } if i18n.is_some() => Err(syn::Error::new_spanned(
-            i18n.unwrap(),
-            "i18n is only supported by the Garde adapter",
+        ValidationAdapterKind::Garde { .. } => Ok(ValidationAdapterKind::Garde { messages }),
+        ValidationAdapterKind::Custom { .. } if messages.is_some() => Err(syn::Error::new(
+            messages_span.expect("messages span recorded with value"),
+            "`messages` is only supported by the Garde adapter",
         )),
         ValidationAdapterKind::Custom { adapter, .. } => {
             Ok(ValidationAdapterKind::Custom { adapter, context })
         }
-        ValidationAdapterKind::None if context.is_some() || i18n.is_some() => Err(syn::Error::new(
+        ValidationAdapterKind::None if messages.is_some() => Err(syn::Error::new(
+            messages_span.expect("messages span recorded with value"),
+            "`messages` is only supported by the Garde adapter",
+        )),
+        ValidationAdapterKind::None if context.is_some() => Err(syn::Error::new(
             input.span(),
-            "validation context/i18n requires an adapter",
+            "validation context requires an adapter",
         )),
         ValidationAdapterKind::None => Ok(ValidationAdapterKind::None),
     }
@@ -485,19 +497,19 @@ mod tests {
     use syn::{Attribute, parse_quote};
 
     #[test]
-    fn parses_garde_i18n_provider_without_custom_context() {
+    fn parses_garde_message_provider_without_custom_context() {
         let attrs: Vec<Attribute> = vec![parse_quote!(
-            #[form(validation(adapter = "garde", i18n = AppI18nProvider))]
+            #[form(validation(adapter = "garde", messages = AppMessageProvider))]
         )];
         let parsed = FormAttributes::parse(&attrs).expect("valid Garde configuration");
         assert!(matches!(
             parsed.validation,
-            ValidationAdapterKind::Garde { i18n: Some(_) }
+            ValidationAdapterKind::Garde { messages: Some(_) }
         ));
     }
 
     #[test]
-    fn rejects_context_for_garde_and_i18n_for_custom_adapter() {
+    fn rejects_context_for_garde_and_messages_for_other_adapters() {
         let garde: Vec<Attribute> = vec![parse_quote!(
             #[form(validation(adapter = "garde", context = AppContext))]
         )];
@@ -510,14 +522,54 @@ mod tests {
         );
 
         let custom: Vec<Attribute> = vec![parse_quote!(
-            #[form(validation(adapter = AppValidator, i18n = AppI18nProvider))]
+            #[form(validation(adapter = AppValidator, messages = AppMessageProvider))]
         )];
         assert!(
             FormAttributes::parse(&custom)
                 .err()
-                .expect("custom i18n must be rejected")
+                .expect("custom messages must be rejected")
                 .to_string()
                 .contains("only supported by the Garde adapter")
+        );
+
+        let none: Vec<Attribute> = vec![parse_quote!(
+            #[form(validation(messages = AppMessageProvider))]
+        )];
+        assert!(
+            FormAttributes::parse(&none)
+                .err()
+                .expect("messages without an adapter must be rejected")
+                .to_string()
+                .contains("only supported by the Garde adapter")
+        );
+    }
+
+    #[test]
+    fn rejects_removed_i18n_and_duplicate_messages_options() {
+        let removed: Vec<Attribute> = vec![parse_quote!(
+            #[form(validation(adapter = "garde", i18n = AppI18nProvider))]
+        )];
+        assert!(
+            FormAttributes::parse(&removed)
+                .err()
+                .expect("removed i18n option must be rejected")
+                .to_string()
+                .contains("validation option `i18n` was removed")
+        );
+
+        let duplicate: Vec<Attribute> = vec![parse_quote!(
+            #[form(validation(
+                adapter = "garde",
+                messages = FirstMessageProvider,
+                messages = SecondMessageProvider
+            ))]
+        )];
+        assert!(
+            FormAttributes::parse(&duplicate)
+                .err()
+                .expect("duplicate messages option must be rejected")
+                .to_string()
+                .contains("duplicate validation option `messages`")
         );
     }
 

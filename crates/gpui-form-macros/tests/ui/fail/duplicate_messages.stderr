@@ -1,0 +1,5 @@
+error: duplicate validation option `messages`
+ --> tests/ui/fail/duplicate_messages.rs:4:64
+  |
+4 | #[form(validation(adapter = "garde", messages = FirstProvider, messages = SecondProvider))]
+  |                                                                ^^^^^^^^

@@ -76,7 +76,7 @@ pub(in crate::features::settings::provider) fn localized_api_mode_choices(
 #[garde(context(super::ProviderValidationContext))]
 #[form(
     store = CustomOpenAiProviderFormStore,
-    validation(adapter = "garde", i18n = super::JacoGardeI18nProvider),
+    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
     transform(adapter = super::CustomOpenAiProviderTransform)
 )]
 pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput {

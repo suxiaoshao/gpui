@@ -1,8 +1,9 @@
-use fluent_bundle::FluentArgs;
 use gpui_form::typed::{SubmitTransform, TransformReport};
 use jaco_core::PromptId;
 
-use super::super::form_validation::{JacoGardeI18nProvider, JacoValidationContext};
+use super::super::form_validation::{
+    JacoGardeMessageProvider, JacoValidationContext, garde_message,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct PromptValidationDependencies {
@@ -16,7 +17,7 @@ pub(super) type PromptEditValidationContext = JacoValidationContext<PromptValida
 #[garde(context(PromptEditValidationContext))]
 #[form(
     store = PromptEditFormStore,
-    validation(adapter = "garde", i18n = JacoGardeI18nProvider),
+    validation(adapter = "garde", messages = JacoGardeMessageProvider),
     transform(adapter = PromptEditTransform)
 )]
 pub(super) struct PromptEditFormInput {
@@ -47,7 +48,10 @@ fn validate_prompt_name(value: &str, context: &PromptEditValidationContext) -> g
             context.dependencies.prompt_id.as_ref() != Some(prompt_id) && prompt_name.trim() == name
         });
     if duplicate {
-        return Err(context.error("prompt-validation-name-duplicate", &FluentArgs::new()));
+        return Err(garde_message(
+            "prompt-validation-name-duplicate",
+            std::iter::empty(),
+        ));
     }
     Ok(())
 }

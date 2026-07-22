@@ -515,6 +515,11 @@ where
                 },
             ));
         }
+        orchestration_subscriptions.push(
+            cx.observe_global_in::<I18n>(window, |controller, window, cx| {
+                controller.refresh_locale(window, cx)
+            }),
+        );
 
         Self {
             model_field,
@@ -592,6 +597,65 @@ where
         self.sync_model_picker(selected.clone(), window, cx);
         self.sync_reasoning_picker(capability.clone(), reasoning.clone(), window, cx);
         self.sync_token_budget_control(window, cx);
+        cx.notify();
+    }
+
+    fn refresh_locale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (model_choices, selected_model, model_picker) = {
+            let state = self.controls.model.read(cx);
+            (
+                state.choices.clone(),
+                state.selected.clone(),
+                state.picker.clone(),
+            )
+        };
+        let model_sections =
+            model_sections(model_choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
+        let model_empty = model_empty_label(&model_choices, cx.global::<I18n>());
+        model_picker.update(cx, |picker, cx| {
+            picker
+                .delegate_mut()
+                .replace_projection(model_sections, model_empty, selected_model);
+            let ix = picker.delegate().selected_index();
+            picker.set_selected_index(ix, window, cx);
+        });
+
+        let (capability, selected_reasoning, reasoning_picker) = {
+            let state = self.controls.reasoning.read(cx);
+            (
+                state.capability.clone(),
+                state.selected.clone(),
+                state.picker.clone(),
+            )
+        };
+        let reasoning_sections =
+            effort_select::effort_sections(capability.as_ref(), cx.global::<I18n>());
+        let reasoning_empty = cx.global::<I18n>().t("chat-form-effort-empty").into();
+        reasoning_picker.update(cx, |picker, cx| {
+            picker.delegate_mut().replace_projection(
+                reasoning_sections,
+                reasoning_empty,
+                selected_reasoning,
+            );
+            let ix = picker.delegate().selected_index();
+            picker.set_selected_index(ix, window, cx);
+        });
+
+        let (selected_approval, approval_picker) = {
+            let state = self.controls.approval.read(cx);
+            (state.selected, state.picker.clone())
+        };
+        let approval_sections = approval_select::approval_mode_sections(cx.global::<I18n>());
+        approval_picker.update(cx, |picker, cx| {
+            picker.delegate_mut().replace_projection(
+                approval_sections,
+                SharedString::from(""),
+                Some(selected_approval),
+            );
+            let ix = picker.delegate().selected_index();
+            picker.set_selected_index(ix, window, cx);
+        });
+
         cx.notify();
     }
 

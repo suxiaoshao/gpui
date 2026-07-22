@@ -536,11 +536,11 @@ fn validation_parts(
             quote!(::gpui_form::typed::NoValidationContext),
             quote!(::gpui_form::typed::NoopValidationAdapter),
         ),
-        ValidationAdapterKind::Garde { i18n } => {
-            let provider = i18n
+        ValidationAdapterKind::Garde { messages } => {
+            let provider = messages
                 .as_ref()
                 .map(|provider| quote!(#provider))
-                .unwrap_or_else(|| quote!(::gpui_form::typed::DefaultGardeI18nProvider));
+                .unwrap_or_else(|| quote!(::gpui_form::typed::DefaultGardeMessageProvider));
             (
                 quote!(<#model as ::garde::Validate>::Context),
                 quote!(::gpui_form::typed::GardeAdapter<#model, #provider>),

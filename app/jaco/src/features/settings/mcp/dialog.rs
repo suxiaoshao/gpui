@@ -8,7 +8,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -83,7 +83,6 @@ pub(super) struct McpServerEditDialogState {
     draft_oauth_credential_keys: BTreeSet<state::mcp_oauth::CredentialsKey>,
     sign_out_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
-    _subscriptions: Vec<Subscription>,
 }
 
 struct McpOAuthDialogTarget {
@@ -137,17 +136,6 @@ impl McpServerEditDialogState {
         let server_for_draft = server.clone().unwrap_or_default();
         let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
         let components = McpServerFormComponents::bind(&draft.form, window, cx);
-        let form_for_locale = draft.form.downgrade();
-        let locale_subscription = cx.observe_global::<I18n>(move |_dialog, cx| {
-            let form = form_for_locale.clone();
-            cx.defer(move |cx| {
-                let Some(form) = form.upgrade() else { return };
-                form.update(cx, |form, cx| {
-                    let context = form.validation_context().relocalized(cx);
-                    form.set_validation_context(context, cx);
-                });
-            });
-        });
 
         Self {
             mode,
@@ -163,7 +151,6 @@ impl McpServerEditDialogState {
             draft_oauth_credential_keys: BTreeSet::new(),
             sign_out_task: None,
             save_task: None,
-            _subscriptions: vec![locale_subscription],
         }
     }
 
@@ -228,7 +215,7 @@ impl McpServerEditDialogState {
         let form = cx.entity().downgrade();
         let prepared = self.draft.form.update(cx, |form_store, cx| {
             form_store.set_validation_context(
-                mcp_validation_context(original_server_id.clone(), existing_server_ids.clone(), cx),
+                mcp_validation_context(original_server_id.clone(), existing_server_ids.clone()),
                 cx,
             );
             let revision = form_store.revision();
@@ -823,7 +810,7 @@ impl McpServerEditDialogState {
         });
         self.draft.form.update(cx, |form, cx| {
             form.set_validation_context(
-                mcp_validation_context(original_server_id, existing_server_ids, cx),
+                mcp_validation_context(original_server_id, existing_server_ids),
                 cx,
             );
             form.validate(trigger, ValidationScope::Form, cx);

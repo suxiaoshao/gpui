@@ -61,7 +61,7 @@ pub enum ValidationMessage {
         key: Cow<'static, str>,
         params: ErrorParams,
     },
-    Localized(Cow<'static, str>),
+    Literal(Cow<'static, str>),
 }
 
 impl ValidationMessage {
@@ -72,8 +72,8 @@ impl ValidationMessage {
         }
     }
 
-    pub fn localized(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::Localized(message.into())
+    pub fn literal(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::Literal(message.into())
     }
 
     pub fn with_param(

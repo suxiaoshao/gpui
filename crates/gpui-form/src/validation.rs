@@ -456,39 +456,427 @@ impl fmt::Display for GardePathError {
 impl std::error::Error for GardePathError {}
 
 #[cfg(feature = "garde-adapter")]
-pub trait GardeI18nProvider<C>: 'static
-where
-    C: ValidationContextValue,
-{
-    type Handler<'a>: garde::i18n::I18n + 'a
-    where
-        C: 'a;
+pub enum GardeRule {
+    LengthLowerThan {
+        min: usize,
+    },
+    LengthGreaterThan {
+        max: usize,
+    },
+    RangeLowerThan {
+        min: Cow<'static, str>,
+    },
+    RangeGreaterThan {
+        max: Cow<'static, str>,
+    },
+    CreditCardInvalid {
+        reason: garde::i18n::InvalidCreditCard,
+    },
+    PatternNoMatch {
+        pattern: Cow<'static, str>,
+    },
+    ContainsMissing {
+        pattern: Cow<'static, str>,
+    },
+    UrlInvalid {
+        reason: garde::i18n::InvalidUrl,
+    },
+    PrefixMissing {
+        pattern: Cow<'static, str>,
+    },
+    SuffixMissing {
+        pattern: Cow<'static, str>,
+    },
+    PhoneNumberInvalid {
+        reason: garde::i18n::InvalidPhoneNumber,
+    },
+    IpInvalid {
+        kind: garde::i18n::IpKind,
+    },
+    MatchesFieldMismatch {
+        field: Cow<'static, str>,
+    },
+    EmailInvalid {
+        reason: garde::i18n::InvalidEmail,
+    },
+    AsciiInvalid,
+    AlphanumericInvalid,
+    RequiredNotSet,
+}
 
-    fn handler<'a>(context: &'a C, cx: &'a App) -> Self::Handler<'a>;
+#[cfg(feature = "garde-adapter")]
+pub trait GardeMessageProvider: 'static {
+    fn message(rule: GardeRule) -> ValidationMessage;
 }
 
 #[cfg(feature = "garde-adapter")]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct DefaultGardeI18nProvider;
+pub struct DefaultGardeMessageProvider;
 
 #[cfg(feature = "garde-adapter")]
-impl<C> GardeI18nProvider<C> for DefaultGardeI18nProvider
-where
-    C: ValidationContextValue,
-{
-    type Handler<'a>
-        = garde::i18n::DefaultI18n
-    where
-        C: 'a;
+impl GardeMessageProvider for DefaultGardeMessageProvider {
+    fn message(rule: GardeRule) -> ValidationMessage {
+        use garde::i18n::I18n as _;
 
-    fn handler<'a>(_context: &'a C, _cx: &'a App) -> Self::Handler<'a> {
-        garde::i18n::DefaultI18n
+        let handler = garde::i18n::DefaultI18n;
+        let message = match rule {
+            GardeRule::LengthLowerThan { min } => handler.length_lower_than(min),
+            GardeRule::LengthGreaterThan { max } => handler.length_greater_than(max),
+            GardeRule::RangeLowerThan { min } => handler.range_lower_than(&min),
+            GardeRule::RangeGreaterThan { max } => handler.range_greater_than(&max),
+            GardeRule::CreditCardInvalid { reason } => handler.credit_card_invalid(reason),
+            GardeRule::PatternNoMatch { pattern } => handler.pattern_no_match(&pattern),
+            GardeRule::ContainsMissing { pattern } => handler.contains_missing(&pattern),
+            GardeRule::UrlInvalid { reason } => handler.url_invalid(reason),
+            GardeRule::PrefixMissing { pattern } => handler.prefix_missing(&pattern),
+            GardeRule::SuffixMissing { pattern } => handler.suffix_missing(&pattern),
+            GardeRule::PhoneNumberInvalid { reason } => handler.phone_number_invalid(reason),
+            GardeRule::IpInvalid { kind } => handler.ip_invalid(kind),
+            GardeRule::MatchesFieldMismatch { field } => handler.matches_field_mismatch(&field),
+            GardeRule::EmailInvalid { reason } => handler.email_invalid(reason),
+            GardeRule::AsciiInvalid => handler.ascii_invalid(),
+            GardeRule::AlphanumericInvalid => handler.alphanumeric_invalid(),
+            GardeRule::RequiredNotSet => handler.required_not_set(),
+        };
+        ValidationMessage::literal(message)
     }
 }
 
 #[cfg(feature = "garde-adapter")]
+const GARDE_MESSAGE_ENVELOPE_NAMESPACE: &str = "\0gpui-form:garde-message:";
+#[cfg(feature = "garde-adapter")]
+const GARDE_MESSAGE_ENVELOPE_V1: &str = "\0gpui-form:garde-message:v1:";
+
+#[cfg(feature = "garde-adapter")]
+fn encode_garde_message(message: &ValidationMessage) -> String {
+    let mut payload = Vec::new();
+    match message {
+        ValidationMessage::Key { key, params } => {
+            payload.push(0);
+            encode_garde_string(&mut payload, key);
+            encode_garde_len(&mut payload, params.len());
+            for (key, value) in params {
+                encode_garde_string(&mut payload, key);
+                match value {
+                    crate::error::ErrorParamValue::String(value) => {
+                        payload.push(0);
+                        encode_garde_string(&mut payload, value);
+                    }
+                    crate::error::ErrorParamValue::Integer(value) => {
+                        payload.push(1);
+                        payload.extend_from_slice(&value.to_be_bytes());
+                    }
+                    crate::error::ErrorParamValue::Unsigned(value) => {
+                        payload.push(2);
+                        payload.extend_from_slice(&value.to_be_bytes());
+                    }
+                    crate::error::ErrorParamValue::Float(value) => {
+                        payload.push(3);
+                        payload.extend_from_slice(&value.to_bits().to_be_bytes());
+                    }
+                    crate::error::ErrorParamValue::Bool(value) => {
+                        payload.push(4);
+                        payload.push(u8::from(*value));
+                    }
+                }
+            }
+        }
+        ValidationMessage::Literal(message) => {
+            payload.push(1);
+            encode_garde_string(&mut payload, message);
+        }
+    }
+
+    let mut envelope = String::with_capacity(GARDE_MESSAGE_ENVELOPE_V1.len() + payload.len() * 2);
+    envelope.push_str(GARDE_MESSAGE_ENVELOPE_V1);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in payload {
+        envelope.push(HEX[usize::from(byte >> 4)] as char);
+        envelope.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    envelope
+}
+
+#[cfg(feature = "garde-adapter")]
+fn encode_garde_len(payload: &mut Vec<u8>, len: usize) {
+    let len = u64::try_from(len).expect("Garde message envelope length exceeds u64");
+    payload.extend_from_slice(&len.to_be_bytes());
+}
+
+#[cfg(feature = "garde-adapter")]
+fn encode_garde_string(payload: &mut Vec<u8>, value: &str) {
+    encode_garde_len(payload, value.len());
+    payload.extend_from_slice(value.as_bytes());
+}
+
+#[cfg(feature = "garde-adapter")]
+enum DecodedGardeMessage {
+    NotEnvelope,
+    Message(ValidationMessage),
+    Malformed(&'static str),
+}
+
+#[cfg(feature = "garde-adapter")]
+fn decode_garde_message(message: &str) -> DecodedGardeMessage {
+    if !message.starts_with(GARDE_MESSAGE_ENVELOPE_NAMESPACE) {
+        return DecodedGardeMessage::NotEnvelope;
+    }
+    let Some(payload) = message.strip_prefix(GARDE_MESSAGE_ENVELOPE_V1) else {
+        return DecodedGardeMessage::Malformed("unsupported Garde message envelope version");
+    };
+    let payload = match decode_garde_hex(payload) {
+        Ok(payload) => payload,
+        Err(reason) => return DecodedGardeMessage::Malformed(reason),
+    };
+    match decode_garde_payload(&payload) {
+        Ok(message) => DecodedGardeMessage::Message(message),
+        Err(reason) => DecodedGardeMessage::Malformed(reason),
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+fn decode_garde_hex(encoded: &str) -> Result<Vec<u8>, &'static str> {
+    if encoded.len() % 2 != 0 {
+        return Err("Garde message envelope has an odd hexadecimal payload length");
+    }
+    let mut decoded = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let high = decode_garde_hex_digit(pair[0])?;
+        let low = decode_garde_hex_digit(pair[1])?;
+        decoded.push((high << 4) | low);
+    }
+    Ok(decoded)
+}
+
+#[cfg(feature = "garde-adapter")]
+fn decode_garde_hex_digit(value: u8) -> Result<u8, &'static str> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err("Garde message envelope contains non-hexadecimal data"),
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+fn decode_garde_payload(payload: &[u8]) -> Result<ValidationMessage, &'static str> {
+    let mut reader = GardeMessageReader::new(payload);
+    let message = match reader.read_byte()? {
+        0 => {
+            let key = Cow::Owned(reader.read_string()?);
+            let param_count = reader.read_len()?;
+            let mut params = BTreeMap::new();
+            for _ in 0..param_count {
+                let key = Cow::Owned(reader.read_string()?);
+                let value = match reader.read_byte()? {
+                    0 => crate::error::ErrorParamValue::String(Cow::Owned(reader.read_string()?)),
+                    1 => crate::error::ErrorParamValue::Integer(reader.read_i64()?),
+                    2 => crate::error::ErrorParamValue::Unsigned(reader.read_u64()?),
+                    3 => crate::error::ErrorParamValue::Float(f64::from_bits(reader.read_u64()?)),
+                    4 => match reader.read_byte()? {
+                        0 => crate::error::ErrorParamValue::Bool(false),
+                        1 => crate::error::ErrorParamValue::Bool(true),
+                        _ => return Err("Garde message envelope contains an invalid boolean"),
+                    },
+                    _ => return Err("Garde message envelope contains an unknown parameter type"),
+                };
+                if params.insert(key, value).is_some() {
+                    return Err("Garde message envelope contains duplicate parameter keys");
+                }
+            }
+            ValidationMessage::Key { key, params }
+        }
+        1 => ValidationMessage::Literal(Cow::Owned(reader.read_string()?)),
+        _ => return Err("Garde message envelope contains an unknown message type"),
+    };
+    if !reader.is_empty() {
+        return Err("Garde message envelope contains trailing data");
+    }
+    Ok(message)
+}
+
+#[cfg(feature = "garde-adapter")]
+struct GardeMessageReader<'a> {
+    payload: &'a [u8],
+    cursor: usize,
+}
+
+#[cfg(feature = "garde-adapter")]
+impl<'a> GardeMessageReader<'a> {
+    fn new(payload: &'a [u8]) -> Self {
+        Self { payload, cursor: 0 }
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], &'static str> {
+        let end = self
+            .cursor
+            .checked_add(len)
+            .ok_or("Garde message envelope length overflow")?;
+        let value = self
+            .payload
+            .get(self.cursor..end)
+            .ok_or("Garde message envelope ended unexpectedly")?;
+        self.cursor = end;
+        Ok(value)
+    }
+
+    fn read_byte(&mut self) -> Result<u8, &'static str> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u64(&mut self) -> Result<u64, &'static str> {
+        let bytes: [u8; 8] = self
+            .read_exact(8)?
+            .try_into()
+            .expect("Garde message reader requested exactly eight bytes");
+        Ok(u64::from_be_bytes(bytes))
+    }
+
+    fn read_i64(&mut self) -> Result<i64, &'static str> {
+        let bytes: [u8; 8] = self
+            .read_exact(8)?
+            .try_into()
+            .expect("Garde message reader requested exactly eight bytes");
+        Ok(i64::from_be_bytes(bytes))
+    }
+
+    fn read_len(&mut self) -> Result<usize, &'static str> {
+        usize::try_from(self.read_u64()?)
+            .map_err(|_| "Garde message envelope length exceeds this platform")
+    }
+
+    fn read_string(&mut self) -> Result<String, &'static str> {
+        let len = self.read_len()?;
+        let value = std::str::from_utf8(self.read_exact(len)?)
+            .map_err(|_| "Garde message envelope contains invalid UTF-8")?;
+        Ok(value.to_owned())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.cursor == self.payload.len()
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+struct GardeMessageI18n<P> {
+    marker: std::marker::PhantomData<fn() -> P>,
+}
+
+#[cfg(feature = "garde-adapter")]
+impl<P> Default for GardeMessageI18n<P> {
+    fn default() -> Self {
+        Self {
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+impl<P> GardeMessageI18n<P>
+where
+    P: GardeMessageProvider,
+{
+    fn message(rule: GardeRule) -> Cow<'static, str> {
+        Cow::Owned(encode_garde_message(&P::message(rule)))
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+impl<P> garde::i18n::I18n for GardeMessageI18n<P>
+where
+    P: GardeMessageProvider,
+{
+    fn length_lower_than(&self, min: usize) -> Cow<'static, str> {
+        Self::message(GardeRule::LengthLowerThan { min })
+    }
+
+    fn length_greater_than(&self, max: usize) -> Cow<'static, str> {
+        Self::message(GardeRule::LengthGreaterThan { max })
+    }
+
+    fn range_lower_than(&self, min: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::RangeLowerThan {
+            min: Cow::Owned(min.to_string()),
+        })
+    }
+
+    fn range_greater_than(&self, max: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::RangeGreaterThan {
+            max: Cow::Owned(max.to_string()),
+        })
+    }
+
+    fn credit_card_invalid(&self, reason: garde::i18n::InvalidCreditCard) -> Cow<'static, str> {
+        Self::message(GardeRule::CreditCardInvalid { reason })
+    }
+
+    fn pattern_no_match(&self, pattern: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::PatternNoMatch {
+            pattern: Cow::Owned(pattern.to_string()),
+        })
+    }
+
+    fn contains_missing(&self, pattern: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::ContainsMissing {
+            pattern: Cow::Owned(pattern.to_string()),
+        })
+    }
+
+    fn url_invalid(&self, reason: garde::i18n::InvalidUrl) -> Cow<'static, str> {
+        Self::message(GardeRule::UrlInvalid { reason })
+    }
+
+    fn prefix_missing(&self, pattern: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::PrefixMissing {
+            pattern: Cow::Owned(pattern.to_string()),
+        })
+    }
+
+    fn suffix_missing(&self, pattern: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::SuffixMissing {
+            pattern: Cow::Owned(pattern.to_string()),
+        })
+    }
+
+    fn phone_number_invalid(&self, reason: garde::i18n::InvalidPhoneNumber) -> Cow<'static, str> {
+        Self::message(GardeRule::PhoneNumberInvalid { reason })
+    }
+
+    fn ip_invalid(&self, kind: garde::i18n::IpKind) -> Cow<'static, str> {
+        Self::message(GardeRule::IpInvalid { kind })
+    }
+
+    fn matches_field_mismatch(&self, field: &dyn fmt::Display) -> Cow<'static, str> {
+        Self::message(GardeRule::MatchesFieldMismatch {
+            field: Cow::Owned(field.to_string()),
+        })
+    }
+
+    fn email_invalid(&self, reason: garde::i18n::InvalidEmail) -> Cow<'static, str> {
+        Self::message(GardeRule::EmailInvalid { reason })
+    }
+
+    fn ascii_invalid(&self) -> Cow<'static, str> {
+        Self::message(GardeRule::AsciiInvalid)
+    }
+
+    fn alphanumeric_invalid(&self) -> Cow<'static, str> {
+        Self::message(GardeRule::AlphanumericInvalid)
+    }
+
+    fn required_not_set(&self) -> Cow<'static, str> {
+        Self::message(GardeRule::RequiredNotSet)
+    }
+}
+
+#[cfg(feature = "garde-adapter")]
+pub fn garde_error(message: ValidationMessage) -> garde::Error {
+    garde::Error::new(encode_garde_message(&message))
+}
+
+#[cfg(feature = "garde-adapter")]
 #[derive(Clone, Copy, Debug)]
-pub struct GardeAdapter<T, P = DefaultGardeI18nProvider> {
+pub struct GardeAdapter<T, P = DefaultGardeMessageProvider> {
     marker: std::marker::PhantomData<fn() -> (T, P)>,
 }
 
@@ -513,7 +901,7 @@ impl<T, P> ValidationAdapter<T> for GardeAdapter<T, P>
 where
     T: garde::Validate + GardePathMapper + 'static,
     T::Context: ValidationContextValue,
-    P: GardeI18nProvider<T::Context>,
+    P: GardeMessageProvider,
 {
     type Context = T::Context;
 
@@ -523,10 +911,9 @@ where
         trigger: ValidationTrigger,
         _scope: ValidationScope,
         context: ValidationContext<'_, Self::Context>,
-        cx: &App,
+        _cx: &App,
     ) -> ValidationAdapterReport {
-        let handler = P::handler(context.external, cx);
-        let result = garde::i18n::with_i18n(handler, || {
+        let result = garde::i18n::with_i18n(GardeMessageI18n::<P>::default(), || {
             garde::Validate::validate_with(model, context.external)
         });
         let Err(report) = result else {
@@ -536,12 +923,31 @@ where
         let mut issues = Vec::new();
         for (path, error) in report.into_inner() {
             let garde_path = path.to_string();
+            let message = match decode_garde_message(error.message()) {
+                DecodedGardeMessage::NotEnvelope => {
+                    ValidationMessage::literal(error.message().to_owned())
+                }
+                DecodedGardeMessage::Message(message) => message,
+                DecodedGardeMessage::Malformed(reason) => {
+                    issues.push(
+                        ValidationIssue::form(
+                            trigger,
+                            ValidationSource::Internal,
+                            "garde_message_envelope",
+                            ValidationMessage::key("gpui-form-error-internal"),
+                        )
+                        .with_param("path", garde_path)
+                        .with_param("reason", reason),
+                    );
+                    continue;
+                }
+            };
             if garde_path.is_empty() {
                 issues.push(ValidationIssue::form(
                     trigger,
                     ValidationSource::Garde,
                     "garde",
-                    ValidationMessage::localized(error.message().to_string()),
+                    message,
                 ));
                 continue;
             }
@@ -552,7 +958,7 @@ where
                     trigger,
                     ValidationSource::Garde,
                     "garde",
-                    ValidationMessage::localized(error.message().to_string()),
+                    message,
                 )),
                 Err(reason) => issues.push(
                     ValidationIssue::form(

@@ -1,0 +1,5 @@
+error: `messages` is only supported by the Garde adapter
+ --> tests/ui/fail/invalid_custom_messages.rs:4:43
+  |
+4 | #[form(validation(adapter = AppValidator, messages = AppMessageProvider))]
+  |                                           ^^^^^^^^

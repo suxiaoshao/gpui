@@ -506,6 +506,7 @@ mcp-validation-header-reserved = Header "{ $name }" is managed by MCP or auth an
 mcp-validation-header-row-incomplete = Header rows need both a name and a value.
 mcp-validation-bearer-env-invalid = Bearer token environment variable "{ $name }" must match [A-Za-z_][A-Za-z0-9_]*.
 mcp-validation-cwd-invalid = Working directory is invalid.
+mcp-validation-path-invalid = Invalid MCP validation path: { $reason }.
 validation-garde-length-min = Must contain at least { $min } characters.
 validation-garde-length-max = Must contain at most { $max } characters.
 validation-garde-range-min = Must be at least { $min }.

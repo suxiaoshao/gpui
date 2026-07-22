@@ -2,15 +2,16 @@ use std::collections::BTreeMap;
 
 use gpui::{App, AppContext as _, Context, Entity, EntityId, Window};
 use gpui_form::typed::{
-    FormRevision, FormStore as _, SubmitError, SubmitTransform, TransformReport, ValidationReport,
-    ValidationScope, ValidationTrigger,
+    ErrorParamValue, FormRevision, FormStore as _, SubmitError, SubmitTransform, TransformReport,
+    ValidationReport, ValidationScope, ValidationTrigger,
 };
 use jaco_core::{
     ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
 };
 
-use crate::features::settings::form_validation::{JacoGardeI18nProvider, JacoValidationContext};
-use fluent_bundle::FluentArgs;
+use crate::features::settings::form_validation::{
+    JacoGardeMessageProvider, JacoValidationContext, garde_message,
+};
 
 use super::{catalog::ProviderFormKind, draft::ProviderFormSeed};
 
@@ -107,11 +108,8 @@ impl Default for ProviderValidationDependencies {
 
 pub(super) type ProviderValidationContext = JacoValidationContext<ProviderValidationDependencies>;
 
-fn provider_validation_context(
-    secret_refs: ProviderSecretRefs,
-    cx: &App,
-) -> ProviderValidationContext {
-    ProviderValidationContext::new(ProviderValidationDependencies { secret_refs }, cx)
+fn provider_validation_context(secret_refs: ProviderSecretRefs) -> ProviderValidationContext {
+    ProviderValidationContext::new(ProviderValidationDependencies { secret_refs })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -272,21 +270,21 @@ impl ProviderSettingsForm {
             ProviderFormKind::ApiKey => Self::ApiKey(cx.new(|cx| {
                 ApiKeyProviderFormStore::from_value_with_validation_context(
                     ApiKeyProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone(), cx),
+                    provider_validation_context(seed.existing_secret_refs.clone()),
                     cx,
                 )
             })),
             ProviderFormKind::Ollama => Self::Ollama(cx.new(|cx| {
                 OllamaProviderFormStore::from_value_with_validation_context(
                     OllamaProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone(), cx),
+                    provider_validation_context(seed.existing_secret_refs.clone()),
                     cx,
                 )
             })),
             ProviderFormKind::CustomOpenAiCompatible => Self::CustomOpenAi(cx.new(|cx| {
                 CustomOpenAiProviderFormStore::from_value_with_validation_context(
                     CustomOpenAiProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone(), cx),
+                    provider_validation_context(seed.existing_secret_refs.clone()),
                     cx,
                 )
             })),
@@ -298,23 +296,6 @@ impl ProviderSettingsForm {
             Self::ApiKey(form) => form.entity_id(),
             Self::Ollama(form) => form.entity_id(),
             Self::CustomOpenAi(form) => form.entity_id(),
-        }
-    }
-
-    pub(super) fn relocalize_validation(&self, cx: &mut App) {
-        match self {
-            Self::ApiKey(form) => form.update(cx, |form, cx| {
-                let context = form.validation_context().relocalized(cx);
-                form.set_validation_context(context, cx);
-            }),
-            Self::Ollama(form) => form.update(cx, |form, cx| {
-                let context = form.validation_context().relocalized(cx);
-                form.set_validation_context(context, cx);
-            }),
-            Self::CustomOpenAi(form) => form.update(cx, |form, cx| {
-                let context = form.validation_context().relocalized(cx);
-                form.set_validation_context(context, cx);
-            }),
         }
     }
 
@@ -434,7 +415,7 @@ impl ProviderSettingsForm {
             Self::ApiKey(form) => {
                 let output = form.update(cx, |form, cx| {
                     form.set_validation_context(
-                        provider_validation_context(secret_refs.clone(), cx),
+                        provider_validation_context(secret_refs.clone()),
                         cx,
                     );
                     form.prepare_submit(cx)
@@ -449,7 +430,7 @@ impl ProviderSettingsForm {
             Self::Ollama(form) => {
                 let output = form.update(cx, |form, cx| {
                     form.set_validation_context(
-                        provider_validation_context(secret_refs.clone(), cx),
+                        provider_validation_context(secret_refs.clone()),
                         cx,
                     );
                     form.prepare_submit(cx)
@@ -464,7 +445,7 @@ impl ProviderSettingsForm {
             Self::CustomOpenAi(form) => {
                 let output = form.update(cx, |form, cx| {
                     form.set_validation_context(
-                        provider_validation_context(secret_refs.clone(), cx),
+                        provider_validation_context(secret_refs.clone()),
                         cx,
                     );
                     form.prepare_submit(cx)
@@ -549,26 +530,17 @@ impl ProviderSettingsForm {
     ) -> ValidationReport {
         match self {
             Self::ApiKey(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(
-                    provider_validation_context(secret_refs.clone(), cx),
-                    cx,
-                );
+                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
                 form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
                 form.validation_report()
             }),
             Self::Ollama(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(
-                    provider_validation_context(secret_refs.clone(), cx),
-                    cx,
-                );
+                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
                 form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
                 form.validation_report()
             }),
             Self::CustomOpenAi(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(
-                    provider_validation_context(secret_refs.clone(), cx),
-                    cx,
-                );
+                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
                 form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
                 form.validation_report()
             }),
@@ -618,13 +590,14 @@ impl CustomOpenAiProviderFormInput {
 }
 
 fn provider_validation_error(
-    context: &ProviderValidationContext,
+    _context: &ProviderValidationContext,
     field: ProviderFormField,
     kind: ProviderValidationKind,
 ) -> garde::Error {
-    let mut args = FluentArgs::new();
-    args.set("field", context.text(field.label_key()));
-    context.error(kind.message_key(), &args)
+    garde_message(
+        kind.message_key(),
+        [("field", ErrorParamValue::from(field.label_key()))],
+    )
 }
 
 pub(super) fn validate_required_provider_text(

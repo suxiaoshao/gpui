@@ -1,10 +1,11 @@
 use super::validation::{canonical_hotkey, validate_shortcut_hotkey};
 use crate::{
     components::run_settings::RunSettingsInput,
-    features::settings::form_validation::{JacoGardeI18nProvider, JacoValidationContext},
+    features::settings::form_validation::{
+        JacoGardeMessageProvider, JacoValidationContext, garde_message,
+    },
     state::providers::ProviderModelKey,
 };
-use fluent_bundle::FluentArgs;
 use gpui_form::typed::{SubmitTransform, TransformReport};
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
@@ -23,7 +24,7 @@ pub(super) type ShortcutEditValidationContext =
 #[garde(context(ShortcutEditValidationContext))]
 #[form(
     store = ShortcutEditFormStore,
-    validation(adapter = "garde", i18n = JacoGardeI18nProvider),
+    validation(adapter = "garde", messages = JacoGardeMessageProvider),
     transform(adapter = ShortcutEditTransform)
 )]
 pub(super) struct ShortcutEditFormInput {
@@ -80,7 +81,7 @@ fn validate_hotkey(
         context.dependencies.temporary_hotkey.as_deref(),
     )
     .map(|_| ())
-    .map_err(|error| context.error(error.i18n_key(), &FluentArgs::new()))
+    .map_err(|error| garde_message(error.i18n_key(), std::iter::empty()))
 }
 
 #[derive(Clone, Debug, Default)]

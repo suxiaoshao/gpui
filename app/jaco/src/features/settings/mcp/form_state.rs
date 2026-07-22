@@ -60,7 +60,7 @@ pub(super) struct McpEnvHeaderRowInput {
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(
     store = McpServerFormStore,
-    validation(adapter = "garde", i18n = crate::features::settings::form_validation::JacoGardeI18nProvider),
+    validation(adapter = "garde", messages = crate::features::settings::form_validation::JacoGardeMessageProvider),
     transform(adapter = super::validation::McpServerTransform)
 )]
 pub(super) struct McpServerFormInput {
@@ -409,7 +409,7 @@ impl McpServerFormDraft {
         let form = cx.new(|cx| {
             McpServerFormStore::from_value_with_validation_context(
                 input,
-                super::validation::mcp_validation_context(None, Vec::new(), cx),
+                super::validation::mcp_validation_context(None, Vec::new()),
                 cx,
             )
         });
@@ -942,7 +942,6 @@ mod tests {
                     super::super::validation::mcp_validation_context(
                         Some("server".to_string()),
                         Vec::new(),
-                        cx,
                     ),
                     cx,
                 );

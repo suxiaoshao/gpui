@@ -158,6 +158,18 @@ where
         self.selected_value = selected_value;
     }
 
+    pub(crate) fn replace_projection(
+        &mut self,
+        sections: Vec<PickerSection<T>>,
+        empty_label: SharedString,
+        selected_value: Option<T::Value>,
+    ) {
+        self.all_sections = sections;
+        self.empty_label = empty_label;
+        self.selected_value = selected_value;
+        self.apply_query();
+    }
+
     pub(crate) fn selected_item(&self) -> Option<Rc<T>> {
         let selected_value = self.selected_value.as_ref()?;
         self.all_sections
@@ -576,6 +588,53 @@ mod tests {
 
         assert_eq!(delegate.sections[0].items.len(), 1);
         assert_eq!(delegate.sections[0].items[0].value(), &2);
+    }
+
+    #[test]
+    fn replace_projection_preserves_query_and_reprojects_selection() {
+        let mut delegate = PickerListDelegate::new(
+            PickerSection::flat([
+                TestItem {
+                    title: "one",
+                    value: 1,
+                    description: "alpha",
+                },
+                TestItem {
+                    title: "two",
+                    value: 2,
+                    description: "beta",
+                },
+            ]),
+            Some(1),
+            "Empty".into(),
+            Rc::new(|_, _, _| {}),
+            Rc::new(|_, _| {}),
+        );
+        delegate.last_query = "beta".to_string();
+        delegate.apply_query();
+
+        delegate.replace_projection(
+            PickerSection::flat([
+                TestItem {
+                    title: "uno",
+                    value: 1,
+                    description: "alpha",
+                },
+                TestItem {
+                    title: "dos",
+                    value: 2,
+                    description: "beta",
+                },
+            ]),
+            "Vacío".into(),
+            Some(2),
+        );
+
+        assert_eq!(delegate.last_query, "beta");
+        assert_eq!(delegate.sections[0].items.len(), 1);
+        assert_eq!(delegate.sections[0].items[0].value(), &2);
+        assert_eq!(delegate.selected_index(), Some(IndexPath::default()));
+        assert_eq!(delegate.empty_label.as_ref(), "Vacío");
     }
 
     struct TestRoot;

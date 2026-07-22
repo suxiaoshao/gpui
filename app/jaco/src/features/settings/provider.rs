@@ -446,11 +446,6 @@ impl ProviderSettingsPage {
         editor._form_subscriptions.clear();
         let components = ProviderFormComponents::bind(&editor.form, window, cx);
         let mut subscriptions = Vec::new();
-        let form_for_locale = editor.form.clone();
-        subscriptions.push(cx.observe_global::<I18n>(move |_page, cx| {
-            let form = form_for_locale.clone();
-            cx.defer(move |cx| form.relocalize_validation(cx));
-        }));
         editor.components = components;
         match &editor.form {
             ProviderSettingsForm::ApiKey(form) => {
@@ -634,9 +629,7 @@ impl ProviderSettingsPage {
         if self.spec_for_key(&key).is_none() {
             if let Some(editor) = self.editors.get_mut(&key) {
                 editor.validation = ProviderValidationState::Invalid(
-                    cx.global::<I18n>()
-                        .t("provider-validation-not-registered")
-                        .into(),
+                    gpui_form::typed::ValidationMessage::key("provider-validation-not-registered"),
                 );
             }
             return false;
@@ -648,7 +641,7 @@ impl ProviderSettingsPage {
             editor
                 .form
                 .validate_current(editor.metadata.existing_secret_refs.clone(), window, cx);
-        let validation = provider_validation_state_from_report(&validation_report, cx);
+        let validation = provider_validation_state_from_report(&validation_report);
         let valid = matches!(validation, ProviderValidationState::Valid);
         if let Some(editor) = self.editors.get_mut(&key) {
             editor.validation = validation;
@@ -684,7 +677,7 @@ impl ProviderSettingsPage {
         let output = match editor.form.prepare_submit(existing_secret_refs.clone(), cx) {
             Ok(output) => output,
             Err(SubmitError::Validation(report)) => {
-                let validation = provider_validation_state_from_report(&report, cx);
+                let validation = provider_validation_state_from_report(&report);
                 if let Some(editor) = self.editors.get_mut(&key) {
                     editor.validation = validation;
                 }
@@ -1449,7 +1442,9 @@ impl ProviderSettingsPage {
                 .gap_2()
                 .text_color(cx.theme().danger)
                 .child(Icon::new(IconName::CircleAlert))
-                .child(Label::new(message.clone()).text_sm())
+                .child(
+                    Label::new(super::form_validation::validation_message(message, cx)).text_sm(),
+                )
                 .into_any_element(),
         }
     }
@@ -1529,14 +1524,11 @@ fn provider_field_error_message(error: &ValidationIssue, cx: &App) -> SharedStri
     super::form_validation::validation_message(&error.message, cx)
 }
 
-fn provider_validation_state_from_report(
-    report: &ValidationReport,
-    cx: &App,
-) -> ProviderValidationState {
+fn provider_validation_state_from_report(report: &ValidationReport) -> ProviderValidationState {
     report
         .issues()
         .first()
-        .map(|error| ProviderValidationState::Invalid(provider_field_error_message(error, cx)))
+        .map(|error| ProviderValidationState::Invalid(error.message.clone()))
         .unwrap_or(ProviderValidationState::Valid)
 }
 

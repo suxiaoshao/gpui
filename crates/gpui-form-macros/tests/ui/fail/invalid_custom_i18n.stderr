@@ -1,5 +1,5 @@
-error: i18n is only supported by the Garde adapter
- --> tests/ui/fail/invalid_custom_i18n.rs:4:50
+error: validation option `i18n` was removed; use `messages = ProviderType` for a Garde semantic-message provider
+ --> tests/ui/fail/invalid_custom_i18n.rs:4:43
   |
 4 | #[form(validation(adapter = AppValidator, i18n = AppI18nProvider))]
-  |                                                  ^^^^^^^^^^^^^^^
+  |                                           ^^^^

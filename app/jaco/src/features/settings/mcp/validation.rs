@@ -1,15 +1,14 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    features::settings::form_validation::JacoValidationContext,
+    features::settings::form_validation::{JacoValidationContext, garde_message},
     state::config::{
         McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
     },
 };
-use fluent_bundle::FluentArgs;
 use gpui_form::typed::{
-    FieldPath, FieldPathSegment, SubmitTransform, TransformReport, ValidationScope,
-    ValidationTrigger,
+    ErrorParamValue, FieldPath, FieldPathSegment, SubmitTransform, TransformReport,
+    ValidationScope, ValidationTrigger,
 };
 
 use super::form_state::McpServerFormInput;
@@ -25,15 +24,11 @@ pub(super) type McpServerValidationContext = JacoValidationContext<McpServerVali
 pub(super) fn mcp_validation_context(
     original_server_id: Option<String>,
     existing_server_ids: Vec<String>,
-    cx: &gpui::App,
 ) -> McpServerValidationContext {
-    JacoValidationContext::new(
-        McpServerValidationDependencies {
-            original_server_id,
-            existing_server_ids,
-        },
-        cx,
-    )
+    JacoValidationContext::new(McpServerValidationDependencies {
+        original_server_id,
+        existing_server_ids,
+    })
 }
 
 impl garde::Validate for McpServerFormInput {
@@ -51,15 +46,21 @@ impl garde::Validate for McpServerFormInput {
             ValidationTrigger::Submit,
             &ValidationScope::Form,
         ) {
-            let mut args = FluentArgs::new();
-            for (key, value) in issue.args {
-                args.set(key, value);
-            }
+            let message = garde_message(
+                issue.message_key,
+                issue
+                    .args
+                    .into_iter()
+                    .map(|(key, value)| (key, ErrorParamValue::from(value))),
+            );
             match garde_path(self, &issue.path, parent()) {
-                Ok(path) => report.append(path, context.error(issue.message_key, &args)),
+                Ok(path) => report.append(path, message),
                 Err(reason) => report.append(
                     parent(),
-                    garde::Error::new(format!("invalid MCP validation path: {reason}")),
+                    garde_message(
+                        "mcp-validation-path-invalid",
+                        [("reason", ErrorParamValue::from(reason))],
+                    ),
                 ),
             }
         }

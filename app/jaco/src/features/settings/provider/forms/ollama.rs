@@ -2,7 +2,7 @@
 #[garde(context(super::ProviderValidationContext))]
 #[form(
     store = OllamaProviderFormStore,
-    validation(adapter = "garde", i18n = super::JacoGardeI18nProvider),
+    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
     transform(adapter = super::OllamaProviderTransform)
 )]
 pub(in crate::features::settings::provider) struct OllamaProviderFormInput {

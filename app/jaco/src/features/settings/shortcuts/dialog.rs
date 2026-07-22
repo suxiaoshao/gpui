@@ -170,14 +170,12 @@ impl ShortcutEditDialogState {
         let shortcut_id = shortcut.as_ref().map(|shortcut| shortcut.id.clone());
         let prompt_choices = choices.prompts;
         let form_input = ShortcutEditFormInput::new(shortcut.as_ref());
-        let validation_context = ShortcutEditValidationContext::new(
-            ShortcutValidationDependencies {
+        let validation_context =
+            ShortcutEditValidationContext::new(ShortcutValidationDependencies {
                 shortcut_id: shortcut_id.clone(),
                 existing_shortcuts: existing_shortcuts.clone(),
                 temporary_hotkey: temporary_hotkey.clone(),
-            },
-            cx,
-        );
+            });
         let form = cx.new(|cx| {
             ShortcutEditFormStore::from_value_with_validation_context(
                 form_input,
@@ -210,17 +208,6 @@ impl ShortcutEditDialogState {
         .expect("shortcut prompt form entity is alive");
         let prompt_select = (*prompt_control).clone();
         let mut subscriptions = Vec::new();
-        let form_for_locale = form.downgrade();
-        subscriptions.push(cx.observe_global::<I18n>(move |_dialog, cx| {
-            let form = form_for_locale.clone();
-            cx.defer(move |cx| {
-                let Some(form) = form.upgrade() else { return };
-                form.update(cx, |form, cx| {
-                    let context = form.validation_context().relocalized(cx);
-                    form.set_validation_context(context, cx);
-                });
-            });
-        }));
         subscriptions.extend(
             bind_hotkey(
                 ShortcutEditFormStore::hotkey_field(&form),
@@ -274,14 +261,12 @@ impl ShortcutEditDialogState {
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mode = self.mode;
         let shortcut_id = self.shortcut_id.clone();
-        let validation_context = ShortcutEditValidationContext::new(
-            ShortcutValidationDependencies {
+        let validation_context =
+            ShortcutEditValidationContext::new(ShortcutValidationDependencies {
                 shortcut_id: shortcut_id.clone(),
                 existing_shortcuts: self.existing_shortcuts.clone(),
                 temporary_hotkey: self.temporary_hotkey.clone(),
-            },
-            cx,
-        );
+            });
         let result = self.form.update(cx, |form, cx| {
             form.set_validation_context(validation_context, cx);
             let revision = form.revision();

@@ -491,6 +491,7 @@ mcp-validation-header-reserved = Header“{ $name }”由 MCP 或认证流程管
 mcp-validation-header-row-incomplete = Header 行需要同时填写名称和值。
 mcp-validation-bearer-env-invalid = Bearer token 环境变量“{ $name }”必须符合 [A-Za-z_][A-Za-z0-9_]*。
 mcp-validation-cwd-invalid = 工作目录无效。
+mcp-validation-path-invalid = MCP 验证路径无效：{ $reason }。
 validation-garde-length-min = 至少需要 { $min } 个字符。
 validation-garde-length-max = 最多允许 { $max } 个字符。
 validation-garde-range-min = 不能小于 { $min }。

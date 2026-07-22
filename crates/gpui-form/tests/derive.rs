@@ -6,110 +6,30 @@ use gpui_form::typed::{
 };
 
 #[cfg(feature = "garde-adapter")]
-#[derive(Clone, Debug)]
-struct GardeContext {
-    locale: &'static str,
-}
+#[derive(Clone, Debug, Default)]
+struct GardeContext;
 
 #[cfg(feature = "garde-adapter")]
-struct TestGardeI18nProvider;
+struct TestGardeMessageProvider;
 
 #[cfg(feature = "garde-adapter")]
-struct TestGardeI18n(&'static str);
-
-#[cfg(feature = "garde-adapter")]
-impl garde::i18n::I18n for TestGardeI18n {
-    fn length_lower_than(&self, _min: usize) -> std::borrow::Cow<'static, str> {
-        "length lower".into()
-    }
-
-    fn length_greater_than(&self, _max: usize) -> std::borrow::Cow<'static, str> {
-        "length greater".into()
-    }
-
-    fn range_lower_than(&self, _min: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "range lower".into()
-    }
-
-    fn range_greater_than(&self, _max: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "range greater".into()
-    }
-
-    fn credit_card_invalid(
-        &self,
-        _reason: garde::i18n::InvalidCreditCard,
-    ) -> std::borrow::Cow<'static, str> {
-        "credit card".into()
-    }
-
-    fn pattern_no_match(&self, _pattern: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "pattern".into()
-    }
-
-    fn contains_missing(&self, _pattern: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "contains".into()
-    }
-
-    fn url_invalid(&self, _reason: garde::i18n::InvalidUrl) -> std::borrow::Cow<'static, str> {
-        "url".into()
-    }
-
-    fn prefix_missing(&self, _pattern: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "prefix".into()
-    }
-
-    fn suffix_missing(&self, _pattern: &dyn std::fmt::Display) -> std::borrow::Cow<'static, str> {
-        "suffix".into()
-    }
-
-    fn phone_number_invalid(
-        &self,
-        _reason: garde::i18n::InvalidPhoneNumber,
-    ) -> std::borrow::Cow<'static, str> {
-        "phone".into()
-    }
-
-    fn ip_invalid(&self, _kind: garde::i18n::IpKind) -> std::borrow::Cow<'static, str> {
-        "ip".into()
-    }
-
-    fn matches_field_mismatch(
-        &self,
-        _field: &dyn std::fmt::Display,
-    ) -> std::borrow::Cow<'static, str> {
-        "matches".into()
-    }
-
-    fn email_invalid(&self, _reason: garde::i18n::InvalidEmail) -> std::borrow::Cow<'static, str> {
-        "email".into()
-    }
-
-    fn ascii_invalid(&self) -> std::borrow::Cow<'static, str> {
-        "ascii".into()
-    }
-
-    fn alphanumeric_invalid(&self) -> std::borrow::Cow<'static, str> {
-        "alphanumeric".into()
-    }
-
-    fn required_not_set(&self) -> std::borrow::Cow<'static, str> {
-        format!("{} required", self.0).into()
-    }
-}
-
-#[cfg(feature = "garde-adapter")]
-impl gpui_form::typed::GardeI18nProvider<GardeContext> for TestGardeI18nProvider {
-    type Handler<'a> = TestGardeI18n;
-
-    fn handler<'a>(context: &'a GardeContext, _cx: &'a gpui::App) -> Self::Handler<'a> {
-        TestGardeI18n(context.locale)
+impl gpui_form::typed::GardeMessageProvider for TestGardeMessageProvider {
+    fn message(rule: gpui_form::typed::GardeRule) -> ValidationMessage {
+        match rule {
+            gpui_form::typed::GardeRule::RequiredNotSet => {
+                ValidationMessage::key("validation-required").with_param("rule", "required")
+            }
+            rule => <gpui_form::typed::DefaultGardeMessageProvider as gpui_form::typed::GardeMessageProvider>::message(
+                rule,
+            ),
+        }
     }
 }
 
 #[cfg(feature = "garde-adapter")]
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
 #[garde(context(GardeContext))]
-#[form(validation(adapter = "garde", i18n = TestGardeI18nProvider))]
+#[form(validation(adapter = "garde", messages = TestGardeMessageProvider))]
 struct GardeInput {
     #[form(validate(on_submit))]
     #[garde(required)]
@@ -560,12 +480,12 @@ fn async_validation_replaces_the_previous_task_and_result(cx: &mut TestAppContex
 
 #[cfg(feature = "garde-adapter")]
 #[gpui::test]
-fn garde_uses_typed_context_and_stores_localized_messages(cx: &mut TestAppContext) {
+fn garde_uses_typed_context_and_stores_semantic_messages(cx: &mut TestAppContext) {
     let form = cx.update(|cx| {
         cx.new(|cx| {
             GardeInputFormStore::from_value_with_validation_context(
                 GardeInput { value: None },
-                GardeContext { locale: "en" },
+                GardeContext,
                 cx,
             )
         })
@@ -581,20 +501,7 @@ fn garde_uses_typed_context_and_stores_localized_messages(cx: &mut TestAppContex
         });
         assert_eq!(
             form.read(cx).validation_report().issues()[0].message,
-            ValidationMessage::localized("en required")
-        );
-
-        form.update(cx, |form, cx| {
-            form.set_validation_context(GardeContext { locale: "zh" }, cx);
-            form.validate(
-                ValidationTrigger::Submit,
-                gpui_form::typed::ValidationScope::Form,
-                cx,
-            );
-        });
-        assert_eq!(
-            form.read(cx).validation_report().issues()[0].message,
-            ValidationMessage::localized("zh required")
+            ValidationMessage::key("validation-required").with_param("rule", "required")
         );
     });
 }

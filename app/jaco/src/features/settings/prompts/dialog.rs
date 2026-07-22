@@ -51,7 +51,6 @@ pub(super) struct PromptEditDialogState {
     form: Entity<PromptEditFormStore>,
     name_input: FormInput,
     content_input: FormInput,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl PromptEditDialogState {
@@ -73,7 +72,7 @@ impl PromptEditDialogState {
         let validation_context =
             prompt_edit_validation_context(prompt.as_ref().map(|prompt| prompt.id.clone()), cx)
                 .unwrap_or_else(|_| {
-                    PromptEditValidationContext::new(PromptValidationDependencies::default(), cx)
+                    PromptEditValidationContext::new(PromptValidationDependencies::default())
                 });
         let form = cx.new(|cx| {
             PromptEditFormStore::from_value_with_validation_context(
@@ -103,27 +102,12 @@ impl PromptEditDialogState {
             cx,
         )
         .expect("prompt content form entity is alive");
-        let form_for_locale = form.downgrade();
-        let locale_subscription = cx.observe_global::<I18n>(move |_dialog, cx| {
-            let form = form_for_locale.clone();
-            cx.defer(move |cx| {
-                let Some(form) = form.upgrade() else {
-                    return;
-                };
-                form.update(cx, |form, cx| {
-                    let context = form.validation_context().relocalized(cx);
-                    form.set_validation_context(context, cx);
-                });
-            });
-        });
-
         Self {
             mode,
             prompt_id: prompt.map(|prompt| prompt.id),
             form,
             name_input,
             content_input,
-            _subscriptions: vec![locale_subscription],
         }
     }
 
@@ -244,7 +228,6 @@ fn prompt_edit_validation_context(
             prompt_id,
             existing_prompts,
         },
-        cx,
     ))
 }
 
@@ -481,10 +464,13 @@ fn form_field(
 #[cfg(test)]
 mod tests {
     use super::super::form_state::{PromptEditFormInputField, PromptEditFormStore};
-    use super::{PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog};
+    use super::{
+        PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
+    };
     use crate::{database::FreshStoreGlobal, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
+    use gpui_form::typed::FormStore as _;
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -519,6 +505,7 @@ mod tests {
     #[gpui::test]
     fn duplicate_name_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
+        cx.update(|cx| cx.set_global(foundation::I18n::for_locale_tag("en-US")));
         cx.update(|cx| {
             state::prompts::create_prompt(
                 cx,
@@ -544,6 +531,32 @@ mod tests {
 
         let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
         assert!(!saved);
+        let (report_before_locale_change, revision_before_locale_change, english_error) = form
+            .read_with(&cx, |dialog, cx| {
+                let form = dialog.form.read(cx);
+                let report = form.validation_report();
+                let error = report.issues().first().expect("duplicate prompt error");
+                (
+                    report.clone(),
+                    form.revision(),
+                    validation_message(&error.message, cx),
+                )
+            });
+        cx.update(|_, cx| cx.set_global(foundation::I18n::for_locale_tag("zh-CN")));
+        let (report_after_locale_change, revision_after_locale_change, chinese_error) = form
+            .read_with(&cx, |dialog, cx| {
+                let form = dialog.form.read(cx);
+                let report = form.validation_report();
+                let error = report.issues().first().expect("duplicate prompt error");
+                (
+                    report.clone(),
+                    form.revision(),
+                    validation_message(&error.message, cx),
+                )
+            });
+        assert_eq!(report_after_locale_change, report_before_locale_change);
+        assert_eq!(revision_after_locale_change, revision_before_locale_change);
+        assert_ne!(chinese_error, english_error);
         assert_eq!(
             form.read_with(&cx, |dialog, cx| {
                 if !PromptEditFormStore::name_field(&dialog.form)

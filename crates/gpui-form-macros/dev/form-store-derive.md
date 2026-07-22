@@ -5,10 +5,9 @@
 - 文档位置：`crates/gpui-form-macros/dev/form-store-derive.md`。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
 - 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 issue #175 的产品需求。
-- **当前状态：2026-07-22 重新打开的 expansion/runtime integration 门禁已经关闭。** 严格 parser、
-  compile-fail harness、pure nested model lens、完整路径 schema resolver、array
-  container/item/item-leaf mapper 与递归 bounds 已完成，并与 core `FORM-45` 原子通过定向及 workspace
-  gate。公开契约以
+- **当前状态：2026-07-22 重新打开 Garde 消息 provider attribute 门禁。** 既有严格 parser、
+  pure nested model lens、完整路径 schema 与 array mapper 门禁保持完成；新增 `MACRO-50` 尚未实施，
+  用于把 `i18n = ProviderType` 替换为不执行翻译的 `messages = ProviderType`。公开契约完成迁移后以
   [`README.md`](../README.md) 和 [`docs/guide.md`](../docs/guide.md) 为准。
 - **2026-07-21 验证：**已按仓库规则通过 Cargo 添加 dev-only `trybuild 1.0.118`，由 Cargo
   同步更新同一份 `Cargo.lock`；11 组 compile-fail fixture 及其 `.stderr` 契约均通过，未手工
@@ -161,7 +160,7 @@ mapper：equal leaf write 是 no-op；whole-form
 | UI/component/focus/accessibility | 宏不拥有；由 adapter crate 与页面决定 |
 | 数据库、持久化、网络、异步任务、shutdown | 不进入宏；`prepare_submit` 只做同步验证与 transform |
 | 资源、图标、主题、用户文案 | 无变更 |
-| 国际化 | `i18n = ProviderType` 只选择 Garde provider type；宏不生成 locale key、翻译文本或 observer |
+| 国际化 | `messages = ProviderType` 只选择 Garde semantic-message provider；宏不生成 locale key、翻译文本或 observer |
 | 数据迁移 | 无持久化 schema，因此不需要 migration 或 fallback |
 
 ## 3. 已冻结设计决策
@@ -176,8 +175,8 @@ mapper：equal leaf write 是 no-op；whole-form
    child form entity、每字段业务值副本、adapter instance 或 transform instance。
 3. **严格语法**：model/field 各最多一个 `#[form(...)]`；每个 option 最多一次；空 clause、
    duplicate、unknown、removed 与非 canonical 拼写都是 compile error，禁止 last-write-wins。
-4. **Validation adapter 互斥规则**：无 adapter 时禁止 `context`/`i18n`；`"garde"` 禁止
-   `context`、可选 `i18n`；custom adapter 可选 `context`、禁止 `i18n`。省略 custom context
+4. **Validation adapter 互斥规则**：无 adapter 时禁止 `context`/`messages`；`"garde"` 禁止
+   `context`、可选 `messages`；custom adapter 可选 `context`、禁止 `messages`。省略 custom context
    时使用 adapter 的 associated `Context`。
 5. **Constructor**：两种 constructor 都先构造唯一 runtime，再恰好执行一次 `on_mount`。
    `from_value` 由 trait 提供并要求 `ValidationContext: Default`；derive 不按配置条件生成另一套
@@ -231,14 +230,14 @@ mapper：equal leaf write 是 no-op；whole-form
 
 ```text
 store = StoreIdent
-validation(adapter = "garde"[, i18n = ProviderType])
+validation(adapter = "garde"[, messages = ProviderType])
 validation(adapter = CustomValidatorType[, context = ContextType])
 transform(adapter = "validify")
 transform(adapter = CustomTransformType)
 ```
 
 - `StoreIdent` 是未加引号的单个 identifier。
-- custom adapter、context、I18n provider 是未加引号的 Rust type path。
+- custom adapter、context、Garde message provider 是未加引号的 Rust type path。
 - 只有内建 adapter 名 `"garde"` 与 `"validify"` 使用 string literal。
 - `validation(...)` 与 `transform(...)` 必须包含 `adapter`，不能为空。
 
@@ -298,7 +297,7 @@ struct FormAttributes {
 }
 
 enum ValidationSpec {
-    Garde { i18n: Option<TypePath> },
+    Garde { messages: Option<TypePath> },
     Custom { adapter: TypePath, context: Option<TypePath> },
 }
 
@@ -357,7 +356,7 @@ where
 这是 generated store 的唯一字段。不生成 `SubmitRuntime`，也不保存 validation adapter 或 submit
 transform instance。无 validation 时选择 `NoopValidationAdapter`/
 `NoValidationContext`；Garde 选择
-`GardeAdapter<Model, Provider>`，默认 provider 为 `DefaultGardeI18nProvider`；custom adapter
+`GardeAdapter<Model, Provider>`，默认 provider 为 `DefaultGardeMessageProvider`；custom adapter
 使用声明类型。无 transform 时选择 `IdentityTransform<Model>`；`"validify"` 选择
 `ValidifyTransform<Model>`；custom transform 使用声明类型。所选 adapter/transform 都通过 associated
 type 表达，并分别满足 `ValidationAdapter<Model>: Default + 'static` 与
@@ -495,7 +494,7 @@ lens；`*_item`/`*_item_in` 使用 core identified-item lens。后者在 write-b
 | 未加引号或未知 built-in name | adapter value | 列出仅支持的 built-in literal |
 | 空 `validation()`/`transform()`/`validate()` | 空 clause | 指出缺失的 required option/trigger |
 | Garde + `context` | `context` | 指向 `#[garde(context(...))]` |
-| custom/no adapter + `i18n` | `i18n` | 说明 I18n 只属于 Garde provider |
+| custom/no adapter + `messages` | `messages` | 说明 semantic-message provider 只属于 Garde adapter |
 | `group` + `array` | 后出现的 shape | 说明互斥 |
 | `array` 用于非 `Vec<T>` | 字段类型 | 说明 canonical `Vec<Item>` 要求 |
 | `array` item 是裸 type parameter/associated type | item type | 说明命名 ID field 无法由该类型表达，要求具体/名义 item path |
@@ -513,7 +512,7 @@ typed field access 交给编译器检查；计划不能声称宏能提前 intros
 | Token generation | 直接使用 `quote`/`proc-macro2` | generation module 消费同一个 `DeriveModel` |
 | typed field/schema/path | 复用 `gpui-form` 的 `FormField`、`FormFieldId`、`FieldPath`、schema API | 宏只生成静态 projection 与 metadata |
 | write/revision/validation lifecycle | 复用 core transaction/runtime | 删除宏内重复 setter lifecycle |
-| Garde validation/i18n | 复用 core `GardeAdapter` 与 provider traits | 宏只选择 type 并生成 stable path mapper |
+| Garde validation/message bridge | 复用 core `GardeAdapter` 与 `GardeMessageProvider` | 宏只选择 type 并生成 stable path mapper |
 | transform | 复用 `IdentityTransform`、`ValidifyTransform` 与 `SubmitTransform` | 不复制 Validify 逻辑 |
 | compile-fail | 直接使用 `trybuild 1.0.118` | 维护 repo-local `.rs`/`.stderr` fixture |
 
@@ -634,7 +633,7 @@ cargo check -p gpui-form-macros --all-targets --locked
    或手改 entry。依赖变更命令本身是 mutation，不冒充 `--locked` 验证；变更完成后的所有 Cargo
    验证必须使用 `--locked`。
 2. 先实现 helper/option 首次 span 记录与 duplicate 聚合，再解析具体值，避免后值覆盖前值。
-3. 实现 validation/context/i18n mutual exclusion、field shape 互斥与 canonical `Vec<Item>` 检查。
+3. 实现 validation/context/messages mutual exclusion、field shape 互斥与 canonical `Vec<Item>` 检查。
 4. 一次构建 `DeriveModel`，所有 expansion 只消费它，不再次解释 attributes。
 5. `tests/ui.rs` 只运行 parser/model 阶段即可失败的 fixtures，确保不会展开到 core symbol。
 
@@ -647,7 +646,7 @@ cargo check -p gpui-form-macros --all-targets --locked
 **UI、数据、数据库、图标、国际化与依赖**
 
 - UI、业务数据、数据库/schema、网络、icons/assets、应用 i18n、平台代码：`No change`。
-- i18n 属性只解析 provider type，不生成文案或 locale observer。
+- messages 属性只解析 semantic-message provider type，不生成文案、翻译或 locale observer。
 - 依赖：唯一新增项是 dev-only `trybuild 1.0.118`；`proc-macro2`/`quote`/`syn` 不变；同一 root
   lockfile 继续保留 DEP-00 exact Git source。
 
@@ -658,7 +657,7 @@ cargo check -p gpui-form-macros --all-targets --locked
 | canonical parser | `src/attributes.rs` unit tests | `parses_canonical_model_and_field_attributes` | 任意合法顺序归一为同一 AST |
 | duplicate 聚合 | `tests/ui/fail` | `duplicate_*` | `.stderr` 指向第二个 helper/option |
 | type token 分类 | 同上 | `quoted_custom_type.rs` | 要求未加引号 `TypePath` |
-| adapter 互斥 | 同上 | `invalid_garde_context.rs`、`invalid_custom_i18n.rs` | 说明 Garde/custom owner 边界 |
+| adapter 互斥 | 同上 | `invalid_garde_context.rs`、`invalid_custom_messages.rs` | 说明 Garde/custom owner 边界 |
 | 空 clause | 同上 | `empty_validation.rs`、`empty_transform.rs`、`empty_validate.rs` | 指出缺少 adapter/trigger |
 | array grammar | 同上 | `invalid_array_id_syntax.rs`、`non_vec_array.rs` | 精确要求 `Vec<T>` 与 `id = "field"` |
 | removed surface | 同上 | `removed_*_option.rs` | 指向 adapter/page 责任边界，不提供 alias |
@@ -859,8 +858,8 @@ git diff --check
 - UI/focus/component/subscription：`No change`；Blur 由具体 control 显式调用 core API。
 - 数据：一个 typed model snapshot；无 draft、submit state 或 persistence side effect。
 - 数据库/schema、网络、icons/assets、平台代码：`No change`。
-- i18n：只选择 `GardeI18nProvider` associated type；不生成 Fluent key、翻译、locale observer，
-  handler 不跨 await。
+- i18n：只选择 `GardeMessageProvider` associated type；不生成 Fluent key、翻译、locale observer，
+  Garde 字符串桥接由 core 私有实现。
 - 依赖：不新增 macro runtime dependency；只消费 core 的 feature-gated Garde/Validify 类型与 DEP-00
   lock。
 
@@ -874,7 +873,7 @@ git diff --check
 | 精确失效 | 同上 | `typed_write_preserves_adapter_and_control_issue_buckets` | 全 bucket + pending fixture | 只清相交三类 sync/async；adapter/control 保留 |
 | Change 顺序 | 同上 | `change_validation_runs_from_typed_write` | recording adapter/event | value/revision → invalidation → validate → event/notify |
 | custom context | 同上 | `derive_uses_custom_adapter_associated_context` | implicit/explicit context | associated equality 与 runtime context 正确 |
-| Garde i18n/path | 同上 | `garde_indices_map_to_current_stable_ids` | reorder + custom provider | issue 跟随 logical item；localized message 保留 |
+| Garde message/path | 同上 | `garde_indices_map_to_current_stable_ids` | reorder + custom message provider | issue 跟随 logical item；key/params 保留 |
 | mapping failure | 同上 | `garde_mapping_failures_are_blocking` | 五类 path error | 每类转 internal blocking issue |
 | one snapshot | `gpui-form/tests/submit.rs` | `prepare_submit_validates_and_transforms_one_snapshot` | recording adapter/transform | 二者观察同一值，transform 一次 |
 | associated output | 同上 | `custom_transform_returns_associated_output` | `Output != Model` | 静态类型与值正确 |
@@ -1134,7 +1133,7 @@ git diff --check
 **UI、数据、数据库、图标、国际化与依赖**
 
 - UI、form data、数据库/schema、网络、icons/assets、平台代码：`No change`。
-- i18n：只维护英文默认与中文镜像文档；不修改应用 locale bundle。
+- i18n：只维护英文默认与中文镜像文档；不修改应用 locale bundle，locale 不进入 generated validation context。
 - 依赖：不再新增或更新 package，只使用 MACRO-10 后的同一 locked dependency graph。
 
 **测试**
@@ -1167,6 +1166,46 @@ git diff --check
 - 公开内容已与 target implementation 一致；新增证据已交给并通过 core `FORM-70`，最终状态已经
   翻转，不重跑已完成的 adapter `CORE-GATE`、control 或 Jaco 工作包。
 
+### MACRO-50：迁移 Garde semantic-message provider 属性
+
+**状态**：`[待实施]`。只处理 core `FORM-80` 引入的 provider 类型选择与 breaking grammar；不重跑
+或重构既有 nested lens/schema/path expansion。
+
+**前置**：core `FORM-80` 的 `GardeMessageProvider`、`DefaultGardeMessageProvider` 与
+`GardeAdapter<Model, Provider>` 最终签名已经落地。
+
+**文件**
+
+- 修改 `src/attributes.rs`、validation associated-type expansion 与直接 parser/trybuild tests。
+- 删除 `i18n` 正向语法；它只可作为 removed-option compile-fail fixture 出现。
+
+**API contract**
+
+- canonical 语法固定为
+  `validation(adapter = "garde"[, messages = ProviderType])`。
+- generated store 只选择 provider type；不生成 locale observer、翻译调用、validation context 字段或
+  Dynamic trigger。
+- 不保留 `i18n` alias，也不同时接受两套语法。
+
+**实施流程**
+
+1. 把内部 `ValidationSpec::Garde` 字段从 `i18n` 改为 `messages`，同步严格 duplicate/unknown/type-path
+   诊断。
+2. 让 Garde associated type选择 `DefaultGardeMessageProvider` 或声明的 provider。
+3. 新增 `i18n` removed-option、custom/no-adapter `messages` 和 duplicate `messages` compile-fail fixture。
+4. 保持 generated path mapper、schema resolver、trigger 和 submit glue不变。
+
+**测试与验证**
+
+- `cargo fmt --all --check`
+- `cargo test -p gpui-form-macros --locked`
+- 不在本包重跑 adapter、Jaco、workspace 或历史 residual/文档完整性门禁。
+
+**完成条件**
+
+- active grammar/expansion 不再引用 `GardeI18nProvider` 或正向 `i18n` option。
+- 正确 provider type 进入 core `GardeAdapter`，非法组合给出字段级 compile diagnostic。
+
 ## 10. 工作包依赖与落地顺序
 
 ```text
@@ -1195,6 +1234,12 @@ core FORM-45 <-> macro MACRO-35
 它不要求重做 adapter/Jaco 迁移，但旧的 MACRO-40/FORM-70 通过记录不能替代新增 nested
 group/array tests。这里的 MACRO-40 是 corrective 文档纠偏，不再沿用历史主链中的
 `MACRO-40 -> CORE-GATE` handoff；它只把新增 evidence 交给最终 FORM-70。
+
+本次延迟翻译纠正只执行新增链路，不重跑上述已完成工作包：
+
+```text
+core FORM-80 -> macro MACRO-50 -> Jaco JACO-FORM-80
+```
 
 ## 11. 跨包验证
 

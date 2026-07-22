@@ -21,7 +21,9 @@ pub use crate::{
 };
 
 #[cfg(feature = "garde-adapter")]
-pub use crate::validation::{DefaultGardeI18nProvider, GardeAdapter, GardeI18nProvider};
+pub use crate::validation::{
+    DefaultGardeMessageProvider, GardeAdapter, GardeMessageProvider, GardeRule, garde_error,
+};
 
 #[cfg(feature = "validify-transform")]
 pub use crate::transform::ValidifyTransform;

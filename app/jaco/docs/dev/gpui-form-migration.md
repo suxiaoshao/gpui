@@ -11,6 +11,9 @@
   residual scan 与宏 compile-fail gate，并成功生成本地 `Jaco.app` bundle。隔离数据目录下已完成
   home、provider、shortcut 的定向 Computer Use smoke；临时窗口全局快捷键与有数据列表流程因
   自动化工具不能触发全局快捷键且隔离库无对话数据，仍保留为人工验证缺口。
+- [重新打开] 2026-07-22 locale review 证明当前 Garde report 保存了已翻译字符串；新增
+  `JACO-FORM-80` 尚未实施。语言切换必须改为对同一结构化 report 重新渲染，而不是替换 validation
+  context 或运行 Dynamic validation。
 - [用户决定] 可以做 breaking、大规模重构并删除无用 API、trait 和类型；不保留兼容层。
 - [分阶段发布门槛] 四份计划按以下唯一顺序实施；Jaco 迁移不能等待 adapter 全计划结束，否则
   `CONTROL-40` 与 Jaco 调用点迁移会形成循环：
@@ -24,6 +27,10 @@ adapter DEP-00
   -> adapter CONTROL-40 -> CONTROL-50
   -> JACO-FORM-70
   -> core FORM-70
+
+新增纠正链路只执行：
+
+core FORM-80 -> macro MACRO-50 -> JACO-FORM-80
 ```
 
   - core：`crates/gpui-form/dev/typed-form-store.md`
@@ -34,7 +41,8 @@ adapter DEP-00
 
 1. prompt、provider、MCP、shortcut、ChatInput/RunSettings 都以一个 generated form store 作为编辑期业务值唯一来源。
 2. 页面只组合 form、bound controls、catalog/context 与 persistence；不保存第二份 leaf draft，也不从控件反向组装提交模型。
-3. Jaco 同步业务验证统一使用 Garde 0.23；应用只保留 Garde custom rule、Fluent 国际化和必要的路径映射。
+3. Jaco 同步业务验证统一使用 Garde 0.23；应用把规则映射为稳定 Fluent key/params，验证报告不保存
+   当前 locale 的最终字符串，语言切换不重新验证。
 4. persistence 由页面持有任务与 UI 状态；成功结果只用 `FormRevision`/`rebase_if_revision` 合入，过期任务不能覆盖新输入。
 5. 模型目录只从 `ProviderCatalogGlobal` 的 `SharedStore<ProviderCatalogSnapshot>` 读取一次快照；无选择或已失效选择都显示错误，不自动选择第一个模型、不回退、不在 form/control 路径读数据库。
 6. `ChatForm` 保持纯 UI shell，通过 `ControlSlot` 接收调用者创建的 controls；普通对话、新对话、临时窗口与快捷键编辑器保持一致体验。
@@ -53,13 +61,13 @@ adapter DEP-00
 
 | 区域 | [当前事实] 证据 | 必须消除的边界 |
 | --- | --- | --- |
-| Prompt | `features/settings/prompts/form_state.rs` 已 derive `FormStore`/Garde；`dialog.rs::save` 在 form 内 `prepare_submit` 后同步保存并无条件 `rebase` | locale context 更新后未显式 Dynamic 重验；成功合入没有 revision 守卫；旧 `SubmitError::Busy` 分支仍存在 |
+| Prompt | `features/settings/prompts/form_state.rs` 已 derive `FormStore`/Garde；locale observer 只替换含 I18n snapshot 的 validation context | Garde report 保存最终翻译字符串；语言切换后旧错误不能重新渲染，且用 Dynamic 重验会错误地把 presentation 变化当成 validation 变化 |
 | Provider | `features/settings/provider.rs` 同时持有 `ProviderDraft`、`ProviderDraftSnapshot`、typed form 和页面 validation；`forms.rs::submit_async_save` 把 handler task 塞回 form submit runtime | leaf 值、dirty、保存状态多源；form 错误地持有 persistence 生命周期；异步成功可能覆盖后续编辑 |
 | MCP | `features/settings/mcp/form_state.rs` 为 row 类型生成多个 child stores并由页面重绑 controls；`validation.rs` 已手写 `garde::Validate` 但仍携带 gpui-form trigger/scope 细节 | 动态 row 不是一个 parent store；绑定生命周期分散；Garde 与 form 内部路由耦合 |
 | Shortcut | `features/settings/shortcuts/dialog.rs::save` `prepare_submit` 后再次读取 enabled model catalog并调用 `resolve_run_settings` | 提交不是一个 form/catalog 一致快照；旧 `FieldChangeSource` 和自定义 bind helper仍存在 |
 | RunSettings | `components/run_settings.rs` 保存 reader/writer closures、三个 picker state、token budget control、source 路由与 subscriptions；`resolve_run_settings` 会为无效 reasoning 计算默认值 | wrapper 过度承担 form 同步；选项变更与业务值混合；提交时可能隐式改变 reasoning 语义 |
 | ChatInput | `components/chat_input.rs::can_send` 与 `submit_snapshot` 多次 `form.read(cx).value()` 和 `load_model_choices`；composer snapshot又单独写回 form | 一个发送动作可跨多个 form/catalog快照；调用者直接读 whole-form；附件与模型检查不具原子边界 |
-| i18n | `features/settings/form_validation.rs` 已有 `JacoValidationContext`、`JacoGardeI18nProvider` 与 Garde 0.23 的 17 个方法；dialog 使用 `observe_global::<I18n>` | 保留这一共享层，但 locale observer 必须 set context 后显式 Dynamic 重验；form 不持有 global subscription |
+| i18n | `features/settings/form_validation.rs` 把 `I18n` snapshot 放入 `JacoValidationContext`，`JacoGardeI18nProvider` 在验证时生成最终字符串 | context 只保留验证依赖；改用 `JacoGardeMessageProvider` 产生 key/params。locale observer 只刷新缓存的 native 文案并 notify，不更新 form、不重验 |
 | Catalog | `state/providers.rs` 已有 `ProviderCatalogGlobal` 和 `SharedStore<ProviderCatalogSnapshot>`；mutation helper在 DB 成功后 `refresh_snapshot` | form/control 只消费 store snapshot；不调用 `enabled_provider_models` 的无-global DB fallback |
 
 ### 2.2 依赖证据
@@ -87,7 +95,9 @@ Zed/GPUI 的完整升级、feature、MSRV、平台与 lockfile验证以 `typed-b
 2. [用户决定] form 只拥有 typed current value、baseline、revision、validation report/generation和已启动的 async validation task；不拥有 FocusHandle、touched/blurred、control state、persistence Task、loading、retry或 submission attempts。
 3. [用户决定] bound-control wrapper 只保存 native `Entity<State>` 与 `Vec<Subscription>` 并实现 `Deref`；页面不另存 binding subscriptions。
 4. [用户决定] component user event在 emitter update结束后 defer typed form write；任意 form event都让所有 control（包括来源 control）调用 silent setter重新投影，不做 origin echo skip、不返回 authoritative readback。
-5. [用户决定] `set_validation_context` 只替换 context并 notify；locale/catalog 等外部状态变化后由页面显式执行 `ValidationTrigger::Dynamic`。
+5. [用户决定] `set_validation_context` 只替换真正影响合法性的依赖并 notify；catalog/capability 等
+   变化后页面显式执行 `ValidationTrigger::Dynamic`。locale 是 presentation，不进入 context，语言
+   切换只重绘现有结构化消息。
 6. [用户决定] on-mount只在初始 value/context安装完成后运行一次；所有已启动 async validation都阻止提交，非阻塞提示归应用自己管理。
 7. [用户决定] persistence owner是页面。页面在同一次 form update中取得 `FormRevision` 与 `prepare_submit` output；成功后调用 `rebase_if_revision`。CAS失败无任何 form副作用，保留新编辑和 dirty状态。
 8. [用户决定] 用户未选择模型时保持 `None` 并报 required；保存模型被删除/禁用时报 unavailable；任何路径都不自动回退到第一个 enabled model。
@@ -103,12 +113,12 @@ Zed/GPUI 的完整升级、feature、MSRV、平台与 lockfile验证以 `typed-b
 
 ```text
 app/jaco/src/
-├── foundation/i18n.rs                         # 可 clone 的 I18n snapshot；无 form resolver global
+├── foundation/i18n.rs                         # 当前 global I18n；validation report 在 render 时解析 key/params
 ├── features/settings.rs                       # 注册 form_validation 模块
 ├── features/settings/form_validation.rs       # Garde/Fluent 共享 adapter与 message rendering
 ├── features/settings/prompts/
 │   ├── form_state.rs                          # Prompt typed model/context/transform
-│   └── dialog.rs                              # controls、locale subscription、同步 persistence/CAS
+│   └── dialog.rs                              # controls、同步 persistence/CAS；无 validation locale subscription
 ├── features/settings/provider.rs              # page/editor/save task与 provider orchestration
 ├── features/settings/provider/editor_state.rs # metadata、catalog/fetch与 manual-model editor state；无 form leaf draft
 ├── features/settings/provider/forms.rs        # variant form enum/output；无 submit runtime
@@ -121,7 +131,7 @@ app/jaco/src/
 │   ├── form_state.rs                          # 一个 parent form与 stable-ID rows
 │   ├── form_rows.rs                           # row controls；无 child form entity，row store只作 *_in namespace
 │   ├── validation.rs                          # manual Garde Validate + stable path helper
-│   └── dialog.rs                              # OAuth/save task、locale subscription、CAS
+│   └── dialog.rs                              # OAuth/save task、CAS；locale只刷新必要的 native projection
 ├── features/settings/shortcuts/
 │   ├── form_state.rs                          # parent typed model/Garde/transform
 │   ├── validation.rs                          # canonical hotkey pure predicates
@@ -138,33 +148,42 @@ app/jaco/src/
 
 ### 4.2 共享验证契约
 
-保留并收敛 `features/settings/form_validation.rs`：
+`features/settings/form_validation.rs` 只负责语义消息映射与 render-time 翻译：
 
 ```rust,ignore
 #[derive(Clone)]
 pub(crate) struct JacoValidationContext<D> {
     pub(crate) dependencies: D,
-    i18n: I18n,
 }
 
-impl<D: Clone> JacoValidationContext<D> {
-    pub(crate) fn new(dependencies: D, cx: &App) -> Self;
-    pub(crate) fn relocalized(&self, cx: &App) -> Self;
-    pub(crate) fn error(
-        &self,
-        key: &'static str,
-        args: &FluentArgs<'_>,
-    ) -> garde::Error;
+pub(crate) struct JacoGardeMessageProvider;
+
+impl gpui_form::typed::GardeMessageProvider for JacoGardeMessageProvider {
+    fn message(rule: gpui_form::typed::GardeRule) -> ValidationMessage;
 }
 
-pub(crate) struct JacoGardeI18nProvider;
-pub(crate) struct JacoGardeI18n { i18n: I18n }
+pub(crate) fn validation_message(
+    message: &ValidationMessage,
+    cx: &App,
+) -> SharedString;
+
+pub(crate) fn garde_message(
+    key: &'static str,
+    params: impl IntoIterator<Item = (&'static str, ErrorParamValue)>,
+) -> garde::Error;
 ```
 
-- `JacoGardeI18n` 实现 Garde 0.23 全部 17 个 `I18n` 方法；方法签名以 registry source为准，例如 `length_lower_than(&self, min: usize)`、`email_invalid(&self, reason: garde::i18n::InvalidEmail)`。
-- Garde 内置/custom错误在验证时使用 context中的 I18n snapshot生成 `ValidationMessage::Localized`；`ValidationMessage::Key` 仍由 render时 Fluent解析。
-- 每个 editor持有 `observe_global::<I18n>` subscription。callback capture weak editor owner，并统一通过 `cx.defer` 在当前 global/owner update结束后执行；deferred callback再次 upgrade owner。owner先原地刷新仍挂载的 native control/picker 的本地化 labels、sections、empty/search projection，再对 active form依次 `set_validation_context(relocalized)`、`validate(Dynamic, Form)`；不只捕获 form而留下旧语言的 component projection。
-- form与 bound control都不持有 global subscription。
+- `JacoValidationContext` 只保存 prompt names、provider catalog 等真正影响合法性的 typed dependency，
+  不保存 `I18n`，也没有 `relocalized()`、`text()` 或提前翻译的 `error()`。
+- `JacoGardeMessageProvider` 覆盖 Garde 0.23 全部内置规则，把每个规则及参数映射为
+  `ValidationMessage::Key`；custom validator 通过 `garde_message`/core `garde_error` 保存同样的
+  key/params。应用自己产生的错误不得使用 `ValidationMessage::Literal`。
+- `validation_message` 在每次 render 时从当前 `cx.global::<I18n>()` 解析 `Key`；`Literal` 仅显示
+  无法结构化的第三方原文。
+- locale observer 只在页面确有缓存的 native labels/sections/empty text 时存在；callback 通过 weak
+  owner + defer 原地刷新这些 projection 并 notify。它不读取或更新 form，不替换 validation
+  context，也不调用任何 trigger。纯 render-time 文案页面不需要 form locale subscription。
+- form 与 bound control 都不持有 global subscription。
 
 ### 4.3 页面保存契约
 
@@ -233,7 +252,7 @@ let rebased = form.update(cx, |form, cx| {
 - 三个 native state 继续使用现有 `ListState<PickerListDelegate<...>>`，并保存渲染 picker 所需的 open/query/display projection。这里的 selected projection只是 form typed value的静默 UI投影，不是可独立提交或持久化的第二业务源；任何用户 confirm都只产生 defer后的 typed field intent。
 - `RunSettingsBoundControls` 是页面/controller持有的普通组合，拥有三个 picker wrapper与按需挂载的 `Option<FormIntegerInput<u32>>`。`chat_form::controls::RunSettingsControls` 仍是纯视图输入，只包含三个 `ControlSlot<Entity<...>>`；它不拥有 subscriptions、form field、catalog或保存逻辑。
 - 标准 gpui-component `FormSelect` 只用于真正采用 `SelectState` 的页面，不用于替换 RunSettings 的分组/搜索 picker。这样迁移不会改变当前 model grouping、搜索、键盘确认、取消或 popup样式。
-- locale与 provider catalog subscription都是页面/controller级 orchestration subscription，不是 binding subscription；页面保存它们，deferred callback只 weak-capture页面/controller owner，并调用 `RunSettingsBoundControls` 的原地 refresh/reconcile方法。`RunSettingsBoundControls`/各 picker wrapper不观察 global、store或数据库。
+- locale与 provider catalog subscription都是页面/controller级 orchestration subscription，不是 binding subscription；页面保存它们，deferred callback只 weak-capture页面/controller owner，并调用 `RunSettingsBoundControls` 的原地 refresh/reconcile方法。catalog callback可更新 validation context并 Dynamic重验；locale callback只刷新 native projection并 notify。`RunSettingsBoundControls`/各 picker wrapper不观察 global、store或数据库。
 - provider catalog更新取得一次 `ProviderCatalogSnapshot`，由页面/controller调用 native state更新 options/delegate，再以当前 delegate静默重投影；form value不变，随后把同一 snapshot装入 validation context并显式 Dynamic重验。
 - model为 `None` 或 key不存在、reasoning selection不受 capability支持、token budget越界都产生明确错误；不计算或写入默认选择。
 - 快捷键保存使用同一次 catalog store snapshot验证并解析 `RunSettingsSubmitSnapshot`；不调用 DB fallback。
@@ -277,19 +296,21 @@ let rebased = form.update(cx, |form, cx| {
 
 - `app/jaco/Cargo.toml`：No change；继续使用现有 `garde.workspace = true`，不新增或删除 Jaco direct dependency。
 - 修改 `features/settings.rs`、`foundation/i18n.rs`、`features/settings/form_validation.rs`。
-- 修改两份 `app/jaco/locales/*/main.ftl`，仅补齐实际被 Garde provider/custom rules引用而缺失的成对 key。
+- 两份 `app/jaco/locales/*/main.ftl` 只在 semantic provider 缺少成对 key 时修改。
 
 **API contract**
 
-- 使用 4.2 的 `JacoValidationContext`/`JacoGardeI18nProvider`。
+- 使用 4.2 的 `JacoValidationContext`/`JacoGardeMessageProvider`。
 - 不新增 Jaco form facade、global resolver或 subscription set。
 
 **实施流程**
 
 1. 切换所有 imports到最终 core/macro/adapter公开路径。
 2. 删除 `FormTextResolver`/旧 typed module兼容引用。
-3. 对照 Garde 0.23 trait逐个实现并测试 I18n method。
-4. 建立 editor locale observer的共同写法，但不抽成持有生命周期的共享类型。
+3. 对照 core `GardeRule` 覆盖 Garde 0.23 全部内置规则，逐个映射 Fluent key/params；custom rule
+   统一使用结构化 `garde_message`。
+4. 删除只为 validation context relocalize 存在的 observer；确实缓存 native 文案的页面保留自己的
+   weak-owner locale projection refresh。
 
 **错误与生命周期**
 
@@ -308,8 +329,8 @@ let rebased = form.update(cx, |form, cx| {
 
 | Requirement | Test file | Proposed test name | Fixture/mock | Assertions |
 | --- | --- | --- | --- | --- |
-| Garde i18n签名和 key | `features/settings/form_validation.rs` | `garde_builtin_rule_messages_exist_in_both_locales` | en-US/zh-CN bundle | 17种消息不返回 key；参数存在 |
-| locale invalidation | focused GPUI test | `locale_change_revalidates_active_form_once` | invalid form + `set_global(I18n)` | context替换后 Dynamic report变语言；无 reentrancy |
+| Garde semantic key | `features/settings/form_validation.rs` | `garde_builtin_rules_map_to_keys_and_params` | 全部 `GardeRule` | 每个规则映射稳定 key；参数无损 |
+| locale rendering | focused GPUI test | `locale_change_rerenders_existing_validation_report` | invalid form + adapter counter + `set_global(I18n)` | 同一 report 显示新语言；validator 0 次；revision/report/generation/task 不变 |
 
 **验证**
 
@@ -317,7 +338,8 @@ let rebased = form.update(cx, |form, cx| {
 
 **完成条件**
 
-- Jaco编译只使用最终 form API；无 resolver global；locale切换契约有测试。
+- Jaco编译只使用最终 form API；validation context 无 I18n snapshot；locale切换只重新渲染消息并有
+  无验证副作用测试。
 
 ### JACO-FORM-20：Prompt 参考迁移
 
@@ -330,7 +352,9 @@ let rebased = form.update(cx, |form, cx| {
 **API contract**
 
 - `PromptEditFormInput`、`PromptEditValidationContext`、`PromptEditTransform`。
-- dialog字段：form、两个 owning `FormInput`、`Vec<Subscription>`（仅 locale/owner级订阅）；无 page binding subscription、show-error bool或 submit runtime。
+- dialog字段：form、两个 owning `FormInput` 与 persistence owner；Prompt 没有缓存的 native locale
+  projection，因此不保存 validation locale subscription；无 page binding subscription、show-error bool
+  或 submit runtime。
 
 **实施流程**
 
@@ -429,7 +453,8 @@ let rebased = form.update(cx, |form, cx| {
 - 一个 `Entity<McpServerFormStore>`。
 - 五个 row `*FormStore` 只能通过 4.4 固定的 `*_in(parent_*_item(...))` accessor产生 root-typed field handle，不能实例化为 `Entity`。
 - row identity为 `FormItemId`/业务 `row_id`；immutable、unique、不复用。
-- dialog持有 row wrapper集合、OAuth tasks、save task、locale subscription；form不持有这些资源。
+- dialog持有 row wrapper集合、OAuth tasks与 save task；只有确实缓存 native locale projection 时才
+  持有对应 locale subscription，且该 subscription 不读取或更新 form。
 
 **实施流程**
 
@@ -506,7 +531,10 @@ let token_budget = parent.project_value(
 4. page/controller另持有唯一的 model与reasoning leaf orchestration subscriptions，所有 peer/capability/token跨字段编排只在这里发生。model event defer到 owner后只读一次当前 catalog snapshot，按 selected model推导 capability并替换 reasoning sections，静默投影原 reasoning typed值，然后 reconcile token结构并用同一 snapshot更新 validation context、Dynamic重验；不写 reasoning默认值。reasoning event defer到 owner后 reconcile token结构；各 leaf自身 native projection仍只由第3步对应 wrapper负责，approval没有跨字段编排。
 5. token reconcile仅在 `project_value` 当前可读且当前 capability仍提供 token-budget control时挂载 `FormIntegerInput<u32>`；非 custom、custom value缺失、capability不再提供 token budget或 path unavailable时立即 drop wrapper。capability的 min/max/step变化时，用当前 typed value和新 `IntegerInputPolicy<u32>` 原地更新 native policy；若 adapter不支持 policy setter则 drop/rebuild wrapper。两条路径都不修改、clamp或 fallback form值，越界只由 Dynamic/Submit report显示，incomplete raw text只由 control issue持有。
 6. catalog subscription由 page/controller持有，事件 defer到 weak owner并调用与 model event相同的 `reconcile(snapshot)`；一次 callback只取得一个 snapshot，更新 sections/capability/token policy后重投影当前 typed leaves，再安装同一 snapshot context并 Dynamic重验。
-7. locale subscription由 page/controller持有，事件 defer到 weak owner；owner先用 `replace_projection` 重建 reasoning/approval localized sections与 model/reasoning empty labels，同时保留 query/open/selected value，再 relocalize validation context并 Dynamic重验一次。trigger/search/footer等 render-time文案随同一次 owner notify刷新。
+7. locale subscription由 page/controller持有，事件 defer到 weak owner；owner用 `replace_projection`
+   重建 reasoning/approval localized sections与 model/reasoning empty labels，同时保留
+   query/open/selected value，然后 notify。它不访问 form、不替换 validation context、不运行 Dynamic；
+   trigger/search/footer与现有 validation report 都在 render时使用当前 I18n。
 8. Shortcut save在同一 update capture revision/output；使用同一 catalog snapshot解析；同步 persistence成功后以 captured revision调用 `rebase_if_revision`，CAS false不关闭 editor、不改 current/baseline/report/revision/control projection。
 9. ChatForm通过 `view_states()` 返回的 `ControlSlot` 复用同一 native states，无 shortcut特制样式副本。
 
@@ -534,7 +562,7 @@ let token_budget = parent.project_value(
 | shortcut一致快照 | `shortcuts/dialog.rs` tests | `shortcut_save_uses_one_form_and_catalog_snapshot` | catalog mutation harness | output不混用两版 catalog；无 DB fallback |
 | shortcut stale CAS | 同上 | `shortcut_save_rebase_is_revision_guarded` | capture后修改 form的 fake repository | persistence成功但 CAS false；current/baseline/report/revision/control projection均保持新编辑 |
 | reentrancy | focused GPUI test | `run_settings_picker_confirm_defers_form_write` | ListState harness | 无 nested update panic；最终值正确 |
-| locale顺序 | focused GPUI test | `run_settings_locale_change_refreshes_picker_projection_before_validation` | open picker + query + invalid form + zh-CN切换 | query/open/selected保持；sections/empty与 report同为新语言；Dynamic一次；无 reentrancy |
+| locale刷新 | focused GPUI test | `run_settings_locale_change_refreshes_projection_without_validation` | open picker + query + invalid form + adapter counter + zh-CN切换 | query/open/selected保持；sections/empty与现有 report同为新语言；validator 0次；无 reentrancy |
 | 纯 UI ownership | `chat_form/controls.rs` tests | `run_settings_view_states_do_not_own_bindings` | drop `RunSettingsBoundControls` 后保留 entity clone | subscriptions随 wrapper释放；ChatForm只渲染 native state |
 
 **验证**：`cargo test -p jaco run_settings --locked && cargo test -p jaco shortcut --locked`
@@ -636,6 +664,61 @@ rg -n '\bProviderDraft(Snapshot|Value)?\b' app/jaco/src
 定向 Computer Use smoke 已完成，临时窗口全局快捷键与有数据列表键盘流程仍是人工验证缺口，
 不能标记为完整跨平台发布证据。
 
+### JACO-FORM-80：迁移结构化验证消息与 locale 重绘
+
+**状态**：`[待实施]`。只修正 Prompt、Provider、MCP、Shortcut/RunSettings 的验证消息国际化
+边界；不重跑或重构已经完成的表单业务值、绑定、持久化和 UI 布局工作包。
+
+**前置**：core `FORM-80` 与 macro `MACRO-50`。
+
+**文件**
+
+- 修改 `features/settings/form_validation.rs` 和使用 Garde provider/custom error 的各 form model。
+- 修改 Prompt、Provider、MCP、Shortcut/RunSettings 中现有 locale observer：删除只为 form
+  relocalize 存在的 observer；保留并收窄确实刷新 picker/native 缓存文案的 observer。
+- locale bundle 只在现有 Garde rule 缺少成对 key 时修改，不改变文案含义。
+
+**API contract**
+
+- 按第 4.2 节使用 `JacoGardeMessageProvider` 和结构化 custom `garde_message`；macro attribute 使用
+  `messages = JacoGardeMessageProvider`。
+- `JacoValidationContext` 只保存 typed validation dependencies；删除 I18n snapshot、
+  `relocalized()`、`text()` 和提前翻译的 `error()`。
+- locale 切换保持 form value、baseline、revision、validation report、generation、pending task 和
+  adapter 调用数不变；只重新 render `ValidationMessage::Key`。
+- catalog/capability 等真正依赖变化仍按原契约更新 context并 Dynamic重验，不与 locale path合并。
+
+**实施流程**
+
+1. 将 Garde 17 个内置规则映射为现有 Fluent key/params；custom duplicate、range、catalog 等错误改用
+   结构化 helper。
+2. 删除所有 `set_validation_context(relocalized)` + `validate(Dynamic, Form)` locale 路径。
+3. Prompt/Provider/MCP 等纯 render-time 页面依赖现有 I18n global render notification；RunSettings 等
+   缓存 picker 文案的页面只原地更新 native projection并 notify。
+4. 保持 catalog observer、save前 dependency snapshot 和 Dynamic/Submit validation 路径不变。
+
+**测试**
+
+| Requirement | Test file | Proposed test name | Assertions |
+| --- | --- | --- | --- |
+| Garde rule mapping | `features/settings/form_validation.rs` | `garde_rules_map_to_existing_fluent_keys` | 全部规则 key/params稳定，en-US/zh-CN均可渲染 |
+| Prompt locale | `prompts/dialog.rs` | `prompt_error_retranslates_without_validation` | duplicate错误切换语言；adapter 0次，report/revision不变 |
+| MCP/Provider/Shortcut locale | 各现有 focused tests | `*_error_retranslates_without_validation` | visible错误切换语言；无 context write/Dynamic |
+| picker locale | RunSettings focused test | `run_settings_locale_refresh_does_not_validate` | cached labels更新，query/open/selection与 form runtime不变 |
+
+**验证**
+
+- `cargo fmt --all --check`
+- `cargo test -p jaco form_validation --locked`
+- 只运行直接受影响的 Prompt、Provider、MCP、Shortcut/RunSettings locale 定向测试；不重跑历史 UI
+  smoke、完整文档审计或已完成工作包的重复 residual scan。
+
+**完成条件**
+
+- Jaco active source 不再把 I18n 放入 validation context，也不因语言切换调用 validator。
+- 所有 app-owned Garde 错误以 key/params进入 report，并可由同一 report 在当前 locale 下重新渲染。
+- native cached labels 与 validation message 同步换语言，同时保持 form runtime完全不变。
+
 ## 7. 跨包验证
 
 JACO-FORM-70 完成定向验证与 Computer Use smoke 后，把证据交给 core `FORM-70`。以下全 workspace
@@ -667,10 +750,11 @@ git diff --check
 
 ## 8. 执行交接审计
 
-- 所有 public/architecture选择已经由用户确认；实施者无需选择 source policy、submit owner、validation owner、binding echo语义、required语义、model fallback或 wrapper形态。
+- 除 JACO-FORM-80 尚待实施外，既有 public/architecture选择已经由用户确认；消息国际化唯一目标是
+  semantic report + render-time translation，不允许退回 locale Dynamic validation。
 - 三个库计划是 API与依赖唯一来源；Jaco计划只描述应用组合，不复制库内部实现。
 - 每个 mutable resource都有单一 owner：form business/validation、control native state/subscriptions、page persistence/locale、gpui-store catalog、service/DB。
 - 每个异步路径都规定 task retention、weak completion、stale revision、partial persistence与 retry边界。
 - database/data acquisition/icons/assets/i18n/dependencies/UI等系统表面均已明确修改或 No change。
 - 每个 requirement映射到具体 test、fixture、assertion、validation和 done condition。
-- 跨计划发布顺序唯一固定为 `DEP-00 -> FORM-10..60 -> MACRO-10..40 -> CORE-GATE/CONTROL-10..30 -> JACO-FORM-10..60 -> CONTROL-40/50 -> JACO-FORM-70 -> FORM-70`；macro不得等待最终FORM-70，JACO-FORM-70完成后必须明确交接给core FORM-70执行最终workspace/release/document-status gate。Exact commit/source/locked验证已写入对应计划，不需要实施者重新做广泛研究。
+- 历史迁移顺序保持为 `DEP-00 -> FORM-10..60 -> MACRO-10..40 -> CORE-GATE/CONTROL-10..30 -> JACO-FORM-10..60 -> CONTROL-40/50 -> JACO-FORM-70 -> FORM-70`；本次只追加 `FORM-80 -> MACRO-50 -> JACO-FORM-80`，不得重跑未受影响工作包或重新做广泛研究。

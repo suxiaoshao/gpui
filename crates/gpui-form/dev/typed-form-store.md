@@ -5,10 +5,10 @@
 - 文档位置：`crates/gpui-form/dev/typed-form-store.md`。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
 - 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 issue #175 的产品需求。
-- 当前阶段：**2026-07-22 重新打开的 core/macro validation 门禁已经关闭。`FORM-45` 与 macro
-  `MACRO-35` 已在同一 changeset 完成，nested group/array 的 change trigger、完整路径 adapter issue
-  trigger、array container/item/item-leaf mapping 与 stable-ID immutable 契约均已由定向测试和
-  workspace release gate 验证。**
+- 当前阶段：**2026-07-22 重新打开验证消息国际化边界。既有 `FORM-45`/`MACRO-35` nested
+  group/array 门禁保持完成；新增 `FORM-80`、macro `MACRO-50` 与 Jaco `JACO-FORM-80` 尚未实施，
+  用于把验证报告从“已翻译字符串”改为“语义消息 + 渲染时翻译”。在这三个工作包完成前，不能把
+  locale 切换依赖 Dynamic 重验的当前实现视为最终契约。**
 - 当前代码状态：`crates/gpui-form` 已落地单一类型化 model/runtime、revision/CAS、类型化字段与
   projection、同步/异步/control validation、stable-ID array 和纯 `prepare_submit` 契约；active
   source 的旧 submit runtime、来源跳过、draft/codec/focus 状态与兼容 API 已清除。Nested write 现在
@@ -32,7 +32,8 @@
 3. 建立不会发生 GPUI entity 重入的绑定契约：组件事件 defer 写入；每次 form value 事件都
    静默重投影到所有已挂载控件，包括发起写入的控件。
 4. 明确定义 mount/change/blur/dynamic/submit 验证、required 语义、同步 bucket、异步任务
-   generation、control issue 生命周期和 Garde 0.23.0 国际化边界。
+   generation、control issue 生命周期，以及与 locale 无关、在渲染阶段才翻译的 Garde 0.23.0
+   语义消息边界。
 5. 让 `prepare_submit` 只负责同一份 model snapshot 的同步验证、pending 检查和纯转换；持久化
    task、loading、retry 和 provider/database 错误由页面或应用 store 持有。
 6. 用 `FormRevision` 与 `rebase_if_revision` 防止异步保存响应覆盖用户的新编辑。
@@ -73,8 +74,9 @@
 9. `[用户决定]` 相等的字段写入是完全 no-op；显式 `replace`/`reset`/`rebase` 和成功的
    `rebase_if_revision` 即使值相等也推进 revision；失败 CAS 完全没有副作用。
 10. `[用户决定]` 删除 form-owned `SubmitRuntime`、busy、attempts、outcome 和 persistence task。
-11. `[用户决定]` Jaco 同步业务验证优先迁移到 Garde；core 只提供通用 Garde adapter 与
-    i18n/path 桥接，不依赖具体应用本地化实现。
+11. `[用户决定]` Jaco 同步业务验证优先迁移到 Garde；core 只提供通用 Garde adapter、稳定 path
+    和结构化消息桥接，不依赖具体应用本地化实现。locale 是展示状态，不进入 validation context，
+    语言切换不得重新运行验证。
 
 ### 兼容与重建策略
 
@@ -113,7 +115,7 @@
 | Garde `0.23.0` `Validate` | 带 context 的入口是 `validate_with(&Context)` | 非默认 context 不 fallback 到 `validate()` |
 | Garde `0.23.0` `I18n` | 方法返回 `Cow<'static, str>`；例如 `length_lower_than(&self, min: usize)`、`email_invalid(&self, reason: InvalidEmail)` | provider 必须实现精确签名，不能传不存在的 actual 参数 |
 | Garde `0.23.0` `with_i18n` | handler 只在当前线程和同步闭包栈内生效 | handler 不跨 `await`；异步验证不复用 thread-local handler |
-| Garde `0.23.0` error/path | error 最终只保存字符串；公开 `Path` 支持 `Display`，内部 iterator 是 doc-hidden；Vec path 使用当前 index | 保存 `ValidationMessage::Localized`；不逆向解析字符串；generated mapper 把 index 映射到 stable ID |
+| Garde `0.23.0` error/path | `Error` 最终只保存字符串，无法原生携带 key/params；公开 `Path` 支持 `Display`，内部 iterator 是 doc-hidden；Vec path 使用当前 index | core 用私有、可逆的消息信封跨越 Garde 字符串边界，验证报告恢复为 `ValidationMessage::{Key, Literal}`；generated mapper 把 index 映射到 stable ID |
 | Garde `0.23.0` Vec/item validation | Vec 为每个 item 追加 index segment；item 类型级 custom rule 把 issue 附着在当前 item root，因此合法路径同时包含 container `rows`、item root `rows[index]` 与 item leaf `rows[index].name` | mapper 必须覆盖三种形态；stable item root 由直接所属 array schema 控制，不能误报成 unknown/internal |
 | Validify `2.0.0` | `Modify::modify(&mut self)` 原地修改 value | `ValidifyTransform` 只修改一次 clone，不回写 form |
 
@@ -134,7 +136,8 @@
 - 数据库：无 schema、migration、repository 或 transaction 变化。
 - 数据获取：不新增 HTTP/provider endpoint、认证、缓存、分页、timeout 或 offline 策略。
 - 图标与 assets：无变化。
-- 应用 i18n 文件：无变化；core 仅定义 `ValidationMessage` 和 Garde provider 边界。
+- 应用 i18n 文件：由应用迁移计划维护；core 只定义 `ValidationMessage`、Garde semantic-message
+  provider 与私有信封边界，不读取 locale global。
 - 平台：无 macOS/Linux/Windows 特有分支。
 - 依赖：[用户决定] 接受 Zed/GPUI 与 gpui-component 升级。root manifest source 只由 adapter
   `DEP-00` 修改；corrective FORM-45 仅把已锁定的 `trybuild 1.0.118` 加到 core dev-dependencies，
@@ -585,7 +588,8 @@ trigger 语义：
 - Mount：constructor 安装 value/context 后恰好一次；只执行声明 `on_mount` 的规则。
 - Change：非相等 typed write 已提交后执行；validator 读取新 model。
 - Blur：具体控件报告可靠 final blur 时执行；不保存 blur 状态。
-- Dynamic：调用方在 catalog/locale/外部依赖变化后显式调用。
+- Dynamic：调用方只在 catalog、capability 或其他会改变“当前数据是否合法”的外部依赖变化后
+  显式调用。locale 只改变消息呈现，不属于验证依赖，也不触发 Dynamic。
 - Submit：`prepare_submit` 对同一 snapshot 执行；required 总是参与，其他规则按
   `on_submit` 声明参与。
 
@@ -639,7 +643,7 @@ struct FormValidationRuntime {
   上游顺序保持不变。
 - async 以 `(path, source)` 替换；control 在内部以 crate-private `ControlId` 替换。
 - 最终 report 顺序固定为 generated schema/path 顺序、adapter batch 原顺序、async key 顺序、
-  control ID 顺序；本地化消息不参与 identity、排序或去重。
+  control ID 顺序；消息 key、params 或 literal 文本都不参与 identity、排序或去重。
 - 不参与当前 trigger/scope 的 field bucket 保持原样。
 
 Adapter report 的 path/scope/trigger 过滤由 core 统一规范化，adapter 自行过滤只能作为减少工作量的
@@ -688,38 +692,66 @@ pub trait RequiredValue {
 成为 compile error。required 总是在 Submit 执行，字段 attribute 中声明的 trigger 只增加
 更早时机。错误 key 固定为 `gpui-form-error-required`。
 
-### 3.9 Garde adapter 与国际化
+### 3.9 Garde adapter 与延迟翻译
+
+验证报告保存语义消息，不保存应用已经翻译完成的文本：
 
 ```rust,ignore
-pub trait GardeI18nProvider<C>: 'static {
-    type Handler<'a>: garde::i18n::I18n + 'a
-    where C: 'a;
-
-    fn handler<'a>(context: &'a C, cx: &'a App) -> Self::Handler<'a>;
+pub enum ValidationMessage {
+    Key {
+        key: Cow<'static, str>,
+        params: BTreeMap<Cow<'static, str>, ErrorParamValue>,
+    },
+    Literal(Cow<'static, str>),
 }
+
+pub enum GardeRule {
+    LengthLowerThan { min: usize },
+    LengthGreaterThan { max: usize },
+    // 其余 Garde 0.23 内置规则及其参数均使用同样的 owned variant。
+    RequiredNotSet,
+}
+
+pub trait GardeMessageProvider: 'static {
+    fn message(rule: GardeRule) -> ValidationMessage;
+}
+
+pub fn garde_error(message: ValidationMessage) -> garde::Error;
 
 pub trait GardePathMapper {
     fn map_garde_path(&self, path: &str) -> Result<FieldPath, GardePathError>;
 }
 ```
 
+- `Key` 是默认的应用可翻译消息；UI 每次 render 都用当前 locale 解析 key/params。
+- `Literal` 只承载无法结构化的第三方原始文本，明确不承诺随 locale 改变；删除容易误解为“已经
+  本地化且可再次切换”的 `Localized` 命名。
+- `GardeRule` 覆盖 Garde 0.23 `I18n` 的全部规则和参数。应用 provider 只把规则映射为稳定
+  `ValidationMessage`，不接收 `I18n`、`App` 或 validation context，也不翻译文本。
+- `garde_error` 是 custom Garde validator 构造结构化错误的唯一公共桥接；直接
+  `garde::Error::new(text)` 的未知消息降级为 `Literal`，不得猜测或二次翻译。
+
 `GardeAdapter<T, P>` 的约束固定为：
 
 ```rust,ignore
 T: garde::Validate + GardePathMapper + 'static,
-P: GardeI18nProvider<T::Context>,
+P: GardeMessageProvider,
 ```
 
 同步调用顺序固定为：
 
-1. `P::handler(validation_context, cx)` 创建 handler；
-2. 在 `garde::i18n::with_i18n(handler, || value.validate_with(context))` 中验证；
-3. 空 path 产生 form-level Garde issue；非空 path 先通过 `value.map_garde_path`；
-4. generated mapper 仅消费公开 `Path::Display` 字符串，并用当前被验证 model 把 Vec index
+1. core 创建一个私有 Garde `I18n` handler；每个内置规则先构造 owned `GardeRule`，再调用
+   `P::message` 得到 `ValidationMessage`；
+2. handler 通过 crate-private、带版本且可逆的消息信封满足 Garde 只能返回字符串的接口；该信封
+   仅在当前同步 validation stack 内使用，不进入最终 report，也不是供应用解析的公开协议；
+3. 在 `garde::i18n::with_i18n(handler, || value.validate_with(context))` 中验证；adapter 对内置规则
+   和 `garde_error` 生成的信封进行严格解码，未知普通字符串转换为 `Literal`；解码失败的本库信封
+   转为 blocking internal issue，不能静默当作用户文本；
+4. 空 path 产生 form-level Garde issue；非空 path 先通过 `value.map_garde_path`；
+5. generated mapper 仅消费公开 `Path::Display` 字符串，并用当前被验证 model 把 Vec index
    映射为 stable `FormItemId`；
-5. 映射后的 stable `FieldPath` 进入第 3.7 节统一 normalization：先由当前 model 递归解析完整
+6. 映射后的 stable `FieldPath` 进入第 3.7 节统一 normalization：先由当前 model 递归解析完整
    group/array/item/leaf path 的精确 schema，再依次校验 scope 与 trigger；
-6. Garde 最终字符串保存为 `ValidationMessage::Localized`；不再包进通用 key；
 7. unknown field、malformed/out-of-bounds index、invalid ID、duplicate ID 都转换为
    `ValidationSource::Internal`、code `garde_path_mapping` 的 blocking form issue。
 
@@ -734,9 +766,10 @@ fallback。
 `IndexOutOfBounds`、`InvalidItemId`、`DuplicateItemId`。禁止调用 doc-hidden path iterator，
 禁止在最终 path 保留数组 index，禁止从最终字符串猜 Garde rule。
 
-默认 provider 返回 `garde::i18n::DefaultI18n`。自定义 provider 实现 Garde 0.23.0 的准确
-`I18n` 签名，handler 生命周期不能跨 `await`。locale 变化由应用更新 validation context 后
-显式执行 Dynamic validation；core 不观察 locale global。
+默认 provider 使用 Garde 默认英文文本并返回 `Literal`，保证未配置应用消息目录时仍有可读错误；
+需要多语言的应用必须提供 `GardeMessageProvider` 并返回 `Key`。core 的私有 handler 生命周期不能
+跨 `await`。locale 变化只让应用 UI 重绘并用当前 locale 重新解析现有 `Key`，不得修改 validation
+context、report、revision、generation 或 task，也不得调用任何 validator。
 
 ### 3.10 异步验证
 
@@ -1198,7 +1231,8 @@ adapter DEP-00
 - 当前 Field scope 只比较相等 path，无法覆盖 parent/descendant。
 - 当前 `ValidationContext` 重复保存 `submitted`。
 - 当前 bool required 实现返回 `false`，导致必须同意的控件永远不报 required。
-- Garde 0.23.0 的 exact `I18n`/`validate_with`/Path Display 已核实。
+- Garde 0.23.0 的 exact `I18n`/`validate_with`/Path Display 已核实；其 `Error` 只保留字符串的限制
+  由 FORM-80 的私有消息信封补齐，不能继续把最终翻译文本作为 report 数据。
 
 **Files**
 
@@ -1209,7 +1243,7 @@ adapter DEP-00
 
 **API contract**
 
-- 实现第 3.7、3.8、3.9 节的历史 bucket、trigger/basic scope、required、Garde i18n 与 indexed
+- 实现第 3.7、3.8、3.9 节的历史 bucket、trigger/basic scope、required、Garde adapter 与 indexed
   stable-path mapping 基线；第 3.3.1 节完整路径 schema resolution，以及第 3.7/3.9 节新增的
   direct item-root scope、array container/item-root mapping 和 `resolver -> scope -> trigger` 顺序由
   FORM-45/MACRO-35 独占。
@@ -1231,8 +1265,9 @@ adapter DEP-00
 5. 每次 run 都临时构造 `Self::ValidationAdapter::default()`，让 report 整批替换唯一 adapter-wide
    bucket；generated store/runtime 不保存 adapter instance，并删除 submitted flag。完整路径 resolver
    和精确 trigger filtering 由 FORM-45 替换历史 root-prefix 实现。
-6. 重写 Garde provider 调用、Localized message 与 indexed stable path mapping error；array container、
-   direct item root 与 item leaf 三种完整 mapper 形态由 MACRO-35 补齐。
+6. 历史实现先接入 Garde provider 与 indexed stable path mapping error；旧
+   `GardeI18nProvider`/`ValidationMessage::Localized` 只作为已发现问题的当前事实，由 FORM-80
+   完整替换，不能继续作为目标 API。
 7. 保证 public validation run 最多 emit 一个 RuntimeChanged + notify；field write 的无事件 hidden pass
    与单一 `FieldChanged` 收口由 FORM-45/MACRO-35 完成。
 
@@ -1242,12 +1277,14 @@ adapter DEP-00
 - Garde path mapping 失败转 typed internal issue，不 panic、不忽略、不 fallback 到 index。
 - 已映射 path 的 schema resolution 失败同样转 typed blocking internal issue；array direct item root
   是合法路径并由直接所属 array schema 管理，不属于 failure。
-- locale/context 变化不自动清旧报告；调用方显式 Dynamic validation 后整批替换目标报告。
+- validation context 变化不自动清旧报告；只有真正影响合法性的依赖变化才由调用方显式 Dynamic
+  validation。locale 变化不属于 validation context，也不替换报告。
 - active control issue 与同步 data bucket 分开，sync validation 不会误删它。
 
 **UI/data/database/icons/i18n/dependencies**
 
-- i18n：只增加/修正 provider 和 `ValidationMessage::{Key, Localized}` 边界；不修改 locale 文件。
+- i18n：FORM-40 的 `ValidationMessage::Localized` 历史基线由 FORM-80 废止；最终边界固定为
+  `ValidationMessage::{Key, Literal}` 与 render-time translation，不修改 locale 文件。
 - UI、数据库、数据获取、图标/assets、依赖、平台：`No change`。
 
 **Tests**
@@ -1265,7 +1302,7 @@ adapter DEP-00
 | adapter 只按 Default 临时构造 | `tests/validation.rs` | `validation_default_constructs_stateless_adapter_per_run` | Default/validate counters + typed context | 每次 run 各 default/validate 一次；运行时依赖来自 context；form 不保留 adapter |
 | adapter field scope bucket | `tests/validation.rs` | `adapter_batch_is_replaced_on_scoped_run` | custom adapter | form + field issues没有旧批残留 |
 | Garde default context | `tests/validation.rs` | `garde_uses_validate_with_for_default_context` | garde model | expected issues/path |
-| Garde custom i18n signature | `tests/validation.rs` | `garde_custom_i18n_preserves_localized_message` | complete test I18n provider | exact localized text，无二次 key |
+| Garde semantic message（由 FORM-80 替代旧测试） | `tests/validation.rs` | `garde_message_provider_preserves_key_and_params` | complete message provider | report 保存 key/params，不保存当前 locale 文本 |
 | stable array path | `tests/validation.rs` | `garde_array_indices_map_to_stable_item_ids` | reordered array | final path 使用 Item ID，不含 index |
 | mapping failures block | `tests/validation.rs` | `garde_path_mapping_failures_become_internal_issues` | unknown/out-of-range/duplicate | 每种 typed reason，submit invalid |
 
@@ -1277,7 +1314,7 @@ adapter DEP-00
 
 **Done condition**
 
-- 历史五种 trigger/basic scope、所有 required 内置类型和 indexed Garde mapping/i18n 都有测试；完整
+- 历史五种 trigger/basic scope、所有 required 内置类型和 indexed Garde mapping 都有测试；完整
   nested group/array scope 与三形态 mapper 只能由 FORM-45/MACRO-35 的新增测试关闭。
 - report 只通过 bucket 替换；没有 submitted flag、英文 Garde 二次包装或 index path fallback。
 
@@ -1741,6 +1778,64 @@ git diff --check
 - Core 与 macro 的双语公开文档及两份实施计划状态可在同一 changeset 安全标记为实施完成；没有
   为了通过 gate 修改 downstream owner 的源码或引入兼容层。
 
+### FORM-80：验证消息延迟翻译与 Garde 结构化桥接
+
+**状态**：`[待实施]`。这是 2026-07-22 locale review 重新打开的纠正工作包；既有 FORM-10..70
+证据保持历史有效，但不能覆盖本包。
+
+**前置**
+
+- 既有 typed form、validation bucket、完整路径 schema 与 Garde path mapping 保持不变。
+- macro `MACRO-50` 和 Jaco `JACO-FORM-80` 分别消费本包 API；本包不替它们迁移 attribute 或页面。
+
+**文件**
+
+- 修改：`src/error.rs`、`src/validation.rs`、`src/typed.rs`、相关 validation tests。
+- 不修改 component adapter、数据库、应用 locale 文件或 Jaco 页面。
+
+**API contract**
+
+- 实现第 3.9 节 `ValidationMessage::{Key, Literal}`、`GardeRule`、
+  `GardeMessageProvider` 与 `garde_error`；删除 `ValidationMessage::Localized`、
+  `GardeI18nProvider` 和 `DefaultGardeI18nProvider`，不保留兼容 alias。
+- validation report 中的 app-owned 消息必须保留稳定 key/params；locale 不属于
+  `ValidationContext`，也不进入 validation identity、trigger 或 bucket lifecycle。
+- Garde 私有消息信封必须可逆、带版本并与普通第三方文本无歧义；未知普通文本只成为
+  `Literal`，本库信封损坏成为 blocking internal issue。
+
+**实施流程**
+
+1. 重命名并收紧 `ValidationMessage`，保持 key/params 的 owned、cloneable 数据契约。
+2. 用 `GardeRule` + `GardeMessageProvider` 包装 Garde 0.23 全部 `I18n` 方法；provider 只返回语义
+   消息，core 私有 handler 负责同步信封桥接。
+3. 让内置规则与 `garde_error` 走同一严格解码路径；直接第三方 `garde::Error::new(text)` 保留为
+   `Literal`。
+4. 保持既有 path mapping、schema resolution、scope/trigger filtering 和 bucket replacement 完全
+   不变；本包不得借机重构验证生命周期。
+
+**测试**
+
+| Requirement | Test file | Proposed test name | Assertions |
+| --- | --- | --- | --- |
+| 内置规则结构化 | `tests/validation.rs` | `garde_message_provider_preserves_key_and_params` | report 含稳定 key/参数，不含当前 locale 文本 |
+| custom 结构化错误 | 同上 | `garde_custom_error_preserves_key_and_params` | `garde_error` 往返无损 |
+| 第三方 literal | 同上 | `garde_unknown_text_remains_literal` | 未知文本不猜 key、不报内部错误 |
+| 信封损坏 | 同上 | `garde_malformed_internal_message_is_blocking` | blocking internal issue，不泄漏为用户文本 |
+| locale 无验证副作用 | 同上 | `validation_messages_render_against_locale_without_revalidation` | 同一 report 可渲染两种语言；adapter 调用数、revision、report、generation 与 task 不变 |
+
+**验证**
+
+- `cargo fmt --all --check`
+- `cargo test -p gpui-form --all-features --locked --test validation`
+- 不在本包重跑已完成的 nested、adapter、Jaco 或 workspace 历史门禁；downstream 编译由
+  `MACRO-50`/`JACO-FORM-80` 完成迁移后验证。
+
+**完成条件**
+
+- core 不再存储 app 已翻译文本，也不把 locale 视为 Dynamic 依赖。
+- Garde 的字符串限制被封装在 core 私有同步桥接内，应用只处理结构化消息。
+- 定向测试通过，未改变 path、trigger、scope、async、control 或 submit 契约。
+
 ## 7. 跨工作包验证
 
 ### 7.1 Core 聚焦命令
@@ -1791,13 +1886,14 @@ rg --files crates/gpui-form/src | rg '/(core|pipeline|view)(\\.rs|/)'
 
 ## 8. 执行交接审计
 
-- [x] 没有未解决架构问题；每项歧义已按用户确认的推荐方案冻结。
+- [ ] FORM-80/MACRO-50/JACO-FORM-80 的延迟翻译纠正尚未实施；其余已完成架构决定保持冻结。
 - [x] 每个新增 public type/trait/method 都有 owner、side effect、错误和生命周期契约。
 - [x] revision、equal write、whole-form operation 和 CAS 的边界已精确定义。
 - [x] 同步/异步/control validation bucket、替换范围、排序和 submit 阻塞条件已精确定义。
 - [x] GPUI reentrancy 通过 public `defer_*` intent + crate-private weak lifetime 解决；外部无法
   绕过 defer，也不依赖来源跳过隐藏问题。
-- [x] Garde 0.23.0 的 exact API、国际化生命周期和 stable path 限制已核实。
+- [x] Garde 0.23.0 的 exact API、字符串消息限制和 stable path 限制已核实；FORM-80 已固定私有
+  消息信封与 render-time translation 目标。
 - [x] Required、Garde、Validify、GPUI task/entity 能力均优先复用上游。
 - [x] UI、数据、数据库、网络、图标/assets、i18n、依赖和平台 surface 均已明确处理或写明
   `No change`。
@@ -1808,3 +1904,5 @@ rg --files crates/gpui-form/src | rg '/(core|pipeline|view)(\\.rs|/)'
 - [x] `FORM-60` 只完成既有 core source/API 与 crate tests；当前唯一最终 release gate 是
   `FORM-45 <-> MACRO-35 -> MACRO-40 文档纠偏 -> FORM-70`。既有
   `CONTROL-50 -> JACO-FORM-70` 证据继续作为 FORM-70 的其他 prerequisite，不需要重做业务迁移。
+- [ ] 新增纠正顺序固定为 `FORM-80 -> MACRO-50 -> JACO-FORM-80`；只验证受影响消息链路，不重跑
+  上述已完成的 nested、control、persistence 或 UI 历史工作包。
