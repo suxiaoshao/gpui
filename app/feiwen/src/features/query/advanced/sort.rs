@@ -70,7 +70,7 @@ impl Render for DragSortRow {
                 cx.theme().drag_border
             })
             .rounded_sm()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .shadow_sm()
             .child(Icon::new(IconName::EllipsisVertical))
             .child(

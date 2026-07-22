@@ -1,0 +1,5 @@
+error: custom types must be written as an unquoted type path
+ --> tests/ui/fail/quoted_custom_type.rs:4:53
+  |
+4 | #[form(validation(adapter = AppValidator, context = "AppContext"))]
+  |                                                     ^^^^^^^^^^^^

@@ -1,17 +1,18 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use gpui::{Entity, SharedString, Subscription};
 use gpui_component::input::InputState;
+use gpui_form::typed::ValidationMessage;
 use jaco_core::{
     ModelCapabilitiesSnapshot, ProviderId, ProviderModelId, ProviderModelMetadata,
-    ProviderSecretRefs,
+    ProviderSecretRefs, ProviderSettingValue,
 };
 
 use super::{capabilities::CapabilityDraft, catalog::ProviderKindKey};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum ProviderSelection {
     Builtin {
         kind: ProviderKindKey,
@@ -24,68 +25,49 @@ pub(super) enum ProviderSelection {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum ProviderDraftValue {
-    String(String),
-    Bool(bool),
-    Number(f64),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct ProviderDraft {
+pub(super) struct ProviderFormSeed {
     pub(super) provider_id: Option<ProviderId>,
     pub(super) kind: ProviderKindKey,
     pub(super) display_name: String,
     pub(super) enabled: bool,
-    pub(super) fields: BTreeMap<String, ProviderDraftValue>,
+    pub(super) fields: BTreeMap<String, ProviderSettingValue>,
     pub(super) existing_secret_refs: ProviderSecretRefs,
-    pub(super) dirty: bool,
 }
 
-impl ProviderDraft {
+impl ProviderFormSeed {
     pub(super) fn field_string(&self, key: &str) -> String {
         match self.fields.get(key) {
-            Some(ProviderDraftValue::String(value)) => value.clone(),
-            Some(ProviderDraftValue::Bool(value)) => value.to_string(),
-            Some(ProviderDraftValue::Number(value)) => value.to_string(),
+            Some(ProviderSettingValue::String { value }) => value.clone(),
+            Some(ProviderSettingValue::Bool { value }) => value.to_string(),
+            Some(ProviderSettingValue::Number { value }) => value.to_string(),
+            Some(ProviderSettingValue::Object { .. }) => String::new(),
             None => String::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ProviderDraftSnapshot {
+pub(super) struct ProviderEditorMetadata {
     pub(super) provider_id: Option<ProviderId>,
     pub(super) kind: ProviderKindKey,
-    pub(super) display_name: String,
-    pub(super) enabled: bool,
-    pub(super) fields: BTreeMap<String, ProviderDraftValue>,
-    pub(super) secret_refs: ProviderSecretRefs,
-    pub(super) dirty_secret_keys: BTreeSet<String>,
+    pub(super) existing_secret_refs: ProviderSecretRefs,
 }
 
-impl ProviderDraftSnapshot {
-    pub(super) fn from_draft(draft: &ProviderDraft) -> Self {
+impl ProviderEditorMetadata {
+    pub(super) fn from_seed(seed: &ProviderFormSeed) -> Self {
         Self {
-            provider_id: draft.provider_id.clone(),
-            kind: draft.kind.clone(),
-            display_name: draft.display_name.clone(),
-            enabled: draft.enabled,
-            fields: draft.fields.clone(),
-            secret_refs: draft.existing_secret_refs.clone(),
-            dirty_secret_keys: BTreeSet::new(),
+            provider_id: seed.provider_id.clone(),
+            kind: seed.kind.clone(),
+            existing_secret_refs: seed.existing_secret_refs.clone(),
         }
     }
-
-    pub(super) fn is_dirty_against(&self, saved: Option<&Self>) -> bool {
-        saved != Some(self)
-    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum ProviderValidationState {
     Idle,
     Valid,
-    Invalid(SharedString),
+    Invalid(ValidationMessage),
 }
 
 #[derive(Debug, Clone, PartialEq)]

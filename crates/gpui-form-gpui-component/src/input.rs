@@ -1,128 +1,102 @@
-use std::marker::PhantomData;
+use std::ops::Deref;
 
-use gpui::{App, AppContext as _, Context, Entity, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
-use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
-    resolve_form_text,
-};
+use gpui_form::typed::{FormControl, FormField, FormStore};
 
-pub trait TextFieldValue: Clone + PartialEq + 'static {
-    fn to_text(&self) -> String;
-    fn from_text(text: String) -> Self;
+use crate::FormControlError;
+
+pub struct FormInput {
+    subscriptions: Vec<Subscription>,
+    input: Entity<InputState>,
 }
 
-impl TextFieldValue for String {
-    fn to_text(&self) -> String {
-        self.clone()
-    }
-
-    fn from_text(text: String) -> Self {
-        text
-    }
-}
-
-impl TextFieldValue for Option<String> {
-    fn to_text(&self) -> String {
-        self.clone().unwrap_or_default()
-    }
-
-    fn from_text(text: String) -> Self {
-        if text.is_empty() { None } else { Some(text) }
-    }
-}
-
-pub struct TextInputBinding<T>(PhantomData<fn() -> T>);
-
-impl<T> FormComponentBinding<T> for TextInputBinding<T>
-where
-    T: TextFieldValue,
-{
-    type State = InputState;
-    type Draft = String;
-
-    fn new_state(
-        initial: &T,
-        options: ComponentStateOptions,
+impl FormInput {
+    pub fn new<Form, Owner, Build>(
+        field: FormField<Form, String>,
+        build: Build,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        cx.new(|cx| {
-            let mut input = InputState::new(window, cx).default_value(initial.to_text());
-            if let Some(placeholder_key) = options.placeholder_key {
-                input = input.placeholder(resolve_form_text(placeholder_key, cx));
-            }
-            if options.masked {
-                input = input.masked(true);
-            }
-            input
-        })
-    }
-
-    fn draft_from_value(value: &T) -> Self::Draft {
-        value.to_text()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        state.read(cx).value().to_string()
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: FieldPath,
-        _trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<T, Box<FieldError>> {
-        Ok(T::from_text(draft.clone()))
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &T,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |input, cx| {
-            input.set_value(value.to_text(), window, cx);
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        state.update(cx, |input, cx| {
-            input.focus(window, cx);
-        });
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormControlError>
     where
-        Form: 'static,
+        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<InputState>) -> InputState,
     {
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &state,
-            window,
-            move |form, _state, event: &InputEvent, window, cx| {
-                let event = match event {
-                    InputEvent::Change => {
-                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-                    }
-                    InputEvent::Focus => Some(FormComponentEvent::Focus),
-                    InputEvent::Blur => Some(FormComponentEvent::Blur),
-                    InputEvent::PressEnter { .. } => None,
+        <Self as FormControl<String>>::new(field, build, window, cx)
+    }
+}
+
+impl Deref for FormInput {
+    type Target = Entity<InputState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.input
+    }
+}
+
+impl Drop for FormInput {
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
+}
+
+impl FormControl<String> for FormInput {
+    type State = InputState;
+    type Error = FormControlError;
+
+    fn new<Form, Owner, Build>(
+        field: FormField<Form, String>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, Self::Error>
+    where
+        Form: FormStore,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
+    {
+        let value = field.value(cx)?;
+        let attachment = field.attach_control(cx)?;
+        let input = cx.new(|cx| build(window, cx));
+        input.update(cx, |input, cx| input.set_value(value, window, cx));
+
+        let weak_input = input.downgrade();
+        let projection = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
+            let weak_input = weak_input.clone();
+            let projection = projection.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let Some(input) = weak_input.upgrade() else {
+                    return;
                 };
-                if let Some(event) = event {
-                    sink.emit(form, event, window, cx);
+                let Ok(value) = projection.value(cx) else {
+                    return;
+                };
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            });
+        })?;
+
+        let input_attachment = attachment.clone();
+        let input_subscription = cx.subscribe_in(
+            &input,
+            window,
+            move |_, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    input_attachment.defer_set_user_value(
+                        input.read(cx).value().to_string(),
+                        window,
+                        cx,
+                    );
                 }
+                InputEvent::Blur => input_attachment.defer_blur(window, cx),
+                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
             },
-        ));
-        subscriptions
+        );
+
+        Ok(Self {
+            subscriptions: vec![form_subscription, input_subscription],
+            input,
+        })
     }
 }

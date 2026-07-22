@@ -1,10 +1,8 @@
-use gpui::{App, AppContext as _, Context, Entity, Window};
+use std::ops::Deref;
+
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
-use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, RequiredValue, SubscriptionSet, ValidationTrigger,
-    resolve_form_text,
-};
+use gpui_form::typed::{FormField, FormStore};
 
 use super::ProviderFormField;
 
@@ -33,145 +31,101 @@ impl ProviderSecretValue {
     }
 }
 
-impl RequiredValue for ProviderSecretValue {
-    fn is_empty_value(&self) -> bool {
+impl gpui_form::typed::RequiredValue for ProviderSecretValue {
+    fn is_missing(&self) -> bool {
         self.value.trim().is_empty()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::features::settings::provider) struct ProviderSecretDraft {
-    field: ProviderFormField,
-    value: String,
-    changed: bool,
-}
-
-pub(in crate::features::settings::provider) struct ProviderSecretInputState {
+/// Owning control for a provider secret. Its lifetime owns both projection
+/// subscriptions, so dropping the control detaches it from the shared form.
+pub(in crate::features::settings::provider) struct ProviderSecretInputState<Form>
+where
+    Form: FormStore,
+{
+    subscriptions: Vec<Subscription>,
     input: Entity<InputState>,
-    field: ProviderFormField,
-    changed: bool,
+    _marker: std::marker::PhantomData<Form>,
 }
 
-impl ProviderSecretInputState {
-    pub(in crate::features::settings::provider) fn input(&self) -> Entity<InputState> {
-        self.input.clone()
-    }
-}
-
-pub(in crate::features::settings::provider) struct ProviderSecretInputBinding;
-
-impl FormComponentBinding<ProviderSecretValue> for ProviderSecretInputBinding {
-    type State = ProviderSecretInputState;
-    type Draft = ProviderSecretDraft;
-
-    fn new_state(
-        initial: &ProviderSecretValue,
-        options: ComponentStateOptions,
+impl<Form> ProviderSecretInputState<Form>
+where
+    Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+{
+    pub(in crate::features::settings::provider) fn new<Owner>(
+        field: FormField<Form, ProviderSecretValue>,
+        placeholder: String,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        let input = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).default_value(initial.value.clone());
-            if let Some(placeholder_key) = options.placeholder_key {
-                input = input.placeholder(resolve_form_text(placeholder_key, cx));
-            }
-            if options.masked {
-                input = input.masked(true);
-            }
-            input
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, gpui_form_gpui_component::FormControlError>
+    where
+        Owner: 'static,
+    {
+        let value = field
+            .value(cx)
+            .map_err(gpui_form_gpui_component::FormControlError::from)?;
+        let state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(placeholder)
         });
-        cx.new(|_| ProviderSecretInputState {
-            input,
-            field: initial.field,
-            changed: initial.changed,
+        state.update(cx, |input, cx| input.set_value(value.value, window, cx));
+        let attachment = field.attach_control(cx)?;
+        let form_state = state.clone();
+        let projected_field = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_owner, window, cx| {
+            let state = form_state.clone();
+            let field = projected_field.clone();
+            cx.defer_in(window, move |_owner, window, cx| {
+                let Ok(value) = field.value(cx) else { return };
+                state.update(cx, |input, cx| {
+                    input.set_value(value.value, window, cx);
+                });
+            });
+        })?;
+        let component_attachment = attachment;
+        let input_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_owner, state, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let text = state.read(cx).value().to_string();
+                    let Ok(mut value) = field.value(cx) else {
+                        return;
+                    };
+                    value.value = text;
+                    value.changed = true;
+                    component_attachment.defer_set_user_value(value, window, cx);
+                }
+                InputEvent::Blur => component_attachment.defer_blur(window, cx),
+                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
+            },
+        );
+
+        Ok(Self {
+            subscriptions: vec![form_subscription, input_subscription],
+            input: state,
+            _marker: std::marker::PhantomData,
         })
     }
+}
 
-    fn draft_from_value(value: &ProviderSecretValue) -> Self::Draft {
-        ProviderSecretDraft {
-            field: value.field,
-            value: value.value.clone(),
-            changed: value.changed,
-        }
+impl<Form> Deref for ProviderSecretInputState<Form>
+where
+    Form: FormStore,
+{
+    type Target = Entity<InputState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.input
     }
+}
 
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        let state = state.read(cx);
-        ProviderSecretDraft {
-            field: state.field,
-            value: state.input.read(cx).value().to_string(),
-            changed: state.changed,
-        }
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: FieldPath,
-        _trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<ProviderSecretValue, Box<FieldError>> {
-        Ok(ProviderSecretValue::new(
-            draft.field,
-            draft.value.clone(),
-            draft.changed,
-        ))
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &ProviderSecretValue,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |state, cx| {
-            state.field = value.field;
-            state.changed = value.changed;
-            state.input.update(cx, |input, cx| {
-                input.set_value(value.value.clone(), window, cx);
-            });
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        let input = state.read(cx).input();
-        input.update(cx, |input, cx| {
-            input.focus(window, cx);
-        });
-        true
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
-    where
-        Form: 'static,
-    {
-        let input = state.read(cx).input();
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &input,
-            window,
-            move |form, _input, event: &InputEvent, window, cx| {
-                let event = match event {
-                    InputEvent::Change => {
-                        state.update(cx, |state, _cx| {
-                            state.changed = true;
-                        });
-                        Some(FormComponentEvent::Change(FieldChangeCause::UserInput))
-                    }
-                    InputEvent::Focus => Some(FormComponentEvent::Focus),
-                    InputEvent::Blur => Some(FormComponentEvent::Blur),
-                    InputEvent::PressEnter { .. } => None,
-                };
-                if let Some(event) = event {
-                    sink.emit(form, event, window, cx);
-                }
-            },
-        ));
-        subscriptions
+impl<Form> Drop for ProviderSecretInputState<Form>
+where
+    Form: FormStore,
+{
+    fn drop(&mut self) {
+        self.subscriptions.clear();
     }
 }

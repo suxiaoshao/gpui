@@ -1,156 +1,126 @@
-use std::marker::PhantomData;
+use std::ops::Deref;
 
-use gpui::{App, AppContext as _, Context, Entity, Focusable, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::{
     searchable_list::{SearchableListDelegate, SearchableListItem},
     select::{SelectEvent, SelectState},
 };
-use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
-};
+use gpui_form::typed::{FormControl, FormField, FormStore};
 
-pub trait SelectFieldValue: Clone + PartialEq + 'static {
-    type Selected: Clone + PartialEq + 'static;
+use crate::FormControlError;
 
-    fn to_selected_value(&self) -> Option<Self::Selected>;
-    fn from_selected_value(selected: Option<Self::Selected>, previous: &Self) -> Self;
-}
+type SelectValue<D> = <<D as SearchableListDelegate>::Item as SearchableListItem>::Value;
 
-impl<T> SelectFieldValue for Option<T>
+pub struct FormSelect<D>
 where
-    T: Clone + PartialEq + 'static,
-{
-    type Selected = T;
-
-    fn to_selected_value(&self) -> Option<Self::Selected> {
-        self.clone()
-    }
-
-    fn from_selected_value(selected: Option<Self::Selected>, _previous: &Self) -> Self {
-        selected
-    }
-}
-
-pub struct SelectBinding<T, D>(PhantomData<fn() -> (T, D)>);
-
-impl<T, D> SelectBinding<T, D>
-where
-    T: SelectFieldValue,
     D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem<Value = T::Selected>,
+    D::Item: SearchableListItem,
 {
-    pub fn new_state_with_delegate(
-        initial: &T,
-        delegate: D,
-        searchable: bool,
-        _options: ComponentStateOptions,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<SelectState<D>> {
-        let selected_index = initial
-            .to_selected_value()
-            .and_then(|value| delegate.position(&value));
-        cx.new(|cx| SelectState::new(delegate, selected_index, window, cx).searchable(searchable))
-    }
+    subscriptions: Vec<Subscription>,
+    select: Entity<SelectState<D>>,
+}
 
-    pub fn set_items(
-        state: &Entity<SelectState<D>>,
-        delegate: D,
+impl<D> FormSelect<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    pub fn new<Form, Owner, Build>(
+        field: FormField<Form, Option<SelectValue<D>>>,
+        build: Build,
         window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |select, cx| {
-            select.set_items(delegate, window, cx);
-        });
-    }
-
-    pub fn focus(state: &Entity<SelectState<D>>, window: &mut Window, cx: &mut App) -> bool {
-        let focus_handle = state.read(cx).focus_handle(cx);
-        focus_handle.focus(window, cx);
-        true
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormControlError>
+    where
+        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<SelectState<D>>) -> SelectState<D>,
+    {
+        <Self as FormControl<Option<SelectValue<D>>>>::new(field, build, window, cx)
     }
 }
 
-impl<T, D> FormComponentBinding<T> for SelectBinding<T, D>
+impl<D> Deref for FormSelect<D>
 where
-    T: SelectFieldValue + Default,
-    D: SearchableListDelegate + Default + 'static,
-    D::Item: SearchableListItem<Value = T::Selected>,
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    type Target = Entity<SelectState<D>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.select
+    }
+}
+
+impl<D> Drop for FormSelect<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
+}
+
+impl<D> FormControl<Option<SelectValue<D>>> for FormSelect<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
 {
     type State = SelectState<D>;
-    type Draft = T;
+    type Error = FormControlError;
 
-    fn new_state(
-        initial: &T,
-        options: ComponentStateOptions,
+    fn new<Form, Owner, Build>(
+        field: FormField<Form, Option<SelectValue<D>>>,
+        build: Build,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        Self::new_state_with_delegate(initial, D::default(), false, options, window, cx)
-    }
-
-    fn draft_from_value(value: &T) -> Self::Draft {
-        value.clone()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        T::from_selected_value(state.read(cx).selected_value().cloned(), &T::default())
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: FieldPath,
-        _trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<T, Box<FieldError>> {
-        Ok(draft.clone())
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &T,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let selected = value.to_selected_value();
-        state.update(cx, |select, cx| {
-            if let Some(value) = selected.as_ref() {
-                select.set_selected_value(value, window, cx);
-            } else {
-                select.set_selected_index(None, window, cx);
-            }
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        Self::focus(state, window, cx)
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, Self::Error>
     where
-        Form: 'static,
+        Form: FormStore,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
     {
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &state,
+        let value = field.value(cx)?;
+        let attachment = field.attach_control(cx)?;
+        let select = cx.new(|cx| build(window, cx));
+        select.update(cx, |select, cx| match &value {
+            Some(value) => select.set_selected_value(value, window, cx),
+            None => select.set_selected_index(None, window, cx),
+        });
+
+        let weak_select = select.downgrade();
+        let projection = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
+            let weak_select = weak_select.clone();
+            let projection = projection.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let Some(select) = weak_select.upgrade() else {
+                    return;
+                };
+                let Ok(value) = projection.value(cx) else {
+                    return;
+                };
+                select.update(cx, |select, cx| match &value {
+                    Some(value) => select.set_selected_value(value, window, cx),
+                    None => select.set_selected_index(None, window, cx),
+                });
+            });
+        })?;
+
+        let select_attachment = attachment.clone();
+        let select_subscription = cx.subscribe_in(
+            &select,
             window,
-            move |form, _state, event: &SelectEvent<D>, window, cx| {
-                let SelectEvent::Confirm(_) = event;
-                sink.emit(
-                    form,
-                    FormComponentEvent::Change(FieldChangeCause::UserInput),
-                    window,
-                    cx,
-                );
+            move |_, _, event: &SelectEvent<D>, window, cx| {
+                let SelectEvent::Confirm(value) = event;
+                select_attachment.defer_set_user_value(value.clone(), window, cx);
             },
-        ));
-        subscriptions
+        );
+
+        Ok(Self {
+            subscriptions: vec![form_subscription, select_subscription],
+            select,
+        })
     }
 }

@@ -1,62 +1,86 @@
 use std::collections::BTreeSet;
 
-use crate::state::config::{
-    McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
+use crate::{
+    features::settings::form_validation::{JacoValidationContext, garde_message},
+    state::config::{
+        McpTransportKind, is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
+    },
 };
-use gpui_form::{
-    SubmitTransform, TransformContext, TransformReport, ValidationAdapter, ValidationAdapterReport,
-    ValidationContext, ValidationIssue, ValidationScope, ValidationSource, ValidationTrigger,
+use gpui_form::typed::{
+    ErrorParamValue, FieldPath, FieldPathSegment, SubmitTransform, TransformReport,
+    ValidationScope, ValidationTrigger,
 };
 
 use super::form_state::McpServerFormInput;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct McpServerValidationContext {
+pub(super) struct McpServerValidationDependencies {
     pub(super) original_server_id: Option<String>,
     pub(super) existing_server_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct McpServerValidator;
+pub(super) type McpServerValidationContext = JacoValidationContext<McpServerValidationDependencies>;
 
-impl ValidationAdapter<McpServerFormInput> for McpServerValidator {
+pub(super) fn mcp_validation_context(
+    original_server_id: Option<String>,
+    existing_server_ids: Vec<String>,
+) -> McpServerValidationContext {
+    JacoValidationContext::new(McpServerValidationDependencies {
+        original_server_id,
+        existing_server_ids,
+    })
+}
+
+impl garde::Validate for McpServerFormInput {
     type Context = McpServerValidationContext;
 
-    fn validate(
+    fn validate_into(
         &self,
-        draft: &McpServerFormInput,
-        trigger: ValidationTrigger,
-        scope: ValidationScope,
-        context: ValidationContext<'_, Self::Context>,
-        _cx: &gpui::App,
-    ) -> ValidationAdapterReport {
-        ValidationAdapterReport::new(validate_mcp_issues(
-            draft,
-            context.external,
-            trigger,
-            &scope,
-        ))
+        context: &Self::Context,
+        parent: &mut dyn FnMut() -> garde::Path,
+        report: &mut garde::Report,
+    ) {
+        for issue in collect_mcp_garde_errors(
+            self,
+            &context.dependencies,
+            ValidationTrigger::Submit,
+            &ValidationScope::Form,
+        ) {
+            let message = garde_message(
+                issue.message_key,
+                issue
+                    .args
+                    .into_iter()
+                    .map(|(key, value)| (key, ErrorParamValue::from(value))),
+            );
+            match garde_path(self, &issue.path, parent()) {
+                Ok(path) => report.append(path, message),
+                Err(reason) => report.append(
+                    parent(),
+                    garde_message(
+                        "mcp-validation-path-invalid",
+                        [("reason", ErrorParamValue::from(reason))],
+                    ),
+                ),
+            }
+        }
     }
+}
+
+struct McpGardeError {
+    path: FieldPath,
+    message_key: &'static str,
+    args: Vec<(&'static str, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct McpServerTransform;
 
-impl SubmitTransform<McpServerFormInput, McpServerFormInput> for McpServerTransform {
-    fn preview(
-        &self,
-        draft: &McpServerFormInput,
-        _context: &TransformContext,
-    ) -> Result<McpServerFormInput, TransformReport> {
-        Ok(normalize_mcp_input(draft))
-    }
+impl SubmitTransform<McpServerFormInput> for McpServerTransform {
+    type Output = McpServerFormInput;
 
-    fn transform_on_submit(
-        &self,
-        draft: &McpServerFormInput,
-        context: &TransformContext,
-    ) -> Result<McpServerFormInput, TransformReport> {
-        self.preview(draft, context)
+    fn transform(&self, draft: &McpServerFormInput) -> Result<Self::Output, TransformReport> {
+        Ok(normalize_mcp_input(draft))
     }
 }
 
@@ -77,12 +101,12 @@ fn normalize_mcp_input(input: &McpServerFormInput) -> McpServerFormInput {
     }
 }
 
-fn validate_mcp_issues(
+fn collect_mcp_garde_errors(
     output: &McpServerFormInput,
-    context: &McpServerValidationContext,
+    context: &McpServerValidationDependencies,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-) -> Vec<ValidationIssue> {
+) -> Vec<McpGardeError> {
     let mut issues = Vec::new();
     let server_id = output.server_id(context.original_server_id.as_deref());
 
@@ -111,18 +135,12 @@ fn validate_server_id_issue(
     existing_server_ids: &[String],
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     let path = field_path("server_id");
     if server_id.is_empty() {
-        push_mcp_issue(
-            issues,
-            path,
-            trigger,
-            scope,
-            "mcp-validation-name-required",
-            [],
-        );
+        // The field-level `#[form(required)]` rule owns the unconditional
+        // empty-value constraint. Garde only supplies the MCP-specific rules.
         return;
     }
 
@@ -158,7 +176,7 @@ fn validate_stdio_issues(
     input: &McpServerFormInput,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     if input.command.trim().is_empty() {
         push_mcp_issue(
@@ -171,11 +189,11 @@ fn validate_stdio_issues(
         );
     }
 
-    for (index, row) in input.args.iter().enumerate() {
+    for row in &input.args {
         if !row.value.is_empty() && row.value.trim().is_empty() {
             push_mcp_issue(
                 issues,
-                row_field_path("args", index, "value"),
+                row_field_path("args", row.row_id, "value"),
                 trigger,
                 scope,
                 "mcp-validation-arg-empty",
@@ -192,16 +210,16 @@ fn validate_env_row_issues(
     input: &McpServerFormInput,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     let mut seen = BTreeSet::new();
-    for (index, row) in input.env.iter().enumerate() {
+    for row in &input.env {
         let key = row.key.trim();
         let value = row.value.trim();
         if key.is_empty() && value.is_empty() {
             continue;
         }
-        let key_path = row_field_path("env", index, "key");
+        let key_path = row_field_path("env", row.row_id, "key");
         if key.is_empty() {
             push_mcp_issue(
                 issues,
@@ -241,15 +259,15 @@ fn validate_env_var_row_issues(
     input: &McpServerFormInput,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     let mut seen = BTreeSet::new();
-    for (index, row) in input.env_vars.iter().enumerate() {
+    for row in &input.env_vars {
         let value = row.value.trim();
         if value.is_empty() {
             continue;
         }
-        let value_path = row_field_path("env_vars", index, "value");
+        let value_path = row_field_path("env_vars", row.row_id, "value");
         if !is_valid_mcp_env_var_name(value) {
             push_mcp_issue(
                 issues,
@@ -278,7 +296,7 @@ fn validate_http_issues(
     input: &McpServerFormInput,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     let url = input.url.trim().to_string();
     if url.is_empty() {
@@ -341,13 +359,13 @@ fn validate_header_row_issues(
     trigger: ValidationTrigger,
     scope: &ValidationScope,
     authorization_managed: bool,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     let mut seen = BTreeSet::new();
-    for (index, row) in input.headers.iter().enumerate() {
+    for row in &input.headers {
         validate_header_row_issue(
-            row_field_path("headers", index, "name"),
-            row_field_path("headers", index, "value"),
+            row_field_path("headers", row.row_id, "name"),
+            row_field_path("headers", row.row_id, "value"),
             row.name.trim().to_string(),
             row.value.trim().to_string(),
             false,
@@ -358,10 +376,10 @@ fn validate_header_row_issues(
             issues,
         );
     }
-    for (index, row) in input.env_headers.iter().enumerate() {
+    for row in &input.env_headers {
         validate_header_row_issue(
-            row_field_path("env_headers", index, "name"),
-            row_field_path("env_headers", index, "env_var"),
+            row_field_path("env_headers", row.row_id, "name"),
+            row_field_path("env_headers", row.row_id, "env_var"),
             row.name.trim().to_string(),
             row.env_var.trim().to_string(),
             true,
@@ -376,8 +394,8 @@ fn validate_header_row_issues(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_header_row_issue(
-    name_path: gpui_form::FieldPath,
-    value_path: gpui_form::FieldPath,
+    name_path: gpui_form::typed::FieldPath,
+    value_path: gpui_form::typed::FieldPath,
     name: String,
     value: String,
     value_is_env_var: bool,
@@ -385,7 +403,7 @@ fn validate_header_row_issue(
     seen: &mut BTreeSet<String>,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut Vec<McpGardeError>,
 ) {
     if name.is_empty() && value.is_empty() {
         return;
@@ -470,17 +488,21 @@ fn validate_header_row_issue(
     }
 }
 
-fn field_path(field: &'static str) -> gpui_form::FieldPath {
-    gpui_form::FieldPath::from_static(field)
+fn field_path(field: &'static str) -> gpui_form::typed::FieldPath {
+    gpui_form::typed::FieldPath::field(field)
 }
 
-fn row_field_path(array: &'static str, index: usize, field: &'static str) -> gpui_form::FieldPath {
-    field_path(array).join_index(index).join_field(field)
+fn row_field_path(
+    array: &'static str,
+    id: gpui_form::typed::FormItemId,
+    field: &'static str,
+) -> gpui_form::typed::FieldPath {
+    field_path(array).join_item(id).join_field(field)
 }
 
 fn push_mcp_issue<const N: usize>(
-    issues: &mut Vec<ValidationIssue>,
-    path: gpui_form::FieldPath,
+    issues: &mut Vec<McpGardeError>,
+    path: gpui_form::typed::FieldPath,
     trigger: ValidationTrigger,
     scope: &ValidationScope,
     message_key: &'static str,
@@ -489,20 +511,15 @@ fn push_mcp_issue<const N: usize>(
     if !scope_includes_path(scope, &path) {
         return;
     }
-    let mut issue = ValidationIssue::field(
+    let _ = trigger;
+    issues.push(McpGardeError {
         path,
-        trigger,
-        ValidationSource::App("jaco-mcp".into()),
         message_key,
-        message_key,
-    );
-    for (key, value) in args {
-        issue = issue.with_param(key, value);
-    }
-    issues.push(issue);
+        args: args.into_iter().collect(),
+    });
 }
 
-fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> bool {
+fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::typed::FieldPath) -> bool {
     match scope {
         ValidationScope::Form => true,
         ValidationScope::Field(field_path) => field_path == path || path.starts_with(field_path),
@@ -511,6 +528,43 @@ fn scope_includes_path(scope: &ValidationScope, path: &gpui_form::FieldPath) -> 
             path: array_path, ..
         } => path.starts_with(array_path),
     }
+}
+
+fn garde_path(
+    input: &McpServerFormInput,
+    path: &FieldPath,
+    mut output: garde::Path,
+) -> Result<garde::Path, String> {
+    let mut array = None;
+    for segment in path.segments() {
+        match segment {
+            FieldPathSegment::Field(field) => {
+                array = Some(field.as_ref());
+                output = output.join(field.as_ref());
+            }
+            FieldPathSegment::Item(id) => {
+                let array = array
+                    .take()
+                    .ok_or_else(|| "item without array".to_string())?;
+                let index = match array {
+                    "args" => input.args.iter().position(|row| row.row_id == *id),
+                    "env" => input.env.iter().position(|row| row.row_id == *id),
+                    "env_vars" => input.env_vars.iter().position(|row| row.row_id == *id),
+                    "headers" => input.headers.iter().position(|row| row.row_id == *id),
+                    "env_headers" => input.env_headers.iter().position(|row| row.row_id == *id),
+                    _ => None,
+                }
+                .ok_or_else(|| format!("unknown item {id:?} in {array}"))?;
+                output = output.join(index);
+            }
+            FieldPathSegment::Projection(projection) => {
+                return Err(format!(
+                    "projection {projection} cannot be mapped to a Garde path"
+                ));
+            }
+        }
+    }
+    Ok(output)
 }
 
 #[cfg(test)]

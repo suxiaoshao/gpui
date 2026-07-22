@@ -114,6 +114,10 @@ struct SelectionOwner {
     count: StoreSelection<i32>,
 }
 
+struct OptionalSelectionOwner {
+    count: Option<StoreSelection<i32>>,
+}
+
 #[gpui::test]
 fn selection_notifies_owner_only_when_snapshot_changes(cx: &mut TestAppContext) {
     let (store, owner, counter) = cx.update(|cx| {
@@ -149,6 +153,30 @@ fn selection_notifies_owner_only_when_snapshot_changes(cx: &mut TestAppContext) 
     assert_eq!(
         cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
         1
+    );
+}
+
+#[gpui::test]
+fn selection_drop_releases_owner_subscription(cx: &mut TestAppContext) {
+    let (store, owner, counter) = cx.update(|cx| {
+        let store = SharedStore::new(cx, TestState::default());
+        let owner = cx.new(|cx| OptionalSelectionOwner {
+            count: Some(store.select(cx, |state| state.count)),
+        });
+        let counter = cx.new(|cx| NotifyCounter::new(owner.clone(), cx));
+        (store, owner, counter)
+    });
+
+    cx.update(|cx| {
+        owner.update(cx, |owner, _| {
+            owner.count.take();
+        });
+        store.set(cx, |state| &mut state.count, 1);
+    });
+
+    assert_eq!(
+        cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
+        0
     );
 }
 
@@ -269,6 +297,7 @@ struct FakeBackendInner {
     callbacks: Vec<StoreBackendCallback<()>>,
     reconcile_calls: usize,
     commit_calls: usize,
+    fail_next_commit: bool,
 }
 
 impl FakeBackend {
@@ -279,6 +308,7 @@ impl FakeBackend {
                 callbacks: Vec::new(),
                 reconcile_calls: 0,
                 commit_calls: 0,
+                fail_next_commit: false,
             })),
         }
     }
@@ -365,6 +395,10 @@ impl FakeCommitBackend {
     fn commit_calls(&self) -> usize {
         self.backend.commit_calls()
     }
+
+    fn fail_next_commit(&self) {
+        self.backend.inner.borrow_mut().fail_next_commit = true;
+    }
 }
 
 impl StoreBackend<TestState> for FakeCommitBackend {
@@ -400,6 +434,10 @@ impl StoreCommitBackend<TestState> for FakeCommitBackend {
     ) -> Result<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
         let mut inner = self.backend.inner.borrow_mut();
         inner.commit_calls += 1;
+        if inner.fail_next_commit {
+            inner.fail_next_commit = false;
+            return Err("commit failed".to_string());
+        }
         inner.snapshot = draft.count;
         Ok(Some(StoreCommitAck::with_snapshot(inner.snapshot)))
     }
@@ -469,6 +507,28 @@ fn committed_backend_commit_runs_once_and_reconciles_ack_snapshot(cx: &mut TestA
 
     assert_eq!(fake.reconcile_calls(), 3);
     assert_eq!(fake.commit_calls(), 1);
+}
+
+#[gpui::test]
+fn failed_committed_update_preserves_snapshot_revision_and_notifications(cx: &mut TestAppContext) {
+    let fake = FakeCommitBackend::new(0);
+    let (store, counter) = cx.update(|cx| {
+        let store = SharedStore::new_with_backend(cx, TestState::default(), fake.clone()).unwrap();
+        let counter = cx.new(|cx| NotifyCounter::new(store.entity(), cx));
+        (store, counter)
+    });
+    fake.fail_next_commit();
+
+    let result = cx.update(|cx| store.try_set(cx, |state| &mut state.count, 11));
+
+    assert_eq!(result.expect_err("commit should fail"), "commit failed");
+    assert_eq!(fake.commit_calls(), 1);
+    assert_eq!(cx.update(|cx| store.read(cx, |state| state.count)), 0);
+    assert_eq!(cx.update(|cx| store.revision(cx).get()), 0);
+    assert_eq!(
+        cx.update(|cx| counter.read_with(cx, |counter, _| counter.count())),
+        0
+    );
 }
 
 #[derive(Clone)]

@@ -1,0 +1,52 @@
+error[E0277]: the trait bound `std::string::String: ToFormItemId` is not satisfied
+ --> tests/ui/fail/array_id_to_form_item_id.rs:8:23
+  |
+6 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+  |                            -------------------- required by a bound introduced by this call
+7 | struct Root {
+8 |     #[form(array(id = "row_id"))]
+  |                       ^^^^^^^^ the trait `ToFormItemId` is not implemented for `std::string::String`
+  |
+help: the following other types implement trait `ToFormItemId`
+ --> src/array.rs
+  |
+  | impl ToFormItemId for FormItemId {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `FormItemId`
+...
+  | impl ToFormItemId for u64 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `u64`
+...
+  | impl ToFormItemId for u32 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `u32`
+...
+  | impl ToFormItemId for usize {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `usize`
+note: required by a bound in `FormField::<Form, Vec<Item>>::identified_item`
+ --> src/field.rs
+  |
+  |     pub fn identified_item<Id>(
+  |            --------------- required by a bound in this associated function
+...
+  |         Id: ToFormItemId + 'static,
+  |             ^^^^^^^^^^^^ required by this bound in `FormField::<Form, Vec<Item>>::identified_item`
+
+error[E0277]: the trait bound `std::string::String: ToFormItemId` is not satisfied
+ --> tests/ui/fail/array_id_to_form_item_id.rs:8:23
+  |
+8 |     #[form(array(id = "row_id"))]
+  |                       ^^^^^^^^ the trait `ToFormItemId` is not implemented for `std::string::String`
+  |
+help: the following other types implement trait `ToFormItemId`
+ --> src/array.rs
+  |
+  | impl ToFormItemId for FormItemId {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `FormItemId`
+...
+  | impl ToFormItemId for u64 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `u64`
+...
+  | impl ToFormItemId for u32 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `u32`
+...
+  | impl ToFormItemId for usize {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `usize`

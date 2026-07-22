@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, rc::Rc};
 
 use crate::{
     components::hotkey_input::format_hotkey_label,
+    components::run_settings::reasoning_selection_is_valid,
     foundation::{
         I18n,
         assets::{IconName, provider_visual_for_kind, provider_visual_icon},
@@ -35,6 +36,7 @@ pub(super) enum ShortcutStatus {
     HotkeyConflict,
     PromptUnavailable,
     ModelUnavailable,
+    CapabilityMismatch,
     RegistrationFailed,
 }
 
@@ -47,6 +49,7 @@ impl ShortcutStatus {
             Self::HotkeyConflict => "shortcut-status-hotkey-conflict",
             Self::PromptUnavailable => "shortcut-status-prompt-unavailable",
             Self::ModelUnavailable => "shortcut-status-model-unavailable",
+            Self::CapabilityMismatch => "shortcut-status-capability-mismatch",
             Self::RegistrationFailed => "shortcut-status-registration-failed",
         })
         .into()
@@ -60,6 +63,7 @@ impl ShortcutStatus {
             | Self::HotkeyConflict
             | Self::PromptUnavailable
             | Self::ModelUnavailable
+            | Self::CapabilityMismatch
             | Self::RegistrationFailed => Tag::warning(),
         }
         .small()
@@ -192,11 +196,11 @@ impl RenderOnce for ShortcutManagementEntry {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .px_3()
             .py_2()
             .cursor_pointer()
-            .hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+            .hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             .on_click(move |_, window, cx| on_row_view(row_id.clone(), window, cx))
             .child(
                 div()
@@ -206,7 +210,7 @@ impl RenderOnce for ShortcutManagementEntry {
                     .items_center()
                     .justify_center()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
+                    .bg(cx.theme().tokens.border.background.opacity(0.35))
                     .child(
                         provider_icon
                             .size_4()
@@ -473,6 +477,19 @@ fn shortcut_status(
     {
         return ShortcutStatus::ModelUnavailable;
     }
+    if shortcut
+        .settings_snapshot
+        .reasoning_selection
+        .as_ref()
+        .is_some_and(|selection| {
+            !reasoning_selection_is_valid(
+                model.and_then(|model| model.capabilities.reasoning.as_ref()),
+                selection,
+            )
+        })
+    {
+        return ShortcutStatus::CapabilityMismatch;
+    }
     if diagnostics.registration_errors.contains_key(&shortcut.id) {
         return ShortcutStatus::RegistrationFailed;
     }
@@ -529,9 +546,9 @@ mod tests {
     };
     use crate::state::hotkey::ShortcutRuntimeDiagnostics;
     use jaco_core::{
-        ProviderModelMetadata, ProviderSettingsPayload, RunSettingsSnapshot, ShortcutAction,
-        ShortcutInputSource, ToolApprovalMode, ToolApprovalPolicy, ToolPolicySnapshot,
-        conservative_model_capabilities,
+        ProviderModelMetadata, ProviderSettingsPayload, ReasoningSelectionSnapshot,
+        RunSettingsSnapshot, ShortcutAction, ShortcutInputSource, ToolApprovalMode,
+        ToolApprovalPolicy, ToolPolicySnapshot, conservative_model_capabilities,
     };
     use jaco_db::{PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
     use time::OffsetDateTime;
@@ -586,6 +603,23 @@ mod tests {
 
         assert_eq!(rows[0].status, ShortcutStatus::HotkeyConflict);
         assert_eq!(rows[1].status, ShortcutStatus::HotkeyConflict);
+    }
+
+    #[test]
+    fn row_status_reports_reasoning_capability_mismatch() {
+        let i18n = crate::foundation::I18n::english_for_test();
+        let mut shortcut = shortcut("shortcut-1", "super+shift+j");
+        shortcut.settings_snapshot.reasoning_selection = Some(ReasoningSelectionSnapshot::AlwaysOn);
+
+        let rows = shortcut_management_rows(
+            &[shortcut],
+            &[],
+            &[(provider(), vec![model(true)])],
+            &ShortcutRuntimeDiagnostics::default(),
+            &i18n,
+        );
+
+        assert_eq!(rows[0].status, ShortcutStatus::CapabilityMismatch);
     }
 
     fn shortcut(id: &str, hotkey: &str) -> ShortcutRecord {

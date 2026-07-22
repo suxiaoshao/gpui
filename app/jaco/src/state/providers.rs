@@ -1,46 +1,27 @@
-#![allow(dead_code)]
-
 use crate::database;
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
+use gpui::{App, Global};
+use gpui_store::{SharedStore, StoreState};
 use jaco_core::{ModelCapabilitiesSnapshot, ProviderId, ProviderModelId};
 use jaco_db::{NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord, UpdateProvider};
 
 #[derive(Clone)]
-pub(crate) struct ProviderCatalogGlobal(Entity<ProviderCatalogStore>);
+pub(crate) struct ProviderCatalogGlobal(SharedStore<ProviderCatalogSnapshot>);
 
 impl ProviderCatalogGlobal {
-    pub(crate) fn entity(&self) -> Entity<ProviderCatalogStore> {
+    pub(crate) fn store(&self) -> SharedStore<ProviderCatalogSnapshot> {
         self.0.clone()
     }
 }
 
 impl Global for ProviderCatalogGlobal {}
 
-pub(crate) struct ProviderCatalogStore {
-    revision: u64,
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ProviderCatalogSnapshot {
+    pub(crate) providers: Vec<(ProviderRecord, Vec<ProviderModelRecord>)>,
+    pub(crate) enabled_models: Vec<ProviderModelChoice>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProviderCatalogEvent {
-    Changed(ProviderCatalogChange),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProviderCatalogChange {
-    ProviderSaved {
-        provider_id: ProviderId,
-    },
-    ModelsReplaced {
-        provider_id: ProviderId,
-    },
-    ModelEnabledChanged {
-        provider_id: ProviderId,
-        model_id: ProviderModelId,
-        enabled: bool,
-    },
-}
-
-impl EventEmitter<ProviderCatalogEvent> for ProviderCatalogStore {}
+impl StoreState for ProviderCatalogSnapshot {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProviderModelKey {
@@ -73,99 +54,65 @@ impl ProviderModelChoice {
     }
 }
 
-impl ProviderCatalogStore {
-    fn new() -> Self {
-        Self { revision: 0 }
-    }
+fn refresh_snapshot(store: &SharedStore<ProviderCatalogSnapshot>, cx: &mut App) {
+    let Ok(snapshot) = load_catalog_snapshot(cx) else {
+        return;
+    };
+    store.update(cx, |current| {
+        *current = snapshot;
+    });
+}
 
-    #[cfg(test)]
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision
-    }
+fn update_provider_impl(
+    provider_id: &ProviderId,
+    input: UpdateProvider,
+    cx: &mut App,
+) -> jaco_db::Result<ProviderRecord> {
+    let provider = database::repository(cx).update_provider(provider_id, input)?;
+    refresh_snapshot(&catalog(cx), cx);
+    Ok(provider)
+}
 
-    pub(crate) fn update_provider(
-        &mut self,
-        provider_id: &ProviderId,
-        input: UpdateProvider,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProviderRecord> {
-        let provider = database::repository(cx).update_provider(provider_id, input)?;
-        self.emit_changed(
-            ProviderCatalogChange::ProviderSaved {
-                provider_id: provider.id.clone(),
-            },
-            cx,
-        );
-        Ok(provider)
-    }
+fn insert_provider_with_id_impl(
+    provider_id: ProviderId,
+    input: NewProvider,
+    cx: &mut App,
+) -> jaco_db::Result<ProviderRecord> {
+    let provider = database::repository(cx).insert_provider_with_id(provider_id, input)?;
+    refresh_snapshot(&catalog(cx), cx);
+    Ok(provider)
+}
 
-    pub(crate) fn insert_provider_with_id(
-        &mut self,
-        provider_id: ProviderId,
-        input: NewProvider,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProviderRecord> {
-        let provider = database::repository(cx).insert_provider_with_id(provider_id, input)?;
-        self.emit_changed(
-            ProviderCatalogChange::ProviderSaved {
-                provider_id: provider.id.clone(),
-            },
-            cx,
-        );
-        Ok(provider)
-    }
+fn replace_fetched_provider_models_impl(
+    provider_id: &ProviderId,
+    models: Vec<NewProviderModel>,
+    cx: &mut App,
+) -> jaco_db::Result<Vec<ProviderModelRecord>> {
+    let models = database::repository(cx).replace_fetched_provider_models(provider_id, models)?;
+    refresh_snapshot(&catalog(cx), cx);
+    Ok(models)
+}
 
-    pub(crate) fn replace_fetched_provider_models(
-        &mut self,
-        provider_id: &ProviderId,
-        models: Vec<NewProviderModel>,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<Vec<ProviderModelRecord>> {
-        let models =
-            database::repository(cx).replace_fetched_provider_models(provider_id, models)?;
-        self.emit_changed(
-            ProviderCatalogChange::ModelsReplaced {
-                provider_id: provider_id.clone(),
-            },
-            cx,
-        );
-        Ok(models)
-    }
-
-    pub(crate) fn set_provider_model_enabled(
-        &mut self,
-        provider_id: &ProviderId,
-        model_id: &ProviderModelId,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProviderModelRecord> {
-        let model =
-            database::repository(cx).set_provider_model_enabled(provider_id, model_id, enabled)?;
-        self.emit_changed(
-            ProviderCatalogChange::ModelEnabledChanged {
-                provider_id: model.provider_id.clone(),
-                model_id: model.model_id.clone(),
-                enabled: model.enabled,
-            },
-            cx,
-        );
-        Ok(model)
-    }
-
-    fn emit_changed(&mut self, change: ProviderCatalogChange, cx: &mut Context<Self>) {
-        self.revision += 1;
-        cx.emit(ProviderCatalogEvent::Changed(change));
-        cx.notify();
-    }
+fn set_provider_model_enabled_impl(
+    provider_id: &ProviderId,
+    model_id: &ProviderModelId,
+    enabled: bool,
+    cx: &mut App,
+) -> jaco_db::Result<ProviderModelRecord> {
+    let model =
+        database::repository(cx).set_provider_model_enabled(provider_id, model_id, enabled)?;
+    refresh_snapshot(&catalog(cx), cx);
+    Ok(model)
 }
 
 pub(crate) fn init(cx: &mut App) {
-    let store = cx.new(|_| ProviderCatalogStore::new());
+    let snapshot = load_catalog_snapshot(cx).unwrap_or_default();
+    let store = SharedStore::new(cx, snapshot);
     cx.set_global(ProviderCatalogGlobal(store));
 }
 
-pub(crate) fn catalog(cx: &App) -> Entity<ProviderCatalogStore> {
-    cx.global::<ProviderCatalogGlobal>().entity()
+pub(crate) fn catalog(cx: &App) -> SharedStore<ProviderCatalogSnapshot> {
+    cx.global::<ProviderCatalogGlobal>().store()
 }
 
 pub(crate) fn update_provider(
@@ -173,9 +120,7 @@ pub(crate) fn update_provider(
     provider_id: &ProviderId,
     input: UpdateProvider,
 ) -> jaco_db::Result<ProviderRecord> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.update_provider(provider_id, input, cx)
-    })
+    update_provider_impl(provider_id, input, cx)
 }
 
 pub(crate) fn insert_provider_with_id(
@@ -183,9 +128,7 @@ pub(crate) fn insert_provider_with_id(
     provider_id: ProviderId,
     input: NewProvider,
 ) -> jaco_db::Result<ProviderRecord> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.insert_provider_with_id(provider_id, input, cx)
-    })
+    insert_provider_with_id_impl(provider_id, input, cx)
 }
 
 pub(crate) fn replace_fetched_provider_models(
@@ -193,9 +136,7 @@ pub(crate) fn replace_fetched_provider_models(
     provider_id: &ProviderId,
     models: Vec<NewProviderModel>,
 ) -> jaco_db::Result<Vec<ProviderModelRecord>> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.replace_fetched_provider_models(provider_id, models, cx)
-    })
+    replace_fetched_provider_models_impl(provider_id, models, cx)
 }
 
 pub(crate) fn set_provider_model_enabled(
@@ -204,12 +145,19 @@ pub(crate) fn set_provider_model_enabled(
     model_id: &ProviderModelId,
     enabled: bool,
 ) -> jaco_db::Result<ProviderModelRecord> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.set_provider_model_enabled(provider_id, model_id, enabled, cx)
-    })
+    set_provider_model_enabled_impl(provider_id, model_id, enabled, cx)
 }
 
 pub(crate) fn providers_with_models(
+    cx: &App,
+) -> jaco_db::Result<Vec<(ProviderRecord, Vec<ProviderModelRecord>)>> {
+    if cx.has_global::<ProviderCatalogGlobal>() {
+        return Ok(catalog(cx).read_cloned(cx, |snapshot| &snapshot.providers));
+    }
+    query_providers_with_models(cx)
+}
+
+fn query_providers_with_models(
     cx: &App,
 ) -> jaco_db::Result<Vec<(ProviderRecord, Vec<ProviderModelRecord>)>> {
     let repository = database::repository(cx);
@@ -224,7 +172,10 @@ pub(crate) fn providers_with_models(
 }
 
 pub(crate) fn enabled_provider_models(cx: &App) -> jaco_db::Result<Vec<ProviderModelChoice>> {
-    Ok(providers_with_models(cx)?
+    if cx.has_global::<ProviderCatalogGlobal>() {
+        return Ok(catalog(cx).read_cloned(cx, |snapshot| &snapshot.enabled_models));
+    }
+    Ok(query_providers_with_models(cx)?
         .into_iter()
         .filter(|(provider, _)| provider.enabled)
         .flat_map(|(provider, models)| {
@@ -241,6 +192,31 @@ pub(crate) fn enabled_provider_models(cx: &App) -> jaco_db::Result<Vec<ProviderM
                 })
         })
         .collect())
+}
+
+fn load_catalog_snapshot(cx: &App) -> jaco_db::Result<ProviderCatalogSnapshot> {
+    let providers = query_providers_with_models(cx)?;
+    let enabled_models = providers
+        .iter()
+        .filter(|(provider, _)| provider.enabled)
+        .flat_map(|(provider, models)| {
+            models
+                .iter()
+                .filter(|model| model.enabled)
+                .map(move |model| ProviderModelChoice {
+                    provider_id: provider.id.clone(),
+                    provider_kind: provider.kind.clone(),
+                    provider_display_name: provider.display_name.clone(),
+                    model_id: model.model_id.clone(),
+                    model_display_name: model.display_name.clone(),
+                    capabilities: model.capabilities.clone(),
+                })
+        })
+        .collect();
+    Ok(ProviderCatalogSnapshot {
+        providers,
+        enabled_models,
+    })
 }
 
 #[cfg(test)]

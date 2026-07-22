@@ -1,0 +1,17 @@
+error[E0277]: the trait bound `Child: GardePathMapper` is not satisfied
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:37:12
+   |
+37 |     child: Child,
+   |            ^^^^^ unsatisfied trait bound
+   |
+help: the trait `GardePathMapper` is not implemented for `Child`
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:7:1
+   |
+ 7 | struct Child {
+   | ^^^^^^^^^^^^
+help: the trait `GardePathMapper` is implemented for `Root`
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:32:28
+   |
+32 | #[derive(Clone, PartialEq, gpui_form::FormStore, garde::Validate)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)

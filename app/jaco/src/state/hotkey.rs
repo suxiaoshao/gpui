@@ -10,7 +10,7 @@ use gpui_component::{
 };
 use jaco_core::{
     AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource, ToolApprovalMode,
+    ShortcutInputSource,
 };
 use jaco_db::ShortcutRecord;
 use platform_ext::{OcrError, ocr::ImageFrame};
@@ -18,9 +18,10 @@ use tracing::{Level, event};
 
 use crate::{
     app::{menus::ToggleTemporaryConversation, temporary_window},
+    components::run_settings::reasoning_selection_is_valid,
     database,
     errors::{JacoError, JacoResult},
-    features::{screenshot::overlay as screenshot_overlay, temporary::TemporaryWindow},
+    features::screenshot::overlay as screenshot_overlay,
     foundation::I18n,
     platform::capture::CaptureError,
     state::{
@@ -742,21 +743,18 @@ impl GlobalHotkeyState {
         image: ImageFrame,
         cx: &mut App,
     ) -> JacoResult<()> {
-        let text = cx
-            .global::<I18n>()
-            .t("shortcut-input-screenshot")
-            .to_string();
+        let title_seed = screenshot_title_seed(cx.global::<I18n>());
         let png = screenshot_png_bytes(&image)
             .map_err(|err| JacoError::Window(format!("encode screenshot failed: {err}")))?;
         let attachment = screenshot_composer_attachment(&image, &png)?;
         let created = self.create_shortcut_conversation(
             &trigger,
-            vec![ContentPart::Text { text: text.clone() }],
+            Vec::new(),
             vec![attachment],
-            text.clone(),
+            title_seed,
             cx,
         )?;
-        self.open_created_shortcut_conversation(created, cx);
+        self.finish_shortcut_trigger(created, cx);
         Ok(())
     }
 
@@ -770,7 +768,7 @@ impl GlobalHotkeyState {
         let result =
             self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
         match result {
-            Ok(created) => self.open_created_shortcut_conversation(created, cx),
+            Ok(created) => self.finish_shortcut_trigger(created, cx),
             Err(err) => self.push_notification(
                 "notify-shortcut-trigger-model-unavailable-title",
                 err.to_string(),
@@ -788,6 +786,20 @@ impl GlobalHotkeyState {
         title_seed: String,
         cx: &mut App,
     ) -> JacoResult<state::conversations::CreatedConversation> {
+        if let Some(selection) = trigger
+            .shortcut
+            .settings_snapshot
+            .reasoning_selection
+            .as_ref()
+            && !reasoning_selection_is_valid(
+                trigger.provider_model.capabilities.reasoning.as_ref(),
+                selection,
+            )
+        {
+            return Err(JacoError::Window(
+                "shortcut reasoning setting is not supported by the selected model".to_string(),
+            ));
+        }
         state::conversations::create_conversation(
             state::conversations::CreateConversationRequest {
                 project_id: None,
@@ -801,7 +813,7 @@ impl GlobalHotkeyState {
                     .settings_snapshot
                     .reasoning_selection
                     .clone(),
-                approval_mode: ToolApprovalMode::RequestApproval,
+                approval_mode: trigger.shortcut.settings_snapshot.tool_policy.approval_mode,
                 prompt_id: trigger.prompt_id.clone(),
                 prompt_snapshot: trigger.prompt_snapshot.clone(),
                 trigger_kind: AgentRunTriggerKind::Shortcut,
@@ -810,37 +822,23 @@ impl GlobalHotkeyState {
         )
     }
 
-    fn open_created_shortcut_conversation(
+    fn finish_shortcut_trigger(
         &self,
         created: state::conversations::CreatedConversation,
         cx: &mut App,
     ) {
-        let Some(root) = temporary_window::open_temporary_window(cx) else {
-            event!(
-                Level::ERROR,
-                "failed to open temporary window for shortcut conversation"
-            );
-            return;
-        };
-
-        if let Err(err) = root.update(cx, |root, window, cx| {
-            let Ok(view) = root.view().clone().downcast::<TemporaryWindow>() else {
+        // Selection/OCR/screenshot completion normally arrives from inside a
+        // `GlobalHotkeyState` update. The temporary-window lifecycle performs
+        // nested global/window/entity updates, so dispatch it after the
+        // current update scope has released its borrows.
+        cx.defer(move |cx| {
+            if temporary_window::show_created_conversation(created, cx).is_none() {
                 event!(
                     Level::ERROR,
-                    "temporary window root did not contain TemporaryWindow view"
+                    "failed to show shortcut conversation in temporary window"
                 );
-                return;
-            };
-            view.update(cx, |view, cx| {
-                view.open_created_conversation(created, window, cx);
-            });
-        }) {
-            event!(
-                Level::ERROR,
-                error = ?err,
-                "failed to open shortcut conversation in temporary window"
-            );
-        }
+            }
+        });
     }
 
     pub(crate) fn handle_screenshot_capture_failure(&self, error: CaptureError, cx: &mut App) {
@@ -934,6 +932,10 @@ fn normalized_text(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+fn screenshot_title_seed(i18n: &I18n) -> String {
+    i18n.t("shortcut-input-screenshot").to_string()
+}
+
 fn screenshot_png_bytes(image: &ImageFrame) -> Result<Vec<u8>, String> {
     use image::ImageEncoder as _;
 
@@ -980,8 +982,10 @@ mod tests {
     use super::{
         FakeHotkeyBackend, GlobalHotkeyState, normalized_text, screenshot_capture_error_message,
         screenshot_composer_attachment, screenshot_ocr_error_message, screenshot_png_bytes,
+        screenshot_title_seed,
     };
     use crate::{
+        foundation::I18n,
         platform::capture::CaptureError,
         state::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
     };
@@ -989,6 +993,18 @@ mod tests {
     use gpui::Task;
     use platform_ext::{OcrError, ocr::ImageFrame};
     use std::str::FromStr;
+
+    #[test]
+    fn screenshot_title_seed_uses_localized_label() {
+        assert_eq!(
+            screenshot_title_seed(&I18n::english_for_test()),
+            "Screenshot"
+        );
+        assert_eq!(
+            screenshot_title_seed(&I18n::for_locale_tag("zh-CN")),
+            "截图"
+        );
+    }
 
     #[test]
     fn temporary_hotkey_registration_records_diagnostics() {

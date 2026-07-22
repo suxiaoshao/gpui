@@ -1,6 +1,6 @@
 {
   "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
-  "name": "Ayu Light",
+  "name": "Ayu",
   "author": "Zed Industries",
   "url": "https://github.com/zed-industries/zed/blob/e62dd2a0e584154886ff86cc1e9e3e060558b977/assets/themes/ayu",
   "themes": [
@@ -37,7 +37,6 @@
         "tab.active.background": "#FCFCFC",
         "tab.active.foreground": "#5C6773",
         "tab.background": "#ECECED00",
-        "tab.foreground": "#99a0a6",
         "tab_bar.background": "#F4F4F5",
         "title_bar.background": "#ECECED",
         "title_bar.border": "#CFD1D2",
@@ -260,10 +259,8 @@
         "secondary.background": "#1F2127",
         "secondary.foreground": "#B3B1AD",
         "secondary.hover.background": "#26282f99",
-        "tab.active.background": "#0D1016",
         "tab.active.foreground": "#B3B1AD",
-        "tab.background": "#16191F00",
-        "tab.foreground": "#52514f",
+        "tab.active.background": "#0D1016",
         "tab_bar.background": "#16191F",
         "title_bar.background": "#16191F",
         "title_bar.border": "#38393b",
@@ -272,7 +269,9 @@
         "base.blue": "#5ac1fe",
         "base.green": "#aad84c",
         "base.magenta": "#d2a6ff",
-        "base.cyan": "#5a728b"
+        "base.cyan": "#5a728b",
+        "tab.background": "#16191F00",
+        "tab.foreground": "#52514f"
       },
       "highlight": {
         "editor.foreground": "#bfbdb6",

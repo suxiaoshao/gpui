@@ -346,7 +346,7 @@ impl Render for HotkeyInput {
                 Size::Size(size) => this.h(size),
             })
             .line_height(relative(1.))
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .rounded(cx.theme().radius)
             .border_color(cx.theme().input)
             .border_1()

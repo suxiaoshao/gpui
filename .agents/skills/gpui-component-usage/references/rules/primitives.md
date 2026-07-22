@@ -7,6 +7,9 @@ Use this file when custom app UI is necessary but should still feel native to gp
 - Use `h_flex()` and `v_flex()` for common row/column containers before adding app-local helper functions.
 - Use `StyledExt::paddings()` and `StyledExt::margins()` when applying `Edges` values from components or size helpers.
 - Use `StyledExt::refine_style()` when a component exposes `StyleRefinement` and needs caller-provided style composition.
+- Let a `Scrollable` source element own its gap, padding, and size. Keep an
+  outer wrapper only when it has a real clipping, overlay, or independent
+  layout responsibility.
 
 ## Element Helpers
 
@@ -19,6 +22,8 @@ Use this file when custom app UI is necessary but should still feel native to gp
 - Use `Root` for app roots that should participate in gpui-component theme and global behavior.
 - Use `WindowExt` for window-level helpers exposed by the library.
 - For window chrome, inspect `TitleBar` and its compatibility handling before implementing custom titlebar behavior.
+- Prefer `ListItem` for ordinary selectable rows and `Progress` for determinate
+  progress before duplicating their state visuals in app-local elements.
 
 ## Icons and Media
 
@@ -30,4 +35,3 @@ Use this file when custom app UI is necessary but should still feel native to gp
 Application entrypoints should call `gpui_component::init(cx)` once before using components. This initializes theme, global state, root behavior, focus trap, overlays, menus, table, text, tree, tooltip, and other component systems.
 
 When diagnosing missing overlay, tooltip, menu, theme, or focus behavior, check initialization before changing component code.
-

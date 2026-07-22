@@ -660,7 +660,7 @@ fn render_sorts_table(
         .child(
             h_flex()
                 .w_full()
-                .bg(cx.theme().table_head)
+                .bg(cx.theme().tokens.table_head.background)
                 .text_color(cx.theme().table_head_foreground)
                 .border_b_1()
                 .border_color(cx.theme().table_row_border)
@@ -741,15 +741,18 @@ fn render_sort_item(
                 .id(("sort-row", sort_id))
                 .w_full()
                 .items_center()
-                .hover(|style| style.bg(cx.theme().accent.opacity(0.18)))
+                .hover(|style| style.bg(cx.theme().tokens.accent.background.opacity(0.18)))
                 .when(!disabled, |this| {
                     this.drag_over::<DragSortRow>(move |this, drag, _window, cx| {
                         if drag.row_id == sort_id {
                             this
                         } else {
-                            this.border_l_2()
-                                .border_color(cx.theme().drag_border)
-                                .bg(cx.theme().accent.opacity(0.25))
+                            this.border_l_2().border_color(cx.theme().drag_border).bg(cx
+                                .theme()
+                                .tokens
+                                .accent
+                                .background
+                                .opacity(0.25))
                         }
                     })
                 })
@@ -772,7 +775,9 @@ fn render_sort_item(
                                 .rounded_sm()
                                 .when(!disabled, |this| {
                                     this.cursor_grab()
-                                        .hover(|style| style.bg(cx.theme().accent))
+                                        .hover(|style| {
+                                            style.bg(cx.theme().tokens.accent.background)
+                                        })
                                         .on_drag(
                                             DragSortRow::new(
                                                 sort_id,

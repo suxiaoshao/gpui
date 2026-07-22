@@ -21,8 +21,8 @@ use jaco_core::{AgentRunId, ConversationEntryId, ConversationId, ToolInvocationI
 use tracing::{Level, event};
 
 use crate::{
-    components::chat_form::{
-        ChatForm, ChatFormEvent, ChatFormSkillCompletionPlacement, ChatFormSubmit,
+    components::chat_input::{
+        ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
     foundation::{I18n, conversation_format as format},
     state::{self, conversations::ConversationLoadSnapshot},
@@ -31,7 +31,7 @@ use crate::{
 pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
     snapshot: Result<Option<ConversationLoadSnapshot>, String>,
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatInputController>,
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
@@ -74,9 +74,31 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_focus(conversation_id, true, window, cx)
+    }
+
+    pub(crate) fn new_without_focus(
+        conversation_id: ConversationId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_focus(conversation_id, false, window, cx)
+    }
+
+    fn new_with_focus(
+        conversation_id: ConversationId,
+        focus_composer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatForm::new(window, cx);
-            chat_form.set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm);
+            let mut chat_form = if focus_composer {
+                ChatInputController::new(window, cx)
+            } else {
+                ChatInputController::new_without_focus(window, cx)
+            };
+            chat_form
+                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm, cx);
             chat_form
         });
         let runtime = state::conversation_runtime::runtime(cx);
@@ -86,14 +108,14 @@ impl ConversationDetailPage {
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
-            |page, _chat_form, event: &ChatFormEvent, window, cx| match event {
-                ChatFormEvent::SendRequested(submit) => {
+            |page, _chat_form, event: &ChatInputEvent, window, cx| match event {
+                ChatInputEvent::SendRequested(submit) => {
                     page.submit_message((**submit).clone(), window, cx);
                 }
-                ChatFormEvent::StopRequested => {
+                ChatInputEvent::StopRequested => {
                     page.stop_agent_run(cx);
                 }
-                ChatFormEvent::AddRequested => {}
+                ChatInputEvent::AddRequested | ChatInputEvent::AddProjectRequested => {}
             },
         );
         let runtime_subscription = cx.subscribe_in(
@@ -134,7 +156,7 @@ impl ConversationDetailPage {
 
     fn submit_message(
         &mut self,
-        submit: ChatFormSubmit,
+        submit: ChatInputSubmit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -144,7 +166,7 @@ impl ConversationDetailPage {
         let request = state::conversations::SendConversationMessageRequest {
             conversation_id: self.conversation_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
-            attachments: submit.composer.attachments.clone(),
+            attachments: submit.attachments.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
             reasoning_selection: submit.reasoning_selection,
@@ -154,7 +176,7 @@ impl ConversationDetailPage {
             Ok(sent) => {
                 let _ = &sent.item.id;
                 self.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.clear_after_submit(cx);
+                    chat_form.clear_after_submit(window, cx);
                 });
                 self.reload(window, cx);
                 self.timeline.set_follow_mode(FollowMode::Tail);
@@ -501,7 +523,7 @@ impl Render for ConversationDetailPage {
             .size_full()
             .min_w_0()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .child(
                 div()
                     .flex_1()
@@ -530,7 +552,9 @@ impl Render for ConversationDetailPage {
                             list(timeline.clone(), move |ix, window, cx| {
                                 page.upgrade()
                                     .and_then(|page| page.read(cx).timeline_rows.row(ix))
-                                    .map(|row| row.render(window, cx).into_any_element())
+                                    .map(|row| {
+                                        gpui::RenderOnce::render(row, window, cx).into_any_element()
+                                    })
                                     .unwrap_or_else(|| div().into_any_element())
                             })
                             .size_full(),
@@ -666,5 +690,49 @@ mod tests {
             message_text_update("hello world", "hello markdown"),
             MessageTextUpdate::Replace
         );
+    }
+
+    #[test]
+    fn streaming_markdown_keeps_latest_complete_source() {
+        let chunks = [
+            "Paragraph with `inline code`.\n\n",
+            "```ru",
+            "st\nfn main() {\n",
+            "    println!(\"hello\");\n}\n",
+            "```\n\n",
+            "```unknown-language\nplain fallback\n```\n",
+            "```\nuntyped fallback\n```",
+        ];
+        let expected = chunks.concat();
+        let mut current = String::new();
+
+        for chunk in chunks {
+            let next = format!("{current}{chunk}");
+            assert_eq!(
+                message_text_update(&current, &next),
+                MessageTextUpdate::Append(chunk)
+            );
+            current.push_str(chunk);
+        }
+
+        assert_eq!(current, expected);
+    }
+
+    #[test]
+    fn streaming_markdown_preserves_split_fences_and_plain_fallback_source() {
+        let chunks = [
+            "before\n\n`",
+            "``javascript\nconst value = 1;\n",
+            "```\n\n```not-registered\nvalue\n",
+            "```\n\nafter",
+        ];
+        let mut source = String::new();
+        for chunk in chunks {
+            source.push_str(chunk);
+        }
+
+        assert!(source.contains("```javascript\nconst value = 1;\n```"));
+        assert!(source.contains("```not-registered\nvalue\n```"));
+        assert!(source.ends_with("after"));
     }
 }

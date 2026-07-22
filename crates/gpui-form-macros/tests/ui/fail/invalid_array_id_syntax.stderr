@@ -1,0 +1,5 @@
+error: array id must be a string literal: id = "field_name"
+ --> tests/ui/fail/invalid_array_id_syntax.rs:5:23
+  |
+5 |     #[form(array(id = item_id))]
+  |                       ^^^^^^^

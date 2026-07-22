@@ -226,7 +226,7 @@ impl SkillsSettingsPage {
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().warning)
-                .bg(cx.theme().warning.opacity(0.08))
+                .bg(cx.theme().tokens.warning.background.opacity(0.08))
                 .text_color(cx.theme().warning)
                 .p_3()
                 .child(Icon::new(IconName::CircleAlert).with_size(px(16.)))

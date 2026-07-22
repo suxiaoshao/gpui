@@ -1,180 +1,125 @@
-use std::marker::PhantomData;
+use std::ops::Deref;
 
-use gpui::{App, AppContext as _, Context, Entity, Focusable, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::{
-    IndexPath,
     combobox::{ComboboxEvent, ComboboxState},
     searchable_list::{SearchableListDelegate, SearchableListItem},
 };
-use gpui_form::{
-    ComponentStateOptions, FieldChangeCause, FieldError, FieldPath, FormComponentBinding,
-    FormComponentEvent, FormComponentEventSink, SubscriptionSet, ValidationTrigger,
-};
+use gpui_form::typed::{FormControl, FormField, FormStore};
 
-pub trait ComboboxFieldValue: Clone + PartialEq + 'static {
-    type Selected: Clone + PartialEq + 'static;
+use crate::FormControlError;
 
-    fn to_selected_values(&self) -> Vec<Self::Selected>;
-    fn from_selected_values(selected: Vec<Self::Selected>, previous: &Self) -> Self;
+type ComboboxValue<D> = <<D as SearchableListDelegate>::Item as SearchableListItem>::Value;
+
+pub struct FormCombobox<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    subscriptions: Vec<Subscription>,
+    combobox: Entity<ComboboxState<D>>,
 }
 
-impl<T> ComboboxFieldValue for Vec<T>
+impl<D> FormCombobox<D>
 where
-    T: Clone + PartialEq + 'static,
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
 {
-    type Selected = T;
-
-    fn to_selected_values(&self) -> Vec<Self::Selected> {
-        self.clone()
-    }
-
-    fn from_selected_values(selected: Vec<Self::Selected>, _previous: &Self) -> Self {
-        selected
-    }
-}
-
-impl<T> ComboboxFieldValue for Option<T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    type Selected = T;
-
-    fn to_selected_values(&self) -> Vec<Self::Selected> {
-        self.clone().into_iter().collect()
-    }
-
-    fn from_selected_values(mut selected: Vec<Self::Selected>, _previous: &Self) -> Self {
-        selected.drain(..).next()
-    }
-}
-
-pub struct ComboboxBinding<T, D>(PhantomData<fn() -> (T, D)>);
-
-impl<T, D> ComboboxBinding<T, D>
-where
-    T: ComboboxFieldValue,
-    D: SearchableListDelegate + Clone + 'static,
-    D::Item: SearchableListItem<Value = T::Selected>,
-{
-    pub fn new_state_with_delegate(
-        initial: &T,
-        delegate: D,
-        multiple: bool,
-        searchable: bool,
-        _options: ComponentStateOptions,
+    pub fn new<Form, Owner, Build>(
+        field: FormField<Form, Vec<ComboboxValue<D>>>,
+        build: Build,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<ComboboxState<D>> {
-        let selected_indices = Self::selected_indices_for(&delegate, initial);
-        cx.new(|cx| {
-            ComboboxState::new(delegate, selected_indices, window, cx)
-                .multiple(multiple)
-                .searchable(searchable)
-        })
-    }
-
-    pub fn set_items(
-        state: &Entity<ComboboxState<D>>,
-        delegate: D,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |combobox, cx| {
-            combobox.set_items(delegate, window, cx);
-        });
-    }
-
-    pub fn focus(state: &Entity<ComboboxState<D>>, window: &mut Window, cx: &mut App) -> bool {
-        let focus_handle = state.read(cx).focus_handle(cx);
-        focus_handle.focus(window, cx);
-        true
-    }
-
-    fn selected_indices_for(delegate: &D, value: &T) -> Vec<IndexPath> {
-        value
-            .to_selected_values()
-            .iter()
-            .filter_map(|selected| delegate.position(selected))
-            .collect()
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormControlError>
+    where
+        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<ComboboxState<D>>) -> ComboboxState<D>,
+    {
+        <Self as FormControl<Vec<ComboboxValue<D>>>>::new(field, build, window, cx)
     }
 }
 
-impl<T, D> FormComponentBinding<T> for ComboboxBinding<T, D>
+impl<D> Deref for FormCombobox<D>
 where
-    T: ComboboxFieldValue + Default,
-    D: SearchableListDelegate + Clone + Default + 'static,
-    D::Item: SearchableListItem<Value = T::Selected>,
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    type Target = Entity<ComboboxState<D>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.combobox
+    }
+}
+
+impl<D> Drop for FormCombobox<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
+}
+
+impl<D> FormControl<Vec<ComboboxValue<D>>> for FormCombobox<D>
+where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
 {
     type State = ComboboxState<D>;
-    type Draft = T;
+    type Error = FormControlError;
 
-    fn new_state(
-        initial: &T,
-        options: ComponentStateOptions,
+    fn new<Form, Owner, Build>(
+        field: FormField<Form, Vec<ComboboxValue<D>>>,
+        build: Build,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self::State> {
-        Self::new_state_with_delegate(initial, D::default(), false, false, options, window, cx)
-    }
-
-    fn draft_from_value(value: &T) -> Self::Draft {
-        value.clone()
-    }
-
-    fn read_draft(state: &Entity<Self::State>, cx: &App) -> Self::Draft {
-        T::from_selected_values(state.read(cx).selected_values(), &T::default())
-    }
-
-    fn parse_draft(
-        draft: &Self::Draft,
-        _path: FieldPath,
-        _trigger: ValidationTrigger,
-        _cx: &App,
-    ) -> Result<T, Box<FieldError>> {
-        Ok(draft.clone())
-    }
-
-    fn write_value(
-        state: &Entity<Self::State>,
-        value: &T,
-        _cause: FieldChangeCause,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let delegate = D::default();
-        let selected_indices = Self::selected_indices_for(&delegate, value);
-        state.update(cx, |combobox, cx| {
-            combobox.set_selected_indices(selected_indices, window, cx);
-        });
-    }
-
-    fn focus(state: &Entity<Self::State>, window: &mut Window, cx: &mut App) -> bool {
-        Self::focus(state, window, cx)
-    }
-
-    fn install_subscriptions<Form>(
-        state: Entity<Self::State>,
-        sink: FormComponentEventSink<Form>,
-        window: &mut Window,
-        cx: &mut Context<Form>,
-    ) -> SubscriptionSet
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, Self::Error>
     where
-        Form: 'static,
+        Form: FormStore,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
     {
-        let mut subscriptions = SubscriptionSet::new();
-        subscriptions.push(cx.subscribe_in(
-            &state,
-            window,
-            move |form, _state, event: &ComboboxEvent<D>, window, cx| {
-                let event = match event {
-                    ComboboxEvent::Change(_) => {
-                        FormComponentEvent::Change(FieldChangeCause::UserInput)
-                    }
-                    ComboboxEvent::Confirm(_) => FormComponentEvent::Blur,
+        let values = field.value(cx)?;
+        let attachment = field.attach_control(cx)?;
+        let combobox = cx.new(|cx| build(window, cx));
+        combobox.update(cx, |combobox, cx| {
+            combobox.set_selected_values(&values, window, cx)
+        });
+
+        let weak_combobox = combobox.downgrade();
+        let projection = field.clone();
+        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
+            let weak_combobox = weak_combobox.clone();
+            let projection = projection.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let Some(combobox) = weak_combobox.upgrade() else {
+                    return;
                 };
-                sink.emit(form, event, window, cx);
+                let Ok(values) = projection.value(cx) else {
+                    return;
+                };
+                combobox.update(cx, |combobox, cx| {
+                    combobox.set_selected_values(&values, window, cx)
+                });
+            });
+        })?;
+
+        let combobox_attachment = attachment.clone();
+        let combobox_subscription = cx.subscribe_in(
+            &combobox,
+            window,
+            move |_, _, event: &ComboboxEvent<D>, window, cx| {
+                if let ComboboxEvent::Change(values) = event {
+                    combobox_attachment.defer_set_user_value(values.clone(), window, cx);
+                }
             },
-        ));
-        subscriptions
+        );
+
+        Ok(Self {
+            subscriptions: vec![form_subscription, combobox_subscription],
+            combobox,
+        })
     }
 }

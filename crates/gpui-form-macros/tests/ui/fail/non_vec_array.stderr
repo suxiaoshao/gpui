@@ -1,0 +1,5 @@
+error: #[form(array(...))] requires a Vec<T> field
+ --> tests/ui/fail/non_vec_array.rs:6:12
+  |
+6 |     items: Item,
+  |            ^^^^

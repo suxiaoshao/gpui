@@ -11,7 +11,7 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
-use gpui_form::FormItemId;
+use gpui_form::typed::FormItemId;
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

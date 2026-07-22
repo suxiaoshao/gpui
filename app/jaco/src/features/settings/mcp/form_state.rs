@@ -1,135 +1,90 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+use crate::foundation::I18n;
 use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
-use gpui::{App, AppContext as _, Entity, Window};
-use gpui_form::{FormItemId, FormStore};
+use gpui::{App, AppContext as _, Context, Entity, Window};
+use gpui_component::input::InputState;
+use gpui_form::typed::FormItemId;
+use gpui_form_gpui_component::FormInput;
 
-type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
-type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
-
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = McpArgRowFormStore)]
 pub(super) struct McpArgRowInput {
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-arg",
-        validate(on_change, on_blur, on_submit)
-    )]
+    pub(super) row_id: FormItemId,
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = McpEnvVarRowFormStore)]
 pub(super) struct McpEnvVarRowInput {
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-env-var",
-        validate(on_change, on_blur, on_submit)
-    )]
+    pub(super) row_id: FormItemId,
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = McpEnvRowFormStore)]
 pub(super) struct McpEnvRowInput {
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-env-key",
-        validate(on_change, on_blur, on_submit)
-    )]
+    pub(super) row_id: FormItemId,
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) key: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-env-value",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = McpHeaderRowFormStore)]
 pub(super) struct McpHeaderRowInput {
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-header-name",
-        validate(on_change, on_blur, on_submit)
-    )]
+    pub(super) row_id: FormItemId,
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) name: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-header-value",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = McpEnvHeaderRowFormStore)]
 pub(super) struct McpEnvHeaderRowInput {
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-header-name",
-        validate(on_change, on_blur, on_submit)
-    )]
+    pub(super) row_id: FormItemId,
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) name: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-env-header-var",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) env_var: String,
 }
 
-#[derive(Clone, Debug, PartialEq, FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(
     store = McpServerFormStore,
-    validation(adapter = super::validation::McpServerValidator, context = super::validation::McpServerValidationContext),
+    validation(adapter = "garde", messages = crate::features::settings::form_validation::JacoGardeMessageProvider),
     transform(adapter = super::validation::McpServerTransform)
 )]
 pub(super) struct McpServerFormInput {
     pub(super) transport: McpTransportKind,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-server-id",
-        required,
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(required, validate(on_change, on_blur, on_submit))]
     pub(super) server_id: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-command",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) command: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-cwd",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) cwd: String,
-    #[form(component = "array", store = "McpArgRowFormStore")]
+    #[form(array(id = "row_id"), validate(on_change, on_blur, on_submit))]
     pub(super) args: Vec<McpArgRowInput>,
-    #[form(component = "array", store = "McpEnvRowFormStore")]
+    #[form(array(id = "row_id"), validate(on_change, on_blur, on_submit))]
     pub(super) env: Vec<McpEnvRowInput>,
-    #[form(component = "array", store = "McpEnvVarRowFormStore")]
+    #[form(array(id = "row_id"), validate(on_change, on_blur, on_submit))]
     pub(super) env_vars: Vec<McpEnvVarRowInput>,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-url",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) url: String,
-    #[form(
-        binding = "StringInputBinding",
-        placeholder = "mcp-placeholder-bearer-token-env-var",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
     pub(super) bearer_token_env_var: String,
-    #[form(component = "array", store = "McpHeaderRowFormStore")]
+    #[form(array(id = "row_id"), validate(on_change, on_blur, on_submit))]
     pub(super) headers: Vec<McpHeaderRowInput>,
-    #[form(component = "array", store = "McpEnvHeaderRowFormStore")]
+    #[form(array(id = "row_id"), validate(on_change, on_blur, on_submit))]
     pub(super) env_headers: Vec<McpEnvHeaderRowInput>,
-    #[form(binding = "BoolInputBinding")]
     pub(super) oauth_enabled: bool,
 }
 
@@ -204,11 +159,216 @@ pub(super) struct McpServerFormDraft {
     pub(super) form: Entity<McpServerFormStore>,
 }
 
+pub(super) struct McpServerFormComponents {
+    pub(super) server_id: Entity<InputState>,
+    pub(super) command: Entity<InputState>,
+    pub(super) cwd: Entity<InputState>,
+    pub(super) url: Entity<InputState>,
+    pub(super) bearer_token_env_var: Entity<InputState>,
+    pub(super) args: BTreeMap<FormItemId, Entity<InputState>>,
+    pub(super) env: BTreeMap<FormItemId, (Entity<InputState>, Entity<InputState>)>,
+    pub(super) env_vars: BTreeMap<FormItemId, Entity<InputState>>,
+    pub(super) headers: BTreeMap<FormItemId, (Entity<InputState>, Entity<InputState>)>,
+    pub(super) env_headers: BTreeMap<FormItemId, (Entity<InputState>, Entity<InputState>)>,
+    _controls: Vec<FormInput>,
+}
+
+impl McpServerFormComponents {
+    pub(super) fn bind<T>(
+        form: &Entity<McpServerFormStore>,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> Self
+    where
+        T: 'static,
+    {
+        fn bind_field<T>(
+            field: gpui_form::typed::FormField<McpServerFormStore, String>,
+            placeholder: String,
+            controls: &mut Vec<FormInput>,
+            window: &mut Window,
+            cx: &mut Context<T>,
+        ) -> Entity<InputState>
+        where
+            T: 'static,
+        {
+            let control = FormInput::new(
+                field,
+                move |window, cx| InputState::new(window, cx).placeholder(placeholder),
+                window,
+                cx,
+            )
+            .expect("bind typed MCP input");
+            let input = (*control).clone();
+            controls.push(control);
+            input
+        }
+
+        let i18n = cx.global::<I18n>().clone();
+        let mut controls = Vec::new();
+        let server_id = bind_field(
+            McpServerFormStore::server_id_field(form),
+            i18n.t("mcp-placeholder-server-id"),
+            &mut controls,
+            window,
+            cx,
+        );
+        let command = bind_field(
+            McpServerFormStore::command_field(form),
+            i18n.t("mcp-placeholder-command"),
+            &mut controls,
+            window,
+            cx,
+        );
+        let cwd = bind_field(
+            McpServerFormStore::cwd_field(form),
+            i18n.t("mcp-placeholder-cwd"),
+            &mut controls,
+            window,
+            cx,
+        );
+        let url = bind_field(
+            McpServerFormStore::url_field(form),
+            i18n.t("mcp-placeholder-url"),
+            &mut controls,
+            window,
+            cx,
+        );
+        let bearer_token_env_var = bind_field(
+            McpServerFormStore::bearer_token_env_var_field(form),
+            i18n.t("mcp-placeholder-bearer-token-env-var"),
+            &mut controls,
+            window,
+            cx,
+        );
+
+        let mut args = BTreeMap::new();
+        for row in McpServerFormStore::args_field(form)
+            .value(cx)
+            .unwrap_or_default()
+        {
+            let item =
+                McpServerFormStore::args_field(form).identified_item(row.row_id, |row| &row.row_id);
+            let input = bind_field(
+                item.project("value", |row| &row.value, |row, value| row.value = value),
+                i18n.t("mcp-placeholder-arg"),
+                &mut controls,
+                window,
+                cx,
+            );
+            args.insert(row.row_id, input);
+        }
+        let mut env = BTreeMap::new();
+        for row in McpServerFormStore::env_field(form)
+            .value(cx)
+            .unwrap_or_default()
+        {
+            let item =
+                McpServerFormStore::env_field(form).identified_item(row.row_id, |row| &row.row_id);
+            let key = bind_field(
+                item.project("key", |row| &row.key, |row, value| row.key = value),
+                i18n.t("mcp-placeholder-env-key"),
+                &mut controls,
+                window,
+                cx,
+            );
+            let value = bind_field(
+                item.project("value", |row| &row.value, |row, value| row.value = value),
+                i18n.t("mcp-placeholder-env-value"),
+                &mut controls,
+                window,
+                cx,
+            );
+            env.insert(row.row_id, (key, value));
+        }
+        let mut env_vars = BTreeMap::new();
+        for row in McpServerFormStore::env_vars_field(form)
+            .value(cx)
+            .unwrap_or_default()
+        {
+            let item = McpServerFormStore::env_vars_field(form)
+                .identified_item(row.row_id, |row| &row.row_id);
+            let input = bind_field(
+                item.project("value", |row| &row.value, |row, value| row.value = value),
+                i18n.t("mcp-placeholder-env-var"),
+                &mut controls,
+                window,
+                cx,
+            );
+            env_vars.insert(row.row_id, input);
+        }
+        let mut headers = BTreeMap::new();
+        for row in McpServerFormStore::headers_field(form)
+            .value(cx)
+            .unwrap_or_default()
+        {
+            let item = McpServerFormStore::headers_field(form)
+                .identified_item(row.row_id, |row| &row.row_id);
+            let name = bind_field(
+                item.project("name", |row| &row.name, |row, value| row.name = value),
+                i18n.t("mcp-placeholder-header-name"),
+                &mut controls,
+                window,
+                cx,
+            );
+            let value = bind_field(
+                item.project("value", |row| &row.value, |row, value| row.value = value),
+                i18n.t("mcp-placeholder-header-value"),
+                &mut controls,
+                window,
+                cx,
+            );
+            headers.insert(row.row_id, (name, value));
+        }
+        let mut env_headers = BTreeMap::new();
+        for row in McpServerFormStore::env_headers_field(form)
+            .value(cx)
+            .unwrap_or_default()
+        {
+            let item = McpServerFormStore::env_headers_field(form)
+                .identified_item(row.row_id, |row| &row.row_id);
+            let name = bind_field(
+                item.project("name", |row| &row.name, |row, value| row.name = value),
+                i18n.t("mcp-placeholder-header-name"),
+                &mut controls,
+                window,
+                cx,
+            );
+            let env_var = bind_field(
+                item.project(
+                    "env_var",
+                    |row| &row.env_var,
+                    |row, value| row.env_var = value,
+                ),
+                i18n.t("mcp-placeholder-env-header-var"),
+                &mut controls,
+                window,
+                cx,
+            );
+            env_headers.insert(row.row_id, (name, env_var));
+        }
+
+        Self {
+            server_id,
+            command,
+            cwd,
+            url,
+            bearer_token_env_var,
+            args,
+            env,
+            env_vars,
+            headers,
+            env_headers,
+            _controls: controls,
+        }
+    }
+}
+
 impl McpServerFormDraft {
     pub(super) fn from_config(
         server_id: String,
         server: &McpServerTomlConfig,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> Self {
         let cwd = server
@@ -246,9 +406,12 @@ impl McpServerFormDraft {
             ),
             oauth_enabled: server.oauth.is_some(),
         };
-        let form = cx.new(|cx| McpServerFormStore::from_value(input, window, cx));
-        form.update(cx, |form, cx| {
-            sync_transport_required_fields(form, window, cx);
+        let form = cx.new(|cx| {
+            McpServerFormStore::from_value_with_validation_context(
+                input,
+                super::validation::mcp_validation_context(None, Vec::new()),
+                cx,
+            )
         });
         Self { form }
     }
@@ -258,24 +421,53 @@ impl McpServerFormDraft {
     }
 
     pub(super) fn input(&self, cx: &App) -> McpServerFormInput {
-        self.form.read(cx).draft()
+        McpServerFormInput {
+            transport: McpServerFormStore::transport_field(&self.form)
+                .value(cx)
+                .expect("MCP transport field is available"),
+            server_id: McpServerFormStore::server_id_field(&self.form)
+                .value(cx)
+                .expect("MCP server ID field is available"),
+            command: McpServerFormStore::command_field(&self.form)
+                .value(cx)
+                .expect("MCP command field is available"),
+            cwd: McpServerFormStore::cwd_field(&self.form)
+                .value(cx)
+                .expect("MCP cwd field is available"),
+            args: McpServerFormStore::args_field(&self.form)
+                .value(cx)
+                .expect("MCP args field is available"),
+            env: McpServerFormStore::env_field(&self.form)
+                .value(cx)
+                .expect("MCP env field is available"),
+            env_vars: McpServerFormStore::env_vars_field(&self.form)
+                .value(cx)
+                .expect("MCP env vars field is available"),
+            url: McpServerFormStore::url_field(&self.form)
+                .value(cx)
+                .expect("MCP URL field is available"),
+            bearer_token_env_var: McpServerFormStore::bearer_token_env_var_field(&self.form)
+                .value(cx)
+                .expect("MCP bearer token field is available"),
+            headers: McpServerFormStore::headers_field(&self.form)
+                .value(cx)
+                .expect("MCP headers field is available"),
+            env_headers: McpServerFormStore::env_headers_field(&self.form)
+                .value(cx)
+                .expect("MCP env headers field is available"),
+            oauth_enabled: McpServerFormStore::oauth_enabled_field(&self.form)
+                .value(cx)
+                .expect("MCP OAuth field is available"),
+        }
     }
 
     pub(super) fn set_transport(
         &mut self,
         transport: McpTransportKind,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            form.set_transport_value(
-                transport,
-                gpui_form::FieldChangeCause::UserInput,
-                window,
-                cx,
-            );
-            sync_transport_required_fields(form, window, cx);
-        });
+        let _ = McpServerFormStore::transport_field(&self.form).set_user_value(transport, cx);
     }
 
     pub(super) fn merge_into_config(
@@ -286,21 +478,16 @@ impl McpServerFormDraft {
         self.input(cx).merge_into_config(original_config)
     }
 
-    pub(super) fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.set_oauth_enabled_value(
-                enabled,
-                gpui_form::FieldChangeCause::UserInput,
-                window,
-                cx,
-            );
-        });
+    pub(super) fn set_oauth_enabled(&mut self, enabled: bool, _window: &mut Window, cx: &mut App) {
+        let _ = McpServerFormStore::oauth_enabled_field(&self.form).set_user_value(enabled, cx);
     }
 
-    pub(super) fn add_arg_row(&mut self, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.args_append(empty_arg_input(), window, cx);
-        });
+    pub(super) fn add_arg_row(&mut self, _window: &mut Window, cx: &mut App) {
+        append_row(
+            McpServerFormStore::args_field(&self.form),
+            empty_arg_input(),
+            cx,
+        );
     }
 
     pub(super) fn remove_arg_row(
@@ -309,15 +496,20 @@ impl McpServerFormDraft {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            let _ = form.args_remove_id(row_id, cx);
-        });
+        remove_row(
+            McpServerFormStore::args_field(&self.form),
+            row_id,
+            |row| row.row_id,
+            cx,
+        );
     }
 
-    pub(super) fn add_env_var_row(&mut self, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.env_vars_append(empty_env_var_input(), window, cx);
-        });
+    pub(super) fn add_env_var_row(&mut self, _window: &mut Window, cx: &mut App) {
+        append_row(
+            McpServerFormStore::env_vars_field(&self.form),
+            empty_env_var_input(),
+            cx,
+        );
     }
 
     pub(super) fn remove_env_var_row(
@@ -326,15 +518,20 @@ impl McpServerFormDraft {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            let _ = form.env_vars_remove_id(row_id, cx);
-        });
+        remove_row(
+            McpServerFormStore::env_vars_field(&self.form),
+            row_id,
+            |row| row.row_id,
+            cx,
+        );
     }
 
-    pub(super) fn add_env_row(&mut self, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.env_append(empty_env_input(), window, cx);
-        });
+    pub(super) fn add_env_row(&mut self, _window: &mut Window, cx: &mut App) {
+        append_row(
+            McpServerFormStore::env_field(&self.form),
+            empty_env_input(),
+            cx,
+        );
     }
 
     pub(super) fn remove_env_row(
@@ -343,15 +540,20 @@ impl McpServerFormDraft {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            let _ = form.env_remove_id(row_id, cx);
-        });
+        remove_row(
+            McpServerFormStore::env_field(&self.form),
+            row_id,
+            |row| row.row_id,
+            cx,
+        );
     }
 
-    pub(super) fn add_header_row(&mut self, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.headers_append(empty_header_input(), window, cx);
-        });
+    pub(super) fn add_header_row(&mut self, _window: &mut Window, cx: &mut App) {
+        append_row(
+            McpServerFormStore::headers_field(&self.form),
+            empty_header_input(),
+            cx,
+        );
     }
 
     pub(super) fn remove_header_row(
@@ -360,15 +562,20 @@ impl McpServerFormDraft {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            let _ = form.headers_remove_id(row_id, cx);
-        });
+        remove_row(
+            McpServerFormStore::headers_field(&self.form),
+            row_id,
+            |row| row.row_id,
+            cx,
+        );
     }
 
-    pub(super) fn add_env_header_row(&mut self, window: &mut Window, cx: &mut App) {
-        self.form.update(cx, |form, cx| {
-            form.env_headers_append(empty_env_header_input(), window, cx);
-        });
+    pub(super) fn add_env_header_row(&mut self, _window: &mut Window, cx: &mut App) {
+        append_row(
+            McpServerFormStore::env_headers_field(&self.form),
+            empty_env_header_input(),
+            cx,
+        );
     }
 
     pub(super) fn remove_env_header_row(
@@ -377,32 +584,52 @@ impl McpServerFormDraft {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        self.form.update(cx, |form, cx| {
-            let _ = form.env_headers_remove_id(row_id, cx);
-        });
+        remove_row(
+            McpServerFormStore::env_headers_field(&self.form),
+            row_id,
+            |row| row.row_id,
+            cx,
+        );
     }
 }
 
-fn sync_transport_required_fields(
-    form: &mut McpServerFormStore,
-    window: &mut Window,
-    cx: &mut gpui::Context<McpServerFormStore>,
+fn append_row<Row: Clone + PartialEq + 'static>(
+    field: gpui_form::typed::FormField<McpServerFormStore, Vec<Row>>,
+    row: Row,
+    cx: &mut App,
 ) {
-    match form.transport_value() {
-        McpTransportKind::Stdio => {
-            form.set_command_required(true, window, cx);
-            form.set_url_required(false, window, cx);
-        }
-        McpTransportKind::StreamableHttp => {
-            form.set_command_required(false, window, cx);
-            form.set_url_required(true, window, cx);
-        }
-    }
+    let Ok(mut rows) = field.value(cx) else {
+        return;
+    };
+    rows.push(row);
+    let _ = field.set_user_value(rows, cx);
+}
+
+fn remove_row<Row: Clone + PartialEq + 'static>(
+    field: gpui_form::typed::FormField<McpServerFormStore, Vec<Row>>,
+    id: FormItemId,
+    row_id: impl Fn(&Row) -> FormItemId,
+    cx: &mut App,
+) {
+    let Ok(mut rows) = field.value(cx) else {
+        return;
+    };
+    rows.retain(|row| row_id(row) != id);
+    let _ = field.set_user_value(rows, cx);
+}
+
+static NEXT_FORM_ITEM_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_form_item_id() -> FormItemId {
+    FormItemId::new(NEXT_FORM_ITEM_ID.fetch_add(1, Ordering::Relaxed))
 }
 
 fn arg_inputs(values: impl Iterator<Item = String>) -> Vec<McpArgRowInput> {
     let mut rows = values
-        .map(|value| McpArgRowInput { value })
+        .map(|value| McpArgRowInput {
+            row_id: next_form_item_id(),
+            value,
+        })
         .collect::<Vec<_>>();
     if rows.is_empty() {
         rows.push(empty_arg_input());
@@ -412,7 +639,10 @@ fn arg_inputs(values: impl Iterator<Item = String>) -> Vec<McpArgRowInput> {
 
 fn env_var_inputs(values: impl Iterator<Item = String>) -> Vec<McpEnvVarRowInput> {
     let mut rows = values
-        .map(|value| McpEnvVarRowInput { value })
+        .map(|value| McpEnvVarRowInput {
+            row_id: next_form_item_id(),
+            value,
+        })
         .collect::<Vec<_>>();
     if rows.is_empty() {
         rows.push(empty_env_var_input());
@@ -422,7 +652,11 @@ fn env_var_inputs(values: impl Iterator<Item = String>) -> Vec<McpEnvVarRowInput
 
 fn env_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpEnvRowInput> {
     let mut rows = values
-        .map(|(key, value)| McpEnvRowInput { key, value })
+        .map(|(key, value)| McpEnvRowInput {
+            row_id: next_form_item_id(),
+            key,
+            value,
+        })
         .collect::<Vec<_>>();
     if rows.is_empty() {
         rows.push(empty_env_input());
@@ -432,7 +666,11 @@ fn env_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpEnvRowIn
 
 fn header_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpHeaderRowInput> {
     let mut rows = values
-        .map(|(name, value)| McpHeaderRowInput { name, value })
+        .map(|(name, value)| McpHeaderRowInput {
+            row_id: next_form_item_id(),
+            name,
+            value,
+        })
         .collect::<Vec<_>>();
     if rows.is_empty() {
         rows.push(empty_header_input());
@@ -442,7 +680,11 @@ fn header_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpHeade
 
 fn env_header_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpEnvHeaderRowInput> {
     let mut rows = values
-        .map(|(name, env_var)| McpEnvHeaderRowInput { name, env_var })
+        .map(|(name, env_var)| McpEnvHeaderRowInput {
+            row_id: next_form_item_id(),
+            name,
+            env_var,
+        })
         .collect::<Vec<_>>();
     if rows.is_empty() {
         rows.push(empty_env_header_input());
@@ -452,18 +694,21 @@ fn env_header_inputs(values: impl Iterator<Item = (String, String)>) -> Vec<McpE
 
 fn empty_arg_input() -> McpArgRowInput {
     McpArgRowInput {
+        row_id: next_form_item_id(),
         value: String::new(),
     }
 }
 
 fn empty_env_var_input() -> McpEnvVarRowInput {
     McpEnvVarRowInput {
+        row_id: next_form_item_id(),
         value: String::new(),
     }
 }
 
 fn empty_env_input() -> McpEnvRowInput {
     McpEnvRowInput {
+        row_id: next_form_item_id(),
         key: String::new(),
         value: String::new(),
     }
@@ -471,6 +716,7 @@ fn empty_env_input() -> McpEnvRowInput {
 
 fn empty_header_input() -> McpHeaderRowInput {
     McpHeaderRowInput {
+        row_id: next_form_item_id(),
         name: String::new(),
         value: String::new(),
     }
@@ -478,6 +724,7 @@ fn empty_header_input() -> McpHeaderRowInput {
 
 fn empty_env_header_input() -> McpEnvHeaderRowInput {
     McpEnvHeaderRowInput {
+        row_id: next_form_item_id(),
         name: String::new(),
         env_var: String::new(),
     }
@@ -509,8 +756,7 @@ fn optional_string(value: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::validation::McpServerValidationContext;
-    use super::McpServerFormDraft;
+    use super::{McpServerFormDraft, McpServerFormStore};
     use crate::{
         foundation,
         state::config::{
@@ -518,11 +764,9 @@ mod tests {
         },
     };
     use gpui::{
-        AppContext as _, Entity, IntoElement, Render, TestAppContext, VisualTestContext,
-        WindowHandle, div,
+        AppContext as _, IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div,
     };
-    use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::{FormStore as _, ValidationTrigger};
+    use gpui_form::typed::{FormField, FormStore as _, ValidationScope, ValidationTrigger};
     use std::{collections::BTreeMap, path::PathBuf};
 
     #[gpui::test]
@@ -554,16 +798,18 @@ mod tests {
                 original,
             )
         });
-        let command_input = cx.update(|_, cx| draft.form.read(cx).command_state());
-        set_input_value(command_input, "new-command", &mut cx);
-        let arg_input = cx.update(|_, cx| {
-            draft.form.read(cx).args_items()[0]
-                .item
-                .store()
-                .read(cx)
-                .value_state()
+        let command_handle = cx.update(|_, _cx| McpServerFormStore::command_field(&draft.form));
+        set_form_text_value(command_handle, "new-command", &mut cx);
+        let arg_handle = cx.update(|_, cx| {
+            let row_id = McpServerFormStore::args_field(&draft.form)
+                .value(cx)
+                .unwrap()[0]
+                .row_id;
+            McpServerFormStore::args_field(&draft.form)
+                .identified_item(row_id, |row| &row.row_id)
+                .project("value", |row| &row.value, |row, value| row.value = value)
         });
-        set_input_value(arg_input, "--new", &mut cx);
+        set_form_text_value(arg_handle, "--new", &mut cx);
 
         cx.update(|_, cx| {
             let merged = draft.merge_into_config(Some(&original), cx);
@@ -587,7 +833,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn required_flags_follow_transport(cx: &mut TestAppContext) {
+    fn transport_validation_requires_the_active_endpoint(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -604,27 +850,49 @@ mod tests {
             )
         });
 
-        let (name_required, command_required, url_required) =
-            draft.form.read_with(&cx, |form, _| {
-                (
-                    form.server_id_required(),
-                    form.command_required(),
-                    form.url_required(),
-                )
+        cx.update(|_, cx| {
+            draft.form.update(cx, |form, cx| {
+                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
             });
-        assert!(name_required);
-        assert!(command_required);
-        assert!(!url_required);
+        });
+        let (command_has_errors, url_has_errors) = cx.update(|_, cx| {
+            (
+                !McpServerFormStore::command_field(&draft.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty(),
+                !McpServerFormStore::url_field(&draft.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty(),
+            )
+        });
+        assert!(command_has_errors);
+        assert!(!url_has_errors);
 
         cx.update(|window, cx| {
             draft.set_transport(McpTransportKind::StreamableHttp, window, cx);
         });
 
-        let (command_required, url_required) = draft.form.read_with(&cx, |form, _| {
-            (form.command_required(), form.url_required())
+        cx.update(|_, cx| {
+            draft.form.update(cx, |form, cx| {
+                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
+            });
         });
-        assert!(!command_required);
-        assert!(url_required);
+        let (command_has_errors, url_has_errors) = cx.update(|_, cx| {
+            (
+                !McpServerFormStore::command_field(&draft.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty(),
+                !McpServerFormStore::url_field(&draft.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty(),
+            )
+        });
+        assert!(!command_has_errors);
+        assert!(url_has_errors);
     }
 
     #[gpui::test]
@@ -653,38 +921,37 @@ mod tests {
         cx.update(|window, cx| {
             draft.set_oauth_enabled(false, window, cx);
         });
-        let header_name = cx.update(|_, cx| {
-            draft.form.read(cx).headers_items()[0]
-                .item
-                .store()
-                .read(cx)
-                .name_state()
+        let (header_name, header_value) = cx.update(|_, cx| {
+            let row_id = McpServerFormStore::headers_field(&draft.form)
+                .value(cx)
+                .unwrap()[0]
+                .row_id;
+            let row = McpServerFormStore::headers_field(&draft.form)
+                .identified_item(row_id, |row| &row.row_id);
+            (
+                row.project("name", |row| &row.name, |row, name| row.name = name),
+                row.project("value", |row| &row.value, |row, value| row.value = value),
+            )
         });
-        set_input_value(header_name, "Authorization", &mut cx);
-        let header_value = cx.update(|_, cx| {
-            draft.form.read(cx).headers_items()[0]
-                .item
-                .store()
-                .read(cx)
-                .value_state()
-        });
-        set_input_value(header_value, "Bearer token", &mut cx);
+        set_form_text_value(header_name, "Authorization", &mut cx);
+        set_form_text_value(header_value, "Bearer token", &mut cx);
 
-        cx.update(|window, cx| {
+        cx.update(|_window, cx| {
             let report = draft.form.update(cx, |form, cx| {
                 form.set_validation_context(
-                    McpServerValidationContext {
-                        original_server_id: Some("server".to_string()),
-                        existing_server_ids: Vec::new(),
-                    },
+                    super::super::validation::mcp_validation_context(
+                        Some("server".to_string()),
+                        Vec::new(),
+                    ),
                     cx,
                 );
-                form.validate(ValidationTrigger::Submit, window, cx)
+                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
+                form.validation_report()
             });
             assert!(
                 report.is_valid(),
                 "unexpected validation errors: {:?}",
-                report.field_errors()
+                report.issues()
             );
         });
     }
@@ -713,8 +980,8 @@ mod tests {
         cx.update(|window, cx| {
             draft.set_transport(McpTransportKind::StreamableHttp, window, cx);
         });
-        let url_input = cx.update(|_, cx| draft.form.read(cx).url_state());
-        set_input_value(url_input, "https://example.com/mcp", &mut cx);
+        let url_handle = cx.update(|_, _cx| McpServerFormStore::url_field(&draft.form));
+        set_form_text_value(url_handle, "https://example.com/mcp", &mut cx);
 
         cx.update(|_, cx| {
             let merged = draft.merge_into_config(Some(&original), cx);
@@ -743,7 +1010,12 @@ mod tests {
             };
             McpServerFormDraft::from_config("server".to_string(), &original, window, cx)
         });
-        let row_id = cx.update(|_, cx| draft.form.read(cx).args_items()[0].id);
+        let row_id = cx.update(|_, cx| {
+            McpServerFormStore::args_field(&draft.form)
+                .value(cx)
+                .unwrap()[0]
+                .row_id
+        });
 
         cx.update(|window, cx| {
             draft.remove_arg_row(row_id, window, cx);
@@ -751,8 +1023,7 @@ mod tests {
 
         cx.update(|_, cx| {
             let form = draft.form.read(cx);
-            assert!(form.args_items().is_empty());
-            assert!(form.draft().args.is_empty());
+            assert!(form.value().args.is_empty());
         });
     }
 
@@ -763,22 +1034,27 @@ mod tests {
         });
     }
 
-    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                let view = cx.new(|_| TestView);
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                let _ = window;
+                cx.new(|_| TestView)
             })
             .expect("open mcp form state test window")
         })
     }
 
-    fn set_input_value(input: Entity<InputState>, value: &str, cx: &mut VisualTestContext) {
-        cx.update(|window, cx| {
-            input.update(cx, |input, cx| {
-                input.set_value(value, window, cx);
-                cx.emit(InputEvent::Change);
-            });
+    fn set_form_text_value<Form>(
+        handle: FormField<Form, String>,
+        value: &str,
+        cx: &mut VisualTestContext,
+    ) where
+        Form: gpui_form::typed::FormStore,
+    {
+        cx.update(|_, cx| {
+            handle
+                .set_user_value(value.to_string(), cx)
+                .expect("form field is alive");
         });
     }
 

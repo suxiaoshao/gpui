@@ -84,12 +84,12 @@ impl RenderOnce for ProviderListEntry {
                     .gap_2()
                     .px_3()
                     .bg(if self.selected {
-                        cx.theme().secondary_active
+                        cx.theme().tokens.secondary_active.background
                     } else {
-                        cx.theme().background
+                        cx.theme().tokens.background.background
                     })
                     .when(!self.selected, |this| {
-                        this.hover(|this| this.bg(cx.theme().secondary_hover))
+                        this.hover(|this| this.bg(cx.theme().tokens.secondary_hover.background))
                     })
                     .child(
                         provider_visual_icon(self.row.visual)
@@ -104,7 +104,12 @@ impl RenderOnce for ProviderListEntry {
                     )
                     .child(div().flex_1())
                     .when(self.row.enabled, |this| {
-                        this.child(div().size_2().rounded_full().bg(cx.theme().primary))
+                        this.child(
+                            div()
+                                .size_2()
+                                .rounded_full()
+                                .bg(cx.theme().tokens.primary.background),
+                        )
                     }),
             )
     }

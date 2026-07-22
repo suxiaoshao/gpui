@@ -96,7 +96,7 @@ impl RenderOnce for CapabilityTagRow {
     fn render(self, _: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         v_flex()
             .rounded(cx.theme().radius)
-            .bg(cx.theme().muted)
+            .bg(cx.theme().tokens.muted.background)
             .px_2()
             .py_1()
             .child(Label::new(self.label).text_xs())

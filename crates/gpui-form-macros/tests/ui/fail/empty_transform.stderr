@@ -1,0 +1,5 @@
+error: unexpected end of input, transform requires an adapter
+ --> tests/ui/fail/empty_transform.rs:4:18
+  |
+4 | #[form(transform())]
+  |                  ^

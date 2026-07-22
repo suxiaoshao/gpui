@@ -11,6 +11,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_store::StoreSelection;
 use jaco_db::ProjectRecord;
 use std::path::PathBuf;
 use tracing::{Level, event};
@@ -18,50 +19,15 @@ use tracing::{Level, event};
 use super::{layout::settings_empty_message, push_settings_error};
 
 pub(super) struct ProjectsSettingsPage {
-    projects: Result<Vec<ProjectRecord>, String>,
-    _subscriptions: Vec<Subscription>,
+    projects: StoreSelection<Vec<ProjectRecord>>,
 }
 
 impl ProjectsSettingsPage {
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
-        let project_catalog = state::projects::catalog(cx);
-        let subscription = cx.subscribe(
-            &project_catalog,
-            |page, _catalog, _event: &state::projects::ProjectCatalogEvent, cx| {
-                page.reload_projects_from_catalog(cx);
-            },
-        );
         Self {
-            projects: Self::load_projects(cx).map_err(|err| err.to_string()),
-            _subscriptions: vec![subscription],
+            projects: state::projects::catalog(cx)
+                .select_cloned(cx, |snapshot| snapshot.projects()),
         }
-    }
-
-    fn load_projects(cx: &App) -> jaco_db::Result<Vec<ProjectRecord>> {
-        state::projects::normal_projects(cx)
-    }
-
-    fn reload_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match Self::load_projects(cx) {
-            Ok(projects) => {
-                self.projects = Ok(projects);
-                cx.notify();
-                true
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-projects-failed");
-                let message = err.to_string();
-                self.projects = Err(message.clone());
-                push_settings_error(window, cx, title, message);
-                cx.notify();
-                false
-            }
-        }
-    }
-
-    fn reload_projects_from_catalog(&mut self, cx: &mut Context<Self>) {
-        self.projects = Self::load_projects(cx).map_err(|err| err.to_string());
-        cx.notify();
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -120,7 +86,6 @@ impl ProjectsSettingsPage {
     ) {
         match state::projects::insert_existing_folder_project(cx, path) {
             Ok(result) => {
-                let _ = self.reload_projects(window, cx);
                 let (title, notification_type) = if result.was_existing {
                     (
                         cx.global::<I18n>().t("notify-project-already-exists"),
@@ -173,10 +138,10 @@ impl ProjectsSettingsPage {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .px_3()
             .py_2()
-            .hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+            .hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             .child(
                 div()
                     .flex()
@@ -185,7 +150,7 @@ impl ProjectsSettingsPage {
                     .items_center()
                     .justify_center()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
+                    .bg(cx.theme().tokens.border.background.opacity(0.35))
                     .child(Icon::new(IconName::Folder).text_color(cx.theme().muted_foreground)),
             )
             .child(
@@ -210,26 +175,23 @@ impl ProjectsSettingsPage {
     }
 
     fn render_project_list(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match &self.projects {
-            Err(err) => {
-                let load_failed = cx.global::<I18n>().t("notify-load-projects-failed");
-                settings_empty_message(format!("{load_failed}: {err}"))
-            }
-            Ok(projects) if projects.is_empty() => {
+        self.projects.read(|projects| {
+            if projects.is_empty() {
                 settings_empty_message(cx.global::<I18n>().t("empty-projects"))
+            } else {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .children(
+                        projects
+                            .iter()
+                            .cloned()
+                            .map(|project| self.render_project_row(project, cx))
+                            .collect::<Vec<_>>(),
+                    )
+                    .into_any_element()
             }
-            Ok(projects) => v_flex()
-                .w_full()
-                .gap_2()
-                .children(
-                    projects
-                        .iter()
-                        .cloned()
-                        .map(|project| self.render_project_row(project, cx))
-                        .collect::<Vec<_>>(),
-                )
-                .into_any_element(),
-        }
+        })
     }
 }
 

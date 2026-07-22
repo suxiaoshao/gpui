@@ -88,11 +88,17 @@ impl RenderOnce for ConversationSearchItem {
             .py_2()
             .cursor_pointer()
             .when(!self.is_selected, |this| {
-                this.hover(|this| this.bg(cx.theme().accent.opacity(0.45)))
+                this.hover(|this| this.bg(cx.theme().tokens.accent.background.opacity(0.45)))
             })
-            .when(self.is_selected, |this| this.bg(cx.theme().accent))
+            .when(self.is_selected, |this| {
+                this.bg(cx.theme().tokens.accent.background)
+            })
             .on_click(move |_, window, cx| {
-                on_confirm(conversation_id.clone(), window, cx);
+                let on_confirm = on_confirm.clone();
+                let conversation_id = conversation_id.clone();
+                window.defer(cx, move |window, cx| {
+                    on_confirm(conversation_id, window, cx);
+                });
             })
             .child(
                 div()
@@ -102,7 +108,7 @@ impl RenderOnce for ConversationSearchItem {
                     .items_center()
                     .justify_center()
                     .rounded(cx.theme().radius)
-                    .bg(cx.theme().border.opacity(0.35))
+                    .bg(cx.theme().tokens.border.background.opacity(0.35))
                     .child(
                         Icon::new(IconName::MessageSquare)
                             .size_4()
@@ -192,7 +198,14 @@ impl ListDelegate for ConversationSearchDelegate {
         if let Some(ix) = self.ix
             && let Some(result) = self.items.get(ix.row)
         {
-            (self.on_confirm)(result.conversation.id.clone(), window, cx);
+            let on_confirm = self.on_confirm.clone();
+            let conversation_id = result.conversation.id.clone();
+            // `confirm` runs while `ListState` is locked. The callback updates
+            // the workspace and closes the dialog, so dispatch it after the
+            // list update releases its entity borrow.
+            window.defer(cx, move |window, cx| {
+                on_confirm(conversation_id, window, cx);
+            });
         }
     }
 }
@@ -419,4 +432,95 @@ where
     D: ListDelegate + 'static,
 {
     state.delegate().items_count(0, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConversationSearchDelegate;
+    use crate::state::workspace::{SidebarConversationNode, SidebarSearchResult};
+    use gpui::{
+        App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
+    };
+    use gpui_component::{
+        IndexPath,
+        list::{ListDelegate, ListState},
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    struct TestRoot;
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn test_result() -> SidebarSearchResult {
+        SidebarSearchResult {
+            conversation: SidebarConversationNode {
+                id: "conversation".to_string(),
+                project_id: String::new(),
+                title: "Conversation".into(),
+                updated_at: 0,
+                pinned: false,
+            },
+            project: None,
+        }
+    }
+
+    #[gpui::test]
+    fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<ConversationSearchDelegate>>>,
+        ));
+        let callback_ran = Rc::new(Cell::new(false));
+        let on_confirm = Rc::new({
+            let list_slot = list_slot.clone();
+            let callback_ran = callback_ran.clone();
+            move |_conversation_id, _window: &mut Window, cx: &mut App| {
+                let list = list_slot
+                    .borrow()
+                    .as_ref()
+                    .cloned()
+                    .expect("conversation search list should be initialized");
+                list.update(cx, |_, _| callback_ran.set(true));
+            }
+        });
+
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    ConversationSearchDelegate::new(
+                        vec![test_result()],
+                        "No project".into(),
+                        on_confirm,
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("conversation search list should be initialized");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(callback_ran.get());
+    }
 }

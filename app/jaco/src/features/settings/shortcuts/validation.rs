@@ -13,7 +13,6 @@ pub(super) enum ShortcutValidationError {
     HotkeyPlainKey,
     TemporaryConflict,
     BindingConflict,
-    ModelRequired,
 }
 
 impl ShortcutValidationError {
@@ -24,7 +23,6 @@ impl ShortcutValidationError {
             Self::HotkeyPlainKey => "shortcut-validation-hotkey-invalid",
             Self::TemporaryConflict => "shortcut-validation-temporary-conflict",
             Self::BindingConflict => "shortcut-validation-binding-conflict",
-            Self::ModelRequired => "shortcut-validation-model-required",
         }
     }
 }

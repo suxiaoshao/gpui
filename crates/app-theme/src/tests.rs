@@ -66,23 +66,6 @@ fn main_syntax_palette(highlight: &HighlightThemeStyle) -> Vec<(&'static str, Ar
     .collect()
 }
 
-fn collect_null_paths(prefix: &str, value: &serde_json::Value, paths: &mut Vec<String>) {
-    match value {
-        serde_json::Value::Null => paths.push(prefix.to_string()),
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                let path = if prefix.is_empty() {
-                    key.to_string()
-                } else {
-                    format!("{prefix}.{key}")
-                };
-                collect_null_paths(&path, value, paths);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn relative_luminance(color: Argb) -> f64 {
     fn channel(value: u8) -> f64 {
         let value = f64::from(value) / 255.0;
@@ -288,7 +271,6 @@ fn generated_theme_config_has_expected_mode_and_colors() {
 #[test]
 fn generated_dark_material_theme_keeps_secondary_selection_readable() {
     let scheme = material_scheme(ComponentThemeMode::Dark);
-    let palette = MaterialPalette::new(ComponentThemeMode::Dark, &scheme);
     let config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
         .expect("dark material theme");
 
@@ -298,11 +280,19 @@ fn generated_dark_material_theme_keeps_secondary_selection_readable() {
     );
     assert_eq!(
         config.colors.secondary_hover,
-        Some(palette.secondary.hover.clone())
+        Some(state_layer(
+            scheme.secondary_container,
+            scheme.on_secondary_container,
+            MATERIAL_HOVER_STATE_LAYER_ALPHA
+        ))
     );
     assert_eq!(
         config.colors.secondary_active,
-        Some(palette.secondary.active.clone())
+        Some(state_layer(
+            scheme.secondary_container,
+            scheme.on_secondary_container,
+            MATERIAL_PRESSED_STATE_LAYER_ALPHA
+        ))
     );
     assert_eq!(
         config.colors.secondary_foreground,
@@ -401,6 +391,30 @@ fn generated_material_theme_uses_material_state_layers() {
         let danger_roles =
             material_semantic_roles_for_palette(&scheme, scheme.error_palette.clone());
 
+        assert_eq!(config.colors.button, Some(hex(scheme.secondary_container)));
+        assert_eq!(
+            config.colors.button_foreground,
+            Some(hex(scheme.on_secondary_container))
+        );
+        assert_eq!(config.colors.button_primary, Some(hex(scheme.primary)));
+        assert_eq!(
+            config.colors.button_primary_foreground,
+            Some(hex(scheme.on_primary))
+        );
+        assert_eq!(
+            config.colors.button_secondary,
+            Some(hex(scheme.secondary_container))
+        );
+        assert_eq!(
+            config.colors.button_secondary_foreground,
+            Some(hex(scheme.on_secondary_container))
+        );
+        assert_eq!(config.colors.button_danger, Some(hex(scheme.error)));
+        assert_eq!(
+            config.colors.button_danger_foreground,
+            Some(hex(scheme.on_error))
+        );
+
         assert_eq!(
             config.colors.primary_hover,
             Some(state_layer(
@@ -461,15 +475,13 @@ fn generated_material_theme_uses_material_state_layers() {
 }
 
 #[test]
-fn material_semantic_roles_for_palette_matches_scheme_error_roles() {
+fn material_semantic_pair_for_palette_matches_scheme_error_roles() {
     for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
         let scheme = material_scheme(mode);
         let roles = material_semantic_roles_for_palette(&scheme, scheme.error_palette.clone());
 
         assert_eq!(roles.color, scheme.error);
         assert_eq!(roles.on_color, scheme.on_error);
-        assert_eq!(roles.container, scheme.error_container);
-        assert_eq!(roles.on_container, scheme.on_error_container);
     }
 }
 
@@ -568,39 +580,7 @@ fn generated_material_control_states_are_distinct_and_readable() {
 }
 
 #[test]
-fn generated_material_theme_config_has_no_unexpected_missing_public_color_tokens() {
-    let allowed_missing = HashSet::from([
-        "base.blue",
-        "base.blue.light",
-        "base.cyan",
-        "base.cyan.light",
-        "base.green",
-        "base.green.light",
-        "base.magenta",
-        "base.magenta.light",
-        "base.red",
-        "base.red.light",
-        "base.yellow",
-        "base.yellow.light",
-    ]);
-
-    for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
-        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
-        let value = serde_json::to_value(&config.colors).expect("serialize theme colors");
-        let mut missing = Vec::new();
-        collect_null_paths("", &value, &mut missing);
-        missing.retain(|path| !allowed_missing.contains(path.as_str()));
-        missing.sort();
-
-        assert!(
-            missing.is_empty(),
-            "Material You {mode:?} should not leave public color tokens unset: {missing:?}"
-        );
-    }
-}
-
-#[test]
-fn generated_material_theme_fills_highlight_tokens() {
+fn generated_material_theme_fills_owned_highlight_tokens() {
     for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
         let highlight = config.highlight.expect("highlight should be generated");
@@ -611,6 +591,7 @@ fn generated_material_theme_fills_highlight_tokens() {
         assert!(highlight.editor_line_number.is_some());
         assert!(highlight.editor_active_line_number.is_some());
         assert!(highlight.editor_invisible.is_some());
+        assert!(highlight.editor_gutter_background.is_none());
 
         for name in [
             "attribute",
@@ -690,6 +671,7 @@ fn generated_material_editor_highlight_is_readable() {
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
         let highlight = config.highlight.expect("highlight should be generated");
         let background = color_from_hsla(highlight.editor_background.expect("editor background"));
+        let markdown_background = color_from_option(&config.colors.muted);
 
         assert_eq!(background, scheme.surface_container_lowest);
         assert_eq!(
@@ -729,7 +711,52 @@ fn generated_material_editor_highlight_is_readable() {
                 contrast_ratio(background, color) >= 4.5,
                 "{name} should be readable on editor background for {mode:?}"
             );
+            assert!(
+                contrast_ratio(markdown_background, color) >= 4.5,
+                "{name} should be readable on rendered Markdown code blocks for {mode:?}"
+            );
         }
+    }
+}
+
+#[test]
+fn generated_material_editor_and_markdown_share_code_content_palette() {
+    for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+        let colors = &config.colors;
+        let highlight = config.highlight.as_ref().expect("highlight");
+
+        assert_eq!(
+            color_from_hsla(highlight.editor_foreground.expect("editor foreground")),
+            color_from_option(&colors.foreground)
+        );
+        assert_eq!(
+            color_from_hsla(highlight.editor_line_number.expect("line number")),
+            color_from_option(&colors.muted_foreground)
+        );
+        assert_eq!(
+            syntax_color(highlight, "variable"),
+            color_from_option(&colors.foreground)
+        );
+        assert_eq!(
+            syntax_color(highlight, "comment"),
+            color_from_option(&colors.muted_foreground)
+        );
+        assert_ne!(
+            highlight.editor_background.map(color_from_hsla),
+            Some(color_from_option(&colors.muted)),
+            "editor chrome and Markdown code-block surfaces stay context-specific"
+        );
+    }
+}
+
+#[test]
+fn generated_material_theme_leaves_component_geometry_unset() {
+    for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+
+        assert!(config.radius.is_none());
+        assert!(config.radius_lg.is_none());
     }
 }
 
@@ -777,6 +804,29 @@ fn generated_material_theme_uses_translucent_selection_tokens() {
     assert!(theme.list_active.a <= 0.2);
     assert!(theme.table_active.a <= 0.2);
     assert!(theme.selection.a <= 0.3);
+}
+
+#[test]
+fn generated_material_non_button_colors_match_baseline() {
+    for (mode, expected_hash) in [
+        (ComponentThemeMode::Light, 0x73ce8e31c6e175e5_u64),
+        (ComponentThemeMode::Dark, 0x5c9b6443a77793e7_u64),
+    ] {
+        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+        let mut value = serde_json::to_value(&config.colors).expect("serialize colors");
+        let object = value.as_object_mut().expect("colors object");
+        object.retain(|key, _| !key.starts_with("button."));
+        let bytes = serde_json::to_vec(&value).expect("serialize baseline");
+        let hash = bytes
+            .into_iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+        assert_eq!(
+            hash, expected_hash,
+            "non-button colors changed for {mode:?}"
+        );
+    }
 }
 
 #[test]

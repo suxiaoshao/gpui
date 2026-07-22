@@ -32,6 +32,29 @@ Before integrating `gpui-store` into an app, also read the current app state flo
 - `StoreCommitBackend<S>` is the optional committed write capability. Only implement it when generic local drafts can be safely committed through the backend.
 - Backend type is orthogonal to ownership: both `LocalStore` and `SharedStore` can be memory-only or backend-backed.
 
+## Source of Truth and Form Integration
+
+- A store state must contain the actual typed committed snapshot needed by its consumers. A
+  revision/event-only entity is metadata, not a catalog source; do not make each page query and cache
+  its own rows, labels, or capabilities.
+- `StoreSelection<T>` is a one-way read projection. It may cache render data, but it has no business
+  setter and must not be read by submit/validation as a replacement for the committed store or the
+  form-owned current value.
+- `StoreBinding<T>` is only for an intentional writable lens whose setter writes back to the same
+  backing store. Do not use it to create a form mirror or a second persistence owner.
+- There is no implicit form↔store synchronization. After loading a committed
+  domain value, the app explicitly calls `form.rebase(committed_value)`. Bound
+  controls reproject that form-owned value. Catalog/options snapshots are
+  dependencies and must never hydrate/rebase the form or replace selected values.
+  Submit starts from `form.prepare_submit()`, commits through the app, then the
+  store reconciles the committed snapshot and the form rebases the saved value.
+- Backend/selection observers read and compute, then replace their own snapshot or notify. They must
+  not recursively update the source entity while it is already in `Entity::update`; schedule an
+  explicit cross-entity command/task when another entity must change.
+- For Jaco form migration, read the app state flow first and follow
+  `app/jaco/docs/dev/gpui-form-migration.md`; do not add a generic cross-store
+  selector or a `gpui-store` dependency on `gpui-form` as a shortcut.
+
 ## Ownership Choice
 
 Use `LocalStore<S, Backend>` when:

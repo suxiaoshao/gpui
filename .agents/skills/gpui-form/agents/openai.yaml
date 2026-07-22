@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI Form"
+  short_description: "GPUI form draft and validation guidance"
+  default_prompt: "Use $gpui-form to update form draft, validation, or external synchronization guidance."

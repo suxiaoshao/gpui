@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
+use gpui::{App, Global};
+use gpui_store::{SharedStore, StoreState};
 use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use jaco_db::{NewProject, ProjectRecord};
 
@@ -10,34 +11,28 @@ const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
 const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
 
 #[derive(Clone)]
-pub(crate) struct ProjectCatalogGlobal(Entity<ProjectCatalogStore>);
+pub(crate) struct ProjectCatalogGlobal(SharedStore<ProjectCatalogSnapshot>);
 
 impl ProjectCatalogGlobal {
-    pub(crate) fn entity(&self) -> Entity<ProjectCatalogStore> {
+    pub(crate) fn store(&self) -> SharedStore<ProjectCatalogSnapshot> {
         self.0.clone()
     }
 }
 
 impl Global for ProjectCatalogGlobal {}
 
-pub(crate) struct ProjectCatalogStore {
-    revision: u64,
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ProjectCatalogSnapshot {
+    projects: Vec<ProjectRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectCatalogEvent {
-    Changed(ProjectCatalogChange),
-}
+impl StoreState for ProjectCatalogSnapshot {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectCatalogChange {
-    Added { project_id: ProjectId },
-    Renamed { project_id: ProjectId },
-    Removed { project_id: ProjectId },
-    PinChanged { project_id: ProjectId, pinned: bool },
+impl ProjectCatalogSnapshot {
+    pub(crate) fn projects(&self) -> &Vec<ProjectRecord> {
+        &self.projects
+    }
 }
-
-impl EventEmitter<ProjectCatalogEvent> for ProjectCatalogStore {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InsertExistingFolderProjectResult {
@@ -45,169 +40,127 @@ pub(crate) struct InsertExistingFolderProjectResult {
     pub(crate) was_existing: bool,
 }
 
-impl ProjectCatalogStore {
-    fn new() -> Self {
-        Self { revision: 0 }
-    }
+fn refresh_snapshot(store: &SharedStore<ProjectCatalogSnapshot>, cx: &mut App) {
+    let Ok(projects) = database::repository(cx).list_sidebar_projects() else {
+        return;
+    };
+    store.update(cx, |snapshot| {
+        snapshot.projects = projects;
+    });
+}
 
-    #[cfg(test)]
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision
-    }
+fn insert_existing_folder_project_impl(
+    path: PathBuf,
+    cx: &mut App,
+) -> jaco_db::Result<InsertExistingFolderProjectResult> {
+    let store = catalog(cx);
+    let project_path = path.display().to_string();
+    let repository = database::repository(cx);
 
-    pub(crate) fn insert_existing_folder_project(
-        &mut self,
-        path: PathBuf,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<InsertExistingFolderProjectResult> {
-        let project_path = path.display().to_string();
-        let repository = database::repository(cx);
-
-        if let Some(project) = repository.get_project_by_path(&project_path)? {
-            if project.removed {
-                let restored = repository.set_project_removed(&project.id, false)?;
-                self.emit_changed(
-                    ProjectCatalogChange::Added {
-                        project_id: restored.id.clone(),
-                    },
-                    cx,
-                );
-                return Ok(InsertExistingFolderProjectResult {
-                    project: restored,
-                    was_existing: true,
-                });
-            }
-
+    if let Some(project) = repository.get_project_by_path(&project_path)? {
+        if project.removed {
+            let restored = repository.set_project_removed(&project.id, false)?;
+            refresh_snapshot(&store, cx);
             return Ok(InsertExistingFolderProjectResult {
-                project,
+                project: restored,
                 was_existing: true,
             });
         }
 
-        let project = repository.insert_project(NewProject {
-            path: project_path,
-            display_name: project_display_name(&path),
-            kind: ProjectKind::Normal,
-            pinned: false,
-            removed: false,
-            metadata: empty_project_metadata(),
-        })?;
-        self.emit_changed(
-            ProjectCatalogChange::Added {
-                project_id: project.id.clone(),
-            },
-            cx,
-        );
-
-        Ok(InsertExistingFolderProjectResult {
+        return Ok(InsertExistingFolderProjectResult {
             project,
-            was_existing: false,
-        })
+            was_existing: true,
+        });
     }
 
-    pub(crate) fn insert_scratch_project(
-        &mut self,
-        path: PathBuf,
-        display_name: String,
-        scratch_reason: String,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
-        let mut metadata = empty_project_metadata();
-        metadata.scratch_reason = Some(scratch_reason);
-        let project = database::repository(cx).insert_project(NewProject {
-            path: path.display().to_string(),
-            display_name,
-            kind: ProjectKind::Scratch,
-            pinned: false,
-            removed: false,
-            metadata,
-        })?;
-        self.emit_changed(
-            ProjectCatalogChange::Added {
-                project_id: project.id.clone(),
-            },
-            cx,
-        );
-        Ok(project)
-    }
+    let project = repository.insert_project(NewProject {
+        path: project_path,
+        display_name: project_display_name(&path),
+        kind: ProjectKind::Normal,
+        pinned: false,
+        removed: false,
+        metadata: empty_project_metadata(),
+    })?;
+    refresh_snapshot(&store, cx);
 
-    pub(crate) fn rename_project(
-        &mut self,
-        project_id: &ProjectId,
-        display_name: String,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
-        let project = database::repository(cx).rename_project(project_id, display_name)?;
-        self.emit_changed(
-            ProjectCatalogChange::Renamed {
-                project_id: project.id.clone(),
-            },
-            cx,
-        );
-        Ok(project)
-    }
+    Ok(InsertExistingFolderProjectResult {
+        project,
+        was_existing: false,
+    })
+}
 
-    pub(crate) fn set_project_pinned(
-        &mut self,
-        project_id: &ProjectId,
-        pinned: bool,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
-        let repository = database::repository(cx);
-        let project = repository.set_project_pinned(project_id, pinned)?;
-        self.emit_changed(
-            ProjectCatalogChange::PinChanged {
-                project_id: project.id.clone(),
-                pinned,
-            },
-            cx,
-        );
-        Ok(project)
-    }
+fn insert_scratch_project(
+    path: PathBuf,
+    display_name: String,
+    scratch_reason: String,
+    cx: &mut App,
+) -> jaco_db::Result<ProjectRecord> {
+    let store = catalog(cx);
+    let mut metadata = empty_project_metadata();
+    metadata.scratch_reason = Some(scratch_reason);
+    let project = database::repository(cx).insert_project(NewProject {
+        path: path.display().to_string(),
+        display_name,
+        kind: ProjectKind::Scratch,
+        pinned: false,
+        removed: false,
+        metadata,
+    })?;
+    refresh_snapshot(&store, cx);
+    Ok(project)
+}
 
-    pub(crate) fn set_project_removed(
-        &mut self,
-        project_id: &ProjectId,
-        removed: bool,
-        cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
-        let project = database::repository(cx).set_project_removed(project_id, removed)?;
-        self.emit_changed(
-            ProjectCatalogChange::Removed {
-                project_id: project.id.clone(),
-            },
-            cx,
-        );
-        Ok(project)
-    }
+pub(crate) fn rename_project(
+    project_id: &ProjectId,
+    display_name: String,
+    cx: &mut App,
+) -> jaco_db::Result<ProjectRecord> {
+    let store = catalog(cx);
+    let project = database::repository(cx).rename_project(project_id, display_name)?;
+    refresh_snapshot(&store, cx);
+    Ok(project)
+}
 
-    fn emit_changed(&mut self, change: ProjectCatalogChange, cx: &mut Context<Self>) {
-        self.revision += 1;
-        cx.emit(ProjectCatalogEvent::Changed(change));
-        cx.notify();
-    }
+pub(crate) fn set_project_pinned(
+    project_id: &ProjectId,
+    pinned: bool,
+    cx: &mut App,
+) -> jaco_db::Result<ProjectRecord> {
+    let store = catalog(cx);
+    let repository = database::repository(cx);
+    let project = repository.set_project_pinned(project_id, pinned)?;
+    refresh_snapshot(&store, cx);
+    Ok(project)
+}
+
+pub(crate) fn set_project_removed(
+    project_id: &ProjectId,
+    removed: bool,
+    cx: &mut App,
+) -> jaco_db::Result<ProjectRecord> {
+    let store = catalog(cx);
+    let project = database::repository(cx).set_project_removed(project_id, removed)?;
+    refresh_snapshot(&store, cx);
+    Ok(project)
 }
 
 pub(crate) fn init(cx: &mut App) {
-    let store = cx.new(|_| ProjectCatalogStore::new());
+    let projects = database::repository(cx)
+        .list_sidebar_projects()
+        .unwrap_or_default();
+    let store = SharedStore::new(cx, ProjectCatalogSnapshot { projects });
     cx.set_global(ProjectCatalogGlobal(store));
 }
 
-pub(crate) fn catalog(cx: &App) -> Entity<ProjectCatalogStore> {
-    cx.global::<ProjectCatalogGlobal>().entity()
-}
-
-pub(crate) fn normal_projects(cx: &App) -> jaco_db::Result<Vec<ProjectRecord>> {
-    database::repository(cx).list_sidebar_projects()
+pub(crate) fn catalog(cx: &App) -> SharedStore<ProjectCatalogSnapshot> {
+    cx.global::<ProjectCatalogGlobal>().store()
 }
 
 pub(crate) fn insert_existing_folder_project(
     cx: &mut App,
     path: PathBuf,
 ) -> jaco_db::Result<InsertExistingFolderProjectResult> {
-    catalog(cx).update(cx, |catalog, cx| {
-        catalog.insert_existing_folder_project(path, cx)
-    })
+    insert_existing_folder_project_impl(path, cx)
 }
 
 pub(crate) fn create_anonymous_scratch_project(cx: &mut App) -> JacoResult<ProjectRecord> {
@@ -215,14 +168,12 @@ pub(crate) fn create_anonymous_scratch_project(cx: &mut App) -> JacoResult<Proje
     let path = config::data_dir(cx)?.join(SCRATCH_PROJECTS_DIR).join(&id);
     std::fs::create_dir_all(&path)?;
     let display_name = cx.global::<I18n>().t("anonymous-project-name");
-    Ok(catalog(cx).update(cx, |catalog, cx| {
-        catalog.insert_scratch_project(
-            path,
-            display_name,
-            NO_PROJECT_SCRATCH_REASON.to_string(),
-            cx,
-        )
-    })?)
+    Ok(insert_scratch_project(
+        path,
+        display_name,
+        NO_PROJECT_SCRATCH_REASON.to_string(),
+        cx,
+    )?)
 }
 
 pub(crate) fn project_display_name(path: &Path) -> String {
@@ -280,10 +231,5 @@ mod tests {
         assert_eq!(metadata.scratch_reason, None);
         assert_eq!(metadata.git_root, None);
         assert_eq!(metadata.last_active_conversation_id, None);
-    }
-
-    #[test]
-    fn project_catalog_revision_starts_at_zero() {
-        assert_eq!(super::ProjectCatalogStore::new().revision(), 0);
     }
 }

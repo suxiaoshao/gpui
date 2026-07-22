@@ -312,8 +312,10 @@ fn title_bar_menu_trigger(
         .line_height(gpui::relative(1.))
         .text_color(cx.theme().foreground)
         .child(label.into())
-        .hover(|this| this.bg(cx.theme().secondary_hover))
-        .when(is_selected, |this| this.bg(cx.theme().secondary_active))
+        .hover(|this| this.bg(cx.theme().tokens.secondary_hover.background))
+        .when(is_selected, |this| {
+            this.bg(cx.theme().tokens.secondary_active.background)
+        })
 }
 
 fn popup_menu_from_owned_items(

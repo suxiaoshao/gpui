@@ -1,0 +1,5 @@
+error: identified array items cannot use a bare type parameter or associated type; use a nominal item type such as Row<T>
+  --> tests/ui/fail/associated_array_item.rs:10:16
+   |
+10 |     items: Vec<T::Item>,
+   |                ^^^^^^^

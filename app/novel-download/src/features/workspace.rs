@@ -276,7 +276,7 @@ impl Render for WorkspaceView {
             .key_context("NovelDownload")
             .p_4()
             .size_full()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .child(
                 div().h_flex().gap_1().child(Input::new(&self.input)).child(

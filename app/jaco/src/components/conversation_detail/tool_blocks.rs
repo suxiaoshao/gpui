@@ -67,7 +67,7 @@ pub(super) fn detail_block(
         .rounded(px(8.))
         .border_1()
         .border_color(cx.theme().border.opacity(0.7))
-        .bg(cx.theme().muted.opacity(0.28))
+        .bg(cx.theme().tokens.muted.background.opacity(0.28))
         .px_2()
         .py_1()
         .child(

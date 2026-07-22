@@ -1,0 +1,5 @@
+error: array id must name a valid Rust field identifier
+ --> tests/ui/fail/invalid_array_id_literal.rs:5:23
+  |
+5 |     #[form(array(id = "not-a-field"))]
+  |                       ^^^^^^^^^^^^^

@@ -23,7 +23,7 @@
   - `crates/xtask`
 - 技术基线：
   - Rust Edition: `2024`
-  - 推荐 Rust: `1.92+`
+  - 推荐 Rust: `1.95+`
   - 关键依赖通过 workspace 统一声明；当前 `gpui` / `gpui_platform` 来自 `zed-industries/zed` git，`gpui-component` / `gpui-component-assets` 来自 `longbridge/gpui-component` git。
 
 ## 2. 代码修改原则

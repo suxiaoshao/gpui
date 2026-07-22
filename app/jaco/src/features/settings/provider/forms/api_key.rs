@@ -1,30 +1,17 @@
-type StringInputBinding = gpui_form_gpui_component::TextInputBinding<String>;
-type BoolInputBinding = gpui_form_gpui_component::BoolBinding;
-type SecretInputBinding = super::ProviderSecretInputBinding;
-
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[garde(context(super::ProviderValidationContext))]
 #[form(
     store = ApiKeyProviderFormStore,
-    validation(adapter = super::ApiKeyProviderValidator, context = super::ProviderValidationContext),
+    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
     transform(adapter = super::ApiKeyProviderTransform)
 )]
 pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
-    #[form(binding = "BoolInputBinding")]
+    #[garde(skip)]
     pub(super) enabled: bool,
-    #[form(
-        binding = "SecretInputBinding",
-        label = "provider-field-api-key",
-        placeholder = "provider-placeholder-api-key",
-        required,
-        mask,
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
+    #[garde(custom(super::validate_provider_secret))]
     pub(super) api_key: super::ProviderSecretValue,
-    #[form(
-        binding = "StringInputBinding",
-        label = "provider-field-base-url",
-        placeholder = "provider-placeholder-base-url-default",
-        validate(on_change, on_blur, on_submit)
-    )]
+    #[form(validate(on_change, on_blur, on_submit))]
+    #[garde(custom(super::validate_optional_provider_url))]
     pub(super) base_url: String,
 }

@@ -62,6 +62,7 @@ gpui-store.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
+garde.workspace = true
 image = { version = "0.25.10", default-features = false, features = [
   "gif",
   "jpeg",

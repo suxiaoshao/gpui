@@ -99,17 +99,10 @@ fn main() -> FeiwenResult<()> {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");
         event!(Level::INFO, title = %title, "opening main window");
-        match cx.open_window(
-            WindowOptions {
-                titlebar: Some(main_titlebar_options(title)),
-                window_background: WindowBackgroundAppearance::Blurred,
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(|cx| WorkspaceView::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
-        ) {
+        match cx.open_window(main_window_options(title), |window, cx| {
+            let view = cx.new(|cx| WorkspaceView::new(window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        }) {
             Ok(_) => event!(Level::INFO, "main window opened"),
             Err(err) => event!(Level::ERROR, error = %err, "failed to open main window"),
         }
@@ -125,10 +118,20 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
     }
 }
 
+fn main_window_options(title: impl Into<SharedString>) -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(main_titlebar_options(title)),
+        app_owns_titlebar_drag: true,
+        window_background: WindowBackgroundAppearance::Blurred,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::main_titlebar_options;
+    use super::{main_titlebar_options, main_window_options};
     use crate::app::titlebar;
+    use gpui::WindowBackgroundAppearance;
 
     #[test]
     fn main_window_uses_custom_titlebar_options() {
@@ -142,6 +145,17 @@ mod tests {
         assert_eq!(
             options.traffic_light_position,
             Some(titlebar::traffic_light_position())
+        );
+    }
+
+    #[test]
+    fn main_window_owns_custom_titlebar_drag() {
+        let options = main_window_options("Feiwen");
+
+        assert!(options.app_owns_titlebar_drag);
+        assert_eq!(
+            options.window_background,
+            WindowBackgroundAppearance::Blurred
         );
     }
 }

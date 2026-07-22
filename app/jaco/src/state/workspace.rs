@@ -5,6 +5,7 @@ use std::{
 };
 
 use gpui::{App, AppContext, Context, Entity, Global, SharedString, Subscription};
+use gpui_store::SharedStore;
 use jaco_core::{ConversationId, ConversationStatus, ProjectId, ProjectKind};
 use jaco_db::{ConversationRecord, ProjectRecord};
 
@@ -75,29 +76,29 @@ pub(crate) struct JacoWorkspaceStore {
     route: HomeRoute,
     snapshot: SidebarSnapshot,
     expanded_project_ids: HashSet<ProjectId>,
-    project_catalog: Entity<projects::ProjectCatalogStore>,
     pending_new_conversation_project_id: Option<ProjectId>,
     last_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl JacoWorkspaceStore {
-    fn new(project_catalog: Entity<projects::ProjectCatalogStore>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        project_catalog: SharedStore<projects::ProjectCatalogSnapshot>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut store = Self {
             route: HomeRoute::NewConversation,
             snapshot: SidebarSnapshot::default(),
             expanded_project_ids: HashSet::new(),
-            project_catalog: project_catalog.clone(),
             pending_new_conversation_project_id: None,
             last_error: None,
             _subscriptions: Vec::new(),
         };
-        store._subscriptions.push(cx.subscribe(
-            &project_catalog,
-            |store, _catalog, _event: &projects::ProjectCatalogEvent, cx| {
+        store._subscriptions.push(
+            cx.observe(&project_catalog.entity(), |store, _catalog, cx| {
                 store.reload_sidebar(cx);
-            },
-        ));
+            }),
+        );
         store.reload_sidebar(cx);
         store
     }
@@ -169,9 +170,7 @@ impl JacoWorkspaceStore {
         pinned: bool,
         cx: &mut Context<Self>,
     ) -> jaco_db::Result<ProjectRecord> {
-        self.project_catalog.update(cx, |catalog, cx| {
-            catalog.set_project_pinned(project_id, pinned, cx)
-        })
+        projects::set_project_pinned(project_id, pinned, cx)
     }
 
     pub(crate) fn rename_project(
@@ -180,9 +179,7 @@ impl JacoWorkspaceStore {
         display_name: String,
         cx: &mut Context<Self>,
     ) -> jaco_db::Result<ProjectRecord> {
-        self.project_catalog.update(cx, |catalog, cx| {
-            catalog.rename_project(project_id, display_name, cx)
-        })
+        projects::rename_project(project_id, display_name, cx)
     }
 
     pub(crate) fn remove_project(
@@ -193,9 +190,7 @@ impl JacoWorkspaceStore {
         if self.route_belongs_to_project(project_id, cx) {
             self.route = HomeRoute::NewConversation;
         }
-        self.project_catalog.update(cx, |catalog, cx| {
-            catalog.set_project_removed(project_id, true, cx)
-        })
+        projects::set_project_removed(project_id, true, cx)
     }
 
     pub(crate) fn pin_conversation(

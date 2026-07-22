@@ -1,7 +1,7 @@
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, Global, SharedString};
+use gpui::{App, Global};
 use jaco_core::AppLanguage;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 use unic_langid::LanguageIdentifier;
 
 use crate::state::config;
@@ -15,20 +15,16 @@ enum Locale {
     ZhCn,
 }
 
+#[derive(Clone)]
 pub(crate) struct I18n {
     locale: Locale,
-    bundles: HashMap<Locale, FluentBundle<FluentResource>>,
+    bundles: Rc<HashMap<Locale, FluentBundle<FluentResource>>>,
 }
 
 impl Global for I18n {}
 
 pub(crate) fn init(cx: &mut App) {
     cx.set_global(I18n::from_settings(cx));
-    cx.set_global(gpui_form::FormTextResolver::new(resolve_gpui_form_text));
-}
-
-fn resolve_gpui_form_text(key: &str, cx: &App) -> SharedString {
-    cx.global::<I18n>().t(key).into()
 }
 
 impl I18n {
@@ -37,7 +33,10 @@ impl I18n {
         bundles.insert(Locale::EnUs, build_bundle("en-US", EN_US));
         bundles.insert(Locale::ZhCn, build_bundle("zh-CN", ZH_CN));
 
-        Self { locale, bundles }
+        Self {
+            locale,
+            bundles: Rc::new(bundles),
+        }
     }
 
     fn from_settings(cx: &App) -> Self {

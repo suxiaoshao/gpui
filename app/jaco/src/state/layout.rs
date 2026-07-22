@@ -218,8 +218,9 @@ impl JacoLayoutState {
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let path = Self::path();
         let snapshot = self.persisted.clone();
+        let timer = cx.background_executor().timer(SAVE_DEBOUNCE);
         self.save_task = Some(cx.spawn(async move |_, _cx| {
-            smol::Timer::after(SAVE_DEBOUNCE).await;
+            timer.await;
             let path = match path {
                 Ok(path) => path,
                 Err(err) => {

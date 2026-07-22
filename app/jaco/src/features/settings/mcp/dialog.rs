@@ -16,16 +16,15 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
     h_flex,
-    input::Input,
+    input::{Input, InputContentType},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     switch::Switch,
     v_flex,
 };
-use gpui_form::{
-    ErrorParamValue, FieldError, FormField, FormItemId, FormMeta, FormStore as _, SubmitError,
-    ValidationTrigger,
+use gpui_form::typed::{
+    FormItemId, FormRevision, FormStore as _, ValidationScope, ValidationTrigger,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
 use std::{
@@ -39,8 +38,10 @@ use super::{
     form_rows::{
         AddMcpRow, McpRowList, RemoveMcpRow, one_input_rows, two_input_rows, validation_error_list,
     },
-    form_state::McpServerFormDraft,
-    validation::McpServerValidationContext,
+    form_state::{
+        McpServerFormComponents, McpServerFormDraft, McpServerFormInput, McpServerFormStore,
+    },
+    validation::mcp_validation_context,
 };
 
 static NEXT_DRAFT_OAUTH_KEY: AtomicU64 = AtomicU64::new(1);
@@ -75,11 +76,13 @@ pub(super) struct McpServerEditDialogState {
     mode: McpServerEditMode,
     original_config: Option<McpServerTomlConfig>,
     draft: McpServerFormDraft,
+    components: McpServerFormComponents,
     content_scroll_handle: ScrollHandle,
     draft_oauth_status_key: String,
     draft_oauth_credential_key: Option<state::mcp_oauth::CredentialsKey>,
     draft_oauth_credential_keys: BTreeSet<state::mcp_oauth::CredentialsKey>,
     sign_out_task: Option<Task<()>>,
+    save_task: Option<Task<()>>,
 }
 
 struct McpOAuthDialogTarget {
@@ -92,6 +95,8 @@ struct McpOAuthDialogTarget {
 }
 
 struct McpServerSaveRequest {
+    revision: FormRevision,
+    output: McpServerFormInput,
     original_server_id: Option<String>,
     server_id: String,
     server: McpServerTomlConfig,
@@ -130,11 +135,13 @@ impl McpServerEditDialogState {
         let server_id = mode.original_server_id().unwrap_or_default().to_string();
         let server_for_draft = server.clone().unwrap_or_default();
         let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
+        let components = McpServerFormComponents::bind(&draft.form, window, cx);
 
         Self {
             mode,
             original_config: server,
             draft,
+            components,
             content_scroll_handle: ScrollHandle::default(),
             draft_oauth_status_key: format!(
                 "__mcp_oauth_draft_{}",
@@ -143,23 +150,33 @@ impl McpServerEditDialogState {
             draft_oauth_credential_key: None,
             draft_oauth_credential_keys: BTreeSet::new(),
             sign_out_task: None,
+            save_task: None,
         }
     }
 
     fn focus_primary_input(&self, window: &mut Window, cx: &mut Context<Self>) {
         let input = if !self.mode.is_edit() {
-            self.draft.form.read(cx).server_id_state()
+            self.components.server_id.clone()
         } else {
-            match self.draft.form.read(cx).transport_value() {
-                McpTransportKind::Stdio => self.draft.form.read(cx).command_state(),
-                McpTransportKind::StreamableHttp => self.draft.form.read(cx).url_state(),
+            match McpServerFormStore::transport_field(&self.draft.form)
+                .value(cx)
+                .unwrap_or(McpTransportKind::Stdio)
+            {
+                McpTransportKind::Stdio => self.components.command.clone(),
+                McpTransportKind::StreamableHttp => self.components.url.clone(),
             }
         };
         input.update(cx, |input, cx| input.focus(window, cx));
     }
 
+    fn rebind_form_components(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let components = McpServerFormComponents::bind(&self.draft.form, window, cx);
+        self.components = components;
+    }
+
     fn is_saving(&self, cx: &App) -> bool {
-        self.draft.form.read(cx).is_submitting()
+        let _ = cx;
+        self.save_task.is_some()
     }
 
     fn is_signing_out(&self) -> bool {
@@ -196,76 +213,65 @@ impl McpServerEditDialogState {
             McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
         };
         let form = cx.entity().downgrade();
-        let start = self.draft.form.update(cx, |form_store, cx| {
+        let prepared = self.draft.form.update(cx, |form_store, cx| {
             form_store.set_validation_context(
-                McpServerValidationContext {
-                    original_server_id: original_server_id.clone(),
-                    existing_server_ids: existing_server_ids.clone(),
-                },
+                mcp_validation_context(original_server_id.clone(), existing_server_ids.clone()),
                 cx,
             );
-            form_store.submit_async(
-                move |output, window, cx| {
-                    let server_id = output.server_id(original_server_id.as_deref());
-                    let server = output.merge_into_config(original_config.as_ref());
-                    let saved_server = server.clone();
-                    let saved_auth = oauth_status_after_save(
-                        draft_oauth_credential_key.as_ref(),
-                        &draft_oauth_status_key,
-                        original_server_id.as_deref(),
-                        original_config.as_ref(),
-                        &server_id,
-                        &saved_server,
-                        cx,
-                    );
-                    let credential_keys_to_delete = oauth_credential_keys_to_delete(
-                        original_server_id.as_deref(),
-                        original_config.as_ref(),
-                        &server_id,
-                        &saved_server,
-                        &draft_oauth_credential_keys,
-                        promoted_draft_oauth_key(
-                            draft_oauth_credential_key.as_ref(),
-                            &server_id,
-                            &saved_server,
-                        ),
-                    );
-                    let request = McpServerSaveRequest {
-                        original_server_id,
-                        server_id,
-                        server,
-                        saved_auth,
-                        credential_keys_to_delete,
-                        success_title_key,
-                    };
-                    Ok::<_, String>(window.spawn(cx, async move |cx| {
-                        let result = delete_oauth_credentials_for_save(request, cx).await;
-                        match form
-                            .update_in(cx, |form, window, cx| form.finish_save(result, window, cx))
-                        {
-                            Ok(result) => result,
-                            Err(err) => {
-                                event!(Level::ERROR, error = ?err, "finish mcp server save failed");
-                                Err(err.to_string())
-                            }
-                        }
-                    }))
-                },
-                window,
-                cx,
-            )
+            let revision = form_store.revision();
+            form_store
+                .prepare_submit(cx)
+                .map(|output| (revision, output))
         });
-        match start {
-            Ok(()) => {}
-            Err(SubmitError::Handler(message)) => {
-                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
-                push_settings_error(window, cx, title, message);
-                return false;
-            }
-            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => {
-                return false;
-            }
-        }
+        let Ok((revision, output)) = prepared else {
+            return false;
+        };
+        let server_id = output.server_id(original_server_id.as_deref());
+        let server = output.clone().merge_into_config(original_config.as_ref());
+        let saved_server = server.clone();
+        let saved_auth = oauth_status_after_save(
+            draft_oauth_credential_key.as_ref(),
+            &draft_oauth_status_key,
+            original_server_id.as_deref(),
+            original_config.as_ref(),
+            &server_id,
+            &saved_server,
+            cx,
+        );
+        let credential_keys_to_delete = oauth_credential_keys_to_delete(
+            original_server_id.as_deref(),
+            original_config.as_ref(),
+            &server_id,
+            &saved_server,
+            &draft_oauth_credential_keys,
+            promoted_draft_oauth_key(
+                draft_oauth_credential_key.as_ref(),
+                &server_id,
+                &saved_server,
+            ),
+        );
+        let request = McpServerSaveRequest {
+            revision,
+            output,
+            original_server_id,
+            server_id,
+            server,
+            saved_auth,
+            credential_keys_to_delete,
+            success_title_key,
+        };
+        let task = window.spawn(cx, async move |cx| {
+            let result = delete_oauth_credentials_for_save(request, cx).await;
+            let _ =
+                match form.update_in(cx, |form, window, cx| form.finish_save(result, window, cx)) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        event!(Level::ERROR, error = ?err, "finish mcp server save failed");
+                        Err(err.to_string())
+                    }
+                };
+        });
+        self.save_task = Some(task);
         cx.notify();
         false
     }
@@ -276,6 +282,7 @@ impl McpServerEditDialogState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.save_task.take();
         let request = match result {
             Ok(request) => request,
             Err(err) => {
@@ -295,6 +302,9 @@ impl McpServerEditDialogState {
             request.server,
         ) {
             Ok(()) => {
+                self.draft.form.update(cx, |form, cx| {
+                    form.rebase_if_revision(request.revision, request.output, cx);
+                });
                 if let Some(original_server_id) = request.original_server_id {
                     disconnect_server(original_server_id, window, cx);
                 }
@@ -365,7 +375,9 @@ impl McpServerEditDialogState {
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        let transport = self.draft.form.read(cx).transport_value();
+        let transport = McpServerFormStore::transport_field(&self.draft.form)
+            .value(cx)
+            .unwrap_or(McpTransportKind::Stdio);
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -384,7 +396,9 @@ impl McpServerEditDialogState {
             ])
             .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
                 let transport = transport_from_toggle_states(
-                    this.draft.form.read(cx).transport_value(),
+                    McpServerFormStore::transport_field(&this.draft.form)
+                        .value(cx)
+                        .unwrap_or(McpTransportKind::Stdio),
                     states,
                 );
                 this.draft.set_transport(transport, window, cx);
@@ -402,6 +416,7 @@ impl McpServerEditDialogState {
             McpRowList::Headers => self.draft.add_header_row(window, cx),
             McpRowList::EnvHeaders => self.draft.add_env_header_row(window, cx),
         }
+        self.rebind_form_components(window, cx);
         self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
@@ -420,6 +435,7 @@ impl McpServerEditDialogState {
             McpRowList::Headers => self.draft.remove_header_row(row_id, window, cx),
             McpRowList::EnvHeaders => self.draft.remove_env_header_row(row_id, window, cx),
         }
+        self.rebind_form_components(window, cx);
         self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
@@ -598,7 +614,9 @@ impl McpServerEditDialogState {
         let dialog = cx.entity().downgrade();
         let authorize_dialog = dialog.clone();
         let sign_out_dialog = dialog.clone();
-        let enabled = self.draft.form.read(cx).oauth_enabled_value();
+        let enabled = McpServerFormStore::oauth_enabled_field(&self.draft.form)
+            .value(cx)
+            .unwrap_or(false);
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
@@ -630,7 +648,7 @@ impl McpServerEditDialogState {
                     .rounded(cx.theme().radius)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().muted.opacity(0.25))
+                    .bg(cx.theme().tokens.muted.background.opacity(0.25))
                     .p_3()
                     .child(
                         h_flex()
@@ -747,7 +765,10 @@ impl McpServerEditDialogState {
     }
 
     fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
-        if !self.draft.form.read(cx).oauth_enabled_value() {
+        if !McpServerFormStore::oauth_enabled_field(&self.draft.form)
+            .value(cx)
+            .unwrap_or(false)
+        {
             return McpOAuthStatusSnapshot::SignedOut;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -780,7 +801,7 @@ impl McpServerEditDialogState {
     fn revalidate_form(
         &self,
         trigger: ValidationTrigger,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let original_server_id = self.mode.original_server_id().map(ToOwned::to_owned);
@@ -789,53 +810,24 @@ impl McpServerEditDialogState {
         });
         self.draft.form.update(cx, |form, cx| {
             form.set_validation_context(
-                McpServerValidationContext {
-                    original_server_id,
-                    existing_server_ids,
-                },
+                mcp_validation_context(original_server_id, existing_server_ids),
                 cx,
             );
-            form.validate(trigger, window, cx);
+            form.validate(trigger, ValidationScope::Form, cx);
         });
     }
 
     fn validation_summary_messages(&self, cx: &App) -> Vec<SharedString> {
-        let form = self.draft.form.read(cx);
-        let mut messages = Vec::new();
-        messages.extend(field_error_messages(&form.server_id, cx));
-        messages.extend(field_error_messages(&form.command, cx));
-        messages.extend(field_error_messages(&form.cwd, cx));
-        messages.extend(field_error_messages(&form.url, cx));
-        messages.extend(field_error_messages(&form.bearer_token_env_var, cx));
-        for item in form.args_items() {
-            let store = item.item.store();
-            let store = store.read(cx);
-            messages.extend(field_error_messages(&store.value, cx));
-        }
-        for item in form.env_items() {
-            let store = item.item.store();
-            let store = store.read(cx);
-            messages.extend(field_error_messages(&store.key, cx));
-            messages.extend(field_error_messages(&store.value, cx));
-        }
-        for item in form.env_vars_items() {
-            let store = item.item.store();
-            let store = store.read(cx);
-            messages.extend(field_error_messages(&store.value, cx));
-        }
-        for item in form.headers_items() {
-            let store = item.item.store();
-            let store = store.read(cx);
-            messages.extend(field_error_messages(&store.name, cx));
-            messages.extend(field_error_messages(&store.value, cx));
-        }
-        for item in form.env_headers_items() {
-            let store = item.item.store();
-            let store = store.read(cx);
-            messages.extend(field_error_messages(&store.name, cx));
-            messages.extend(field_error_messages(&store.env_var, cx));
-        }
-        messages
+        self.draft
+            .form
+            .read(cx)
+            .validation_report()
+            .issues()
+            .iter()
+            .map(|issue| {
+                crate::features::settings::form_validation::validation_message(&issue.message, cx)
+            })
+            .collect()
     }
 }
 
@@ -891,23 +883,28 @@ impl Render for McpServerEditDialogState {
             bearer_token_env_var_errors,
         ) = {
             let form = self.draft.form.read(cx);
+            let value = form.value();
             (
-                form.transport_value(),
-                form.server_id_state(),
-                form.server_id_required(),
-                form.command_state(),
-                form.command_required(),
-                form.cwd_state(),
-                form.cwd_required(),
-                form.url_state(),
-                form.url_required(),
-                form.bearer_token_env_var_state(),
-                form.bearer_token_env_var_required(),
-                field_error_messages(&form.server_id, cx),
-                field_error_messages(&form.command, cx),
-                field_error_messages(&form.cwd, cx),
-                field_error_messages(&form.url, cx),
-                field_error_messages(&form.bearer_token_env_var, cx),
+                value.transport,
+                self.components.server_id.clone(),
+                true,
+                self.components.command.clone(),
+                value.transport == McpTransportKind::Stdio,
+                self.components.cwd.clone(),
+                false,
+                self.components.url.clone(),
+                value.transport == McpTransportKind::StreamableHttp,
+                self.components.bearer_token_env_var.clone(),
+                false,
+                validation_errors_at(form, &gpui_form::typed::FieldPath::field("server_id"), cx),
+                validation_errors_at(form, &gpui_form::typed::FieldPath::field("command"), cx),
+                validation_errors_at(form, &gpui_form::typed::FieldPath::field("cwd"), cx),
+                validation_errors_at(form, &gpui_form::typed::FieldPath::field("url"), cx),
+                validation_errors_at(
+                    form,
+                    &gpui_form::typed::FieldPath::field("bearer_token_env_var"),
+                    cx,
+                ),
             )
         };
         let validation_summary_messages = self.validation_summary_messages(cx);
@@ -958,15 +955,24 @@ impl Render for McpServerEditDialogState {
                                 {
                                     let rows = {
                                         let form = self.draft.form.read(cx);
-                                        form.args_items()
+                                        form.value()
+                                            .args
                                             .iter()
                                             .map(|item| {
-                                                let store = item.item.store();
-                                                let store = store.read(cx);
                                                 (
-                                                    item.id,
-                                                    store.value_state(),
-                                                    field_error_messages(&store.value, cx),
+                                                    item.row_id,
+                                                    self.components
+                                                        .args
+                                                        .get(&item.row_id)
+                                                        .expect("MCP arg row control exists")
+                                                        .clone(),
+                                                    validation_item_errors(
+                                                        form,
+                                                        "args",
+                                                        item.row_id,
+                                                        &["value"],
+                                                        cx,
+                                                    ),
                                                 )
                                             })
                                             .collect::<Vec<_>>()
@@ -988,20 +994,31 @@ impl Render for McpServerEditDialogState {
                                 {
                                     let rows = {
                                         let form = self.draft.form.read(cx);
-                                        form.env_items()
+                                        form.value()
+                                            .env
                                             .iter()
                                             .map(|item| {
-                                                let store = item.item.store();
-                                                let store = store.read(cx);
                                                 (
-                                                    item.id,
-                                                    store.key_state(),
-                                                    store.value_state(),
-                                                    [
-                                                        field_error_messages(&store.key, cx),
-                                                        field_error_messages(&store.value, cx),
-                                                    ]
-                                                    .concat(),
+                                                    item.row_id,
+                                                    self.components
+                                                        .env
+                                                        .get(&item.row_id)
+                                                        .expect("MCP env row controls exist")
+                                                        .0
+                                                        .clone(),
+                                                    self.components
+                                                        .env
+                                                        .get(&item.row_id)
+                                                        .expect("MCP env row controls exist")
+                                                        .1
+                                                        .clone(),
+                                                    validation_item_errors(
+                                                        form,
+                                                        "env",
+                                                        item.row_id,
+                                                        &["key", "value"],
+                                                        cx,
+                                                    ),
                                                 )
                                             })
                                             .collect::<Vec<_>>()
@@ -1023,15 +1040,24 @@ impl Render for McpServerEditDialogState {
                                 {
                                     let rows = {
                                         let form = self.draft.form.read(cx);
-                                        form.env_vars_items()
+                                        form.value()
+                                            .env_vars
                                             .iter()
                                             .map(|item| {
-                                                let store = item.item.store();
-                                                let store = store.read(cx);
                                                 (
-                                                    item.id,
-                                                    store.value_state(),
-                                                    field_error_messages(&store.value, cx),
+                                                    item.row_id,
+                                                    self.components
+                                                        .env_vars
+                                                        .get(&item.row_id)
+                                                        .expect("MCP env var row control exists")
+                                                        .clone(),
+                                                    validation_item_errors(
+                                                        form,
+                                                        "env_vars",
+                                                        item.row_id,
+                                                        &["value"],
+                                                        cx,
+                                                    ),
                                                 )
                                             })
                                             .collect::<Vec<_>>()
@@ -1061,7 +1087,10 @@ impl Render for McpServerEditDialogState {
                         this.child(section_label(http_section_label, cx))
                             .child(form_field(
                                 url_label,
-                                Input::new(&url_input).w_full().into_any_element(),
+                                Input::new(&url_input)
+                                    .w_full()
+                                    .content_type(InputContentType::Url)
+                                    .into_any_element(),
                                 url_errors,
                                 url_required,
                                 cx,
@@ -1079,20 +1108,31 @@ impl Render for McpServerEditDialogState {
                                 {
                                     let rows = {
                                         let form = self.draft.form.read(cx);
-                                        form.headers_items()
+                                        form.value()
+                                            .headers
                                             .iter()
                                             .map(|item| {
-                                                let store = item.item.store();
-                                                let store = store.read(cx);
                                                 (
-                                                    item.id,
-                                                    store.name_state(),
-                                                    store.value_state(),
-                                                    [
-                                                        field_error_messages(&store.name, cx),
-                                                        field_error_messages(&store.value, cx),
-                                                    ]
-                                                    .concat(),
+                                                    item.row_id,
+                                                    self.components
+                                                        .headers
+                                                        .get(&item.row_id)
+                                                        .expect("MCP header row controls exist")
+                                                        .0
+                                                        .clone(),
+                                                    self.components
+                                                        .headers
+                                                        .get(&item.row_id)
+                                                        .expect("MCP header row controls exist")
+                                                        .1
+                                                        .clone(),
+                                                    validation_item_errors(
+                                                        form,
+                                                        "headers",
+                                                        item.row_id,
+                                                        &["name", "value"],
+                                                        cx,
+                                                    ),
                                                 )
                                             })
                                             .collect::<Vec<_>>()
@@ -1114,20 +1154,31 @@ impl Render for McpServerEditDialogState {
                                 {
                                     let rows = {
                                         let form = self.draft.form.read(cx);
-                                        form.env_headers_items()
+                                        form.value()
+                                            .env_headers
                                             .iter()
                                             .map(|item| {
-                                                let store = item.item.store();
-                                                let store = store.read(cx);
                                                 (
-                                                    item.id,
-                                                    store.name_state(),
-                                                    store.env_var_state(),
-                                                    [
-                                                        field_error_messages(&store.name, cx),
-                                                        field_error_messages(&store.env_var, cx),
-                                                    ]
-                                                    .concat(),
+                                                    item.row_id,
+                                                    self.components
+                                                        .env_headers
+                                                        .get(&item.row_id)
+                                                        .expect("MCP env header row controls exist")
+                                                        .0
+                                                        .clone(),
+                                                    self.components
+                                                        .env_headers
+                                                        .get(&item.row_id)
+                                                        .expect("MCP env header row controls exist")
+                                                        .1
+                                                        .clone(),
+                                                    validation_item_errors(
+                                                        form,
+                                                        "env_headers",
+                                                        item.row_id,
+                                                        &["name", "env_var"],
+                                                        cx,
+                                                    ),
                                                 )
                                             })
                                             .collect::<Vec<_>>()
@@ -1572,38 +1623,38 @@ fn form_field(
         .into_any_element()
 }
 
-fn field_error_messages<Field>(field: &Field, cx: &App) -> Vec<SharedString>
-where
-    Field: FormField,
-{
-    field
-        .visible_errors(&FormMeta::default())
+fn validation_errors_at(
+    form: &super::form_state::McpServerFormStore,
+    path: &gpui_form::typed::FieldPath,
+    cx: &App,
+) -> Vec<SharedString> {
+    form.errors_at(path)
         .into_iter()
-        .map(|error| field_error_message(error, cx))
+        .map(|issue| {
+            crate::features::settings::form_validation::validation_message(&issue.message, cx)
+        })
         .collect()
 }
 
-fn field_error_message(error: &FieldError, cx: &App) -> SharedString {
-    let i18n = cx.global::<I18n>();
-    if error.params.is_empty() {
-        return i18n.t(error.message_key.as_ref()).into();
-    }
-
-    let mut args = FluentArgs::new();
-    for (key, value) in &error.params {
-        args.set(key.to_string(), error_param_value(value));
-    }
-    i18n.t_with_args(error.message_key.as_ref(), &args).into()
-}
-
-fn error_param_value(value: &ErrorParamValue) -> String {
-    match value {
-        ErrorParamValue::String(value) => value.to_string(),
-        ErrorParamValue::Integer(value) => value.to_string(),
-        ErrorParamValue::Unsigned(value) => value.to_string(),
-        ErrorParamValue::Float(value) => value.to_string(),
-        ErrorParamValue::Bool(value) => value.to_string(),
-    }
+fn validation_item_errors(
+    form: &super::form_state::McpServerFormStore,
+    array: &'static str,
+    id: FormItemId,
+    fields: &[&'static str],
+    cx: &App,
+) -> Vec<SharedString> {
+    fields
+        .iter()
+        .flat_map(|field| {
+            validation_errors_at(
+                form,
+                &gpui_form::typed::FieldPath::field(array)
+                    .join_item(id)
+                    .join_field(field),
+                cx,
+            )
+        })
+        .collect()
 }
 
 fn list_field_with_errors(
@@ -1636,7 +1687,7 @@ fn render_validation_summary(messages: Vec<SharedString>, cx: &mut App) -> AnyEl
         .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().danger.opacity(0.55))
-        .bg(cx.theme().danger.opacity(0.08))
+        .bg(cx.theme().tokens.danger.background.opacity(0.08))
         .p_3()
         .child(
             Label::new(cx.global::<I18n>().t("mcp-validation-summary"))
@@ -1658,12 +1709,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
+        features::settings::mcp::form_state::McpServerFormStore,
         foundation, state,
         state::config::{McpOAuthTomlConfig, McpServerTomlConfig},
     };
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::FormField as _;
+    use gpui_form::typed::{FieldPath, FormStore as _};
     use jaco_agent::McpOAuthStatusSnapshot;
     use tempfile::{TempDir, tempdir};
 
@@ -1790,7 +1842,7 @@ mod tests {
             assert!(form.read(cx).is_oauth_signing_in(cx));
             assert!(form.read(cx).is_dialog_blocked(cx));
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
-            assert!(!form.read(cx).draft.form.read(cx).is_submitting());
+            assert!(!form.read(cx).is_saving(cx));
         });
     }
 
@@ -1804,54 +1856,61 @@ mod tests {
             cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
         });
         let arg_input = cx.update(|_, cx| {
-            form.read(cx).draft.form.read(cx).args_items()[0]
-                .item
-                .store()
-                .read(cx)
-                .value_state()
+            let dialog = form.read(cx);
+            let row_id = McpServerFormStore::args_field(&dialog.draft.form)
+                .value(cx)
+                .unwrap()[0]
+                .row_id;
+            dialog
+                .components
+                .args
+                .get(&row_id)
+                .expect("MCP arg row control exists")
+                .clone()
         });
         set_input_value(arg_input, "   ", &mut cx);
+        cx.run_until_parked();
 
         cx.update(|window, cx| {
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
 
             let dialog = form.read(cx);
             let draft_form = dialog.draft.form.read(cx);
+            let arg_id = draft_form.value().args[0].row_id;
             assert_eq!(
                 draft_form
-                    .server_id
-                    .errors()
+                    .errors_at(&FieldPath::field("server_id"))
                     .first()
-                    .map(|error| error.message_key.as_ref()),
-                Some("mcp-validation-name-required")
+                    .map(|error| error.code.as_ref()),
+                Some("required")
             );
             assert_eq!(
                 draft_form
-                    .command
-                    .errors()
+                    .errors_at(&FieldPath::field("command"))
                     .first()
-                    .map(|error| error.message_key.as_ref()),
-                Some("mcp-validation-command-required")
+                    .map(|error| error.code.as_ref()),
+                Some("garde")
             );
 
-            let arg_store = draft_form.args_items()[0].item.store();
             assert_eq!(
-                arg_store
-                    .read(cx)
-                    .value
-                    .errors()
+                draft_form
+                    .errors_at(
+                        &FieldPath::field("args")
+                            .join_item(arg_id)
+                            .join_field("value"),
+                    )
                     .first()
-                    .map(|error| error.message_key.as_ref()),
-                Some("mcp-validation-arg-empty")
+                    .map(|error| error.code.as_ref()),
+                Some("garde")
             );
             assert!(
                 draft_form
-                    .command
-                    .errors()
+                    .errors_at(&FieldPath::field("command"))
                     .iter()
-                    .any(gpui_form::FieldError::is_error)
+                    .any(|error| error.code == "garde")
             );
-            assert!(dialog.validation_summary_messages(cx).len() >= 3);
+            let summary = dialog.validation_summary_messages(cx);
+            assert!(summary.len() >= 3, "summary={summary:?}");
         });
     }
 
@@ -1885,11 +1944,11 @@ mod tests {
         dir
     }
 
-    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                let view = cx.new(|_| TestView);
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                let _ = window;
+                cx.new(|_| TestView)
             })
             .expect("open mcp dialog test window")
         })

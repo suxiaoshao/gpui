@@ -233,5 +233,4 @@ enum AppEvent {
 entity1.subscribe(entity2) → emits event
 entity2.subscribe(entity1) → emits event → infinite loop!
 ```
-
 ## Reference Documentation

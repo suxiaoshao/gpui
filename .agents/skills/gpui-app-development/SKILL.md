@@ -36,7 +36,28 @@ Use this skill for workspace-specific GPUI app decisions. Use `gpui` for framewo
 - Avoid ineffective synchronization data such as `is_loading` plus `load_task`, `selected_id` plus a duplicated selected record, or `status == Running` plus `task: Option<Task<_>>` when the extra field carries no independent meaning.
 - Add a separate field only when it represents independent information, a durable business state, or user-visible history that cannot be derived from the existing field.
 - For GPUI tasks, store the `Task` to keep it alive or cancel it on drop. If in-flight UI state has no extra semantics, derive loading/disabled guards from `task.is_some()`. Use an underscore prefix only for fields that are intentionally held but never read.
-- For new `gpui-store` usage, choose `LocalStore` versus `SharedStore` by ownership and notification boundary. Choose `StoreSource` separately by synchronization backend. Do not migrate an app to `gpui-store` opportunistically while doing unrelated work.
+- For new `gpui-store` usage, choose `LocalStore` versus `SharedStore` by ownership and notification boundary. Choose `StoreBackend` separately by synchronization backend. Do not migrate an app to `gpui-store` opportunistically while doing unrelated work.
+
+### Draft, committed state, projection, and ephemeral UI
+
+Keep these layers separate when a screen edits data that also arrives from an external store:
+
+1. committed store/repository state is the durable or shared source;
+2. one generated form store owns the current editable typed model and baseline;
+3. that form store owns validation report/generations and submit runtime;
+4. bound controls project typed form fields and own subscriptions plus interaction-local state;
+5. external component options/catalog/capabilities are app-owned configuration;
+6. picker open/focus, query, highlight, scroll, preview, IME, and in-flight tasks are component-instance UI state.
+
+Do not mirror a selected id with a selected record, a form value with a component business cache,
+or a catalog revision with separately cached rows unless the extra value is explicitly a read-only
+projection. Submit through `form.prepare_submit()` so validation, transform, and persistence use the
+same typed value. Catalog/options updates only refresh component configuration and never choose a
+fallback value or rebase the form. Focus is
+owned by the concrete component/page because one data field may be represented by multiple components;
+the form may return an error path but must not store a `FocusHandle`. For Jaco, the
+durable target is `app/jaco/docs/dev/gpui-form-migration.md`; the form and store crate
+contracts remain in their own docs.
 
 ## Product UI Guidance
 

@@ -296,8 +296,9 @@ impl ScreenshotOverlayView {
         }
         window.remove_window();
 
+        let timer = cx.background_executor().timer(CAPTURE_START_DELAY);
         cx.spawn(async move |_this, cx| {
-            smol::Timer::after(CAPTURE_START_DELAY).await;
+            timer.await;
             let captured_display = display.clone();
             let captured = smol::unblock(move || capture_region(&captured_display, rect)).await;
             match captured {

@@ -44,6 +44,13 @@ pub(crate) fn open_temporary_window(cx: &mut App) -> Option<WindowHandle<Root>> 
     with_lifecycle_state(cx, |state, cx| state.ensure_temporary_window_visible(cx)).flatten()
 }
 
+pub(crate) fn show_created_conversation(
+    created: crate::state::conversations::CreatedConversation,
+    cx: &mut App,
+) -> Option<WindowHandle<Root>> {
+    with_lifecycle_state(cx, |state, cx| state.show_created_conversation(created, cx)).flatten()
+}
+
 pub(crate) fn toggle_temporary_window(cx: &mut App) {
     let _ = with_lifecycle_state(cx, |state, cx| {
         state.toggle_temporary_window(cx);
@@ -81,6 +88,51 @@ fn with_lifecycle_state<R>(
 }
 
 impl TemporaryWindowLifecycleState {
+    fn show_created_conversation(
+        &mut self,
+        created: crate::state::conversations::CreatedConversation,
+        cx: &mut App,
+    ) -> Option<WindowHandle<Root>> {
+        let window = find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
+        let mut reveal = None;
+        let mut handled = false;
+        let update_result = window.update(cx, |root, window, cx| {
+            let Ok(view) = root.view().clone().downcast::<TemporaryWindow>() else {
+                event!(
+                    Level::ERROR,
+                    "temporary window root did not contain TemporaryWindow view"
+                );
+                return;
+            };
+            handled = true;
+            view.update(cx, |view, cx| {
+                let started = view.open_created_conversation(created, window, cx);
+                if !started {
+                    event!(
+                        Level::DEBUG,
+                        "temporary conversation run was already active"
+                    );
+                }
+            });
+            reveal = self.prepare_temporary_window(root, window, cx);
+        });
+        match update_result {
+            Ok(()) => {
+                if !handled {
+                    return None;
+                }
+                if let Some(reveal) = reveal {
+                    self.schedule_temporary_window_reveal(reveal, cx);
+                }
+                Some(window)
+            }
+            Err(err) => {
+                event!(Level::ERROR, error = ?err, "show created conversation in temporary window failed");
+                None
+            }
+        }
+    }
+
     fn ensure_temporary_window_visible(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         let window = find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
         let mut reveal = None;
@@ -266,8 +318,9 @@ fn set_temporary_window_level(window: &mut Window) {
 }
 
 fn delay_close_temporary_window(window: &mut Window, cx: &mut App) -> Task<()> {
+    let timer = cx.background_executor().timer(Duration::from_secs(600));
     window.spawn(cx, async |cx| {
-        smol::Timer::after(Duration::from_secs(600)).await;
+        timer.await;
         if let Err(err) = cx.window_handle().update(cx, |_root, window, _cx| {
             window.remove_window();
         }) {

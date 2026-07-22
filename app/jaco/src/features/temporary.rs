@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::{
     app::{menus, temporary_window},
     components::{
-        chat_form::{COMPOSER_EDITOR_KEY_CONTEXT, ChatFormSubmit},
+        chat_input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
         conversation_detail::ConversationDetailPage,
     },
     foundation::{self, I18n, assets::IconName},
@@ -420,14 +420,14 @@ impl TemporaryWindow {
 
     fn submit_new_conversation(
         &mut self,
-        submit: ChatFormSubmit,
+        submit: ChatInputSubmit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let request = state::conversations::CreateConversationRequest {
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
-            attachments: submit.composer.attachments.clone(),
+            attachments: submit.attachments.clone(),
             title_seed: submit.composer.text.clone(),
             skill_requests: submit.composer.skill_requests.clone(),
             provider_model: submit.provider_model,
@@ -442,7 +442,7 @@ impl TemporaryWindow {
             Ok(created) => {
                 let conversation_id = created.record.conversation.id.clone();
                 self.new_conversation.update(cx, |pane, cx| {
-                    pane.clear_after_submit(cx);
+                    pane.clear_after_submit(window, cx);
                 });
                 self.query.clear();
                 self.search_input.update(cx, |input, cx| {
@@ -482,7 +482,7 @@ impl TemporaryWindow {
         created: state::conversations::CreatedConversation,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let conversation_id = created.record.conversation.id.clone();
         self.query.clear();
         self.search_input.update(cx, |input, cx| {
@@ -501,8 +501,8 @@ impl TemporaryWindow {
             workspace.reload_sidebar(cx);
         });
         self.runtime.update(cx, |runtime, cx| {
-            runtime.start_run(created.run_request, window, cx);
-        });
+            runtime.start_run(created.run_request, window, cx)
+        })
     }
 
     fn conversation_page(
@@ -514,7 +514,9 @@ impl TemporaryWindow {
         self.conversation_pages
             .entry(conversation_id.clone())
             .or_insert_with(|| {
-                cx.new(|cx| ConversationDetailPage::new(conversation_id, window, cx))
+                // Keep search focus while the route is materialized after an
+                // arrow-key selection.
+                cx.new(|cx| ConversationDetailPage::new_without_focus(conversation_id, window, cx))
             })
             .clone()
     }
@@ -547,7 +549,7 @@ impl TemporaryWindow {
             .min_w_0()
             .border_r_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
+            .bg(cx.theme().tokens.sidebar.background)
             .when_some(last_error, |this, error| {
                 this.child(
                     h_flex()
@@ -603,7 +605,7 @@ impl Render for TemporaryWindow {
             .key_context(KEY_CONTEXT)
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background.background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))

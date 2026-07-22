@@ -537,6 +537,38 @@ mod tests {
     }
 
     #[test]
+    fn user_message_accepts_image_only_content() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let image_path = temp_dir.path().join("image.png");
+        fs::write(&image_path, [0x89, b'P', b'N', b'G']).unwrap();
+        let item = conversation_entry(
+            "item-1",
+            vec![ContentPart::Image {
+                attachment_id: "att-1".to_string(),
+            }],
+        );
+        let attachment = attachment_record(
+            "att-1",
+            AttachmentKind::Image,
+            Some("image/png"),
+            Some(image_path.to_string_lossy().as_ref()),
+        );
+        let attachments = [attachment];
+        let attachment_map = attachment_map(&attachments);
+
+        let message = conversation_entry_to_rig_message(&item, &attachment_map)
+            .unwrap()
+            .unwrap();
+
+        let RigMessage::User { content } = message else {
+            panic!("expected user message");
+        };
+        let parts = content.iter().collect::<Vec<_>>();
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(parts[0], UserContent::Image(_)));
+    }
+
+    #[test]
     fn unsupported_binary_file_is_rejected() {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("archive.zip");

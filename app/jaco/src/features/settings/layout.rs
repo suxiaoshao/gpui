@@ -172,7 +172,7 @@ impl RenderOnce for SettingsNav {
             .id("settings-nav")
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().sidebar)
+            .bg(cx.theme().tokens.sidebar.background)
             .text_color(cx.theme().sidebar_foreground)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
@@ -204,11 +204,11 @@ impl RenderOnce for SettingsNav {
                         .cursor_pointer()
                         .text_color(text_color)
                         .when(active, |this| {
-                            this.bg(cx.theme().sidebar_accent)
+                            this.bg(cx.theme().tokens.sidebar_accent.background)
                                 .text_color(cx.theme().sidebar_accent_foreground)
                         })
                         .hover(|this| {
-                            this.bg(cx.theme().sidebar_accent)
+                            this.bg(cx.theme().tokens.sidebar_accent.background)
                                 .text_color(cx.theme().sidebar_accent_foreground)
                         })
                         .on_click(move |_, window, cx| on_select(page.key, window, cx))
@@ -244,34 +244,33 @@ impl SettingsPageFrame {
         self.body_scroll = SettingsPageBodyScroll::None;
         self
     }
+
+    pub(super) fn no_outer_body_scroll_full_bleed(mut self) -> Self {
+        self.body_scroll = SettingsPageBodyScroll::NoneFullBleed;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsPageBodyScroll {
     Outer,
     None,
+    NoneFullBleed,
 }
 
 impl RenderOnce for SettingsPageFrame {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let body = match self.body_scroll {
-            SettingsPageBodyScroll::Outer => div()
+            SettingsPageBodyScroll::Outer => v_flex()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .w_full()
-                .overflow_hidden()
-                .child(
-                    div().size_full().overflow_y_scrollbar().child(
-                        v_flex()
-                            .w_full()
-                            .min_w_0()
-                            .max_w(px(960.))
-                            .gap_4()
-                            .p_4()
-                            .child(self.body),
-                    ),
-                )
+                .max_w(px(960.))
+                .gap_4()
+                .p_4()
+                .overflow_y_scrollbar()
+                .child(self.body)
                 .into_any_element(),
             SettingsPageBodyScroll::None => div()
                 .flex_1()
@@ -280,6 +279,14 @@ impl RenderOnce for SettingsPageFrame {
                 .w_full()
                 .overflow_hidden()
                 .p_4()
+                .child(self.body)
+                .into_any_element(),
+            SettingsPageBodyScroll::NoneFullBleed => div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .w_full()
+                .overflow_hidden()
                 .child(self.body)
                 .into_any_element(),
         };

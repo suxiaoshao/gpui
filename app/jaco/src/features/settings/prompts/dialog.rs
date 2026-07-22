@@ -11,19 +11,22 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
     h_flex,
-    input::Input,
+    input::{Input, InputState},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::{FieldError, FormStore as _, SubmitError};
+use gpui_form::typed::{FormFieldId as _, FormStore as _, SubmitError};
+use gpui_form_gpui_component::FormInput;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
 
+use super::super::form_validation::validation_message;
 use super::super::push_settings_error;
 use super::form_state::{
-    PromptEditFormInput, PromptEditFormStore, PromptEditValidationContext, field_errors,
+    PromptEditFormInput, PromptEditFormInputField, PromptEditFormStore,
+    PromptEditValidationContext, PromptValidationDependencies,
 };
 use super::rows::prompt_updated_label;
 
@@ -46,13 +49,8 @@ pub(super) struct PromptEditDialogState {
     mode: PromptEditMode,
     prompt_id: Option<PromptId>,
     form: Entity<PromptEditFormStore>,
-}
-
-enum PromptSaveError {
-    Notify {
-        title_key: &'static str,
-        message: String,
-    },
+    name_input: FormInput,
+    content_input: FormInput,
 }
 
 impl PromptEditDialogState {
@@ -73,20 +71,43 @@ impl PromptEditDialogState {
         let form_input = PromptEditFormInput::new(name, content);
         let validation_context =
             prompt_edit_validation_context(prompt.as_ref().map(|prompt| prompt.id.clone()), cx)
-                .unwrap_or_default();
+                .unwrap_or_else(|_| {
+                    PromptEditValidationContext::new(PromptValidationDependencies::default())
+                });
         let form = cx.new(|cx| {
             PromptEditFormStore::from_value_with_validation_context(
                 form_input,
                 validation_context,
-                window,
                 cx,
             )
         });
-
+        let name_input = FormInput::new(
+            PromptEditFormStore::name_field(&form),
+            |window, cx| {
+                InputState::new(window, cx)
+                    .placeholder(cx.global::<I18n>().t("prompt-placeholder-name"))
+            },
+            window,
+            cx,
+        )
+        .expect("prompt name form entity is alive");
+        let content_input = FormInput::new(
+            PromptEditFormStore::content_field(&form),
+            |window, cx| {
+                InputState::new(window, cx)
+                    .multi_line(true)
+                    .placeholder(cx.global::<I18n>().t("prompt-placeholder-content"))
+            },
+            window,
+            cx,
+        )
+        .expect("prompt content form entity is alive");
         Self {
             mode,
             prompt_id: prompt.map(|prompt| prompt.id),
             form,
+            name_input,
+            content_input,
         }
     }
 
@@ -101,56 +122,57 @@ impl PromptEditDialogState {
                 return false;
             }
         };
-        let result = self.form.update(cx, |form, cx| {
+        let prepared = self.form.update(cx, |form, cx| {
             form.set_validation_context(validation_context, cx);
-            form.submit_sync(
-                move |draft, window, cx| {
-                    let result = match mode {
-                        PromptEditMode::Create => {
-                            state::prompts::create_prompt(cx, draft.name, draft.content)
-                        }
-                        PromptEditMode::Edit => {
-                            let Some(prompt_id) = prompt_id.clone() else {
-                                return Err(PromptSaveError::Notify {
-                                    title_key: "notify-save-prompt-failed",
-                                    message: "prompt id is missing".to_string(),
-                                });
-                            };
-                            state::prompts::update_prompt(cx, &prompt_id, draft.name, draft.content)
-                        }
-                    };
-
-                    result.map_err(|err| PromptSaveError::Notify {
-                        title_key: "notify-save-prompt-failed",
-                        message: err.to_string(),
-                    })?;
-                    window.push_notification(
-                        Notification::new()
-                            .title(cx.global::<I18n>().t("notify-prompt-saved"))
-                            .with_type(NotificationType::Success),
-                        cx,
-                    );
-                    Ok(())
-                },
-                window,
-                cx,
-            )
+            let revision = form.revision();
+            form.prepare_submit(cx).map(|draft| (revision, draft))
         });
-
-        match result {
-            Ok(()) => true,
-            Err(SubmitError::Invalid(_)) | Err(SubmitError::Busy) => false,
-            Err(SubmitError::Handler(PromptSaveError::Notify { title_key, message })) => {
-                let title = cx.global::<I18n>().t(title_key);
-                push_settings_error(window, cx, title, message);
-                false
+        let (revision, draft) = match prepared {
+            Ok(prepared) => prepared,
+            Err(
+                SubmitError::Validation(_)
+                | SubmitError::ValidationPending
+                | SubmitError::Transform(_),
+            ) => {
+                return false;
             }
+        };
+        let result = match mode {
+            PromptEditMode::Create => {
+                state::prompts::create_prompt(cx, draft.name.clone(), draft.content.clone())
+            }
+            PromptEditMode::Edit => {
+                let Some(prompt_id) = prompt_id else {
+                    let title = cx.global::<I18n>().t("notify-save-prompt-failed");
+                    push_settings_error(window, cx, title, "prompt id is missing");
+                    return false;
+                };
+                state::prompts::update_prompt(
+                    cx,
+                    &prompt_id,
+                    draft.name.clone(),
+                    draft.content.clone(),
+                )
+            }
+        };
+        if let Err(error) = result {
+            let title = cx.global::<I18n>().t("notify-save-prompt-failed");
+            push_settings_error(window, cx, title, error.to_string());
+            return false;
         }
+        self.form
+            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
+        window.push_notification(
+            Notification::new()
+                .title(cx.global::<I18n>().t("notify-prompt-saved"))
+                .with_type(NotificationType::Success),
+            cx,
+        );
+        true
     }
 
     fn focus_name(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let name_input = self.form.read(cx).name_state();
-        name_input.update(cx, |input, cx| {
+        self.name_input.update(cx, |input, cx| {
             input.focus(window, cx);
         });
     }
@@ -158,30 +180,34 @@ impl PromptEditDialogState {
 
 impl Render for PromptEditDialogState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (name_input, content_input, name_error, content_error, name_required, content_required) = {
-            let form = self.form.read(cx);
-            (
-                form.name_state(),
-                form.content_state(),
-                field_error_message(field_errors(&form.name), cx),
-                field_error_message(field_errors(&form.content), cx),
-                form.name_required(),
-                form.content_required(),
-            )
-        };
+        let name_error = PromptEditFormStore::name_field(&self.form)
+            .errors(cx)
+            .ok()
+            .and_then(|issues| issues.into_iter().next())
+            .map(|issue| validation_message(&issue.message, cx));
+        let content_error = PromptEditFormStore::content_field(&self.form)
+            .errors(cx)
+            .ok()
+            .and_then(|issues| issues.into_iter().next())
+            .map(|issue| validation_message(&issue.message, cx));
+        let name_required = PromptEditFormInputField::Name.schema().is_required();
+        let content_required = PromptEditFormInputField::Content.schema().is_required();
         v_flex()
             .w_full()
             .gap_4()
             .child(form_field(
                 cx.global::<I18n>().t("prompt-field-name"),
-                Input::new(&name_input).w_full().min_w_0(),
+                Input::new(&self.name_input).w_full().min_w_0(),
                 name_error,
                 name_required,
                 cx,
             ))
             .child(form_field(
                 cx.global::<I18n>().t("prompt-field-content"),
-                Input::new(&content_input).w_full().min_w_0().h(px(220.)),
+                Input::new(&self.content_input)
+                    .w_full()
+                    .min_w_0()
+                    .h(px(220.)),
                 content_error,
                 content_required,
                 cx,
@@ -197,16 +223,12 @@ fn prompt_edit_validation_context(
         .into_iter()
         .map(|prompt| (prompt.id, prompt.name))
         .collect();
-    Ok(PromptEditValidationContext {
-        prompt_id,
-        existing_prompts,
-    })
-}
-
-fn field_error_message(errors: Vec<FieldError>, cx: &App) -> Option<SharedString> {
-    errors
-        .first()
-        .map(|error| cx.global::<I18n>().t(error.message_key.as_ref()).into())
+    Ok(PromptEditValidationContext::new(
+        PromptValidationDependencies {
+            prompt_id,
+            existing_prompts,
+        },
+    ))
 }
 
 pub(super) fn open_prompt_edit_dialog(
@@ -365,7 +387,7 @@ fn render_prompt_preview(prompt: PromptRecord, cx: &mut App) -> AnyElement {
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().background)
+                .bg(cx.theme().tokens.background.background)
                 .p_3()
                 .child(
                     div()
@@ -394,7 +416,7 @@ fn render_prompt_preview_header(
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .bg(cx.theme().accent.opacity(0.65))
+                .bg(cx.theme().tokens.accent.background.opacity(0.65))
                 .child(Icon::new(IconName::FilePen).text_color(cx.theme().accent_foreground)),
         )
         .child(
@@ -441,16 +463,14 @@ fn form_field(
 
 #[cfg(test)]
 mod tests {
-    use super::super::form_state::PromptEditFormField;
+    use super::super::form_state::{PromptEditFormInputField, PromptEditFormStore};
     use super::{
-        PromptEditMode, confirm_prompt_edit_dialog, field_errors, open_prompt_edit_dialog,
+        PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
     };
     use crate::{database::FreshStoreGlobal, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::{
-        WindowExt,
-        input::{InputEvent, InputState},
-    };
+    use gpui_component::input::{InputEvent, InputState};
+    use gpui_form::typed::FormStore as _;
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -459,22 +479,18 @@ mod tests {
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
-        let form = cx
-            .update(|window, cx| open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx));
-
-        let saved = cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-            confirm_prompt_edit_dialog(&form, window, cx)
+        let form = cx.update(|window, cx| {
+            cx.new(|cx| PromptEditDialogState::new(PromptEditMode::Create, None, window, cx))
         });
+
+        let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
         assert!(!saved);
 
-        cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-        });
-
         assert!(form.read_with(&cx, |dialog, cx| {
-            let form = dialog.form.read(cx);
-            !field_errors(&form.name).is_empty()
+            !PromptEditFormStore::name_field(&dialog.form)
+                .errors(cx)
+                .unwrap_or_default()
+                .is_empty()
         }));
         cx.update(|_, cx| {
             assert!(
@@ -489,6 +505,7 @@ mod tests {
     #[gpui::test]
     fn duplicate_name_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
+        cx.update(|cx| cx.set_global(foundation::I18n::for_locale_tag("en-US")));
         cx.update(|cx| {
             state::prompts::create_prompt(
                 cx,
@@ -500,36 +517,65 @@ mod tests {
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
-        let form = cx
-            .update(|window, cx| open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx));
-        let (name_input, content_input) = form.read_with(&cx, |dialog, cx| {
-            let form = dialog.form.read(cx);
-            (form.name_state(), form.content_state())
+        let form = cx.update(|window, cx| {
+            cx.new(|cx| PromptEditDialogState::new(PromptEditMode::Create, None, window, cx))
+        });
+        let (name_input, content_input) = form.read_with(&cx, |dialog, _cx| {
+            (
+                (*dialog.name_input).clone(),
+                (*dialog.content_input).clone(),
+            )
         });
         set_input_value(name_input, "Existing Prompt", &mut cx);
         set_input_value(content_input, "New content", &mut cx);
 
-        let saved = cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-            confirm_prompt_edit_dialog(&form, window, cx)
-        });
+        let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
         assert!(!saved);
-
-        cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-        });
+        let (report_before_locale_change, revision_before_locale_change, english_error) = form
+            .read_with(&cx, |dialog, cx| {
+                let form = dialog.form.read(cx);
+                let report = form.validation_report();
+                let error = report.issues().first().expect("duplicate prompt error");
+                (
+                    report.clone(),
+                    form.revision(),
+                    validation_message(&error.message, cx),
+                )
+            });
+        cx.update(|_, cx| cx.set_global(foundation::I18n::for_locale_tag("zh-CN")));
+        let (report_after_locale_change, revision_after_locale_change, chinese_error) = form
+            .read_with(&cx, |dialog, cx| {
+                let form = dialog.form.read(cx);
+                let report = form.validation_report();
+                let error = report.issues().first().expect("duplicate prompt error");
+                (
+                    report.clone(),
+                    form.revision(),
+                    validation_message(&error.message, cx),
+                )
+            });
+        assert_eq!(report_after_locale_change, report_before_locale_change);
+        assert_eq!(revision_after_locale_change, revision_before_locale_change);
+        assert_ne!(chinese_error, english_error);
         assert_eq!(
             form.read_with(&cx, |dialog, cx| {
-                let form = dialog.form.read(cx);
-                if !field_errors(&form.name).is_empty() {
-                    Some(PromptEditFormField::Name)
-                } else if !field_errors(&form.content).is_empty() {
-                    Some(PromptEditFormField::Content)
+                if !PromptEditFormStore::name_field(&dialog.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    Some(PromptEditFormInputField::Name)
+                } else if !PromptEditFormStore::content_field(&dialog.form)
+                    .errors(cx)
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    Some(PromptEditFormInputField::Content)
                 } else {
                     None
                 }
             }),
-            Some(PromptEditFormField::Name)
+            Some(PromptEditFormInputField::Name)
         );
         assert_eq!(
             cx.update(|_, cx| crate::database::repository(cx)
@@ -551,11 +597,11 @@ mod tests {
         dir
     }
 
-    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<gpui_component::Root> {
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                let view = cx.new(|_| TestView);
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                let _ = window;
+                cx.new(|_| TestView)
             })
             .expect("open prompt dialog test window")
         })

@@ -10,7 +10,7 @@ validify-transform = ["dep:validify"]
 form-pipeline = ["garde-adapter", "validify-transform"]
 
 [dependencies]
-garde = { version = "0.23.0", default-features = false, features = ["derive", "url", "email", "pattern"], optional = true }
+garde = { workspace = true, optional = true }
 gpui = { workspace = true }
 gpui-form-macros = { workspace = true }
 validify = { version = "2.0.0", optional = true }
@@ -19,3 +19,4 @@ validify = { version = "2.0.0", optional = true }
 gpui = { workspace = true, features = ["test-support"] }
 gpui-component = { workspace = true }
 gpui-form-gpui-component = { workspace = true }
+trybuild = "1.0.118"

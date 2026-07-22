@@ -83,8 +83,10 @@ impl TimelineRow {
 impl RenderOnce for TimelineRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self {
-            TimelineRow::User(row) => (*row).render(window, cx).into_any_element(),
-            TimelineRow::Agent(row) => (*row).render(window, cx).into_any_element(),
+            TimelineRow::User(row) => gpui::RenderOnce::render(*row, window, cx).into_any_element(),
+            TimelineRow::Agent(row) => {
+                gpui::RenderOnce::render(*row, window, cx).into_any_element()
+            }
         }
     }
 }
@@ -149,7 +151,7 @@ impl RenderOnce for UserMessageRow {
                                 .rounded(px(8.))
                                 .px_3()
                                 .py_2()
-                                .bg(cx.theme().primary.opacity(0.12))
+                                .bg(cx.theme().tokens.primary.background.opacity(0.12))
                                 .border_1()
                                 .border_color(cx.theme().primary.opacity(0.18))
                                 .text_color(cx.theme().foreground)
@@ -327,7 +329,7 @@ impl AgentTurnRow {
             .w_full()
             .max_w(px(760.))
             .h(px(1.))
-            .bg(cx.theme().border.opacity(0.7))
+            .bg(cx.theme().tokens.border.background.opacity(0.7))
             .into_any_element()
     }
 

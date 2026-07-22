@@ -131,6 +131,7 @@ pub(crate) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSecti
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn model_select_groups(
     choices: &[ProviderModelChoice],
 ) -> SearchableVec<SelectGroup<ModelOption>> {
