@@ -44,7 +44,6 @@ struct ShortcutSettingsSnapshot {
     shortcuts: Vec<ShortcutRecord>,
     prompts: Vec<PromptRecord>,
     providers: Vec<(ProviderRecord, Vec<ProviderModelRecord>)>,
-    diagnostics: state::hotkey::ShortcutRuntimeDiagnostics,
 }
 
 impl ShortcutsSettingsPage {
@@ -90,6 +89,10 @@ impl ShortcutsSettingsPage {
                 page.reload_snapshot(window, cx);
             },
         );
+        let diagnostics_subscription =
+            cx.observe_global_in::<state::GlobalHotkeyState>(window, |_page, _window, cx| {
+                cx.notify();
+            });
 
         Self {
             search_input,
@@ -99,6 +102,7 @@ impl ShortcutsSettingsPage {
                 shortcut_subscription,
                 prompt_subscription,
                 provider_subscription,
+                diagnostics_subscription,
             ],
         }
     }
@@ -108,7 +112,6 @@ impl ShortcutsSettingsPage {
             shortcuts: state::shortcuts::list_shortcuts(cx)?,
             prompts: state::prompts::list_prompts(cx)?,
             providers: state::providers::providers_with_models(cx)?,
-            diagnostics: state::GlobalHotkeyState::diagnostics_snapshot(cx),
         })
     }
 
@@ -157,11 +160,12 @@ impl ShortcutsSettingsPage {
 
     fn row_by_id(&self, shortcut_id: &ShortcutId, cx: &App) -> Option<ShortcutManagementRow> {
         let snapshot = self.snapshot.as_ref().ok()?;
+        let diagnostics = state::GlobalHotkeyState::diagnostics_snapshot(cx);
         shortcut_management_rows(
             &snapshot.shortcuts,
             &snapshot.prompts,
             &snapshot.providers,
-            &snapshot.diagnostics,
+            &diagnostics,
             cx.global::<I18n>(),
         )
         .into_iter()
@@ -194,11 +198,7 @@ impl ShortcutsSettingsPage {
             .as_ref()
             .map(|snapshot| snapshot.shortcuts.clone())
             .unwrap_or_default();
-        let temporary_hotkey = self
-            .snapshot
-            .as_ref()
-            .ok()
-            .and_then(|snapshot| snapshot.diagnostics.temporary_hotkey.clone());
+        let temporary_hotkey = state::GlobalHotkeyState::diagnostics_snapshot(cx).temporary_hotkey;
         open_shortcut_edit_dialog(
             ShortcutEditMode::Create,
             None,
@@ -268,11 +268,7 @@ impl ShortcutsSettingsPage {
             .as_ref()
             .map(|snapshot| snapshot.shortcuts.clone())
             .unwrap_or_default();
-        let temporary_hotkey = self
-            .snapshot
-            .as_ref()
-            .ok()
-            .and_then(|snapshot| snapshot.diagnostics.temporary_hotkey.clone());
+        let temporary_hotkey = state::GlobalHotkeyState::diagnostics_snapshot(cx).temporary_hotkey;
         open_shortcut_edit_dialog(
             ShortcutEditMode::Edit,
             Some(shortcut),
@@ -401,11 +397,12 @@ impl ShortcutsSettingsPage {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let diagnostics = state::GlobalHotkeyState::diagnostics_snapshot(cx);
         let entries = shortcut_management_rows(
             &snapshot.shortcuts,
             &snapshot.prompts,
             &snapshot.providers,
-            &snapshot.diagnostics,
+            &diagnostics,
             cx.global::<I18n>(),
         );
         let query = self.current_query(cx);
