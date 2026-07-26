@@ -20,18 +20,17 @@ use crate::{
         run_settings::resolve_run_settings,
         run_settings::{RunSettingsController, RunSettingsInput},
     },
-    errors::JacoError,
     foundation, state,
     state::providers::{ProviderModelChoice, ProviderModelKey},
     state::{
         attachments::{ComposerAttachment, ModelAttachmentSupportIssue},
-        config::{ChatFormConfig, ChatFormModelConfig},
+        config::ChatFormModelConfig,
     },
 };
 use gpui::*;
-use gpui_store::StoreBinding;
+use gpui_operation::{Complete, Load, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::{Level, event};
 
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
@@ -109,11 +108,10 @@ pub(crate) struct ChatInputController {
     form: Entity<ChatInputFormStore>,
     run_settings: Entity<RunSettingsController<ChatInputFormStore>>,
     primary_action_state: Entity<PrimaryActionControlState>,
-    chat_form_config: StoreBinding<ChatFormConfig, JacoError>,
     next_attachment_id: u64,
     agent_running: bool,
     skill_catalog_scope: state::skills::SkillCatalogScope,
-    skill_catalog_task: Task<()>,
+    skill_catalog: state::skills::SkillCatalogOperation,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -149,20 +147,18 @@ impl ChatInputController {
         if focus_composer {
             composer.update(cx, |composer, cx| composer.focus(window, cx));
         }
-        if cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
-            let entries = state::skills::catalog(cx).read_cloned(cx, |state| state.entry_records());
-            composer.update(cx, |composer, cx| composer.set_skill_entries(&entries, cx));
+        let mut skill_catalog = state::skills::SkillCatalogOperation::new();
+        skill_catalog.transition(Load(Task::ready(())));
+        skill_catalog.transition(Complete(state::skills::load_catalog(
+            state::skills::SkillCatalogScope::Global,
+        )));
+        if let Some(data) = skill_catalog.data() {
+            composer.update(cx, |composer, cx| {
+                composer.set_skill_entries(data.entries(), cx)
+            });
         }
         let model_choices = load_model_choices(cx);
-        let config_store = state::config::store(cx);
-        let chat_form_config = config_store.bind_committed(
-            cx,
-            |config| config.chat_form.clone(),
-            |config, chat_form| {
-                config.chat_form = chat_form;
-            },
-        );
-        let configured_chat_form = chat_form_config.cloned();
+        let configured_chat_form = state::config::read(cx, |config| config.chat_form.clone());
         let selected_model_key =
             configured_model_key_in(&model_choices, configured_chat_form.model.as_ref());
         let selected_reasoning_selection = initial_reasoning_selection(
@@ -192,23 +188,6 @@ impl ChatInputController {
             },
         );
         let mut subscriptions = vec![composer_subscription];
-
-        if cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
-            let skill_catalog = state::skills::catalog(cx);
-            subscriptions.push(skill_catalog.observe_select_in(
-                cx,
-                window,
-                |catalog_state| catalog_state.entry_records().clone(),
-                |form, entries, _window, cx| {
-                    if matches!(
-                        form.skill_catalog_scope,
-                        state::skills::SkillCatalogScope::Global
-                    ) {
-                        form.apply_skill_catalog_entries(entries.clone(), cx);
-                    }
-                },
-            ));
-        }
 
         let form = cx.new(|cx| {
             ChatInputFormStore::from_value(
@@ -293,11 +272,10 @@ impl ChatInputController {
             form,
             run_settings,
             primary_action_state,
-            chat_form_config,
             next_attachment_id: 1,
             agent_running: false,
             skill_catalog_scope: state::skills::SkillCatalogScope::Global,
-            skill_catalog_task: Task::ready(()),
+            skill_catalog,
             _subscriptions: subscriptions,
         };
 
@@ -335,34 +313,18 @@ impl ChatInputController {
             })
             .unwrap_or(state::skills::SkillCatalogScope::Global);
         self.skill_catalog_scope = scope.clone();
-        match scope {
-            state::skills::SkillCatalogScope::Global => {
-                self.skill_catalog_task = Task::ready(());
-                self.sync_global_skill_catalog(cx);
-            }
-            state::skills::SkillCatalogScope::Project { root } => {
-                self.load_project_skill_catalog(root, cx);
-            }
-        }
+        self.load_skill_catalog(scope, cx);
     }
 
-    fn sync_global_skill_catalog(&mut self, cx: &mut Context<Self>) {
-        if !cx.has_global::<state::skills::GlobalSkillCatalogStore>() {
-            self.apply_skill_catalog_entries(Vec::new(), cx);
-            return;
-        }
-
-        let entries = state::skills::catalog(cx).read_cloned(cx, |state| state.entry_records());
-        self.apply_skill_catalog_entries(entries, cx);
-    }
-
-    fn load_project_skill_catalog(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        let scope = state::skills::SkillCatalogScope::Project { root };
+    fn load_skill_catalog(
+        &mut self,
+        scope: state::skills::SkillCatalogScope,
+        cx: &mut Context<Self>,
+    ) {
         let task_scope = scope.clone();
-        let load =
-            cx.background_spawn(async move { state::skills::load_catalog_entries(task_scope) });
+        let load = cx.background_spawn(async move { state::skills::load_catalog(task_scope) });
 
-        self.skill_catalog_task = cx.spawn(async move |form, cx| {
+        let task = cx.spawn(async move |form, cx| {
             let result = load.await;
             let Some(form) = form.upgrade() else {
                 return;
@@ -371,20 +333,16 @@ impl ChatInputController {
                 if form.skill_catalog_scope != scope {
                     return;
                 }
-
-                match result {
-                    Ok(entries) => form.apply_skill_catalog_entries(entries, cx),
-                    Err(err) => {
-                        event!(
-                            Level::ERROR,
-                            error = ?err,
-                            "load project skill catalog failed"
-                        );
-                        form.apply_skill_catalog_entries(Vec::new(), cx);
-                    }
+                form.skill_catalog.transition(Complete(result));
+                if let Some(data) = form.skill_catalog.data() {
+                    let entries = data.entries().to_vec();
+                    form.apply_skill_catalog_entries(entries, cx);
                 }
+                cx.notify();
             });
         });
+        self.skill_catalog = state::skills::SkillCatalogOperation::new();
+        self.skill_catalog.transition(Load(task));
     }
 
     fn apply_skill_catalog_entries(
@@ -436,13 +394,17 @@ impl ChatInputController {
         let reasoning_selection = settings.reasoning_selection;
         let approval_mode = settings.approval_mode;
 
-        if let Err(err) = self.chat_form_config.try_update(cx, move |config| {
+        let task = state::config::update_chat_form_config(cx, move |config| {
             config.model = model;
             config.reasoning_selection = reasoning_selection;
             config.approval_mode = approval_mode;
-        }) {
-            event!(Level::ERROR, error = ?err, "save chat form config failed");
-        }
+        });
+        cx.spawn(async move |_, _| {
+            if let Err(err) = task.await {
+                event!(Level::ERROR, error = ?err, "save chat form config failed");
+            }
+        })
+        .detach();
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
@@ -515,10 +477,15 @@ impl Render for ChatInputController {
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {
-    if !cx.has_global::<state::providers::ProviderCatalogGlobal>() {
+    if !cx.has_global::<state::providers::ProviderStore>() {
         return Err("provider catalog is unavailable".into());
     }
-    Ok(state::providers::catalog(cx).read_cloned(cx, |snapshot| &snapshot.enabled_models))
+    state::providers::catalog(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|data| data.enabled_models.clone())
+            .ok_or_else(|| "provider catalog is unavailable".into())
+    })
 }
 
 fn selected_model_choice_in<'a>(
@@ -579,7 +546,7 @@ mod tests {
         components::chat_form::{
             SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT, skill_completion_popup_layout,
         },
-        database::{self, FreshStoreGlobal},
+        database,
         foundation::I18n,
         state,
         state::config::ChatFormModelConfig,
@@ -739,16 +706,18 @@ mod tests {
 
         assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
 
-        cx.update(|_, cx| {
+        let task = cx.update(|_, cx| {
             let provider_id = provider_id_for_kind(cx, "openai");
             state::providers::set_provider_model_enabled(
                 cx,
-                &provider_id,
-                &"gpt-5".to_string(),
+                provider_id,
+                "gpt-5".to_string(),
                 false,
             )
-            .unwrap();
         });
+        cx.foreground_executor()
+            .block_test(task)
+            .expect("disable provider model");
 
         // Catalog refreshes update the available options, but must not silently
         // rewrite the form value or choose another model.
@@ -824,7 +793,7 @@ mod tests {
     fn chat_form_initializes_from_config_preferences(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let provider_id = cx.update(|cx| provider_id_for_kind(cx, "openai"));
-        cx.update(|cx| {
+        let task = cx.update(|cx| {
             state::config::update_chat_form_config(cx, |config| {
                 config.model = Some(ChatFormModelConfig {
                     provider_id,
@@ -832,8 +801,10 @@ mod tests {
                 });
                 config.approval_mode = ToolApprovalMode::FullAccess;
             })
-            .unwrap();
         });
+        cx.foreground_executor()
+            .block_test(task)
+            .expect("update chat form config");
 
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -963,13 +934,14 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             let config =
                 state::JacoConfig::load_from_path_for_test(&test_config_path(&dir)).unwrap();
-            state::config::install_for_test(cx, config).expect("install config store");
+            state::config::install_for_test(cx, test_config_path(&dir), config)
+                .expect("install config store");
             crate::foundation::i18n::init(cx);
 
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             repository
                 .replace_fetched_provider_models(
@@ -989,13 +961,14 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             let config =
                 state::JacoConfig::load_from_path_for_test(&test_config_path(&dir)).unwrap();
-            state::config::install_for_test(cx, config).expect("install config store");
+            state::config::install_for_test(cx, test_config_path(&dir), config)
+                .expect("install config store");
             crate::foundation::i18n::init(cx);
 
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             repository
                 .replace_fetched_provider_models(
@@ -1110,7 +1083,7 @@ mod tests {
     }
 
     fn provider_id_for_kind(cx: &App, kind: &str) -> String {
-        database::repository(cx)
+        test_repository(cx)
             .list_providers()
             .unwrap()
             .into_iter()
@@ -1120,16 +1093,23 @@ mod tests {
     }
 
     fn configure_chat_form_model(cx: &mut TestAppContext, model_id: &str) {
-        cx.update(|cx| {
+        let model_id = model_id.to_string();
+        let task = cx.update(|cx| {
             let provider_id = provider_id_for_kind(cx, "openai");
-            state::config::update_chat_form_config(cx, |config| {
+            state::config::update_chat_form_config(cx, move |config| {
                 config.model = Some(ChatFormModelConfig {
                     provider_id,
-                    model_id: model_id.to_string(),
+                    model_id,
                 });
             })
-            .expect("configure chat form model");
         });
+        cx.foreground_executor()
+            .block_test(task)
+            .expect("configure chat form model");
+    }
+
+    fn test_repository(cx: &App) -> jaco_db::FreshRepository {
+        database::with_ready_repository(cx, |repository| Ok(repository.clone())).unwrap()
     }
 
     fn test_config_path(dir: &TempDir) -> PathBuf {

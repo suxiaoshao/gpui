@@ -3,12 +3,12 @@ use crate::{
         APP_NAME, menus,
         title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
-    foundation::{self, I18n, assets::IconName},
+    foundation::{I18n, assets::IconName},
     state,
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    Root, StyledExt, TitleBar, WindowExt as NotificationWindowExt, h_flex,
+    ActiveTheme, Root, StyledExt, TitleBar, WindowExt as NotificationWindowExt, h_flex,
     input::{InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
@@ -92,6 +92,9 @@ impl SettingsView {
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let config_store = state::config::store(cx);
+        let database_store = crate::database::store(cx);
+        let binding = crate::database::ready_binding(cx)
+            .expect("settings is only constructed for an exact Ready session");
         let _subscriptions = vec![
             cx.subscribe_in(
                 &settings_search_input,
@@ -124,20 +127,20 @@ impl SettingsView {
             config_store.observe_select_in(
                 cx,
                 window,
-                |config| {
-                    (
-                        config.app_settings.language,
-                        config.app_settings.theme.clone(),
-                    )
-                },
+                state::selectors::SelectAppPresentation::current(cx),
                 |this, _settings, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
                     state::theme::apply_current_theme(window, cx);
                     this.reload_app_menu_bar(cx);
                     cx.refresh_windows();
                 },
             ),
+            database_store.observe_in(cx, window, move |_settings, _resource, window, cx| {
+                if crate::database::retained_binding(cx).as_ref() != Some(&binding) {
+                    window.remove_window();
+                } else {
+                    cx.notify();
+                }
+            }),
         ];
         Self {
             focus_handle,
@@ -256,7 +259,7 @@ impl Render for SettingsView {
         let select_view = cx.entity().downgrade();
         window.set_window_title(&settings_title);
 
-        v_flex()
+        let content = v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)
             .size_full()
@@ -298,7 +301,26 @@ impl Render for SettingsView {
                 ),
             )
             .children(dialog_layer)
-            .children(notification_layer)
+            .children(notification_layer);
+        if crate::database::is_ready(cx) {
+            content.into_any_element()
+        } else {
+            div()
+                .relative()
+                .size_full()
+                .child(content)
+                .child(
+                    v_flex()
+                        .absolute()
+                        .inset_0()
+                        .items_center()
+                        .justify_center()
+                        .p_8()
+                        .bg(cx.theme().background.opacity(0.92))
+                        .child(cx.global::<I18n>().t("critical-read-only-description")),
+                )
+                .into_any_element()
+        }
     }
 }
 
@@ -315,6 +337,10 @@ fn open_settings_window_to(
     selected_page: Option<SettingsPageKey>,
     cx: &mut App,
 ) {
+    if !crate::database::is_ready(cx) {
+        crate::app::show_or_create_main_window(cx);
+        return;
+    }
     let span = tracing::info_span!("open_jaco_settings_window");
     let _guard = span.enter();
     let exists_settings = cx.windows().iter().find_map(|window| {

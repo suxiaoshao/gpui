@@ -1,6 +1,7 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
-use gpui::App;
+use gpui::{App, Task};
+use gpui_operation::refresh;
 use jaco_agent::{AgentRunRequest, SkillActivationRequest};
 use jaco_core::{
     AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
@@ -10,10 +11,12 @@ use jaco_core::{
     ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole, new_id,
 };
 use jaco_db::{
-    ConversationEntryRecord, ConversationRecord, ConversationTimelineRecords,
-    ConversationWithUserItemRecord, FreshRepository, NewConversation, NewConversationEntry,
-    NewConversationWithUserItem, ProjectRecord,
+    ConversationEntryRecord, ConversationIndexDelta, ConversationRecord,
+    ConversationTimelineRecords, ConversationWithUserItemRecord, CreatedConversationTransaction,
+    FreshRepository, NewConversation, NewConversationEntry, NewConversationTransaction,
+    NewConversationWithUserItem, ProjectRecord, SendConversationTransaction,
 };
+use tokio::sync::oneshot;
 
 use crate::{
     database,
@@ -21,10 +24,11 @@ use crate::{
     foundation::I18n,
     state::{
         attachments::{
-            ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments,
+            ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
         },
-        projects,
+        config, conversation_index, projects,
         providers::ProviderModelChoice,
+        session::CatalogMutation,
     },
 };
 
@@ -64,24 +68,90 @@ pub(crate) struct CreatedConversation {
 
 pub(crate) struct SentConversationMessage {
     pub(crate) item: ConversationEntryRecord,
+    pub(crate) conversation: ConversationRecord,
     pub(crate) run_request: AgentRunRequest,
 }
 
 pub(crate) type ConversationLoadSnapshot = ConversationTimelineRecords;
+pub(crate) type ConversationTimelineOperation =
+    refresh::Operation<Option<ConversationLoadSnapshot>, ConversationTimelineProblem, Task<()>>;
+
+#[derive(Debug)]
+pub(crate) struct ConversationTimelineProblem(jaco_db::DbError);
+
+impl fmt::Display for ConversationTimelineProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ConversationTimelineProblem {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<jaco_db::DbError> for ConversationTimelineProblem {
+    fn from(error: jaco_db::DbError) -> Self {
+        Self(error)
+    }
+}
 
 pub(crate) fn create_conversation(
     request: CreateConversationRequest,
     cx: &mut App,
-) -> JacoResult<CreatedConversation> {
-    let repository = database::repository(cx);
-    let provider = repository
-        .get_provider(&request.provider_model.provider_id)?
-        .ok_or_else(|| {
-            jaco_db::DbError::Invariant(format!(
-                "provider {} is missing",
-                request.provider_model.provider_id
-            ))
-        })?;
+) -> Task<JacoResult<CreatedConversation>> {
+    if !conversation_index::is_ready(cx) {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation index is not ready".to_string(),
+        )
+        .into()));
+    }
+    let provider =
+        match crate::state::providers::ready_provider(&request.provider_model.provider_id, cx) {
+            Ok(provider) => provider,
+            Err(error) => return Task::ready(Err(error.into())),
+        };
+    let (project_id, new_project, scratch_path) = match request.project_id.as_ref() {
+        Some(project_id) => {
+            let project = projects::catalog(cx).read(cx, |operation| match operation {
+                projects::ProjectOperation::Ready(ready) => ready
+                    .data()
+                    .projects()
+                    .iter()
+                    .find(|project| &project.id == project_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        jaco_db::DbError::Invariant(format!("project {project_id} is missing"))
+                    }),
+                _ => Err(jaco_db::DbError::Invariant(
+                    "project resource is not ready".to_string(),
+                )),
+            });
+            match project {
+                Ok(project) => (project.id, None, None),
+                Err(error) => return Task::ready(Err(error.into())),
+            }
+        }
+        None => match projects::prepare_anonymous_scratch_project(cx) {
+            Ok((id, path, project)) => (id.clone(), Some((id, project)), Some(path)),
+            Err(error) => return Task::ready(Err(error)),
+        },
+    };
+    let data_dir = match config::data_dir(cx) {
+        Ok(path) => path,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let Some(binding) = database::ready_binding(cx) else {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation create requires an exact Ready session".to_string(),
+        )
+        .into()));
+    };
+    let executor = match database::ready_executor(cx) {
+        Ok(executor) => executor,
+        Err(error) => return Task::ready(Err(error.into())),
+    };
     let mut tool_policy = default_tool_policy();
     tool_policy.approval_mode = request.approval_mode;
     let settings_snapshot = conversation_settings_snapshot(
@@ -90,18 +160,9 @@ pub(crate) fn create_conversation(
         tool_policy.clone(),
     );
     let conversation_id = new_id();
-    let prepared_attachments =
-        prepare_message_attachments(&conversation_id, &new_id(), &request.attachments, cx)?;
-    let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
-    let project = match project_for_new_conversation(request.project_id.as_ref(), cx) {
-        Ok(project) => project,
-        Err(err) => {
-            cleanup_stored_attachment_files(&attachment_cleanup_paths);
-            return Err(err);
-        }
-    };
+    let entry_id = new_id();
     let conversation = NewConversation {
-        project_id: project.id.clone(),
+        project_id,
         title: conversation_title(&request.title_seed, cx.global::<I18n>()),
         pinned: false,
         prompt_id: request.prompt_id.clone(),
@@ -111,99 +172,218 @@ pub(crate) fn create_conversation(
         settings_snapshot,
     };
     let user_item = new_user_message_item(conversation_id.clone(), request.content_parts.clone());
-    let record = match repository.insert_conversation_with_user_item_with_id_and_attachments(
-        conversation_id,
-        NewConversationWithUserItem {
-            conversation,
-            user_item,
-        },
-        prepared_attachments.new_attachments,
-    ) {
-        Ok(record) => record,
-        Err(err) => {
-            cleanup_stored_attachment_files(&attachment_cleanup_paths);
-            return Err(err.into());
+    let attachments = request.attachments.clone();
+    let run_input = request;
+    let (sender, receiver) = oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = executor
+            .mutate_two(
+                CatalogMutation::Project,
+                CatalogMutation::Conversation,
+                move |repository| {
+                    if let Some(path) = scratch_path.as_ref() {
+                        std::fs::create_dir_all(path)
+                            .map_err(|error| jaco_db::DbError::Invariant(error.to_string()))?;
+                    }
+                    let prepared = match prepare_message_attachments_in(
+                        data_dir,
+                        &conversation_id,
+                        &entry_id,
+                        &attachments,
+                    ) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            if let Some(path) = scratch_path.as_ref() {
+                                let _ = std::fs::remove_dir_all(path);
+                            }
+                            return Err(jaco_db::DbError::Invariant(error.to_string()));
+                        }
+                    };
+                    let cleanup = prepared.stored_paths.clone();
+                    let result =
+                        repository.create_conversation_transaction(NewConversationTransaction {
+                            new_project,
+                            conversation_id,
+                            conversation: NewConversationWithUserItem {
+                                conversation,
+                                user_item,
+                            },
+                            attachments: prepared.new_attachments,
+                        });
+                    if result.is_err() {
+                        cleanup_stored_attachment_files(&cleanup);
+                        if let Some(path) = scratch_path.as_ref() {
+                            let _ = std::fs::remove_dir_all(path);
+                        }
+                    }
+                    result
+                },
+            )
+            .await
+            .map(|transaction: CreatedConversationTransaction| {
+                let run_request = build_run_request(RunRequestContext {
+                    conversation_id: &transaction.record.conversation.id,
+                    trigger_entry_id: &transaction.record.user_item.id,
+                    project: &transaction.project,
+                    provider_settings: &provider.settings,
+                    provider_model: run_input.provider_model,
+                    reasoning_selection: run_input.reasoning_selection,
+                    skill_requests: run_input.skill_requests,
+                    prompt_snapshot: run_input.prompt_snapshot,
+                    trigger_kind: run_input.trigger_kind,
+                    tool_policy,
+                });
+                (transaction, run_request)
+            });
+        if let Ok((transaction, _)) = &result {
+            cx.update(|cx| {
+                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                    projects::publish_project(transaction.project.clone(), cx);
+                    conversation_index::publish(transaction.record.conversation.clone(), cx);
+                }
+            });
         }
-    };
-    update_last_active_conversation(&project, &record.conversation.id, cx)?;
-    let run_request = build_run_request(RunRequestContext {
-        conversation_id: &record.conversation.id,
-        trigger_entry_id: &record.user_item.id,
-        project: &project,
-        provider_settings: &provider.settings,
-        provider_model: request.provider_model,
-        reasoning_selection: request.reasoning_selection,
-        skill_requests: request.skill_requests,
-        prompt_snapshot: request.prompt_snapshot,
-        trigger_kind: request.trigger_kind,
-        tool_policy,
-    });
-
-    Ok(CreatedConversation {
-        record,
-        run_request,
+        let result = result
+            .map(|(transaction, run_request)| CreatedConversation {
+                record: transaction.record,
+                run_request,
+            })
+            .map_err(Into::into);
+        let _ = sender.send(result);
+    })
+    .detach();
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(jaco_db::DbError::Invariant(
+                "conversation create driver ended without a result".to_string(),
+            )
+            .into())
+        })
     })
 }
 
 pub(crate) fn send_conversation_message(
     request: SendConversationMessageRequest,
     cx: &mut App,
-) -> JacoResult<SentConversationMessage> {
-    let repository = database::repository(cx);
-    let conversation = repository
-        .get_conversation(&request.conversation_id)?
-        .ok_or_else(|| {
-            jaco_db::DbError::Invariant(format!(
-                "conversation {} is missing",
-                request.conversation_id
-            ))
-        })?;
-    let project = repository
-        .get_project(&conversation.project_id)?
-        .ok_or_else(|| {
-            jaco_db::DbError::Invariant(format!("project {} is missing", conversation.project_id))
-        })?;
-    let provider = repository
-        .get_provider(&request.provider_model.provider_id)?
-        .ok_or_else(|| {
-            jaco_db::DbError::Invariant(format!(
-                "provider {} is missing",
-                request.provider_model.provider_id
-            ))
-        })?;
-    let prompt_snapshot = follow_up_prompt_snapshot(&conversation, &repository)?;
-    let prepared_attachments =
-        prepare_message_attachments(&conversation.id, &new_id(), &request.attachments, cx)?;
-    let attachment_cleanup_paths = prepared_attachments.stored_paths.clone();
-    let item = match repository.append_conversation_entry_with_attachments(
-        new_user_message_item(conversation.id.clone(), request.content_parts.clone()),
-        prepared_attachments.new_attachments,
-    ) {
-        Ok(item) => item,
-        Err(err) => {
-            cleanup_stored_attachment_files(&attachment_cleanup_paths);
-            return Err(err.into());
-        }
+) -> Task<JacoResult<SentConversationMessage>> {
+    if !conversation_index::is_ready(cx) {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation index is not ready".to_string(),
+        )
+        .into()));
+    }
+    let provider =
+        match crate::state::providers::ready_provider(&request.provider_model.provider_id, cx) {
+            Ok(provider) => provider,
+            Err(error) => return Task::ready(Err(error.into())),
+        };
+    let data_dir = match config::data_dir(cx) {
+        Ok(path) => path,
+        Err(error) => return Task::ready(Err(error)),
     };
-    update_last_active_conversation(&project, &conversation.id, cx)?;
-    let run_request = build_run_request(RunRequestContext {
-        conversation_id: &conversation.id,
-        trigger_entry_id: &item.id,
-        project: &project,
-        provider_settings: &provider.settings,
-        provider_model: request.provider_model,
-        reasoning_selection: request.reasoning_selection,
-        skill_requests: request.skill_requests,
-        prompt_snapshot,
-        trigger_kind: AgentRunTriggerKind::User,
-        tool_policy: {
-            let mut tool_policy = default_tool_policy();
-            tool_policy.approval_mode = request.approval_mode;
-            tool_policy
-        },
-    });
-
-    Ok(SentConversationMessage { item, run_request })
+    let Some(binding) = database::ready_binding(cx) else {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation send requires an exact Ready session".to_string(),
+        )
+        .into()));
+    };
+    let executor = match database::ready_executor(cx) {
+        Ok(executor) => executor,
+        Err(error) => return Task::ready(Err(error.into())),
+    };
+    let conversation_id = request.conversation_id.clone();
+    let entry_id = new_id();
+    let attachments = request.attachments.clone();
+    let content_parts = request.content_parts.clone();
+    let (sender, receiver) = oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = executor
+            .mutate_two(
+                CatalogMutation::Project,
+                CatalogMutation::Conversation,
+                move |repository| {
+                    let conversation =
+                        repository
+                            .get_conversation(&conversation_id)?
+                            .ok_or_else(|| {
+                                jaco_db::DbError::Invariant(format!(
+                                    "conversation {conversation_id} is missing"
+                                ))
+                            })?;
+                    let prompt_snapshot = follow_up_prompt_snapshot(&conversation, repository)?;
+                    let prepared = prepare_message_attachments_in(
+                        data_dir,
+                        &conversation_id,
+                        &entry_id,
+                        &attachments,
+                    )
+                    .map_err(|error| jaco_db::DbError::Invariant(error.to_string()))?;
+                    let cleanup = prepared.stored_paths.clone();
+                    let result = repository
+                        .send_conversation_transaction(SendConversationTransaction {
+                            entry: new_user_message_item(conversation_id, content_parts),
+                            attachments: prepared.new_attachments,
+                        })
+                        .map(|transaction| (transaction, prompt_snapshot));
+                    if result.is_err() {
+                        cleanup_stored_attachment_files(&cleanup);
+                    }
+                    result
+                },
+            )
+            .await
+            .map(|(transaction, prompt_snapshot)| {
+                let item = transaction.commit.value.clone();
+                let run_request = build_run_request(RunRequestContext {
+                    conversation_id: &transaction.commit.conversation.id,
+                    trigger_entry_id: &item.id,
+                    project: &transaction.project,
+                    provider_settings: &provider.settings,
+                    provider_model: request.provider_model,
+                    reasoning_selection: request.reasoning_selection,
+                    skill_requests: request.skill_requests,
+                    prompt_snapshot,
+                    trigger_kind: AgentRunTriggerKind::User,
+                    tool_policy: {
+                        let mut tool_policy = default_tool_policy();
+                        tool_policy.approval_mode = request.approval_mode;
+                        tool_policy
+                    },
+                });
+                let sent = SentConversationMessage {
+                    item,
+                    conversation: transaction.commit.conversation.clone(),
+                    run_request,
+                };
+                (transaction, sent)
+            });
+        if let Ok((transaction, _)) = &result {
+            cx.update(|cx| {
+                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                    projects::publish_project(transaction.project.clone(), cx);
+                    conversation_index::publish_committed(
+                        transaction.commit.conversation.clone(),
+                        transaction.commit.index_delta.clone(),
+                        cx,
+                    );
+                }
+            });
+        }
+        let _ = sender.send(
+            result
+                .map(|(_, sent)| sent)
+                .map_err(crate::errors::JacoError::from),
+        );
+    })
+    .detach();
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(jaco_db::DbError::Invariant(
+                "conversation send driver ended without a result".to_string(),
+            )
+            .into())
+        })
+    })
 }
 
 fn follow_up_prompt_snapshot(
@@ -222,26 +402,86 @@ fn follow_up_prompt_snapshot(
         .map(|prompt| prompt.content))
 }
 
-pub(crate) fn load_conversation(
-    conversation_id: &ConversationId,
-    cx: &App,
-) -> jaco_db::Result<Option<ConversationLoadSnapshot>> {
-    database::repository(cx).conversation_timeline_records(conversation_id)
+pub(crate) fn set_conversation_pinned(
+    conversation_id: ConversationId,
+    pinned: bool,
+    cx: &mut App,
+) -> Task<jaco_db::Result<ConversationRecord>> {
+    spawn_conversation_mutation(
+        cx,
+        move |repository| repository.set_conversation_pinned(&conversation_id, pinned),
+        |conversation, cx| {
+            conversation_index::publish_committed(
+                conversation.clone(),
+                ConversationIndexDelta::PresentationChanged {
+                    id: conversation.id.clone(),
+                    title: None,
+                    pinned: Some(conversation.pinned),
+                    status: None,
+                    updated_at: conversation.updated_at,
+                },
+                cx,
+            );
+        },
+    )
 }
 
-fn project_for_new_conversation(
-    project_id: Option<&ProjectId>,
+pub(crate) fn delete_conversation(
+    conversation_id: ConversationId,
     cx: &mut App,
-) -> JacoResult<ProjectRecord> {
-    if let Some(project_id) = project_id {
-        return database::repository(cx)
-            .get_project(project_id)?
-            .ok_or_else(|| {
-                jaco_db::DbError::Invariant(format!("project {project_id} is missing")).into()
-            });
-    }
+) -> Task<jaco_db::Result<ConversationRecord>> {
+    let removed_id = conversation_id.clone();
+    spawn_conversation_mutation(
+        cx,
+        move |repository| repository.soft_delete_conversation(&conversation_id),
+        move |_conversation, cx| conversation_index::publish_removed(removed_id, cx),
+    )
+}
 
-    projects::create_anonymous_scratch_project(cx)
+fn spawn_conversation_mutation<R>(
+    cx: &mut App,
+    command: impl FnOnce(&FreshRepository) -> jaco_db::Result<R> + Send + 'static,
+    publish: impl FnOnce(&R, &mut App) + Send + 'static,
+) -> Task<jaco_db::Result<R>>
+where
+    R: Send + 'static,
+{
+    if !conversation_index::is_ready(cx) {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation index is not ready".to_string(),
+        )));
+    }
+    let Some(binding) = database::ready_binding(cx) else {
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation mutation requires an exact Ready session".to_string(),
+        )));
+    };
+    let executor = match database::ready_executor(cx) {
+        Ok(executor) => executor,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let (sender, receiver) = oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = executor
+            .mutate(CatalogMutation::Conversation, command)
+            .await;
+        if let Ok(value) = &result {
+            cx.update(|cx| {
+                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                    publish(value, cx);
+                }
+            });
+        }
+        let _ = sender.send(result);
+    })
+    .detach();
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(jaco_db::DbError::Invariant(
+                "conversation mutation driver ended without a result".to_string(),
+            ))
+        })
+    })
 }
 
 fn new_user_message_item(
@@ -341,17 +581,6 @@ fn empty_conversation_metadata() -> ConversationMetadata {
     }
 }
 
-fn update_last_active_conversation(
-    project: &ProjectRecord,
-    conversation_id: &ConversationId,
-    cx: &App,
-) -> jaco_db::Result<()> {
-    let mut metadata = project.metadata.clone();
-    metadata.last_active_conversation_id = Some(conversation_id.clone());
-    database::repository(cx).update_project_metadata(&project.id, metadata)?;
-    Ok(())
-}
-
 fn conversation_title(seed: &str, i18n: &I18n) -> String {
     let title = seed.lines().next().unwrap_or_default().trim();
     if title.is_empty() {
@@ -368,7 +597,7 @@ fn conversation_title(seed: &str, i18n: &I18n) -> String {
 mod tests {
     use super::*;
     use crate::{
-        database::{self, FreshStoreGlobal},
+        database,
         foundation::I18n,
         state::{
             JacoConfig,
@@ -402,7 +631,7 @@ mod tests {
     fn send_message_does_not_persist_user_item_when_attachment_copy_fails(cx: &mut TestAppContext) {
         let dir = init_conversations_test(cx);
         let (conversation_id, provider_model, initial_item_count) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
             let conversation_id = insert_conversation(&repository, &provider_model);
@@ -412,9 +641,10 @@ mod tests {
                 .len();
             (conversation_id, provider_model, initial_item_count)
         });
+        init_conversation_resources(cx);
         let missing_path = dir.path().join("missing-attachment.txt");
 
-        let result = cx.update(|cx| {
+        let task = cx.update(|cx| {
             send_conversation_message(
                 SendConversationMessageRequest {
                     conversation_id: conversation_id.clone(),
@@ -439,10 +669,11 @@ mod tests {
                 cx,
             )
         });
+        let result = cx.foreground_executor().block_test(task);
 
         assert!(result.is_err());
         cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             assert_eq!(
                 repository
                     .conversation_entries(&conversation_id)
@@ -465,13 +696,14 @@ mod tests {
     ) {
         let dir = init_conversations_test(cx);
         let provider_model = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             provider_model_choice(&provider.id)
         });
+        init_conversation_resources(cx);
         let missing_path = dir.path().join("missing-new-conversation.txt");
 
-        let result = cx.update(|cx| {
+        let task = cx.update(|cx| {
             create_conversation(
                 CreateConversationRequest {
                     project_id: None,
@@ -500,11 +732,12 @@ mod tests {
                 cx,
             )
         });
+        let result = cx.foreground_executor().block_test(task);
 
         assert!(result.is_err());
         cx.update(|cx| {
             assert!(
-                database::repository(cx)
+                test_repository(cx)
                     .list_sidebar_conversations()
                     .unwrap()
                     .is_empty()
@@ -516,7 +749,7 @@ mod tests {
     fn send_message_reuses_conversation_prompt_snapshot(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
             let prompt = repository
@@ -540,25 +773,25 @@ mod tests {
             );
             (conversation_id, provider_model, expected_prompt)
         });
+        init_conversation_resources(cx);
 
-        let sent = cx
-            .update(|cx| {
-                send_conversation_message(
-                    SendConversationMessageRequest {
-                        conversation_id,
-                        content_parts: vec![ContentPart::Text {
-                            text: "follow up".to_string(),
-                        }],
-                        attachments: Vec::new(),
-                        skill_requests: Vec::new(),
-                        provider_model,
-                        reasoning_selection: None,
-                        approval_mode: ToolApprovalMode::RequestApproval,
-                    },
-                    cx,
-                )
-            })
-            .unwrap();
+        let task = cx.update(|cx| {
+            send_conversation_message(
+                SendConversationMessageRequest {
+                    conversation_id,
+                    content_parts: vec![ContentPart::Text {
+                        text: "follow up".to_string(),
+                    }],
+                    attachments: Vec::new(),
+                    skill_requests: Vec::new(),
+                    provider_model,
+                    reasoning_selection: None,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                },
+                cx,
+            )
+        });
+        let sent = cx.foreground_executor().block_test(task).unwrap();
 
         assert_eq!(
             sent.run_request.prompt_snapshot,
@@ -574,7 +807,7 @@ mod tests {
     fn send_message_falls_back_to_prompt_id_when_snapshot_is_missing(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
             let prompt = repository
@@ -596,25 +829,25 @@ mod tests {
             );
             (conversation_id, provider_model, expected_prompt)
         });
+        init_conversation_resources(cx);
 
-        let sent = cx
-            .update(|cx| {
-                send_conversation_message(
-                    SendConversationMessageRequest {
-                        conversation_id,
-                        content_parts: vec![ContentPart::Text {
-                            text: "follow up".to_string(),
-                        }],
-                        attachments: Vec::new(),
-                        skill_requests: Vec::new(),
-                        provider_model,
-                        reasoning_selection: None,
-                        approval_mode: ToolApprovalMode::RequestApproval,
-                    },
-                    cx,
-                )
-            })
-            .unwrap();
+        let task = cx.update(|cx| {
+            send_conversation_message(
+                SendConversationMessageRequest {
+                    conversation_id,
+                    content_parts: vec![ContentPart::Text {
+                        text: "follow up".to_string(),
+                    }],
+                    attachments: Vec::new(),
+                    skill_requests: Vec::new(),
+                    provider_model,
+                    reasoning_selection: None,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                },
+                cx,
+            )
+        });
+        let sent = cx.foreground_executor().block_test(task).unwrap();
 
         assert_eq!(
             sent.run_request.prompt_snapshot,
@@ -629,14 +862,29 @@ mod tests {
     fn init_conversations_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             let mut config =
                 JacoConfig::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
             config.storage.data_dir = Some(dir.path().join("data"));
-            crate::state::config::install_for_test(cx, config).unwrap();
+            crate::state::config::install_for_test(cx, dir.path().join("config.toml"), config)
+                .unwrap();
             crate::foundation::i18n::init(cx);
         });
         dir
+    }
+
+    fn init_conversation_resources(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::state::providers::init(cx);
+            crate::state::projects::init(cx);
+            crate::state::prompts::init(cx);
+            crate::state::conversation_index::init(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn test_repository(cx: &App) -> jaco_db::FreshRepository {
+        database::with_ready_repository(cx, |repository| Ok(repository.clone())).unwrap()
     }
 
     fn insert_conversation(

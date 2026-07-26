@@ -6,4 +6,5 @@ pub(crate) mod hotkey_input;
 pub(crate) mod image_preview;
 pub(crate) mod model_picker;
 pub(crate) mod picker;
+pub(crate) mod resource_status;
 pub(crate) mod run_settings;

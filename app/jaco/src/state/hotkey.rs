@@ -1,8 +1,13 @@
-use std::{collections::BTreeMap, str::FromStr, time::SystemTime};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+    time::SystemTime,
+};
 
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::{
-    AnyWindowHandle, App, BorrowAppContext, Global, Image, ImageFormat, SharedString, Task,
+    AnyWindowHandle, App, AppContext, BorrowAppContext, Context, Entity, Global, Image,
+    ImageFormat, SharedString, Subscription, Task,
 };
 use gpui_component::{
     Root, WindowExt as NotificationWindowExt,
@@ -19,7 +24,6 @@ use tracing::{Level, event};
 use crate::{
     app::{menus::ToggleTemporaryConversation, temporary_window},
     components::run_settings::reasoning_selection_is_valid,
-    database,
     errors::{JacoError, JacoResult},
     features::screenshot::overlay as screenshot_overlay,
     foundation::I18n,
@@ -29,6 +33,7 @@ use crate::{
         attachments::{ComposerAttachment, generated_image_attachment},
         config,
         providers::ProviderModelChoice,
+        selectors::{SelectShortcutRegistrations, SelectTemporaryHotkey, ShortcutRegistration},
     },
 };
 
@@ -107,6 +112,17 @@ pub(crate) struct GlobalHotkeyState {
 
 impl Global for GlobalHotkeyState {}
 
+struct HotkeyResourceObserver {
+    _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct HotkeyResourceObserverGlobal {
+    _observer: Entity<HotkeyResourceObserver>,
+}
+
+impl Global for HotkeyResourceObserverGlobal {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HotkeyPressDiagnostics {
     pub(crate) hotkey_id: u32,
@@ -177,7 +193,6 @@ pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
             .registration_errors
             .insert("manager".to_string(), err);
     }
-    hotkeys.load_initial_shortcuts(cx)?;
     event!(
         Level::INFO,
         temporary_hotkey = ?hotkeys.temporary_hotkey,
@@ -186,7 +201,60 @@ pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
         "initialized jaco global hotkeys"
     );
     cx.set_global(hotkeys);
+    let observer = cx.new(HotkeyResourceObserver::new);
+    cx.set_global(HotkeyResourceObserverGlobal {
+        _observer: observer,
+    });
     Ok(())
+}
+
+pub(crate) fn shutdown(cx: &mut App) {
+    if !cx.has_global::<GlobalHotkeyState>() {
+        return;
+    }
+    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| hotkeys.shutdown_runtime());
+}
+
+impl HotkeyResourceObserver {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let config_store = config::store(cx);
+        let shortcut_store = state::shortcuts::catalog(cx);
+        let temporary =
+            config_store.observe_select(cx, SelectTemporaryHotkey, |_observer, temporary, cx| {
+                if crate::app::is_shutting_down() {
+                    return;
+                }
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+                    let previous = hotkeys.temporary_hotkey.clone();
+                    if let Err(error) = hotkeys
+                        .update_temporary_hotkey_runtime(previous.as_deref(), temporary.as_deref())
+                    {
+                        event!(
+                            Level::ERROR,
+                            ?error,
+                            "reconcile temporary hotkey resource failed"
+                        );
+                    }
+                });
+            });
+        let shortcuts = shortcut_store.observe_select(
+            cx,
+            SelectShortcutRegistrations,
+            |_observer, registrations, cx| {
+                if crate::app::is_shutting_down() {
+                    return;
+                }
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+                    hotkeys.reconcile_shortcut_registrations(
+                        registrations.as_deref().unwrap_or_default(),
+                    );
+                });
+            },
+        );
+        Self {
+            _subscriptions: vec![temporary, shortcuts],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +276,31 @@ impl GlobalHotkeyState {
             last_pressed: None,
             _task: task,
         }
+    }
+
+    fn shutdown_runtime(&mut self) {
+        let registered = self
+            .temporary_hotkey
+            .iter()
+            .chain(self.registered_shortcuts.values())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for binding in registered {
+            let result =
+                Self::parse_hotkey(&binding).and_then(|hotkey| self.backend.unregister(hotkey));
+            if let Err(error) = result {
+                event!(
+                    Level::ERROR,
+                    hotkey = %binding,
+                    ?error,
+                    "unregister jaco hotkey during shutdown failed"
+                );
+            }
+        }
+        self.temporary_hotkey = None;
+        self.registered_shortcuts.clear();
+        self.hotkey_actions.clear();
+        self.registration_errors.clear();
     }
 
     fn parse_hotkey(hotkey: &str) -> JacoResult<HotKey> {
@@ -261,23 +354,6 @@ impl GlobalHotkeyState {
         Ok(())
     }
 
-    fn load_initial_shortcuts(&mut self, cx: &mut App) -> JacoResult<()> {
-        if let Some(hotkey) = config::app_settings(cx)
-            .temporary_hotkey()
-            .map(str::to_string)
-            && let Err(err) = self.register_temporary_hotkey(hotkey)
-        {
-            event!(Level::ERROR, error = ?err, "failed to load temporary hotkey");
-        }
-
-        let shortcuts = database::repository(cx).list_shortcuts()?;
-        for shortcut in shortcuts {
-            self.register_shortcut(shortcut);
-        }
-
-        Ok(())
-    }
-
     fn register_temporary_hotkey(&mut self, hotkey: String) -> JacoResult<()> {
         let result = self.register_action(&hotkey, RegisteredHotkeyAction::TemporaryConversation);
 
@@ -296,6 +372,7 @@ impl GlobalHotkeyState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn update_temporary_hotkey(
         old_hotkey: Option<&str>,
         new_hotkey: Option<&str>,
@@ -376,9 +453,52 @@ impl GlobalHotkeyState {
         Ok(())
     }
 
-    fn register_shortcut(&mut self, shortcut: ShortcutRecord) {
-        if let Err(err) = self.upsert_shortcut_runtime(None, &shortcut) {
-            crate::state::shortcuts::log_shortcut_runtime_sync_error(&shortcut.id, err);
+    fn reconcile_shortcut_registrations(&mut self, desired: &[ShortcutRegistration]) {
+        let desired_by_id = desired
+            .iter()
+            .map(|registration| (registration.id.clone(), registration))
+            .collect::<BTreeMap<_, _>>();
+        let existing = self.registered_shortcuts.clone();
+        for (shortcut_id, hotkey) in existing {
+            let keep = desired_by_id
+                .get(&shortcut_id)
+                .is_some_and(|desired| desired.enabled && desired.hotkey == hotkey);
+            if !keep {
+                let action = RegisteredHotkeyAction::Shortcut {
+                    shortcut_id: shortcut_id.clone(),
+                };
+                if let Err(error) = self.unregister_action(&hotkey, action) {
+                    self.registration_errors
+                        .insert(shortcut_id.clone(), error.to_string());
+                    continue;
+                }
+                self.registered_shortcuts.remove(&shortcut_id);
+            }
+        }
+
+        for registration in desired.iter().filter(|registration| registration.enabled) {
+            if self.registered_shortcuts.get(&registration.id) == Some(&registration.hotkey) {
+                self.registration_errors.remove(&registration.id);
+                continue;
+            }
+            let action = RegisteredHotkeyAction::Shortcut {
+                shortcut_id: registration.id.clone(),
+            };
+            match self.register_action(&registration.hotkey, action) {
+                Ok(()) => {
+                    self.registered_shortcuts
+                        .insert(registration.id.clone(), registration.hotkey.clone());
+                    self.registration_errors.remove(&registration.id);
+                }
+                Err(error) => {
+                    self.registration_errors
+                        .insert(registration.id.clone(), error.to_string());
+                    crate::state::shortcuts::log_shortcut_runtime_sync_error(
+                        &registration.id,
+                        error,
+                    );
+                }
+            }
         }
     }
 
@@ -549,14 +669,21 @@ impl GlobalHotkeyState {
         shortcut_id: ShortcutId,
         cx: &App,
     ) -> JacoResult<Option<ShortcutTriggerContext>> {
-        let Some(shortcut) = database::repository(cx).get_shortcut(&shortcut_id)? else {
-            event!(
-                Level::ERROR,
-                shortcut_id = %shortcut_id,
-                "shortcut hotkey was pressed but shortcut record is missing"
-            );
-            return Ok(None);
-        };
+        let shortcut = state::shortcuts::catalog(cx).read(cx, |operation| match operation {
+            state::shortcuts::ShortcutOperation::Ready(ready) => ready
+                .data()
+                .shortcuts()
+                .iter()
+                .find(|shortcut| shortcut.id == shortcut_id)
+                .cloned()
+                .ok_or_else(|| {
+                    jaco_db::DbError::Invariant(format!("shortcut {shortcut_id} is missing"))
+                }),
+            _ => Err(jaco_db::DbError::Invariant(
+                "shortcut resource is not ready".to_string(),
+            )),
+        });
+        let shortcut = shortcut?;
         if !shortcut.enabled {
             event!(
                 Level::INFO,
@@ -577,12 +704,20 @@ impl GlobalHotkeyState {
 
         let prompt_snapshot = match shortcut.prompt_id.as_ref() {
             Some(prompt_id) => {
-                let Some(prompt) = database::repository(cx).get_prompt(prompt_id)? else {
-                    return Err(jaco_db::DbError::Invariant(format!(
-                        "prompt {prompt_id} is missing"
-                    ))
-                    .into());
-                };
+                let prompt = state::prompts::catalog(cx).read(cx, |operation| match operation {
+                    state::prompts::PromptOperation::Ready(ready) => ready
+                        .data()
+                        .prompts()
+                        .iter()
+                        .find(|prompt| &prompt.id == prompt_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            jaco_db::DbError::Invariant(format!("prompt {prompt_id} is missing"))
+                        }),
+                    _ => Err(jaco_db::DbError::Invariant(
+                        "prompt resource is not ready".to_string(),
+                    )),
+                })?;
                 if !prompt.enabled {
                     return Err(jaco_db::DbError::Invariant(format!(
                         "prompt {prompt_id} is disabled"
@@ -753,8 +888,8 @@ impl GlobalHotkeyState {
             vec![attachment],
             title_seed,
             cx,
-        )?;
-        self.finish_shortcut_trigger(created, cx);
+        );
+        Self::finish_shortcut_creation(created, cx);
         Ok(())
     }
 
@@ -765,17 +900,9 @@ impl GlobalHotkeyState {
         content_parts: Vec<ContentPart>,
         cx: &mut App,
     ) {
-        let result =
+        let task =
             self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
-        match result {
-            Ok(created) => self.finish_shortcut_trigger(created, cx),
-            Err(err) => self.push_notification(
-                "notify-shortcut-trigger-model-unavailable-title",
-                err.to_string(),
-                NotificationType::Error,
-                cx,
-            ),
-        }
+        Self::finish_shortcut_creation(task, cx);
     }
 
     fn create_shortcut_conversation(
@@ -785,7 +912,7 @@ impl GlobalHotkeyState {
         attachments: Vec<ComposerAttachment>,
         title_seed: String,
         cx: &mut App,
-    ) -> JacoResult<state::conversations::CreatedConversation> {
+    ) -> Task<JacoResult<state::conversations::CreatedConversation>> {
         if let Some(selection) = trigger
             .shortcut
             .settings_snapshot
@@ -796,9 +923,9 @@ impl GlobalHotkeyState {
                 selection,
             )
         {
-            return Err(JacoError::Window(
+            return Task::ready(Err(JacoError::Window(
                 "shortcut reasoning setting is not supported by the selected model".to_string(),
-            ));
+            )));
         }
         state::conversations::create_conversation(
             state::conversations::CreateConversationRequest {
@@ -820,6 +947,25 @@ impl GlobalHotkeyState {
             },
             cx,
         )
+    }
+
+    fn finish_shortcut_creation(
+        task: Task<JacoResult<state::conversations::CreatedConversation>>,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |cx| {
+            let result = task.await;
+            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match result {
+                Ok(created) => hotkeys.finish_shortcut_trigger(created, cx),
+                Err(error) => hotkeys.push_notification(
+                    "notify-shortcut-trigger-model-unavailable-title",
+                    error.to_string(),
+                    NotificationType::Error,
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     fn finish_shortcut_trigger(

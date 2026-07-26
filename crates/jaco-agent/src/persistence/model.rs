@@ -62,6 +62,7 @@ where
         };
         let provider_step = context
             .insert_provider_step(&request)
+            .await
             .map_err(completion_request_error)?;
 
         let response = tokio::select! {
@@ -70,6 +71,7 @@ where
                 let payload = run_error("canceled", "runtime canceled", false, None);
                 context
                     .cancel_provider_step(&provider_step.id, payload)
+                    .await
                     .map_err(completion_request_error)?;
                 return Err(completion_request_error(AgentRuntimeError::Canceled));
             }
@@ -79,6 +81,7 @@ where
             let payload = run_error("canceled", "runtime canceled", false, None);
             context
                 .cancel_provider_step(&provider_step.id, payload)
+                .await
                 .map_err(completion_request_error)?;
             return Err(completion_request_error(AgentRuntimeError::Canceled));
         }
@@ -87,12 +90,13 @@ where
             Ok(response) => {
                 context
                     .finish_provider_step(&provider_step.id, &response)
+                    .await
                     .map_err(completion_request_error)?;
                 Ok(response)
             }
             Err(error) => {
                 let payload = run_error("provider_error", error.to_string(), true, None);
-                let _ = context.fail_provider_step(&provider_step.id, payload);
+                let _ = context.fail_provider_step(&provider_step.id, payload).await;
                 Err(error)
             }
         }
@@ -110,6 +114,7 @@ where
         };
         let provider_step = context
             .insert_provider_step(&request)
+            .await
             .map_err(completion_request_error)?;
         let response = tokio::select! {
             biased;
@@ -117,6 +122,7 @@ where
                 let payload = run_error("canceled", "runtime canceled", false, None);
                 context
                     .cancel_provider_step(&provider_step.id, payload)
+                    .await
                     .map_err(completion_request_error)?;
                 return Err(completion_request_error(AgentRuntimeError::Canceled));
             }
@@ -126,6 +132,7 @@ where
             let payload = run_error("canceled", "runtime canceled", false, None);
             context
                 .cancel_provider_step(&provider_step.id, payload)
+                .await
                 .map_err(completion_request_error)?;
             return Err(completion_request_error(AgentRuntimeError::Canceled));
         }
@@ -133,7 +140,7 @@ where
             Ok(response) => Ok(response),
             Err(error) => {
                 let payload = run_error("provider_error", error.to_string(), true, None);
-                let _ = context.fail_provider_step(&provider_step.id, payload);
+                let _ = context.fail_provider_step(&provider_step.id, payload).await;
                 Err(error)
             }
         }

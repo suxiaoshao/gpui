@@ -4,23 +4,21 @@ use std::{
     path::PathBuf,
 };
 
-use gpui::{App, AppContext, Context, Entity, Global, SharedString, Subscription};
-use gpui_store::SharedStore;
+use gpui::{App, AppContext, Context, Entity, SharedString, Subscription, Task};
+use gpui_store::StoreSelection;
 use jaco_core::{ConversationId, ConversationStatus, ProjectId, ProjectKind};
 use jaco_db::{ConversationRecord, ProjectRecord};
 
-use crate::{database, state::projects};
-
-#[derive(Clone)]
-pub(crate) struct WorkspaceStoreGlobal(Entity<JacoWorkspaceStore>);
-
-impl WorkspaceStoreGlobal {
-    pub(crate) fn entity(&self) -> Entity<JacoWorkspaceStore> {
-        self.0.clone()
-    }
-}
-
-impl Global for WorkspaceStoreGlobal {}
+use crate::{
+    database,
+    state::{
+        conversation_index, projects,
+        selectors::{
+            SelectWorkspaceConversations, SelectWorkspaceProjects, WorkspaceConversationInput,
+            WorkspaceProjectInput,
+        },
+    },
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HomeRoute {
@@ -77,29 +75,41 @@ pub(crate) struct JacoWorkspaceStore {
     snapshot: SidebarSnapshot,
     expanded_project_ids: HashSet<ProjectId>,
     pending_new_conversation_project_id: Option<ProjectId>,
-    last_error: Option<String>,
+    projects: StoreSelection<Option<Vec<WorkspaceProjectInput>>>,
+    conversations: StoreSelection<Option<Vec<WorkspaceConversationInput>>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl JacoWorkspaceStore {
     fn new(
-        project_catalog: SharedStore<projects::ProjectCatalogSnapshot>,
+        project_catalog: projects::ProjectStore,
+        conversation_catalog: conversation_index::ConversationIndexStore,
         cx: &mut Context<Self>,
     ) -> Self {
+        let projects = project_catalog.select(cx, SelectWorkspaceProjects);
+        let conversations = conversation_catalog.select(cx, SelectWorkspaceConversations);
         let mut store = Self {
             route: HomeRoute::NewConversation,
             snapshot: SidebarSnapshot::default(),
             expanded_project_ids: HashSet::new(),
             pending_new_conversation_project_id: None,
-            last_error: None,
+            projects,
+            conversations,
             _subscriptions: Vec::new(),
         };
-        store._subscriptions.push(
-            cx.observe(&project_catalog.entity(), |store, _catalog, cx| {
-                store.reload_sidebar(cx);
-            }),
-        );
-        store.reload_sidebar(cx);
+        store._subscriptions.push(project_catalog.observe_select(
+            cx,
+            SelectWorkspaceProjects,
+            |store, _, cx| store.rebuild_sidebar(cx),
+        ));
+        store
+            ._subscriptions
+            .push(conversation_catalog.observe_select(
+                cx,
+                SelectWorkspaceConversations,
+                |store, _, cx| store.rebuild_sidebar(cx),
+            ));
+        store.rebuild_sidebar(cx);
         store
     }
 
@@ -111,20 +121,16 @@ impl JacoWorkspaceStore {
         &self.snapshot
     }
 
-    pub(crate) fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
-    }
-
-    pub(crate) fn reload_sidebar(&mut self, cx: &mut Context<Self>) {
-        match build_sidebar_snapshot(&self.expanded_project_ids, cx) {
-            Ok(snapshot) => {
-                self.snapshot = snapshot;
-                self.last_error = None;
-            }
-            Err(err) => {
-                self.last_error = Some(err.to_string());
-            }
-        }
+    fn rebuild_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.snapshot = self.projects.read(|projects| {
+            self.conversations.read(|conversations| {
+                build_sidebar_snapshot(
+                    &self.expanded_project_ids,
+                    projects.as_deref().unwrap_or_default(),
+                    conversations.as_deref().unwrap_or_default(),
+                )
+            })
+        });
         cx.notify();
     }
 
@@ -161,33 +167,33 @@ impl JacoWorkspaceStore {
         if !self.expanded_project_ids.insert(project_id.clone()) {
             self.expanded_project_ids.remove(project_id);
         }
-        self.reload_sidebar(cx);
+        self.rebuild_sidebar(cx);
     }
 
     pub(crate) fn pin_project(
         &mut self,
-        project_id: &ProjectId,
+        project_id: ProjectId,
         pinned: bool,
         cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
+    ) -> Task<jaco_db::Result<ProjectRecord>> {
         projects::set_project_pinned(project_id, pinned, cx)
     }
 
     pub(crate) fn rename_project(
         &mut self,
-        project_id: &ProjectId,
+        project_id: ProjectId,
         display_name: String,
         cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
+    ) -> Task<jaco_db::Result<ProjectRecord>> {
         projects::rename_project(project_id, display_name, cx)
     }
 
     pub(crate) fn remove_project(
         &mut self,
-        project_id: &ProjectId,
+        project_id: ProjectId,
         cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ProjectRecord> {
-        if self.route_belongs_to_project(project_id, cx) {
+    ) -> Task<jaco_db::Result<ProjectRecord>> {
+        if self.route_belongs_to_project(&project_id, cx) {
             self.route = HomeRoute::NewConversation;
         }
         projects::set_project_removed(project_id, true, cx)
@@ -195,76 +201,122 @@ impl JacoWorkspaceStore {
 
     pub(crate) fn pin_conversation(
         &mut self,
-        conversation_id: &ConversationId,
+        conversation_id: ConversationId,
         pinned: bool,
         cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ConversationRecord> {
-        let conversation =
-            database::repository(cx).set_conversation_pinned(conversation_id, pinned)?;
-        self.reload_sidebar(cx);
-        Ok(conversation)
+    ) -> Task<jaco_db::Result<ConversationRecord>> {
+        super::conversations::set_conversation_pinned(conversation_id, pinned, cx)
     }
 
     pub(crate) fn delete_conversation(
         &mut self,
-        conversation_id: &ConversationId,
+        conversation_id: ConversationId,
         cx: &mut Context<Self>,
-    ) -> jaco_db::Result<ConversationRecord> {
-        let conversation = database::repository(cx).soft_delete_conversation(conversation_id)?;
-        if matches!(&self.route, HomeRoute::Conversation(id) if id == conversation_id) {
+    ) -> Task<jaco_db::Result<ConversationRecord>> {
+        if matches!(&self.route, HomeRoute::Conversation(id) if id == &conversation_id) {
             self.route = HomeRoute::NewConversation;
         }
-        self.reload_sidebar(cx);
-        Ok(conversation)
+        super::conversations::delete_conversation(conversation_id, cx)
     }
 
     pub(crate) fn search_conversations(
         &self,
-        query: &str,
+        query: String,
         limit: usize,
-        cx: &App,
-    ) -> jaco_db::Result<Vec<SidebarSearchResult>> {
-        let repository = database::repository(cx);
-        let project_by_id = visible_project_headers(cx)?;
-        Ok(repository
-            .search_sidebar_conversations(query, limit)?
-            .into_iter()
-            .map(|conversation| SidebarSearchResult {
-                project: project_by_id.get(&conversation.project_id).cloned(),
-                conversation: conversation_node(conversation),
-            })
-            .collect())
+        cx: &mut Context<Self>,
+    ) -> Task<jaco_db::Result<Vec<SidebarSearchResult>>> {
+        let project_by_id = self.visible_project_headers();
+        if query.is_empty() {
+            let results =
+                self.snapshot
+                    .projects
+                    .iter()
+                    .flat_map(|project| {
+                        project.conversations.iter().cloned().map(|conversation| {
+                            SidebarSearchResult {
+                                project: Some(project.project.clone()),
+                                conversation,
+                            }
+                        })
+                    })
+                    .chain(self.snapshot.no_project_conversations.iter().cloned().map(
+                        |conversation| SidebarSearchResult {
+                            project: None,
+                            conversation,
+                        },
+                    ))
+                    .take(limit)
+                    .collect();
+            return Task::ready(Ok(results));
+        }
+        let executor = match database::ready_executor(cx) {
+            Ok(executor) => executor,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        cx.spawn(async move |_, _| {
+            executor
+                .execute(move |repo| repo.search_sidebar_conversations(&query, limit))
+                .await
+                .map(|conversations| {
+                    conversations
+                        .into_iter()
+                        .map(|conversation| SidebarSearchResult {
+                            project: project_by_id.get(&conversation.project_id).cloned(),
+                            conversation: SidebarConversationNode {
+                                id: conversation.id,
+                                project_id: conversation.project_id,
+                                title: conversation.title.into(),
+                                updated_at: conversation.updated_at.unix_timestamp_nanos(),
+                                pinned: conversation.pinned,
+                            },
+                        })
+                        .collect()
+                })
+        })
     }
 
-    fn route_belongs_to_project(&self, project_id: &ProjectId, cx: &App) -> bool {
+    fn route_belongs_to_project(&self, project_id: &ProjectId, _cx: &App) -> bool {
         let HomeRoute::Conversation(conversation_id) = &self.route else {
             return false;
         };
 
-        database::repository(cx)
-            .get_conversation(conversation_id)
-            .ok()
-            .flatten()
-            .is_some_and(|conversation| &conversation.project_id == project_id)
+        self.conversations.read(|conversations| {
+            conversations
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|conversation| &conversation.id == conversation_id)
+                .is_some_and(|conversation| &conversation.project_id == project_id)
+        })
+    }
+
+    fn visible_project_headers(&self) -> HashMap<ProjectId, SidebarProjectHeader> {
+        self.projects.read(|projects| {
+            projects
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|project| (project.id.clone(), project_header(project)))
+                .collect()
+        })
     }
 }
 
-pub(crate) fn init(cx: &mut App) {
+pub(crate) fn create(cx: &mut App) -> Entity<JacoWorkspaceStore> {
     let project_catalog = projects::catalog(cx);
-    let store = cx.new(|cx| JacoWorkspaceStore::new(project_catalog, cx));
-    cx.set_global(WorkspaceStoreGlobal(store));
+    let conversation_catalog = conversation_index::catalog(cx);
+    cx.new(|cx| JacoWorkspaceStore::new(project_catalog, conversation_catalog, cx))
 }
 
 pub(crate) fn workspace(cx: &App) -> Entity<JacoWorkspaceStore> {
-    cx.global::<WorkspaceStoreGlobal>().entity()
+    crate::app::ready_workspace(cx).expect("workspace requires a ready main-window session")
 }
 
 fn build_sidebar_snapshot(
     expanded_project_ids: &HashSet<ProjectId>,
-    cx: &App,
-) -> jaco_db::Result<SidebarSnapshot> {
-    let repository = database::repository(cx);
-    let visible_projects = repository.list_visible_projects()?;
+    visible_projects: &[WorkspaceProjectInput],
+    sidebar_conversations: &[WorkspaceConversationInput],
+) -> SidebarSnapshot {
     let mut normal_projects = visible_projects
         .iter()
         .filter(|project| project.kind == ProjectKind::Normal)
@@ -290,7 +342,10 @@ fn build_sidebar_snapshot(
         HashMap::new();
     let mut no_project_conversations = Vec::new();
 
-    for conversation in repository.list_sidebar_conversations()? {
+    for conversation in sidebar_conversations
+        .iter()
+        .filter(|conversation| conversation.status == ConversationStatus::Active)
+    {
         let node = conversation_node(conversation);
         if normal_project_ids.contains(&node.project_id) {
             conversations_by_project
@@ -340,33 +395,39 @@ fn build_sidebar_snapshot(
         .chain(pinned_projects.into_iter().map(SidebarPinnedEntry::Project))
         .collect();
 
-    Ok(SidebarSnapshot {
+    SidebarSnapshot {
         pinned,
         projects,
         no_project_conversations,
-    })
+    }
 }
 
-fn visible_project_headers(cx: &App) -> jaco_db::Result<HashMap<ProjectId, SidebarProjectHeader>> {
-    Ok(database::repository(cx)
-        .list_visible_projects()?
-        .into_iter()
-        .map(|project| (project.id.clone(), project_header(&project)))
-        .collect())
-}
-
-fn project_header(project: &ProjectRecord) -> SidebarProjectHeader {
+fn project_header(project: &WorkspaceProjectInput) -> SidebarProjectHeader {
     SidebarProjectHeader {
         id: project.id.clone(),
-        path: PathBuf::from(&project.path),
+        path: project.path.clone(),
         display_name: project.display_name.clone().into(),
-        updated_at: project.updated_at.unix_timestamp_nanos(),
+        updated_at: project.updated_at,
         pinned: project.pinned,
     }
 }
 
-pub(crate) fn conversation_node(conversation: ConversationRecord) -> SidebarConversationNode {
+pub(crate) fn conversation_node(
+    conversation: &WorkspaceConversationInput,
+) -> SidebarConversationNode {
     debug_assert_eq!(conversation.status, ConversationStatus::Active);
+    SidebarConversationNode {
+        id: conversation.id.clone(),
+        project_id: conversation.project_id.clone(),
+        title: conversation.title.clone().into(),
+        updated_at: conversation.updated_at,
+        pinned: conversation.pinned,
+    }
+}
+
+pub(crate) fn conversation_record_node(
+    conversation: ConversationRecord,
+) -> SidebarConversationNode {
     SidebarConversationNode {
         id: conversation.id,
         project_id: conversation.project_id,

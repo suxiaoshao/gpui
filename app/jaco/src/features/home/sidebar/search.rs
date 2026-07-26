@@ -6,12 +6,15 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Selectable, Sizable, WindowExt, h_flex,
+    ActiveTheme, Icon, IndexPath, Selectable, Sizable, WindowExt,
+    button::Button,
+    h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
     label::Label,
     list::{List, ListDelegate, ListState},
     v_flex,
 };
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_core::ConversationId;
 
 const CONTEXT: &str = "jaco_conversation_search";
@@ -213,6 +216,8 @@ impl ListDelegate for ConversationSearchDelegate {
 pub(crate) struct ConversationSearchView {
     search_input: Entity<InputState>,
     results: Entity<ListState<ConversationSearchDelegate>>,
+    query: String,
+    operation: refresh::Operation<Vec<SidebarSearchResult>, jaco_db::DbError, Task<()>>,
     _search_input_subscription: Subscription,
 }
 
@@ -224,13 +229,19 @@ impl ConversationSearchView {
         });
         let _search_input_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        let results = Self::build_list("", window, cx);
-
-        Self {
+        let results = Self::build_list(Vec::new(), window, cx);
+        let view = Self {
             search_input,
             results,
+            query: String::new(),
+            operation: refresh::Operation::new(),
             _search_input_subscription,
-        }
+        };
+        let entity = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            let _ = entity.update(cx, |view, cx| view.reload(window, cx));
+        });
+        view
     }
 
     fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,7 +250,7 @@ impl ConversationSearchView {
     }
 
     fn build_list(
-        query: &str,
+        items: Vec<SidebarSearchResult>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ListState<ConversationSearchDelegate>> {
@@ -247,10 +258,6 @@ impl ConversationSearchView {
             .global::<I18n>()
             .t("sidebar-section-no-project-conversations")
             .into();
-        let items = state::workspace::workspace(cx)
-            .read(cx)
-            .search_conversations(query, SEARCH_RESULT_LIMIT, cx)
-            .unwrap_or_default();
         let on_confirm: OnConfirm = Rc::new(|conversation_id, window, cx| {
             state::workspace::workspace(cx).update(cx, |workspace, cx| {
                 workspace.open_conversation(conversation_id.clone(), cx);
@@ -283,7 +290,42 @@ impl ConversationSearchView {
         if !matches!(event, InputEvent::Change) {
             return;
         }
-        self.results = Self::build_list(&self.current_query(cx), window, cx);
+        self.query = self.current_query(cx);
+        if self.operation.is_running() {
+            self.operation.transition(Cancel);
+        }
+        self.reload(window, cx);
+    }
+
+    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.query.clone();
+        let search = state::workspace::workspace(cx).update(cx, |workspace, cx| {
+            workspace.search_conversations(query.clone(), SEARCH_RESULT_LIMIT, cx)
+        });
+        let view = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let result = search.await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                if view.query != query || !view.operation.is_running() {
+                    return;
+                }
+                view.operation.transition(Complete(result));
+                let items = view.operation.data().cloned().unwrap_or_default();
+                view.results = Self::build_list(items, window, cx);
+                cx.notify();
+            });
+        });
+        match &self.operation {
+            refresh::Operation::Idle(_) => self.operation.transition(Load(task)),
+            refresh::Operation::Ready(_) | refresh::Operation::Degraded(_) => {
+                self.operation.transition(Refresh(task))
+            }
+            refresh::Operation::Unavailable(_) => self.operation.transition(Retry(task)),
+            refresh::Operation::Loading(_)
+            | refresh::Operation::Refreshing(_)
+            | refresh::Operation::Retrying(_)
+            | refresh::Operation::RefreshingDegraded(_) => {}
+        }
         cx.notify();
     }
 
@@ -324,6 +366,7 @@ impl ConversationSearchView {
 impl Render for ConversationSearchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let no_results = cx.global::<I18n>().t("sidebar-search-no-results");
+        let error = self.operation.problem().map(ToString::to_string);
         let count = item_count(self.results.read(cx), cx);
 
         v_flex()
@@ -355,7 +398,23 @@ impl Render for ConversationSearchView {
                     ),
             )
             .map(|this| {
-                if count == 0 {
+                if let Some(error) = error {
+                    this.child(
+                        v_flex()
+                            .flex_1()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .child(Label::new(error).text_sm().text_color(cx.theme().danger))
+                            .child(
+                                Button::new("conversation-search-retry")
+                                    .label(cx.global::<I18n>().t("resource-status-refresh"))
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.reload(window, cx);
+                                    })),
+                            ),
+                    )
+                } else if count == 0 {
                     this.child(
                         v_flex().flex_1().items_center().justify_center().child(
                             Label::new(no_results)

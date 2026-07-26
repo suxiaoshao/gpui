@@ -1410,7 +1410,7 @@ mod tests {
         let config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
 
         cx.update(|cx| {
-            config::install_for_test(cx, config).expect("install config store");
+            config::install_for_test(cx, path.clone(), config).expect("install config store");
             let store = cx.new(McpRuntimeStore::new);
             store.update(cx, |store, cx| {
                 let server_id = "draft-oauth".to_string();
@@ -1449,7 +1449,7 @@ mod tests {
         let config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
 
         cx.update(|cx| {
-            config::install_for_test(cx, config).expect("install config store");
+            config::install_for_test(cx, path.clone(), config).expect("install config store");
             let store = cx.new(McpRuntimeStore::new);
             store.update(cx, |store, cx| {
                 let draft_key = "__draft".to_string();
@@ -1493,11 +1493,12 @@ mod tests {
     fn oauth_credentials_write_result_updates_status(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
-        let config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
+        let mut config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
+        config
+            .mcp_servers
+            .insert("server".to_string(), oauth_http_server());
         cx.update(|cx| {
-            config::install_for_test(cx, config).expect("install config store");
-            config::upsert_mcp_server(cx, None, "server".to_string(), oauth_http_server())
-                .expect("create MCP server");
+            config::install_for_test(cx, path.clone(), config).expect("install config store");
             let store = cx.new(McpRuntimeStore::new);
             store.update(cx, |store, cx| {
                 let status = McpOAuthStatusSnapshot::Authorized {

@@ -44,13 +44,27 @@ pub(super) fn project_popup_menu(
             } else {
                 IconName::Pin
             })
-            .on_click(move |_, _window, cx| {
+            .on_click(move |_, window, cx| {
                 let workspace = state::workspace::workspace(cx);
                 let project_id = project_for_pin.id.clone();
                 let pinned = !project_for_pin.pinned;
-                let _ = workspace.update(cx, |workspace, cx| {
-                    workspace.pin_project(&project_id, pinned, cx)
+                let task = workspace.update(cx, |workspace, cx| {
+                    workspace.pin_project(project_id, pinned, cx)
                 });
+                window
+                    .spawn(cx, async move |cx| {
+                        if let Err(error) = task.await {
+                            let _ = cx.update(|window, cx| {
+                                push_sidebar_error(
+                                    window,
+                                    cx,
+                                    cx.global::<I18n>().t("sidebar-project-pin-failed"),
+                                    error.to_string(),
+                                );
+                            });
+                        }
+                    })
+                    .detach();
             }),
     )
     .item(
@@ -96,16 +110,23 @@ pub(super) fn open_delete_conversation_confirm(
         DestructiveAction::Delete,
         move |window, cx| {
             let workspace = state::workspace::workspace(cx);
-            if let Err(err) = workspace.update(cx, |workspace, cx| {
-                workspace.delete_conversation(&conversation_id, cx)
-            }) {
-                push_sidebar_error(
-                    window,
-                    cx,
-                    cx.global::<I18n>().t("sidebar-delete-conversation-failed"),
-                    err.to_string(),
-                );
-            }
+            let task = workspace.update(cx, |workspace, cx| {
+                workspace.delete_conversation(conversation_id.clone(), cx)
+            });
+            window
+                .spawn(cx, async move |cx| {
+                    if let Err(err) = task.await {
+                        let _ = cx.update(|window, cx| {
+                            push_sidebar_error(
+                                window,
+                                cx,
+                                cx.global::<I18n>().t("sidebar-delete-conversation-failed"),
+                                err.to_string(),
+                            );
+                        });
+                    }
+                })
+                .detach();
         },
         window,
         cx,
@@ -156,22 +177,28 @@ fn open_rename_project_dialog(project: SidebarProjectHeader, window: &mut Window
                                             return;
                                         }
                                         let workspace = state::workspace::workspace(cx);
-                                        match workspace.update(cx, |workspace, cx| {
+                                        let task = workspace.update(cx, |workspace, cx| {
                                             workspace.rename_project(
-                                                &project_id,
+                                                project_id.clone(),
                                                 display_name.clone(),
                                                 cx,
                                             )
-                                        }) {
-                                            Ok(_) => window.close_dialog(cx),
-                                            Err(err) => push_sidebar_error(
-                                                window,
-                                                cx,
-                                                cx.global::<I18n>()
-                                                    .t("sidebar-rename-project-failed"),
-                                                err.to_string(),
-                                            ),
-                                        }
+                                        });
+                                        window
+                                            .spawn(cx, async move |cx| {
+                                                let result = task.await;
+                                                let _ = cx.update(|window, cx| match result {
+                                                    Ok(_) => window.close_dialog(cx),
+                                                    Err(err) => push_sidebar_error(
+                                                        window,
+                                                        cx,
+                                                        cx.global::<I18n>()
+                                                            .t("sidebar-rename-project-failed"),
+                                                        err.to_string(),
+                                                    ),
+                                                });
+                                            })
+                                            .detach();
                                     }
                                 }),
                         ),
@@ -199,16 +226,23 @@ fn open_remove_project_confirm(project: SidebarProjectHeader, window: &mut Windo
         DestructiveAction::Delete,
         move |window, cx| {
             let workspace = state::workspace::workspace(cx);
-            if let Err(err) = workspace.update(cx, |workspace, cx| {
-                workspace.remove_project(&project_id, cx)
-            }) {
-                push_sidebar_error(
-                    window,
-                    cx,
-                    cx.global::<I18n>().t("sidebar-remove-project-failed"),
-                    err.to_string(),
-                );
-            }
+            let task = workspace.update(cx, |workspace, cx| {
+                workspace.remove_project(project_id.clone(), cx)
+            });
+            window
+                .spawn(cx, async move |cx| {
+                    if let Err(err) = task.await {
+                        let _ = cx.update(|window, cx| {
+                            push_sidebar_error(
+                                window,
+                                cx,
+                                cx.global::<I18n>().t("sidebar-remove-project-failed"),
+                                err.to_string(),
+                            );
+                        });
+                    }
+                })
+                .detach();
         },
         window,
         cx,

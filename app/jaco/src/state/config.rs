@@ -1,8 +1,6 @@
-use gpui::{App, AppContext};
-use gpui_store::{
-    SharedStore, StoreBackend, StoreBackendFuture, StoreBackendId, StoreCommitAck,
-    StoreCommitBackend, StoreState,
-};
+use gpui::{App, AppContext, Task};
+use gpui_operation::{Complete, Load, Refresh, Repair, Transition, repair};
+use gpui_store::Store;
 use jaco_core::{
     AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
     ProviderModelId, ReasoningSelectionSnapshot, ToolApprovalMode, default_tool_approval_mode,
@@ -13,13 +11,16 @@ use std::{
     ffi::OsString,
     fs,
     io::ErrorKind,
+    ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tracing::{Level, event};
+use tokio::sync::oneshot;
 
 use crate::{
     app::APP_NAME,
     errors::{JacoError, JacoResult},
+    state::persistence,
 };
 
 mod mcp;
@@ -42,56 +43,153 @@ pub(crate) struct JacoConfig {
     pub(crate) app_settings: AppSettingsConfig,
     pub(crate) chat_form: ChatFormConfig,
     pub(crate) mcp_servers: BTreeMap<String, McpServerTomlConfig>,
-    #[serde(skip)]
-    load_error: Option<JacoConfigLoadError>,
-    #[serde(skip)]
-    config_path: Option<PathBuf>,
 }
 
-impl StoreState for JacoConfig {}
-
-pub(crate) type JacoConfigStore = SharedStore<JacoConfig, JacoConfigBackend>;
+pub(crate) type ConfigOperation =
+    repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
+pub(crate) type JacoConfigStore = Store<ConfigOperation>;
 
 #[derive(Clone, Debug)]
-pub(crate) struct JacoConfigBackend {
+pub(crate) struct ConfigData {
+    value: JacoConfig,
     path: PathBuf,
+    source_bytes: Vec<u8>,
+    data_dir: PathBuf,
 }
 
-impl JacoConfigBackend {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
+impl ConfigData {
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct JacoConfigLoadError {
-    path: PathBuf,
-    message: String,
+impl Deref for ConfigData {
+    type Target = JacoConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 
-impl JacoConfigLoadError {
-    fn new(path: PathBuf, error: toml::de::Error) -> Self {
-        Self {
-            path,
-            message: error.to_string(),
+#[derive(Clone, Debug)]
+pub(crate) struct PendingConfig {
+    data: ConfigData,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigBackupIntent {
+    CreateDefault,
+    OverwritePending,
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum ConfigProblem {
+    #[error("could not resolve the configuration directory: {message}")]
+    ResolveDirectory { message: String },
+    #[error("could not read {path}: {message}")]
+    Read { path: PathBuf, message: String },
+    #[error("could not parse {path}: {message}")]
+    Parse { path: PathBuf, message: String },
+    #[error("could not derive the database target from {path}: {message}")]
+    Target { path: PathBuf, message: String },
+    #[error("another Jaco process is writing {path}: {message}")]
+    Locked { path: PathBuf, message: String },
+    #[error("{path} changed outside Jaco")]
+    ExternalChange {
+        path: PathBuf,
+        pending: Arc<PendingConfig>,
+    },
+    #[error("could not write {path}: {message}")]
+    Write {
+        path: PathBuf,
+        message: String,
+        pending: Arc<PendingConfig>,
+    },
+    #[error("could not back up {path}: {message}")]
+    Backup {
+        path: PathBuf,
+        message: String,
+        intent: ConfigBackupIntent,
+        pending: Option<Arc<PendingConfig>>,
+    },
+    #[error("the backup at {backup_path} succeeded, but writing {path} failed: {message}")]
+    WriteAfterBackup {
+        path: PathBuf,
+        backup_path: PathBuf,
+        message: String,
+        intent: ConfigBackupIntent,
+        pending: Option<Arc<PendingConfig>>,
+    },
+}
+
+impl ConfigProblem {
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Read { path, .. }
+            | Self::Parse { path, .. }
+            | Self::Target { path, .. }
+            | Self::Locked { path, .. }
+            | Self::ExternalChange { path, .. }
+            | Self::Write { path, .. }
+            | Self::Backup { path, .. }
+            | Self::WriteAfterBackup { path, .. } => path,
+            Self::ResolveDirectory { .. } => Path::new(""),
         }
     }
 
-    pub(crate) fn path_display(&self) -> String {
-        self.path.display().to_string()
+    pub(crate) fn supports(&self, repair: ConfigRepair) -> bool {
+        match repair {
+            ConfigRepair::Reload => true,
+            ConfigRepair::RetryWrite => {
+                matches!(self, Self::Write { .. } | Self::WriteAfterBackup { .. })
+            }
+            ConfigRepair::BackupAndCreateDefault => matches!(
+                self,
+                Self::Parse { .. }
+                    | Self::Target { .. }
+                    | Self::Backup {
+                        intent: ConfigBackupIntent::CreateDefault,
+                        ..
+                    }
+            ),
+            ConfigRepair::BackupAndOverwritePending => matches!(
+                self,
+                Self::ExternalChange { .. }
+                    | Self::Backup {
+                        intent: ConfigBackupIntent::OverwritePending,
+                        ..
+                    }
+            ),
+        }
     }
 
-    pub(crate) fn message(&self) -> &str {
-        &self.message
+    fn pending(&self) -> Option<Arc<PendingConfig>> {
+        match self {
+            Self::ExternalChange { pending, .. } | Self::Write { pending, .. } => {
+                Some(pending.clone())
+            }
+            Self::Backup { pending, .. } | Self::WriteAfterBackup { pending, .. } => {
+                pending.clone()
+            }
+            _ => None,
+        }
     }
 
-    fn save_blocked_message(&self) -> String {
-        format!(
-            "config.toml is invalid; fix {} before saving settings: {}",
-            self.path.display(),
-            self.message
-        )
+    fn backup_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::WriteAfterBackup { backup_path, .. } => Some(backup_path.clone()),
+            _ => None,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigRepair {
+    Reload,
+    RetryWrite,
+    BackupAndCreateDefault,
+    BackupAndOverwritePending,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -167,77 +265,10 @@ impl PartialEq for JacoConfig {
             && self.app_settings == other.app_settings
             && self.chat_form == other.chat_form
             && self.mcp_servers == other.mcp_servers
-            && self.load_error == other.load_error
-    }
-}
-
-impl StoreBackend<JacoConfig> for JacoConfigBackend {
-    type Snapshot = JacoConfig;
-    type Event = ();
-    type Subscription = ();
-    type Error = JacoError;
-
-    fn backend_id(&self) -> StoreBackendId {
-        StoreBackendId::new(format!("file:{}", self.path.display()))
-    }
-
-    fn load(&self) -> StoreBackendFuture<Option<Self::Snapshot>, Self::Error> {
-        Ok(Some(JacoConfig::load_or_create_from_path(&self.path)?))
-    }
-
-    fn reconcile(&self, state: &mut JacoConfig, snapshot: Self::Snapshot) -> bool {
-        if *state == snapshot {
-            return false;
-        }
-
-        *state = snapshot;
-        true
-    }
-}
-
-impl StoreCommitBackend<JacoConfig> for JacoConfigBackend {
-    fn commit_snapshot(
-        &self,
-        draft: &JacoConfig,
-    ) -> StoreBackendFuture<Option<StoreCommitAck<Self::Snapshot>>, Self::Error> {
-        if let Some(load_error) = draft.load_error.as_ref() {
-            return Err(JacoError::Config(load_error.save_blocked_message()));
-        }
-
-        draft.save_to_path(&self.path)?;
-        Ok(Some(StoreCommitAck::with_snapshot(draft.clone())))
     }
 }
 
 impl JacoConfig {
-    fn load_or_create_from_path(path: &Path) -> JacoResult<Self> {
-        match fs::read_to_string(path) {
-            Ok(source) => match toml::from_str::<Self>(&source) {
-                Ok(mut config) => {
-                    config.config_path = Some(path.to_path_buf());
-                    Ok(config)
-                }
-                Err(err) => {
-                    event!(Level::ERROR, error = ?err, "parse jaco config.toml failed");
-                    Ok(Self {
-                        load_error: Some(JacoConfigLoadError::new(path.to_path_buf(), err)),
-                        config_path: Some(path.to_path_buf()),
-                        ..Default::default()
-                    })
-                }
-            },
-            Err(err) if err.kind() == ErrorKind::NotFound => {
-                let config = Self {
-                    config_path: Some(path.to_path_buf()),
-                    ..Default::default()
-                };
-                config.save_to_path(path)?;
-                Ok(config)
-            }
-            Err(err) => Err(err.into()),
-        }
-    }
-
     pub(crate) fn path() -> JacoResult<PathBuf> {
         Ok(Self::config_dir()?.join(CONFIG_FILE_NAME))
     }
@@ -253,54 +284,26 @@ impl JacoConfig {
         Ok(dir)
     }
 
-    pub(crate) fn data_dir(&self) -> JacoResult<PathBuf> {
-        match self.storage.data_dir.as_ref() {
-            Some(path) => Ok(path.clone()),
-            None => Self::config_dir(),
-        }
-    }
-
     pub(crate) fn app_settings_payload(&self) -> AppSettingsPayload {
         self.app_settings.payload()
     }
 
     #[cfg(test)]
-    fn save(&self) -> JacoResult<()> {
-        let path = match self.config_path.as_ref() {
-            Some(path) => path.clone(),
-            None => Self::path()?,
-        };
-        self.save_to_path(&path)
-    }
-
-    fn save_to_path(&self, path: &Path) -> JacoResult<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, toml::to_string_pretty(self)?)?;
-        Ok(())
-    }
-
-    #[cfg(test)]
     pub(crate) fn with_app_settings_for_test(
-        config_path: PathBuf,
+        _config_path: PathBuf,
         payload: AppSettingsPayload,
     ) -> Self {
         Self {
             app_settings: AppSettingsConfig::from(payload),
-            config_path: Some(config_path),
             ..Default::default()
         }
     }
 
     #[cfg(test)]
     pub(crate) fn load_from_path_for_test(path: &Path) -> JacoResult<Self> {
-        Self::load_or_create_from_path(path)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn save_for_test(&self) -> JacoResult<()> {
-        self.save()
+        load_for_operation(path)
+            .map(|data| data.value)
+            .map_err(|error| JacoError::Config(error.to_string()))
     }
 }
 
@@ -343,21 +346,27 @@ pub(crate) fn store(cx: &impl AppContext) -> JacoConfigStore {
 }
 
 pub(crate) fn read<R>(cx: &impl AppContext, f: impl FnOnce(&JacoConfig) -> R) -> R {
-    store(cx).read(cx, f)
+    store(cx).read(cx, |operation| {
+        f(&operation
+            .data()
+            .expect("config command requires ConfigOperation data")
+            .value)
+    })
 }
 
 pub(crate) fn data_dir(cx: &impl AppContext) -> JacoResult<PathBuf> {
-    read(cx, JacoConfig::data_dir)
+    store(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|data| data.data_dir.clone())
+            .ok_or_else(|| JacoError::Config("config is not ready".to_string()))
+    })
 }
 
 pub(crate) fn app_settings(cx: &impl AppContext) -> JacoAppSettings {
     read(cx, |config| {
         JacoAppSettings::new(config.app_settings_payload())
     })
-}
-
-pub(crate) fn config_load_error(cx: &impl AppContext) -> Option<JacoConfigLoadError> {
-    read(cx, |config| config.load_error.clone())
 }
 
 impl AppSettingsConfig {
@@ -408,88 +417,556 @@ impl From<AppThemeSettings> for AppThemeConfig {
 
 pub(crate) fn update_app_settings(
     cx: &mut App,
-    update: impl FnOnce(&mut AppSettingsPayload),
-) -> JacoResult<AppSettingsPayload> {
-    let config_store = store(cx);
-    let mut next_payload = config_store.read(cx, JacoConfig::app_settings_payload);
-    let store_update = config_store.try_update(cx, |config| {
-        let mut payload = config.app_settings_payload();
-        update(&mut payload);
-        next_payload = payload.clone();
-        config.app_settings = AppSettingsConfig::from(payload);
-    })?;
-
-    if store_update.changed_state() {
-        cx.refresh_windows();
-    }
-
-    Ok(next_payload)
+    update: impl FnOnce(&mut AppSettingsPayload) + Send + 'static,
+) -> Task<JacoResult<AppSettingsPayload>> {
+    let current = match ready_data(cx) {
+        Ok(current) => current,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let mut next_payload = current.app_settings_payload();
+    update(&mut next_payload);
+    let committed_payload = next_payload.clone();
+    let commit = commit_update(
+        current,
+        move |config| config.app_settings = AppSettingsConfig::from(committed_payload),
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        commit.await?;
+        cx.update(|cx| cx.refresh_windows());
+        Ok(next_payload)
+    })
 }
 
-#[cfg(test)]
 pub(crate) fn update_chat_form_config(
     cx: &mut App,
-    update: impl FnOnce(&mut ChatFormConfig),
-) -> JacoResult<ChatFormConfig> {
-    let config_store = store(cx);
-    let mut next_chat_form = config_store.read_cloned(cx, |config| &config.chat_form);
-    config_store.try_update_field(
+    update: impl FnOnce(&mut ChatFormConfig) + Send + 'static,
+) -> Task<JacoResult<ChatFormConfig>> {
+    let current = match ready_data(cx) {
+        Ok(current) => current,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let mut next_chat_form = current.chat_form.clone();
+    update(&mut next_chat_form);
+    let committed_chat_form = next_chat_form.clone();
+    let commit = commit_update(
+        current,
+        move |config| config.chat_form = committed_chat_form,
         cx,
-        |config| &mut config.chat_form,
-        |chat_form| {
-            update(chat_form);
-            next_chat_form = chat_form.clone();
-        },
-    )?;
-    Ok(next_chat_form)
+    );
+    cx.spawn(async move |_| {
+        commit.await?;
+        Ok(next_chat_form)
+    })
 }
 
 pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
-    let path = JacoConfig::path()?;
-    let config_store = JacoConfigStore::install_global_with_backend(
-        cx,
-        JacoConfig::default(),
-        JacoConfigBackend::new(path),
-    )?;
-    let data_dir = data_dir(cx)?;
-    let enabled_mcp_servers = match config_store.read(cx, JacoConfig::mcp_config_layer) {
-        Ok(layer) => layer.servers.len(),
-        Err(err) => {
-            event!(Level::ERROR, error = ?err, "parse jaco MCP config failed");
-            0
-        }
-    };
-    event!(
-        Level::INFO,
-        data_dir = ?data_dir,
-        enabled_mcp_servers,
-        "loaded jaco config"
-    );
+    JacoConfigStore::install_global(cx, ConfigOperation::new());
     Ok(())
 }
 
-pub(crate) fn init_app_settings(cx: &mut App) -> JacoResult<()> {
-    let settings = app_settings(cx);
-    event!(
-        Level::INFO,
-        language = ?settings.language(),
-        theme = ?settings.theme().mode,
-        temporary_hotkey = ?settings.temporary_hotkey(),
-        http_proxy = ?settings.http_proxy(),
-        default_project_id = ?settings.default_project_id(),
-        "loaded jaco app settings"
-    );
-    Ok(())
+pub(crate) fn request_initial_load(cx: &mut App) {
+    let config_store = store(cx);
+    let completion_store = config_store.clone();
+    let task = cx.spawn(async move |cx| {
+        let result = smol::unblock(|| {
+            JacoConfig::path()
+                .map_err(|error| ConfigProblem::ResolveDirectory {
+                    message: error.to_string(),
+                })
+                .and_then(|path| load_for_operation(&path))
+        })
+        .await;
+        cx.update(|cx| {
+            completion_store.update(cx, |operation| {
+                if matches!(operation, ConfigOperation::Loading(_)) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    });
+    config_store.update(cx, |operation| {
+        if matches!(operation, ConfigOperation::Idle(_)) {
+            operation.transition(Load(task));
+        }
+    });
 }
 
 #[cfg(test)]
-pub(crate) fn install_for_test(cx: &mut App, config: JacoConfig) -> JacoResult<()> {
-    let path = match config.config_path.clone() {
-        Some(path) => path,
-        None => JacoConfig::path()?,
-    };
-    JacoConfigStore::install_global_with_backend(cx, config, JacoConfigBackend::new(path))?;
+pub(crate) fn install_for_test(cx: &mut App, path: PathBuf, config: JacoConfig) -> JacoResult<()> {
+    let source_bytes = fs::read(&path).unwrap_or_else(|_| {
+        toml::to_string_pretty(&config)
+            .expect("test config must encode")
+            .into_bytes()
+    });
+    let data = data_from_value(path, config, source_bytes)
+        .map_err(|error| JacoError::Config(error.to_string()))?;
+    let mut operation = ConfigOperation::new();
+    operation.transition(Load(Task::ready(())));
+    operation.transition(Complete(Ok(data)));
+    JacoConfigStore::install_global(cx, operation);
     Ok(())
+}
+
+struct ReplaceConfig(ConfigData);
+
+impl Transition<ReplaceConfig> for &mut ConfigData {
+    type Output = ();
+
+    fn transition(self, message: ReplaceConfig) {
+        *self = message.0;
+    }
+}
+
+fn ready_data(cx: &impl AppContext) -> JacoResult<ConfigData> {
+    store(cx).read(cx, |operation| match operation {
+        ConfigOperation::Ready(ready) => Ok(ready.data().clone()),
+        _ => Err(JacoError::Config(
+            "config is not ready for mutation".to_string(),
+        )),
+    })
+}
+
+fn update_config<R>(
+    cx: &mut App,
+    update: impl FnOnce(&mut JacoConfig) -> R + Send + 'static,
+) -> Task<JacoResult<R>>
+where
+    R: Send + 'static,
+{
+    let current = match ready_data(cx) {
+        Ok(current) => current,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let mut next = current.value.clone();
+    let result = update(&mut next);
+    let commit = commit_update(current, move |config| *config = next, cx);
+    cx.spawn(async move |_| {
+        commit.await?;
+        Ok(result)
+    })
+}
+
+fn commit_update(
+    current: ConfigData,
+    update: impl FnOnce(&mut JacoConfig) + Send + 'static,
+    cx: &mut App,
+) -> Task<JacoResult<()>> {
+    let mut value = current.value.clone();
+    update(&mut value);
+    let bytes = toml::to_string_pretty(&value)
+        .map_err(|error| JacoError::Config(format!("encode config: {error}")));
+    let bytes = match bytes {
+        Ok(bytes) => bytes.into_bytes(),
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let pending = Arc::new(PendingConfig {
+        data: match data_from_value(current.path.clone(), value, bytes.clone()) {
+            Ok(data) => data,
+            Err(error) => return Task::ready(Err(JacoError::Config(error.to_string()))),
+        },
+        bytes,
+    });
+    let config_store = store(cx);
+    config_store.update(cx, |operation| {
+        let ConfigOperation::Ready(_) = operation else {
+            return;
+        };
+        operation.transition(Refresh(Task::ready(())));
+    });
+    let completion_store = config_store.clone();
+    let (sender, receiver) = oneshot::channel();
+    cx.spawn(async move |cx| {
+        let result = smol::unblock(move || write_pending(&current, pending)).await;
+        let outcome = result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| JacoError::Config(error.to_string()));
+        cx.update(|cx| {
+            completion_store.update(cx, |operation| {
+                if matches!(operation, ConfigOperation::Refreshing(_)) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+        let _ = sender.send(outcome);
+    })
+    .detach();
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(JacoError::Config(
+                "config write driver ended without a result".to_string(),
+            ))
+        })
+    })
+}
+
+fn load_for_operation(path: &Path) -> Result<ConfigData, ConfigProblem> {
+    match fs::read(path) {
+        Ok(source) => decode_data(path, source),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let value = JacoConfig::default();
+            let bytes = toml::to_string_pretty(&value)
+                .map_err(|error| ConfigProblem::Write {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                    pending: Arc::new(PendingConfig {
+                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new())
+                            .expect("default config target must be valid"),
+                        bytes: Vec::new(),
+                    }),
+                })?
+                .into_bytes();
+            let pending = Arc::new(PendingConfig {
+                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
+                bytes,
+            });
+            let lock_path = path.with_extension("toml.lock");
+            let _lock = persistence::FileLock::acquire(&lock_path).map_err(|error| {
+                ConfigProblem::Locked {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                }
+            })?;
+            let committed =
+                persistence::atomic_replace(path, None, &pending.bytes).map_err(|error| {
+                    ConfigProblem::Write {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                        pending: pending.clone(),
+                    }
+                })?;
+            data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
+        }
+        Err(error) => Err(ConfigProblem::Read {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn decode_data(path: &Path, source: Vec<u8>) -> Result<ConfigData, ConfigProblem> {
+    let text = std::str::from_utf8(&source).map_err(|error| ConfigProblem::Parse {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let value = toml::from_str::<JacoConfig>(text).map_err(|error| ConfigProblem::Parse {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    data_from_value(path.to_path_buf(), value, source)
+}
+
+fn data_from_value(
+    path: PathBuf,
+    value: JacoConfig,
+    source_bytes: Vec<u8>,
+) -> Result<ConfigData, ConfigProblem> {
+    let parent = path.parent().ok_or_else(|| ConfigProblem::Target {
+        path: path.clone(),
+        message: "configuration path has no parent".to_string(),
+    })?;
+    let data_dir = match value.storage.data_dir.as_ref() {
+        Some(data_dir) if data_dir.is_absolute() => data_dir.clone(),
+        Some(data_dir) => normalize_lexically(parent.join(data_dir)),
+        None => parent.to_path_buf(),
+    };
+    if data_dir.as_os_str().is_empty() {
+        return Err(ConfigProblem::Target {
+            path,
+            message: "database directory is empty".to_string(),
+        });
+    }
+    Ok(ConfigData {
+        value,
+        path,
+        source_bytes,
+        data_dir,
+    })
+}
+
+fn write_pending(
+    current: &ConfigData,
+    pending: Arc<PendingConfig>,
+) -> Result<ConfigData, ConfigProblem> {
+    let lock_path = current.path.with_extension("toml.lock");
+    let _lock =
+        persistence::FileLock::acquire(&lock_path).map_err(|error| ConfigProblem::Locked {
+            path: current.path.clone(),
+            message: error.to_string(),
+        })?;
+    let committed =
+        persistence::atomic_replace(&current.path, Some(&current.source_bytes), &pending.bytes)
+            .map_err(|error| {
+                if error.kind() == ErrorKind::AlreadyExists {
+                    ConfigProblem::ExternalChange {
+                        path: current.path.clone(),
+                        pending: pending.clone(),
+                    }
+                } else {
+                    ConfigProblem::Write {
+                        path: current.path.clone(),
+                        message: error.to_string(),
+                        pending: pending.clone(),
+                    }
+                }
+            })?;
+    data_from_value(current.path.clone(), pending.data.value.clone(), committed)
+}
+
+pub(crate) fn request_reload(cx: &mut App) {
+    let config_store = store(cx);
+    let (path, refresh_ready) = config_store.read(cx, |operation| {
+        (
+            operation.data().map(|data| data.path.clone()).or_else(|| {
+                operation
+                    .problem()
+                    .map(|problem| problem.path().to_path_buf())
+            }),
+            matches!(operation, ConfigOperation::Ready(_)),
+        )
+    });
+    let path = path
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| JacoConfig::path().ok());
+    let completion_store = config_store.clone();
+    let task = cx.spawn(async move |cx| {
+        let result = smol::unblock(move || {
+            path.ok_or_else(|| ConfigProblem::ResolveDirectory {
+                message: "configuration directory is unavailable".to_string(),
+            })
+            .and_then(|path| load_for_operation(&path))
+        })
+        .await;
+        cx.update(|cx| {
+            completion_store.update(cx, |operation| {
+                if matches!(
+                    operation,
+                    ConfigOperation::Refreshing(_)
+                        | ConfigOperation::RepairingUnavailable(_)
+                        | ConfigOperation::RepairingDegraded(_)
+                ) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    });
+    config_store.update(cx, |operation| {
+        if refresh_ready && matches!(operation, ConfigOperation::Ready(_)) {
+            operation.transition(Refresh(task));
+        } else if !refresh_ready
+            && matches!(
+                operation,
+                ConfigOperation::Unavailable(_) | ConfigOperation::Degraded(_)
+            )
+        {
+            operation.transition(Repair {
+                repair: ConfigRepair::Reload,
+                task,
+            });
+        }
+    });
+}
+
+pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<()> {
+    let (path, problem, current) = store(cx).read(cx, |operation| {
+        let problem = operation.problem().cloned();
+        let path = operation
+            .data()
+            .map(|data| data.path.clone())
+            .or_else(|| problem.as_ref().map(|problem| problem.path().to_path_buf()));
+        (path, problem, operation.data().cloned())
+    });
+    let problem = problem.ok_or_else(|| JacoError::Config("config has no problem".to_string()))?;
+    if !problem.supports(repair) {
+        return Err(JacoError::Config(format!(
+            "{repair:?} is not supported for the current config problem"
+        )));
+    }
+    let path = path
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| JacoError::Config("configuration path is unavailable".to_string()))?;
+    #[allow(clippy::large_enum_variant)]
+    enum RepairAttempt {
+        Reload {
+            path: PathBuf,
+        },
+        RetryWrite {
+            current: ConfigData,
+            pending: Arc<PendingConfig>,
+            backup_path: Option<PathBuf>,
+        },
+        BackupAndCreateDefault {
+            path: PathBuf,
+        },
+        BackupAndOverwritePending {
+            path: PathBuf,
+            pending: Arc<PendingConfig>,
+        },
+    }
+    let attempt = match repair {
+        ConfigRepair::Reload => RepairAttempt::Reload { path },
+        ConfigRepair::RetryWrite => RepairAttempt::RetryWrite {
+            current: current.ok_or_else(|| {
+                JacoError::Config(
+                    "retrying a config write requires retained committed data".to_string(),
+                )
+            })?,
+            pending: problem
+                .pending()
+                .ok_or_else(|| JacoError::Config("pending config is unavailable".to_string()))?,
+            backup_path: problem.backup_path(),
+        },
+        ConfigRepair::BackupAndCreateDefault => RepairAttempt::BackupAndCreateDefault { path },
+        ConfigRepair::BackupAndOverwritePending => RepairAttempt::BackupAndOverwritePending {
+            path,
+            pending: problem
+                .pending()
+                .ok_or_else(|| JacoError::Config("pending config is unavailable".to_string()))?,
+        },
+    };
+    let config_store = store(cx);
+    let completion_store = config_store.clone();
+    let task = cx.spawn(async move |cx| {
+        let result = smol::unblock(move || match attempt {
+            RepairAttempt::Reload { path } => load_for_operation(&path),
+            RepairAttempt::RetryWrite {
+                current,
+                pending,
+                backup_path,
+            } => {
+                if let Some(backup_path) = backup_path {
+                    write_pending_after_backup(&current, pending, backup_path)
+                } else {
+                    write_pending(&current, pending)
+                }
+            }
+            RepairAttempt::BackupAndCreateDefault { path } => {
+                backup_and_replace(&path, ConfigBackupIntent::CreateDefault, None)
+            }
+            RepairAttempt::BackupAndOverwritePending { path, pending } => {
+                backup_and_replace(&path, ConfigBackupIntent::OverwritePending, Some(pending))
+            }
+        })
+        .await;
+        cx.update(|cx| {
+            completion_store.update(cx, |operation| {
+                if matches!(
+                    operation,
+                    ConfigOperation::RepairingUnavailable(_)
+                        | ConfigOperation::RepairingDegraded(_)
+                ) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    });
+    config_store.update(cx, |operation| {
+        if matches!(
+            operation,
+            ConfigOperation::Unavailable(_) | ConfigOperation::Degraded(_)
+        ) {
+            operation.transition(Repair { repair, task });
+        }
+    });
+    Ok(())
+}
+
+fn backup_and_replace(
+    path: &Path,
+    intent: ConfigBackupIntent,
+    pending: Option<Arc<PendingConfig>>,
+) -> Result<ConfigData, ConfigProblem> {
+    if let Ok(valid) = load_for_operation(path) {
+        return Ok(valid);
+    }
+    let lock_path = path.with_extension("toml.lock");
+    let _lock =
+        persistence::FileLock::acquire(&lock_path).map_err(|error| ConfigProblem::Locked {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    let original = fs::read(path).map_err(|error| ConfigProblem::Read {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let parent = path.parent().ok_or_else(|| ConfigProblem::Target {
+        path: path.to_path_buf(),
+        message: "configuration path has no parent".to_string(),
+    })?;
+    let backup_path = persistence::next_available_path(parent, "config.invalid", "toml");
+    persistence::copy_new_synced(&original, &backup_path).map_err(|error| {
+        ConfigProblem::Backup {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+            intent,
+            pending: pending.clone(),
+        }
+    })?;
+    let pending = match pending {
+        Some(pending) => pending,
+        None => {
+            let value = JacoConfig::default();
+            let bytes = toml::to_string_pretty(&value)
+                .map_err(|error| ConfigProblem::WriteAfterBackup {
+                    path: path.to_path_buf(),
+                    backup_path: backup_path.clone(),
+                    message: error.to_string(),
+                    intent,
+                    pending: None,
+                })?
+                .into_bytes();
+            Arc::new(PendingConfig {
+                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
+                bytes,
+            })
+        }
+    };
+    if fs::read(path).ok().as_deref() != Some(original.as_slice()) {
+        return Err(ConfigProblem::ExternalChange {
+            path: path.to_path_buf(),
+            pending,
+        });
+    }
+    let committed =
+        persistence::atomic_replace(path, Some(&original), &pending.bytes).map_err(|error| {
+            ConfigProblem::WriteAfterBackup {
+                path: path.to_path_buf(),
+                backup_path: backup_path.clone(),
+                message: error.to_string(),
+                intent,
+                pending: Some(pending.clone()),
+            }
+        })?;
+    data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
+}
+
+fn write_pending_after_backup(
+    current: &ConfigData,
+    pending: Arc<PendingConfig>,
+    backup_path: PathBuf,
+) -> Result<ConfigData, ConfigProblem> {
+    write_pending(current, pending.clone()).map_err(|problem| ConfigProblem::WriteAfterBackup {
+        path: current.path.clone(),
+        backup_path,
+        message: problem.to_string(),
+        intent: ConfigBackupIntent::OverwritePending,
+        pending: Some(pending),
+    })
+}
+
+fn normalize_lexically(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]

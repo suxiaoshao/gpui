@@ -137,7 +137,9 @@ pub(crate) async fn run_saved_provider_model(
                         .await
                 }
                 Err(error) => {
-                    runtime.record_setup_failed_started_run(&agent_run, error, observer.as_ref())
+                    runtime
+                        .record_setup_failed_started_run(&agent_run, error, observer.as_ref())
+                        .await
                 }
             }
         };
@@ -151,13 +153,17 @@ pub(crate) async fn run_saved_provider_model(
         "openrouter" => run_with_client!(build_openrouter_client(&provider, &secrets)),
         "deepseek" => run_with_client!(build_deepseek_client(&provider, &secrets)),
         "mistral" => run_with_client!(build_mistral_client(&provider, &secrets)),
-        provider_kind => runtime.record_setup_failed_started_run(
-            &agent_run,
-            AgentRuntimeError::Unsupported(format!(
-                "provider `{provider_kind}` cannot run completion models"
-            )),
-            observer.as_ref(),
-        ),
+        provider_kind => {
+            runtime
+                .record_setup_failed_started_run(
+                    &agent_run,
+                    AgentRuntimeError::Unsupported(format!(
+                        "provider `{provider_kind}` cannot run completion models"
+                    )),
+                    observer.as_ref(),
+                )
+                .await
+        }
     }
 }
 
@@ -993,7 +999,8 @@ mod tests {
 
     fn provider_record(kind: &str, base_url: Option<&str>) -> ProviderRecord {
         let dir = tempdir().unwrap();
-        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let store =
+            FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
         store
             .repository()
             .insert_provider(NewProvider {

@@ -27,6 +27,10 @@ pub(crate) fn init(cx: &mut App) {
     cx.set_global(I18n::from_settings(cx));
 }
 
+pub(crate) fn init_bootstrap(cx: &mut App) {
+    cx.set_global(I18n::new(detect_locale()));
+}
+
 impl I18n {
     fn new(locale: Locale) -> Self {
         let mut bundles = HashMap::new();
@@ -41,7 +45,12 @@ impl I18n {
 
     fn from_settings(cx: &App) -> Self {
         let language = if cx.has_global::<config::JacoConfigStore>() {
-            config::app_settings(cx).language()
+            config::store(cx).read(cx, |operation| {
+                operation
+                    .data()
+                    .map(|config| config.app_settings_payload().language)
+                    .unwrap_or_default()
+            })
         } else {
             AppLanguage::default()
         };

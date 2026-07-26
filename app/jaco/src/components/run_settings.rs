@@ -30,6 +30,7 @@ use gpui_component::{
     input::{InputState, NumberInput},
     label::Label,
     list::ListState,
+    v_flex,
 };
 use gpui_form::typed::{FormField, FormStore};
 use gpui_form_gpui_component::integer_input::{
@@ -132,7 +133,6 @@ pub(crate) fn resolve_run_settings(
 }
 
 pub(crate) struct ModelControlState {
-    pub(crate) choices: Result<Vec<ProviderModelChoice>, SharedString>,
     pub(crate) selected: Option<ProviderModelKey>,
     pub(crate) picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
     pub(crate) open: bool,
@@ -323,6 +323,10 @@ where
                 cx,
             )
             .searchable(true);
+            picker.delegate_mut().set_selectable(
+                model_catalog_is_ready(cx),
+                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
+            );
             picker.set_selected_index(model_selected_ix, window, cx);
             picker
         });
@@ -447,7 +451,6 @@ where
         });
 
         let model_state = cx.new(|_| ModelControlState {
-            choices,
             selected: draft.model.clone(),
             picker: model_picker,
             open: false,
@@ -505,10 +508,10 @@ where
             .expect("run-settings approval field is alive");
 
         let mut orchestration_subscriptions = Vec::new();
-        if cx.has_global::<state::providers::ProviderCatalogGlobal>() {
+        if cx.has_global::<state::providers::ProviderStore>() {
             let catalog = state::providers::catalog(cx);
-            orchestration_subscriptions.push(cx.observe_in(
-                &catalog.entity(),
+            orchestration_subscriptions.push(catalog.observe_in(
+                cx,
                 window,
                 |controller, _catalog, window, cx| {
                     controller.reload_models(window, cx);
@@ -564,8 +567,8 @@ where
     #[cfg(test)]
     pub(crate) fn selected_model(&self, cx: &App) -> Option<ProviderModelChoice> {
         let selected = self.model_field.value(cx).ok()?;
-        let state = self.controls.model.read(cx);
-        selected_model_choice(&state.choices, selected.as_ref()).cloned()
+        let choices = load_model_choices(cx);
+        selected_model_choice(&choices, selected.as_ref()).cloned()
     }
 
     pub(crate) fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -588,9 +591,6 @@ where
             .map(|choice| choice.capabilities.clone());
         let reasoning = preserved_reasoning;
 
-        self.controls.model.update(cx, |state, _| {
-            state.choices = choices.clone();
-        });
         self.controls.reasoning.update(cx, |state, _| {
             state.capability = capability.clone();
         });
@@ -601,13 +601,10 @@ where
     }
 
     fn refresh_locale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (model_choices, selected_model, model_picker) = {
+        let model_choices = load_model_choices(cx);
+        let (selected_model, model_picker) = {
             let state = self.controls.model.read(cx);
-            (
-                state.choices.clone(),
-                state.selected.clone(),
-                state.picker.clone(),
-            )
+            (state.selected.clone(), state.picker.clone())
         };
         let model_sections =
             model_sections(model_choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
@@ -616,6 +613,10 @@ where
             picker
                 .delegate_mut()
                 .replace_projection(model_sections, model_empty, selected_model);
+            picker.delegate_mut().set_selectable(
+                model_catalog_is_ready(cx),
+                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
+            );
             let ix = picker.delegate().selected_index();
             picker.set_selected_index(ix, window, cx);
         });
@@ -843,15 +844,20 @@ where
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (choices, picker) = self.controls.model.update(cx, |state, cx| {
+        let choices = load_model_choices(cx);
+        let picker = self.controls.model.update(cx, |state, cx| {
             state.selected = selected.clone();
             cx.notify();
-            (state.choices.clone(), state.picker.clone())
+            state.picker.clone()
         });
         let sections = model_sections(choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
         picker.update(cx, |picker, cx| {
             picker.delegate_mut().set_sections(sections);
             picker.delegate_mut().set_selected_value(selected);
+            picker.delegate_mut().set_selectable(
+                model_catalog_is_ready(cx),
+                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
+            );
             let ix = picker.delegate().selected_index();
             picker.set_selected_index(ix, window, cx);
         });
@@ -898,9 +904,9 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let capability =
-            selected_model_choice(&self.controls.model.read(cx).choices, model.as_ref())
-                .map(|choice| choice.capabilities.clone());
+        let choices = load_model_choices(cx);
+        let capability = selected_model_choice(&choices, model.as_ref())
+            .map(|choice| choice.capabilities.clone());
         self.controls.reasoning.update(cx, |state, _| {
             state.capability = capability.clone();
         });
@@ -923,10 +929,22 @@ where
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {
-    if !cx.has_global::<state::providers::ProviderCatalogGlobal>() {
+    if !cx.has_global::<state::providers::ProviderStore>() {
         return Err("provider catalog is unavailable".into());
     }
-    Ok(state::providers::catalog(cx).read_cloned(cx, |snapshot| &snapshot.enabled_models))
+    state::providers::catalog(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|data| data.enabled_models.clone())
+            .ok_or_else(|| "provider catalog is unavailable".into())
+    })
+}
+
+fn model_catalog_is_ready(cx: &App) -> bool {
+    cx.has_global::<state::providers::ProviderStore>()
+        && state::providers::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::providers::ProviderOperation::Ready(_))
+        })
 }
 
 fn selected_model_choice<'a>(
@@ -1001,22 +1019,21 @@ pub(crate) fn render_model_selector(
 ) -> AnyElement {
     let state_snapshot = state.read(cx);
     let selected = state_snapshot.selected.clone();
+    let choices = load_model_choices(cx);
     let i18n = cx.global::<I18n>();
-    let label: SharedString = match &state_snapshot.choices {
+    let label: SharedString = match &choices {
         Err(_) => i18n.t("chat-form-model-load-failed").into(),
         Ok(_) => selected
             .as_ref()
-            .and_then(|key| selected_model_choice(&state_snapshot.choices, Some(key)))
+            .and_then(|key| selected_model_choice(&choices, Some(key)))
             .map(|choice| choice.display_label().into())
             .unwrap_or_else(|| i18n.t("chat-form-model-empty").into()),
     };
     let open = enabled && state_snapshot.open;
     let list = state_snapshot.picker.clone();
     let on_open_change = state_snapshot.on_open_change.clone();
-    let show_provider_footer = !state_snapshot
-        .choices
-        .as_ref()
-        .is_ok_and(|choices| !choices.is_empty());
+    let show_provider_footer =
+        !choices.as_ref().is_ok_and(|choices| !choices.is_empty()) || !model_catalog_is_ready(cx);
     let trigger = crate::components::picker::picker_trigger(
         "chat-form-model-trigger",
         crate::foundation::assets::IconName::Sparkles,
@@ -1044,10 +1061,32 @@ pub(crate) fn render_model_selector(
 }
 
 fn render_model_picker_footer(cx: &App) -> AnyElement {
-    div()
+    let status = state::providers::catalog(cx).read(cx, |operation| {
+        (!matches!(operation, state::providers::ProviderOperation::Ready(_))).then(|| {
+            let message = operation
+                .problem()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"));
+            let running = operation.is_running();
+            v_flex()
+                .gap_1()
+                .p_2()
+                .child(Label::new(message).text_xs().text_color(cx.theme().warning))
+                .child(
+                    Button::new("chat-form-refresh-providers")
+                        .label(cx.global::<I18n>().t("resource-status-refresh"))
+                        .small()
+                        .loading(running)
+                        .disabled(running)
+                        .on_click(|_, _, cx| state::providers::request_refresh(cx)),
+                )
+        })
+    });
+    v_flex()
         .border_t_1()
         .border_color(cx.theme().border)
         .p_1()
+        .children(status)
         .child(
             Button::new("chat-form-configure-providers")
                 .ghost()

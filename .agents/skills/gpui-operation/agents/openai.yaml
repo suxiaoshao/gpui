@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPUI Operation"
+  short_description: "GPUI fallible operation state-machine guidance"
+  default_prompt: "Use $gpui-operation to design or integrate a fallible, cancellable GPUI operation."

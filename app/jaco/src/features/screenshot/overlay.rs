@@ -34,6 +34,17 @@ pub(crate) fn is_active(cx: &App) -> bool {
         .is_some_and(|state| state.session.is_some())
 }
 
+pub(crate) fn close(cx: &mut App) {
+    if !cx.has_global::<ScreenshotOverlayState>() {
+        return;
+    }
+    cx.update_global::<ScreenshotOverlayState, _>(|state, cx| {
+        if let Some(session) = state.session.take() {
+            session.close_all(cx);
+        }
+    });
+}
+
 pub(crate) fn open(shortcut: ShortcutRecord, cx: &mut App) -> Result<(), CaptureError> {
     if is_active(cx) {
         return Err(CaptureError::BackendUnavailable(

@@ -6,31 +6,37 @@ use rig_core::completion::{AssistantContent, CompletionRequest, CompletionRespon
 use serde::Serialize;
 
 impl PersistenceContext {
-    pub(super) fn insert_provider_step(
+    pub(super) async fn insert_provider_step(
         &self,
         request: &CompletionRequest,
     ) -> Result<ProviderStepRecord> {
-        let seq = self.repo.next_provider_step_seq(&self.agent_run_id)?;
+        let seq = self
+            .persistence
+            .next_provider_step_seq(self.agent_run_id.clone())
+            .await?;
         let input_item_ids = mutex_clone(&self.input_item_ids);
-        let step = self.repo.insert_provider_step(NewProviderStep {
-            agent_run_id: self.agent_run_id.clone(),
-            seq,
-            status: ProviderStepStatus::Running,
-            request_snapshot: ProviderStepRequestSnapshot {
-                provider_id: self.provider_id.clone(),
-                model_id: self.model_id.clone(),
-                input_item_ids,
-                snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
-                request_body: ProviderRawPayload {
-                    provider_kind: "rig".to_string(),
-                    value: serde_json::to_value(request)?,
+        let step = self
+            .persistence
+            .insert_provider_step(NewProviderStep {
+                agent_run_id: self.agent_run_id.clone(),
+                seq,
+                status: ProviderStepStatus::Running,
+                request_snapshot: ProviderStepRequestSnapshot {
+                    provider_id: self.provider_id.clone(),
+                    model_id: self.model_id.clone(),
+                    input_item_ids,
+                    snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+                    request_body: ProviderRawPayload {
+                        provider_kind: "rig".to_string(),
+                        value: serde_json::to_value(request)?,
+                    },
                 },
-            },
-            response_snapshot: None,
-            state_snapshot: None,
-            settings_snapshot: self.settings_snapshot.clone(),
-            error: None,
-        })?;
+                response_snapshot: None,
+                state_snapshot: None,
+                settings_snapshot: self.settings_snapshot.clone(),
+                error: None,
+            })
+            .await?;
         mutex_replace(&self.last_provider_step_id, Some(step.id.clone()));
         self.push_event(AgentRunEvent::ProviderStepStarted {
             provider_step_id: step.id.clone(),
@@ -40,10 +46,16 @@ impl PersistenceContext {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: step.id.clone(),
         });
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
+                step: Box::new(step.clone()),
+            }],
+        });
         Ok(step)
     }
 
-    pub(super) fn finish_provider_step<M>(
+    pub(super) async fn finish_provider_step<M>(
         &self,
         provider_step_id: &str,
         response: &CompletionResponse<M>,
@@ -79,15 +91,18 @@ impl PersistenceContext {
                     value: serde_json::json!({ "messageId": message_id }),
                 }),
         };
-        let step = self.repo.update_provider_step_status(
-            provider_step_id,
-            UpdateProviderStepStatus {
-                status: ProviderStepStatus::Completed,
-                response_snapshot: Some(response_snapshot),
-                state_snapshot: Some(state_snapshot.clone()),
-                error: None,
-            },
-        )?;
+        let step = self
+            .persistence
+            .update_provider_step_status(
+                provider_step_id.to_string(),
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Completed,
+                    response_snapshot: Some(response_snapshot),
+                    state_snapshot: Some(state_snapshot.clone()),
+                    error: None,
+                },
+            )
+            .await?;
         if step.status != ProviderStepStatus::Completed {
             return Ok(());
         }
@@ -95,12 +110,20 @@ impl PersistenceContext {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
         });
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
+                step: Box::new(step.clone()),
+            }],
+        });
         let usage = provider_usage(response.usage);
-        self.repo.insert_usage_event(NewUsageEvent {
-            provider_step_id: provider_step_id.to_string(),
-            date_key: time::OffsetDateTime::now_utc().date().to_string(),
-            usage: usage.clone(),
-        })?;
+        self.persistence
+            .insert_usage_event(NewUsageEvent {
+                provider_step_id: provider_step_id.to_string(),
+                date_key: time::OffsetDateTime::now_utc().date().to_string(),
+                usage: usage.clone(),
+            })
+            .await?;
         self.push_event(AgentRunEvent::ProviderStepEvent {
             provider_step_id: provider_step_id.to_string(),
             event: ProviderStepEvent::UsageUpdated { usage },
@@ -114,7 +137,7 @@ impl PersistenceContext {
         Ok(())
     }
 
-    pub(crate) fn finish_current_streaming_provider_step<M>(
+    pub(crate) async fn finish_current_streaming_provider_step<M>(
         &self,
         response: Option<&M>,
         usage: Usage,
@@ -126,23 +149,24 @@ impl PersistenceContext {
             return Ok(());
         };
         self.finish_streaming_provider_step(&provider_step_id, response, usage)
+            .await
     }
 
-    pub(crate) fn fail_current_provider_step(&self, error: RunErrorPayload) -> Result<()> {
+    pub(crate) async fn fail_current_provider_step(&self, error: RunErrorPayload) -> Result<()> {
         let Some(provider_step_id) = mutex_clone(&self.last_provider_step_id) else {
             return Ok(());
         };
-        self.fail_provider_step(&provider_step_id, error)
+        self.fail_provider_step(&provider_step_id, error).await
     }
 
-    pub(crate) fn cancel_current_provider_step(&self, error: RunErrorPayload) -> Result<()> {
+    pub(crate) async fn cancel_current_provider_step(&self, error: RunErrorPayload) -> Result<()> {
         let Some(provider_step_id) = mutex_clone(&self.last_provider_step_id) else {
             return Ok(());
         };
-        self.cancel_provider_step(&provider_step_id, error)
+        self.cancel_provider_step(&provider_step_id, error).await
     }
 
-    pub(super) fn finish_streaming_provider_step<M>(
+    pub(super) async fn finish_streaming_provider_step<M>(
         &self,
         provider_step_id: &str,
         response: Option<&M>,
@@ -169,15 +193,18 @@ impl PersistenceContext {
             output_item_ids: Vec::new(),
             continuation: None,
         };
-        let step = self.repo.update_provider_step_status(
-            provider_step_id,
-            UpdateProviderStepStatus {
-                status: ProviderStepStatus::Completed,
-                response_snapshot: Some(response_snapshot),
-                state_snapshot: Some(state_snapshot.clone()),
-                error: None,
-            },
-        )?;
+        let step = self
+            .persistence
+            .update_provider_step_status(
+                provider_step_id.to_string(),
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Completed,
+                    response_snapshot: Some(response_snapshot),
+                    state_snapshot: Some(state_snapshot.clone()),
+                    error: None,
+                },
+            )
+            .await?;
         if step.status != ProviderStepStatus::Completed {
             return Ok(());
         }
@@ -185,12 +212,20 @@ impl PersistenceContext {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
         });
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
+                step: Box::new(step.clone()),
+            }],
+        });
         let usage = provider_usage(usage);
-        self.repo.insert_usage_event(NewUsageEvent {
-            provider_step_id: provider_step_id.to_string(),
-            date_key: time::OffsetDateTime::now_utc().date().to_string(),
-            usage: usage.clone(),
-        })?;
+        self.persistence
+            .insert_usage_event(NewUsageEvent {
+                provider_step_id: provider_step_id.to_string(),
+                date_key: time::OffsetDateTime::now_utc().date().to_string(),
+                usage: usage.clone(),
+            })
+            .await?;
         self.push_event(AgentRunEvent::ProviderStepEvent {
             provider_step_id: provider_step_id.to_string(),
             event: ProviderStepEvent::UsageUpdated { usage },
@@ -204,26 +239,35 @@ impl PersistenceContext {
         Ok(())
     }
 
-    pub(super) fn fail_provider_step(
+    pub(super) async fn fail_provider_step(
         &self,
         provider_step_id: &str,
         error: RunErrorPayload,
     ) -> Result<()> {
-        let step = self.repo.update_provider_step_status(
-            provider_step_id,
-            UpdateProviderStepStatus {
-                status: ProviderStepStatus::Failed,
-                response_snapshot: None,
-                state_snapshot: None,
-                error: Some(error.clone()),
-            },
-        )?;
+        let step = self
+            .persistence
+            .update_provider_step_status(
+                provider_step_id.to_string(),
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Failed,
+                    response_snapshot: None,
+                    state_snapshot: None,
+                    error: Some(error.clone()),
+                },
+            )
+            .await?;
         if step.status != ProviderStepStatus::Failed {
             return Ok(());
         }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
+        });
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
+                step: Box::new(step.clone()),
+            }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {
             provider_step_id: provider_step_id.to_string(),
@@ -232,26 +276,35 @@ impl PersistenceContext {
         Ok(())
     }
 
-    pub(super) fn cancel_provider_step(
+    pub(super) async fn cancel_provider_step(
         &self,
         provider_step_id: &str,
         error: RunErrorPayload,
     ) -> Result<()> {
-        let step = self.repo.update_provider_step_status(
-            provider_step_id,
-            UpdateProviderStepStatus {
-                status: ProviderStepStatus::Canceled,
-                response_snapshot: None,
-                state_snapshot: None,
-                error: Some(error.clone()),
-            },
-        )?;
+        let step = self
+            .persistence
+            .update_provider_step_status(
+                provider_step_id.to_string(),
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Canceled,
+                    response_snapshot: None,
+                    state_snapshot: None,
+                    error: Some(error.clone()),
+                },
+            )
+            .await?;
         if step.status != ProviderStepStatus::Canceled {
             return Ok(());
         }
         self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
             agent_run_id: self.agent_run_id.clone(),
             provider_step_id: provider_step_id.to_string(),
+        });
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
+                step: Box::new(step.clone()),
+            }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {
             provider_step_id: provider_step_id.to_string(),

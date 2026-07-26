@@ -1,0 +1,14 @@
+[package]
+name = "gpui-operation"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[dependencies]
+tracing = { version = "0.1.44", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

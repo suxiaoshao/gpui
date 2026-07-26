@@ -2,76 +2,94 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-store` 是面向 GPUI 应用的类型化状态容器。它提供局部/共享 store、owned snapshot 读取、变化检测、只读 selection 和可选 backend reconcile，同时不把应用状态绑定到特定持久化系统。
+`gpui-store` 是面向 GPUI 应用的小型、类型化纯内存状态容器。一个 `Store<S>` 持有一份
+权威数据，通过显式 API 让调用者读取和修改，并向组件、observer 和只读 selection 发布
+变化。
 
-## 核心概念
+本 crate 有意不读取文件、不查询数据库，也不持久化变更。持久化写入仍由应用命令或
+repository 负责。
 
-- `LocalStore<S, B>` 由单个组件或 controller 持有；
-- `SharedStore<S, B>` 是应用级 GPUI entity；
-- 读取返回 owned snapshot，调用方不持有内部 borrow；
-- 只有值实际变化时才通知 observer；
-- `StoreSelection<T>` 是 committed store state 的只读 projection；
-- `StoreBinding<T>` 只用于明确需要写回同一 store 的字段；
-- 持久化 backend 是可选能力，与内存状态所有权正交。
+## 快速开始
 
-## Local store
+为需要共享的状态创建一个 store：
 
-```rust,ignore
-use gpui::Context;
-use gpui_store::{LocalStore, StoreState};
+```rust
+use gpui_store::{Store, StoreChange};
 
-#[derive(Clone, Default, PartialEq)]
-struct EditorState {
-    query: String,
+#[derive(Default)]
+struct CounterState {
+    count: u64,
+    label: String,
 }
 
-impl StoreState for EditorState {}
+let counter = Store::new(
+    cx,
+    CounterState {
+        count: 0,
+        label: "Requests".into(),
+    },
+);
+```
 
-struct Editor {
-    state: LocalStore<EditorState>,
-}
+通过闭包读取，并通过 store 修改：
 
-impl Editor {
-    fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.state.set(cx, |state| &mut state.query, query);
+```rust
+let count = counter.read(cx, |state| state.count);
+
+counter.update(cx, |state| {
+    state.count += 1;
+});
+
+let outcome = counter.update_if(cx, |state| {
+    if state.label == "Completed requests" {
+        return StoreChange::unchanged(());
     }
+
+    state.label = "Completed requests".into();
+    StoreChange::changed(())
+});
+```
+
+`update` 总是发布变化，并且可以返回闭包产生的业务值。`update_if` 返回
+`StoreChange<R>`，在同一个原子结果中携带业务结果和调用者的通知决定。这样相等性策略
+保留在调用处，也不要求 `CounterState: Clone + PartialEq`。
+
+当组件只需要状态的一部分时，创建只读 selection：
+
+```rust
+struct CounterPane {
+    counter: Store<CounterState>,
+    count: StoreSelection<u64>,
 }
+
+let count = counter.select(cx, |state: &CounterState| state.count);
 ```
 
-## Shared store
+store 变化后，selection 会重新计算，并且只在选中结果变化时通知 owner。它没有 setter，
+永远不会成为第二份事实来源。
 
-```rust,ignore
-use gpui_store::{SharedStore, StoreState};
+## 全局状态
 
-#[derive(Clone, Default, PartialEq)]
-struct ModelCatalog {
-    models: Vec<ModelSummary>,
-}
+store 可以作为类型化的应用 global 安装和获取：
 
-impl StoreState for ModelCatalog {}
+```rust
+Store::install_global(cx, CounterState::default());
 
-let catalog = SharedStore::new(cx, ModelCatalog::default());
-let models = catalog.read_cloned(cx, |state| &state.models);
+let counter = Store::<CounterState>::global(cx);
 ```
 
-组件可以从 snapshot 派生渲染 options，但 catalog 刷新不能静默改写 form 拥有的当前选择。
+Clone `Store<S>` 只会 clone handle，不会 clone `S`；所有 handle 都指向同一份状态。
 
-## Store 与表单
+## 职责边界
 
-`gpui-store` 拥有 committed 应用状态与 catalog。生成的 `gpui-form` store 拥有当前可编辑 typed model、baseline、验证与提交 runtime；bound component 只投影该模型并保存交互局部 UI 状态。三者通过显式边界协作：
+使用：
 
-```text
-committed store snapshot -> form.rebase(committed value)
-catalog snapshot -> 只更新组件 options/projection
-form.prepare_submit() -> typed output -> store 或 repository command
-command success -> reconcile committed store
-```
+- `gpui-store` 保存共享、可观察的纯内存应用状态；
+- `gpui-form` 处理可编辑表单 model、验证和提交准备；
+- 应用 service 或 repository 处理持久化和领域命令。
 
-`gpui-store` 不依赖 `gpui-form`，也不提供隐式 store-to-form binding。
+## 文档
 
-## 延伸阅读
-
-- [Complete design (English)](docs/design.md)
-- [完整设计（中文）](docs/design.zh-CN.md)
-- [API 与 backend 参考](docs/reference.md)
+- [User guide](docs/guide.md)
+- [使用指南（中文）](docs/guide.zh-CN.md)
 - [文档索引](docs/README.md)

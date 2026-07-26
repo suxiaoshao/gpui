@@ -12,12 +12,11 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_store::StoreSelection;
+use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
-use tracing::{Level, event};
 
 use super::push_settings_error;
 use rows::{
@@ -29,13 +28,11 @@ mod rows;
 
 pub(super) struct SkillsSettingsPage {
     search_input: Entity<InputState>,
-    skills: StoreSelection<Vec<state::skills::GlobalSkillEntry>>,
-    last_error: StoreSelection<Option<String>>,
+    skill_catalog: state::skills::SkillCatalogOperation,
     list: ListState,
     rows: Vec<SkillCatalogRow>,
     items: Vec<PathBuf>,
     expanded: BTreeMap<PathBuf, SkillContentPanelState>,
-    load_tasks: BTreeMap<PathBuf, Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -45,39 +42,18 @@ impl SkillsSettingsPage {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("skill-search-placeholder"))
         });
-        let skill_catalog = state::skills::catalog(cx);
-        let skills =
-            skill_catalog.select_cloned(cx, state::skills::GlobalSkillCatalogState::entry_records);
-        let last_error =
-            skill_catalog.select(cx, |state| state.last_error().map(ToOwned::to_owned));
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        let catalog_subscription = skill_catalog.observe_select_in(
-            cx,
-            window,
-            |state| {
-                (
-                    state.entries().to_vec(),
-                    state.last_error().map(ToOwned::to_owned),
-                    state.last_refreshed_at(),
-                )
-            },
-            |page, _, _window, cx| {
-                page.sync_list_items(cx, None);
-            },
-        );
         let mut page = Self {
             search_input,
-            skills,
-            last_error,
+            skill_catalog: state::skills::SkillCatalogOperation::new(),
             list: ListState::new(0, ListAlignment::Top, px(2048.)).measure_all(),
             rows: Vec::new(),
             items: Vec::new(),
             expanded: BTreeMap::new(),
-            load_tasks: BTreeMap::new(),
-            _subscriptions: vec![search_subscription, catalog_subscription],
+            _subscriptions: vec![search_subscription],
         };
-        page.sync_list_items(cx, None);
+        page.start_skill_load(cx);
         page
     }
 
@@ -97,15 +73,40 @@ impl SkillsSettingsPage {
         self.search_input.read(cx).value().trim().to_string()
     }
 
-    fn refresh_skills(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        state::skills::refresh_global_catalog(cx);
-        self.sync_list_items(cx, None);
-        let refresh_error =
-            state::skills::catalog(cx).read(cx, |state| state.last_error().map(ToOwned::to_owned));
-        if let Some(error) = refresh_error {
-            let title = cx.global::<I18n>().t("notify-refresh-skills-failed");
-            push_settings_error(window, cx, title, error);
+    fn start_skill_load(&mut self, cx: &mut Context<Self>) {
+        if self.skill_catalog.is_running() {
+            return;
         }
+        let load = cx.background_spawn(async {
+            state::skills::load_catalog(state::skills::SkillCatalogScope::Global)
+        });
+        let task = cx.spawn(async move |page, cx| {
+            let result = load.await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.update(cx, |page, cx| {
+                page.skill_catalog.transition(Complete(result));
+                page.sync_list_items(cx, None);
+            });
+        });
+        match &self.skill_catalog {
+            state::skills::SkillCatalogOperation::Idle(_) => {
+                self.skill_catalog.transition(Load(task));
+            }
+            state::skills::SkillCatalogOperation::Ready(_)
+            | state::skills::SkillCatalogOperation::Degraded(_) => {
+                self.skill_catalog.transition(Refresh(task));
+            }
+            state::skills::SkillCatalogOperation::Unavailable(_) => {
+                self.skill_catalog.transition(Retry(task));
+            }
+            state::skills::SkillCatalogOperation::Loading(_)
+            | state::skills::SkillCatalogOperation::Refreshing(_)
+            | state::skills::SkillCatalogOperation::RefreshingDegraded(_)
+            | state::skills::SkillCatalogOperation::Retrying(_) => unreachable!(),
+        }
+        cx.notify();
     }
 
     fn toggle_skill_content(
@@ -115,12 +116,11 @@ impl SkillsSettingsPage {
         cx: &mut Context<Self>,
     ) {
         if self.expanded.remove(&skill_file_path).is_some() {
-            self.load_tasks.remove(&skill_file_path);
             self.sync_list_items(cx, Some(&skill_file_path));
             return;
         }
 
-        let Some(row) = self
+        let Some(_row) = self
             .rows
             .iter()
             .find(|row| row.key == skill_file_path)
@@ -131,63 +131,35 @@ impl SkillsSettingsPage {
             return;
         };
 
-        self.expanded
-            .insert(skill_file_path.clone(), SkillContentPanelState::Loading);
-        self.sync_list_items(cx, Some(&skill_file_path));
-
-        let page = cx.entity().downgrade();
-        let task_path = skill_file_path.clone();
-        let load = cx.background_spawn(async move { state::skills::load_skill_content(row.entry) });
-        let task = window.spawn(cx, async move |cx| {
-            let result = load.await;
-            if let Err(err) = page.update_in(cx, |page, _window, cx| {
-                page.finish_skill_content_load(task_path, result, cx);
-            }) {
-                event!(
-                    Level::ERROR,
-                    error = ?err,
-                    "finish skill settings content load failed"
-                );
-            }
-        });
-        self.load_tasks.insert(skill_file_path, task);
-    }
-
-    fn finish_skill_content_load(
-        &mut self,
-        skill_file_path: PathBuf,
-        result: jaco_agent::Result<state::skills::LoadedSkillContent>,
-        cx: &mut Context<Self>,
-    ) {
-        self.load_tasks.remove(&skill_file_path);
-        if !self.expanded.contains_key(&skill_file_path) {
-            return;
-        }
-
-        let next_state = match result {
-            Ok(content) => SkillContentPanelState::Loaded {
-                content: content.content.into(),
-                content_sha256: content.content_sha256.into(),
-            },
-            Err(err) => SkillContentPanelState::Failed {
-                message: err.to_string().into(),
-            },
-        };
+        let next_state = self
+            .skill_catalog
+            .data()
+            .and_then(|data| data.details().get(&skill_file_path))
+            .map(|content| SkillContentPanelState::Loaded {
+                content: content.content.clone().into(),
+                content_sha256: content.content_sha256.clone().into(),
+            })
+            .unwrap_or_else(|| SkillContentPanelState::Failed {
+                message: "skill detail is unavailable".into(),
+            });
         self.expanded.insert(skill_file_path.clone(), next_state);
         self.sync_list_items(cx, Some(&skill_file_path));
     }
 
     fn sync_list_items(&mut self, cx: &mut Context<Self>, remeasure_hint: Option<&PathBuf>) {
         let previous_keys = self.items.clone();
-        let entries = self.skills.snapshot();
+        let entries = self
+            .skill_catalog
+            .data()
+            .map(state::skills::SkillCatalogData::entries)
+            .unwrap_or_default();
         let all_paths = entries
             .iter()
             .map(|entry| entry.skill_file_path.clone())
             .collect::<BTreeSet<_>>();
         self.expanded.retain(|path, _| all_paths.contains(path));
-        self.load_tasks.retain(|path, _| all_paths.contains(path));
 
-        let rows = skill_catalog_rows(entries.as_slice(), cx.global::<I18n>());
+        let rows = skill_catalog_rows(entries, cx.global::<I18n>());
         let query = self.current_query(cx);
         self.rows = filter_skill_catalog_rows(&rows, &query);
         self.items = skill_catalog_list_items(&self.rows);
@@ -210,15 +182,16 @@ impl SkillsSettingsPage {
                 Button::new("skill-settings-refresh")
                     .icon(IconName::RefreshCcw)
                     .label(cx.global::<I18n>().t("button-refresh-skills"))
-                    .on_click(cx.listener(|page, _, window, cx| {
-                        page.refresh_skills(window, cx);
+                    .on_click(cx.listener(|page, _, _window, cx| {
+                        page.start_skill_load(cx);
                     })),
             )
             .into_any_element()
     }
 
     fn render_error_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.last_error.cloned().map(|error| {
+        self.skill_catalog.problem().map(|problem| {
+            let error = problem.to_string();
             h_flex()
                 .w_full()
                 .items_start()
@@ -240,7 +213,11 @@ impl SkillsSettingsPage {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
-        let message = if self.skills.snapshot().is_empty() {
+        let message = if self
+            .skill_catalog
+            .data()
+            .is_none_or(|data| data.entries().is_empty())
+        {
             "skill-empty"
         } else {
             "skill-search-empty"

@@ -28,6 +28,7 @@ thiserror = "2.0.18"
 time = { version = "0.3.49", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1.52.3", features = ["process", "sync", "time"] }
 tokio-util = "0.7.18"
+tracing = "0.1.44"
 url = "2.5.8"
 
 [dev-dependencies]

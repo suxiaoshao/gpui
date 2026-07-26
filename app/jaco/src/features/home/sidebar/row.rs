@@ -329,16 +329,26 @@ impl RenderOnce for ConversationSidebarRow {
                             .ghost()
                             .xsmall()
                             .tooltip(pin_tooltip)
-                            .on_click(move |_, _window, cx| {
+                            .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 let pinned = !is_pinned;
-                                workspace_for_pin.update(cx, |workspace, cx| {
-                                    let _ = workspace.pin_conversation(
-                                        &pin_conversation_id,
+                                let task = workspace_for_pin.update(cx, |workspace, cx| {
+                                    workspace.pin_conversation(
+                                        pin_conversation_id.clone(),
                                         pinned,
                                         cx,
-                                    );
+                                    )
                                 });
+                                window
+                                    .spawn(cx, async move |_| {
+                                        if let Err(error) = task.await {
+                                            tracing::error!(
+                                                error = %error,
+                                                "failed to update conversation pin"
+                                            );
+                                        }
+                                    })
+                                    .detach();
                             }),
                     )
                     .child(

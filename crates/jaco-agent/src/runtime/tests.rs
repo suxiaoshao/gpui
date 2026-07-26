@@ -5,11 +5,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use jaco_db::{
-    AgentRunFinalEntry, ConversationEntryRecord, ConversationRecord, FinishAgentRun, FreshStore,
-    NewConversation, NewConversationEntry, NewProject, NewProvider, NewProviderModel,
-    NewProviderStep, NewToolInvocation, NewToolInvocationApproval, ProviderModelRecord,
-    ProviderRecord, ProviderStepRecord, ToolInvocationRecord, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus,
+    AgentRunFinalEntry, ConversationEntryRecord, ConversationRecord, FinishAgentRun,
+    FreshRepository, FreshStore, NewConversation, NewConversationEntry, NewProject, NewProvider,
+    NewProviderModel, NewProviderStep, NewToolInvocation, NewToolInvocationApproval,
+    ProviderModelRecord, ProviderRecord, ProviderStepRecord, ToolInvocationRecord,
+    UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use rig_core::{
     OneOrMany,
@@ -109,7 +109,7 @@ impl ToolApprovalBroker for ManualApprovalBroker {
 #[tokio::test]
 async fn no_tool_run_persists_provider_step_and_final_message() {
     let fixture = Fixture::new("no-tool");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let model = MockCompletionModel::text("hello from model");
     let handle = runtime
         .run_with_model(fixture.request(), model)
@@ -145,7 +145,7 @@ async fn no_tool_run_persists_provider_step_and_final_message() {
 #[tokio::test]
 async fn streaming_text_delta_updates_single_assistant_item() {
     let fixture = Fixture::new("streaming-text");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let model = MockCompletionModel::from_stream_turns([[
         MockStreamEvent::text("hello "),
         MockStreamEvent::text("world"),
@@ -216,7 +216,7 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 #[tokio::test]
 async fn streaming_provider_open_error_stays_before_later_user_entry_after_reload() {
     let fixture = Fixture::new("streaming-provider-open-error");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let db_path = fixture.db_path.clone();
     let conversation_id = fixture.conversation.id.clone();
     let initial_user_entry_id = fixture.user_item.id.clone();
@@ -251,7 +251,9 @@ async fn streaming_provider_open_error_stays_before_later_user_entry_after_reloa
 
     drop(runtime);
     drop(fixture.repo);
-    let reopened = FreshStore::open(&db_path).unwrap().repository();
+    let reopened = FreshStore::reopen_validated_existing(&db_path)
+        .unwrap()
+        .repository();
     let timeline = reopened
         .conversation_timeline_records(&conversation_id)
         .unwrap()
@@ -305,7 +307,7 @@ async fn streaming_provider_open_error_stays_before_later_user_entry_after_reloa
 #[tokio::test]
 async fn blocking_provider_error_persists_final_error_entry() {
     let fixture = Fixture::new("blocking-provider-error");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let handle = runtime
         .run_with_model(fixture.request(), FailBeforeFirstTokenModel)
@@ -334,7 +336,7 @@ async fn blocking_provider_error_persists_final_error_entry() {
 #[tokio::test]
 async fn completed_without_output_uses_status_final_entry() {
     let fixture = Fixture::new("completed-without-output");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let handle = runtime
         .run_with_model(fixture.request(), MockCompletionModel::text(""))
@@ -376,7 +378,7 @@ async fn completed_without_output_uses_status_final_entry() {
 #[tokio::test]
 async fn partial_stream_failure_keeps_partial_entry_and_finishes_with_error() {
     let fixture = Fixture::new("streaming-provider-error-after-text");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let handle = runtime
         .run_with_model(fixture.streaming_request(), FailAfterTextModel)
@@ -429,7 +431,7 @@ async fn partial_stream_failure_keeps_partial_entry_and_finishes_with_error() {
 #[tokio::test]
 async fn retry_runs_share_trigger_entry_and_keep_entry_sequence() {
     let fixture = Fixture::new("retry-order");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let first = runtime
         .run_with_model(fixture.streaming_request(), FailBeforeFirstTokenModel)
@@ -500,7 +502,7 @@ async fn retry_runs_share_trigger_entry_and_keep_entry_sequence() {
 #[tokio::test]
 async fn streaming_provider_step_stays_running_until_final_event() {
     let fixture = Fixture::new("streaming-step-running");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let repo = fixture.repo.clone();
     let request = fixture.streaming_request();
     let task = tokio::spawn(async move {
@@ -549,7 +551,7 @@ async fn streaming_provider_step_stays_running_until_final_event() {
 #[tokio::test]
 async fn streaming_reasoning_delta_updates_single_reasoning_item() {
     let fixture = Fixture::new("streaming-reasoning");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let handle = runtime
         .run_with_model(fixture.streaming_request(), ReasoningStreamModel)
@@ -587,7 +589,7 @@ async fn streaming_reasoning_delta_updates_single_reasoning_item() {
 #[tokio::test]
 async fn streaming_tool_call_is_persisted_only_by_hook() {
     let fixture = Fixture::new("streaming-tool");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.streaming_request();
     request
         .tool_registry
@@ -646,7 +648,8 @@ async fn streaming_tool_call_is_persisted_only_by_hook() {
 async fn streaming_approval_required_preserves_partial_text() {
     let fixture = Fixture::new("streaming-approval");
     let broker = Arc::new(ManualApprovalBroker::default());
-    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
+    let runtime =
+        AgentRuntime::from_repository(fixture.repo.clone()).with_approval_broker(broker.clone());
     let mut request = fixture.streaming_request();
     let cancellation_token = request.cancellation_token.clone();
     request
@@ -707,7 +710,7 @@ async fn streaming_approval_required_preserves_partial_text() {
 #[tokio::test]
 async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() {
     let fixture = Fixture::new("streaming-cancel");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.streaming_request();
     let model = CancelAfterTextStreamModel {
         cancellation_token: request.cancellation_token.clone(),
@@ -754,7 +757,7 @@ async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() 
 #[tokio::test]
 async fn non_streaming_cancellation_before_response_persistence_marks_run_canceled() {
     let fixture = Fixture::new("non-streaming-cancel");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.request();
     let model = CancelDuringCompletionModel {
         cancellation_token: request.cancellation_token.clone(),
@@ -808,7 +811,7 @@ async fn non_streaming_cancellation_before_response_persistence_marks_run_cancel
 #[tokio::test]
 async fn non_streaming_cancellation_during_provider_open_does_not_wait_for_response() {
     let fixture = Fixture::new("non-streaming-open-cancel");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.request();
     let model = CancelAndPendCompletionModel {
         cancellation_token: request.cancellation_token.clone(),
@@ -839,7 +842,7 @@ async fn non_streaming_cancellation_during_provider_open_does_not_wait_for_respo
 #[tokio::test]
 async fn streaming_cancellation_during_provider_open_does_not_record_provider_error() {
     let fixture = Fixture::new("streaming-open-cancel");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.streaming_request();
     let model = CancelAndPendStreamOpenModel {
         cancellation_token: request.cancellation_token.clone(),
@@ -866,7 +869,7 @@ async fn streaming_cancellation_during_provider_open_does_not_record_provider_er
 #[tokio::test]
 async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediately() {
     let fixture = Fixture::new("streaming-next-cancel");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.streaming_request();
     let model = CancelAndPendNextStreamModel {
         cancellation_token: request.cancellation_token.clone(),
@@ -909,7 +912,7 @@ async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediatel
 #[tokio::test]
 async fn streaming_disabled_uses_non_streaming_prompt() {
     let fixture = Fixture::new("streaming-disabled");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let model = MockCompletionModel::text("non-stream response");
 
     let handle = runtime
@@ -935,7 +938,7 @@ async fn streaming_disabled_uses_non_streaming_prompt() {
 #[tokio::test]
 async fn enabled_builtin_tools_are_exposed_to_rig_requests() {
     let fixture = Fixture::new("builtin-tools");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.project_root = Some(fixture.dir.path().to_path_buf());
     let model = MockCompletionModel::text("ok");
@@ -969,7 +972,7 @@ async fn enabled_builtin_tools_are_exposed_to_rig_requests() {
 async fn full_access_builtin_tool_does_not_persist_empty_approval_entries() {
     let fixture = Fixture::new("builtin-full-access");
     fs::write(fixture.dir.path().join("hello.txt"), "hello from fixture").unwrap();
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.project_root = Some(fixture.dir.path().to_path_buf());
     request.settings_snapshot.tool_policy.permission_scope = Some(ToolPermissionScopeSnapshot {
@@ -1018,7 +1021,7 @@ async fn full_access_builtin_tool_does_not_persist_empty_approval_entries() {
 #[tokio::test]
 async fn rig_tool_call_persists_tool_call_and_result() {
     let fixture = Fixture::new("tool-run");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request
         .tool_registry
@@ -1087,7 +1090,7 @@ async fn rig_tool_call_persists_tool_call_and_result() {
 #[tokio::test]
 async fn tool_execution_cancellation_does_not_persist_tool_output() {
     let fixture = Fixture::new("tool-cancel-during-await");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.guards.tool_timeout = Duration::from_millis(50);
     request
@@ -1122,7 +1125,7 @@ async fn tool_execution_cancellation_does_not_persist_tool_output() {
 #[tokio::test]
 async fn tool_error_output_is_persisted_without_reconstructing_from_model_text() {
     let fixture = Fixture::new("tool-error-output");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request
         .tool_registry
@@ -1190,7 +1193,7 @@ async fn tool_error_output_is_persisted_without_reconstructing_from_model_text()
 #[tokio::test]
 async fn recoverable_builtin_argument_error_is_returned_to_model() {
     let fixture = Fixture::new("recoverable-builtin-args");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.project_root = Some(fixture.dir.path().to_path_buf());
     let model = MockCompletionModel::new([
@@ -1258,7 +1261,7 @@ async fn recoverable_builtin_argument_error_is_returned_to_model() {
 #[tokio::test]
 async fn recoverable_unknown_tool_is_returned_to_model() {
     let fixture = Fixture::new("recoverable-unknown-tool");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let model = MockCompletionModel::new([
         MockTurn::tool_call("call_1", "missing_tool", json!({"path": "."})),
         MockTurn::text("recovered"),
@@ -1334,7 +1337,7 @@ async fn recoverable_missing_runtime_tool_is_returned_to_model() {
         },
     };
     let context = PersistenceContext::new(
-        fixture.repo.clone(),
+        crate::persistence::direct_agent_persistence(fixture.repo.clone()),
         agent_run.id.clone(),
         fixture.conversation.id.clone(),
         fixture.provider.id.clone(),
@@ -1399,7 +1402,7 @@ async fn recoverable_missing_runtime_tool_is_returned_to_model() {
 #[tokio::test]
 async fn max_turns_is_persisted_as_max_steps_stop() {
     let fixture = Fixture::new("max-steps");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.guards.max_steps = 1;
     request
@@ -1463,7 +1466,7 @@ async fn max_turns_is_persisted_as_max_steps_stop() {
 #[tokio::test]
 async fn prompt_error_fails_active_tool_invocations() {
     let fixture = Fixture::new("tool-failure");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = fixture
         .repo
         .insert_agent_run(new_agent_run_input(&fixture.request()))
@@ -1498,6 +1501,7 @@ async fn prompt_error_fails_active_tool_invocations() {
             ToolInvocationStatus::Failed,
             run_error("prompt_error", "tool failed", true, None),
         )
+        .await
         .unwrap();
 
     let invocation = fixture
@@ -1533,7 +1537,7 @@ async fn prompt_error_fails_active_tool_invocations() {
 #[tokio::test]
 async fn rmcp_tool_call_is_registered_and_persisted_with_source_server() {
     let fixture = Fixture::new("mcp-tool-run");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mcp_service = start_mcp_server(vec![make_mcp_tool("mcp_echo", "Echo over MCP")]).await;
     let tools = mcp_service.peer().list_all_tools().await.unwrap();
 
@@ -1574,7 +1578,8 @@ async fn rmcp_tool_call_is_registered_and_persisted_with_source_server() {
 async fn approval_policy_waits_inside_same_run_until_broker_decision() {
     let fixture = Fixture::new("approval");
     let broker = Arc::new(ManualApprovalBroker::default());
-    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
+    let runtime =
+        AgentRuntime::from_repository(fixture.repo.clone()).with_approval_broker(broker.clone());
     let mut request = fixture.request();
     request
         .tool_registry
@@ -1670,7 +1675,8 @@ async fn approval_policy_waits_inside_same_run_until_broker_decision() {
 async fn denied_approval_writes_error_tool_result_and_continues_same_run() {
     let fixture = Fixture::new("approval-denied");
     let broker = Arc::new(ManualApprovalBroker::default());
-    let runtime = AgentRuntime::new(fixture.repo.clone()).with_approval_broker(broker.clone());
+    let runtime =
+        AgentRuntime::from_repository(fixture.repo.clone()).with_approval_broker(broker.clone());
     let mut request = fixture.request();
     request
         .tool_registry
@@ -1735,10 +1741,10 @@ async fn denied_approval_writes_error_tool_result_and_continues_same_run() {
     assert!(approval_decision.seq < tool_result.seq);
 }
 
-#[test]
-fn recovery_fails_active_child_execution_rows() {
+#[tokio::test]
+async fn recovery_fails_active_child_execution_rows() {
     let fixture = Fixture::new("recovery-children");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
     let provider_step = insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
     let invocation = insert_tool_invocation(
@@ -1748,7 +1754,7 @@ fn recovery_fails_active_child_execution_rows() {
         ToolInvocationStatus::Running,
     );
 
-    let recovered = runtime.recover_interrupted_runs().unwrap();
+    let recovered = runtime.recover_interrupted_runs().await.unwrap();
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].status, AgentRunStatus::Failed);
     assert_eq!(recovered[0].error.as_ref().unwrap().code, "interrupted");
@@ -1766,7 +1772,7 @@ fn recovery_fails_active_child_execution_rows() {
         ConversationEntryPayload::Error(error) if error.code == "interrupted"
     ));
     assert_eq!(final_entry.status, ConversationEntryStatus::Failed);
-    let recovered_again = runtime.recover_interrupted_runs().unwrap();
+    let recovered_again = runtime.recover_interrupted_runs().await.unwrap();
     assert!(recovered_again.is_empty());
     assert_eq!(
         fixture
@@ -1799,13 +1805,13 @@ fn recovery_fails_active_child_execution_rows() {
     );
 }
 
-#[test]
-fn recovery_fails_waiting_approval_runs() {
+#[tokio::test]
+async fn recovery_fails_waiting_approval_runs() {
     let fixture = Fixture::new("recovery-waiting");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let (agent_run, invocation) = insert_waiting_approval(&fixture);
 
-    let recovered = runtime.recover_interrupted_runs().unwrap();
+    let recovered = runtime.recover_interrupted_runs().await.unwrap();
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].status, AgentRunStatus::Failed);
     assert_eq!(recovered[0].error.as_ref().unwrap().code, "interrupted");
@@ -1836,10 +1842,10 @@ fn recovery_fails_waiting_approval_runs() {
     );
 }
 
-#[test]
-fn cancel_running_run_terminalizes_active_children_without_run_error() {
+#[tokio::test]
+async fn cancel_running_run_terminalizes_active_children_without_run_error() {
     let fixture = Fixture::new("cancel-running");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
     let provider_step = insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
     let invocation = insert_tool_invocation(
@@ -1875,6 +1881,7 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
 
     let canceled = runtime
         .cancel_run(&agent_run.id, Some(&observer))
+        .await
         .unwrap()
         .unwrap();
 
@@ -1888,13 +1895,25 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
         Some(canceled.output.as_ref().unwrap().final_entry_id.as_str()),
         Some(assistant_item.id.as_str())
     );
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[0],
+        AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            if matches!(
+                changes.as_slice(),
+                [jaco_db::ConversationChange::RunStatusChanged { run }]
+                    if run.id == agent_run.id && run.status == AgentRunStatus::Canceled
+            )
+    ));
     assert_eq!(
-        *events.lock().unwrap(),
-        vec![AgentRuntimeEvent::AgentRunStatusChanged {
+        events[1],
+        AgentRuntimeEvent::AgentRunStatusChanged {
             agent_run_id: agent_run.id.clone(),
             status: AgentRunStatus::Canceled,
-        }]
+        }
     );
+    drop(events);
 
     let provider_step = fixture
         .repo
@@ -1913,10 +1932,10 @@ fn cancel_running_run_terminalizes_active_children_without_run_error() {
     assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
 }
 
-#[test]
-fn late_provider_and_tool_completion_after_cancel_do_not_override_terminal_state() {
+#[tokio::test]
+async fn late_provider_and_tool_completion_after_cancel_do_not_override_terminal_state() {
     let fixture = Fixture::new("cancel-late-finish");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
     let provider_step = insert_provider_step(&fixture, &agent_run.id, ProviderStepStatus::Running);
     let invocation = insert_tool_invocation(
@@ -1926,7 +1945,11 @@ fn late_provider_and_tool_completion_after_cancel_do_not_override_terminal_state
         ToolInvocationStatus::Running,
     );
 
-    runtime.cancel_run(&agent_run.id, None).unwrap().unwrap();
+    runtime
+        .cancel_run(&agent_run.id, None)
+        .await
+        .unwrap()
+        .unwrap();
 
     let provider_step = fixture
         .repo
@@ -1966,13 +1989,17 @@ fn late_provider_and_tool_completion_after_cancel_do_not_override_terminal_state
     assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
 }
 
-#[test]
-fn cancel_waiting_approval_cancels_pending_approval() {
+#[tokio::test]
+async fn cancel_waiting_approval_cancels_pending_approval() {
     let fixture = Fixture::new("cancel-waiting-approval");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let (agent_run, invocation) = insert_waiting_approval(&fixture);
 
-    let canceled = runtime.cancel_run(&agent_run.id, None).unwrap().unwrap();
+    let canceled = runtime
+        .cancel_run(&agent_run.id, None)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(canceled.status, AgentRunStatus::Canceled);
     assert!(canceled.error.is_none());
@@ -1996,10 +2023,10 @@ fn cancel_waiting_approval_cancels_pending_approval() {
     assert_eq!(tool_result_texts(&fixture), vec!["runtime canceled"]);
 }
 
-#[test]
-fn cancel_terminal_run_is_idempotent() {
+#[tokio::test]
+async fn cancel_terminal_run_is_idempotent() {
     let fixture = Fixture::new("cancel-terminal");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Completed);
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observer = AgentRuntimeObserver::new({
@@ -2011,6 +2038,7 @@ fn cancel_terminal_run_is_idempotent() {
 
     let unchanged = runtime
         .cancel_run(&agent_run.id, Some(&observer))
+        .await
         .unwrap()
         .unwrap();
 
@@ -2022,7 +2050,7 @@ fn cancel_terminal_run_is_idempotent() {
 #[tokio::test]
 async fn setup_failure_marks_agent_run_failed() {
     let fixture = Fixture::new("setup-failure");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.project_root = Some(fixture.dir.path().to_path_buf());
     request.skill_requests = vec![crate::SkillActivationRequest::new("missing-skill")];
@@ -2067,7 +2095,7 @@ async fn setup_failure_marks_agent_run_failed() {
 #[tokio::test]
 async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
     let fixture = Fixture::new("saved-provider-setup-failure");
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
 
     let handle = runtime
         .run_with_saved_provider_observed(
@@ -2131,7 +2159,7 @@ async fn skill_activation_is_persisted_as_snapshot() {
     )
     .unwrap();
 
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
     request.project_root = Some(fixture.dir.path().to_path_buf());
     request.skill_requests = vec![crate::SkillActivationRequest::new("rust")];
@@ -2249,9 +2277,9 @@ async fn tool_history_replay_preserves_provider_call_ids() {
             },
         })
         .unwrap();
-    let runtime = AgentRuntime::new(fixture.repo.clone());
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let mut request = fixture.request();
-    request.trigger_entry_id = next_user_item.id;
+    request.trigger_entry_id = next_user_item.id.clone();
     let model = MockCompletionModel::text("ok");
 
     runtime
@@ -2328,6 +2356,7 @@ fn insert_waiting_approval(fixture: &Fixture) -> (AgentRunRecord, ToolInvocation
             },
         )
         .unwrap()
+        .value
         .1;
     (agent_run, invocation)
 }
@@ -2376,6 +2405,7 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
                 },
             )
             .unwrap()
+            .value
             .run;
     }
     fixture
@@ -2481,7 +2511,8 @@ struct Fixture {
 impl Fixture {
     fn new(name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let store =
+            FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
         let db_path = store.path().to_path_buf();
         let repo = store.repository();
         let project = repo
@@ -2563,7 +2594,8 @@ impl Fixture {
                     }],
                 },
             })
-            .unwrap();
+            .unwrap()
+            .value;
         Self {
             dir,
             db_path,

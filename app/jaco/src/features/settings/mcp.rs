@@ -55,7 +55,7 @@ impl McpSettingsPage {
             config_store.observe_select_in(
                 cx,
                 window,
-                |config| config.mcp_servers.clone(),
+                state::selectors::SelectMcpConfig,
                 |page, _, _window, cx| {
                     page.selected_server_id = None;
                     cx.notify();
@@ -176,19 +176,26 @@ impl McpSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match state::config::set_mcp_server_enabled(cx, &server_id, enabled) {
-            Ok(()) => {
-                if !enabled {
-                    state::mcp::runtime(cx).update(cx, |runtime, cx| {
-                        runtime.disconnect_server(server_id, window, cx);
-                    });
-                }
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
-                super::push_settings_error(window, cx, title, err);
-            }
-        }
+        let task = state::config::set_mcp_server_enabled(cx, &server_id, enabled);
+        let page = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let result = task.await;
+                let _ = page.update_in(cx, |_page, window, cx| match result {
+                    Ok(()) => {
+                        if !enabled {
+                            state::mcp::runtime(cx).update(cx, |runtime, cx| {
+                                runtime.disconnect_server(server_id, window, cx);
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                        super::push_settings_error(window, cx, title, err);
+                    }
+                });
+            })
+            .detach();
     }
 
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

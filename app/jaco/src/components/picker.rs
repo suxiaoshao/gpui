@@ -17,6 +17,7 @@ const PICKER_TRIGGER_RADIUS: f32 = 999.;
 
 type OnCancel = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 type OnConfirm<T> = Rc<dyn Fn(T, &mut Window, &mut App) + 'static>;
+type IsSelectable<T> = Rc<dyn Fn(&T) -> bool + 'static>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PickerSection<T> {
@@ -61,6 +62,9 @@ where
     last_query: String,
     selected_value: Option<T::Value>,
     empty_label: SharedString,
+    selectable: bool,
+    read_only_reason: Option<SharedString>,
+    is_item_selectable: IsSelectable<T>,
     on_confirm: OnConfirm<T>,
     on_cancel: OnCancel,
 }
@@ -73,17 +77,19 @@ where
     id: SharedString,
     item: Rc<T>,
     is_selected: bool,
+    selectable: bool,
 }
 
 impl<T> PickerListItem<T>
 where
     T: SelectItem + Clone + 'static,
 {
-    fn new(id: SharedString, item: Rc<T>) -> Self {
+    fn new(id: SharedString, item: Rc<T>, selectable: bool) -> Self {
         Self {
             id,
             item,
             is_selected: false,
+            selectable,
         }
     }
 }
@@ -114,6 +120,7 @@ where
             .py_1()
             .rounded(cx.theme().radius)
             .selected(self.is_selected)
+            .disabled(!self.selectable)
             .child(
                 h_flex()
                     .relative()
@@ -144,6 +151,9 @@ where
             last_query: String::new(),
             selected_value,
             empty_label,
+            selectable: true,
+            read_only_reason: None,
+            is_item_selectable: Rc::new(|_| true),
             on_confirm,
             on_cancel,
         }
@@ -156,6 +166,20 @@ where
 
     pub(crate) fn set_selected_value(&mut self, selected_value: Option<T::Value>) {
         self.selected_value = selected_value;
+    }
+
+    pub(crate) fn set_selectable(
+        &mut self,
+        selectable: bool,
+        read_only_reason: Option<SharedString>,
+    ) {
+        self.selectable = selectable;
+        self.read_only_reason = (!selectable).then_some(read_only_reason).flatten();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_item_selectable(&mut self, is_selectable: impl Fn(&T) -> bool + 'static) {
+        self.is_item_selectable = Rc::new(is_selectable);
     }
 
     pub(crate) fn replace_projection(
@@ -281,11 +305,32 @@ where
             .and_then(|section| section.items.get(ix.row))
             .cloned()
             .map(|item| {
+                let selectable = self.selectable && (self.is_item_selectable)(&item);
                 PickerListItem::new(
                     format!("picker-item-{}-{}", ix.section, ix.row).into(),
                     item,
+                    selectable,
                 )
             })
+    }
+
+    fn render_section_footer(
+        &mut self,
+        section: usize,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        if section + 1 != self.sections.len() {
+            return None;
+        }
+        self.read_only_reason.clone().map(|reason| {
+            Label::new(reason)
+                .text_xs()
+                .px_2()
+                .pt_1()
+                .pb_2()
+                .text_color(cx.theme().warning)
+        })
     }
 
     fn render_empty(
@@ -316,6 +361,9 @@ where
         window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) {
+        if !self.selectable {
+            return;
+        }
         let Some(ix) = self.ix else {
             return;
         };
@@ -327,6 +375,9 @@ where
         else {
             return;
         };
+        if !(self.is_item_selectable)(&item) {
+            return;
+        }
 
         self.selected_value = Some(item.value().clone());
         let on_confirm = self.on_confirm.clone();
@@ -701,5 +752,103 @@ mod tests {
         cx.run_until_parked();
 
         assert!(callback_ran.get());
+    }
+
+    #[gpui::test]
+    fn read_only_picker_does_not_confirm(cx: &mut TestAppContext) {
+        let callback_ran = Rc::new(Cell::new(false));
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
+        ));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let callback_ran = callback_ran.clone();
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    PickerListDelegate::new(
+                        PickerSection::flat([TestItem {
+                            title: "one",
+                            value: 1,
+                            description: "first",
+                        }]),
+                        None,
+                        "Empty".into(),
+                        Rc::new(move |_, _, _| callback_ran.set(true)),
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_selectable(false, Some("Refreshing".into()));
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot.borrow().as_ref().cloned().expect("picker list");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(!callback_ran.get());
+        assert!(
+            list.read_with(cx, |list, _| list.delegate().selected_item())
+                .is_none()
+        );
+    }
+
+    #[gpui::test]
+    fn disabled_item_does_not_confirm(cx: &mut TestAppContext) {
+        let callback_ran = Rc::new(Cell::new(false));
+        let list_slot = Rc::new(RefCell::new(
+            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
+        ));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let callback_ran = callback_ran.clone();
+            let list = cx.new(|cx| {
+                let mut list = ListState::new(
+                    PickerListDelegate::new(
+                        PickerSection::flat([TestItem {
+                            title: "one",
+                            value: 1,
+                            description: "first",
+                        }]),
+                        None,
+                        "Empty".into(),
+                        Rc::new(move |_, _, _| callback_ran.set(true)),
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                );
+                list.delegate_mut()
+                    .set_item_selectable(|item| item.value != 1);
+                list.delegate_mut()
+                    .set_selected_index(Some(IndexPath::default()), window, cx);
+                list
+            });
+            *list_slot.borrow_mut() = Some(list);
+            TestRoot
+        });
+        let list = list_slot.borrow().as_ref().cloned().expect("picker list");
+
+        cx.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                list.delegate_mut().confirm(false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(!callback_ran.get());
+        assert!(
+            list.read_with(cx, |list, _| list.delegate().selected_item())
+                .is_none()
+        );
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
-    AgentRunFinalEntry, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment, NewConversation,
-    NewConversationEntry, NewProject, NewPrompt, NewProvider, NewProviderModel, NewProviderStep,
-    NewShortcut, NewToolInvocation, NewToolInvocationApproval, NewUsageEvent,
+    AgentRunFinalEntry, DATABASE_FILE, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment,
+    NewConversation, NewConversationEntry, NewProject, NewPrompt, NewProvider, NewProviderModel,
+    NewProviderStep, NewShortcut, NewToolInvocation, NewToolInvocationApproval, NewUsageEvent,
     ToolInvocationApproval, ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt,
     UpdateProvider, UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
 };
@@ -17,7 +17,7 @@ use tempfile::tempdir;
 #[test]
 fn creates_fresh_database_and_reads_internal_version() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     assert_eq!(store.path(), &dir.path().join(crate::DATABASE_FILE));
 
     let metadata = store.repository().metadata().unwrap();
@@ -30,10 +30,10 @@ fn creates_fresh_database_and_reads_internal_version() {
 fn bootstrap_is_idempotent() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(crate::DATABASE_FILE);
-    let first = FreshStore::open(&path).unwrap();
+    let first = FreshStore::open_or_create_initial(&path).unwrap();
     let first_updated_at = first.repository().metadata().unwrap().updated_at;
 
-    let second = FreshStore::open(&path).unwrap();
+    let second = FreshStore::open_or_create_initial(&path).unwrap();
     let metadata = second.repository().metadata().unwrap();
     assert_eq!(metadata.schema_version, crate::repository::schema_version());
     assert!(metadata.updated_at >= first_updated_at);
@@ -45,7 +45,7 @@ fn bootstrap_is_idempotent() {
 #[test]
 fn pooled_connections_configure_sqlite_busy_timeout() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let mut conn = store.pool().get().unwrap();
 
     assert_eq!(
@@ -70,7 +70,7 @@ fn failed_migration_rolls_back_partial_schema() {
 #[test]
 fn empty_first_run_has_no_user_data_or_source_tables() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let mut conn = store.pool().get().unwrap();
 
     assert_eq!(count(&mut conn, "projects"), 0);
@@ -97,7 +97,7 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
 #[test]
 fn projects_can_be_listed_in_display_order() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     repo.insert_project(NewProject {
@@ -150,7 +150,7 @@ fn projects_can_be_listed_in_display_order() {
 #[test]
 fn project_can_be_loaded_by_path() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let inserted = repo.insert_project(project("by-path")).unwrap();
 
@@ -166,7 +166,7 @@ fn project_can_be_loaded_by_path() {
 #[test]
 fn sidebar_projects_filter_scratch_and_removed_projects() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let visible = repo.insert_project(project("visible")).unwrap();
@@ -195,7 +195,7 @@ fn sidebar_projects_filter_scratch_and_removed_projects() {
 #[test]
 fn sidebar_project_and_conversation_metadata_can_be_updated() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let project = repo.insert_project(project("pin")).unwrap();
@@ -218,7 +218,7 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
 #[test]
 fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let visible_project = repo
@@ -271,7 +271,7 @@ fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
 #[test]
 fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let searchable_project = repo.insert_project(project("searchable-project")).unwrap();
@@ -336,7 +336,7 @@ fn sidebar_search_matches_title_project_and_item_text_with_visibility_filters() 
 #[test]
 fn no_project_conversations_only_include_visible_scratch_active_conversations() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let normal_project = repo.insert_project(project("normal-no-project")).unwrap();
@@ -378,7 +378,7 @@ fn no_project_conversations_only_include_visible_scratch_active_conversations() 
 #[test]
 fn no_project_search_matches_title_and_item_text_but_not_normal_project_text() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let normal_project = repo.insert_project(project("release-normal")).unwrap();
@@ -419,7 +419,7 @@ fn no_project_search_matches_title_and_item_text_but_not_normal_project_text() {
 #[test]
 fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let mut conn = store.pool().get().unwrap();
 
     let schema_migrations_sql = table_sql(&mut conn, "schema_migrations");
@@ -468,7 +468,7 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 #[test]
 fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("checks")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -553,7 +553,7 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
 #[test]
 fn foreign_keys_transactions_and_cascades_are_enforced() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let invalid = repo.insert_conversation(NewConversation {
@@ -585,7 +585,7 @@ fn foreign_keys_transactions_and_cascades_are_enforced() {
 #[test]
 fn append_items_updates_order_last_seq_and_search_text() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("items")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -635,7 +635,7 @@ fn append_items_updates_order_last_seq_and_search_text() {
 #[test]
 fn update_item_payload_bumps_parent_conversation_timestamp() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("item-update")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -664,7 +664,7 @@ fn update_item_payload_bumps_parent_conversation_timestamp() {
 #[test]
 fn append_item_rejects_cross_conversation_execution_links() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("execution-links")).unwrap();
     let conversation_a = repo.insert_conversation(conversation(&project)).unwrap();
@@ -744,7 +744,7 @@ fn append_item_rejects_cross_conversation_execution_links() {
 #[test]
 fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("agent-run-input")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -794,7 +794,7 @@ fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
 #[test]
 fn insert_tool_invocation_rejects_provider_step_from_other_run() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("tool-step-link")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -853,7 +853,7 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
 #[test]
 fn usage_event_derives_dimensions_from_provider_step() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("usage-dimensions")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -902,7 +902,7 @@ fn usage_event_derives_dimensions_from_provider_step() {
 #[test]
 fn provider_step_derives_dimensions_from_request_snapshot() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo
         .insert_project(project("provider-step-dimensions"))
@@ -980,7 +980,7 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
 #[test]
 fn provider_step_validates_input_item_ownership() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo
         .insert_project(project("provider-step-input-items"))
@@ -1032,7 +1032,7 @@ fn provider_step_validates_input_item_ownership() {
         .unwrap();
     assert_eq!(
         provider_step.request_snapshot.input_item_ids,
-        [user_item.id.clone(), context_item.id]
+        [user_item.id.clone(), context_item.id.clone()]
     );
 
     let mut missing_request = provider_step_request(&provider.id, &model.model_id, &user_item.id);
@@ -1051,7 +1051,7 @@ fn provider_step_validates_input_item_ownership() {
 
     let mut cross_conversation_request =
         provider_step_request(&provider.id, &model.model_id, &user_item.id);
-    cross_conversation_request.input_item_ids = vec![other_item.id];
+    cross_conversation_request.input_item_ids = vec![other_item.id.clone()];
     let cross_conversation = repo.insert_provider_step(NewProviderStep {
         agent_run_id: agent_run.id,
         seq: 2,
@@ -1068,7 +1068,7 @@ fn provider_step_validates_input_item_ownership() {
 #[test]
 fn tool_invocation_approval_derives_status_and_decision_columns() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("approval-outcome")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -1078,7 +1078,8 @@ fn tool_invocation_approval_derives_status_and_decision_columns() {
         .unwrap();
     let user_item = repo
         .append_conversation_entry(message_item(&conversation.id, "approval input"))
-        .unwrap();
+        .unwrap()
+        .value;
     let agent_run = repo
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
@@ -1172,7 +1173,7 @@ fn tool_invocation_approval_derives_status_and_decision_columns() {
 #[test]
 fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("execution-updates")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -1338,7 +1339,7 @@ fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
 #[test]
 fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo
         .insert_project(project("agent-run-finalization"))
@@ -1495,7 +1496,8 @@ fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
                 })),
             },
         )
-        .unwrap();
+        .unwrap()
+        .value;
     let status_entry = completed.final_entry;
     assert!(matches!(
         status_entry.payload,
@@ -1529,7 +1531,7 @@ fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
 #[test]
 fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("approval-entries")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -1580,7 +1582,8 @@ fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
                 }),
             },
         )
-        .unwrap();
+        .unwrap()
+        .value;
     assert!(matches!(
         request_entry.payload,
         ConversationEntryPayload::ApprovalRequest(_)
@@ -1613,7 +1616,8 @@ fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
                 }),
             },
         )
-        .unwrap();
+        .unwrap()
+        .value;
     assert!(matches!(
         decision_entry.payload,
         ConversationEntryPayload::ApprovalDecision(_)
@@ -1652,7 +1656,7 @@ fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
 #[test]
 fn active_execution_inserts_stamp_start_times() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("active-starts")).unwrap();
     let provider = repo.insert_provider(provider()).unwrap();
@@ -1765,7 +1769,7 @@ fn active_execution_inserts_stamp_start_times() {
 #[test]
 fn typed_json_roundtrips_for_repository_records() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
 
     let project = repo.insert_project(project("json")).unwrap();
@@ -1961,7 +1965,7 @@ fn typed_json_roundtrips_for_repository_records() {
 #[test]
 fn provider_model_manual_refresh_updates_cached_row() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let provider = repo.insert_provider(provider()).unwrap();
 
@@ -1988,7 +1992,7 @@ fn provider_model_manual_refresh_updates_cached_row() {
 #[test]
 fn provider_repository_lists_updates_and_deletes_provider_rows() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let provider = repo.insert_provider(provider()).unwrap();
 
@@ -2018,7 +2022,7 @@ fn provider_repository_lists_updates_and_deletes_provider_rows() {
 #[test]
 fn provider_repository_can_insert_with_preallocated_id() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let provider_id = "provider-preallocated-id".to_string();
 
@@ -2036,7 +2040,7 @@ fn provider_repository_can_insert_with_preallocated_id() {
 #[test]
 fn prompt_repository_lists_updates_and_deletes_prompt_rows() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let second = repo
         .insert_prompt(NewPrompt {
@@ -2090,7 +2094,7 @@ fn prompt_repository_lists_updates_and_deletes_prompt_rows() {
 #[test]
 fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let provider = repo.insert_provider(provider()).unwrap();
 
@@ -2163,7 +2167,7 @@ fn provider_model_repository_lists_toggles_replaces_and_deletes_rows() {
 #[test]
 fn conversation_timeline_includes_attachments() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo
         .insert_project(project("timeline-attachments"))
@@ -2202,7 +2206,7 @@ fn conversation_timeline_includes_attachments() {
 #[test]
 fn multimodal_user_message_persists_text_and_attachments_in_one_entry() {
     let dir = tempdir().unwrap();
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
     let repo = store.repository();
     let project = repo.insert_project(project("multimodal-entry")).unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
@@ -2296,7 +2300,7 @@ fn multimodal_user_message_persists_text_and_attachments_in_one_entry() {
         .conversation_timeline_records(&conversation.id)
         .unwrap()
         .unwrap();
-    assert_eq!(timeline.items, vec![entry]);
+    assert_eq!(timeline.items, vec![entry.value]);
     assert_eq!(timeline.attachments, attachments);
 }
 
@@ -2306,7 +2310,7 @@ fn legacy_store_files_coexist_with_fresh_database() {
     fs::write(dir.path().join("history.sqlite3"), "legacy-v1").unwrap();
     fs::write(dir.path().join("history_v6.sqlite3"), "legacy-v6").unwrap();
 
-    let store = FreshStore::open_in_dir(dir.path()).unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
 
     assert!(store.path().exists());
     assert_eq!(

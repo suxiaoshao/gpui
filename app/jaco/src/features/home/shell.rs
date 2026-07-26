@@ -3,12 +3,10 @@ use crate::{
     components::conversation_detail::ConversationDetailPage,
     foundation, state,
 };
-use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Root, StyledExt, TitleBar, WindowExt as _, h_flex,
+    ActiveTheme, Root, StyledExt, TitleBar, h_flex,
     label::Label,
-    notification::{Notification, NotificationType},
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -28,24 +26,37 @@ pub(crate) struct HomeView {
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::JacoLayoutState>,
     workspace: Entity<state::JacoWorkspaceStore>,
+    runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
-    config_load_error_notified: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HomeView {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        workspace: Entity<state::JacoWorkspaceStore>,
+        runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
-        let config_store = state::config::store(cx);
-        let workspace = state::workspace::workspace(cx);
-        let sidebar = cx.new(HomeSidebar::new);
-        let new_conversation = cx.new(|cx| NewConversationPage::new(window, cx));
+        let sidebar_workspace = workspace.clone();
+        let sidebar = cx.new(|cx| HomeSidebar::new(sidebar_workspace, cx));
+        let new_conversation_workspace = workspace.clone();
+        let new_conversation_runtime = runtime.clone();
+        let new_conversation = cx.new(|cx| {
+            NewConversationPage::new(
+                new_conversation_workspace,
+                new_conversation_runtime,
+                window,
+                cx,
+            )
+        });
         let layout_state_for_bounds = layout_state.clone();
         let new_conversation_for_workspace = new_conversation.clone();
 
@@ -54,10 +65,10 @@ impl HomeView {
             app_menu_bar,
             layout_state: layout_state.clone(),
             workspace: workspace.clone(),
+            runtime,
             sidebar,
             new_conversation,
             conversation_pages: HashMap::new(),
-            config_load_error_notified: false,
             _subscriptions: vec![
                 cx.observe(&layout_state, |_state, _layout, cx| {
                     cx.notify();
@@ -96,23 +107,6 @@ impl HomeView {
                         cx.refresh_windows();
                     },
                 ),
-                config_store.observe_select_in(
-                    cx,
-                    window,
-                    |config| {
-                        (
-                            config.app_settings.language,
-                            config.app_settings.theme.clone(),
-                        )
-                    },
-                    |this, _settings, window, cx| {
-                        foundation::init_i18n(cx);
-                        menus::sync_app_menus(cx);
-                        state::theme::apply_current_theme(window, cx);
-                        this.reload_app_menu_bar(cx);
-                        cx.refresh_windows();
-                    },
-                ),
             ],
         }
     }
@@ -125,29 +119,6 @@ impl HomeView {
     pub(crate) fn focus_chat_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_conversation
             .update(cx, |page, cx| page.focus_primary(window, cx));
-    }
-
-    pub(crate) fn notify_config_load_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.config_load_error_notified {
-            return;
-        }
-
-        let Some(load_error) = state::config::config_load_error(cx) else {
-            return;
-        };
-        self.config_load_error_notified = true;
-
-        let i18n = cx.global::<foundation::I18n>();
-        let mut args = FluentArgs::new();
-        args.set("path", load_error.path_display());
-        args.set("error", load_error.message().to_string());
-        window.push_notification(
-            Notification::new()
-                .title(i18n.t("config-load-error-title"))
-                .message(i18n.t_with_args("config-load-error-message", &args))
-                .with_type(NotificationType::Error),
-            cx,
-        );
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
@@ -188,7 +159,8 @@ impl HomeView {
         self.conversation_pages
             .entry(conversation_id.clone())
             .or_insert_with(|| {
-                cx.new(|cx| ConversationDetailPage::new(conversation_id, window, cx))
+                let runtime = self.runtime.clone();
+                cx.new(|cx| ConversationDetailPage::new(conversation_id, runtime, window, cx))
             })
             .clone()
     }

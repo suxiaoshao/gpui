@@ -13,6 +13,7 @@ members = [
   "crates/gpui-form",
   "crates/gpui-form-gpui-component",
   "crates/gpui-form-macros",
+  "crates/gpui-operation",
   "crates/gpui-store",
   "crates/gpui-tokio",
   "crates/platform-ext",
@@ -36,6 +37,7 @@ app-theme = { path = "./crates/app-theme", default-features = false }
 gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter", "validify-transform"] }
 gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }
 gpui-form-macros = { path = "./crates/gpui-form-macros" }
+gpui-operation = { path = "./crates/gpui-operation" }
 gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }
 garde = { version = "0.23.0", default-features = false, features = ["derive", "url", "email", "pattern"] }

@@ -2,35 +2,38 @@ mod approval;
 
 use std::{collections::HashMap, sync::Arc};
 
-use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
+use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Task};
+use gpui_operation::{Cancel, Complete, Load, Retry, Transition, refresh};
 use jaco_agent::{
-    AgentCancellationToken, AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeObserver,
-    ToolApprovalDecision,
+    AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
+    AgentRuntimeObserver, ToolApprovalDecision,
 };
 use jaco_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
-use jaco_db::FreshRepository;
+use jaco_db::ProviderRecord;
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
 
 use self::approval::ConversationApprovalBroker;
 use crate::{database, errors::JacoResult, state::provider_secrets::ProviderSecretStore};
 
-#[derive(Clone)]
-pub(crate) struct ConversationRuntimeGlobal(Entity<ConversationRuntimeStore>);
-
-impl ConversationRuntimeGlobal {
-    pub(crate) fn entity(&self) -> Entity<ConversationRuntimeStore> {
-        self.0.clone()
-    }
-}
-
-impl Global for ConversationRuntimeGlobal {}
-
 pub(crate) struct ConversationRuntimeStore {
     active_runs: HashMap<ConversationId, ActiveRun>,
     last_errors: HashMap<ConversationId, String>,
     next_run_key: u64,
+    shutting_down: bool,
+    recovery: refresh::Operation<(), ConversationRuntimeProblem, Task<()>>,
 }
+
+#[derive(Debug)]
+pub(crate) struct ConversationRuntimeProblem(String);
+
+impl std::fmt::Display for ConversationRuntimeProblem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConversationRuntimeProblem {}
 
 struct ActiveRun {
     key: ActiveRunKey,
@@ -44,11 +47,22 @@ struct ActiveRun {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActiveRunKey(u64);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConversationRuntimeEvent {
-    RunStarted { conversation_id: ConversationId },
-    ConversationChanged { conversation_id: ConversationId },
-    RunFinished { conversation_id: ConversationId },
+    RunStarted {
+        conversation_id: ConversationId,
+    },
+    ConversationChanged {
+        conversation_id: ConversationId,
+    },
+    ConversationChanges {
+        conversation_id: ConversationId,
+        conversation: Option<Box<jaco_db::ConversationRecord>>,
+        changes: Vec<jaco_db::ConversationChange>,
+    },
+    RunFinished {
+        conversation_id: ConversationId,
+    },
 }
 
 impl EventEmitter<ConversationRuntimeEvent> for ConversationRuntimeStore {}
@@ -59,7 +73,17 @@ impl ConversationRuntimeStore {
             active_runs: HashMap::new(),
             last_errors: HashMap::new(),
             next_run_key: 0,
+            shutting_down: false,
+            recovery: refresh::Operation::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn new_ready_for_test() -> Self {
+        let mut runtime = Self::new();
+        runtime.recovery.transition(Load(Task::ready(())));
+        runtime.recovery.transition(Complete(Ok(())));
+        runtime
     }
 
     pub(crate) fn is_running(&self, conversation_id: &ConversationId) -> bool {
@@ -95,17 +119,24 @@ impl ConversationRuntimeStore {
             active.approval_broker.cancel_all();
         }
         active.run_task.take();
-        let repository = database::repository(cx);
-        if let Err(err) = AgentRuntime::new(repository)
-            .cancel_non_terminal_runs_for_conversation(conversation_id, None)
-        {
-            event!(
-                Level::ERROR,
-                error = ?err,
-                conversation_id = %conversation_id,
-                agent_run_id = ?active.agent_run_id,
-                "cancel active conversation runs failed"
-            );
+        if let Ok(persistence) = database::ready_agent_persistence(cx) {
+            let conversation_id = conversation_id.clone();
+            let agent_run_id = active.agent_run_id.clone();
+            cx.spawn(async move |_, _| {
+                if let Err(err) = AgentRuntime::new(persistence)
+                    .cancel_non_terminal_runs_for_conversation(&conversation_id, None)
+                    .await
+                {
+                    event!(
+                        Level::ERROR,
+                        error = ?err,
+                        conversation_id = %conversation_id,
+                        agent_run_id = ?agent_run_id,
+                        "cancel active conversation runs failed"
+                    );
+                }
+            })
+            .detach();
         }
 
         self.last_errors.remove(conversation_id);
@@ -125,6 +156,17 @@ impl ConversationRuntimeStore {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
+            self.last_errors.insert(
+                request.conversation_id.clone(),
+                self.recovery
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "conversation runtime is recovering".to_string()),
+            );
+            cx.notify();
+            return false;
+        }
         let conversation_id = request.conversation_id.clone();
         if self.active_runs.contains_key(&conversation_id) {
             return false;
@@ -132,7 +174,24 @@ impl ConversationRuntimeStore {
 
         self.last_errors.remove(&conversation_id);
         let run_key = self.next_active_run_key();
-        let repository = database::repository(cx);
+        let persistence = match database::ready_agent_persistence(cx) {
+            Ok(persistence) => persistence,
+            Err(error) => {
+                self.last_errors
+                    .insert(conversation_id.clone(), error.to_string());
+                cx.notify();
+                return false;
+            }
+        };
+        let provider = match crate::state::providers::ready_provider(&request.provider_id, cx) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.last_errors
+                    .insert(conversation_id.clone(), error.to_string());
+                cx.notify();
+                return false;
+            }
+        };
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
         let approval_broker = Arc::new(ConversationApprovalBroker::new());
@@ -141,9 +200,15 @@ impl ConversationRuntimeStore {
         let cancellation_token = request.cancellation_token.clone();
         let runtime_approval_broker = approval_broker.clone();
         let run_task = window.spawn(cx, async move |cx| {
-            let result =
-                run_agent_with_saved_provider(repository, request, tx, runtime_approval_broker, cx)
-                    .await;
+            let result = run_agent_with_saved_provider(
+                persistence,
+                provider,
+                request,
+                tx,
+                runtime_approval_broker,
+                cx,
+            )
+            .await;
             if let Err(err) = store.update_in(cx, |store, _window, cx| {
                 store.finish_run(run_conversation_id.clone(), run_key, result, cx);
             }) {
@@ -170,6 +235,43 @@ impl ConversationRuntimeStore {
         true
     }
 
+    pub(crate) fn shutdown_all(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        if self.shutting_down {
+            return Task::ready(());
+        }
+        self.shutting_down = true;
+        if self.recovery.is_running() {
+            self.recovery.transition(Cancel);
+        }
+
+        let active_runs = std::mem::take(&mut self.active_runs);
+        let mut tasks = Vec::with_capacity(active_runs.len());
+        for (conversation_id, mut active) in active_runs {
+            active.cancellation_token.cancel();
+            if let Some(agent_run_id) = active.agent_run_id.as_ref() {
+                active.approval_broker.cancel_all_for_run(agent_run_id);
+            } else {
+                active.approval_broker.cancel_all();
+            }
+            self.last_errors.remove(&conversation_id);
+            cx.emit(ConversationRuntimeEvent::ConversationChanged {
+                conversation_id: conversation_id.clone(),
+            });
+            cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
+            tasks.push((active.run_task.take(), active._event_task));
+        }
+        cx.notify();
+
+        cx.spawn(async move |_, _| {
+            for (run_task, event_task) in tasks {
+                if let Some(run_task) = run_task {
+                    run_task.await;
+                }
+                event_task.await;
+            }
+        })
+    }
+
     pub(crate) fn approve_tool_invocation(
         &mut self,
         conversation_id: ConversationId,
@@ -177,6 +279,9 @@ impl ConversationRuntimeStore {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
+            return false;
+        }
         self.last_errors.remove(&conversation_id);
         let Some(active) = self.active_runs.get(&conversation_id) else {
             return false;
@@ -214,6 +319,9 @@ impl ConversationRuntimeStore {
         tool_invocation_id: ToolInvocationId,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
+            return false;
+        }
         self.last_errors.remove(&conversation_id);
         let Some(active) = self.active_runs.get(&conversation_id) else {
             return false;
@@ -274,6 +382,34 @@ impl ConversationRuntimeStore {
         cx: &mut Context<Self>,
     ) {
         match runtime_event {
+            jaco_agent::AgentRuntimeEvent::ConversationCommitted {
+                conversation,
+                index_delta,
+                changes,
+            } => {
+                let conversation = *conversation;
+                let conversation_id = conversation.id.clone();
+                crate::state::conversation_index::publish_committed(
+                    conversation.clone(),
+                    index_delta,
+                    cx,
+                );
+                cx.emit(ConversationRuntimeEvent::ConversationChanges {
+                    conversation_id: conversation_id.clone(),
+                    conversation: Some(Box::new(conversation.clone())),
+                    changes,
+                });
+            }
+            jaco_agent::AgentRuntimeEvent::ConversationTimelineChanged {
+                conversation_id,
+                changes,
+            } => {
+                cx.emit(ConversationRuntimeEvent::ConversationChanges {
+                    conversation_id,
+                    conversation: None,
+                    changes,
+                });
+            }
             jaco_agent::AgentRuntimeEvent::AgentRunStarted {
                 agent_run_id,
                 conversation_id,
@@ -353,26 +489,79 @@ impl ConversationRuntimeStore {
     }
 }
 
-pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
-    let recovered = AgentRuntime::new(database::repository(cx)).recover_interrupted_runs()?;
-    if !recovered.is_empty() {
+pub(crate) fn create(cx: &mut App) -> JacoResult<Entity<ConversationRuntimeStore>> {
+    let store = cx.new(|_| ConversationRuntimeStore::new());
+    request_recovery(store.clone(), cx)?;
+    Ok(store)
+}
+
+pub(crate) fn retry_recovery_if_needed(store: &Entity<ConversationRuntimeStore>, cx: &mut App) {
+    let should_retry = {
+        let runtime = store.read(cx);
+        !runtime.shutting_down
+            && matches!(
+                runtime.recovery,
+                refresh::Operation::Unavailable(_) | refresh::Operation::Degraded(_)
+            )
+    };
+    if should_retry && let Err(error) = request_recovery(store.clone(), cx) {
         event!(
-            Level::WARN,
-            recovered_count = recovered.len(),
-            "recovered interrupted jaco agent runs"
+            Level::ERROR,
+            ?error,
+            "retry conversation runtime recovery failed"
         );
     }
-    let store = cx.new(|_| ConversationRuntimeStore::new());
-    cx.set_global(ConversationRuntimeGlobal(store));
+}
+
+fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> JacoResult<()> {
+    let persistence = database::ready_agent_persistence(cx)?;
+    let completion_store = store.downgrade();
+    let task = cx.spawn(async move |cx| {
+        let result = AgentRuntime::new(persistence)
+            .recover_interrupted_runs()
+            .await
+            .map_err(|error| ConversationRuntimeProblem(error.to_string()));
+        if let Ok(recovered) = &result
+            && !recovered.is_empty()
+        {
+            event!(
+                Level::WARN,
+                recovered_count = recovered.len(),
+                "recovered interrupted jaco agent runs"
+            );
+        }
+        let failed = result.is_err();
+        let _ = completion_store.update(cx, |runtime, cx| {
+            if runtime.recovery.is_running() {
+                runtime.recovery.transition(Complete(result.map(|_| ())));
+                cx.notify();
+            }
+        });
+        if failed {
+            event!(Level::ERROR, "recover interrupted jaco agent runs failed");
+            cx.update(database::request_refresh);
+        }
+    });
+    store.update(cx, |runtime, cx| {
+        match runtime.recovery {
+            refresh::Operation::Idle(_) => runtime.recovery.transition(Load(task)),
+            refresh::Operation::Unavailable(_) | refresh::Operation::Degraded(_) => {
+                runtime.recovery.transition(Retry(task));
+            }
+            refresh::Operation::Loading(_)
+            | refresh::Operation::Ready(_)
+            | refresh::Operation::Refreshing(_)
+            | refresh::Operation::Retrying(_)
+            | refresh::Operation::RefreshingDegraded(_) => {}
+        }
+        cx.notify();
+    });
     Ok(())
 }
 
-pub(crate) fn runtime(cx: &App) -> Entity<ConversationRuntimeStore> {
-    cx.global::<ConversationRuntimeGlobal>().entity()
-}
-
 async fn run_agent_with_saved_provider(
-    repository: FreshRepository,
+    persistence: Arc<dyn AgentPersistence>,
+    provider: ProviderRecord,
     request: AgentRunRequest,
     tx: Sender<jaco_agent::AgentRuntimeEvent>,
     approval_broker: Arc<ConversationApprovalBroker>,
@@ -383,12 +572,14 @@ async fn run_agent_with_saved_provider(
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
-    let runtime = AgentRuntime::new(repository.clone()).with_approval_broker(approval_broker);
+    let runtime = AgentRuntime::new(persistence).with_approval_broker(approval_broker);
     let mut request = match crate::state::mcp::prepare_run_request(request, cx).await {
         Ok(prepared) => prepared.request,
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
-                runtime.record_setup_failed_run(err.request, err.message, Some(&observer))
+                runtime
+                    .record_setup_failed_run(err.request, err.message, Some(&observer))
+                    .await
             })
             .await
             .map_err(|err| err.to_string())?
@@ -397,27 +588,15 @@ async fn run_agent_with_saved_provider(
     };
     let agent_run = runtime
         .begin_run(&mut request, Some(&observer))
+        .await
         .map_err(|err| err.to_string())?;
-    let provider = match repository
-        .get_provider(&request.provider_id)
-        .map_err(|err| err.to_string())?
-    {
-        Some(provider) => provider,
-        None => {
-            let message = format!("provider `{}` was not found", request.provider_id);
-            return gpui_tokio::Tokio::spawn(cx, async move {
-                runtime.record_setup_failed_started_run(&agent_run, message, Some(&observer))
-            })
-            .await
-            .map_err(|err| err.to_string())?
-            .map_err(|err| err.to_string());
-        }
-    };
     let secrets = match ProviderSecretStore::read_values(cx, &provider.secret_refs).await {
         Ok(secrets) => secrets,
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
-                runtime.record_setup_failed_started_run(&agent_run, err, Some(&observer))
+                runtime
+                    .record_setup_failed_started_run(&agent_run, err, Some(&observer))
+                    .await
             })
             .await
             .map_err(|err| err.to_string())?
@@ -450,7 +629,7 @@ fn is_terminal_status(status: AgentRunStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::FreshStoreGlobal;
+    use crate::database;
     use gpui::{Subscription, WindowHandle};
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
@@ -463,8 +642,8 @@ mod tests {
         conservative_model_capabilities,
     };
     use jaco_db::{
-        NewAgentRun, NewConversation, NewConversationEntry, NewProject, NewToolInvocation,
-        NewToolInvocationApproval,
+        FreshRepository, NewAgentRun, NewConversation, NewConversationEntry, NewProject,
+        NewToolInvocation, NewToolInvocationApproval,
     };
     use std::sync::{Arc, Mutex};
     use tempfile::{TempDir, tempdir};
@@ -523,23 +702,24 @@ mod tests {
     fn init_recovers_persisted_running_runs(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
             (conversation_id, agent_run_id)
         });
 
+        let runtime = cx.update(|cx| create(cx).expect("initialize conversation runtime"));
+        cx.run_until_parked();
         cx.update(|cx| {
-            init(cx).expect("initialize conversation runtime");
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let agent_run = repository
                 .get_agent_run(&agent_run_id)
                 .expect("load recovered run")
                 .expect("recovered run exists");
             assert_eq!(agent_run.status, AgentRunStatus::Failed);
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
-            assert!(!runtime(cx).read(cx).is_running(&conversation_id));
+            assert!(!runtime.read(cx).is_running(&conversation_id));
         });
     }
 
@@ -547,7 +727,7 @@ mod tests {
     fn init_recovers_persisted_waiting_approval_runs(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -555,16 +735,17 @@ mod tests {
             (conversation_id, agent_run_id, approval_id)
         });
 
+        let runtime = cx.update(|cx| create(cx).expect("initialize conversation runtime"));
+        cx.run_until_parked();
         cx.update(|cx| {
-            init(cx).expect("initialize conversation runtime");
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let agent_run = repository
                 .get_agent_run(&agent_run_id)
                 .expect("load recovered run")
                 .expect("recovered run exists");
             assert_eq!(agent_run.status, AgentRunStatus::Failed);
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
-            assert!(!runtime(cx).read(cx).is_running(&conversation_id));
+            assert!(!runtime.read(cx).is_running(&conversation_id));
 
             let invocation = repository
                 .get_tool_invocation(&approval_id)
@@ -592,11 +773,11 @@ mod tests {
     #[gpui::test]
     fn stop_run_cancels_active_run_immediately(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
         let cancellation_token = AgentCancellationToken::new();
         let (conversation_id, agent_run_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -624,9 +805,10 @@ mod tests {
         });
 
         assert!(cancellation_token.is_cancelled());
+        cx.run_until_parked();
 
         cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
             assert_eq!(run.status, AgentRunStatus::Canceled);
             assert!(run.error.is_none());
@@ -639,7 +821,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_records_uncanceled_error(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
         cx.update(|cx| {
@@ -664,7 +846,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_removes_matching_active_run(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let agent_run = jaco_db::AgentRunRecord {
             id: "run-1".to_string(),
@@ -718,9 +900,9 @@ mod tests {
     #[gpui::test]
     fn deny_tool_invocation_resolves_matching_pending_approval(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -760,10 +942,10 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let window = open_runtime_test_window(cx);
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -788,7 +970,7 @@ mod tests {
         assert!(!approved);
 
         cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let invocation = repository
                 .get_tool_invocation(&approval_id)
                 .unwrap()
@@ -810,9 +992,9 @@ mod tests {
     #[gpui::test]
     fn deny_tool_invocation_without_active_waiting_run_is_ignored(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -833,7 +1015,7 @@ mod tests {
         });
 
         cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let invocation = repository
                 .get_tool_invocation(&approval_id)
                 .unwrap()
@@ -853,9 +1035,9 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let _dir = init_runtime_test(cx);
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
             let agent_run_id =
                 insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
@@ -887,7 +1069,7 @@ mod tests {
 
     #[gpui::test]
     fn conversation_entry_updated_emits_conversation_changed(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
         let conversation_id = "conversation-1".to_string();
 
@@ -911,7 +1093,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_ignores_stale_run_key(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new()));
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
         cx.update(|cx| {
@@ -935,9 +1117,13 @@ mod tests {
     fn init_runtime_test(cx: &mut gpui::TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
         });
         dir
+    }
+
+    fn test_repository(cx: &App) -> FreshRepository {
+        database::with_ready_repository(cx, |repository| Ok(repository.clone())).unwrap()
     }
 
     fn open_runtime_test_window(cx: &mut gpui::TestAppContext) -> WindowHandle<TestView> {

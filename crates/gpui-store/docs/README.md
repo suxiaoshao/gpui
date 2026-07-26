@@ -1,19 +1,17 @@
 # gpui-store documentation
 
-## Design
+These documents describe the public API implemented by `gpui-store` 0.1.
 
-- [Complete design (English)](design.md)
-- [完整设计（中文）](design.zh-CN.md)
+## Library documentation
 
-Design documents define the final concepts, ownership boundaries, and public invariants. They do not contain migration work packages.
+- [User guide (English)](guide.md)
+- [使用指南（中文）](guide.zh-CN.md)
 
-## Usage reference
+The guide documents the complete public model: creating and sharing a
+`Store<S>`, global stores, reads and mutations, reusable `Select`
+implementations, atomic `StoreChange` outcomes, `StoreSelection`, whole-store
+and selected-value observation, notification semantics, ownership, and
+integration boundaries.
 
-- [API and backend reference](reference.md)
-
-## Implementation documents
-
-The implementation plans are written in Chinese and record the concrete work packages and verification gates behind the current design. Public usage and final invariants are defined by the design and reference documents above:
-
-- [development-plan.md](development-plan.md)
-- [catalog-snapshot-projection-plan.md](catalog-snapshot-projection-plan.md)
+Implementation notes and migration plans are intentionally not part of this
+public documentation set.

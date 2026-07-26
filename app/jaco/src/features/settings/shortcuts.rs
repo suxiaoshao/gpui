@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
+    components::resource_status,
     foundation::{I18n, assets::IconName},
     state,
 };
@@ -35,7 +36,9 @@ mod validation;
 
 pub(super) struct ShortcutsSettingsPage {
     search_input: Entity<InputState>,
-    snapshot: Result<ShortcutSettingsSnapshot, String>,
+    shortcut_resource: state::shortcuts::ShortcutStore,
+    prompt_resource: state::prompts::PromptStore,
+    provider_resource: state::providers::ProviderStore,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -52,43 +55,35 @@ impl ShortcutsSettingsPage {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("shortcut-search-placeholder"))
         });
-        let snapshot = match Self::load_snapshot(cx) {
-            Ok(snapshot) => Ok(snapshot),
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
-                let message = err.to_string();
-                push_settings_error(window, cx, title, message.clone());
-                Err(message)
-            }
-        };
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let shortcut_catalog = state::shortcuts::catalog(cx);
         let shortcut_subscription = shortcut_catalog.observe_select_in(
             cx,
             window,
-            |state| state.shortcuts().to_vec(),
-            |page, _shortcuts, window, cx| {
-                page.reload_snapshot(window, cx);
-            },
+            state::selectors::SelectShortcutRecords,
+            |_page, _shortcuts, _window, cx| cx.notify(),
         );
+        let shortcut_phase_subscription =
+            shortcut_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
         let prompt_catalog = state::prompts::catalog(cx);
         let prompt_subscription = prompt_catalog.observe_select_in(
             cx,
             window,
-            |state| state.prompts().to_vec(),
-            |page, _catalog, window, cx| {
-                page.reload_snapshot(window, cx);
-            },
+            state::selectors::SelectPromptRecords,
+            |_page, _catalog, _window, cx| cx.notify(),
         );
+        let prompt_phase_subscription =
+            prompt_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
         let provider_catalog = state::providers::catalog(cx);
-        let provider_subscription = cx.observe_in(
-            &provider_catalog.entity(),
+        let provider_subscription = provider_catalog.observe_select_in(
+            cx,
             window,
-            |page, _catalog, window, cx| {
-                page.reload_snapshot(window, cx);
-            },
+            state::selectors::SelectProviderRecordsWithModels,
+            |_page, _catalog, _window, cx| cx.notify(),
         );
+        let provider_phase_subscription =
+            provider_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
         let diagnostics_subscription =
             cx.observe_global_in::<state::GlobalHotkeyState>(window, |_page, _window, cx| {
                 cx.notify();
@@ -96,12 +91,17 @@ impl ShortcutsSettingsPage {
 
         Self {
             search_input,
-            snapshot,
+            shortcut_resource: shortcut_catalog,
+            prompt_resource: prompt_catalog,
+            provider_resource: provider_catalog,
             _subscriptions: vec![
                 search_subscription,
                 shortcut_subscription,
+                shortcut_phase_subscription,
                 prompt_subscription,
+                prompt_phase_subscription,
                 provider_subscription,
+                provider_phase_subscription,
                 diagnostics_subscription,
             ],
         }
@@ -127,39 +127,20 @@ impl ShortcutsSettingsPage {
         }
     }
 
-    fn reload_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match Self::load_snapshot(cx) {
-            Ok(snapshot) => {
-                self.snapshot = Ok(snapshot);
-                cx.notify();
-                true
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
-                let message = err.to_string();
-                self.snapshot = Err(message.clone());
-                push_settings_error(window, cx, title, message);
-                cx.notify();
-                false
-            }
-        }
-    }
-
     fn current_query(&self, cx: &App) -> String {
         self.search_input.read(cx).value().trim().to_string()
     }
 
-    fn shortcut_by_id(&self, shortcut_id: &ShortcutId) -> Option<&ShortcutRecord> {
-        self.snapshot
-            .as_ref()
+    fn shortcut_by_id(&self, shortcut_id: &ShortcutId, cx: &App) -> Option<ShortcutRecord> {
+        Self::load_snapshot(cx)
             .ok()?
             .shortcuts
-            .iter()
+            .into_iter()
             .find(|shortcut| &shortcut.id == shortcut_id)
     }
 
     fn row_by_id(&self, shortcut_id: &ShortcutId, cx: &App) -> Option<ShortcutManagementRow> {
-        let snapshot = self.snapshot.as_ref().ok()?;
+        let snapshot = Self::load_snapshot(cx).ok()?;
         let diagnostics = state::GlobalHotkeyState::diagnostics_snapshot(cx);
         shortcut_management_rows(
             &snapshot.shortcuts,
@@ -173,7 +154,7 @@ impl ShortcutsSettingsPage {
     }
 
     fn dialog_choices(&self, cx: &App) -> ShortcutDialogChoices {
-        let Some(snapshot) = self.snapshot.as_ref().ok() else {
+        let Ok(snapshot) = Self::load_snapshot(cx) else {
             return ShortcutDialogChoices {
                 prompts: Vec::new(),
             };
@@ -193,10 +174,8 @@ impl ShortcutsSettingsPage {
     }
 
     fn open_add_shortcut_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let existing_shortcuts = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.shortcuts.clone())
+        let existing_shortcuts = Self::load_snapshot(cx)
+            .map(|snapshot| snapshot.shortcuts)
             .unwrap_or_default();
         let temporary_hotkey = state::GlobalHotkeyState::diagnostics_snapshot(cx).temporary_hotkey;
         open_shortcut_edit_dialog(
@@ -216,7 +195,7 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(shortcut) = self.shortcut_by_id(&shortcut_id).cloned() else {
+        let Some(shortcut) = self.shortcut_by_id(&shortcut_id, cx) else {
             let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
             push_settings_error(window, cx, title, shortcut_id);
             return;
@@ -249,7 +228,7 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(shortcut) = self.shortcut_by_id(&shortcut_id).cloned() else {
+        let Some(shortcut) = self.shortcut_by_id(&shortcut_id, cx) else {
             let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
             push_settings_error(window, cx, title, shortcut_id);
             return;
@@ -263,10 +242,8 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let existing_shortcuts = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.shortcuts.clone())
+        let existing_shortcuts = Self::load_snapshot(cx)
+            .map(|snapshot| snapshot.shortcuts)
             .unwrap_or_default();
         let temporary_hotkey = state::GlobalHotkeyState::diagnostics_snapshot(cx).temporary_hotkey;
         open_shortcut_edit_dialog(
@@ -286,7 +263,7 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(shortcut) = self.shortcut_by_id(&shortcut_id).cloned() else {
+        let Some(shortcut) = self.shortcut_by_id(&shortcut_id, cx) else {
             let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
             push_settings_error(window, cx, title, shortcut_id);
             return;
@@ -301,10 +278,18 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(err) = state::shortcuts::set_shortcut_enabled(cx, &shortcut_id, enabled) {
-            let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
-            push_settings_error(window, cx, title, err);
-        }
+        let mutation = state::shortcuts::set_shortcut_enabled(cx, shortcut_id, enabled);
+        window
+            .spawn(cx, async move |cx| {
+                let result = mutation.await;
+                if let Err(err) = result {
+                    let _ = cx.update(|window, cx| {
+                        let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
+                        push_settings_error(window, cx, title, err);
+                    });
+                }
+            })
+            .detach();
     }
 
     fn reregister_shortcut(
@@ -313,7 +298,7 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match state::shortcuts::reregister_shortcut(cx, &shortcut_id) {
+        match state::shortcuts::reregister_shortcut(cx, shortcut_id) {
             Ok(_) => {
                 window.push_notification(
                     Notification::new()
@@ -459,22 +444,52 @@ impl ShortcutsSettingsPage {
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match &self.snapshot {
+        match Self::load_snapshot(cx) {
             Err(err) => {
                 let load_failed = cx.global::<I18n>().t("notify-load-shortcuts-failed");
                 settings_empty_message(format!("{load_failed}: {err}"))
             }
             Ok(snapshot) if snapshot.shortcuts.is_empty() => self.render_empty_shortcuts(cx),
-            Ok(snapshot) => self.render_shortcut_rows(snapshot, window, cx),
+            Ok(snapshot) => self.render_shortcut_rows(&snapshot, window, cx),
         }
     }
 }
 
 impl Render for ShortcutsSettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let shortcut_status = self.shortcut_resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "shortcut-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::shortcuts::request_refresh,
+                cx,
+            )
+        });
+        let prompt_status = self.prompt_resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "shortcut-prompt-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::prompts::request_refresh,
+                cx,
+            )
+        });
+        let provider_status = self.provider_resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "shortcut-provider-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::providers::request_refresh,
+                cx,
+            )
+        });
         v_flex()
             .w_full()
             .gap_3()
+            .children(shortcut_status)
+            .children(prompt_status)
+            .children(provider_status)
             .child(self.render_toolbar(window, cx))
             .child(self.render_body(window, cx))
     }

@@ -21,23 +21,23 @@ use super::actions::{
     OpenNewConversation,
 };
 
-pub(crate) struct HomeSidebar;
+pub(crate) struct HomeSidebar {
+    workspace: Entity<state::JacoWorkspaceStore>,
+}
 
 impl HomeSidebar {
-    pub(crate) fn new(_: &mut Context<Self>) -> Self {
-        Self
+    pub(crate) fn new(workspace: Entity<state::JacoWorkspaceStore>, _: &mut Context<Self>) -> Self {
+        Self { workspace }
     }
 }
 
 impl Render for HomeSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings_label = sidebar_settings_label(cx.global::<foundation::I18n>());
-        let workspace = state::workspace::workspace(cx);
+        let workspace = self.workspace.clone();
         let route = workspace.read(cx).route().clone();
         let snapshot = workspace.read(cx).snapshot().clone();
-        let last_error = workspace.read(cx).last_error().map(ToOwned::to_owned);
-
-        let sections = sidebar_sections(snapshot, route, workspace, last_error, cx);
+        let sections = sidebar_sections(snapshot, route, workspace, cx);
 
         Sidebar::<SidebarSection>::new("jaco-main-sidebar")
             .side(Side::Left)
@@ -54,7 +54,6 @@ impl Render for HomeSidebar {
 enum SidebarSection {
     Actions(SidebarActions),
     Rows(SidebarGroup<SidebarRows>),
-    Message(SidebarMessage),
 }
 
 impl Collapsible for SidebarSection {
@@ -62,7 +61,6 @@ impl Collapsible for SidebarSection {
         match self {
             Self::Actions(menu) => Self::Actions(menu.collapsed(collapsed)),
             Self::Rows(group) => Self::Rows(group.collapsed(collapsed)),
-            Self::Message(message) => Self::Message(message.collapsed(collapsed)),
         }
     }
 
@@ -70,7 +68,6 @@ impl Collapsible for SidebarSection {
         match self {
             Self::Actions(menu) => menu.is_collapsed(),
             Self::Rows(group) => group.is_collapsed(),
-            Self::Message(message) => message.is_collapsed(),
         }
     }
 }
@@ -85,7 +82,6 @@ impl SidebarItem for SidebarSection {
         match self {
             Self::Actions(menu) => menu.render(id, window, cx).into_any_element(),
             Self::Rows(group) => group.render(id, window, cx).into_any_element(),
-            Self::Message(message) => message.render(id, window, cx).into_any_element(),
         }
     }
 }
@@ -235,63 +231,13 @@ impl SidebarRow {
     }
 }
 
-#[derive(Clone)]
-struct SidebarMessage {
-    message: SharedString,
-    collapsed: bool,
-}
-
-impl SidebarMessage {
-    fn new(message: impl Into<SharedString>) -> Self {
-        Self {
-            message: message.into(),
-            collapsed: false,
-        }
-    }
-}
-
-impl Collapsible for SidebarMessage {
-    fn collapsed(mut self, collapsed: bool) -> Self {
-        self.collapsed = collapsed;
-        self
-    }
-
-    fn is_collapsed(&self) -> bool {
-        self.collapsed
-    }
-}
-
-impl SidebarItem for SidebarMessage {
-    fn render(
-        self,
-        id: impl Into<ElementId>,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> impl IntoElement {
-        div().id(id).w_full().when(!self.collapsed, |this| {
-            this.child(
-                Label::new(self.message)
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .px_2()
-                    .py_1(),
-            )
-        })
-    }
-}
-
 fn sidebar_sections(
     snapshot: state::workspace::SidebarSnapshot,
     route: state::HomeRoute,
     workspace: Entity<state::JacoWorkspaceStore>,
-    last_error: Option<String>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     let mut sections = vec![SidebarSection::Actions(top_actions(cx))];
-
-    if let Some(error) = last_error {
-        sections.push(SidebarSection::Message(SidebarMessage::new(error)));
-    }
 
     sections.extend(render_pinned_section(
         snapshot.pinned,

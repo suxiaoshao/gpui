@@ -1,10 +1,11 @@
 use crate::{
+    components::resource_status,
     foundation::{I18n, assets::IconName},
     state,
 };
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -27,7 +28,8 @@ mod rows;
 
 pub(super) struct PromptsSettingsPage {
     search_input: Entity<InputState>,
-    prompts: StoreSelection<Vec<PromptRecord>>,
+    resource: state::prompts::PromptStore,
+    prompts: StoreSelection<Option<Vec<PromptRecord>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -38,15 +40,17 @@ impl PromptsSettingsPage {
                 .placeholder(cx.global::<I18n>().t("prompt-search-placeholder"))
         });
         let prompt_catalog = state::prompts::catalog(cx);
-        let prompts =
-            prompt_catalog.select_cloned(cx, state::prompts::PromptCatalogState::prompt_records);
+        let prompts = prompt_catalog.select(cx, state::selectors::SelectPromptRecords);
+        let resource_subscription =
+            prompt_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
 
         Self {
             search_input,
+            resource: prompt_catalog,
             prompts,
-            _subscriptions: vec![search_subscription],
+            _subscriptions: vec![search_subscription, resource_subscription],
         }
     }
 
@@ -69,6 +73,7 @@ impl PromptsSettingsPage {
     fn prompt_by_id(&self, prompt_id: &PromptId) -> Option<PromptRecord> {
         self.prompts.read(|prompts| {
             prompts
+                .as_ref()?
                 .iter()
                 .find(|prompt| &prompt.id == prompt_id)
                 .cloned()
@@ -136,6 +141,9 @@ impl PromptsSettingsPage {
                 Button::new("prompt-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-prompt"))
+                    .disabled(!self.resource.read(cx, |operation| {
+                        matches!(operation, state::prompts::PromptOperation::Ready(_))
+                    }))
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_prompt_dialog(window, cx);
                     })),
@@ -228,20 +236,30 @@ impl PromptsSettingsPage {
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let prompts = self.prompts.snapshot();
-        if prompts.is_empty() {
-            self.render_empty_prompts(cx)
-        } else {
-            self.render_prompt_rows(prompts.as_slice(), window, cx)
-        }
+        self.prompts.read(|prompts| match prompts {
+            Some(prompts) if !prompts.is_empty() => {
+                self.render_prompt_rows(prompts.as_slice(), window, cx)
+            }
+            _ => self.render_empty_prompts(cx),
+        })
     }
 }
 
 impl Render for PromptsSettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "prompt-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::prompts::request_refresh,
+                cx,
+            )
+        });
         v_flex()
             .w_full()
             .gap_3()
+            .children(status)
             .child(self.render_toolbar(window, cx))
             .child(self.render_body(window, cx))
     }

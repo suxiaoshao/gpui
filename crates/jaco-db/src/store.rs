@@ -1,6 +1,6 @@
-use crate::{FreshRepository, Result, migrations};
+use crate::{DatabaseValidationError, FreshRepository, Result, migrations, validation};
 use diesel::{
-    SqliteConnection,
+    Connection, SqliteConnection,
     connection::SimpleConnection,
     r2d2::{ConnectionManager, CustomizeConnection, Pool},
 };
@@ -17,21 +17,60 @@ pub struct FreshStore {
 }
 
 impl FreshStore {
-    pub fn open_in_dir(data_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::open(data_dir.as_ref().join(DATABASE_FILE))
-    }
-
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open_or_create_initial(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let should_bootstrap = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.len() == 0,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error.into()),
+        };
+        if !should_bootstrap {
+            validate_read_only_path(&path)?;
+        }
         let pool = create_pool(&path)?;
-        {
+        if should_bootstrap {
             let mut conn = pool.get()?;
             migrations::bootstrap(&mut conn)?;
         }
-        Ok(Self { path, pool })
+        let store = Self { path, pool };
+        store.validate()?;
+        Ok(store)
+    }
+
+    pub fn reopen_validated_existing(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let metadata = std::fs::metadata(&path)?;
+        if metadata.len() == 0 {
+            return Err(
+                DatabaseValidationError::Schema("database file is empty".to_string()).into(),
+            );
+        }
+        validate_read_only_path(&path)?;
+        let store = Self {
+            pool: create_pool(&path)?,
+            path,
+        };
+        store.validate()?;
+        Ok(store)
+    }
+
+    pub fn create_fresh_staging(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("staging database already exists: {}", path.display()),
+            )
+            .into());
+        }
+        Self::open_or_create_initial(path)
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), DatabaseValidationError> {
+        validate_read_only_path(&self.path)
     }
 
     pub fn path(&self) -> &Path {
@@ -62,6 +101,19 @@ impl FreshStore {
         }
         Ok(Self { path, pool })
     }
+}
+
+fn validate_read_only_path(path: &Path) -> std::result::Result<(), DatabaseValidationError> {
+    let mut url = url::Url::from_file_path(path).map_err(|_| {
+        DatabaseValidationError::Query(format!(
+            "database path cannot be represented as a file URL: {}",
+            path.display()
+        ))
+    })?;
+    url.query_pairs_mut().append_pair("mode", "ro");
+    let mut conn = SqliteConnection::establish(url.as_str())
+        .map_err(|error| DatabaseValidationError::Query(error.to_string()))?;
+    validation::validate_connection(&mut conn)
 }
 
 fn create_pool(path: &Path) -> Result<DbPool> {

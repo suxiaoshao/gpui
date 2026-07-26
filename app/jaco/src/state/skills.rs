@@ -1,15 +1,16 @@
-use gpui::{App, AppContext};
-use gpui_store::{SharedStore, StoreBackend, StoreBackendFuture, StoreBackendId, StoreState};
-use jaco_agent::{SkillCatalog, SkillCatalogEntry, SkillLoader};
-use jaco_core::{ContentPart, SkillSourceKind};
 use std::{
-    convert::Infallible,
+    collections::BTreeMap,
+    fmt,
     path::{Path, PathBuf},
 };
-use time::OffsetDateTime;
 
-pub(crate) type GlobalSkillCatalogStore =
-    SharedStore<GlobalSkillCatalogState, GlobalSkillCatalogBackend>;
+use gpui::Task;
+use gpui_operation::refresh;
+use jaco_agent::{SkillCatalog, SkillCatalogEntry, SkillLoader};
+use jaco_core::{ContentPart, SkillSourceKind};
+
+pub(crate) type SkillCatalogOperation =
+    refresh::Operation<SkillCatalogData, SkillCatalogProblem, Task<()>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SkillCatalogScope {
@@ -17,32 +18,36 @@ pub(crate) enum SkillCatalogScope {
     Project { root: PathBuf },
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct GlobalSkillCatalogState {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SkillCatalogData {
     entries: Vec<GlobalSkillEntry>,
-    last_refreshed_at: Option<OffsetDateTime>,
-    last_error: Option<String>,
+    details: BTreeMap<PathBuf, LoadedSkillContent>,
 }
 
-impl GlobalSkillCatalogState {
+impl SkillCatalogData {
     pub(crate) fn entries(&self) -> &[GlobalSkillEntry] {
         &self.entries
     }
 
-    pub(crate) fn entry_records(&self) -> &Vec<GlobalSkillEntry> {
-        &self.entries
-    }
-
-    pub(crate) fn last_refreshed_at(&self) -> Option<OffsetDateTime> {
-        self.last_refreshed_at
-    }
-
-    pub(crate) fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+    pub(crate) fn details(&self) -> &BTreeMap<PathBuf, LoadedSkillContent> {
+        &self.details
     }
 }
 
-impl StoreState for GlobalSkillCatalogState {}
+#[derive(Debug)]
+pub(crate) struct SkillCatalogProblem(jaco_agent::AgentRuntimeError);
+
+impl fmt::Display for SkillCatalogProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for SkillCatalogProblem {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GlobalSkillEntry {
@@ -96,65 +101,6 @@ pub(crate) struct LoadedSkillContent {
     pub(crate) content_sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct GlobalSkillCatalogSnapshot {
-    entries: Option<Vec<GlobalSkillEntry>>,
-    last_refreshed_at: OffsetDateTime,
-    last_error: Option<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct GlobalSkillCatalogBackend;
-
-impl StoreBackend<GlobalSkillCatalogState> for GlobalSkillCatalogBackend {
-    type Snapshot = GlobalSkillCatalogSnapshot;
-    type Event = ();
-    type Subscription = ();
-    type Error = Infallible;
-
-    fn backend_id(&self) -> StoreBackendId {
-        StoreBackendId::new("filesystem:global-skills")
-    }
-
-    fn load(&self) -> StoreBackendFuture<Option<Self::Snapshot>, Self::Error> {
-        Ok(Some(load_global_skill_catalog_snapshot()))
-    }
-
-    fn reconcile(&self, state: &mut GlobalSkillCatalogState, snapshot: Self::Snapshot) -> bool {
-        let next_entries = snapshot.entries.unwrap_or_else(|| state.entries.clone());
-        if state.entries == next_entries
-            && state.last_refreshed_at == Some(snapshot.last_refreshed_at)
-            && state.last_error == snapshot.last_error
-        {
-            return false;
-        }
-
-        state.entries = next_entries;
-        state.last_refreshed_at = Some(snapshot.last_refreshed_at);
-        state.last_error = snapshot.last_error;
-        true
-    }
-}
-
-pub(crate) fn init(cx: &mut App) {
-    GlobalSkillCatalogStore::install_global_with_backend(
-        cx,
-        GlobalSkillCatalogState::default(),
-        GlobalSkillCatalogBackend,
-    )
-    .expect("global skill catalog backend is infallible");
-}
-
-pub(crate) fn catalog(cx: &impl AppContext) -> GlobalSkillCatalogStore {
-    GlobalSkillCatalogStore::global(cx)
-}
-
-pub(crate) fn refresh_global_catalog(cx: &mut App) {
-    catalog(cx)
-        .refresh_from_backend(cx)
-        .expect("global skill catalog backend is infallible");
-}
-
 pub(crate) fn load_skill_content(
     entry: GlobalSkillEntry,
 ) -> jaco_agent::Result<LoadedSkillContent> {
@@ -178,6 +124,23 @@ pub(crate) fn load_skill_content(
     })
 }
 
+pub(crate) fn load_catalog(
+    scope: SkillCatalogScope,
+) -> Result<SkillCatalogData, SkillCatalogProblem> {
+    let entries = load_catalog_entries(scope).map_err(SkillCatalogProblem)?;
+    let details = entries
+        .iter()
+        .cloned()
+        .map(|entry| {
+            let path = entry.skill_file_path.clone();
+            load_skill_content(entry)
+                .map(|content| (path, content))
+                .map_err(SkillCatalogProblem)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(SkillCatalogData { entries, details })
+}
+
 pub(crate) fn load_catalog_entries(
     scope: SkillCatalogScope,
 ) -> jaco_agent::Result<Vec<GlobalSkillEntry>> {
@@ -186,22 +149,6 @@ pub(crate) fn load_catalog_entries(
         SkillCatalogScope::Project { root } => SkillCatalog::scan(Some(root.as_path()))?,
     };
     Ok(entries_from_catalog(&catalog))
-}
-
-fn load_global_skill_catalog_snapshot() -> GlobalSkillCatalogSnapshot {
-    let last_refreshed_at = OffsetDateTime::now_utc();
-    match SkillCatalog::scan(None) {
-        Ok(catalog) => GlobalSkillCatalogSnapshot {
-            entries: Some(entries_from_catalog(&catalog)),
-            last_refreshed_at,
-            last_error: None,
-        },
-        Err(err) => GlobalSkillCatalogSnapshot {
-            entries: None,
-            last_refreshed_at,
-            last_error: Some(err.to_string()),
-        },
-    }
 }
 
 fn entries_from_catalog(catalog: &SkillCatalog) -> Vec<GlobalSkillEntry> {
@@ -246,10 +193,10 @@ fn skill_source_keyword(source_kind: SkillSourceKind) -> &'static str {
 
 fn skill_source_rank(source_kind: SkillSourceKind) -> u8 {
     match source_kind {
-        SkillSourceKind::BuiltIn => 0,
+        SkillSourceKind::Project => 0,
         SkillSourceKind::User => 1,
         SkillSourceKind::Plugin => 2,
-        SkillSourceKind::Project => 3,
+        SkillSourceKind::BuiltIn => 3,
     }
 }
 

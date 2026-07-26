@@ -3,7 +3,7 @@ use crate::{
         APP_NAME, menus,
         title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
-    foundation::{self, I18n, assets::APP_ICON_ASSET_PATH},
+    foundation::{I18n, assets::APP_ICON_ASSET_PATH},
     state,
 };
 use fluent_bundle::FluentArgs;
@@ -175,15 +175,8 @@ impl AboutWindow {
                 config_store.observe_select_in(
                     cx,
                     window,
-                    |config| {
-                        (
-                            config.app_settings.language,
-                            config.app_settings.theme.clone(),
-                        )
-                    },
+                    state::selectors::SelectAppPresentation::current(cx),
                     |this, _settings, window, cx| {
-                        foundation::init_i18n(cx);
-                        menus::sync_app_menus(cx);
                         state::theme::apply_current_theme(window, cx);
                         this.reload_app_menu_bar(cx);
                         cx.refresh_windows();

@@ -560,6 +560,127 @@ impl FreshRepository {
         })
     }
 
+    pub fn create_conversation_transaction(
+        &self,
+        input: NewConversationTransaction,
+    ) -> Result<CreatedConversationTransaction> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            if let Some((project_id, project)) = input.new_project {
+                let now = now_string()?;
+                let row = SqlNewProjectRow {
+                    id: project_id,
+                    path: project.path,
+                    display_name: project.display_name,
+                    kind: db_label(&project.kind)?,
+                    pinned: project.pinned,
+                    removed: project.removed,
+                    metadata_json: to_json(&project.metadata)?,
+                    created_at: now,
+                    updated_at: now,
+                    last_opened_at: None,
+                };
+                diesel::insert_into(projects::table)
+                    .values(&row)
+                    .execute(conn)?;
+            }
+
+            let now = now_string()?;
+            let new_conversation_row = SqlNewConversationRow {
+                id: input.conversation_id,
+                project_id: input.conversation.conversation.project_id,
+                title: input.conversation.conversation.title,
+                status: db_label(&ConversationStatus::Active)?,
+                pinned: input.conversation.conversation.pinned,
+                prompt_id: input.conversation.conversation.prompt_id,
+                default_provider_id: input.conversation.conversation.default_provider_id,
+                default_model_id: input.conversation.conversation.default_model_id,
+                last_entry_seq: 0,
+                metadata_json: to_json(&input.conversation.conversation.metadata)?,
+                settings_snapshot_json: to_json(
+                    &input.conversation.conversation.settings_snapshot,
+                )?,
+                created_at: now,
+                updated_at: now,
+                archived_at: None,
+                deleted_at: None,
+            };
+            diesel::insert_into(conversations::table)
+                .values(&new_conversation_row)
+                .execute(conn)?;
+
+            let mut user_item = input.conversation.user_item;
+            user_item.conversation_id = new_conversation_row.id.clone();
+            insert_attachments_into_message_item_with_conn(
+                conn,
+                &mut user_item,
+                input.attachments,
+            )?;
+            let user_item = append_conversation_entry_with_conn(conn, user_item)?;
+            let conversation: ConversationRecord =
+                conversation_row(conn, &new_conversation_row.id)?
+                    .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
+                    .try_into()?;
+
+            let mut project: ProjectRecord = project_row(conn, &conversation.project_id)?
+                .ok_or_else(|| DbError::Invariant("project is missing".to_string()))?
+                .try_into()?;
+            project.metadata.last_active_conversation_id = Some(conversation.id.clone());
+            let project: ProjectRecord = diesel::update(projects::table.find(&project.id))
+                .set((
+                    projects::metadata_json.eq(to_json(&project.metadata)?),
+                    projects::updated_at.eq(now_string()?),
+                ))
+                .returning(SqlProjectRow::as_returning())
+                .get_result::<SqlProjectRow>(conn)?
+                .try_into()?;
+
+            Ok(CreatedConversationTransaction {
+                project,
+                record: ConversationWithUserItemRecord {
+                    conversation,
+                    user_item,
+                },
+            })
+        })
+    }
+
+    pub fn send_conversation_transaction(
+        &self,
+        mut input: SendConversationTransaction,
+    ) -> Result<SentConversationTransaction> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let conversation: ConversationRecord =
+                conversation_row(conn, &input.entry.conversation_id)?
+                    .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
+                    .try_into()?;
+            let mut project: ProjectRecord = project_row(conn, &conversation.project_id)?
+                .ok_or_else(|| DbError::Invariant("project is missing".to_string()))?
+                .try_into()?;
+
+            insert_attachments_into_message_item_with_conn(
+                conn,
+                &mut input.entry,
+                input.attachments,
+            )?;
+            let entry = append_conversation_entry_with_conn(conn, input.entry)?;
+            let commit = conversation_commit_with_conn(conn, entry.conversation_id.clone(), entry)?;
+
+            project.metadata.last_active_conversation_id = Some(commit.conversation.id.clone());
+            let project: ProjectRecord = diesel::update(projects::table.find(&project.id))
+                .set((
+                    projects::metadata_json.eq(to_json(&project.metadata)?),
+                    projects::updated_at.eq(now_string()?),
+                ))
+                .returning(SqlProjectRow::as_returning())
+                .get_result::<SqlProjectRow>(conn)?
+                .try_into()?;
+
+            Ok(SentConversationTransaction { project, commit })
+        })
+    }
+
     pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRecord>> {
         let mut conn = self.conn()?;
         conversation_row(&mut conn, id)?
@@ -715,20 +836,24 @@ impl FreshRepository {
     pub fn append_conversation_entry(
         &self,
         input: NewConversationEntry,
-    ) -> Result<ConversationEntryRecord> {
+    ) -> Result<ConversationCommit<ConversationEntryRecord>> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| append_conversation_entry_with_conn(conn, input))
+        conn.immediate_transaction(|conn| {
+            let entry = append_conversation_entry_with_conn(conn, input)?;
+            conversation_commit_with_conn(conn, entry.conversation_id.clone(), entry)
+        })
     }
 
     pub fn append_conversation_entry_with_attachments(
         &self,
         mut input: NewConversationEntry,
         attachments: Vec<NewAttachment>,
-    ) -> Result<ConversationEntryRecord> {
+    ) -> Result<ConversationCommit<ConversationEntryRecord>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
-            append_conversation_entry_with_conn(conn, input)
+            let entry = append_conversation_entry_with_conn(conn, input)?;
+            conversation_commit_with_conn(conn, entry.conversation_id.clone(), entry)
         })
     }
 
@@ -793,7 +918,7 @@ impl FreshRepository {
         item_id: &str,
         status: ConversationEntryStatus,
         payload: ConversationEntryPayload,
-    ) -> Result<ConversationEntryRecord> {
+    ) -> Result<ConversationCommit<ConversationEntryRecord>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let now = now_string()?;
@@ -811,7 +936,8 @@ impl FreshRepository {
             diesel::update(conversations::table.find(&item.conversation_id))
                 .set(conversations::updated_at.eq(now))
                 .execute(conn)?;
-            item.try_into()
+            let item: ConversationEntryRecord = item.try_into()?;
+            conversation_commit_with_conn(conn, item.conversation_id.clone(), item)
         })
     }
 
@@ -931,9 +1057,16 @@ impl FreshRepository {
         })
     }
 
-    pub fn finish_agent_run(&self, id: &str, finish: FinishAgentRun) -> Result<FinishedAgentRun> {
+    pub fn finish_agent_run(
+        &self,
+        id: &str,
+        finish: FinishAgentRun,
+    ) -> Result<ConversationCommit<FinishedAgentRun>> {
         let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| finish_agent_run_with_conn(conn, id, finish))
+        conn.immediate_transaction(|conn| {
+            let finished = finish_agent_run_with_conn(conn, id, finish)?;
+            conversation_commit_with_conn(conn, finished.run.conversation_id.clone(), finished)
+        })
     }
 
     pub fn append_conversation_entry_and_update_agent_run(
@@ -1128,13 +1261,13 @@ impl FreshRepository {
         update: UpdateToolInvocationStatus,
         approval: Option<ToolInvocationApproval>,
     ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
-        let (mut items, invocation) = self
-            .append_conversation_entries_and_update_tool_invocation_full(
-                vec![item],
-                tool_invocation_id,
-                update,
-                approval,
-            )?;
+        let commit = self.append_conversation_entries_and_update_tool_invocation_full(
+            vec![item],
+            tool_invocation_id,
+            update,
+            approval,
+        )?;
+        let (mut items, invocation) = commit.value;
         Ok((items.remove(0), invocation))
     }
 
@@ -1163,7 +1296,7 @@ impl FreshRepository {
         tool_invocation_id: &str,
         update: UpdateToolInvocationStatus,
         approval: Option<ToolInvocationApproval>,
-    ) -> Result<(Vec<ConversationEntryRecord>, ToolInvocationRecord)> {
+    ) -> Result<ConversationCommit<(Vec<ConversationEntryRecord>, ToolInvocationRecord)>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             ensure_tool_invocation_not_terminal(conn, tool_invocation_id)?;
@@ -1173,7 +1306,15 @@ impl FreshRepository {
                 .collect::<Result<Vec<_>>>()?;
             let invocation =
                 update_tool_invocation_full_with_conn(conn, tool_invocation_id, update, approval)?;
-            Ok((items, invocation))
+            let conversation_id = items
+                .first()
+                .map(|item| item.conversation_id.clone())
+                .ok_or_else(|| {
+                    DbError::Invariant(
+                        "tool invocation entry transaction requires at least one entry".to_string(),
+                    )
+                })?;
+            conversation_commit_with_conn(conn, conversation_id, (items, invocation))
         })
     }
 
@@ -1207,7 +1348,7 @@ impl FreshRepository {
         id: &str,
         approval: NewToolInvocationApproval,
         entry: NewConversationEntry,
-    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+    ) -> Result<ConversationCommit<(ConversationEntryRecord, ToolInvocationRecord)>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             ensure_tool_invocation_not_terminal(conn, id)?;
@@ -1227,7 +1368,7 @@ impl FreshRepository {
                 ToolInvocationStatus::AwaitingApproval,
                 Some(approval),
             )?;
-            Ok((entry, invocation))
+            conversation_commit_with_conn(conn, entry.conversation_id.clone(), (entry, invocation))
         })
     }
 
@@ -1274,7 +1415,7 @@ impl FreshRepository {
         outcome: ToolInvocationApprovalOutcome,
         status: ToolInvocationStatus,
         entry: NewConversationEntry,
-    ) -> Result<(ConversationEntryRecord, ToolInvocationRecord)> {
+    ) -> Result<ConversationCommit<(ConversationEntryRecord, ToolInvocationRecord)>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             ensure_tool_invocation_not_terminal(conn, id)?;
@@ -1294,7 +1435,7 @@ impl FreshRepository {
             let entry = append_conversation_entry_with_conn(conn, entry)?;
             let invocation =
                 update_tool_invocation_approval_with_conn(conn, id, status, Some(approval))?;
-            Ok((entry, invocation))
+            conversation_commit_with_conn(conn, entry.conversation_id.clone(), (entry, invocation))
         })
     }
 
@@ -1611,6 +1752,30 @@ fn append_conversation_entry_with_conn(
         ))
         .execute(conn)?;
     item.try_into()
+}
+
+fn conversation_commit_with_conn<T>(
+    conn: &mut SqliteConnection,
+    conversation_id: ConversationId,
+    value: T,
+) -> Result<ConversationCommit<T>> {
+    let conversation: ConversationRecord = conversation_row(conn, &conversation_id)?
+        .ok_or_else(|| {
+            DbError::Invariant(format!(
+                "conversation {conversation_id} is missing after commit"
+            ))
+        })?
+        .try_into()?;
+    let index_delta = ConversationIndexDelta::EntryAdvanced {
+        id: conversation.id.clone(),
+        last_entry_seq: conversation.last_entry_seq,
+        updated_at: conversation.updated_at,
+    };
+    Ok(ConversationCommit {
+        value,
+        conversation,
+        index_delta,
+    })
 }
 
 fn insert_attachments_into_message_item_with_conn(
@@ -1979,11 +2144,15 @@ fn update_tool_invocation_full_with_conn(
         return existing.try_into();
     }
     let now = now_string()?;
+    let approval_json = match approval {
+        Some(approval) => to_json_opt(&Some(approval))?,
+        None => existing.approval_json.clone(),
+    };
     let changes = SqlToolInvocationFullChanges {
         status: db_label(&update.status)?,
         output_json: to_json_opt(&update.output)?,
         error_json: to_json_opt(&update.error)?,
-        approval_json: to_json_opt(&approval)?,
+        approval_json,
         started_at: next_started_at(existing.started_at, update.status, now),
         completed_at: next_tool_invocation_completed_at(existing.completed_at, update.status, now),
         updated_at: now,

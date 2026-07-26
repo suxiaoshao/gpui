@@ -41,6 +41,10 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 pub(crate) fn open_temporary_window(cx: &mut App) -> Option<WindowHandle<Root>> {
+    if !crate::database::is_ready(cx) {
+        crate::app::show_or_create_main_window(cx);
+        return None;
+    }
     with_lifecycle_state(cx, |state, cx| state.ensure_temporary_window_visible(cx)).flatten()
 }
 
@@ -48,12 +52,33 @@ pub(crate) fn show_created_conversation(
     created: crate::state::conversations::CreatedConversation,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
+    if !crate::database::is_ready(cx) {
+        crate::app::show_or_create_main_window(cx);
+        return None;
+    }
     with_lifecycle_state(cx, |state, cx| state.show_created_conversation(created, cx)).flatten()
 }
 
 pub(crate) fn toggle_temporary_window(cx: &mut App) {
+    if !crate::database::is_ready(cx) {
+        crate::app::show_or_create_main_window(cx);
+        return;
+    }
     let _ = with_lifecycle_state(cx, |state, cx| {
         state.toggle_temporary_window(cx);
+    });
+}
+
+pub(crate) fn close_temporary_window(cx: &mut App) {
+    if let Some(window) = find_temporary_window(cx) {
+        let _ = window.update(cx, |_root, window, _cx| window.remove_window());
+    }
+    let _ = with_lifecycle_state(cx, |state, _cx| {
+        state.delay_close = None;
+        #[cfg(target_os = "macos")]
+        {
+            state.front_app = None;
+        }
     });
 }
 
@@ -177,6 +202,7 @@ impl TemporaryWindowLifecycleState {
 
     fn create_temporary_window(&mut self, cx: &mut App) -> Option<WindowHandle<Root>> {
         let target_display_id = target_display_id(cx);
+        let runtime = crate::app::ready_runtime(cx)?;
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -194,9 +220,9 @@ impl TemporaryWindowLifecycleState {
                 app_id: Some(APP_NAME.to_owned()),
                 ..Default::default()
             },
-            |window, cx| {
+            move |window, cx| {
                 set_temporary_window_level(window);
-                let view = cx.new(|cx| TemporaryWindow::new(window, cx));
+                let view = cx.new(|cx| TemporaryWindow::new(runtime, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         );

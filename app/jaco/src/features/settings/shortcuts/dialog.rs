@@ -151,6 +151,7 @@ pub(super) struct ShortcutEditDialogState {
     chat_form: Entity<ChatForm>,
     existing_shortcuts: Vec<ShortcutRecord>,
     temporary_hotkey: Option<String>,
+    save_task: Option<Task<()>>,
 }
 
 pub(super) struct ShortcutDialogChoices {
@@ -255,10 +256,14 @@ impl ShortcutEditDialogState {
             chat_form,
             existing_shortcuts,
             temporary_hotkey,
+            save_task: None,
         }
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.save_task.is_some() {
+            return false;
+        }
         let mode = self.mode;
         let shortcut_id = self.shortcut_id.clone();
         let validation_context =
@@ -279,7 +284,7 @@ impl ShortcutEditDialogState {
             return false;
         };
         let Some(catalog) = cx
-            .has_global::<state::providers::ProviderCatalogGlobal>()
+            .has_global::<state::providers::ProviderStore>()
             .then(|| state::providers::catalog(cx))
         else {
             let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
@@ -291,7 +296,12 @@ impl ShortcutEditDialogState {
             );
             return false;
         };
-        let choices = catalog.read_cloned(cx, |snapshot| &snapshot.enabled_models);
+        let choices = catalog.read(cx, |operation| {
+            operation
+                .data()
+                .map(|data| data.enabled_models.clone())
+                .unwrap_or_default()
+        });
         let resolved = match resolve_run_settings(&draft.run_settings, &Ok(choices)) {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -330,7 +340,7 @@ impl ShortcutEditDialogState {
         let persisted = match mode {
             ShortcutEditMode::Create => state::shortcuts::create_shortcut(cx, shortcut_draft),
             ShortcutEditMode::Edit => {
-                let Some(id) = shortcut_id.as_ref() else {
+                let Some(id) = shortcut_id else {
                     let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
                     push_settings_error(window, cx, title, "shortcut id is missing".to_string());
                     return false;
@@ -338,23 +348,36 @@ impl ShortcutEditDialogState {
                 state::shortcuts::update_shortcut(cx, id, shortcut_draft)
             }
         };
-        if let Err(error) = persisted {
-            let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
-            push_settings_error(window, cx, title, error.to_string());
-            return false;
-        }
-        self.form
-            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
-        window.push_notification(
-            Notification::new()
-                .title(cx.global::<I18n>().t(match mode {
-                    ShortcutEditMode::Create => "notify-shortcut-created",
-                    ShortcutEditMode::Edit => "notify-shortcut-updated",
-                }))
-                .with_type(NotificationType::Success),
-            cx,
-        );
-        true
+        let entity = cx.entity().downgrade();
+        self.save_task = Some(window.spawn(cx, async move |cx| {
+            let result = persisted.await;
+            let _ = entity.update_in(cx, |dialog, window, cx| {
+                dialog.save_task = None;
+                match result {
+                    Ok(_) => {
+                        dialog
+                            .form
+                            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
+                        window.push_notification(
+                            Notification::new()
+                                .title(cx.global::<I18n>().t(match mode {
+                                    ShortcutEditMode::Create => "notify-shortcut-created",
+                                    ShortcutEditMode::Edit => "notify-shortcut-updated",
+                                }))
+                                .with_type(NotificationType::Success),
+                            cx,
+                        );
+                        window.close_dialog(cx);
+                    }
+                    Err(error) => {
+                        let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
+                        push_settings_error(window, cx, title, error.to_string());
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+        false
     }
 
     fn focus_hotkey(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -588,7 +611,7 @@ pub(super) fn open_shortcut_preview_dialog(
                                 .on_click({
                                     let shortcut_id = shortcut_id.clone();
                                     move |_, window, cx| {
-                                        match state::shortcuts::reregister_shortcut(cx, &shortcut_id) {
+                                        match state::shortcuts::reregister_shortcut(cx, shortcut_id.clone()) {
                                             Ok(_) => {
                                                 window.push_notification(
                                                     Notification::new()
@@ -650,18 +673,28 @@ pub(super) fn open_shortcut_delete_confirm(
         title,
         message,
         DestructiveAction::Delete,
-        move |window, cx| match state::shortcuts::delete_shortcut(cx, &shortcut_id) {
-            Ok(_) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(deleted_title.clone())
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
-            }
-            Err(err) => {
-                push_settings_error(window, cx, delete_failed_title.clone(), err);
-            }
+        move |window, cx| {
+            let mutation = state::shortcuts::delete_shortcut(cx, shortcut_id.clone());
+            let deleted_title = deleted_title.clone();
+            let delete_failed_title = delete_failed_title.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let result = mutation.await;
+                    let _ = cx.update(|window, cx| match result {
+                        Ok(_) => {
+                            window.push_notification(
+                                Notification::new()
+                                    .title(deleted_title)
+                                    .with_type(NotificationType::Success),
+                                cx,
+                            );
+                        }
+                        Err(err) => {
+                            push_settings_error(window, cx, delete_failed_title, err);
+                        }
+                    });
+                })
+                .detach();
         },
         window,
         cx,
@@ -808,7 +841,7 @@ mod tests {
         confirm_shortcut_edit_dialog, field_error_message, input_source_from_toggle_states,
     };
     use crate::features::settings::shortcuts::form_state::ShortcutEditFormStore;
-    use crate::{database::FreshStoreGlobal, foundation, state};
+    use crate::{database, foundation, state};
     use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
     use tempfile::{TempDir, tempdir};
 
@@ -849,8 +882,7 @@ mod tests {
         );
         cx.update(|_, cx| {
             assert!(
-                crate::database::repository(cx)
-                    .list_shortcuts()
+                crate::database::with_ready_repository(cx, |repo| repo.list_shortcuts())
                     .expect("list shortcuts")
                     .is_empty()
             );
@@ -901,7 +933,7 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             cx.set_global(foundation::I18n::english_for_test());
             state::shortcuts::init(cx);
         });

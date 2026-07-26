@@ -32,6 +32,15 @@ pub struct SkillCatalogEntry {
 #[derive(Debug, Clone, Default)]
 pub struct SkillCatalog {
     entries: BTreeMap<String, SkillCatalogEntry>,
+    warnings: Vec<SkillCatalogWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCatalogWarning {
+    pub name: String,
+    pub source_kind: SkillSourceKind,
+    pub kept_path: PathBuf,
+    pub ignored_path: PathBuf,
 }
 
 impl SkillCatalog {
@@ -59,9 +68,11 @@ impl SkillCatalog {
             return Ok(());
         }
 
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
+        let mut paths = fs::read_dir(root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.sort();
+        for path in paths {
             if !path.is_dir() {
                 continue;
             }
@@ -80,16 +91,37 @@ impl SkillCatalog {
             if !is_valid_skill_name(&name) {
                 continue;
             }
-            self.entries.insert(
-                name.clone(),
-                SkillCatalogEntry {
-                    name,
-                    description: metadata.description,
-                    skill_file_path,
-                    directory_path: path,
-                    source_kind,
-                },
-            );
+            let candidate = SkillCatalogEntry {
+                name: name.clone(),
+                description: metadata.description,
+                skill_file_path,
+                directory_path: path,
+                source_kind,
+            };
+            match self.entries.get(&name) {
+                Some(existing) if existing.source_kind == source_kind => {
+                    let warning = SkillCatalogWarning {
+                        name,
+                        source_kind,
+                        kept_path: existing.skill_file_path.clone(),
+                        ignored_path: candidate.skill_file_path,
+                    };
+                    tracing::warn!(
+                        skill_name = %warning.name,
+                        source = ?warning.source_kind,
+                        kept_path = %warning.kept_path.display(),
+                        ignored_path = %warning.ignored_path.display(),
+                        "ignored duplicate skill in the same source"
+                    );
+                    self.warnings.push(warning);
+                }
+                Some(existing)
+                    if skill_source_rank(existing.source_kind)
+                        <= skill_source_rank(source_kind) => {}
+                _ => {
+                    self.entries.insert(name, candidate);
+                }
+            }
         }
 
         Ok(())
@@ -101,6 +133,10 @@ impl SkillCatalog {
 
     pub fn entries(&self) -> impl Iterator<Item = &SkillCatalogEntry> {
         self.entries.values()
+    }
+
+    pub fn warnings(&self) -> &[SkillCatalogWarning] {
+        &self.warnings
     }
 
     pub fn catalog_hash(&self) -> String {
@@ -185,6 +221,15 @@ fn is_valid_skill_name(name: &str) -> bool {
 
 fn user_skills_root(home_dir: Option<PathBuf>) -> Option<PathBuf> {
     home_dir.map(|home| home.join(".agents").join("skills"))
+}
+
+fn skill_source_rank(source_kind: SkillSourceKind) -> u8 {
+    match source_kind {
+        SkillSourceKind::Project => 0,
+        SkillSourceKind::User => 1,
+        SkillSourceKind::Plugin => 2,
+        SkillSourceKind::BuiltIn => 3,
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +326,56 @@ mod tests {
             Some(PathBuf::from("/home/test/.agents/skills"))
         );
         assert_eq!(user_skills_root(None), None);
+    }
+
+    #[test]
+    fn same_source_duplicate_uses_stable_first_path_and_warns() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        for directory in ["z-last", "a-first"] {
+            let skill = root.join(directory);
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), "---\nname: duplicate\n---\n").unwrap();
+        }
+
+        let mut catalog = SkillCatalog::default();
+        catalog.scan_root(&root, SkillSourceKind::User).unwrap();
+
+        assert_eq!(
+            catalog.get("duplicate").unwrap().directory_path,
+            root.join("a-first")
+        );
+        assert_eq!(catalog.warnings().len(), 1);
+        assert_eq!(
+            catalog.warnings()[0].ignored_path,
+            root.join("z-last").join("SKILL.md")
+        );
+    }
+
+    #[test]
+    fn project_local_overrides_global() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        let project = temp.path().join("project");
+        for root in [&global, &project] {
+            let skill = root.join("same");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), "---\nname: same\n---\n").unwrap();
+        }
+
+        let mut catalog = SkillCatalog::default();
+        catalog.scan_root(&global, SkillSourceKind::User).unwrap();
+        catalog
+            .scan_root(&project, SkillSourceKind::Project)
+            .unwrap();
+
+        assert_eq!(
+            catalog.get("same").unwrap().source_kind,
+            SkillSourceKind::Project
+        );
+        assert_eq!(
+            catalog.get("same").unwrap().directory_path,
+            project.join("same")
+        );
     }
 }

@@ -58,6 +58,7 @@ app-theme = { workspace = true, default-features = false, features = [
 gpui.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
 gpui-store.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
@@ -94,6 +95,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 # async runtime
+async-trait = "0.1.89"
 gpui-tokio.workspace = true
 smol = "2.0.2"
 tokio = { version = "1.52.3", features = ["io-util", "net", "sync", "time"] }
@@ -102,6 +104,7 @@ tokio = { version = "1.52.3", features = ["io-util", "net", "sync", "time"] }
 http = "1.4.2"
 toml = "1.1.2"
 url = "2.5.8"
+tempfile = "3.27.0"
 
 # hotkey
 get-selected-text = "0.1.6"
@@ -112,7 +115,6 @@ unicode-segmentation = "1.13.3"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tempfile = "3.27.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.9.6"

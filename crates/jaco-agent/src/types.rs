@@ -117,8 +117,17 @@ impl AgentRuntimeObserver {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AgentRuntimeEvent {
+    ConversationCommitted {
+        conversation: Box<jaco_db::ConversationRecord>,
+        index_delta: jaco_db::ConversationIndexDelta,
+        changes: Vec<jaco_db::ConversationChange>,
+    },
+    ConversationTimelineChanged {
+        conversation_id: ConversationId,
+        changes: Vec<jaco_db::ConversationChange>,
+    },
     AgentRunStarted {
         agent_run_id: AgentRunId,
         conversation_id: ConversationId,

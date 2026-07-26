@@ -21,13 +21,16 @@ pub use mcp::{
     McpServerTransportKindSnapshot, McpSessionManager, McpSessionPruneMode, McpStdioTransport,
     McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
 };
+pub use persistence::AgentPersistence;
 pub use persistence::PersistingCompletionModel;
 pub use provider_models::{
     ProviderModelFetchError, ProviderModelFetchRequest, ProviderSecretValues,
     fetch_provider_models, provider_model_from_rig_model,
 };
 pub use runtime::AgentRuntime;
-pub use skills::{SkillActivationRequest, SkillCatalog, SkillCatalogEntry, SkillLoader};
+pub use skills::{
+    SkillActivationRequest, SkillCatalog, SkillCatalogEntry, SkillCatalogWarning, SkillLoader,
+};
 pub use tool_registry::{
     LocalTool, RegisteredToolDefinition, ToolDefinition, ToolExecutor, ToolRegistry, ToolRunPolicy,
 };

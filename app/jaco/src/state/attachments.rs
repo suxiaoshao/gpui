@@ -5,17 +5,18 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{App, ClipboardEntry, ClipboardItem, Image, ImageFormat};
+#[cfg(test)]
+use gpui::App;
+use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use jaco_core::{
     AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
 };
 use jaco_db::NewAttachment;
 use tracing::{Level, event};
 
-use crate::{
-    errors::{JacoError, JacoResult},
-    state::config,
-};
+use crate::errors::{JacoError, JacoResult};
+#[cfg(test)]
+use crate::state::config;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ComposerAttachmentKind {
@@ -112,17 +113,32 @@ pub(crate) fn add_attachments_from_paths(
     Ok(result)
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_message_attachments(
     conversation_id: &ConversationId,
     storage_prefix: &str,
     attachments: &[ComposerAttachment],
     cx: &App,
 ) -> JacoResult<PreparedMessageAttachments> {
+    prepare_message_attachments_in(
+        config::data_dir(cx)?,
+        conversation_id,
+        storage_prefix,
+        attachments,
+    )
+}
+
+pub(crate) fn prepare_message_attachments_in(
+    data_dir: PathBuf,
+    conversation_id: &ConversationId,
+    storage_prefix: &str,
+    attachments: &[ComposerAttachment],
+) -> JacoResult<PreparedMessageAttachments> {
     if attachments.is_empty() {
         return Ok(PreparedMessageAttachments::default());
     }
 
-    let attachment_dir = attachment_store_dir(conversation_id, cx)?;
+    let attachment_dir = data_dir.join("attachments").join(conversation_id);
     fs::create_dir_all(&attachment_dir)?;
 
     let mut prepared = PreparedMessageAttachments::default();
@@ -474,12 +490,6 @@ fn clipboard_image_format(format: ImageFormat) -> Option<(&'static str, &'static
     }
 }
 
-fn attachment_store_dir(conversation_id: &ConversationId, cx: &App) -> JacoResult<PathBuf> {
-    Ok(config::data_dir(cx)?
-        .join("attachments")
-        .join(conversation_id))
-}
-
 fn stored_attachment_path(
     attachment_dir: &Path,
     trigger_entry_id: &str,
@@ -678,8 +688,9 @@ mod tests {
             let mut config =
                 JacoConfig::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
             config.storage.data_dir = Some(dir.path().join("data"));
-            config.save_for_test().unwrap();
-            config::install_for_test(cx, config).unwrap();
+            let config_path = dir.path().join("config.toml");
+            std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
+            config::install_for_test(cx, config_path, config).unwrap();
         });
 
         let bytes = vec![137, 80, 78, 71];

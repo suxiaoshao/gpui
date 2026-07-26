@@ -1,5 +1,6 @@
 pub(crate) mod about;
 pub(crate) mod menus;
+pub(crate) mod root;
 pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
 
@@ -7,7 +8,16 @@ use crate::features::{home::HomeView, settings::SettingsView};
 use crate::{database, errors::JacoError, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
-use std::{cell::RefCell, ffi::OsString, fs::create_dir_all, path::PathBuf, rc::Rc};
+use gpui_store::Store;
+use std::{
+    cell::RefCell,
+    ffi::OsString,
+    fs::create_dir_all,
+    path::PathBuf,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use window_ext::{NativeWindowHandle, WindowExt};
@@ -17,6 +27,19 @@ pub(crate) const LOG_DIR_ENV: &str = "JACO_LOG_DIR";
 #[cfg(test)]
 const APP_TITLE: &str = "Jaco";
 const MAIN_WINDOW_FALLBACK_SIZE: Size<Pixels> = size(px(1536.), px(864.));
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AppShutdownPhase {
+    Running,
+    Draining,
+}
+
+pub(crate) type AppShutdownStore = Store<AppShutdownPhase>;
+
+struct ReadyServicesBinding(state::session::DatabaseBinding);
+
+impl Global for ReadyServicesBinding {}
 
 pub(crate) fn run() -> crate::errors::JacoResult<()> {
     init_tracing()?;
@@ -35,6 +58,7 @@ pub(crate) fn run() -> crate::errors::JacoResult<()> {
         }
 
         show_or_create_main_window(cx);
+        state::config::request_initial_load(cx);
     });
 
     if let Some(err) = startup_error.borrow_mut().take() {
@@ -123,36 +147,19 @@ fn init_tracing() -> crate::errors::JacoResult<()> {
 }
 
 fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
+    SHUTTING_DOWN.store(false, Ordering::Release);
+    AppShutdownStore::install_global(cx, AppShutdownPhase::Running);
     gpui_component::init(cx);
+    foundation::init_bootstrap(cx);
     state::config::init(cx)?;
     state::layout::init(cx)?;
-    state::mcp::init(cx)?;
-    database::init_store(cx)?;
-    state::conversation_runtime::init(cx)?;
-    state::providers::init(cx);
-    state::projects::init(cx);
-    state::prompts::init(cx)?;
-    state::skills::init(cx);
-    state::shortcuts::init(cx);
-    state::workspace::init(cx);
     gpui_tokio::init(cx);
-    state::config::init_app_settings(cx)?;
     state::theme::init(cx);
-    foundation::init_i18n(cx);
+    database::init_store(cx);
+    init_ready_services(cx)?;
     title_bar_menu::init(cx);
     temporary_window::init(cx);
     crate::features::init(cx);
-    if let Err(err) = state::hotkey::init(cx) {
-        event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
-    }
-    let hotkey_diagnostics = state::GlobalHotkeyState::diagnostics_snapshot(cx);
-    event!(
-        Level::INFO,
-        temporary_hotkey = ?hotkey_diagnostics.temporary_hotkey,
-        registered_shortcuts = hotkey_diagnostics.registered_shortcuts.len(),
-        registration_errors = hotkey_diagnostics.registration_errors.len(),
-        "jaco hotkey diagnostics"
-    );
 
     menus::init(cx);
     menus::sync_app_menus(cx);
@@ -164,10 +171,74 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     Ok(())
 }
 
+pub(crate) fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
+    let Some(binding) = database::ready_binding(cx) else {
+        return Ok(());
+    };
+    if cx.has_global::<ReadyServicesBinding>() && cx.global::<ReadyServicesBinding>().0 == binding {
+        return Ok(());
+    }
+    state::mcp::init(cx)?;
+    state::providers::init(cx);
+    state::projects::init(cx);
+    state::prompts::init(cx);
+    state::shortcuts::init(cx);
+    state::conversation_index::init(cx);
+    if let Err(err) = state::hotkey::init(cx) {
+        event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
+    }
+    cx.set_global(ReadyServicesBinding(binding));
+    Ok(())
+}
+
 pub(crate) fn quit_app(cx: &mut App) {
-    state::layout::save_now(cx);
-    event!(Level::INFO, "quit jaco by action");
-    cx.quit();
+    if SHUTTING_DOWN.swap(true, Ordering::AcqRel) {
+        show_or_create_main_window(cx);
+        return;
+    }
+
+    let session = database::store(cx).read(cx, |resource| match resource {
+        database::DatabaseResource::Bound { operation, .. } => {
+            operation.data().map(|data| data.session.clone())
+        }
+        database::DatabaseResource::AwaitingConfig => None,
+    });
+    let runtime_task =
+        ready_runtime(cx).map(|runtime| runtime.update(cx, |runtime, cx| runtime.shutdown_all(cx)));
+
+    AppShutdownStore::global(cx).set(cx, AppShutdownPhase::Draining);
+    state::hotkey::shutdown(cx);
+    crate::features::screenshot::overlay::close(cx);
+    temporary_window::close_temporary_window(cx);
+    show_or_create_main_window(cx);
+    event!(Level::INFO, "managed jaco shutdown started");
+
+    cx.spawn(async move |cx| {
+        if let Some(runtime_task) = runtime_task {
+            runtime_task.await;
+        }
+
+        let active = session.and_then(|session| {
+            cx.update(|cx| session.update(cx, |session, _| session.take_active()))
+        });
+        if let Some(active) = active.as_ref() {
+            while active.active_jobs() != 0 {
+                smol::Timer::after(Duration::from_millis(10)).await;
+            }
+        }
+        drop(active);
+
+        cx.update(|cx| {
+            state::layout::save_now(cx);
+            event!(Level::INFO, "managed jaco shutdown completed");
+            cx.quit();
+        });
+    })
+    .detach();
+}
+
+pub(crate) fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::Acquire)
 }
 
 fn register_main_window_close_behavior(window: &mut Window, cx: &mut App) {
@@ -190,7 +261,7 @@ const fn should_hide_main_window_on_close() -> bool {
 
 fn create_main_root(window: &mut Window, cx: &mut App) -> Entity<Root> {
     register_main_window_close_behavior(window, cx);
-    let view = cx.new(|cx| HomeView::new(window, cx));
+    let view = cx.new(|cx| root::JacoRoot::new(window, cx));
     cx.new(|cx| Root::new(view, window, cx))
 }
 
@@ -212,10 +283,9 @@ fn with_root_view<V: 'static, R>(
 }
 
 fn focus_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
+    let _ = with_root_view::<root::JacoRoot, _>(root, cx, |view, cx| {
         view.update(cx, |view, cx| {
-            view.focus_chat_form(window, cx);
-            view.notify_config_load_error(window, cx);
+            view.focus_primary(window, cx);
         });
     });
 }
@@ -257,7 +327,23 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 }
 
 pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
-    find_window_by_view::<HomeView>(cx)
+    find_window_by_view::<root::JacoRoot>(cx)
+}
+
+pub(crate) fn ready_runtime(
+    cx: &App,
+) -> Option<Entity<state::conversation_runtime::ConversationRuntimeStore>> {
+    let window = find_main_window(cx)?;
+    let root = window.read(cx).ok()?;
+    let view = root.view().clone().downcast::<root::JacoRoot>().ok()?;
+    view.read(cx).runtime()
+}
+
+pub(crate) fn ready_workspace(cx: &App) -> Option<Entity<state::JacoWorkspaceStore>> {
+    let window = find_main_window(cx)?;
+    let root = window.read(cx).ok()?;
+    let view = root.view().clone().downcast::<root::JacoRoot>().ok()?;
+    view.read(cx).workspace()
 }
 
 pub(crate) fn reload_app_menu_bars(cx: &mut App) {

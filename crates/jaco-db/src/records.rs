@@ -36,6 +36,32 @@ pub struct NewProject {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NewConversationTransaction {
+    pub new_project: Option<(ProjectId, NewProject)>,
+    pub conversation_id: ConversationId,
+    pub conversation: NewConversationWithUserItem,
+    pub attachments: Vec<NewAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatedConversationTransaction {
+    pub project: ProjectRecord,
+    pub record: ConversationWithUserItemRecord,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendConversationTransaction {
+    pub entry: NewConversationEntry,
+    pub attachments: Vec<NewAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SentConversationTransaction {
+    pub project: ProjectRecord,
+    pub commit: ConversationCommit<ConversationEntryRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConversationRecord {
     pub id: ConversationId,
     pub project_id: ProjectId,
@@ -52,6 +78,56 @@ pub struct ConversationRecord {
     pub updated_at: OffsetDateTime,
     pub archived_at: Option<OffsetDateTime>,
     pub deleted_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationCommit<T> {
+    pub value: T,
+    pub conversation: ConversationRecord,
+    pub index_delta: ConversationIndexDelta,
+}
+
+impl<T> ConversationCommit<T> {
+    pub fn into_value(self) -> T {
+        self.value
+    }
+}
+
+impl<T> std::ops::Deref for ConversationCommit<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversationIndexDelta {
+    InsertIfMissing(Box<ConversationRecord>),
+    EntryAdvanced {
+        id: ConversationId,
+        last_entry_seq: i32,
+        updated_at: OffsetDateTime,
+    },
+    PresentationChanged {
+        id: ConversationId,
+        title: Option<String>,
+        pinned: Option<bool>,
+        status: Option<ConversationStatus>,
+        updated_at: OffsetDateTime,
+    },
+    Remove {
+        id: ConversationId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversationChange {
+    EntryAppended { entry: ConversationEntryRecord },
+    EntryUpdated { entry: ConversationEntryRecord },
+    ProviderStepChanged { step: Box<ProviderStepRecord> },
+    ToolInvocationChanged { invocation: ToolInvocationRecord },
+    RunStatusChanged { run: AgentRunRecord },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,7 +1,6 @@
 use crate::{
-    app::{self, menus},
     components::hotkey_input::{HotkeyInput, format_hotkey_label, string_to_keystroke},
-    foundation::{self, I18n, assets::IconName},
+    foundation::{I18n, assets::IconName},
     state::{self, JacoConfig},
 };
 use gpui::*;
@@ -14,7 +13,6 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
 };
 use jaco_core::AppLanguage;
-use tracing::{Level, event};
 
 use super::{
     layout::{settings_group, settings_row_item},
@@ -234,49 +232,22 @@ fn current_temporary_hotkey(cx: &App) -> Option<Keystroke> {
 }
 
 fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &mut App) -> bool {
-    let previous_hotkey = state::config::app_settings(cx)
-        .temporary_hotkey()
-        .map(str::to_string);
-
-    if let Err(err) = state::GlobalHotkeyState::update_temporary_hotkey(
-        previous_hotkey.as_deref(),
-        next_hotkey.as_deref(),
-        cx,
-    ) {
-        #[cfg(not(test))]
-        {
-            let title = cx.global::<I18n>().t("notify-hotkey-register-failed");
-            push_settings_error(window, cx, title, err);
-        }
-        #[cfg(test)]
-        let _ = (window, err);
-        return false;
-    }
-
-    if let Err(err) = state::config::update_app_settings(cx, |payload| {
-        payload.temporary_hotkey = next_hotkey.clone();
-    }) {
-        if let Err(rollback_err) = state::GlobalHotkeyState::update_temporary_hotkey(
-            next_hotkey.as_deref(),
-            previous_hotkey.as_deref(),
-            cx,
-        ) {
-            event!(
-                Level::ERROR,
-                error = ?rollback_err,
-                "rollback jaco temporary hotkey runtime failed after settings save failure"
-            );
-        }
-        #[cfg(not(test))]
-        {
-            let title = cx.global::<I18n>().t("notify-save-settings-failed");
-            push_settings_error(window, cx, title, err);
-        }
-        #[cfg(test)]
-        let _ = (window, err);
-        return false;
-    }
-
+    let committed_hotkey = next_hotkey;
+    let task = state::config::update_app_settings(cx, move |payload| {
+        payload.temporary_hotkey = committed_hotkey;
+    });
+    window
+        .spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = cx.update(|window, cx| match result {
+                Ok(_) => {}
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("notify-save-settings-failed");
+                    push_settings_error(window, cx, title, err);
+                }
+            });
+        })
+        .detach();
     true
 }
 
@@ -313,24 +284,25 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
                     menu.item(
                         PopupMenuItem::new(label.clone())
                             .checked(language == current_language)
-                            .on_click(
-                                move |_, window, cx| match state::config::update_app_settings(
-                                    cx,
-                                    |payload| {
-                                        payload.language = language;
-                                    },
-                                ) {
-                                    Ok(_) => {
-                                        foundation::init_i18n(cx);
-                                        menus::sync_app_menus(cx);
-                                        app::reload_app_menu_bars(cx);
-                                        cx.refresh_windows();
-                                    }
-                                    Err(err) => {
-                                        push_settings_error(window, cx, save_failed.clone(), err);
-                                    }
-                                },
-                            ),
+                            .on_click(move |_, window, cx| {
+                                let task = state::config::update_app_settings(cx, move |payload| {
+                                    payload.language = language
+                                });
+                                let save_failed = save_failed.clone();
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        let result = task.await;
+                                        let _ = cx.update(|window, cx| match result {
+                                            Ok(_) => {
+                                                cx.refresh_windows();
+                                            }
+                                            Err(err) => {
+                                                push_settings_error(window, cx, save_failed, err);
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                            }),
                     )
                 })
         })
@@ -366,17 +338,23 @@ fn app_http_proxy_input(window: &mut Window, cx: &mut App) -> AnyElement {
                     } else {
                         Some(next_value.clone())
                     };
-                    match state::config::update_app_settings(cx, |payload| {
-                        payload.http_proxy = next_proxy.clone();
-                    }) {
-                        Ok(_) => {
-                            input_state.last_value = next_value;
-                        }
-                        Err(err) => {
-                            let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                            push_settings_error(window, cx, title, err);
-                        }
-                    }
+                    let committed_proxy = next_proxy.clone();
+                    let task = state::config::update_app_settings(cx, move |payload| {
+                        payload.http_proxy = committed_proxy;
+                    });
+                    input_state.last_value = next_value;
+                    window
+                        .spawn(cx, async move |cx| {
+                            let result = task.await;
+                            let _ = cx.update(|window, cx| {
+                                if let Err(err) = result {
+                                    let title =
+                                        cx.global::<I18n>().t("notify-save-settings-failed");
+                                    push_settings_error(window, cx, title, err);
+                                }
+                            });
+                        })
+                        .detach();
                 }
             });
 
@@ -416,8 +394,7 @@ mod tests {
         TemporaryHotkeyControlState, language_label_key, language_options, save_temporary_hotkey,
     };
     use crate::{
-        database::FreshStoreGlobal,
-        foundation,
+        database,
         state::{self, JacoConfig},
     };
     use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
@@ -507,12 +484,14 @@ mod tests {
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
-        cx.update(|_, cx| {
+        let task = cx.update(|_, cx| {
             state::config::update_app_settings(cx, |payload| {
                 payload.temporary_hotkey = Some("cmd+shift+".to_string());
             })
-            .expect("seed invalid temporary hotkey setting");
         });
+        cx.foreground_executor()
+            .block_test(task)
+            .expect("seed invalid temporary hotkey setting");
         let control =
             cx.update(|window, cx| cx.new(|cx| TemporaryHotkeyControlState::new(window, cx)));
 
@@ -633,15 +612,21 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             let payload = AppSettingsPayload {
                 temporary_hotkey: hotkey.map(str::to_string),
                 ..Default::default()
             };
-            let config = JacoConfig::with_app_settings_for_test(config_path, payload.clone());
-            config.save_for_test().expect("save test config");
-            state::config::install_for_test(cx, config).expect("install config store");
-            foundation::init_i18n(cx);
+            let config =
+                JacoConfig::with_app_settings_for_test(config_path.clone(), payload.clone());
+            std::fs::write(
+                &config_path,
+                toml::to_string_pretty(&config).expect("encode test config"),
+            )
+            .expect("save test config");
+            state::config::install_for_test(cx, config_path.clone(), config)
+                .expect("install config store");
+            crate::foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
             if let Some(hotkey) = hotkey {
                 state::GlobalHotkeyState::update_temporary_hotkey(None, Some(hotkey), cx)

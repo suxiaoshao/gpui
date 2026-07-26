@@ -4773,6 +4773,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-operation"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "tracing",
+]
+
+[[package]]
 name = "gpui-store"
 version = "0.1.0"
 dependencies = [
@@ -6033,6 +6041,7 @@ version = "0.1.0"
 dependencies = [
  "app-assets",
  "app-theme",
+ "async-trait",
  "dirs-next",
  "fluent-bundle",
  "garde",
@@ -6043,6 +6052,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui-form",
  "gpui-form-gpui-component",
+ "gpui-operation",
  "gpui-store",
  "gpui-tokio",
  "gpui_platform",
@@ -6103,6 +6113,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
 ]
 
@@ -6127,6 +6138,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "url",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 use crate::{
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    errors::JacoResult,
     foundation::{I18n, assets::IconName},
     state,
     state::config::{McpServerTomlConfig, McpTransportKind, is_valid_mcp_server_id},
@@ -94,6 +95,7 @@ struct McpOAuthDialogTarget {
     cleanup_credentials: bool,
 }
 
+#[derive(Clone)]
 struct McpServerSaveRequest {
     revision: FormRevision,
     output: McpServerFormInput,
@@ -293,14 +295,34 @@ impl McpServerEditDialogState {
             }
         };
 
-        let saved_server = request.server.clone();
-        let saved_server_id = request.server_id.clone();
-        match state::config::upsert_mcp_server(
+        let task = state::config::upsert_mcp_server(
             cx,
             request.original_server_id.as_deref(),
-            request.server_id,
-            request.server,
-        ) {
+            request.server_id.clone(),
+            request.server.clone(),
+        );
+        let dialog = cx.entity().downgrade();
+        self.save_task = Some(window.spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = dialog.update_in(cx, |dialog, window, cx| {
+                dialog.save_task = None;
+                let _ = dialog.finish_config_save(request, result, window, cx);
+            });
+        }));
+        cx.notify();
+        Ok(())
+    }
+
+    fn finish_config_save(
+        &mut self,
+        request: McpServerSaveRequest,
+        result: JacoResult<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let saved_server = request.server.clone();
+        let saved_server_id = request.server_id.clone();
+        match result {
             Ok(()) => {
                 self.draft.form.update(cx, |form, cx| {
                     form.rebase_if_revision(request.revision, request.output, cx);
@@ -1396,27 +1418,34 @@ pub(super) fn open_mcp_server_delete_confirm(
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
             let page_for_task = page.clone();
+            let config_task = state::config::delete_mcp_server(cx, &server_id);
             let task = window.spawn(cx, async move |cx| {
-                let credentials_result =
-                    delete_oauth_credentials(&credential_keys_to_delete, cx).await;
-                if let Err(err) = cx.update(|window, cx| match credentials_result {
-                    Ok(()) => match state::config::delete_mcp_server(cx, &server_id) {
-                        Ok(_) => {
+                match config_task.await {
+                    Ok(_) => {
+                        let credentials_result =
+                            delete_oauth_credentials(&credential_keys_to_delete, cx).await;
+                        if let Err(err) = cx.update(|window, cx| {
+                            let (message, notification_type) = match credentials_result {
+                                Ok(()) => (None, NotificationType::Success),
+                                Err(error) => (Some(error.to_string()), NotificationType::Warning),
+                            };
                             disconnect_server(server_id.clone(), window, cx);
-                            window.push_notification(
-                                Notification::new()
-                                    .title(deleted_title.clone())
-                                    .with_type(NotificationType::Success),
-                                cx,
-                            );
+                            let mut notification = Notification::new()
+                                .title(deleted_title.clone())
+                                .with_type(notification_type);
+                            if let Some(message) = message {
+                                notification = notification.message(message);
+                            }
+                            window.push_notification(notification, cx);
+                        }) {
+                            event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
                         }
-                        Err(err) => {
-                            push_settings_error(window, cx, delete_failed_title.clone(), err)
-                        }
-                    },
-                    Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
-                }) {
-                    event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
+                    }
+                    Err(error) => {
+                        let _ = cx.update(|window, cx| {
+                            push_settings_error(window, cx, delete_failed_title.clone(), error);
+                        });
+                    }
                 }
                 if let Err(err) = page_for_task.update(cx, |page, cx| {
                     page.delete_task = None;
@@ -1938,7 +1967,8 @@ mod tests {
             foundation::init_i18n(cx);
             let config = state::JacoConfig::load_from_path_for_test(&config_path)
                 .expect("create test config");
-            state::config::install_for_test(cx, config).expect("install config store");
+            state::config::install_for_test(cx, config_path.clone(), config)
+                .expect("install config store");
             state::mcp::init(cx).expect("init MCP runtime");
         });
         dir

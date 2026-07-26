@@ -11,3 +11,7 @@ use gpui::App;
 pub(crate) fn init_i18n(cx: &mut App) {
     i18n::init(cx);
 }
+
+pub(crate) fn init_bootstrap(cx: &mut App) {
+    i18n::init_bootstrap(cx);
+}
